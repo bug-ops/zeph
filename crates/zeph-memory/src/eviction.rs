@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
+use crate::sqlite_time::parse_sqlite_datetime_to_unix;
 use crate::store::SqliteStore;
 use crate::types::MessageId;
 
@@ -113,48 +114,25 @@ fn unix_now_secs() -> u64 {
 
 /// Parse a `SQLite` TEXT timestamp ("YYYY-MM-DD HH:MM:SS") into Unix seconds.
 ///
-/// Does not use `chrono` to avoid adding a dependency to `zeph-memory`.
+/// Thin `u64` wrapper around [`parse_sqlite_datetime_to_unix`] — eviction timestamps are
+/// always post-epoch, so the conversion only fails on a (impossible in practice) negative
+/// parse result.
+///
+/// # Behavior note (pre-1970 / negative timestamps)
+///
+/// A pre-1970 (or otherwise negative-computing) input now returns `None` here, whereas the
+/// old hand-rolled `u64`-only parser this replaced silently returned `Some(0)` for such
+/// input (its `for y in 1970..year` day-accumulation loop is simply empty when `year <
+/// 1970`, contributing zero days with no error). That old behavior treated a corrupt
+/// timestamp as "epoch" — maximally old, strongly favoring eviction. This function instead
+/// treats it as unparseable, so [`EbbinghausPolicy::score`]'s `last_accessed → created_at →
+/// now_secs` fallback chain falls through to the next signal (or `now_secs`, i.e. "brand
+/// new" — the *opposite* eviction bias) instead. `last_accessed`/`created_at` are always
+/// application-generated `datetime('now')` strings, so a real pre-1970 value should never
+/// occur outside data corruption — this divergence is believed unreachable in practice, but
+/// is intentional and pinned by a test rather than accidental.
 fn parse_sqlite_timestamp_secs(s: &str) -> Option<u64> {
-    // Expected format: "YYYY-MM-DD HH:MM:SS"
-    let s = s.trim();
-    if s.len() < 19 {
-        return None;
-    }
-    let year: u64 = s[0..4].parse().ok()?;
-    let month: u64 = s[5..7].parse().ok()?;
-    let day: u64 = s[8..10].parse().ok()?;
-    let hour: u64 = s[11..13].parse().ok()?;
-    let min: u64 = s[14..16].parse().ok()?;
-    let sec: u64 = s[17..19].parse().ok()?;
-
-    // Days since Unix epoch (1970-01-01). Simple but accurate for years 1970-2099.
-    // Leap year calculation: divisible by 4 and not 100, or divisible by 400.
-    let is_leap = |y: u64| (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400);
-    let days_in_month = |y: u64, m: u64| -> u64 {
-        match m {
-            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-            4 | 6 | 9 | 11 => 30,
-            2 => {
-                if is_leap(y) {
-                    29
-                } else {
-                    28
-                }
-            }
-            _ => 0,
-        }
-    };
-
-    let mut days: u64 = 0;
-    for y in 1970..year {
-        days += if is_leap(y) { 366 } else { 365 };
-    }
-    for m in 1..month {
-        days += days_in_month(year, m);
-    }
-    days += day.saturating_sub(1);
-
-    Some(days * 86400 + hour * 3600 + min * 60 + sec)
+    u64::try_from(parse_sqlite_datetime_to_unix(s)?).ok()
 }
 
 // ── Sweep loop ────────────────────────────────────────────────────────────────
@@ -496,6 +474,15 @@ mod tests {
             ts, 1_704_067_200,
             "2024-01-01 must parse to known timestamp"
         );
+    }
+
+    #[test]
+    fn parse_sqlite_timestamp_pre_1970_returns_none() {
+        // Pinned behavior (post-refactor): a pre-epoch date now returns `None` rather than
+        // the old hand-rolled parser's silent `Some(0)` fallback — see the doc comment on
+        // `parse_sqlite_timestamp_secs` for why this divergence is intentional.
+        assert_eq!(parse_sqlite_timestamp_secs("1969-12-31 23:59:59"), None);
+        assert_eq!(parse_sqlite_timestamp_secs("1900-01-01 00:00:00"), None);
     }
 
     // ── Phase-2 Qdrant cleanup tests ─────────────────────────────────────────

@@ -105,6 +105,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `acp` feature list, recovering 4 unit tests that the `zeph-acp` default-array split
   had silently dropped from the CI-matching test run. Pure Cargo-hygiene change, no
   runtime behavior change.
+- `refactor(memory)`: deduplicated three more independent hand-rolled patterns in
+  `zeph-memory`. A single SQLite-datetime-to-Unix-seconds parser now lives in new
+  `crates/zeph-memory/src/sqlite_time.rs`, replacing three separate implementations
+  (`graph/types.rs`, `graph/activation.rs`, `eviction.rs`) that had drifted apart
+  (different algorithms, different return types, different fractional-second/timezone
+  tolerance); `eviction.rs`'s `Option<u64>`-returning wrapper is now a thin
+  `u64::try_from(...)` conversion over the canonical `Option<i64>` parser — this
+  changes one previously-untested edge case (a malformed/pre-1970 timestamp string now
+  falls through to `None` instead of silently returning `Some(0)`/epoch), documented
+  and pinned with a regression test since it's unreachable in practice (`datetime('now')`
+  never produces pre-1970 strings) (#5523). A new `build_ingest_documents` free function
+  in `graph/ingest/adapter.rs` replaces the near-identical context-window
+  document-assembly loop duplicated across all three `IngestSourceAdapter` impls
+  (`SubagentJsonl`, `ClaudeCodeJsonl`, `CodexJsonl`) (#5515). New
+  `crates/zeph-memory/src/llm_judge.rs` holds `embed_with_timeout_fail_open` and
+  `llm_judge_score`, consolidating four embed-timeout-fail-open call sites and three
+  single-shot LLM-judge call sites previously duplicated across `admission.rs` and
+  `quality_gate.rs`, including the subtle clamped-vs-unclamped fail-open asymmetry in
+  `refine_goal_utility_llm` (now pinned by a dedicated regression test) (#5514). No
+  behavior change beyond the one documented eviction.rs edge case above; added direct
+  unit test coverage for all three new shared helpers.
 
 ### Fixed
 

@@ -17,13 +17,43 @@ use zeph_llm::provider::Message;
 
 use crate::MemoryError;
 use crate::graph::ingest::document::IngestSourceKind;
-use crate::graph::types::GraphProvenance;
+use crate::graph::types::{GraphOrigin, GraphProvenance};
 
 use super::document::IngestDocument;
 use super::report::ImportBatchId;
 
 mod sealed {
     pub trait Sealed {}
+}
+
+/// Build one [`IngestDocument`] per non-empty `texts[i]`, pairing it with `ids[i]` and the
+/// `context_window` preceding texts.
+///
+/// Shared by every [`IngestSourceAdapter`] impl in this module — they differ only in how
+/// `source_uri` is formatted and which [`GraphOrigin`] tags the provenance.
+fn build_ingest_documents(
+    texts: &[String],
+    ids: &[String],
+    context_window: usize,
+    batch_id: &ImportBatchId,
+    origin: GraphOrigin,
+    source_uri: impl Fn(&str) -> String,
+) -> Vec<IngestDocument> {
+    let mut docs = Vec::with_capacity(texts.len());
+    for (i, (content, id)) in texts.iter().zip(ids.iter()).enumerate() {
+        if content.trim().is_empty() {
+            continue;
+        }
+        let start = i.saturating_sub(context_window);
+        let ctx: Vec<String> = texts[start..i].to_vec();
+        let provenance = GraphProvenance {
+            origin,
+            import_batch_id: batch_id.as_str().to_owned(),
+            source_uri: Some(source_uri(id)),
+        };
+        docs.push(IngestDocument::new(content.clone(), ctx, provenance));
+    }
+    docs
 }
 
 /// Adapter that converts raw source material into [`IngestDocument`] values.
@@ -153,26 +183,16 @@ impl IngestSourceAdapter for SubagentJsonl {
             .iter()
             .map(|e| e.message.to_llm_content().to_owned())
             .collect();
+        let ids: Vec<String> = entries.iter().map(|e| e.seq.to_string()).collect();
 
-        let mut docs = Vec::with_capacity(entries.len());
-        for (i, entry) in entries.iter().enumerate() {
-            let content = texts[i].clone();
-            if content.trim().is_empty() {
-                continue;
-            }
-            let start = i.saturating_sub(self.context_window);
-            let ctx: Vec<String> = texts[start..i].to_vec();
-
-            let source_uri = format!("subagent:{}#{}", self.task_id, entry.seq);
-            let provenance = GraphProvenance {
-                origin: IngestSourceKind::SubagentTranscript.graph_origin(),
-                import_batch_id: batch_id.as_str().to_owned(),
-                source_uri: Some(source_uri),
-            };
-            docs.push(IngestDocument::new(content, ctx, provenance));
-        }
-
-        Ok(docs)
+        Ok(build_ingest_documents(
+            &texts,
+            &ids,
+            self.context_window,
+            batch_id,
+            IngestSourceKind::SubagentTranscript.graph_origin(),
+            |id| format!("subagent:{}#{id}", self.task_id),
+        ))
     }
 }
 
@@ -346,23 +366,14 @@ impl IngestSourceAdapter for ClaudeCodeJsonl {
             uuids.push(record.uuid.unwrap_or_else(|| format!("line{lineno}")));
         }
 
-        let mut docs = Vec::with_capacity(texts.len());
-        for (i, (content, uuid)) in texts.iter().zip(uuids.iter()).enumerate() {
-            if content.trim().is_empty() {
-                continue;
-            }
-            let start = i.saturating_sub(self.context_window);
-            let ctx: Vec<String> = texts[start..i].to_vec();
-            let source_uri = format!("claude-code:{}#{}", self.session_id, uuid);
-            let provenance = GraphProvenance {
-                origin: IngestSourceKind::ExternalAgent.graph_origin(),
-                import_batch_id: batch_id.as_str().to_owned(),
-                source_uri: Some(source_uri),
-            };
-            docs.push(IngestDocument::new(content.clone(), ctx, provenance));
-        }
-
-        Ok(docs)
+        Ok(build_ingest_documents(
+            &texts,
+            &uuids,
+            self.context_window,
+            batch_id,
+            IngestSourceKind::ExternalAgent.graph_origin(),
+            |uuid| format!("claude-code:{}#{uuid}", self.session_id),
+        ))
     }
 }
 
@@ -522,23 +533,14 @@ impl IngestSourceAdapter for CodexJsonl {
             item_ids.push(item_id);
         }
 
-        let mut docs = Vec::with_capacity(texts.len());
-        for (i, (content, item_id)) in texts.iter().zip(item_ids.iter()).enumerate() {
-            if content.trim().is_empty() {
-                continue;
-            }
-            let start = i.saturating_sub(self.context_window);
-            let ctx: Vec<String> = texts[start..i].to_vec();
-            let source_uri = format!("codex:{}#{}", self.session_id, item_id);
-            let provenance = GraphProvenance {
-                origin: IngestSourceKind::ExternalAgent.graph_origin(),
-                import_batch_id: batch_id.as_str().to_owned(),
-                source_uri: Some(source_uri),
-            };
-            docs.push(IngestDocument::new(content.clone(), ctx, provenance));
-        }
-
-        Ok(docs)
+        Ok(build_ingest_documents(
+            &texts,
+            &item_ids,
+            self.context_window,
+            batch_id,
+            IngestSourceKind::ExternalAgent.graph_origin(),
+            |item_id| format!("codex:{}#{item_id}", self.session_id),
+        ))
     }
 }
 

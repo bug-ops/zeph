@@ -23,6 +23,7 @@ use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
 use crate::graph::store::GraphStore;
 use crate::graph::types::{Edge, EdgeType, edge_type_weight, evolved_weight};
+use crate::sqlite_time::parse_sqlite_datetime_to_unix;
 
 /// A graph node that was activated during spreading activation.
 #[derive(Debug, Clone)]
@@ -729,38 +730,6 @@ impl SpreadingActivation {
         let w = weight as f32;
         w
     }
-}
-
-/// Parse a `SQLite` `datetime('now')` string to Unix seconds.
-///
-/// Accepts `"YYYY-MM-DD HH:MM:SS"` (and variants with fractional seconds or timezone suffix).
-/// Returns `None` if the string cannot be parsed.
-#[must_use]
-fn parse_sqlite_datetime_to_unix(s: &str) -> Option<i64> {
-    if s.len() < 19 {
-        return None;
-    }
-    let year: i64 = s[0..4].parse().ok()?;
-    let month: i64 = s[5..7].parse().ok()?;
-    let day: i64 = s[8..10].parse().ok()?;
-    let hour: i64 = s[11..13].parse().ok()?;
-    let min: i64 = s[14..16].parse().ok()?;
-    let sec: i64 = s[17..19].parse().ok()?;
-
-    // Days since Unix epoch via civil calendar algorithm.
-    // Reference: https://howardhinnant.github.io/date_algorithms.html#days_from_civil
-    let (y, m) = if month <= 2 {
-        (year - 1, month + 9)
-    } else {
-        (year, month - 3)
-    };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * m + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-
-    Some(days * 86_400 + hour * 3_600 + min * 60 + sec)
 }
 
 #[cfg(test)]

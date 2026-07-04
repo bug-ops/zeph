@@ -354,16 +354,17 @@ async fn compute_information_value(
     if !provider.supports_embeddings() {
         return 1.0;
     }
-    let candidate = match tokio::time::timeout(embed_timeout, provider.embed(content)).await {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => {
-            tracing::debug!(error = %e, "quality_gate: embed failed, treating info_val = 1.0 (fail-open)");
-            return 1.0;
-        }
-        Err(_) => {
-            tracing::warn!("quality_gate: embed timed out, treating info_val = 1.0 (fail-open)");
-            return 1.0;
-        }
+    let candidate = match crate::llm_judge::embed_with_timeout_fail_open(
+        provider,
+        content,
+        embed_timeout,
+        1.0,
+        "quality_gate: information_value",
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(fail_open) => return fail_open,
     };
     let max_sim = recent_embeddings
         .iter()
@@ -570,8 +571,6 @@ fn extract_predicate_token(content_lower: &str) -> Option<String> {
 ///
 /// Returns `0.5` (neutral) on timeout or any error — ensures fail-open behavior.
 async fn call_llm_scorer(content: &str, provider: &AnyProvider, timeout_ms: u64) -> f32 {
-    use zeph_llm::provider::{Message, MessageMetadata, Role};
-
     let system = "You are a memory quality judge. Rate the quality of the following message \
         for long-term storage on a scale of 0.0 to 1.0. Consider: information density, \
         completeness of references, factual clarity. \
@@ -584,35 +583,16 @@ async fn call_llm_scorer(content: &str, provider: &AnyProvider, timeout_ms: u64)
         content.chars().take(500).collect::<String>()
     );
 
-    let messages = vec![
-        Message {
-            role: Role::System,
-            content: system.to_owned(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        },
-        Message {
-            role: Role::User,
-            content: user,
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        },
-    ];
-
-    let timeout = Duration::from_millis(timeout_ms);
-    let result = match tokio::time::timeout(timeout, provider.chat(&messages)).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
-            tracing::debug!(error = %e, "quality_gate: LLM scorer failed, using 0.5");
-            return 0.5;
-        }
-        Err(_) => {
-            tracing::debug!("quality_gate: LLM scorer timed out, using 0.5");
-            return 0.5;
-        }
-    };
-
-    parse_llm_score(&result)
+    crate::llm_judge::llm_judge_score(
+        provider,
+        system,
+        user,
+        Duration::from_millis(timeout_ms),
+        0.5,
+        "quality_gate: LLM scorer",
+        |s| Some(parse_llm_score(s)),
+    )
+    .await
 }
 
 /// Parse LLM JSON response into a combined quality score.

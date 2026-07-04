@@ -370,16 +370,17 @@ async fn compute_semantic_novelty(
     if !provider.supports_embeddings() {
         return 1.0;
     }
-    let vector = match tokio::time::timeout(embed_timeout, provider.embed(content)).await {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => {
-            tracing::debug!(error = %e, "A-MAC: failed to embed for novelty, using 1.0");
-            return 1.0;
-        }
-        Err(_) => {
-            tracing::warn!("A-MAC: embed timed out in semantic_novelty, using 1.0");
-            return 1.0;
-        }
+    let vector = match crate::llm_judge::embed_with_timeout_fail_open(
+        provider,
+        content,
+        embed_timeout,
+        1.0,
+        "A-MAC: semantic_novelty",
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(fail_open) => return fail_open,
     };
     if let Err(e) = store.ensure_collection_for_vector(&vector).await {
         tracing::debug!(error = %e, "A-MAC: collection not ready for novelty check");
@@ -401,8 +402,6 @@ async fn compute_semantic_novelty(
 /// On timeout or error, returns `0.5` (neutral — no bias toward admit or reject).
 #[tracing::instrument(name = "memory.admission.future_utility_llm", skip_all)]
 async fn compute_future_utility(content: &str, role: &str, provider: &AnyProvider) -> f32 {
-    use zeph_llm::provider::{Message, MessageMetadata, Role};
-
     let system = "You are a memory relevance judge. Rate how likely this message will be \
         referenced in future conversations on a scale of 0.0 to 1.0. \
         Respond with ONLY a decimal number between 0.0 and 1.0, nothing else.";
@@ -412,35 +411,16 @@ async fn compute_future_utility(content: &str, role: &str, provider: &AnyProvide
         content.chars().take(500).collect::<String>()
     );
 
-    let messages = vec![
-        Message {
-            role: Role::System,
-            content: system.to_owned(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        },
-        Message {
-            role: Role::User,
-            content: user,
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        },
-    ];
-
-    let result = match tokio::time::timeout(Duration::from_secs(8), provider.chat(&messages)).await
-    {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
-            tracing::debug!(error = %e, "A-MAC: future_utility LLM call failed, using 0.5");
-            return 0.5;
-        }
-        Err(_) => {
-            tracing::debug!("A-MAC: future_utility LLM timed out, using 0.5");
-            return 0.5;
-        }
-    };
-
-    result.trim().parse::<f32>().unwrap_or(0.5).clamp(0.0, 1.0)
+    crate::llm_judge::llm_judge_score(
+        provider,
+        system,
+        user,
+        Duration::from_secs(8),
+        0.5,
+        "A-MAC: future_utility",
+        |s| s.trim().parse::<f32>().ok(),
+    )
+    .await
 }
 
 /// Compute goal-conditioned utility for a candidate memory.
@@ -467,27 +447,29 @@ async fn compute_goal_utility(
         return 0.0;
     }
 
-    let goal_emb = match tokio::time::timeout(embed_timeout, provider.embed(goal_text)).await {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => {
-            tracing::debug!(error = %e, "goal_utility: failed to embed goal text, using 0.0");
-            return 0.0;
-        }
-        Err(_) => {
-            tracing::warn!("A-MAC: embed timed out in goal_utility (goal text), using 0.0");
-            return 0.0;
-        }
+    let goal_emb = match crate::llm_judge::embed_with_timeout_fail_open(
+        provider,
+        goal_text,
+        embed_timeout,
+        0.0,
+        "goal_utility: goal text",
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(fail_open) => return fail_open,
     };
-    let content_emb = match tokio::time::timeout(embed_timeout, provider.embed(content)).await {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => {
-            tracing::debug!(error = %e, "goal_utility: failed to embed content, using 0.0");
-            return 0.0;
-        }
-        Err(_) => {
-            tracing::warn!("A-MAC: embed timed out in goal_utility (content), using 0.0");
-            return 0.0;
-        }
+    let content_emb = match crate::llm_judge::embed_with_timeout_fail_open(
+        provider,
+        content,
+        embed_timeout,
+        0.0,
+        "goal_utility: content",
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(fail_open) => return fail_open,
     };
 
     // Qdrant is used for novelty search, not for goal utility — we compute cosine directly.
@@ -528,8 +510,6 @@ async fn refine_goal_utility_llm(
     embedding_sim: f32,
     provider: &AnyProvider,
 ) -> f32 {
-    use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
-
     let system = "You are a memory relevance judge. Given a task goal and a candidate memory, \
         rate how relevant the memory is to the goal on a scale of 0.0 to 1.0. \
         Respond with ONLY a decimal number between 0.0 and 1.0, nothing else.";
@@ -540,39 +520,16 @@ async fn refine_goal_utility_llm(
         content.chars().take(300).collect::<String>(),
     );
 
-    let messages = vec![
-        Message {
-            role: Role::System,
-            content: system.to_owned(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        },
-        Message {
-            role: Role::User,
-            content: user,
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        },
-    ];
-
-    let result = match tokio::time::timeout(Duration::from_secs(6), provider.chat(&messages)).await
-    {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
-            tracing::debug!(error = %e, "goal_utility LLM refinement failed, using embedding sim");
-            return embedding_sim;
-        }
-        Err(_) => {
-            tracing::debug!("goal_utility LLM refinement timed out, using embedding sim");
-            return embedding_sim;
-        }
-    };
-
-    result
-        .trim()
-        .parse::<f32>()
-        .unwrap_or(embedding_sim)
-        .clamp(0.0, 1.0)
+    crate::llm_judge::llm_judge_score(
+        provider,
+        system,
+        user,
+        Duration::from_secs(6),
+        embedding_sim,
+        "goal_utility LLM refinement",
+        |s| s.trim().parse::<f32>().ok(),
+    )
+    .await
 }
 
 /// Log an admission decision to the audit log via `tracing`.

@@ -95,6 +95,7 @@ pub mod error;
 pub mod eviction;
 pub mod graph;
 pub mod in_memory_store;
+mod llm_judge;
 pub mod qdrant_ops;
 pub mod quality_gate;
 pub mod response_cache;
@@ -102,6 +103,7 @@ pub mod router;
 pub mod semantic;
 pub mod shadow;
 pub mod snapshot;
+mod sqlite_time;
 pub mod store;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
