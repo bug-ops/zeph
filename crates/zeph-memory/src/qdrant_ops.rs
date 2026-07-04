@@ -73,11 +73,8 @@ impl QdrantOps {
     /// Override the per-call timeout applied to every Qdrant gRPC operation.
     ///
     /// Defaults to 10 seconds. A slow or hung Qdrant server would otherwise block the
-    /// calling async task indefinitely (#5484).
-    ///
-    /// TODO(#5493): no production call site invokes this yet — the timeout is currently
-    /// hardcoded to the default rather than config-driven. Wire a config field through
-    /// `zeph-config`/bootstrap and call this from there.
+    /// calling async task indefinitely (#5484). The production bootstrap path drives this
+    /// from `MemoryConfig::qdrant_timeout_secs`.
     ///
     /// # Examples
     ///

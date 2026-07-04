@@ -680,6 +680,43 @@ pub fn migrate_qdrant_api_key(toml_src: &str) -> Result<MigrationResult, Migrate
     })
 }
 
+/// No-op migration for the optional `qdrant_timeout_secs` field.
+///
+/// The field has `#[serde(default = "default_qdrant_timeout_secs")]` (10 seconds, matching the
+/// previously hardcoded `QdrantOps` default) so existing configs parse unchanged. This step adds
+/// a commented-out hint under `[memory]` if not already present.
+///
+/// # Errors
+///
+/// Returns `MigrateError` if the TOML cannot be parsed or `[memory]` is malformed.
+pub fn migrate_qdrant_timeout_secs(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("qdrant_timeout_secs") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    if !doc.contains_key("memory") {
+        doc.insert("memory", toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+
+    let comment = "\n# Per-call timeout applied to every Qdrant gRPC operation, in seconds.\n\
+         # Bounds each call against a hung server or a stalled network path.\n\
+         # qdrant_timeout_secs = 10\n";
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.qdrant_timeout_secs".to_owned()],
+    })
+}
+
 /// Add commented-out `embed_timeout_secs` and `compress_timeout_secs` to `[memory.fidelity]`
 /// when it is present in the config but does not yet have these keys (#4645, #4651).
 ///

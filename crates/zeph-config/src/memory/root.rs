@@ -46,6 +46,10 @@ fn default_qdrant_url() -> String {
     "http://localhost:6334".into()
 }
 
+fn default_qdrant_timeout_secs() -> u64 {
+    10
+}
+
 fn default_summarization_threshold() -> usize {
     50
 }
@@ -167,6 +171,12 @@ pub struct MemoryConfig {
     /// `skip_serializing` prevents the key from being written back to TOML on config save.
     #[serde(default, skip_serializing)]
     pub qdrant_api_key: Option<Secret>,
+    /// Per-call timeout applied to every Qdrant gRPC operation, in seconds.
+    ///
+    /// Bounds each call against a hung server or a stalled network path instead of blocking
+    /// the calling async task indefinitely. Default: `10`.
+    #[serde(default = "default_qdrant_timeout_secs")]
+    pub qdrant_timeout_secs: u64,
     #[serde(default)]
     pub semantic: SemanticConfig,
     #[serde(default = "default_summarization_threshold")]

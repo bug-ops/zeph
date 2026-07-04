@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        74,
-        "MIGRATIONS registry must contain all 74 sequential steps"
+        75,
+        "MIGRATIONS registry must contain all 75 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1645,7 +1645,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 74);
+    assert_eq!(MIGRATIONS.len(), 75);
 }
 
 #[test]
@@ -1760,6 +1760,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_nli_config",
         "migrate_secret_masking_config",
         "migrate_pii_filter_names",
+        "migrate_qdrant_timeout_secs",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -1838,6 +1839,48 @@ fn migrate_qdrant_api_key_idempotent_on_commented_output() {
     let first = migrate_qdrant_api_key(base).unwrap();
     assert_eq!(first.changed_count, 1);
     let second = migrate_qdrant_api_key(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0, "second run must not double-append");
+    assert_eq!(second.output, first.output);
+}
+
+// ── migrate_qdrant_timeout_secs tests ─────────────────────────────────────
+
+#[test]
+fn migrate_qdrant_timeout_secs_adds_comment_when_absent() {
+    let src = "[memory]\nqdrant_url = \"http://localhost:6334\"\n";
+    let result = migrate_qdrant_timeout_secs(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result
+            .sections_changed
+            .contains(&"memory.qdrant_timeout_secs".to_owned())
+    );
+    assert!(result.output.contains("# qdrant_timeout_secs = 10"));
+}
+
+#[test]
+fn migrate_qdrant_timeout_secs_is_noop_when_present() {
+    let src = "[memory]\nqdrant_url = \"http://localhost:6334\"\nqdrant_timeout_secs = 5\n";
+    let result = migrate_qdrant_timeout_secs(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn migrate_qdrant_timeout_secs_creates_memory_section_when_absent() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_qdrant_timeout_secs(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# qdrant_timeout_secs = 10"));
+}
+
+#[test]
+fn migrate_qdrant_timeout_secs_idempotent_on_commented_output() {
+    let base = "[memory]\nqdrant_url = \"http://localhost:6334\"\n";
+    let first = migrate_qdrant_timeout_secs(base).unwrap();
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_qdrant_timeout_secs(&first.output).unwrap();
     assert_eq!(second.changed_count, 0, "second run must not double-append");
     assert_eq!(second.output, first.output);
 }

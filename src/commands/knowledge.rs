@@ -674,7 +674,10 @@ async fn build_ingest_resources(
         &config.memory.qdrant_url,
         config.memory.qdrant_api_key.as_ref().map(Secret::expose),
     )
-    .map_err(|e| anyhow::anyhow!("failed to connect to Qdrant: {e}"))?;
+    .map_err(|e| anyhow::anyhow!("failed to connect to Qdrant: {e}"))?
+    .with_timeout(std::time::Duration::from_secs(
+        config.memory.qdrant_timeout_secs,
+    ));
     let collection = config.memory.documents.collection.clone();
     let provider = resolve_notes_embed_provider(provider_override, config, &app).await?;
     let embed_fn = {

@@ -260,6 +260,7 @@ impl Default for Config {
                 history_limit: 50,
                 qdrant_url: "http://localhost:6334".into(),
                 qdrant_api_key: None,
+                qdrant_timeout_secs: 10,
                 semantic: SemanticConfig::default(),
                 summarization_threshold: 50,
                 summarization_llm_timeout_secs: 60,

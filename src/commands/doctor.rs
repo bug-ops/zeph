@@ -606,10 +606,12 @@ async fn check_qdrant(config: &zeph_core::config::Config, timeout_secs: u64) -> 
         .qdrant_api_key
         .as_ref()
         .map(|s| s.expose().to_owned());
+    let qdrant_timeout_secs = config.memory.qdrant_timeout_secs;
     let result = tokio::time::timeout(Duration::from_secs(timeout_secs), async move {
         use zeph_memory::vector_store::VectorStore as _;
-        let ops =
-            zeph_memory::QdrantOps::new(&url, api_key.as_deref()).map_err(|e| e.to_string())?;
+        let ops = zeph_memory::QdrantOps::new(&url, api_key.as_deref())
+            .map_err(|e| e.to_string())?
+            .with_timeout(Duration::from_secs(qdrant_timeout_secs));
         ops.health_check()
             .await
             .map(|_| ())

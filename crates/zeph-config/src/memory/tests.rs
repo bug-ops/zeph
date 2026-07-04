@@ -408,6 +408,28 @@ mod apex_mem_quality_gate_config_tests {
     }
 
     #[test]
+    fn memory_config_qdrant_timeout_secs_default_is_ten() {
+        let cfg: MemoryConfig = toml::from_str("history_limit = 50").expect("must deserialize");
+        assert_eq!(
+            cfg.qdrant_timeout_secs, 10,
+            "qdrant_timeout_secs must default to 10, matching the previous hardcoded QdrantOps timeout"
+        );
+    }
+
+    #[test]
+    fn memory_config_qdrant_timeout_secs_toml_roundtrip() {
+        let toml = r"
+            history_limit = 50
+            qdrant_timeout_secs = 3
+        ";
+        let cfg: MemoryConfig = toml::from_str(toml).expect("must deserialize");
+        assert_eq!(
+            cfg.qdrant_timeout_secs, 3,
+            "qdrant_timeout_secs must deserialize from TOML"
+        );
+    }
+
+    #[test]
     fn five_signal_config_default_is_disabled() {
         let cfg: MemoryConfig = toml::from_str("history_limit = 50").expect("must deserialize");
         assert!(!cfg.five_signal.enabled);

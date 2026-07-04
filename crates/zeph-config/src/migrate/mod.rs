@@ -612,17 +612,17 @@ use steps::{
     MigrateNliConfig, MigrateOrchestrationAssetSensitivity, MigrateOrchestrationPersistence,
     MigrateOrchestratorProvider, MigrateOtelFilter, MigratePiiFilterNames,
     MigratePlannerModelToProvider, MigratePolicyProviderAndUtilityWindow,
-    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig,
-    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSecretMaskingConfig,
-    MigrateServeConfig, MigrateSessionPersistProviderOverrides, MigrateSessionPersistenceConfig,
-    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellCheckpointsConfig,
-    MigrateShellTransactional, MigrateSttToProvider, MigrateSupervisorConfig,
-    MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateTraceMetadata,
-    MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig, MigrateTuiThemeDefaults,
-    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
+    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQdrantTimeoutSecs,
+    MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
+    MigrateSecretMaskingConfig, MigrateServeConfig, MigrateSessionPersistProviderOverrides,
+    MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
+    MigrateShellCheckpointsConfig, MigrateShellTransactional, MigrateSttToProvider,
+    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
+    MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig,
+    MigrateTuiThemeDefaults, MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–74).
+/// Ordered registry of all sequential migration steps (steps 1–75).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -754,6 +754,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 74 — add a commented `filter_names = false` advisory to an existing
             // [security.pii_filter] table (#5530)
             Box::new(MigratePiiFilterNames),
+            // Step 75 — add qdrant_timeout_secs advisory under [memory]
+            Box::new(MigrateQdrantTimeoutSecs),
         ]
     });
 

@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use std::sync::RwLock;
+use std::time::Duration;
 
 use tokio::sync::watch;
 use zeph_llm::any::AnyProvider;
@@ -73,6 +74,43 @@ fn is_qdrant_localhost(url: &str) -> bool {
         host.as_deref(),
         Some("127.0.0.1" | "localhost" | "[::1]" | "0.0.0.0" | "host.docker.internal")
     )
+}
+
+/// Build the shared production [`QdrantOps`] client from resolved config, or `None` when
+/// `vector_backend` is not `Qdrant`.
+///
+/// Applies `memory.qdrant_timeout_secs` via [`QdrantOps::with_timeout`] — this is the single
+/// site the `AppBuilder::new` bootstrap path uses, so every subsystem constructed through
+/// `SemanticMemory::with_qdrant_ops` shares the operator-configured per-call timeout.
+///
+/// # Errors
+///
+/// Returns [`BootstrapError::Provider`] if `qdrant_url` fails to parse.
+fn build_qdrant_ops(config: &Config) -> Result<Option<QdrantOps>, BootstrapError> {
+    match config.memory.vector_backend {
+        zeph_core::config::VectorBackend::Qdrant => {
+            let api_key_str = config.memory.qdrant_api_key.as_ref().map(Secret::expose);
+            if api_key_str.unwrap_or("").trim().is_empty()
+                && !is_qdrant_localhost(&config.memory.qdrant_url)
+            {
+                tracing::warn!(
+                    url = %config.memory.qdrant_url,
+                    "qdrant_api_key is not set for non-localhost Qdrant — \
+                     set ZEPH_QDRANT_API_KEY in the vault to authenticate"
+                );
+            }
+            let ops = QdrantOps::new(&config.memory.qdrant_url, api_key_str)
+                .map_err(|e| {
+                    BootstrapError::Provider(format!(
+                        "invalid qdrant_url '{}': {e}",
+                        config.memory.qdrant_url
+                    ))
+                })?
+                .with_timeout(Duration::from_secs(config.memory.qdrant_timeout_secs));
+            Ok(Some(ops))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// Top-level builder that owns all runtime dependencies resolved at startup.
@@ -216,28 +254,7 @@ impl AppBuilder {
             zeph_plugins::apply_plugin_config_overlays(&mut config, &plugins_dir())
                 .map_err(|e| BootstrapError::Provider(format!("plugin overlay merge: {e}")))?;
 
-        let qdrant_ops = match config.memory.vector_backend {
-            zeph_core::config::VectorBackend::Qdrant => {
-                let api_key_str = config.memory.qdrant_api_key.as_ref().map(Secret::expose);
-                if api_key_str.unwrap_or("").trim().is_empty()
-                    && !is_qdrant_localhost(&config.memory.qdrant_url)
-                {
-                    tracing::warn!(
-                        url = %config.memory.qdrant_url,
-                        "qdrant_api_key is not set for non-localhost Qdrant — \
-                         set ZEPH_QDRANT_API_KEY in the vault to authenticate"
-                    );
-                }
-                let ops = QdrantOps::new(&config.memory.qdrant_url, api_key_str).map_err(|e| {
-                    BootstrapError::Provider(format!(
-                        "invalid qdrant_url '{}': {e}",
-                        config.memory.qdrant_url
-                    ))
-                })?;
-                Some(ops)
-            }
-            _ => None,
-        };
+        let qdrant_ops = build_qdrant_ops(&config)?;
 
         Ok(Self {
             config,

@@ -315,6 +315,9 @@ injection_patterns = true
 history_limit = 50
 # Qdrant vector database URL for semantic memory
 qdrant_url = "http://localhost:6334"
+# Per-call timeout applied to every Qdrant gRPC operation, in seconds. Bounds each call
+# against a hung server or a stalled network path instead of blocking indefinitely.
+qdrant_timeout_secs = 10
 # Number of messages before triggering summarization (0 = disabled)
 summarization_threshold = 50
 # Total token budget for context window (0 = auto-detect from model)

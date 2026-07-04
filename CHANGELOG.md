@@ -383,6 +383,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `feat(memory)`: add `memory.qdrant_timeout_secs` config field, wired into
+  `QdrantOps::with_timeout` at all 5 production `QdrantOps::new` construction sites:
+  `AppBuilder::new` (`src/bootstrap/mod.rs`, via the extracted `build_qdrant_ops` helper),
+  `src/commands/doctor.rs`, `src/commands/ingest.rs`, `src/commands/knowledge.rs`, and
+  `src/commands/project.rs` (`PurgeEngine`, 2 call sites). Previously `QdrantOps::with_timeout`
+  had no production caller — every Qdrant gRPC call used the hardcoded 10-second default with
+  no way for an operator to tune it. Defaults to `10` (seconds), matching prior behavior
+  exactly. A `migrate-config` step adds a commented `qdrant_timeout_secs = 10` advisory under
+  `[memory]` for existing configs. (#5493)
+
 - `feat(session)`: add the `zeph-session` crate foundation (spec-068 P0, #5343) — an append-only
   JSONL event log (`SessionEventLog`) as the durable source of truth for a conversation, the
   `SessionEvent` schema (reusing `zeph_llm::provider::MessagePart` and

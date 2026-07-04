@@ -34,7 +34,8 @@
 //! step 72 adds a `[security.content_isolation.nli]` advisory block (#5438);
 //! step 73 adds a `[security.content_isolation.secret_masking]` advisory block (#5437);
 //! step 74 adds a commented `filter_names = false` advisory to an existing
-//! `[security.pii_filter]` table (#5530).
+//! `[security.pii_filter]` table (#5530);
+//! step 75 adds a commented `qdrant_timeout_secs = 10` advisory under `[memory]`.
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -60,9 +61,9 @@ use super::{
     migrate_orchestration_asset_sensitivity, migrate_orchestration_orchestrator_provider,
     migrate_orchestration_persistence, migrate_otel_filter, migrate_pii_filter_names,
     migrate_planner_model_to_provider, migrate_policy_provider_and_utility_window,
-    migrate_provider_max_concurrent, migrate_qdrant_api_key, migrate_quality_config,
-    migrate_sandbox_config, migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
-    migrate_secret_masking_config, migrate_serve_config,
+    migrate_provider_max_concurrent, migrate_qdrant_api_key, migrate_qdrant_timeout_secs,
+    migrate_quality_config, migrate_sandbox_config, migrate_sandbox_egress_filter,
+    migrate_scheduler_daemon_config, migrate_secret_masking_config, migrate_serve_config,
     migrate_session_persist_provider_overrides, migrate_session_persistence_config,
     migrate_session_provider_persistence, migrate_session_recap_config,
     migrate_shell_checkpoints_config, migrate_shell_transactional, migrate_stt_to_provider,
@@ -897,5 +898,17 @@ impl Migration for MigratePiiFilterNames {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_pii_filter_names(toml_src)
+    }
+}
+
+/// Step 75 — adds a commented `qdrant_timeout_secs = 10` advisory under `[memory]`.
+pub(super) struct MigrateQdrantTimeoutSecs;
+impl Migration for MigrateQdrantTimeoutSecs {
+    fn name(&self) -> &'static str {
+        "migrate_qdrant_timeout_secs"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_qdrant_timeout_secs(toml_src)
     }
 }

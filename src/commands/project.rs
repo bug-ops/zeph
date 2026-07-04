@@ -513,7 +513,9 @@ impl PurgeEngine<'_> {
                 .as_ref()
                 .map(|s| s.expose().to_owned());
             let ops = match QdrantOps::new(&config.memory.qdrant_url, api_key.as_deref()) {
-                Ok(o) => o,
+                Ok(o) => o.with_timeout(std::time::Duration::from_secs(
+                    config.memory.qdrant_timeout_secs,
+                )),
                 Err(e) => {
                     println!("    (cannot connect to Qdrant: {e})");
                     return;
@@ -547,7 +549,9 @@ impl PurgeEngine<'_> {
             .as_ref()
             .map(|s| s.expose().to_owned());
         let ops = match QdrantOps::new(&config.memory.qdrant_url, api_key.as_deref()) {
-            Ok(o) => o,
+            Ok(o) => o.with_timeout(std::time::Duration::from_secs(
+                config.memory.qdrant_timeout_secs,
+            )),
             Err(e) => {
                 eprintln!("  Warning: cannot connect to Qdrant: {e}");
                 return 0;

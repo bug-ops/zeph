@@ -556,6 +556,38 @@ fn appbuilder_qdrant_ops_valid_url_succeeds() {
     assert!(result.is_ok(), "QdrantOps::new with valid URL must succeed");
 }
 
+#[test]
+fn appbuilder_qdrant_ops_applies_configured_timeout() {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.memory.vector_backend = zeph_core::config::VectorBackend::Qdrant;
+    config.memory.qdrant_timeout_secs = 3;
+
+    // `build_qdrant_ops` is the exact function `AppBuilder::new` calls to construct the
+    // shared production `QdrantOps` client — not a re-implementation. Deleting the
+    // `.with_timeout(...)` call from that function (or from `AppBuilder::new`, which would
+    // require breaking this call) fails this test. `timeout` is private on `QdrantOps`, so
+    // the configured value is observed via `Debug`.
+    let ops = build_qdrant_ops(&config)
+        .expect("valid default qdrant_url must build")
+        .expect("vector_backend explicitly set to Qdrant");
+    assert!(
+        format!("{ops:?}").contains("3s"),
+        "QdrantOps must be built with the configured qdrant_timeout_secs, not the default"
+    );
+}
+
+#[test]
+fn build_qdrant_ops_returns_none_for_sqlite_backend() {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.memory.vector_backend = zeph_core::config::VectorBackend::Sqlite;
+
+    let ops = build_qdrant_ops(&config).unwrap();
+    assert!(
+        ops.is_none(),
+        "build_qdrant_ops must return None when vector_backend is not Qdrant"
+    );
+}
+
 // ── build_feedback_classifier ─────────────────────────────────────────────────
 //
 // Full integration tests require a live provider (Ollama/OpenAI). These tests only verify
