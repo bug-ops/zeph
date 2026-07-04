@@ -136,6 +136,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tools)`: `UtilityScorer::default_gain` (`crates/zeph-tools/src/utility.rs`) fell through
+  to a generic `0.5` gain for `diagnostics` and other direct-action tools with no exploratory
+  semantics, which satisfied `recommend_action`'s `Retrieve` rule before the direct-`ToolCall`
+  rule (`gain >= 0.7`) could ever fire. An explicitly LLM-issued `diagnostics` call was skipped
+  and replaced with a retry hint; the identical retry then matched on `call_hash` and was
+  vetoed again as redundant, producing a two-step no-op instead of ever running
+  `DiagnosticsExecutor`. `diagnostics`, `edit`, `format`, `create_directory`, `delete_path`,
+  `move_path`, and `copy_path` now score `0.75`, routing them through the direct-`ToolCall`
+  rule on the first attempt; `find_path`/`list_directory` now score `0.65` for parity with the
+  existing `grep`/`glob` tier. (#5650)
 - `fix(agent-context)`: `ContextService::prepare_context`'s proactive-explorer path
   (`crates/zeph-agent-context/src/service.rs`) rebuilt the skill registry after a successful
   exploration by calling `SkillRegistry::load(...)` — a blocking, synchronous directory walk

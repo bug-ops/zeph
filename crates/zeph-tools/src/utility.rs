@@ -53,6 +53,14 @@ pub fn has_explicit_tool_request(user_message: &str) -> bool {
 ///
 /// Keys are exact tool name prefixes or names. Higher value = more expected gain.
 /// Unknown tools default to 0.5 (neutral).
+///
+/// Tools scoring `>= 0.7` take the direct `ToolCall` branch in `recommend_action`
+/// before the exploratory `Retrieve` rule (which requires `gain < 0.7`) is ever
+/// considered. Deterministic, self-contained actions — a compiler diagnostics run,
+/// a file edit or rename, a directory mutation — gain nothing from being routed
+/// through "retrieve context first, then retry": there is no missing context a
+/// memory search could supply, so forcing that detour only produces a stalled
+/// retry that then gets vetoed again as a redundant duplicate call (#5650).
 fn default_gain(tool_name: &str) -> f32 {
     if tool_name.starts_with("memory") {
         return 0.8;
@@ -63,7 +71,9 @@ fn default_gain(tool_name: &str) -> f32 {
     match tool_name {
         "bash" | "shell" => 0.6,
         "read" | "write" => 0.55,
-        "search_code" | "grep" | "glob" => 0.65,
+        "search_code" | "grep" | "glob" | "find_path" | "list_directory" => 0.65,
+        "diagnostics" | "edit" | "format" | "create_directory" | "delete_path" | "move_path"
+        | "copy_path" => 0.75,
         _ => 0.5,
     }
 }
@@ -733,6 +743,122 @@ mod tests {
         assert_eq!(
             scorer.recommend_action(Some(&score), &ctx),
             UtilityAction::Respond
+        );
+    }
+
+    // ── #5650 regression: direct-action tools bypass the Retrieve detour ────────
+
+    #[test]
+    fn default_gain_direct_action_tools_reach_tool_call_threshold() {
+        for tool in [
+            "diagnostics",
+            "edit",
+            "format",
+            "create_directory",
+            "delete_path",
+            "move_path",
+            "copy_path",
+        ] {
+            let gain = default_gain(tool);
+            assert!(gain >= 0.7, "{tool} gain should be >= 0.7, got {gain}");
+        }
+    }
+
+    #[test]
+    fn default_gain_find_path_and_list_directory_match_grep_glob_tier() {
+        for tool in ["find_path", "list_directory", "grep", "glob"] {
+            let gain = default_gain(tool);
+            assert!(
+                (gain - 0.65).abs() < f32::EPSILON,
+                "{tool} gain should be 0.65, got {gain}"
+            );
+        }
+    }
+
+    #[test]
+    fn recommend_action_direct_tools_execute_on_first_call() {
+        // Regression test for #5650: these tools previously fell through to the
+        // generic 0.5 gain bucket, which routed a fresh first call (uncertainty ~1.0)
+        // through rule 7 (Retrieve) instead of rule 6 (ToolCall), stalling the tool
+        // behind a doomed Retrieve -> redundant-Respond cycle.
+        let scorer = UtilityScorer::new(default_config());
+        let ctx = default_ctx(); // tool_calls_this_turn: 0 -> uncertainty == 1.0
+        for tool in [
+            "diagnostics",
+            "edit",
+            "format",
+            "create_directory",
+            "delete_path",
+            "move_path",
+            "copy_path",
+        ] {
+            let call = make_call(tool, json!({}));
+            let score = scorer.score(&call, &ctx).unwrap();
+            assert!(
+                score.gain >= 0.7,
+                "{tool} gain should be >= 0.7, got {}",
+                score.gain
+            );
+            assert_eq!(
+                scorer.recommend_action(Some(&score), &ctx),
+                UtilityAction::ToolCall,
+                "{tool} should execute immediately on first call, not stall on Retrieve"
+            );
+        }
+    }
+
+    #[test]
+    fn recommend_action_unclassified_tools_still_retrieve_on_first_call() {
+        // Documents preserved, intentional behavior: tools that genuinely benefit
+        // from a "retrieve context first" detour (or unknown tool ids) remain in the
+        // 0.5 default-gain bucket and may still receive Retrieve on a fresh first
+        // call. This is not the #5650 regression — it only affected tools that have
+        // no exploratory value to gain from the detour.
+        let scorer = UtilityScorer::new(default_config());
+        let ctx = default_ctx();
+        for tool in ["fetch", "totally_unrecognized_tool_xyz"] {
+            let call = make_call(tool, json!({}));
+            let score = scorer.score(&call, &ctx).unwrap();
+            assert!((score.gain - 0.5).abs() < f32::EPSILON);
+            assert_eq!(
+                scorer.recommend_action(Some(&score), &ctx),
+                UtilityAction::Retrieve,
+                "{tool} should still be eligible for Retrieve on first call"
+            );
+        }
+    }
+
+    #[test]
+    fn recommend_action_diagnostics_never_enters_the_retrieve_redundant_respond_stall() {
+        // Contrasts the fixed diagnostics tool with the still-affected fetch tool:
+        // fetch's first call recommends Retrieve, and once the identical retry is
+        // recorded it becomes a redundant duplicate that resolves to Respond — the
+        // exact two-step no-op #5650 reported. diagnostics's gain (0.75) means it
+        // takes the ToolCall branch on the very first call, so it never enters that
+        // stall in the first place.
+        let mut scorer = UtilityScorer::new(default_config());
+        let ctx = default_ctx();
+
+        let fetch_call = make_call("fetch", json!({"url": "https://example.com"}));
+        let fetch_score = scorer.score(&fetch_call, &ctx).unwrap();
+        assert_eq!(
+            scorer.recommend_action(Some(&fetch_score), &ctx),
+            UtilityAction::Retrieve
+        );
+        scorer.record_call(&fetch_call);
+        let fetch_retry_score = scorer.score(&fetch_call, &ctx).unwrap();
+        assert_eq!(
+            scorer.recommend_action(Some(&fetch_retry_score), &ctx),
+            UtilityAction::Respond,
+            "identical retry should be flagged as redundant, reproducing the stall"
+        );
+
+        let diagnostics_call = make_call("diagnostics", json!({}));
+        let diagnostics_score = scorer.score(&diagnostics_call, &ctx).unwrap();
+        assert_eq!(
+            scorer.recommend_action(Some(&diagnostics_score), &ctx),
+            UtilityAction::ToolCall,
+            "diagnostics must execute on the first call, bypassing the stall entirely"
         );
     }
 
