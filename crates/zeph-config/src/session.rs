@@ -77,7 +77,7 @@ impl Default for SessionConfig {
 pub struct CondenseConfig {
     /// Provider name from `[[llm.providers]]` for condensation LLM calls.
     ///
-    /// An empty [`ProviderName`] falls back to the primary provider. Default: `"fast"`.
+    /// An empty [`ProviderName`] falls back to the primary provider. Default: `""`.
     pub condense_provider: ProviderName,
     /// Fraction of the context budget that triggers condensation on resume/mid-session.
     /// Default: `0.85`.
@@ -89,7 +89,7 @@ pub struct CondenseConfig {
 impl Default for CondenseConfig {
     fn default() -> Self {
         Self {
-            condense_provider: ProviderName::from("fast"),
+            condense_provider: ProviderName::default(),
             threshold: 0.85,
             keep_recent: 20,
         }
@@ -145,5 +145,35 @@ impl Default for RecapConfig {
             provider: ProviderName::default(),
             max_input_messages: 20,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn condense_config_default_provider_is_empty() {
+        let cfg = CondenseConfig::default();
+        assert!(
+            cfg.condense_provider.is_empty(),
+            "condense_provider must default to empty (fallback to primary provider), matching \
+             the sibling recap/feedback/arise_trace provider fields — a non-empty default like \
+             \"fast\" spams a fallback WARN when no provider named \"fast\" is configured (#5665)"
+        );
+    }
+
+    #[test]
+    fn condense_config_empty_section_uses_defaults() {
+        let cfg: CondenseConfig = toml::from_str("").unwrap();
+        assert!(cfg.condense_provider.is_empty());
+        assert!((cfg.threshold - 0.85).abs() < f64::EPSILON);
+        assert_eq!(cfg.keep_recent, 20);
+    }
+
+    #[test]
+    fn condense_config_explicit_provider_roundtrip() {
+        let cfg: CondenseConfig = toml::from_str(r#"condense_provider = "fast""#).unwrap();
+        assert_eq!(cfg.condense_provider, "fast");
     }
 }

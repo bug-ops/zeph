@@ -122,7 +122,7 @@ encrypt = false               # opt-in AEAD encryption — reserved, not yet imp
 max_event_log_mb = 256        # size guard that triggers condensation
 
 [session.condense]
-condense_provider = "fast"    # provider name from [[llm.providers]]; empty = primary provider
+condense_provider = ""        # provider name from [[llm.providers]]; empty = primary provider
 threshold = 0.85               # fraction of context budget that triggers condensation
 keep_recent = 20               # minimum recent events preserved after condensation
 ```

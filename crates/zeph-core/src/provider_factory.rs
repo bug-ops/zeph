@@ -788,10 +788,10 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("cuda feature"));
     }
 
-    #[cfg(any(feature = "gonka", feature = "cocoon"))]
-    use super::build_provider_from_entry;
+    use super::{build_provider_from_entry, resolve_named_provider};
     use crate::config::{Config, ProviderKind};
     use zeph_config::providers::ProviderEntry;
+    use zeph_llm::LlmProvider;
 
     #[cfg(feature = "gonka")]
     mod gonka_tests {
@@ -935,6 +935,24 @@ mod tests {
             config.llm.stable_skill_embedding_model(),
             config.llm.effective_embedding_model()
         );
+    }
+
+    #[test]
+    fn resolve_named_provider_empty_name_falls_back_to_primary_silently() {
+        let config = Config::default();
+        let entry = make_provider_entry(false, Some("primary-model"), None);
+        let primary = build_provider_from_entry(&entry, &config, None).unwrap();
+        let resolved = resolve_named_provider(&config, &primary, "");
+        assert_eq!(resolved.name(), primary.name());
+    }
+
+    #[test]
+    fn resolve_named_provider_unmatched_name_falls_back_to_primary_with_warn() {
+        let config = Config::default(); // no [[llm.providers]] named "fast"
+        let entry = make_provider_entry(false, Some("primary-model"), None);
+        let primary = build_provider_from_entry(&entry, &config, None).unwrap();
+        let resolved = resolve_named_provider(&config, &primary, "fast");
+        assert_eq!(resolved.name(), primary.name());
     }
 
     #[cfg(feature = "cocoon")]

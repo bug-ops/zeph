@@ -1516,7 +1516,7 @@ provider_persistence = true
 # [session.condense] — durable context condensation policy (spec-068 §8, #5343)
 # [session.condense]
 # Provider name from [[llm.providers]] for condensation calls; empty = primary provider
-# condense_provider = "fast"
+# condense_provider = ""
 # Fraction of the context budget that triggers condensation on resume/mid-session
 # threshold = 0.85
 # Minimum recent events preserved after condensation

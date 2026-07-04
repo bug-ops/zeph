@@ -474,7 +474,7 @@ provider_persistence = true    # Persist channel-level provider overrides across
 persist_provider_overrides = true  # Store reasoning_effort per session; requires provider_persistence (default: true)
 
 [session.condense]
-# condense_provider = ""       # Provider name from [[llm.providers]] for condensation; empty = primary (default: "fast")
+# condense_provider = ""       # Provider name from [[llm.providers]] for condensation; empty = primary (default: "")
 threshold = 0.85               # Fraction of the context budget that triggers condensation (default: 0.85)
 keep_recent = 20               # Minimum recent events preserved after condensation (default: 20)
 

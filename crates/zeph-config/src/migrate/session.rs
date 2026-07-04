@@ -283,7 +283,7 @@ pub fn migrate_session_persistence_config(toml_src: &str) -> Result<MigrationRes
 
     let condense_block = "\n# [session.condense] — durable context condensation policy (spec-068 §8, #5343).\n\
          # [session.condense]\n\
-         # condense_provider = \"fast\"  # [[llm.providers]] name; empty falls back to the primary provider\n\
+         # condense_provider = \"\"  # [[llm.providers]] name; empty falls back to the primary provider\n\
          # threshold = 0.85            # fraction of context budget that triggers condensation\n\
          # keep_recent = 20            # minimum recent events preserved after condensation\n";
     let output = format!("{output}{condense_block}");

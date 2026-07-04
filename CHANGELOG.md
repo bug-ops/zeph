@@ -143,6 +143,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   as prompt content instead of ending the session. `try_recv` now matches the same exit strings
   before constructing a message and sets a persistent flag that `recv` checks first, so the
   session ends promptly once the queue drains instead of only incidentally via stdin EOF. (#5657)
+- `fix(config)`: `CondenseConfig::condense_provider` (`crates/zeph-config/src/session.rs`)
+  defaulted to `ProviderName::from("fast")`, but no shipped config defines a provider named
+  `"fast"`. Every session-open path that constructs the resume condenser
+  (`build_resume_condenser` in `crates/zeph-core/src/provider_factory.rs`, used by CLI `sessions
+  resume`, ACP `spawn_acp_agent`, and `zeph serve`'s `hydrate_session_sink`) resolved this via
+  `resolve_named_provider`, which always missed and logged a fallback WARN before falling back
+  to the primary provider anyway — as well as the mid-session live-condensation path
+  (`build_condense_deps` in `crates/zeph-core/src/agent/context/summarization/mod.rs`, called
+  from `assembly.rs`), which resolves via `Agent::resolve_background_provider`
+  (`crates/zeph-core/src/agent/learning/arise.rs`) and logs the identical fallback WARN on an
+  unmatched name. `condense_provider` now defaults to an empty `ProviderName`, matching the
+  sibling `recap.provider`/`feedback_provider`/`arise_trace_provider` fields — both resolvers
+  already fall back to the primary/background provider silently when the name is empty. (#5665)
 - `fix(tools)`: `UtilityScorer::default_gain` (`crates/zeph-tools/src/utility.rs`) fell through
   to a generic `0.5` gain for `diagnostics` and other direct-action tools with no exploratory
   semantics, which satisfied `recommend_action`'s `Retrieve` rule before the direct-`ToolCall`
