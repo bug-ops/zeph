@@ -356,6 +356,32 @@ fn starts_with_question(words: &[&str]) -> bool {
         .is_some_and(|w| QUESTION_WORDS.iter().any(|qw| w.eq_ignore_ascii_case(qw)))
 }
 
+/// Classification signals computed once per query and shared by `route()` and
+/// `route_with_confidence()`, so neither has to recompute the same six checks.
+#[allow(clippy::struct_excessive_bools)] // independent classification flags, not state — each is checked separately in the priority chain
+struct RouteSignals {
+    temporal: bool,
+    relationship: bool,
+    structural_code: bool,
+    question: bool,
+    word_count: usize,
+    snake_case: bool,
+}
+
+/// Compute every routing signal for `query` exactly once.
+fn compute_signals(query: &str) -> RouteSignals {
+    let lower = query.to_ascii_lowercase();
+    let words: Vec<&str> = query.split_whitespace().collect();
+    RouteSignals {
+        temporal: has_temporal_cue(&lower),
+        relationship: RELATIONSHIP_PATTERNS.iter().any(|p| lower.contains(p)),
+        structural_code: query.contains('/') || query.contains("::"),
+        question: starts_with_question(&words),
+        word_count: words.len(),
+        snake_case: words.iter().any(|w| is_pure_snake_case(w)),
+    }
+}
+
 /// Returns true if `word` is a pure `snake_case` identifier (all ASCII, lowercase letters,
 /// digits and underscores, contains at least one underscore, not purely numeric).
 fn is_pure_snake_case(word: &str) -> bool {
@@ -371,101 +397,87 @@ fn is_pure_snake_case(word: &str) -> bool {
         && !word.chars().all(|c| c.is_ascii_digit() || c == '_')
 }
 
-impl MemoryRouter for HeuristicRouter {
+impl HeuristicRouter {
+    /// Decide the route from precomputed signals.
+    ///
+    /// Priority order:
+    /// 1. Temporal patterns → `Episodic` (checked first so e.g. "history of changes
+    ///    last week" routes to `Episodic`, not `Graph`).
+    /// 2. Relationship patterns → `Graph`.
+    /// 3. Code-like patterns (paths, `::`) without a question word → `Keyword`.
+    /// 4. Long NL query or question word → `Semantic`.
+    /// 5. Short non-question query → `Keyword`.
+    /// 6. Pure `snake_case` identifiers → `Keyword`.
+    /// 7. Default → `Hybrid`.
+    fn decide_route(signals: &RouteSignals) -> MemoryRoute {
+        if signals.temporal {
+            return MemoryRoute::Episodic;
+        }
+        if signals.relationship {
+            return MemoryRoute::Graph;
+        }
+        if signals.structural_code && !signals.question {
+            return MemoryRoute::Keyword;
+        }
+        if signals.question || signals.word_count >= 6 {
+            return MemoryRoute::Semantic;
+        }
+        if signals.word_count <= 3 && !signals.question {
+            return MemoryRoute::Keyword;
+        }
+        if signals.snake_case {
+            return MemoryRoute::Keyword;
+        }
+        MemoryRoute::Hybrid
+    }
+
     /// Returns a confidence signal based on pattern match count (W2.1 fix: gradual scale).
     ///
     /// - Exactly one route pattern matches → confidence `1.0` (clear signal)
     /// - Zero patterns match → confidence `0.0` (pure default fallback)
     /// - More than one pattern matches → confidence `1.0 / matched_count` (ambiguous, decreasing)
-    fn route_with_confidence(&self, query: &str) -> RoutingDecision {
-        let lower = query.to_ascii_lowercase();
+    #[allow(clippy::cast_precision_loss)]
+    fn decide_confidence(signals: &RouteSignals) -> f32 {
         let mut matched: u32 = 0;
-        if has_temporal_cue(&lower) {
+        if signals.temporal {
             matched += 1;
         }
-        if RELATIONSHIP_PATTERNS.iter().any(|p| lower.contains(p)) {
+        if signals.relationship {
             matched += 1;
         }
-        let words: Vec<&str> = query.split_whitespace().collect();
-        let word_count = words.len();
-        let has_structural = query.contains('/') || query.contains("::");
-        let question = starts_with_question(&words);
-        let has_snake = words.iter().any(|w| is_pure_snake_case(w));
-        if has_structural && !question {
+        if signals.structural_code && !signals.question {
             matched += 1;
         }
-        if question || word_count >= 6 {
+        if signals.question || signals.word_count >= 6 {
             matched += 1;
         }
-        if word_count <= 3 && !question {
+        if signals.word_count <= 3 && !signals.question {
             matched += 1;
         }
-        if has_snake {
+        if signals.snake_case {
             matched += 1;
         }
 
-        #[allow(clippy::cast_precision_loss)]
-        let confidence = match matched {
+        match matched {
             0 => 0.0,
             1 => 1.0,
             n => 1.0 / n as f32,
-        };
+        }
+    }
+}
 
+impl MemoryRouter for HeuristicRouter {
+    fn route_with_confidence(&self, query: &str) -> RoutingDecision {
+        let signals = compute_signals(query);
         RoutingDecision {
-            route: self.route(query),
-            confidence,
+            route: Self::decide_route(&signals),
+            confidence: Self::decide_confidence(&signals),
             reasoning: None,
         }
     }
 
     fn route(&self, query: &str) -> MemoryRoute {
-        let lower = query.to_ascii_lowercase();
-
-        // 1. Temporal queries take highest priority — must run before relationship check
-        //    to prevent "history of changes last week" from routing to Graph instead of Episodic.
-        if has_temporal_cue(&lower) {
-            return MemoryRoute::Episodic;
-        }
-
-        // 2. Relationship queries go to graph retrieval (feature-gated at call site)
-        let has_relationship = RELATIONSHIP_PATTERNS.iter().any(|p| lower.contains(p));
-        if has_relationship {
-            return MemoryRoute::Graph;
-        }
-
-        let words: Vec<&str> = query.split_whitespace().collect();
-        let word_count = words.len();
-
-        // Code-like patterns that unambiguously indicate keyword search:
-        // file paths (contain '/'), Rust paths (contain '::')
-        let has_structural_code_pattern = query.contains('/') || query.contains("::");
-
-        // Pure snake_case identifiers (e.g. "memory_limit", "error_handling")
-        // but only if the query does NOT start with a question word
-        let has_snake_case = words.iter().any(|w| is_pure_snake_case(w));
-        let question = starts_with_question(&words);
-
-        if has_structural_code_pattern && !question {
-            return MemoryRoute::Keyword;
-        }
-
-        // Long NL queries → semantic, regardless of snake_case tokens
-        if question || word_count >= 6 {
-            return MemoryRoute::Semantic;
-        }
-
-        // Short queries without question words → keyword
-        if word_count <= 3 && !question {
-            return MemoryRoute::Keyword;
-        }
-
-        // Short code-like patterns → keyword
-        if has_snake_case {
-            return MemoryRoute::Keyword;
-        }
-
-        // Default
-        MemoryRoute::Hybrid
+        Self::decide_route(&compute_signals(query))
     }
 }
 

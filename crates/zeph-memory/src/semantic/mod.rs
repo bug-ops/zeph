@@ -402,6 +402,68 @@ pub struct SemanticMemory {
 }
 
 impl SemanticMemory {
+    /// Build a `SemanticMemory` with every field set to its default value, varying only
+    /// the handful of parameters that differ across the public constructors.
+    ///
+    /// Shared by [`SemanticMemory::with_weights_and_pool_size`], [`SemanticMemory::with_qdrant_ops`],
+    /// [`SemanticMemory::from_parts`] and [`SemanticMemory::with_sqlite_backend_and_pool_size`]
+    /// to avoid duplicating the full field literal in each.
+    fn base(
+        sqlite: SqliteStore,
+        qdrant: Option<Arc<EmbeddingStore>>,
+        provider: AnyProvider,
+        embedding_model: String,
+        vector_weight: f64,
+        keyword_weight: f64,
+        token_counter: Arc<TokenCounter>,
+    ) -> Self {
+        Self {
+            sqlite,
+            qdrant,
+            provider,
+            embed_provider: None,
+            embedding_model,
+            vector_weight,
+            keyword_weight,
+            temporal_decay: TemporalDecay::Disabled,
+            temporal_decay_half_life_days: 30,
+            mmr_reranking: MmrReranking::Disabled,
+            mmr_lambda: 0.7,
+            importance_scoring: ImportanceScoring::Disabled,
+            importance_weight: 0.15,
+            tier_boost_semantic: 1.3,
+            token_counter,
+            graph_store: None,
+            experience: None,
+            reasoning: None,
+            community_detection_failures: Arc::new(AtomicU64::new(0)),
+            graph_extraction_count: Arc::new(AtomicU64::new(0)),
+            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+            last_qdrant_warn: Arc::new(AtomicU64::new(0)),
+            admission_control: None,
+            quality_gate: None,
+            key_facts_dedup_threshold: 0.95,
+            embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+            retrieval_depth: 0,
+            search_prompt_template: String::new(),
+            depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            query_bias_correction: QueryBiasCorrection::Enabled,
+            query_bias_profile_weight: 0.25,
+            profile_centroid: RwLock::new(None),
+            profile_centroid_ttl_secs: 300,
+            hebbian_reinforcement: HebbianReinforcement::Disabled,
+            hebbian_lr: 0.1,
+            hebbian_spread: HelaSpreadRuntime::default(),
+            retrieval_failure_logger: None,
+            summarization_llm_timeout_secs: 60,
+            query_sensitive_cost: false,
+            five_signal: None,
+            embed_timeout: std::time::Duration::from_secs(5),
+            graph_cancel: Mutex::new(Vec::new()),
+        }
+    }
+
     /// Create a new `SemanticMemory` instance with default hybrid search weights (0.7/0.3).
     ///
     /// Qdrant connection is best-effort: if unavailable, semantic search is disabled.
@@ -491,51 +553,15 @@ impl SemanticMemory {
             }
         };
 
-        Ok(Self {
+        Ok(Self::base(
             sqlite,
             qdrant,
             provider,
-            embed_provider: None,
-            embedding_model: embedding_model.into(),
+            embedding_model.into(),
             vector_weight,
             keyword_weight,
-            temporal_decay: TemporalDecay::Disabled,
-            temporal_decay_half_life_days: 30,
-            mmr_reranking: MmrReranking::Disabled,
-            mmr_lambda: 0.7,
-            importance_scoring: ImportanceScoring::Disabled,
-            importance_weight: 0.15,
-            tier_boost_semantic: 1.3,
-            token_counter: Arc::new(TokenCounter::new()),
-            graph_store: None,
-            experience: None,
-            reasoning: None,
-            community_detection_failures: Arc::new(AtomicU64::new(0)),
-            graph_extraction_count: Arc::new(AtomicU64::new(0)),
-            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
-            last_qdrant_warn: Arc::new(AtomicU64::new(0)),
-            admission_control: None,
-            quality_gate: None,
-            key_facts_dedup_threshold: 0.95,
-            embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
-            retrieval_depth: 0,
-            search_prompt_template: String::new(),
-            depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            query_bias_correction: QueryBiasCorrection::Enabled,
-            query_bias_profile_weight: 0.25,
-            profile_centroid: RwLock::new(None),
-            profile_centroid_ttl_secs: 300,
-            hebbian_reinforcement: HebbianReinforcement::Disabled,
-            hebbian_lr: 0.1,
-            hebbian_spread: HelaSpreadRuntime::default(),
-            retrieval_failure_logger: None,
-            summarization_llm_timeout_secs: 60,
-            query_sensitive_cost: false,
-            five_signal: None,
-            embed_timeout: std::time::Duration::from_secs(5),
-            graph_cancel: Mutex::new(Vec::new()),
-        })
+            Arc::new(TokenCounter::new()),
+        ))
     }
 
     /// Create a `SemanticMemory` from a pre-built `QdrantOps` instance.
@@ -559,51 +585,15 @@ impl SemanticMemory {
         let pool = sqlite.pool().clone();
         let store = EmbeddingStore::with_store(Box::new(ops), pool);
 
-        Ok(Self {
+        Ok(Self::base(
             sqlite,
-            qdrant: Some(Arc::new(store)),
+            Some(Arc::new(store)),
             provider,
-            embed_provider: None,
-            embedding_model: embedding_model.into(),
+            embedding_model.into(),
             vector_weight,
             keyword_weight,
-            temporal_decay: TemporalDecay::Disabled,
-            temporal_decay_half_life_days: 30,
-            mmr_reranking: MmrReranking::Disabled,
-            mmr_lambda: 0.7,
-            importance_scoring: ImportanceScoring::Disabled,
-            importance_weight: 0.15,
-            tier_boost_semantic: 1.3,
-            token_counter: Arc::new(TokenCounter::new()),
-            graph_store: None,
-            experience: None,
-            reasoning: None,
-            community_detection_failures: Arc::new(AtomicU64::new(0)),
-            graph_extraction_count: Arc::new(AtomicU64::new(0)),
-            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
-            last_qdrant_warn: Arc::new(AtomicU64::new(0)),
-            admission_control: None,
-            quality_gate: None,
-            key_facts_dedup_threshold: 0.95,
-            embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
-            retrieval_depth: 0,
-            search_prompt_template: String::new(),
-            depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            query_bias_correction: QueryBiasCorrection::Enabled,
-            query_bias_profile_weight: 0.25,
-            profile_centroid: RwLock::new(None),
-            profile_centroid_ttl_secs: 300,
-            hebbian_reinforcement: HebbianReinforcement::Disabled,
-            hebbian_lr: 0.1,
-            hebbian_spread: HelaSpreadRuntime::default(),
-            retrieval_failure_logger: None,
-            summarization_llm_timeout_secs: 60,
-            query_sensitive_cost: false,
-            five_signal: None,
-            embed_timeout: std::time::Duration::from_secs(5),
-            graph_cancel: Mutex::new(Vec::new()),
-        })
+            Arc::new(TokenCounter::new()),
+        ))
     }
 
     /// Attach a `GraphStore` for graph-aware retrieval.
@@ -1118,51 +1108,15 @@ impl SemanticMemory {
         keyword_weight: f64,
         token_counter: Arc<TokenCounter>,
     ) -> Self {
-        Self {
+        Self::base(
             sqlite,
             qdrant,
             provider,
-            embed_provider: None,
-            embedding_model: embedding_model.into(),
+            embedding_model.into(),
             vector_weight,
             keyword_weight,
-            temporal_decay: TemporalDecay::Disabled,
-            temporal_decay_half_life_days: 30,
-            mmr_reranking: MmrReranking::Disabled,
-            mmr_lambda: 0.7,
-            importance_scoring: ImportanceScoring::Disabled,
-            importance_weight: 0.15,
-            tier_boost_semantic: 1.3,
             token_counter,
-            graph_store: None,
-            experience: None,
-            reasoning: None,
-            community_detection_failures: Arc::new(AtomicU64::new(0)),
-            graph_extraction_count: Arc::new(AtomicU64::new(0)),
-            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
-            last_qdrant_warn: Arc::new(AtomicU64::new(0)),
-            admission_control: None,
-            quality_gate: None,
-            key_facts_dedup_threshold: 0.95,
-            embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
-            retrieval_depth: 0,
-            search_prompt_template: String::new(),
-            depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            query_bias_correction: QueryBiasCorrection::Enabled,
-            query_bias_profile_weight: 0.25,
-            profile_centroid: RwLock::new(None),
-            profile_centroid_ttl_secs: 300,
-            hebbian_reinforcement: HebbianReinforcement::Disabled,
-            hebbian_lr: 0.1,
-            hebbian_spread: HelaSpreadRuntime::default(),
-            retrieval_failure_logger: None,
-            summarization_llm_timeout_secs: 60,
-            query_sensitive_cost: false,
-            five_signal: None,
-            embed_timeout: std::time::Duration::from_secs(5),
-            graph_cancel: Mutex::new(Vec::new()),
-        }
+        )
     }
 
     /// Create a `SemanticMemory` using the `SQLite`-embedded vector backend.
@@ -1205,51 +1159,15 @@ impl SemanticMemory {
         let pool = sqlite.pool().clone();
         let store = EmbeddingStore::new_sqlite(pool);
 
-        Ok(Self {
+        Ok(Self::base(
             sqlite,
-            qdrant: Some(Arc::new(store)),
+            Some(Arc::new(store)),
             provider,
-            embed_provider: None,
-            embedding_model: embedding_model.into(),
+            embedding_model.into(),
             vector_weight,
             keyword_weight,
-            temporal_decay: TemporalDecay::Disabled,
-            temporal_decay_half_life_days: 30,
-            mmr_reranking: MmrReranking::Disabled,
-            mmr_lambda: 0.7,
-            importance_scoring: ImportanceScoring::Disabled,
-            importance_weight: 0.15,
-            tier_boost_semantic: 1.3,
-            token_counter: Arc::new(TokenCounter::new()),
-            graph_store: None,
-            experience: None,
-            reasoning: None,
-            community_detection_failures: Arc::new(AtomicU64::new(0)),
-            graph_extraction_count: Arc::new(AtomicU64::new(0)),
-            graph_extraction_failures: Arc::new(AtomicU64::new(0)),
-            last_qdrant_warn: Arc::new(AtomicU64::new(0)),
-            admission_control: None,
-            quality_gate: None,
-            key_facts_dedup_threshold: 0.95,
-            embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
-            retrieval_depth: 0,
-            search_prompt_template: String::new(),
-            depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            query_bias_correction: QueryBiasCorrection::Enabled,
-            query_bias_profile_weight: 0.25,
-            profile_centroid: RwLock::new(None),
-            profile_centroid_ttl_secs: 300,
-            hebbian_reinforcement: HebbianReinforcement::Disabled,
-            hebbian_lr: 0.1,
-            hebbian_spread: HelaSpreadRuntime::default(),
-            retrieval_failure_logger: None,
-            summarization_llm_timeout_secs: 60,
-            query_sensitive_cost: false,
-            five_signal: None,
-            embed_timeout: std::time::Duration::from_secs(5),
-            graph_cancel: Mutex::new(Vec::new()),
-        })
+            Arc::new(TokenCounter::new()),
+        ))
     }
 
     /// Access the underlying `SqliteStore` for operations that don't involve semantics.

@@ -470,6 +470,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pass a string literal. Delivers the per-call-site caching acceptance criterion
   originally stated but never implemented for #2387. Closes #5431.
 
+### Changed
+
+- `refactor(memory)`: `HeuristicRouter::route()` and `route_with_confidence()`
+  (`crates/zeph-memory/src/router.rs`) independently recomputed the same six
+  classification signals (temporal cue, relationship pattern, structural code pattern,
+  question-word detection, word-count thresholds, `snake_case` detection), and
+  `route_with_confidence()` additionally called `self.route(query)` to get its result,
+  recomputing everything a second time. Extracted a `RouteSignals` struct and a
+  `compute_signals()` function to compute each signal exactly once, plus
+  `HeuristicRouter::decide_route()`/`decide_confidence()` helpers holding the existing
+  priority-chain and popcount-confidence logic unchanged. `route()` and
+  `route_with_confidence()` now both call `compute_signals()` once and derive their
+  result from the shared `RouteSignals`. Pure extraction — no behavior change. Closes
+  #5510.
+- `refactor(memory)`: `SemanticMemory`'s four public constructors
+  (`with_weights_and_pool_size`, `with_qdrant_ops`, `from_parts`,
+  `with_sqlite_backend_and_pool_size` in `crates/zeph-memory/src/semantic/mod.rs`) each
+  built the full ~35-field `SemanticMemory` struct via an inline literal, differing only
+  in how `qdrant` and `token_counter` were constructed. Extracted a private
+  `SemanticMemory::base()` helper that builds the struct once from the handful of
+  parameters that vary; all four constructors now delegate to it. Pure extraction — no
+  behavior change. Closes #5504.
+
 ### Added
 
 - `feat(memory)`: add `memory.qdrant_timeout_secs` config field, wired into
