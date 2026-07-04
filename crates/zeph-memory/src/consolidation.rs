@@ -209,19 +209,33 @@ async fn process_conversation(
     Ok(())
 }
 
+/// Maximum number of `embed()` calls run concurrently per sweep tick.
+///
+/// `candidates` can be as large as `ConsolidationConfig::sweep_batch_size` (default 500);
+/// matches the bound used by `EntityResolver::resolve_batch` (`graph/resolver/mod.rs`).
+const CONSOLIDATION_EMBED_CONCURRENCY: usize = 4;
+
 /// Embed all consolidation candidates for a single conversation.
 ///
-/// Runs all embeds concurrently via `join_all`.  Candidates that fail to embed are logged
-/// and dropped; they will be retried in a future sweep cycle.
+/// Runs embeds with bounded concurrency (see [`CONSOLIDATION_EMBED_CONCURRENCY`]).
+/// Candidates that fail to embed are logged and dropped; they will be retried in a
+/// future sweep cycle.
 #[tracing::instrument(name = "memory.consolidation.embed_batch", skip_all, fields(count = candidates.len()))]
 async fn embed_candidates(
     provider: &AnyProvider,
     candidates: &[(crate::types::MessageId, String)],
     embed_timeout: Duration,
 ) -> Vec<(i64, String, Vec<f32>)> {
+    use futures::stream::{self, StreamExt as _};
+
+    // Eagerly collected into an owned `Vec` (rather than streamed lazily over
+    // `candidates.iter()`) so the resulting futures don't borrow `candidates` — otherwise
+    // rustc's Send/HRTB inference for the opaque `async fn` type fails at distant call
+    // sites that require a `'static + Send` future (e.g. `TaskSupervisor` factories).
     let futures: Vec<_> = candidates
         .iter()
-        .map(|(id, content)| {
+        .enumerate()
+        .map(|(idx, (id, content))| {
             let id = id.0;
             let content = content.clone();
             async move {
@@ -236,16 +250,21 @@ async fn embed_candidates(
                     );
                     Err(zeph_llm::LlmError::Timeout)
                 };
-                (id, content.clone(), embed_result)
+                (idx, id, content, embed_result)
             }
         })
         .collect();
-    let results = futures::future::join_all(futures).await;
 
-    let mut embedded: Vec<(i64, String, Vec<f32>)> = Vec::with_capacity(results.len());
-    for (id, content, embed_result) in results {
+    // Indexed so results can be restored to input order after `buffer_unordered`,
+    // matching `join_all`'s ordering guarantee (order affects cluster representative
+    // selection in `cluster_by_similarity`).
+    let mut results: Vec<Option<(i64, String, Vec<f32>)>> = vec![None; candidates.len()];
+
+    let mut stream = stream::iter(futures).buffer_unordered(CONSOLIDATION_EMBED_CONCURRENCY);
+
+    while let Some((idx, id, content, embed_result)) = stream.next().await {
         match embed_result {
-            Ok(vec) => embedded.push((id, content, vec)),
+            Ok(vec) => results[idx] = Some((id, content, vec)),
             Err(e) => {
                 tracing::warn!(
                     message_id = id,
@@ -255,7 +274,8 @@ async fn embed_candidates(
             }
         }
     }
-    embedded
+
+    results.into_iter().flatten().collect()
 }
 
 /// Propose and apply a topology op for a single cluster of similar messages.
@@ -1082,6 +1102,61 @@ mod tests {
             result.is_empty(),
             "all candidates must be dropped on embed timeout, got {} entries",
             result.len()
+        );
+    }
+
+    /// #5512: happy path (all embeds succeed) must return one entry per candidate,
+    /// in input order, with matching id/content/vector — identical to the pre-fix
+    /// `join_all` behavior.
+    #[tokio::test]
+    async fn embed_candidates_happy_path_preserves_order_and_results() {
+        let provider = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::default().with_embedding(vec![1.0, 0.0, 0.0]),
+        );
+
+        let candidates = vec![
+            (crate::types::MessageId(1), "Alice uses Rust".to_owned()),
+            (crate::types::MessageId(2), "Alice loves Rust".to_owned()),
+            (crate::types::MessageId(3), "Bob uses Python".to_owned()),
+        ];
+
+        let result = embed_candidates(&provider, &candidates, Duration::from_secs(5)).await;
+
+        assert_eq!(result.len(), 3);
+        for ((expected_id, expected_content), (id, content, vec)) in
+            candidates.iter().zip(result.iter())
+        {
+            assert_eq!(*id, expected_id.0);
+            assert_eq!(content, expected_content);
+            assert_eq!(vec, &vec![1.0, 0.0, 0.0]);
+        }
+    }
+
+    /// #5512: a batch larger than `CONSOLIDATION_EMBED_CONCURRENCY` must never drive more
+    /// than that many concurrent `embed()` calls.
+    #[tokio::test]
+    async fn embed_candidates_bounds_concurrency() {
+        let (mock, peak) = zeph_llm::mock::MockProvider::default()
+            .with_embedding(vec![1.0, 0.0, 0.0])
+            .with_embed_delay(20)
+            .with_embed_concurrency_tracking();
+        let provider = zeph_llm::any::AnyProvider::Mock(mock);
+
+        let candidates: Vec<_> = (0..i64::try_from(CONSOLIDATION_EMBED_CONCURRENCY * 3).unwrap())
+            .map(|i| (crate::types::MessageId(i), format!("content {i}")))
+            .collect();
+
+        let result = embed_candidates(&provider, &candidates, Duration::from_secs(5)).await;
+
+        assert_eq!(result.len(), candidates.len());
+        // Exact equality (not just `<=`) proves concurrency actually happened: with a batch
+        // size that's an exact multiple of the bound and a uniform delay, the bound is always
+        // reached. `<=` alone would still pass if `buffer_unordered` were ever reverted to
+        // fully sequential execution (peak == 1).
+        assert_eq!(
+            peak.load(std::sync::atomic::Ordering::SeqCst),
+            CONSOLIDATION_EMBED_CONCURRENCY,
+            "peak concurrent embed() calls must reach the {CONSOLIDATION_EMBED_CONCURRENCY} bound exactly"
         );
     }
 }

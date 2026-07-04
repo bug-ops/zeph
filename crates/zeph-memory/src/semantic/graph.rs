@@ -465,8 +465,11 @@ pub async fn extract_and_store(
             .with_embedding_store(emb)
             .with_provider(&provider)
             .with_embed_timeout(config.embed_timeout_secs)
+            .with_llm_timeout(config.llm_timeout_secs)
     } else {
-        EntityResolver::new(&store).with_embed_timeout(config.embed_timeout_secs)
+        EntityResolver::new(&store)
+            .with_embed_timeout(config.embed_timeout_secs)
+            .with_llm_timeout(config.llm_timeout_secs)
     };
 
     let (entity_name_to_id, entities_upserted) =

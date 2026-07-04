@@ -51,6 +51,15 @@ pub struct MockProvider {
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     /// High-watermark of concurrent `chat()` calls observed so far.
     peak_concurrent: Arc<std::sync::atomic::AtomicUsize>,
+    /// Counts currently-in-flight `embed()` calls. Updated atomically before and after the call body.
+    /// Shared with the test via [`MockProvider::with_embed_concurrency_tracking`].
+    embed_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    /// High-watermark of concurrent `embed()` calls observed so far.
+    peak_concurrent_embed: Arc<std::sync::atomic::AtomicUsize>,
+    /// Set by [`MockProvider::with_embed_concurrency_tracking`]. Gates the extra
+    /// `yield_now()` in `embed()` so tests using `embed_delay_ms` without opting into
+    /// tracking see unperturbed scheduling.
+    embed_tracking_enabled: bool,
     /// Per-call delay sequence. Each `chat()` call pops from the front; when empty, falls back to `delay_ms`.
     per_call_delays: Arc<Mutex<VecDeque<u64>>>,
     /// Captures the most recent [`GenerationOverrides`] applied via
@@ -82,6 +91,9 @@ impl Default for MockProvider {
             fixed_entropy: None,
             in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             peak_concurrent: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            embed_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            peak_concurrent_embed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            embed_tracking_enabled: false,
             per_call_delays: Arc::new(Mutex::new(VecDeque::new())),
             captured_overrides: Arc::new(Mutex::new(None)),
         }
@@ -285,6 +297,34 @@ impl MockProvider {
         (self, peak)
     }
 
+    /// Enable in-flight concurrency tracking for `embed()`.
+    ///
+    /// Returns the provider and a shared atomic that holds the peak number of concurrent
+    /// `embed()` calls observed across the provider's lifetime. Mirrors
+    /// [`MockProvider::with_concurrency_tracking`] but for `embed()` instead of `chat()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::mock::MockProvider;
+    /// use std::sync::atomic::Ordering;
+    ///
+    /// let (provider, peak) = MockProvider::default()
+    ///     .with_embedding(vec![0.0; 4])
+    ///     .with_embed_concurrency_tracking();
+    /// // After running concurrent calls, peak.load(Ordering::SeqCst) <= expected_limit.
+    /// ```
+    #[must_use]
+    pub fn with_embed_concurrency_tracking(
+        mut self,
+    ) -> (Self, Arc<std::sync::atomic::AtomicUsize>) {
+        let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        self.embed_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        self.peak_concurrent_embed = Arc::clone(&peak);
+        self.embed_tracking_enabled = true;
+        (self, peak)
+    }
+
     /// Enable native `tool_use` support with a pre-configured sequence of `ChatResponse`
     /// values returned from `chat_with_tools()`.
     ///
@@ -371,29 +411,42 @@ impl LlmProvider for MockProvider {
     }
 
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, crate::LlmError> {
+        use std::sync::atomic::Ordering as AOrdering;
+        let current = self.embed_in_flight.fetch_add(1, AOrdering::SeqCst) + 1;
+        self.peak_concurrent_embed
+            .fetch_max(current, AOrdering::SeqCst);
+
         self.embed_call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if self.embed_delay_ms > 0 {
+            if self.embed_tracking_enabled {
+                // Yield before sleeping so concurrent tasks can register in-flight before
+                // any of them finish, enabling accurate peak measurement. Gated on the
+                // tracking opt-in so other `embed_delay_ms`-using tests see unperturbed
+                // scheduling.
+                tokio::task::yield_now().await;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(self.embed_delay_ms)).await;
         }
-        if let Ok(mut errors) = self.errors.lock()
+        let result = if let Ok(mut errors) = self.errors.lock()
             && !errors.is_empty()
         {
-            return Err(errors.pop_front().expect("non-empty"));
-        }
-        if self.embed_invalid_input {
-            return Err(crate::LlmError::InvalidInput {
+            Err(errors.pop_front().expect("non-empty"))
+        } else if self.embed_invalid_input {
+            Err(crate::LlmError::InvalidInput {
                 provider: self.name().to_owned(),
                 message: "input exceeds maximum sequence length".into(),
-            });
-        }
-        if self.supports_embeddings {
+            })
+        } else if self.supports_embeddings {
             Ok(self.embedding.clone())
         } else {
             Err(crate::LlmError::EmbedUnsupported {
                 provider: "mock".into(),
             })
-        }
+        };
+
+        self.embed_in_flight.fetch_sub(1, AOrdering::SeqCst);
+        result
     }
 
     fn supports_embeddings(&self) -> bool {

@@ -1085,6 +1085,92 @@ async fn resolve_ambiguous_score_llm_failure_increments_fallback() {
     );
 }
 
+// ── #5511: LLM disambiguation must be bounded by a timeout ────────────────
+
+// `llm_disambiguate` is exercised directly (rather than through the full `resolve()`
+// pipeline) so the paused-clock zone never overlaps real SQLite I/O — combining
+// `tokio::time::pause()` with pool-backed database calls is flaky under parallel test
+// load, since the runtime can fast-forward the virtual clock past the connection pool's
+// real `acquire_timeout` while a connection is still genuinely pending in wall-clock time.
+#[tokio::test]
+async fn llm_disambiguate_timeout_returns_none() {
+    let gs = setup().await;
+
+    // chat() sleeps far longer than the configured llm_timeout — llm_disambiguate
+    // must time out and return None instead of hanging indefinitely.
+    let mut provider = make_mock_with_embedding_and_chat(
+        vec![1.0, 0.0, 0.0, 0.0],
+        vec![r#"{"same_entity": true}"#.to_owned()],
+    );
+    provider.delay_ms = 60_000;
+    let any_provider = zeph_llm::any::AnyProvider::Mock(provider);
+
+    let resolver = EntityResolver::new(&gs).with_llm_timeout(1);
+    let fallback_count = resolver.fallback_count();
+
+    tokio::time::pause();
+    let fut = resolver.llm_disambiguate(
+        &any_provider,
+        "semaphore lock",
+        "concept",
+        "synchronization primitive",
+        "semaphore",
+        "concept",
+        "counting synchronization primitive",
+        0.6,
+    );
+    let (result, ()) = tokio::join!(fut, async {
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    });
+
+    assert_eq!(
+        result, None,
+        "llm_disambiguate must return None when the chat() call exceeds llm_timeout"
+    );
+    assert_eq!(
+        fallback_count.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "fallback counter must be incremented directly inside llm_disambiguate on timeout"
+    );
+}
+
+// F8(b): the distinct `Err` (chat failure, not timeout) branch inside `llm_disambiguate`
+// must also bump `fallback_count` directly, symmetric with the timeout branch above.
+#[tokio::test]
+async fn llm_disambiguate_chat_error_returns_none_and_increments_fallback() {
+    let gs = setup().await;
+
+    let mut provider = make_mock_with_embedding_and_chat(vec![1.0, 0.0, 0.0, 0.0], vec![]);
+    provider.fail_chat = true;
+    let any_provider = zeph_llm::any::AnyProvider::Mock(provider);
+
+    let resolver = EntityResolver::new(&gs);
+    let fallback_count = resolver.fallback_count();
+
+    let result = resolver
+        .llm_disambiguate(
+            &any_provider,
+            "semaphore lock",
+            "concept",
+            "synchronization primitive",
+            "semaphore",
+            "concept",
+            "counting synchronization primitive",
+            0.6,
+        )
+        .await;
+
+    assert_eq!(
+        result, None,
+        "llm_disambiguate must return None when chat() returns an error"
+    );
+    assert_eq!(
+        fallback_count.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "fallback counter must be incremented directly inside llm_disambiguate on chat error"
+    );
+}
+
 // ── Canonicalization / alias tests ────────────────────────────────────────
 
 #[tokio::test]

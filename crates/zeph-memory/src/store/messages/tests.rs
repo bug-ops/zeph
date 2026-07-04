@@ -10,6 +10,21 @@ async fn test_store() -> SqliteStore {
     SqliteStore::new(":memory:").await.unwrap()
 }
 
+/// Insert `n` plain user messages into `cid` and return their IDs, for tests that need
+/// a batch larger than `MAX_BATCH` to exercise chunked `IN (...)` queries.
+async fn save_n_messages(store: &SqliteStore, cid: ConversationId, n: usize) -> Vec<MessageId> {
+    let mut ids = Vec::with_capacity(n);
+    for i in 0..n {
+        ids.push(
+            store
+                .save_message(cid, "user", &format!("msg {i}"))
+                .await
+                .unwrap(),
+        );
+    }
+    ids
+}
+
 #[tokio::test]
 async fn create_conversation_returns_id() {
     let store = test_store().await;
@@ -1275,6 +1290,93 @@ async fn manual_promote_skips_nonexistent_ids() {
     assert_eq!(count, 0);
 }
 
+/// #5498: `manual_promote` must correctly promote a batch larger than the chunked
+/// `IN (...)` batch size, spanning multiple query chunks.
+#[tokio::test]
+async fn manual_promote_chunks_beyond_max_batch() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let n = MAX_BATCH + 10;
+    let ids = save_n_messages(&store, cid, n).await;
+
+    let count = store.manual_promote(&ids).await.unwrap();
+    assert_eq!(count, n, "all messages across chunks must be promoted");
+
+    let (episodic, semantic) = store.count_messages_by_tier().await.unwrap();
+    assert_eq!(episodic, 0);
+    assert_eq!(semantic, i64::try_from(n).unwrap());
+}
+
+/// #5498: `soft_delete_messages` must soft-delete a batch larger than the chunked
+/// `IN (...)` batch size.
+#[tokio::test]
+async fn soft_delete_messages_chunks_beyond_max_batch() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let n = MAX_BATCH + 10;
+    let ids = save_n_messages(&store, cid, n).await;
+
+    store.soft_delete_messages(&ids).await.unwrap();
+
+    let (episodic, _) = store.count_messages_by_tier().await.unwrap();
+    assert_eq!(
+        episodic, 0,
+        "all messages across chunks must be soft-deleted"
+    );
+}
+
+/// #5498: `mark_qdrant_cleaned` must update a batch larger than the chunked
+/// `IN (...)` batch size.
+#[tokio::test]
+async fn mark_qdrant_cleaned_chunks_beyond_max_batch() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let n = MAX_BATCH + 10;
+    let ids = save_n_messages(&store, cid, n).await;
+
+    store.mark_qdrant_cleaned(&ids).await.unwrap();
+
+    let row: (i64,) = sqlx::query_as(sql!(
+        "SELECT COUNT(*) FROM messages WHERE qdrant_cleaned = TRUE"
+    ))
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        row.0,
+        i64::try_from(n).unwrap(),
+        "all messages across chunks must be marked qdrant_cleaned"
+    );
+}
+
+/// #5498: `mark_messages_consolidated` must update a batch larger than the chunked
+/// `IN (...)` batch size.
+#[tokio::test]
+async fn mark_messages_consolidated_chunks_beyond_max_batch() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let n = MAX_BATCH + 10;
+    let ids: Vec<i64> = save_n_messages(&store, cid, n)
+        .await
+        .into_iter()
+        .map(|id| id.0)
+        .collect();
+
+    store.mark_messages_consolidated(&ids).await.unwrap();
+
+    let row: (i64,) = sqlx::query_as(sql!(
+        "SELECT COUNT(*) FROM messages WHERE consolidated = TRUE"
+    ))
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        row.0,
+        i64::try_from(n).unwrap(),
+        "all messages across chunks must be marked consolidated"
+    );
+}
+
 #[tokio::test]
 async fn migration_042_default_tier_for_preexisting_rows() {
     // Directly INSERT without the tier column to verify the schema DEFAULT applies.
@@ -1432,6 +1534,41 @@ async fn apply_tool_pair_summaries_hides_pairs_and_inserts_summary() {
     let all = store.load_history(cid, 50).await.unwrap();
     // load_history returns all messages regardless of visibility; 3 total: 2 hidden + 1 summary.
     assert_eq!(all.len(), 3, "hidden messages must remain in DB");
+}
+
+/// #5498: `apply_tool_pair_summaries` must hide a `hide_ids` batch larger than the
+/// chunked `IN (...)` batch size.
+#[tokio::test]
+async fn apply_tool_pair_summaries_chunks_beyond_max_batch() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let n = MAX_BATCH + 10;
+    let ids: Vec<i64> = save_n_messages(&store, cid, n)
+        .await
+        .into_iter()
+        .map(|id| id.0)
+        .collect();
+
+    store
+        .apply_tool_pair_summaries(cid, &ids, &["batched summary".to_string()])
+        .await
+        .unwrap();
+
+    let after_visible = store
+        .load_history_filtered(cid, u32::try_from(n + 1).unwrap(), Some(true), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        after_visible.len(),
+        1,
+        "only the inserted summary should remain agent-visible after hiding all originals"
+    );
+
+    let all = store
+        .load_history(cid, u32::try_from(n + 1).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(all.len(), n + 1, "hidden messages must remain in DB");
 }
 
 // Regression test for #2257: `apply_tool_pair_summaries` must write parts using the
@@ -1640,6 +1777,138 @@ async fn apply_consolidation_update_skips_below_threshold() {
     assert_eq!(
         row.0, "fact",
         "content must not change when update is skipped"
+    );
+}
+
+/// #5498: `apply_consolidation_update` must link and mark a batch of
+/// `additional_source_ids` larger than the chunked `IN (...)` batch size.
+#[tokio::test]
+async fn apply_consolidation_update_chunks_beyond_max_batch() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    let target = store
+        .save_message(cid, "user", "target fact")
+        .await
+        .unwrap();
+    let n = MAX_BATCH + 10;
+    let sources = save_n_messages(&store, cid, n).await;
+
+    let accepted = store
+        .apply_consolidation_update(target, "merged content", &sources, 0.9, 0.7)
+        .await
+        .unwrap();
+    assert!(accepted);
+
+    let consolidated_count: (i64,) = sqlx::query_as(sql!(
+        "SELECT COUNT(*) FROM messages WHERE consolidated = TRUE"
+    ))
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        consolidated_count.0,
+        i64::try_from(n).unwrap() + 1,
+        "all additional sources across chunks, plus the target row itself, must be marked consolidated"
+    );
+
+    let join_count: (i64,) = sqlx::query_as(sql!(
+        "SELECT COUNT(*) FROM memory_consolidation_sources WHERE consolidated_id = ?"
+    ))
+    .bind(target)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        join_count.0,
+        i64::try_from(n).unwrap(),
+        "join table must link target to all sources across chunks"
+    );
+}
+
+/// #5498: `apply_consolidation_merge` must link and mark a `source_ids` batch larger
+/// than the chunked `IN (...)` batch size.
+#[tokio::test]
+async fn apply_consolidation_merge_chunks_beyond_max_batch() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let n = MAX_BATCH + 10;
+    let sources = save_n_messages(&store, cid, n).await;
+
+    let accepted = store
+        .apply_consolidation_merge(cid, "assistant", "merged content", &sources, 0.9, 0.7)
+        .await
+        .unwrap();
+    assert!(accepted);
+
+    let consolidated_count: (i64,) = sqlx::query_as(sql!(
+        "SELECT COUNT(*) FROM messages WHERE consolidated = TRUE"
+    ))
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        consolidated_count.0,
+        i64::try_from(n).unwrap() + 1,
+        "all sources across chunks, plus the new consolidated row itself, must be marked consolidated"
+    );
+
+    let new_row: (MessageId,) = sqlx::query_as(sql!(
+        "SELECT id FROM messages WHERE content = 'merged content'"
+    ))
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+
+    let join_count: (i64,) = sqlx::query_as(sql!(
+        "SELECT COUNT(*) FROM memory_consolidation_sources WHERE consolidated_id = ?"
+    ))
+    .bind(new_row.0)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        join_count.0,
+        i64::try_from(n).unwrap(),
+        "join table must link the new consolidated row to all sources across chunks"
+    );
+}
+
+/// #5498: a single chunk of exactly `MAX_BATCH` rows, on the 2-binds-per-row
+/// `memory_consolidation_sources` insert, must stay within `SQLite`'s
+/// `SQLITE_MAX_VARIABLE_NUMBER = 999` bind-parameter limit (`MAX_BATCH * 2 = 980 < 999`).
+/// This proves the boundary sizing itself, not just multi-chunk iteration — a single
+/// legal chunk larger than `MAX_BATCH` here would exceed 999 binds and fail the query.
+#[tokio::test]
+async fn apply_consolidation_merge_at_exactly_max_batch_stays_within_bind_limit() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let sources = save_n_messages(&store, cid, MAX_BATCH).await;
+
+    let accepted = store
+        .apply_consolidation_merge(cid, "assistant", "merged content", &sources, 0.9, 0.7)
+        .await
+        .unwrap();
+    assert!(accepted);
+
+    let new_row: (MessageId,) = sqlx::query_as(sql!(
+        "SELECT id FROM messages WHERE content = 'merged content'"
+    ))
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+
+    let join_count: (i64,) = sqlx::query_as(sql!(
+        "SELECT COUNT(*) FROM memory_consolidation_sources WHERE consolidated_id = ?"
+    ))
+    .bind(new_row.0)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        join_count.0,
+        i64::try_from(MAX_BATCH).unwrap(),
+        "a single MAX_BATCH-sized chunk must link all sources in one INSERT within the bind limit"
     );
 }
 

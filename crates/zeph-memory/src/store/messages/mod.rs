@@ -15,6 +15,12 @@ use super::SqliteStore;
 use crate::error::MemoryError;
 use crate::types::{ConversationId, MessageId};
 
+/// Maximum number of `id IN (...)` placeholders (rows) per batched query chunk.
+///
+/// Stays under `SQLite`'s `SQLITE_MAX_VARIABLE_NUMBER = 999` bind-parameter limit even
+/// for the two-bind-per-row queries in this module (`490 * 2 = 980 < 999`).
+const MAX_BATCH: usize = 490;
+
 /// SQL fragment binding a `?` placeholder into `compacted_at` (`TEXT` on `SQLite`,
 /// `TIMESTAMPTZ` on `PostgreSQL`), dialect-selected.
 ///
@@ -546,16 +552,17 @@ impl SqliteStore {
         let mut tx = self.pool.begin().await?;
 
         let compacted_at_expr = compacted_at_bind_expr();
-        let update_sql = zeph_db::rewrite_placeholders(&format!(
-            "UPDATE messages SET visibility = 'user_only', compacted_at = {compacted_at_expr} \
-             WHERE id = ?"
-        ));
-        for &id in hide_ids {
-            zeph_db::query(sqlx::AssertSqlSafe(update_sql.clone()))
-                .bind(&now)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+        for chunk in hide_ids.chunks(MAX_BATCH) {
+            let in_list: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let update_sql = zeph_db::rewrite_placeholders(&format!(
+                "UPDATE messages SET visibility = 'user_only', compacted_at = {compacted_at_expr} \
+                 WHERE id IN ({in_list})"
+            ));
+            let mut q = zeph_db::query(sqlx::AssertSqlSafe(update_sql)).bind(&now);
+            for &id in chunk {
+                q = q.bind(id);
+            }
+            q.execute(&mut *tx).await?;
         }
 
         for summary in summaries {
@@ -1060,14 +1067,17 @@ impl SqliteStore {
         if ids.is_empty() {
             return Ok(());
         }
-        // SQLite does not support array binding natively. Batch via individual updates.
-        for &id in ids {
-            zeph_db::query(
-                sql!("UPDATE messages SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL"),
-            )
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        for chunk in ids.chunks(MAX_BATCH) {
+            let placeholders = placeholder_list(1, chunk.len());
+            let sql = format!(
+                "UPDATE messages SET deleted_at = CURRENT_TIMESTAMP \
+                 WHERE id IN ({placeholders}) AND deleted_at IS NULL"
+            );
+            let mut q = zeph_db::query(sqlx::AssertSqlSafe(sql));
+            for &id in chunk {
+                q = q.bind(id);
+            }
+            q.execute(&self.pool).await?;
         }
         Ok(())
     }
@@ -1106,7 +1116,6 @@ impl SqliteStore {
         &self,
         candidate_ids: &[MessageId],
     ) -> Result<Vec<MessageId>, crate::error::MemoryError> {
-        const MAX_BATCH: usize = 490;
         if candidate_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -1145,13 +1154,18 @@ impl SqliteStore {
         &self,
         ids: &[MessageId],
     ) -> Result<(), crate::error::MemoryError> {
-        for &id in ids {
-            zeph_db::query(sql!(
-                "UPDATE messages SET qdrant_cleaned = TRUE WHERE id = ?"
-            ))
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        if ids.is_empty() {
+            return Ok(());
+        }
+        for chunk in ids.chunks(MAX_BATCH) {
+            let placeholders = placeholder_list(1, chunk.len());
+            let sql =
+                format!("UPDATE messages SET qdrant_cleaned = TRUE WHERE id IN ({placeholders})");
+            let mut q = zeph_db::query(sqlx::AssertSqlSafe(sql));
+            for &id in chunk {
+                q = q.bind(id);
+            }
+            q.execute(&self.pool).await?;
         }
         Ok(())
     }
@@ -1400,18 +1414,19 @@ impl SqliteStore {
             return Ok(0);
         }
         let epoch_now = <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
-        let manual_promote_raw = format!(
-            "UPDATE messages \
-             SET tier = 'semantic', promotion_timestamp = {epoch_now} \
-             WHERE id = ? AND deleted_at IS NULL AND tier = 'episodic'"
-        );
-        let manual_promote_sql = zeph_db::rewrite_placeholders(&manual_promote_raw);
         let mut count = 0usize;
-        for &id in ids {
-            let result = zeph_db::query(sqlx::AssertSqlSafe(manual_promote_sql.as_str()))
-                .bind(id)
-                .execute(&self.pool)
-                .await?;
+        for chunk in ids.chunks(MAX_BATCH) {
+            let placeholders = placeholder_list(1, chunk.len());
+            let manual_promote_sql = format!(
+                "UPDATE messages \
+                 SET tier = 'semantic', promotion_timestamp = {epoch_now} \
+                 WHERE id IN ({placeholders}) AND deleted_at IS NULL AND tier = 'episodic'"
+            );
+            let mut q = zeph_db::query(sqlx::AssertSqlSafe(manual_promote_sql));
+            for &id in chunk {
+                q = q.bind(id);
+            }
+            let result = q.execute(&self.pool).await?;
             count += usize::try_from(result.rows_affected()).unwrap_or(0);
         }
         Ok(count)
@@ -1585,23 +1600,33 @@ impl SqliteStore {
         .await?;
         let consolidated_id = row.0;
 
-        let consol_sql = zeph_db::rewrite_placeholders(&format!(
-            "{} INTO memory_consolidation_sources (consolidated_id, source_id) VALUES (?, ?){}",
-            <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
-            <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
-        ));
-        for &source_id in source_ids {
-            zeph_db::query(sqlx::AssertSqlSafe(consol_sql.as_str()))
-                .bind(consolidated_id)
-                .bind(source_id)
-                .execute(&mut *tx)
-                .await?;
+        for chunk in source_ids.chunks(MAX_BATCH) {
+            let values_list: String = chunk
+                .iter()
+                .map(|_| "(?, ?)")
+                .collect::<Vec<_>>()
+                .join(", ");
+            let consol_sql = zeph_db::rewrite_placeholders(&format!(
+                "{} INTO memory_consolidation_sources (consolidated_id, source_id) VALUES {values_list}{}",
+                <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
+                <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
+            ));
+            let mut insert_q = zeph_db::query(sqlx::AssertSqlSafe(consol_sql));
+            for &source_id in chunk {
+                insert_q = insert_q.bind(consolidated_id).bind(source_id);
+            }
+            insert_q.execute(&mut *tx).await?;
 
-            // Mark original as consolidated so future sweeps skip it.
-            zeph_db::query(sql!("UPDATE messages SET consolidated = TRUE WHERE id = ?"))
-                .bind(source_id)
-                .execute(&mut *tx)
-                .await?;
+            // Mark originals as consolidated so future sweeps skip them.
+            let in_list: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let update_sql = zeph_db::rewrite_placeholders(&format!(
+                "UPDATE messages SET consolidated = TRUE WHERE id IN ({in_list})"
+            ));
+            let mut update_q = zeph_db::query(sqlx::AssertSqlSafe(update_sql));
+            for &source_id in chunk {
+                update_q = update_q.bind(source_id);
+            }
+            update_q.execute(&mut *tx).await?;
         }
 
         tx.commit().await?;
@@ -1643,22 +1668,32 @@ impl SqliteStore {
         .execute(&mut *tx)
         .await?;
 
-        let consol_sql = zeph_db::rewrite_placeholders(&format!(
-            "{} INTO memory_consolidation_sources (consolidated_id, source_id) VALUES (?, ?){}",
-            <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
-            <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
-        ));
-        for &source_id in additional_source_ids {
-            zeph_db::query(sqlx::AssertSqlSafe(consol_sql.as_str()))
-                .bind(target_id)
-                .bind(source_id)
-                .execute(&mut *tx)
-                .await?;
+        for chunk in additional_source_ids.chunks(MAX_BATCH) {
+            let values_list: String = chunk
+                .iter()
+                .map(|_| "(?, ?)")
+                .collect::<Vec<_>>()
+                .join(", ");
+            let consol_sql = zeph_db::rewrite_placeholders(&format!(
+                "{} INTO memory_consolidation_sources (consolidated_id, source_id) VALUES {values_list}{}",
+                <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
+                <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
+            ));
+            let mut insert_q = zeph_db::query(sqlx::AssertSqlSafe(consol_sql));
+            for &source_id in chunk {
+                insert_q = insert_q.bind(target_id).bind(source_id);
+            }
+            insert_q.execute(&mut *tx).await?;
 
-            zeph_db::query(sql!("UPDATE messages SET consolidated = TRUE WHERE id = ?"))
-                .bind(source_id)
-                .execute(&mut *tx)
-                .await?;
+            let in_list: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let update_sql = zeph_db::rewrite_placeholders(&format!(
+                "UPDATE messages SET consolidated = TRUE WHERE id IN ({in_list})"
+            ));
+            let mut update_q = zeph_db::query(sqlx::AssertSqlSafe(update_sql));
+            for &source_id in chunk {
+                update_q = update_q.bind(source_id);
+            }
+            update_q.execute(&mut *tx).await?;
         }
 
         tx.commit().await?;
@@ -1721,11 +1756,18 @@ impl SqliteStore {
     ///
     /// Returns an error if the update fails.
     pub async fn mark_messages_consolidated(&self, ids: &[i64]) -> Result<(), MemoryError> {
-        for &id in ids {
-            zeph_db::query(sql!("UPDATE messages SET consolidated = TRUE WHERE id = ?"))
-                .bind(id)
-                .execute(&self.pool)
-                .await?;
+        if ids.is_empty() {
+            return Ok(());
+        }
+        for chunk in ids.chunks(MAX_BATCH) {
+            let placeholders = placeholder_list(1, chunk.len());
+            let sql =
+                format!("UPDATE messages SET consolidated = TRUE WHERE id IN ({placeholders})");
+            let mut q = zeph_db::query(sqlx::AssertSqlSafe(sql));
+            for &id in chunk {
+                q = q.bind(id);
+            }
+            q.execute(&self.pool).await?;
         }
         Ok(())
     }

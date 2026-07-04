@@ -21,6 +21,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(memory)`: three async/DB hygiene issues in `zeph-memory`.
+  - `EntityResolver::llm_disambiguate` (`crates/zeph-memory/src/graph/resolver/mod.rs`) called
+    `provider.chat()` with no timeout, violating this project's Await Discipline convention.
+    Since `resolve()` holds a per-normalized-name lock for its whole body, a hung LLM call
+    serialized every other resolution attempt for the same entity name behind that lock, and
+    could occupy one of `resolve_batch`'s 4 concurrent slots indefinitely. Wrapped the call in
+    `tokio::time::timeout(...)`, falling through to `None` (create new entity) on timeout.
+    An earlier version of this fix reused the resolver's existing 5s `embed_timeout` for this
+    chat call, which would have caused normal-latency LLM completions (routinely >5s) to time
+    out under default config and silently create duplicate entities instead of merging —
+    exactly the failure disambiguation exists to prevent. Added a dedicated `with_llm_timeout`
+    builder, wired to `GraphExtractionConfig::llm_timeout_secs` (default 30s, already used by
+    the sibling `GraphExtractor` chat call) instead. The disambiguation fallback counter is now
+    also bumped directly inside `llm_disambiguate` on every failure path (chat error, timeout,
+    and response-parse failure), matching `embed_entity_text`'s self-contained counter pattern.
+    (#5511)
+  - `embed_candidates` (`crates/zeph-memory/src/consolidation.rs`) fired up to
+    `sweep_batch_size` (default 500) concurrent `embed()` calls per sweep tick via
+    `futures::future::join_all`, with no concurrency bound. Replaced with a
+    `stream::iter(...).buffer_unordered(4)` pipeline (matching the
+    `EntityResolver::resolve_batch` convention), preserving per-item timeout/fail-open
+    behavior and input ordering. (#5512)
+  - Several `zeph-memory` store methods (`soft_delete_messages`, `mark_qdrant_cleaned`,
+    `mark_messages_consolidated`, `manual_promote`, and the per-source loops inside
+    `apply_tool_pair_summaries`, `apply_consolidation_merge`, `apply_consolidation_update`)
+    issued one query per ID instead of a single batched `WHERE id IN (...)` query, unlike
+    the file's own established batched helpers (`fetch_importance_scores`,
+    `message_access_counts`, `fetch_tiers`, etc.). Converted all seven sites to chunked
+    `IN (...)` queries (`crates/zeph-memory/src/store/messages/mod.rs`, new module-level
+    `MAX_BATCH = 490` constant, replacing a duplicate function-local constant), removing a
+    stale comment claiming `SQLite` doesn't support array binding. (#5498)
 - `test(tui)`: `detect_unicode_capable()` (`crates/zeph-tui/src/theme/color_mode.rs`) had no
   dedicated unit tests — only a doc-example, flagged as a coverage gap across 4+ consecutive
   CI cycles. Added 6 tests to the existing `mod tests` block covering `TERM=dumb` precedence

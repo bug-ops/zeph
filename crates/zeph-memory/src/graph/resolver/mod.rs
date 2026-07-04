@@ -81,6 +81,12 @@ pub struct EntityResolver<'a> {
     collection_ensured: Arc<tokio::sync::OnceCell<()>>,
     /// Per-call timeout for every `embed()` invocation. Default: 5 s.
     embed_timeout: std::time::Duration,
+    /// Per-call timeout for the LLM disambiguation `chat()` invocation. Default: 30 s.
+    ///
+    /// Kept separate from `embed_timeout` because chat completions are substantially
+    /// slower than embeds — see `GraphExtractionConfig::llm_timeout_secs`, which this
+    /// should be set from at construction time.
+    llm_timeout: std::time::Duration,
 }
 
 impl<'a> EntityResolver<'a> {
@@ -102,6 +108,7 @@ impl<'a> EntityResolver<'a> {
             fallback_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             collection_ensured: Arc::new(tokio::sync::OnceCell::new()),
             embed_timeout: std::time::Duration::from_secs(5),
+            llm_timeout: std::time::Duration::from_secs(30),
         }
     }
 
@@ -111,6 +118,16 @@ impl<'a> EntityResolver<'a> {
     #[must_use]
     pub fn with_embed_timeout(mut self, timeout_secs: u64) -> Self {
         self.embed_timeout = std::time::Duration::from_secs(timeout_secs);
+        self
+    }
+
+    /// Set the per-call timeout for the LLM disambiguation `chat()` invocation.
+    ///
+    /// Default: 30 s. Callers should set this from `GraphExtractionConfig::llm_timeout_secs`
+    /// rather than reusing the (much shorter) embed timeout — chat completions are slower.
+    #[must_use]
+    pub fn with_llm_timeout(mut self, timeout_secs: u64) -> Self {
+        self.llm_timeout = std::time::Duration::from_secs(timeout_secs);
         self
     }
 
@@ -376,8 +393,8 @@ impl<'a> EntityResolver<'a> {
             }
             Some(false) => Ok(None),
             None => {
-                self.fallback_count
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // `fallback_count` was already bumped inside `llm_disambiguate` itself
+                // (mirrors `embed_entity_text`'s self-contained counter increment).
                 tracing::warn!(entity_name = %normalized,
                     "LLM disambiguation failed; falling back to create new entity");
                 Ok(None)
@@ -824,10 +841,22 @@ impl<'a> EntityResolver<'a> {
             Message::from_legacy(Role::User, prompt),
         ];
 
-        let response = match provider.chat(&messages).await {
-            Ok(r) => r,
-            Err(err) => {
+        let response = match tokio::time::timeout(self.llm_timeout, provider.chat(&messages)).await
+        {
+            Ok(Ok(r)) => r,
+            Ok(Err(err)) => {
+                self.fallback_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 tracing::warn!(error = %err, "LLM disambiguation chat failed");
+                return None;
+            }
+            Err(_timeout) => {
+                self.fallback_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(
+                    timeout = ?self.llm_timeout,
+                    "LLM disambiguation chat timed out"
+                );
                 return None;
             }
         };
@@ -837,6 +866,8 @@ impl<'a> EntityResolver<'a> {
         match serde_json::from_str::<DisambiguationResponse>(json_str) {
             Ok(parsed) => Some(parsed.same_entity),
             Err(err) => {
+                self.fallback_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 tracing::warn!(error = %err, response = %response, "failed to parse LLM disambiguation response");
                 None
             }
