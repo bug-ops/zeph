@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// The graph-retrieval-strategy dispatch in `helpers::fetch_graph_facts` chains several
+// nested async fns (`run_graph_strategy`, `run_synapse_strategy`, `run_hybrid_strategy`, ...),
+// which pushes the compiler's Future-layout query depth beyond the default limit of 128
+// under the `postgres` feature's larger `DbPool`/`DbTransaction` types.
+#![recursion_limit = "256"]
+
 //! Agent context-assembly service for Zeph.
 //!
 //! This crate provides [`service::ContextService`] — a stateless façade for all
