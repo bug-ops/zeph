@@ -129,6 +129,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(agent-context)`: `ContextService::prepare_context`'s proactive-explorer path
+  (`crates/zeph-agent-context/src/service.rs`) rebuilt the skill registry after a successful
+  exploration by calling `SkillRegistry::load(...)` — a blocking, synchronous directory walk
+  and parse — directly under the `skill_registry` write lock. Any concurrent read (e.g. a
+  second turn's skill match) blocked for the full rebuild, and since the rebuild itself ran on
+  the async worker thread, it also stalled the runtime while holding that lock. The reload now
+  clones the current `hub_dirs` and `skill_paths` under a brief read lock, runs
+  `SkillRegistry::load(...).with_hub_dirs(...)` inside `tokio::task::spawn_blocking`, and only
+  re-acquires the write lock to swap in the new registry once the blocking work has finished
+  off the async path. A panicked rebuild now logs and leaves the existing registry unchanged
+  instead of losing the lock's contents. (#5640)
 - `fix(memory)`: three async/DB hygiene issues in `zeph-memory`.
   - `EntityResolver::llm_disambiguate` (`crates/zeph-memory/src/graph/resolver/mod.rs`) called
     `provider.chat()` with no timeout, violating this project's Await Discipline convention.

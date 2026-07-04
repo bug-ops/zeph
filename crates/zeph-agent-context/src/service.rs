@@ -7,6 +7,7 @@ use zeph_context::budget::ContextBudget;
 use zeph_context::fidelity::FidelityScorer;
 use zeph_llm::LlmProvider;
 use zeph_llm::provider::{Message, MessagePart, Role};
+use zeph_skills::registry::SkillRegistry;
 
 use crate::error::ContextError;
 use crate::helpers::{
@@ -567,8 +568,27 @@ impl ContextService {
                 .await;
                 match result {
                     Ok(Ok(())) => {
-                        view.skill_registry.write().reload(view.skill_paths);
-                        tracing::debug!(domain = %domain.0, "proactive.explore complete, registry reloaded");
+                        let hub_dirs = view.skill_registry.read().hub_dirs().to_vec();
+                        let reload_paths = view.skill_paths.to_vec();
+                        let span =
+                            tracing::info_span!("agent_context.skills.registry.reload_blocking");
+                        match tokio::task::spawn_blocking(move || {
+                            let _enter = span.enter();
+                            SkillRegistry::load(&reload_paths).with_hub_dirs(hub_dirs)
+                        })
+                        .await
+                        {
+                            Ok(new_registry) => {
+                                *view.skill_registry.write() = new_registry;
+                                tracing::debug!(domain = %domain.0, "proactive.explore complete, registry reloaded");
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    domain = %domain.0,
+                                    "proactive.explore: skill registry reload panicked, registry left unchanged: {e}"
+                                );
+                            }
+                        }
                     }
                     Ok(Err(e)) => {
                         tracing::warn!(domain = %domain.0, error = %e, "proactive exploration failed");
@@ -2398,6 +2418,325 @@ mod tests {
             assert!(
                 window.messages.is_empty(),
                 "no recall message must be injected when memory is None"
+            );
+        }
+    }
+
+    // Regression tests for #5640: the proactive-explorer skill-registry reload used to hold
+    // the shared `skill_registry` write lock across a blocking `WalkDir` + SKILL.md parse.
+    // These tests drive `prepare_context`'s real `Ok(Ok(()))` success branch end-to-end
+    // (previously only the early-return `budget.is_none()` path was exercised) and assert
+    // the off-lock `spawn_blocking` + atomic-swap rebuild produces a correct, non-stale
+    // registry with `hub_dirs` preserved.
+    mod prepare_context_proactive_explore_tests {
+        use parking_lot::RwLock;
+        use std::borrow::Cow;
+        use std::collections::HashSet;
+        use std::sync::Arc;
+
+        use zeph_config::memory::TieredRetrievalConfig;
+        use zeph_config::{
+            ContextFormat, ContextStrategy, DocumentConfig, GraphConfig, PersonaConfig,
+            ReasoningConfig, TrajectoryConfig, TreeConfig,
+        };
+        use zeph_context::budget::ContextBudget;
+        use zeph_context::manager::ContextManager;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::Message;
+        use zeph_memory::TokenCounter;
+        use zeph_sanitizer::ContentIsolationConfig;
+        use zeph_sanitizer::ContentSanitizer;
+        use zeph_skills::generator::SkillGenerator;
+        use zeph_skills::proactive::ProactiveExplorer;
+        use zeph_skills::registry::SkillRegistry;
+
+        use zeph_common::SecurityEventCategory;
+
+        use super::super::*;
+        use crate::state::{
+            ContextAssemblyView, MessageWindowView, MetricsCounters, SecurityEventSink,
+        };
+
+        fn make_task_supervisor() -> Arc<zeph_common::TaskSupervisor> {
+            Arc::new(zeph_common::TaskSupervisor::new(
+                tokio_util::sync::CancellationToken::new(),
+            ))
+        }
+
+        struct NoopSink;
+        impl SecurityEventSink for NoopSink {
+            fn push(&mut self, _: SecurityEventCategory, _: &'static str, _: String) {}
+        }
+
+        fn make_counter() -> Arc<TokenCounter> {
+            Arc::new(TokenCounter::default())
+        }
+
+        fn make_window<'a>(
+            messages: &'a mut Vec<Message>,
+            cached: &'a mut u64,
+            completed: &'a mut HashSet<String>,
+        ) -> MessageWindowView<'a> {
+            let last = Box::leak(Box::new(None::<i64>));
+            let deferred_hide = Box::leak(Box::new(Vec::<i64>::new()));
+            let deferred_summ = Box::leak(Box::new(Vec::<String>::new()));
+            MessageWindowView {
+                messages,
+                last_persisted_message_id: last,
+                deferred_db_hide_ids: deferred_hide,
+                deferred_db_summaries: deferred_summ,
+                cached_prompt_tokens: cached,
+                token_counter: make_counter(),
+                completed_tool_ids: completed,
+            }
+        }
+
+        fn scrub_noop(s: &str) -> Cow<'_, str> {
+            Cow::Borrowed(s)
+        }
+
+        fn mock_skill_content(name: &str) -> String {
+            format!(
+                "---\nname: {name}\ndescription: Test world-knowledge skill for {name}.\n---\n\n## Usage\n\nDetails.\n"
+            )
+        }
+
+        /// Builds a [`ContextAssemblyView`] wired for the proactive-explore success path:
+        /// `budget` is `Some` (so `prepare_context` does not early-return), `proactive_explorer`
+        /// is configured with a mock LLM that returns a valid SKILL.md, and `skill_registry`
+        /// starts pre-populated with `hub_dirs` to verify they survive the rebuild.
+        struct Fixture {
+            registry: Arc<RwLock<SkillRegistry>>,
+            skill_paths: Vec<std::path::PathBuf>,
+            hub_dir: tempfile::TempDir,
+            /// RAII guard only — keeps the skills directory alive for the test's duration;
+            /// its path was already captured into `skill_paths` and the generator/explorer.
+            _skills_dir_guard: tempfile::TempDir,
+            explorer: Arc<ProactiveExplorer>,
+        }
+
+        fn setup_fixture(mock_provider: MockProvider) -> Fixture {
+            let skills_dir = tempfile::tempdir().expect("create skills tempdir");
+            let hub_dir = tempfile::tempdir().expect("create hub tempdir");
+            let skill_paths = vec![skills_dir.path().to_path_buf()];
+
+            let registry = Arc::new(RwLock::new(
+                SkillRegistry::load(&skill_paths).with_hub_dirs(vec![hub_dir.path().to_path_buf()]),
+            ));
+            assert!(
+                registry.read().all_meta().is_empty(),
+                "registry must start empty before any explore() reload"
+            );
+
+            let generator = SkillGenerator::new(
+                AnyProvider::Mock(mock_provider),
+                skills_dir.path().to_path_buf(),
+            );
+            let explorer = Arc::new(ProactiveExplorer::new(
+                generator,
+                None,
+                skills_dir.path().to_path_buf(),
+                8_000,
+                30_000,
+                vec![],
+            ));
+
+            Fixture {
+                registry,
+                skill_paths,
+                hub_dir,
+                _skills_dir_guard: skills_dir,
+                explorer,
+            }
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn make_view<'a>(
+            fixture: &'a Fixture,
+            last_confidence: &'a mut Option<f32>,
+            last_skills_prompt: &'a mut String,
+            active_skill_names: &'a mut Vec<String>,
+            sanitizer: &'a ContentSanitizer,
+            ctx_mgr: &'a mut ContextManager,
+            sink: &'a mut NoopSink,
+        ) -> ContextAssemblyView<'a> {
+            ContextAssemblyView {
+                memory: None,
+                conversation_id: None,
+                recall_limit: 10,
+                cross_session_score_threshold: 0.5,
+                context_format: ContextFormat::default(),
+                last_recall_confidence: last_confidence,
+                context_strategy: ContextStrategy::default(),
+                crossover_turn_threshold: 0,
+                cached_session_digest: None,
+                digest_enabled: false,
+                graph_config: GraphConfig::default(),
+                document_config: DocumentConfig::default(),
+                persona_config: PersonaConfig::default(),
+                trajectory_config: TrajectoryConfig::default(),
+                reasoning_config: ReasoningConfig::default(),
+                memcot_config: zeph_config::MemCotConfig::default(),
+                memcot_state: None,
+                tree_config: TreeConfig::default(),
+                last_skills_prompt,
+                active_skill_names,
+                skill_registry: Arc::clone(&fixture.registry),
+                skill_paths: &fixture.skill_paths,
+                correction_config: None,
+                sidequest_turn_counter: 0,
+                proactive_explorer: Some(Arc::clone(&fixture.explorer)),
+                sanitizer,
+                quarantine_summarizer: None,
+                context_manager: ctx_mgr,
+                token_counter: make_counter(),
+                metrics: MetricsCounters::default(),
+                security_events: sink,
+                cached_prompt_tokens: 0,
+                redact_credentials: false,
+                channel_skills: &[],
+                scrub: scrub_noop,
+                tiered_retrieval_config: TieredRetrievalConfig {
+                    enabled: false,
+                    ..TieredRetrievalConfig::default()
+                },
+                tiered_retrieval_classifier: None,
+                tiered_retrieval_validator: None,
+                fidelity_config: None,
+                fidelity_semantic_provider: None,
+                fidelity_compress_provider: None,
+                planned_next_tools: &[],
+                status_tx: None,
+                task_supervisor: make_task_supervisor(),
+            }
+        }
+
+        #[tokio::test]
+        async fn prepare_context_proactive_explore_reloads_registry_off_lock() {
+            // Query classifies to domain "git" (see zeph_skills::proactive::DOMAIN_KEYWORDS),
+            // the mock LLM returns a valid SKILL.md named after that domain, and the registry
+            // must reflect it after prepare_context returns, with hub_dirs preserved.
+            let fixture = setup_fixture(MockProvider::with_responses(vec![mock_skill_content(
+                "world-knowledge-git",
+            )]));
+            let expected_hub_dirs = vec![fixture.hub_dir.path().to_path_buf()];
+
+            let mut msgs: Vec<Message> = vec![];
+            let mut cached = 0u64;
+            let mut completed = HashSet::new();
+            let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+
+            let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+            let mut ctx_mgr = ContextManager::new();
+            ctx_mgr.budget = Some(ContextBudget::new(100_000, 0.1));
+            let mut sink = NoopSink;
+            let mut last_confidence = None::<f32>;
+            let mut last_skills_prompt = String::new();
+            let mut active_skill_names = Vec::new();
+
+            let mut view = make_view(
+                &fixture,
+                &mut last_confidence,
+                &mut last_skills_prompt,
+                &mut active_skill_names,
+                &sanitizer,
+                &mut ctx_mgr,
+                &mut sink,
+            );
+
+            let result = ContextService::new()
+                .prepare_context("please help me with a git rebase", &mut window, &mut view)
+                .await;
+
+            assert!(result.is_ok(), "prepare_context must succeed: {result:?}");
+
+            let guard = fixture.registry.read();
+            assert_eq!(
+                guard.all_meta().len(),
+                1,
+                "reloaded registry must contain exactly the newly generated skill"
+            );
+            assert!(
+                guard
+                    .all_meta()
+                    .iter()
+                    .any(|m| m.name == "world-knowledge-git"),
+                "reloaded registry must expose the generated skill by name"
+            );
+            assert_eq!(
+                guard.hub_dirs(),
+                expected_hub_dirs.as_slice(),
+                "hub_dirs read before spawn_blocking must survive the off-lock rebuild"
+            );
+        }
+
+        #[tokio::test]
+        async fn prepare_context_proactive_explore_leaves_registry_unchanged_when_not_triggered() {
+            // Query does not classify to any known domain, so the explore/reload branch never
+            // runs. The registry (pre-populated with one real skill below) must be untouched —
+            // this is the control case proving the reload path only fires when actually triggered.
+            let fixture = setup_fixture(MockProvider::with_responses(vec![mock_skill_content(
+                "world-knowledge-unused",
+            )]));
+
+            // Write a real skill to disk and load it directly (bypassing explore()) so we can
+            // detect any unwanted overwrite/reset caused by the reload branch.
+            let existing_skill_dir = fixture.skill_paths[0].join("existing-skill");
+            std::fs::create_dir_all(&existing_skill_dir).expect("create existing skill dir");
+            std::fs::write(
+                existing_skill_dir.join("SKILL.md"),
+                mock_skill_content("existing-skill"),
+            )
+            .expect("write existing SKILL.md");
+            {
+                let mut guard = fixture.registry.write();
+                *guard = SkillRegistry::load(&fixture.skill_paths)
+                    .with_hub_dirs(vec![fixture.hub_dir.path().to_path_buf()]);
+            }
+            assert_eq!(
+                fixture.registry.read().all_meta().len(),
+                1,
+                "sanity: registry must be pre-populated before prepare_context runs"
+            );
+
+            let mut msgs: Vec<Message> = vec![];
+            let mut cached = 0u64;
+            let mut completed = HashSet::new();
+            let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+
+            let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+            let mut ctx_mgr = ContextManager::new();
+            ctx_mgr.budget = Some(ContextBudget::new(100_000, 0.1));
+            let mut sink = NoopSink;
+            let mut last_confidence = None::<f32>;
+            let mut last_skills_prompt = String::new();
+            let mut active_skill_names = Vec::new();
+
+            let mut view = make_view(
+                &fixture,
+                &mut last_confidence,
+                &mut last_skills_prompt,
+                &mut active_skill_names,
+                &sanitizer,
+                &mut ctx_mgr,
+                &mut sink,
+            );
+
+            let result = ContextService::new()
+                .prepare_context("how are you today", &mut window, &mut view)
+                .await;
+
+            assert!(result.is_ok(), "prepare_context must succeed: {result:?}");
+            let guard = fixture.registry.read();
+            assert_eq!(
+                guard.all_meta().len(),
+                1,
+                "registry must remain unchanged when no domain classifies and explore() never runs"
+            );
+            assert!(
+                guard.all_meta().iter().any(|m| m.name == "existing-skill"),
+                "the pre-existing skill must still be present, unreplaced by the mock's canned skill"
             );
         }
     }

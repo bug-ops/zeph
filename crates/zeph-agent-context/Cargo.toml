@@ -32,6 +32,7 @@ zeph-skills.workspace = true
 
 [dev-dependencies]
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "tls-rustls"] }
+tempfile.workspace = true
 tokio-util.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }
 
