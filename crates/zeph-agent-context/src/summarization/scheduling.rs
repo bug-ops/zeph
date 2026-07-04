@@ -369,6 +369,29 @@ pub fn parse_subgoal_extraction_response(response: &str) -> SubgoalExtractionRes
     }
 }
 
+/// Format a conversation excerpt as `[role]: preview\n` lines, truncating each message
+/// to 300 characters, for injection into a goal/subgoal extraction prompt.
+///
+/// Shared by [`spawn_task_goal_extraction`] and [`spawn_subgoal_extraction`].
+fn format_conversation_excerpt(recent: &[(Role, String)]) -> String {
+    let mut context_text = String::new();
+    for (role, content) in recent {
+        let role_str = match role {
+            Role::Assistant => "assistant",
+            Role::System => "system",
+            Role::User | _ => "user",
+        };
+        let preview = if content.len() > 300 {
+            let end = content.floor_char_boundary(300);
+            &content[..end]
+        } else {
+            content.as_str()
+        };
+        let _ = std::fmt::write(&mut context_text, format_args!("[{role_str}]: {preview}\n"));
+    }
+    context_text
+}
+
 /// Spawn a background task-goal extraction task.
 fn spawn_task_goal_extraction(
     provider: AnyProvider,
@@ -380,21 +403,7 @@ fn spawn_task_goal_extraction(
             return None;
         }
 
-        let mut context_text = String::new();
-        for (role, content) in &recent {
-            let role_str = match role {
-                Role::Assistant => "assistant",
-                Role::System => "system",
-                Role::User | _ => "user",
-            };
-            let preview = if content.len() > 300 {
-                let end = content.floor_char_boundary(300);
-                &content[..end]
-            } else {
-                content.as_str()
-            };
-            let _ = std::fmt::write(&mut context_text, format_args!("[{role_str}]: {preview}\n"));
-        }
+        let context_text = format_conversation_excerpt(&recent);
 
         let prompt = format!(
             "Extract the current task goal from this conversation excerpt in one concise \
@@ -457,21 +466,7 @@ fn spawn_subgoal_extraction(
             return None;
         }
 
-        let mut context_text = String::new();
-        for (role, content) in &recent {
-            let role_str = match role {
-                Role::Assistant => "assistant",
-                Role::System => "system",
-                Role::User | _ => "user",
-            };
-            let preview = if content.len() > 300 {
-                let end = content.floor_char_boundary(300);
-                &content[..end]
-            } else {
-                content.as_str()
-            };
-            let _ = std::fmt::write(&mut context_text, format_args!("[{role_str}]: {preview}\n"));
-        }
+        let context_text = format_conversation_excerpt(&recent);
 
         let prompt = format!(
             "Given this conversation excerpt, identify the agent's CURRENT subgoal in one \
@@ -563,5 +558,33 @@ mod tests {
         let result = parse_subgoal_extraction_response(response);
         assert_eq!(result.current.trim(), "CURRENT: \nCOMPLETED: Setup");
         assert_eq!(result.completed, None);
+    }
+
+    #[test]
+    fn format_conversation_excerpt_labels_each_role() {
+        let recent = vec![
+            (Role::User, "hi".to_string()),
+            (Role::Assistant, "hello".to_string()),
+            (Role::System, "sys note".to_string()),
+        ];
+        let text = format_conversation_excerpt(&recent);
+        assert_eq!(text, "[user]: hi\n[assistant]: hello\n[system]: sys note\n");
+    }
+
+    #[test]
+    fn format_conversation_excerpt_truncates_long_messages_to_300_chars() {
+        let long = "x".repeat(400);
+        let recent = vec![(Role::User, long)];
+        let text = format_conversation_excerpt(&recent);
+        let preview = text
+            .strip_prefix("[user]: ")
+            .and_then(|s| s.strip_suffix('\n'))
+            .unwrap();
+        assert_eq!(preview.len(), 300);
+    }
+
+    #[test]
+    fn format_conversation_excerpt_empty_input_is_empty_string() {
+        assert_eq!(format_conversation_excerpt(&[]), "");
     }
 }

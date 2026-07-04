@@ -31,7 +31,9 @@ zeph-sanitizer.workspace = true
 zeph-skills.workspace = true
 
 [dev-dependencies]
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "tls-rustls"] }
 tokio-util.workspace = true
+zeph-llm = { workspace = true, features = ["testing"] }
 
 [features]
 sqlite = ["zeph-memory/sqlite", "zeph-sanitizer/sqlite", "zeph-skills/sqlite"]

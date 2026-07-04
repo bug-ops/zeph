@@ -15,6 +15,49 @@ use crate::error::ContextError;
 use crate::state::{ContextSummarizationView, ProviderHandles, StatusSink};
 use zeph_context::manager::CompactionTier;
 
+/// Iterate over `(req_idx, resp_idx)` pairs of a tool-use message immediately followed
+/// by its tool-result/output response, where the response has no `deferred_summary` set
+/// and both messages are still agent-visible.
+///
+/// Shared traversal for [`count_unsummarized_pairs`] and [`find_oldest_unsummarized_pair`];
+/// walks `messages` from index 1, skipping the system prompt.
+fn unsummarized_pairs(messages: &[Message]) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut i = 1; // skip system prompt
+    std::iter::from_fn(move || {
+        while i < messages.len() {
+            let msg = &messages[i];
+            if !msg.metadata.visibility.is_agent_visible() {
+                i += 1;
+                continue;
+            }
+            let is_tool_request = msg.role == Role::Assistant
+                && msg
+                    .parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::ToolUse { .. }));
+            if is_tool_request && i + 1 < messages.len() {
+                let next = &messages[i + 1];
+                if next.metadata.visibility.is_agent_visible()
+                    && next.role == Role::User
+                    && next.parts.iter().any(|p| {
+                        matches!(
+                            p,
+                            MessagePart::ToolResult { .. } | MessagePart::ToolOutput { .. }
+                        )
+                    })
+                    && next.metadata.deferred_summary.is_none()
+                {
+                    let pair = (i, i + 1);
+                    i += 2;
+                    return Some(pair);
+                }
+            }
+            i += 1;
+        }
+        None
+    })
+}
+
 /// Count tool-use/result pairs that have not yet been summarized.
 ///
 /// Iterates `messages` from index 1 (skipping the system prompt) and counts consecutive
@@ -22,39 +65,7 @@ use zeph_context::manager::CompactionTier;
 /// `deferred_summary` set and is still agent-visible.
 #[must_use]
 pub fn count_unsummarized_pairs(messages: &[Message]) -> usize {
-    let mut count = 0usize;
-    let mut i = 1; // skip system prompt
-    while i < messages.len() {
-        let msg = &messages[i];
-        if !msg.metadata.visibility.is_agent_visible() {
-            i += 1;
-            continue;
-        }
-        let is_tool_request = msg.role == Role::Assistant
-            && msg
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::ToolUse { .. }));
-        if is_tool_request && i + 1 < messages.len() {
-            let next = &messages[i + 1];
-            if next.metadata.visibility.is_agent_visible()
-                && next.role == Role::User
-                && next.parts.iter().any(|p| {
-                    matches!(
-                        p,
-                        MessagePart::ToolResult { .. } | MessagePart::ToolOutput { .. }
-                    )
-                })
-                && next.metadata.deferred_summary.is_none()
-            {
-                count += 1;
-                i += 2;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    count
+    unsummarized_pairs(messages).count()
 }
 
 /// Find the index of the oldest unsummarized tool-use/result pair.
@@ -65,46 +76,17 @@ pub fn count_unsummarized_pairs(messages: &[Message]) -> usize {
 /// Returns `Some((req_idx, resp_idx))` or `None` if no eligible pair exists.
 #[must_use]
 pub fn find_oldest_unsummarized_pair(messages: &[Message]) -> Option<(usize, usize)> {
-    let mut i = 1; // skip system prompt
-    while i < messages.len() {
-        let msg = &messages[i];
-        if !msg.metadata.visibility.is_agent_visible() {
-            i += 1;
-            continue;
-        }
-        let is_tool_request = msg.role == Role::Assistant
-            && msg
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::ToolUse { .. }));
-        if is_tool_request && i + 1 < messages.len() {
-            let next = &messages[i + 1];
-            if next.metadata.visibility.is_agent_visible()
-                && next.role == Role::User
-                && next.parts.iter().any(|p| {
-                    matches!(
-                        p,
-                        MessagePart::ToolResult { .. } | MessagePart::ToolOutput { .. }
-                    )
-                })
-                && next.metadata.deferred_summary.is_none()
-            {
-                // Skip pairs whose response content has been fully pruned (IMP-03).
-                let all_pruned = next.parts.iter().all(|p| match p {
-                    MessagePart::ToolOutput { body, .. } => body.is_empty(),
-                    MessagePart::ToolResult { content, .. } => {
-                        content.trim() == "[pruned]" || content.is_empty()
-                    }
-                    _ => true,
-                });
-                if !all_pruned {
-                    return Some((i, i + 1));
-                }
+    unsummarized_pairs(messages).find(|&(_, resp_idx)| {
+        // Skip pairs whose response content has been fully pruned (IMP-03).
+        let all_pruned = messages[resp_idx].parts.iter().all(|p| match p {
+            MessagePart::ToolOutput { body, .. } => body.is_empty(),
+            MessagePart::ToolResult { content, .. } => {
+                content.trim() == "[pruned]" || content.is_empty()
             }
-        }
-        i += 1;
-    }
-    None
+            _ => true,
+        });
+        !all_pruned
+    })
 }
 
 /// Count messages that carry a pending `deferred_summary`.

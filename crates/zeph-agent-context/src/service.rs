@@ -706,14 +706,10 @@ impl ContextService {
             if let Some(ref tx) = view.status_tx {
                 let _ = tx.send("Scoring context fidelity\u{2026}".into());
             }
-            let embed_provider = view
-                .fidelity_semantic_provider
-                .as_deref()
-                .map(|p| p as &dyn zeph_llm::LlmProviderDyn);
-            let compress_provider = view
-                .fidelity_compress_provider
-                .as_deref()
-                .map(|p| p as &dyn zeph_llm::LlmProviderDyn);
+            let (embed_provider, compress_provider) = fidelity_provider_pair(
+                view.fidelity_semantic_provider.as_ref(),
+                view.fidelity_compress_provider.as_ref(),
+            );
             let fidelity_span = tracing::info_span!(
                 "context.fidelity.score",
                 message_count = window.messages.len(),
@@ -1134,14 +1130,10 @@ impl ContextService {
             )
         {
             use tracing::Instrument as _;
-            let regrade_embed_provider = summ
-                .fidelity_semantic_provider
-                .as_deref()
-                .map(|p| p as &dyn zeph_llm::LlmProviderDyn);
-            let regrade_compress_provider = summ
-                .fidelity_compress_provider
-                .as_deref()
-                .map(|p| p as &dyn zeph_llm::LlmProviderDyn);
+            let (regrade_embed_provider, regrade_compress_provider) = fidelity_provider_pair(
+                summ.fidelity_semantic_provider.as_ref(),
+                summ.fidelity_compress_provider.as_ref(),
+            );
             FidelityScorer
                 .score_and_apply(
                     summ.messages,
@@ -1561,6 +1553,27 @@ pub(crate) fn recompute_prompt_tokens(window: &mut MessageWindowView<'_>) {
         .iter()
         .map(|m| window.token_counter.count_message_tokens(m) as u64)
         .sum();
+}
+
+/// Cast the fidelity scorer's owned semantic/compress providers down to the
+/// `&dyn LlmProviderDyn` pair expected by [`FidelityScorer::score_and_apply`].
+///
+/// Shared by [`ContextService::prepare_context`] and [`ContextService::maybe_compact`],
+/// which each hold their own `Option<Arc<AnyProvider>>` fields for the same purpose.
+fn fidelity_provider_pair<'a>(
+    semantic: Option<&'a std::sync::Arc<zeph_llm::any::AnyProvider>>,
+    compress: Option<&'a std::sync::Arc<zeph_llm::any::AnyProvider>>,
+) -> (
+    Option<&'a dyn zeph_llm::LlmProviderDyn>,
+    Option<&'a dyn zeph_llm::LlmProviderDyn>,
+) {
+    let embed_provider = semantic
+        .map(std::sync::Arc::as_ref)
+        .map(|p| p as &dyn zeph_llm::LlmProviderDyn);
+    let compress_provider = compress
+        .map(std::sync::Arc::as_ref)
+        .map(|p| p as &dyn zeph_llm::LlmProviderDyn);
+    (embed_provider, compress_provider)
 }
 
 /// Persist fidelity tags for all scored messages to `SQLite`.

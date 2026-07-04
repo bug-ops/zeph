@@ -11,6 +11,7 @@
 //! `zeph-core`-internal `MemoryState`, keeping this crate free of `zeph-core` types.
 
 use std::fmt::Write as _;
+use std::future::Future;
 use std::time::Instant;
 
 use zeph_config::ContextFormat;
@@ -113,6 +114,371 @@ pub async fn fetch_graph_facts(
     .map_err(ContextError::Memory)
 }
 
+/// Append graph facts to `body` respecting the token budget; returns result count.
+fn append_graph_facts(
+    facts: &[zeph_memory::graph::types::GraphFact],
+    body: &mut String,
+    tokens_so_far: &mut usize,
+    budget_tokens: usize,
+    tc: &TokenCounter,
+) -> usize {
+    let mut count = 0;
+    for f in facts {
+        let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
+        let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
+        let line_tokens = tc.count_tokens(&line);
+        if *tokens_so_far + line_tokens > budget_tokens {
+            break;
+        }
+        body.push_str(&line);
+        *tokens_so_far += line_tokens;
+        count += 1;
+    }
+    count
+}
+
+/// Await a graph recall future, logging retrieval failures and appending any results
+/// to `body` via [`append_graph_facts`].
+///
+/// Shared by the `Bfs`/`AStar`/`WaterCircles`/`BeamSearch` match arms and the `Hybrid`
+/// arm of [`fetch_graph_facts_raw`] — they differ only in which future produces the
+/// fact list. `Synapse` is handled separately because its activation-score fact
+/// formatting differs from [`append_graph_facts`].
+///
+/// On success with a non-empty result, appends facts to `body`/`tokens_so_far`. On
+/// success with an empty result, logs a `NoHit` failure record and leaves `body`
+/// unchanged, which the caller's tail check (`body == GRAPH_FACTS_PREFIX`) turns into
+/// `Ok(None)`. On error, logs an `Error` failure record and propagates it.
+///
+/// `start` is the instant recall latency should be measured from. Callers with a
+/// genuinely lazy `recall` future can pass `Instant::now()` right before calling; the
+/// `Hybrid` caller passes the instant captured before its own (already-awaited)
+/// classification + recall, since by the time it hands off an already-resolved
+/// `std::future::ready(...)` here, starting a fresh clock would measure only the time
+/// to poll an already-completed future instead of real recall latency.
+#[allow(clippy::too_many_arguments)]
+async fn run_graph_strategy<F>(
+    memory: &zeph_memory::semantic::SemanticMemory,
+    strategy_str: &str,
+    query: &str,
+    edge_types_json: Option<String>,
+    start: Instant,
+    recall: F,
+    body: &mut String,
+    tokens_so_far: &mut usize,
+    budget_tokens: usize,
+    tc: &TokenCounter,
+) -> Result<(), zeph_memory::MemoryError>
+where
+    F: Future<Output = Result<Vec<zeph_memory::graph::types::GraphFact>, zeph_memory::MemoryError>>,
+{
+    let facts = match recall.await {
+        Ok(f) => f,
+        Err(e) => {
+            let latency_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+            memory.log_retrieval_failure(RetrievalFailureRecord {
+                conversation_id: None,
+                turn_index: 0,
+                failure_type: RetrievalFailureType::Error,
+                retrieval_strategy: strategy_str.to_owned(),
+                query_text: query.to_owned(),
+                query_len: query.len(),
+                top_score: None,
+                confidence_threshold: None,
+                result_count: 0,
+                latency_ms,
+                edge_types: edge_types_json,
+                error_context: Some(format!("{e:#}")),
+            });
+            return Err(e);
+        }
+    };
+    let latency_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+    if facts.is_empty() {
+        memory.log_retrieval_failure(RetrievalFailureRecord {
+            conversation_id: None,
+            turn_index: 0,
+            failure_type: RetrievalFailureType::NoHit,
+            retrieval_strategy: strategy_str.to_owned(),
+            query_text: query.to_owned(),
+            query_len: query.len(),
+            top_score: None,
+            confidence_threshold: None,
+            result_count: 0,
+            latency_ms,
+            edge_types: edge_types_json,
+            error_context: None,
+        });
+        return Ok(());
+    }
+    append_graph_facts(&facts, body, tokens_so_far, budget_tokens, tc);
+    Ok(())
+}
+
+/// Run the `Synapse` (spreading-activation) graph retrieval strategy.
+///
+/// Kept separate from [`run_graph_strategy`] because it has its own recall timeout
+/// (in addition to the shared `Error`/`NoHit` cases, it logs a `Timeout` failure) and
+/// formats facts with an extra `activation` score column that [`append_graph_facts`]
+/// does not support.
+///
+/// On success, appends facts to `body`/`tokens_so_far`. On an empty result, logs a
+/// `NoHit` failure record and leaves `body` unchanged — the caller's tail check
+/// (`body == GRAPH_FACTS_PREFIX`) turns this into `Ok(None)`.
+#[allow(clippy::too_many_arguments)]
+async fn run_synapse_strategy(
+    memory: &zeph_memory::semantic::SemanticMemory,
+    sa_config: &zeph_config::memory::SpreadingActivationConfig,
+    strategy_str: &str,
+    query: &str,
+    recall_limit: usize,
+    temporal_decay_rate: f64,
+    edge_types: &[zeph_memory::graph::EdgeType],
+    edge_types_json: Option<String>,
+    body: &mut String,
+    tokens_so_far: &mut usize,
+    budget_tokens: usize,
+    tc: &TokenCounter,
+) {
+    let sa_params = zeph_memory::graph::SpreadingActivationParams {
+        decay_lambda: sa_config.decay_lambda,
+        max_hops: sa_config.max_hops,
+        activation_threshold: sa_config.activation_threshold,
+        inhibition_threshold: sa_config.inhibition_threshold,
+        max_activated_nodes: sa_config.max_activated_nodes,
+        temporal_decay_rate,
+        seed_structural_weight: sa_config.seed_structural_weight,
+        seed_community_cap: sa_config.seed_community_cap,
+        alpha: sa_config.alpha,
+    };
+    let timeout_ms = effective_recall_timeout_ms(sa_config.recall_timeout_ms);
+    let t0 = Instant::now();
+    let activated_facts = match tokio::time::timeout(
+        std::time::Duration::from_millis(timeout_ms),
+        memory.recall_graph_activated(query, recall_limit, sa_params, edge_types),
+    )
+    .await
+    {
+        Ok(Ok(facts)) => facts,
+        Ok(Err(e)) => {
+            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+            tracing::warn!("spreading activation recall failed: {e:#}");
+            // TODO(#3576): conversation_id and turn_index not yet propagated into
+            // context helpers; tracked for future enhancement when
+            // ContextAssemblyView exposes them.
+            memory.log_retrieval_failure(RetrievalFailureRecord {
+                conversation_id: None,
+                turn_index: 0,
+                failure_type: RetrievalFailureType::Error,
+                retrieval_strategy: strategy_str.to_owned(),
+                query_text: query.to_owned(),
+                query_len: query.len(),
+                top_score: None,
+                confidence_threshold: None,
+                result_count: 0,
+                latency_ms,
+                edge_types: edge_types_json.clone(),
+                error_context: Some(format!("{e:#}")),
+            });
+            Vec::new()
+        }
+        Err(_) => {
+            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+            tracing::warn!("spreading activation recall timed out ({timeout_ms}ms)");
+            memory.log_retrieval_failure(RetrievalFailureRecord {
+                conversation_id: None,
+                turn_index: 0,
+                failure_type: RetrievalFailureType::Timeout,
+                retrieval_strategy: strategy_str.to_owned(),
+                query_text: query.to_owned(),
+                query_len: query.len(),
+                top_score: None,
+                confidence_threshold: None,
+                result_count: 0,
+                latency_ms,
+                edge_types: edge_types_json.clone(),
+                error_context: Some(format!("timeout after {timeout_ms}ms")),
+            });
+            Vec::new()
+        }
+    };
+    let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+    if activated_facts.is_empty() {
+        memory.log_retrieval_failure(RetrievalFailureRecord {
+            conversation_id: None,
+            turn_index: 0,
+            failure_type: RetrievalFailureType::NoHit,
+            retrieval_strategy: strategy_str.to_owned(),
+            query_text: query.to_owned(),
+            query_len: query.len(),
+            top_score: None,
+            confidence_threshold: None,
+            result_count: 0,
+            latency_ms,
+            edge_types: edge_types_json,
+            error_context: None,
+        });
+        return;
+    }
+    for f in &activated_facts {
+        let fact_text = f.edge.fact.replace(['\n', '\r', '<', '>'], " ");
+        let line = format!(
+            "- {} (confidence: {:.2}, activation: {:.2})\n",
+            fact_text, f.edge.confidence, f.activation_score
+        );
+        let line_tokens = tc.count_tokens(&line);
+        if *tokens_so_far + line_tokens > budget_tokens {
+            break;
+        }
+        body.push_str(&line);
+        *tokens_so_far += line_tokens;
+    }
+}
+
+/// Classify `query` into a concrete graph sub-strategy for the `Hybrid` retrieval
+/// strategy, via `memory.classify_graph_strategy` under a fixed timeout.
+///
+/// Falls back to `"synapse"` and logs a `Timeout` failure record if the classifier
+/// doesn't resolve in time.
+async fn classify_hybrid_strategy(
+    memory: &zeph_memory::semantic::SemanticMemory,
+    query: &str,
+    edge_types_json: Option<String>,
+) -> String {
+    const CLASSIFIER_TIMEOUT_MS: u64 = 2_000;
+    let classifier_t0 = Instant::now();
+    let classified = if let Ok(s) = tokio::time::timeout(
+        std::time::Duration::from_millis(CLASSIFIER_TIMEOUT_MS),
+        memory.classify_graph_strategy(query),
+    )
+    .await
+    {
+        s
+    } else {
+        let latency_ms = classifier_t0
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        tracing::warn!(
+            "hybrid strategy classifier timed out after {CLASSIFIER_TIMEOUT_MS}ms, \
+             falling back to synapse"
+        );
+        memory.log_retrieval_failure(RetrievalFailureRecord {
+            conversation_id: None,
+            turn_index: 0,
+            failure_type: RetrievalFailureType::Timeout,
+            retrieval_strategy: "hybrid_classifier".to_owned(),
+            query_text: query.to_owned(),
+            query_len: query.len(),
+            top_score: None,
+            confidence_threshold: None,
+            result_count: 0,
+            latency_ms,
+            edge_types: edge_types_json,
+            error_context: Some(format!(
+                "classifier timeout after {CLASSIFIER_TIMEOUT_MS}ms"
+            )),
+        });
+        "synapse".to_owned()
+    };
+    tracing::debug!(classified_strategy = %classified, "hybrid dispatch: classified");
+    classified
+}
+
+/// Run graph recall for the sub-strategy `classified` by [`classify_hybrid_strategy`].
+///
+/// The `astar`/`watercircles`/`beam_search`/synapse-fallback branches used to each
+/// carry their own copy of the error-logging block; here they only need to produce a
+/// `Result`, and the shared `Error`/`NoHit` logging happens once in the caller via
+/// [`run_graph_strategy`].
+#[allow(clippy::too_many_arguments)]
+async fn recall_by_classified_strategy(
+    classified: &str,
+    memory: &zeph_memory::semantic::SemanticMemory,
+    graph_config: &zeph_config::GraphConfig,
+    sa_config: &zeph_config::memory::SpreadingActivationConfig,
+    query: &str,
+    recall_limit: usize,
+    max_hops: u32,
+    temporal_decay_rate: f64,
+    edge_types: &[zeph_memory::graph::EdgeType],
+) -> Result<Vec<zeph_memory::graph::types::GraphFact>, zeph_memory::MemoryError> {
+    match classified {
+        "astar" => {
+            memory
+                .recall_graph_astar(
+                    query,
+                    recall_limit,
+                    max_hops,
+                    temporal_decay_rate,
+                    edge_types,
+                )
+                .await
+        }
+        "watercircles" => {
+            let ring_limit = graph_config.watercircles.ring_limit;
+            memory
+                .recall_graph_watercircles(
+                    query,
+                    recall_limit,
+                    max_hops,
+                    ring_limit,
+                    temporal_decay_rate,
+                    edge_types,
+                )
+                .await
+        }
+        "beam_search" => {
+            let beam_width = graph_config.beam_search.beam_width;
+            memory
+                .recall_graph_beam(
+                    query,
+                    recall_limit,
+                    beam_width,
+                    max_hops,
+                    temporal_decay_rate,
+                    edge_types,
+                )
+                .await
+        }
+        _ => {
+            let sa_params = zeph_memory::graph::SpreadingActivationParams {
+                decay_lambda: sa_config.decay_lambda,
+                max_hops: sa_config.max_hops,
+                activation_threshold: sa_config.activation_threshold,
+                inhibition_threshold: sa_config.inhibition_threshold,
+                max_activated_nodes: sa_config.max_activated_nodes,
+                temporal_decay_rate,
+                seed_structural_weight: sa_config.seed_structural_weight,
+                seed_community_cap: sa_config.seed_community_cap,
+                alpha: sa_config.alpha,
+            };
+            memory
+                .recall_graph_activated(query, recall_limit, sa_params, edge_types)
+                .await
+                .map(|activated| {
+                    activated
+                        .into_iter()
+                        .map(|f| zeph_memory::graph::types::GraphFact {
+                            entity_name: f.edge.source_entity_id.to_string(),
+                            relation: f.edge.relation.clone(),
+                            target_name: f.edge.target_entity_id.to_string(),
+                            fact: f.edge.fact.clone(),
+                            entity_match_score: f.activation_score,
+                            hop_distance: 0,
+                            confidence: f.edge.confidence,
+                            valid_from: Some(f.edge.valid_from.clone()),
+                            edge_type: f.edge.edge_type,
+                            retrieval_count: f.edge.retrieval_count,
+                            edge_id: Some(f.edge.id),
+                        })
+                        .collect()
+                })
+        }
+    }
+}
+
 /// Fetch graph memory facts using individual field arguments.
 ///
 /// This is the raw-args variant used by `zeph-core` test bridge methods and by
@@ -123,7 +489,6 @@ pub async fn fetch_graph_facts(
 /// # Errors
 ///
 /// Returns [`zeph_memory::MemoryError`] when the graph recall backend returns an error.
-#[allow(clippy::too_many_lines, clippy::items_after_statements)]
 #[tracing::instrument(
     name = "agent_context.helpers.fetch_graph_facts_raw",
     skip_all,
@@ -166,564 +531,245 @@ pub async fn fetch_graph_facts_raw(
     let strategy_str = format!("{effective_strategy:?}").to_lowercase();
     let edge_types_json = serde_json::to_string(&edge_types).ok();
 
-    /// Append graph facts to `body` respecting the token budget; returns result count.
-    fn append_graph_facts(
-        facts: &[zeph_memory::graph::types::GraphFact],
-        body: &mut String,
-        tokens_so_far: &mut usize,
-        budget_tokens: usize,
-        tc: &TokenCounter,
-    ) -> usize {
-        let mut count = 0;
-        for f in facts {
-            let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
-            let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
-            let line_tokens = tc.count_tokens(&line);
-            if *tokens_so_far + line_tokens > budget_tokens {
-                break;
-            }
-            body.push_str(&line);
-            *tokens_so_far += line_tokens;
-            count += 1;
-        }
-        count
-    }
-
-    match effective_strategy {
-        GraphRetrievalStrategy::Synapse => {
-            let sa_params = zeph_memory::graph::SpreadingActivationParams {
-                decay_lambda: sa_config.decay_lambda,
-                max_hops: sa_config.max_hops,
-                activation_threshold: sa_config.activation_threshold,
-                inhibition_threshold: sa_config.inhibition_threshold,
-                max_activated_nodes: sa_config.max_activated_nodes,
-                temporal_decay_rate,
-                seed_structural_weight: sa_config.seed_structural_weight,
-                seed_community_cap: sa_config.seed_community_cap,
-                alpha: sa_config.alpha,
-            };
-            let timeout_ms = effective_recall_timeout_ms(sa_config.recall_timeout_ms);
-            let t0 = Instant::now();
-            let activated_facts = match tokio::time::timeout(
-                std::time::Duration::from_millis(timeout_ms),
-                memory.recall_graph_activated(query, recall_limit, sa_params, &edge_types),
-            )
-            .await
-            {
-                Ok(Ok(facts)) => facts,
-                Ok(Err(e)) => {
-                    let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-                    tracing::warn!("spreading activation recall failed: {e:#}");
-                    // TODO(#3576): conversation_id and turn_index not yet propagated into
-                    // context helpers; tracked for future enhancement when
-                    // ContextAssemblyView exposes them.
-                    memory.log_retrieval_failure(RetrievalFailureRecord {
-                        conversation_id: None,
-                        turn_index: 0,
-                        failure_type: RetrievalFailureType::Error,
-                        retrieval_strategy: strategy_str.clone(),
-                        query_text: query.to_owned(),
-                        query_len: query.len(),
-                        top_score: None,
-                        confidence_threshold: None,
-                        result_count: 0,
-                        latency_ms,
-                        edge_types: edge_types_json.clone(),
-                        error_context: Some(format!("{e:#}")),
-                    });
-                    Vec::new()
-                }
-                Err(_) => {
-                    let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-                    tracing::warn!("spreading activation recall timed out ({timeout_ms}ms)");
-                    memory.log_retrieval_failure(RetrievalFailureRecord {
-                        conversation_id: None,
-                        turn_index: 0,
-                        failure_type: RetrievalFailureType::Timeout,
-                        retrieval_strategy: strategy_str.clone(),
-                        query_text: query.to_owned(),
-                        query_len: query.len(),
-                        top_score: None,
-                        confidence_threshold: None,
-                        result_count: 0,
-                        latency_ms,
-                        edge_types: edge_types_json.clone(),
-                        error_context: Some(format!("timeout after {timeout_ms}ms")),
-                    });
-                    Vec::new()
-                }
-            };
-            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-            if activated_facts.is_empty() {
-                memory.log_retrieval_failure(RetrievalFailureRecord {
-                    conversation_id: None,
-                    turn_index: 0,
-                    failure_type: RetrievalFailureType::NoHit,
-                    retrieval_strategy: strategy_str,
-                    query_text: query.to_owned(),
-                    query_len: query.len(),
-                    top_score: None,
-                    confidence_threshold: None,
-                    result_count: 0,
-                    latency_ms,
-                    edge_types: edge_types_json,
-                    error_context: None,
-                });
-                return Ok(None);
-            }
-            for f in &activated_facts {
-                let fact_text = f.edge.fact.replace(['\n', '\r', '<', '>'], " ");
-                let line = format!(
-                    "- {} (confidence: {:.2}, activation: {:.2})\n",
-                    fact_text, f.edge.confidence, f.activation_score
-                );
-                let line_tokens = tc.count_tokens(&line);
-                if tokens_so_far + line_tokens > budget_tokens {
-                    break;
-                }
-                body.push_str(&line);
-                tokens_so_far += line_tokens;
-            }
-        }
-        GraphRetrievalStrategy::Bfs => {
-            let t0 = Instant::now();
-            let facts = match memory
-                .recall_graph(
-                    query,
-                    recall_limit,
-                    max_hops,
-                    None,
-                    temporal_decay_rate,
-                    &edge_types,
-                )
-                .await
-            {
-                Ok(f) => f,
-                Err(e) => {
-                    let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-                    memory.log_retrieval_failure(RetrievalFailureRecord {
-                        conversation_id: None,
-                        turn_index: 0,
-                        failure_type: RetrievalFailureType::Error,
-                        retrieval_strategy: strategy_str,
-                        query_text: query.to_owned(),
-                        query_len: query.len(),
-                        top_score: None,
-                        confidence_threshold: None,
-                        result_count: 0,
-                        latency_ms,
-                        edge_types: edge_types_json,
-                        error_context: Some(format!("{e:#}")),
-                    });
-                    return Err(e);
-                }
-            };
-            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-            if facts.is_empty() {
-                memory.log_retrieval_failure(RetrievalFailureRecord {
-                    conversation_id: None,
-                    turn_index: 0,
-                    failure_type: RetrievalFailureType::NoHit,
-                    retrieval_strategy: strategy_str,
-                    query_text: query.to_owned(),
-                    query_len: query.len(),
-                    top_score: None,
-                    confidence_threshold: None,
-                    result_count: 0,
-                    latency_ms,
-                    edge_types: edge_types_json,
-                    error_context: None,
-                });
-                return Ok(None);
-            }
-            append_graph_facts(&facts, &mut body, &mut tokens_so_far, budget_tokens, tc);
-        }
-        GraphRetrievalStrategy::AStar => {
-            let t0 = Instant::now();
-            let facts = match memory
-                .recall_graph_astar(
-                    query,
-                    recall_limit,
-                    max_hops,
-                    temporal_decay_rate,
-                    &edge_types,
-                )
-                .await
-            {
-                Ok(f) => f,
-                Err(e) => {
-                    let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-                    memory.log_retrieval_failure(RetrievalFailureRecord {
-                        conversation_id: None,
-                        turn_index: 0,
-                        failure_type: RetrievalFailureType::Error,
-                        retrieval_strategy: strategy_str,
-                        query_text: query.to_owned(),
-                        query_len: query.len(),
-                        top_score: None,
-                        confidence_threshold: None,
-                        result_count: 0,
-                        latency_ms,
-                        edge_types: edge_types_json,
-                        error_context: Some(format!("{e:#}")),
-                    });
-                    return Err(e);
-                }
-            };
-            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-            if facts.is_empty() {
-                memory.log_retrieval_failure(RetrievalFailureRecord {
-                    conversation_id: None,
-                    turn_index: 0,
-                    failure_type: RetrievalFailureType::NoHit,
-                    retrieval_strategy: strategy_str,
-                    query_text: query.to_owned(),
-                    query_len: query.len(),
-                    top_score: None,
-                    confidence_threshold: None,
-                    result_count: 0,
-                    latency_ms,
-                    edge_types: edge_types_json,
-                    error_context: None,
-                });
-                return Ok(None);
-            }
-            append_graph_facts(&facts, &mut body, &mut tokens_so_far, budget_tokens, tc);
-        }
-        GraphRetrievalStrategy::WaterCircles => {
-            let ring_limit = graph_config.watercircles.ring_limit;
-            let t0 = Instant::now();
-            let facts = match memory
-                .recall_graph_watercircles(
-                    query,
-                    recall_limit,
-                    max_hops,
-                    ring_limit,
-                    temporal_decay_rate,
-                    &edge_types,
-                )
-                .await
-            {
-                Ok(f) => f,
-                Err(e) => {
-                    let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-                    memory.log_retrieval_failure(RetrievalFailureRecord {
-                        conversation_id: None,
-                        turn_index: 0,
-                        failure_type: RetrievalFailureType::Error,
-                        retrieval_strategy: strategy_str,
-                        query_text: query.to_owned(),
-                        query_len: query.len(),
-                        top_score: None,
-                        confidence_threshold: None,
-                        result_count: 0,
-                        latency_ms,
-                        edge_types: edge_types_json,
-                        error_context: Some(format!("{e:#}")),
-                    });
-                    return Err(e);
-                }
-            };
-            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-            if facts.is_empty() {
-                memory.log_retrieval_failure(RetrievalFailureRecord {
-                    conversation_id: None,
-                    turn_index: 0,
-                    failure_type: RetrievalFailureType::NoHit,
-                    retrieval_strategy: strategy_str,
-                    query_text: query.to_owned(),
-                    query_len: query.len(),
-                    top_score: None,
-                    confidence_threshold: None,
-                    result_count: 0,
-                    latency_ms,
-                    edge_types: edge_types_json,
-                    error_context: None,
-                });
-                return Ok(None);
-            }
-            append_graph_facts(&facts, &mut body, &mut tokens_so_far, budget_tokens, tc);
-        }
-        GraphRetrievalStrategy::BeamSearch => {
-            let beam_width = graph_config.beam_search.beam_width;
-            let t0 = Instant::now();
-            let facts = match memory
-                .recall_graph_beam(
-                    query,
-                    recall_limit,
-                    beam_width,
-                    max_hops,
-                    temporal_decay_rate,
-                    &edge_types,
-                )
-                .await
-            {
-                Ok(f) => f,
-                Err(e) => {
-                    let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-                    memory.log_retrieval_failure(RetrievalFailureRecord {
-                        conversation_id: None,
-                        turn_index: 0,
-                        failure_type: RetrievalFailureType::Error,
-                        retrieval_strategy: strategy_str,
-                        query_text: query.to_owned(),
-                        query_len: query.len(),
-                        top_score: None,
-                        confidence_threshold: None,
-                        result_count: 0,
-                        latency_ms,
-                        edge_types: edge_types_json,
-                        error_context: Some(format!("{e:#}")),
-                    });
-                    return Err(e);
-                }
-            };
-            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-            if facts.is_empty() {
-                memory.log_retrieval_failure(RetrievalFailureRecord {
-                    conversation_id: None,
-                    turn_index: 0,
-                    failure_type: RetrievalFailureType::NoHit,
-                    retrieval_strategy: strategy_str,
-                    query_text: query.to_owned(),
-                    query_len: query.len(),
-                    top_score: None,
-                    confidence_threshold: None,
-                    result_count: 0,
-                    latency_ms,
-                    edge_types: edge_types_json,
-                    error_context: None,
-                });
-                return Ok(None);
-            }
-            append_graph_facts(&facts, &mut body, &mut tokens_so_far, budget_tokens, tc);
-        }
-        GraphRetrievalStrategy::Hybrid => {
-            const CLASSIFIER_TIMEOUT_MS: u64 = 2_000;
-            let classifier_t0 = Instant::now();
-            let classified = if let Ok(s) = tokio::time::timeout(
-                std::time::Duration::from_millis(CLASSIFIER_TIMEOUT_MS),
-                memory.classify_graph_strategy(query),
-            )
-            .await
-            {
-                s
-            } else {
-                let latency_ms = classifier_t0
-                    .elapsed()
-                    .as_millis()
-                    .try_into()
-                    .unwrap_or(u64::MAX);
-                tracing::warn!(
-                    "hybrid strategy classifier timed out after {CLASSIFIER_TIMEOUT_MS}ms, \
-                     falling back to synapse"
-                );
-                memory.log_retrieval_failure(RetrievalFailureRecord {
-                    conversation_id: None,
-                    turn_index: 0,
-                    failure_type: RetrievalFailureType::Timeout,
-                    retrieval_strategy: "hybrid_classifier".to_owned(),
-                    query_text: query.to_owned(),
-                    query_len: query.len(),
-                    top_score: None,
-                    confidence_threshold: None,
-                    result_count: 0,
-                    latency_ms,
-                    edge_types: edge_types_json.clone(),
-                    error_context: Some(format!(
-                        "classifier timeout after {CLASSIFIER_TIMEOUT_MS}ms"
-                    )),
-                });
-                "synapse".to_owned()
-            };
-            tracing::debug!(classified_strategy = %classified, "hybrid dispatch: classified");
-            let t0 = Instant::now();
-            let facts = match classified.as_str() {
-                "astar" => {
-                    match memory
-                        .recall_graph_astar(
-                            query,
-                            recall_limit,
-                            max_hops,
-                            temporal_decay_rate,
-                            &edge_types,
-                        )
-                        .await
-                    {
-                        Ok(f) => f,
-                        Err(e) => {
-                            let latency_ms =
-                                t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-                            memory.log_retrieval_failure(RetrievalFailureRecord {
-                                conversation_id: None,
-                                turn_index: 0,
-                                failure_type: RetrievalFailureType::Error,
-                                retrieval_strategy: strategy_str,
-                                query_text: query.to_owned(),
-                                query_len: query.len(),
-                                top_score: None,
-                                confidence_threshold: None,
-                                result_count: 0,
-                                latency_ms,
-                                edge_types: edge_types_json,
-                                error_context: Some(format!("{e:#}")),
-                            });
-                            return Err(e);
-                        }
-                    }
-                }
-                "watercircles" => {
-                    let ring_limit = graph_config.watercircles.ring_limit;
-                    match memory
-                        .recall_graph_watercircles(
-                            query,
-                            recall_limit,
-                            max_hops,
-                            ring_limit,
-                            temporal_decay_rate,
-                            &edge_types,
-                        )
-                        .await
-                    {
-                        Ok(f) => f,
-                        Err(e) => {
-                            let latency_ms =
-                                t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-                            memory.log_retrieval_failure(RetrievalFailureRecord {
-                                conversation_id: None,
-                                turn_index: 0,
-                                failure_type: RetrievalFailureType::Error,
-                                retrieval_strategy: strategy_str,
-                                query_text: query.to_owned(),
-                                query_len: query.len(),
-                                top_score: None,
-                                confidence_threshold: None,
-                                result_count: 0,
-                                latency_ms,
-                                edge_types: edge_types_json,
-                                error_context: Some(format!("{e:#}")),
-                            });
-                            return Err(e);
-                        }
-                    }
-                }
-                "beam_search" => {
-                    let beam_width = graph_config.beam_search.beam_width;
-                    match memory
-                        .recall_graph_beam(
-                            query,
-                            recall_limit,
-                            beam_width,
-                            max_hops,
-                            temporal_decay_rate,
-                            &edge_types,
-                        )
-                        .await
-                    {
-                        Ok(f) => f,
-                        Err(e) => {
-                            let latency_ms =
-                                t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-                            memory.log_retrieval_failure(RetrievalFailureRecord {
-                                conversation_id: None,
-                                turn_index: 0,
-                                failure_type: RetrievalFailureType::Error,
-                                retrieval_strategy: strategy_str,
-                                query_text: query.to_owned(),
-                                query_len: query.len(),
-                                top_score: None,
-                                confidence_threshold: None,
-                                result_count: 0,
-                                latency_ms,
-                                edge_types: edge_types_json,
-                                error_context: Some(format!("{e:#}")),
-                            });
-                            return Err(e);
-                        }
-                    }
-                }
-                _ => {
-                    let sa_params = zeph_memory::graph::SpreadingActivationParams {
-                        decay_lambda: sa_config.decay_lambda,
-                        max_hops: sa_config.max_hops,
-                        activation_threshold: sa_config.activation_threshold,
-                        inhibition_threshold: sa_config.inhibition_threshold,
-                        max_activated_nodes: sa_config.max_activated_nodes,
-                        temporal_decay_rate,
-                        seed_structural_weight: sa_config.seed_structural_weight,
-                        seed_community_cap: sa_config.seed_community_cap,
-                        alpha: sa_config.alpha,
-                    };
-                    match memory
-                        .recall_graph_activated(query, recall_limit, sa_params, &edge_types)
-                        .await
-                    {
-                        Ok(activated) => activated
-                            .into_iter()
-                            .map(|f| zeph_memory::graph::types::GraphFact {
-                                entity_name: f.edge.source_entity_id.to_string(),
-                                relation: f.edge.relation.clone(),
-                                target_name: f.edge.target_entity_id.to_string(),
-                                fact: f.edge.fact.clone(),
-                                entity_match_score: f.activation_score,
-                                hop_distance: 0,
-                                confidence: f.edge.confidence,
-                                valid_from: Some(f.edge.valid_from.clone()),
-                                edge_type: f.edge.edge_type,
-                                retrieval_count: f.edge.retrieval_count,
-                                edge_id: Some(f.edge.id),
-                            })
-                            .collect(),
-                        Err(e) => {
-                            let latency_ms =
-                                t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-                            memory.log_retrieval_failure(RetrievalFailureRecord {
-                                conversation_id: None,
-                                turn_index: 0,
-                                failure_type: RetrievalFailureType::Error,
-                                retrieval_strategy: strategy_str,
-                                query_text: query.to_owned(),
-                                query_len: query.len(),
-                                top_score: None,
-                                confidence_threshold: None,
-                                result_count: 0,
-                                latency_ms,
-                                edge_types: edge_types_json,
-                                error_context: Some(format!("{e:#}")),
-                            });
-                            return Err(e);
-                        }
-                    }
-                }
-            };
-            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-            if facts.is_empty() {
-                memory.log_retrieval_failure(RetrievalFailureRecord {
-                    conversation_id: None,
-                    turn_index: 0,
-                    failure_type: RetrievalFailureType::NoHit,
-                    retrieval_strategy: strategy_str,
-                    query_text: query.to_owned(),
-                    query_len: query.len(),
-                    top_score: None,
-                    confidence_threshold: None,
-                    result_count: 0,
-                    latency_ms,
-                    edge_types: edge_types_json,
-                    error_context: None,
-                });
-                return Ok(None);
-            }
-            append_graph_facts(&facts, &mut body, &mut tokens_so_far, budget_tokens, tc);
-        }
-        _ => {}
-    }
+    dispatch_graph_strategy(
+        effective_strategy,
+        memory,
+        graph_config,
+        sa_config,
+        &strategy_str,
+        query,
+        recall_limit,
+        max_hops,
+        temporal_decay_rate,
+        &edge_types,
+        edge_types_json,
+        &mut body,
+        &mut tokens_so_far,
+        budget_tokens,
+        tc,
+    )
+    .await?;
 
     if body == GRAPH_FACTS_PREFIX {
         return Ok(None);
     }
 
     Ok(Some(Message::from_legacy(Role::System, body)))
+}
+
+/// Dispatch to the recall implementation for `effective_strategy` and append any
+/// resulting facts to `body`.
+///
+/// One match arm per [`zeph_config::memory::GraphRetrievalStrategy`] variant; each arm
+/// only selects which recall future to run (and, for `Hybrid`, first resolves the
+/// classified sub-strategy) — the shared error/no-hit logging and budget-aware
+/// appending live in [`run_synapse_strategy`] / [`run_graph_strategy`]. The line count
+/// here comes from enumerating six variants side by side, not from duplicated logic;
+/// splitting each arm into its own one-call wrapper function would trade this for five
+/// near-identical trivial functions without reducing complexity, so the length lint is
+/// suppressed instead.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn dispatch_graph_strategy(
+    effective_strategy: zeph_config::memory::GraphRetrievalStrategy,
+    memory: &zeph_memory::semantic::SemanticMemory,
+    graph_config: &zeph_config::GraphConfig,
+    sa_config: &zeph_config::memory::SpreadingActivationConfig,
+    strategy_str: &str,
+    query: &str,
+    recall_limit: usize,
+    max_hops: u32,
+    temporal_decay_rate: f64,
+    edge_types: &[zeph_memory::graph::EdgeType],
+    edge_types_json: Option<String>,
+    body: &mut String,
+    tokens_so_far: &mut usize,
+    budget_tokens: usize,
+    tc: &TokenCounter,
+) -> Result<(), zeph_memory::MemoryError> {
+    use zeph_config::memory::GraphRetrievalStrategy;
+    match effective_strategy {
+        GraphRetrievalStrategy::Synapse => {
+            run_synapse_strategy(
+                memory,
+                sa_config,
+                strategy_str,
+                query,
+                recall_limit,
+                temporal_decay_rate,
+                edge_types,
+                edge_types_json,
+                body,
+                tokens_so_far,
+                budget_tokens,
+                tc,
+            )
+            .await;
+        }
+        GraphRetrievalStrategy::Bfs => {
+            run_graph_strategy(
+                memory,
+                strategy_str,
+                query,
+                edge_types_json,
+                Instant::now(),
+                memory.recall_graph(
+                    query,
+                    recall_limit,
+                    max_hops,
+                    None,
+                    temporal_decay_rate,
+                    edge_types,
+                ),
+                body,
+                tokens_so_far,
+                budget_tokens,
+                tc,
+            )
+            .await?;
+        }
+        GraphRetrievalStrategy::AStar => {
+            run_graph_strategy(
+                memory,
+                strategy_str,
+                query,
+                edge_types_json,
+                Instant::now(),
+                memory.recall_graph_astar(
+                    query,
+                    recall_limit,
+                    max_hops,
+                    temporal_decay_rate,
+                    edge_types,
+                ),
+                body,
+                tokens_so_far,
+                budget_tokens,
+                tc,
+            )
+            .await?;
+        }
+        GraphRetrievalStrategy::WaterCircles => {
+            let ring_limit = graph_config.watercircles.ring_limit;
+            run_graph_strategy(
+                memory,
+                strategy_str,
+                query,
+                edge_types_json,
+                Instant::now(),
+                memory.recall_graph_watercircles(
+                    query,
+                    recall_limit,
+                    max_hops,
+                    ring_limit,
+                    temporal_decay_rate,
+                    edge_types,
+                ),
+                body,
+                tokens_so_far,
+                budget_tokens,
+                tc,
+            )
+            .await?;
+        }
+        GraphRetrievalStrategy::BeamSearch => {
+            let beam_width = graph_config.beam_search.beam_width;
+            run_graph_strategy(
+                memory,
+                strategy_str,
+                query,
+                edge_types_json,
+                Instant::now(),
+                memory.recall_graph_beam(
+                    query,
+                    recall_limit,
+                    beam_width,
+                    max_hops,
+                    temporal_decay_rate,
+                    edge_types,
+                ),
+                body,
+                tokens_so_far,
+                budget_tokens,
+                tc,
+            )
+            .await?;
+        }
+        GraphRetrievalStrategy::Hybrid => {
+            run_hybrid_strategy(
+                memory,
+                graph_config,
+                sa_config,
+                strategy_str,
+                query,
+                recall_limit,
+                max_hops,
+                temporal_decay_rate,
+                edge_types,
+                edge_types_json,
+                body,
+                tokens_so_far,
+                budget_tokens,
+                tc,
+            )
+            .await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Run the `Hybrid` graph retrieval strategy: classify the query into a concrete
+/// sub-strategy, run recall for it, then apply the shared failure-logging/append path.
+#[allow(clippy::too_many_arguments)]
+async fn run_hybrid_strategy(
+    memory: &zeph_memory::semantic::SemanticMemory,
+    graph_config: &zeph_config::GraphConfig,
+    sa_config: &zeph_config::memory::SpreadingActivationConfig,
+    strategy_str: &str,
+    query: &str,
+    recall_limit: usize,
+    max_hops: u32,
+    temporal_decay_rate: f64,
+    edge_types: &[zeph_memory::graph::EdgeType],
+    edge_types_json: Option<String>,
+    body: &mut String,
+    tokens_so_far: &mut usize,
+    budget_tokens: usize,
+    tc: &TokenCounter,
+) -> Result<(), zeph_memory::MemoryError> {
+    let classified = classify_hybrid_strategy(memory, query, edge_types_json.clone()).await;
+    // Capture the start instant here, before the real recall work, rather than inside
+    // run_graph_strategy: by the time facts_result is ready, the future handed to
+    // run_graph_strategy below is already resolved (`std::future::ready`), so starting
+    // a fresh clock there would measure only the time to poll an already-done future
+    // instead of actual recall latency.
+    let recall_t0 = Instant::now();
+    let facts_result = recall_by_classified_strategy(
+        &classified,
+        memory,
+        graph_config,
+        sa_config,
+        query,
+        recall_limit,
+        max_hops,
+        temporal_decay_rate,
+        edge_types,
+    )
+    .await;
+
+    run_graph_strategy(
+        memory,
+        strategy_str,
+        query,
+        edge_types_json,
+        recall_t0,
+        std::future::ready(facts_result),
+        body,
+        tokens_so_far,
+        budget_tokens,
+        tc,
+    )
+    .await
 }
 
 /// Fetch semantically recalled messages using individual field arguments.
@@ -1201,5 +1247,110 @@ mod budget_hint_tests {
         let xml = hint.format_xml().unwrap();
         assert!(xml.starts_with("<budget>"));
         assert!(xml.ends_with("</budget>"));
+    }
+}
+
+#[cfg(test)]
+mod run_graph_strategy_latency_tests {
+    use std::time::Duration;
+
+    use tokio_util::sync::CancellationToken;
+    use zeph_llm::any::AnyProvider;
+    use zeph_memory::RetrievalFailureLogger;
+
+    use super::*;
+
+    /// Regression test for the `Hybrid` `latency_ms` telemetry drift fixed alongside
+    /// this test: `run_hybrid_strategy` awaits the real recall work *before* handing an
+    /// already-resolved `std::future::ready(...)` to `run_graph_strategy`. If
+    /// `run_graph_strategy` captured its own `Instant::now()` internally (as it used
+    /// to) instead of taking `start` as a parameter, it would measure only the
+    /// near-zero time to poll an already-completed future, silently zeroing out
+    /// `latency_ms` on every `Hybrid` failure/no-hit record.
+    ///
+    /// This reproduces that exact shape — real work happens, *then* an already-resolved
+    /// future is passed to `run_graph_strategy` alongside the `start` captured before
+    /// that work — using a real `SemanticMemory` + `RetrievalFailureLogger` so the
+    /// persisted `latency_ms` reflects what a caller would actually observe.
+    #[tokio::test]
+    async fn latency_is_measured_from_caller_supplied_start_not_from_an_internal_clock() {
+        let memory = zeph_memory::semantic::SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            None,
+            AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            "test-model",
+        )
+        .await
+        .unwrap();
+        let sup = zeph_common::TaskSupervisor::new(CancellationToken::new());
+        let logger = RetrievalFailureLogger::new(
+            memory.sqlite().clone(),
+            256,
+            1, // flush as soon as one record is queued, no need to wait on the interval
+            Duration::from_millis(10),
+            90,
+            &sup,
+        );
+        let memory = memory.with_retrieval_failure_logger(logger);
+
+        let mut body = String::from(GRAPH_FACTS_PREFIX);
+        let mut tokens_so_far = 0usize;
+        let tc = TokenCounter::new();
+
+        // Simulate the real recall work `recall_by_classified_strategy` performs inside
+        // `run_hybrid_strategy` before it hands off an already-resolved future.
+        let start = Instant::now();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let facts_result: Result<
+            Vec<zeph_memory::graph::types::GraphFact>,
+            zeph_memory::MemoryError,
+        > = Ok(Vec::new());
+
+        run_graph_strategy(
+            &memory,
+            "hybrid",
+            "test query",
+            None,
+            start,
+            std::future::ready(facts_result),
+            &mut body,
+            &mut tokens_so_far,
+            1000,
+            &tc,
+        )
+        .await
+        .unwrap();
+
+        // The writer flushes asynchronously; poll briefly instead of a fixed sleep guess.
+        let mut latency_ms: Option<i64> = None;
+        for _ in 0..50 {
+            let rows: Vec<(i64,)> = sqlx::query_as(
+                "SELECT latency_ms FROM memory_retrieval_failures WHERE retrieval_strategy = 'hybrid'",
+            )
+            .fetch_all(memory.sqlite().pool())
+            .await
+            .unwrap();
+            if let Some(row) = rows.first() {
+                latency_ms = Some(row.0);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Drop `memory` (and the `RetrievalFailureLogger` sender it owns) before shutting
+        // down the supervisor, so the writer task's `rx.recv()` observes a closed channel
+        // and exits its loop promptly instead of needing a forced abort at the timeout.
+        drop(memory);
+        sup.shutdown_all(Duration::from_secs(5)).await;
+
+        let latency_ms =
+            latency_ms.expect("expected a hybrid NoHit failure record to be persisted");
+        assert!(
+            latency_ms >= 25,
+            "latency_ms should reflect the ~30ms of work done before run_graph_strategy was \
+             called via the `start` parameter, not ~0ms from a freshly-captured internal \
+             Instant polling an already-resolved future; got {latency_ms}"
+        );
     }
 }
