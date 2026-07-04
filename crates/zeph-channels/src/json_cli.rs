@@ -38,6 +38,10 @@ pub struct JsonCliChannel {
     /// `ResponseEnd`. `ResponseEnd` must never be emitted when this is `false`.
     /// Both `send()` and `send_chunk()` set this to `true`; `flush_chunks()` resets it to `false`.
     pending_chunks: bool,
+    /// Set by `try_recv()` when an exit/quit line is drained. Once set, `recv()`
+    /// returns `Ok(None)` immediately instead of waiting on stdin, so an exit
+    /// command discarded mid-drain still ends the session.
+    exit_requested: bool,
 }
 
 impl JsonCliChannel {
@@ -75,12 +79,16 @@ impl JsonCliChannel {
             rx,
             auto,
             pending_chunks: false,
+            exit_requested: false,
         }
     }
 }
 
 impl Channel for JsonCliChannel {
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
+        if self.exit_requested {
+            return Ok(None);
+        }
         loop {
             match self.rx.recv().await {
                 Some(Some(line)) => {
@@ -108,22 +116,31 @@ impl Channel for JsonCliChannel {
     }
 
     fn try_recv(&mut self) -> Option<ChannelMessage> {
+        if self.exit_requested {
+            return None;
+        }
         match self.rx.try_recv() {
             Ok(Some(line)) => {
                 let trimmed = line.trim().to_owned();
-                if trimmed.is_empty() {
-                    return None;
+                match trimmed.as_str() {
+                    "" => None,
+                    "exit" | "quit" | "/exit" | "/quit" => {
+                        self.exit_requested = true;
+                        None
+                    }
+                    _ => {
+                        self.sink.emit(&JsonEvent::Query {
+                            text: &trimmed,
+                            queue_len: 0,
+                        });
+                        Some(ChannelMessage {
+                            text: trimmed,
+                            attachments: Vec::new(),
+                            is_guest_context: false,
+                            is_from_bot: false,
+                        })
+                    }
                 }
-                self.sink.emit(&JsonEvent::Query {
-                    text: &trimmed,
-                    queue_len: 0,
-                });
-                Some(ChannelMessage {
-                    text: trimmed,
-                    attachments: Vec::new(),
-                    is_guest_context: false,
-                    is_from_bot: false,
-                })
             }
             _ => None,
         }
@@ -465,5 +482,106 @@ mod tests {
         let (sink, _) = make_test_sink();
         let mut ch = JsonCliChannel::new(sink, false);
         assert!(ch.try_recv().is_none());
+    }
+
+    /// Constructs a channel with a directly-controlled sender, bypassing the
+    /// background stdin-reading thread spawned by `new()`.
+    fn make_test_channel(
+        sink: Arc<JsonEventSink>,
+    ) -> (JsonCliChannel, tokio::sync::mpsc::Sender<Option<String>>) {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let ch = JsonCliChannel {
+            sink,
+            rx,
+            auto: false,
+            pending_chunks: false,
+            exit_requested: false,
+        };
+        (ch, tx)
+    }
+
+    #[tokio::test]
+    async fn try_recv_exit_is_discarded_not_returned_as_message() {
+        // Regression for #5657: an exit/quit line drained via try_recv() must never
+        // surface as a ChannelMessage that could be merged into pending queue content.
+        let (sink, _read) = make_test_sink();
+        let (mut ch, tx) = make_test_channel(sink);
+        tx.send(Some("hello".to_owned())).await.unwrap();
+        tx.send(Some("/exit".to_owned())).await.unwrap();
+
+        let first = ch.try_recv();
+        assert_eq!(first.map(|m| m.text), Some("hello".to_owned()));
+
+        assert!(
+            ch.try_recv().is_none(),
+            "exit string must not be returned as a ChannelMessage"
+        );
+    }
+
+    #[tokio::test]
+    async fn recv_ends_session_after_try_recv_saw_exit() {
+        // Once try_recv() has drained an exit/quit line, the next recv() must end the
+        // session immediately (Ok(None)) rather than waiting on or returning further
+        // buffered stdin lines.
+        let (sink, _read) = make_test_sink();
+        let (mut ch, tx) = make_test_channel(sink);
+        tx.send(Some("/exit".to_owned())).await.unwrap();
+        tx.send(Some("should never be read".to_owned()))
+            .await
+            .unwrap();
+
+        assert!(ch.try_recv().is_none());
+        let result = ch.recv().await.unwrap();
+        assert!(
+            result.is_none(),
+            "recv() must end the session once exit_requested is set"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_recv_recognizes_all_exit_synonyms() {
+        for word in ["exit", "quit", "/exit", "/quit"] {
+            let (sink, _read) = make_test_sink();
+            let (mut ch, tx) = make_test_channel(sink);
+            tx.send(Some(word.to_owned())).await.unwrap();
+            assert!(
+                ch.try_recv().is_none(),
+                "{word:?} must be recognized as an exit synonym"
+            );
+            assert!(ch.exit_requested, "{word:?} must set exit_requested");
+        }
+    }
+
+    #[tokio::test]
+    async fn try_recv_recognizes_exit_synonyms_with_surrounding_whitespace() {
+        // recv() matches on `line.trim()`; try_recv() must trim identically so the
+        // two entry points never disagree on what counts as an exit line.
+        for word in [" /exit", "/exit ", "  quit  ", "\texit\n"] {
+            let (sink, _read) = make_test_sink();
+            let (mut ch, tx) = make_test_channel(sink);
+            tx.send(Some(word.to_owned())).await.unwrap();
+            assert!(
+                ch.try_recv().is_none(),
+                "{word:?} must be recognized as an exit synonym after trimming"
+            );
+            assert!(ch.exit_requested, "{word:?} must set exit_requested");
+        }
+    }
+
+    #[tokio::test]
+    async fn try_recv_after_exit_requested_does_not_leak_buffered_content() {
+        // Regression for #5657: once try_recv() has seen an exit line, a *further*
+        // try_recv() call (not just recv()) must not surface any buffered lines
+        // that arrived after the exit command.
+        let (sink, _read) = make_test_sink();
+        let (mut ch, tx) = make_test_channel(sink);
+        tx.send(Some("/exit".to_owned())).await.unwrap();
+        tx.send(Some("should never leak".to_owned())).await.unwrap();
+
+        assert!(ch.try_recv().is_none(), "exit line must not be returned");
+        assert!(
+            ch.try_recv().is_none(),
+            "a second try_recv() after exit_requested must not return buffered content"
+        );
     }
 }

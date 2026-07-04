@@ -136,6 +136,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(channels)`: `JsonCliChannel::try_recv` (`crates/zeph-channels/src/json_cli.rs`) did not
+  recognize `exit`/`quit`/`/exit`/`/quit` the way `recv` already did, so an exit command
+  arriving via the queued/merge path (`Agent::drain_channel`'s 500ms merge window in
+  `crates/zeph-core/src/agent/message_queue.rs`) was merged as literal text and sent to the LLM
+  as prompt content instead of ending the session. `try_recv` now matches the same exit strings
+  before constructing a message and sets a persistent flag that `recv` checks first, so the
+  session ends promptly once the queue drains instead of only incidentally via stdin EOF. (#5657)
 - `fix(tools)`: `UtilityScorer::default_gain` (`crates/zeph-tools/src/utility.rs`) fell through
   to a generic `0.5` gain for `diagnostics` and other direct-action tools with no exploratory
   semantics, which satisfied `recommend_action`'s `Retrieve` rule before the direct-`ToolCall`
