@@ -193,7 +193,7 @@ All 7 HTTP endpoints. Bearer auth (BLAKE3 + `subtle::ConstantTimeEq`). Per-IP ra
 **Owner:** rust-developer  
 **Crate:** `src/`  
 **Spec refs:** §9.1  
-Startup: init `LiveSessionRegistry`, spawn `serve.http`, optional `serve.acp`, `serve.evict`. Graceful shutdown: `supervisor.shutdown_all(30s)` on SIGTERM. Test: `test_serve_graceful_shutdown` (NFR-R8).
+Startup: init `LiveSessionRegistry`, run `serve.http` plus, when `--acp` is set (#5420), a second ACP-HTTP listener on `[acp] http_bind` sharing one pool/supervisor; spawn `serve.evict` under `TaskSupervisor`. Graceful shutdown: one shared `CancellationToken` drives both listeners; `supervisor.shutdown_all(30s)` on SIGTERM. Test: `test_serve_graceful_shutdown` (NFR-R8).
 
 ### T-306 — Add `/conv` commands to TUI
 **Owner:** rust-developer  

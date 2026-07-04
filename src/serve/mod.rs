@@ -20,23 +20,28 @@
 //! would be reachable over the network while rejecting every single request, or worse, an
 //! operator could assume auth is protecting it when it silently isn't.
 //!
-//! **`--acp` is intentionally not implemented as in-process combination**: `src/acp.rs`'s
-//! `run_acp_server`/`run_acp_http_server` each build a complete, independent `SharedAgentDeps`
-//! (own `SemanticMemory`/`SQLite` pool, provider, `McpManager`, skill registry,
-//! `TaskSupervisor`) with no path to share those with [`deps::ServeAgentDeps`]. Running both in
-//! one process would mean two independent `SQLite` connection pools writing the same database
-//! file concurrently — a real contention/correctness risk, not just wasted resources — plus
-//! duplicate MCP subprocess spawning if MCP servers are configured. `--acp` therefore returns an
-//! error naming the correct alternative (run `zeph --acp` or `zeph --acp-http` as a *separate*
-//! process alongside `zeph serve-sessions`) rather than silently building something unsafe.
-//! Proper in-process support would need `build_acp_deps` refactored to accept prebuilt
-//! shared resources (it already does this for MCP via `prebuilt_mcp_manager`) — real design work
-//! deserving its own attention, not something to squeeze into this change.
+//! **`--acp` runs the ACP-HTTP transport in-process, on a second listener** (`[acp] http_bind`,
+//! #5420): `zeph_acp::acp_router` already defines `/health` and `/sessions/{id}/messages` at its
+//! root, which collide with serve's own `/health` and `/sessions*` on `.merge()` into one
+//! `Router` — and the two `/sessions` surfaces are different data models (ACP's
+//! `SqliteStore`-backed CRUD vs serve's `LiveSessionRegistry` + file event-logs) that cannot be
+//! unified even in principle. So combined mode runs two foreground-joined (`tokio::join!`, not
+//! `supervisor.spawn`ed) `axum::serve` listeners sharing ONE `TaskSupervisor`'s cancellation
+//! token and ONE `SemanticMemory`/`SQLite` pool (see
+//! [`run_serve_with_acp`]/`crate::acp::build_combined_deps`) rather than two independent pools
+//! writing the same database file concurrently. ACP **stdio** (the standalone `--acp` command)
+//! is not used here: `zeph_acp::serve_stdio` has no cancellation hook and reads immediate EOF
+//! under a daemon's `StandardInput=null`, so it cannot be lifecycle-managed alongside a network
+//! daemon — combined mode is HTTP-only for both transports. Requires the `acp-http` feature
+//! (bundled in the `ide` feature bundle); without it, `--acp` is a hard error naming the
+//! alternative (a separate `zeph --acp` process).
 
 mod agent_factory;
-mod deps;
+pub(crate) mod deps;
 mod handlers;
 mod router;
+#[cfg(test)]
+mod test_support;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -54,12 +59,12 @@ const EVICT_SCAN_INTERVAL: Duration = Duration::from_mins(1);
 pub(crate) struct ServeSessionsArgs {
     /// Overrides `[serve] http_addr` when set.
     pub(crate) http_addr: Option<String>,
-    /// Also run the ACP protocol transport alongside the HTTP/SSE API.
+    /// Also run the ACP-HTTP protocol transport in-process, on `[acp] http_bind` (#5420).
     ///
-    /// Not implemented as in-process combination — see the module doc. Passing this flag is a
-    /// hard error naming the correct alternative (a separate `zeph --acp`/`zeph --acp-http`
-    /// process) rather than a silent no-op, since a user passing `--acp` clearly expects it to
-    /// take effect.
+    /// Distinct from the standalone `zeph --acp` (stdio) / `zeph --acp-http` commands: this
+    /// flag runs ACP-over-HTTP as a *second listener* inside the same `serve-sessions` process,
+    /// sharing its `SemanticMemory`/`SQLite` pool and `TaskSupervisor` — see the module doc.
+    /// Requires the `acp-http` feature; without it, this is a hard error.
     pub(crate) acp: bool,
     /// Overrides `[serve] max_sessions` when set.
     pub(crate) max_sessions: Option<usize>,
@@ -91,26 +96,19 @@ pub(crate) struct AppState {
 
 /// Run `zeph serve-sessions` until a shutdown signal (SIGTERM/Ctrl-C) is received.
 ///
+/// Dispatches to [`run_serve_with_acp`] when `args.acp` is set and the `acp-http` feature is
+/// compiled in; otherwise serves the plain `/sessions*` HTTP/SSE API alone.
+///
 /// # Errors
 ///
-/// Returns an error if the configured bind address is invalid, the port cannot be bound, or the
-/// HTTP server encounters a fatal I/O error after binding.
+/// Returns an error if the configured bind address is invalid, the port cannot be bound, the
+/// HTTP server encounters a fatal I/O error after binding, or `--acp` is passed in a binary
+/// compiled without the `acp-http` feature.
 pub(crate) async fn handle_serve_sessions_command(
     args: ServeSessionsArgs,
     config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     use crate::bootstrap::{load_config_or_default, resolve_config_path};
-
-    if args.acp {
-        anyhow::bail!(
-            "zeph serve-sessions --acp does not run the ACP transport in-process: doing so \
-             would mean two independent SQLite connection pools writing the same database file \
-             concurrently (build_acp_deps builds its own complete SharedAgentDeps with no path \
-             to share resources with serve-sessions' own agent dependencies), plus duplicate \
-             MCP subprocess spawning if MCP servers are configured. Run `zeph --acp` or \
-             `zeph --acp-http` as a separate process alongside `zeph serve-sessions` instead."
-        );
-    }
 
     let config_file = resolve_config_path(config_path);
     let config = load_config_or_default(&config_file);
@@ -124,6 +122,28 @@ pub(crate) async fn handle_serve_sessions_command(
         .map_err(|e| anyhow::anyhow!("invalid [serve] http_addr: {e}"))?;
     let max_sessions = args.max_sessions.unwrap_or(serve_config.max_sessions);
 
+    if args.acp {
+        #[cfg(feature = "acp-http")]
+        {
+            return Box::pin(run_serve_with_acp(
+                &args,
+                config_path,
+                http_addr,
+                max_sessions,
+            ))
+            .await;
+        }
+        #[cfg(not(feature = "acp-http"))]
+        {
+            anyhow::bail!(
+                "zeph serve-sessions --acp requires the `acp-http` feature (bundled in the \
+                 `ide` feature bundle) — this binary was not compiled with it. Rebuild with \
+                 `--features acp-http` (or `ide`), or run `zeph --acp` as a separate process \
+                 alongside `zeph serve-sessions` instead."
+            );
+        }
+    }
+
     let (deps, auth_token) = Box::pin(deps::build_serve_deps(
         config_path,
         args.vault_backend.as_deref(),
@@ -132,27 +152,7 @@ pub(crate) async fn handle_serve_sessions_command(
     ))
     .await?;
 
-    // `/sessions*` endpoints can execute shell/file/web tools on behalf of any caller that
-    // reaches this port. If `require_auth` is set but no token could be resolved from the vault,
-    // `auth_middleware` would reject every single request (`AuthConfig::new(None, true)`) — bind
-    // anyway on loopback (still useful for local-only access without a token requirement in
-    // practice), but refuse a non-loopback bind rather than silently serving an API nobody can
-    // ever successfully call, or worse, one where the operator assumes auth is protecting it.
-    if serve_config.require_auth && auth_token.is_none() && !http_addr.ip().is_loopback() {
-        anyhow::bail!(
-            "refusing to bind {http_addr}: [serve] require_auth is true but no auth token was \
-             resolved from the vault key \"{}\" — every request would be rejected. Set that \
-             vault key, bind to a loopback address (127.0.0.1 or ::1), or set \
-             [serve] require_auth = false to disable authentication explicitly.",
-            serve_config.auth_token_vault_key
-        );
-    }
-    if !serve_config.require_auth {
-        tracing::warn!(
-            "[serve] require_auth is false — /sessions* endpoints are unauthenticated; only \
-             bind to loopback or a trusted network"
-        );
-    }
+    check_require_auth_guard(serve_config, http_addr, auth_token.is_some())?;
 
     let cancel = tokio_util::sync::CancellationToken::new();
     let supervisor = TaskSupervisor::new(cancel.clone());
@@ -167,17 +167,7 @@ pub(crate) async fn handle_serve_sessions_command(
         sanitizer: zeph_core::ContentSanitizer::new(&config.security.content_isolation),
     };
 
-    let idle_ttl = Duration::from_secs(serve_config.session_idle_ttl_secs);
-    let evict_registry = Arc::clone(&registry);
-    let evict_cancel = supervisor.cancellation_token();
-    supervisor.spawn(TaskDescriptor {
-        name: "serve.evict",
-        restart: RestartPolicy::Restart {
-            max: 5,
-            base_delay: Duration::from_secs(1),
-        },
-        factory: move || evict_loop(Arc::clone(&evict_registry), idle_ttl, evict_cancel.clone()),
-    });
+    spawn_evict_task(&supervisor, &registry, serve_config.session_idle_ttl_secs);
 
     let listener = tokio::net::TcpListener::bind(http_addr)
         .await
@@ -201,6 +191,333 @@ pub(crate) async fn handle_serve_sessions_command(
     supervisor.shutdown_all(Duration::from_secs(30)).await;
     tracing::info!("zeph serve-sessions: shutdown complete");
     Ok(())
+}
+
+/// Run `zeph serve-sessions --acp`: serve's `/sessions*` HTTP/SSE API and the ACP-HTTP
+/// transport share ONE `SemanticMemory`/`SQLite` pool and ONE `TaskSupervisor`, built once via
+/// [`crate::acp::build_combined_deps`] (#5420) — see the module doc for why this is two
+/// listeners rather than one merged `Router` or ACP stdio.
+///
+/// # Errors
+///
+/// Returns an error if either bind address is invalid or already in use, a port clash is
+/// detected between `[serve] http_addr` and `[acp] http_bind`, dependency construction fails,
+/// or either HTTP server encounters a fatal I/O error.
+#[cfg(feature = "acp-http")]
+async fn run_serve_with_acp(
+    args: &ServeSessionsArgs,
+    config_path: Option<&std::path::Path>,
+    http_addr: SocketAddr,
+    max_sessions: usize,
+) -> anyhow::Result<()> {
+    let app = crate::bootstrap::AppBuilder::new(
+        config_path,
+        args.vault_backend.as_deref(),
+        args.vault_key.as_deref(),
+        args.vault_path.as_deref(),
+    )
+    .await?;
+    let serve_config = app.config().serve.clone();
+    let acp_bind_addr = app.config().acp.http_bind.clone();
+    let acp_auth_token = app.config().acp.auth_token.clone();
+
+    check_acp_http_port_clash(http_addr, &acp_bind_addr)?;
+
+    let auth_token = deps::resolve_auth_token(&app).await;
+    check_require_auth_guard(&serve_config, http_addr, auth_token.is_some())?;
+    // M1-security (code review 2026-07-04): serve's own `require_auth` guard only covers
+    // `http_addr`. Without an equivalent check here, `[serve] require_auth = true` gives an
+    // operator false confidence that the whole combined process is authenticated, while the
+    // ACP listener — sharing the same `acp_sessions` table serve's guard protects — could be
+    // reachable non-loopback with no token at all.
+    check_acp_auth_guard(&acp_bind_addr, acp_auth_token.is_some())?;
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let supervisor = Arc::new(TaskSupervisor::new(cancel.clone()));
+    let (serve_deps, acp_deps, _acp_keepalive) =
+        Box::pin(crate::acp::build_combined_deps(&app, &supervisor)).await?;
+
+    let registry = Arc::new(LiveSessionRegistry::new());
+    let memory_sqlite = serve_deps.memory.sqlite().clone();
+    let sanitizer = zeph_core::ContentSanitizer::new(&app.config().security.content_isolation);
+    let state = AppState {
+        registry: Arc::clone(&registry),
+        started_at: std::time::Instant::now(),
+        supervisor: TaskSupervisor::clone(&supervisor),
+        deps: serve_deps,
+        mailbox_capacity: serve_config.max_queued_prompts,
+        max_sessions,
+        sanitizer,
+    };
+
+    spawn_evict_task(&supervisor, &registry, serve_config.session_idle_ttl_secs);
+
+    let mut acp_deps = acp_deps;
+    let acp_server_config = crate::acp::acp_http_server_config(&mut acp_deps);
+    let spawner = crate::acp::acp_http_ready_spawner(Arc::new(acp_deps)).await;
+    let acp_http_state =
+        zeph_acp::AcpHttpState::new(spawner, acp_server_config).with_store(memory_sqlite);
+    acp_http_state.mark_ready();
+    // N2 (critic round 2): `start_reaper` spawns its own infinite `interval.tick()` loop on
+    // `AcpHttpState`'s PRIVATE supervisor (constructed inside `AcpHttpState::new`) — not
+    // `supervisor` above, and NOT self-terminating. Left unsupervised-by-us is still safe: it
+    // holds no resource needing graceful drain (an in-memory `DashMap::retain`) and dies at
+    // process exit; routing it through the shared `supervisor` would need an `AcpHttpState` API
+    // change and is deliberately deferred as follow-up scope, not part of #5420.
+    acp_http_state.start_reaper();
+    let acp_router = zeph_acp::acp_router(acp_http_state);
+
+    let http_listener = tokio::net::TcpListener::bind(http_addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to bind {http_addr}: {e}"))?;
+    tracing::info!(addr = %http_addr, max_sessions, "zeph serve-sessions listening");
+    let acp_listener = tokio::net::TcpListener::bind(&acp_bind_addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to bind ACP HTTP {acp_bind_addr}: {e}"))?;
+    tracing::info!(addr = %acp_bind_addr, "zeph serve-sessions: ACP HTTP transport listening");
+
+    let http_router = router::build_router(state, auth_token.as_deref(), serve_config.require_auth);
+
+    // N3 (critic round 2): exactly one SIGTERM/Ctrl-C -> cancel producer, shared by both
+    // servers' graceful shutdown. Embedding the signal-wait inside both `.with_graceful_shutdown`
+    // closures (the single-server pattern above) would mean neither one actually drives the
+    // other's shutdown — each would independently wait on its own signal instead of one firing
+    // `cancel` for both to observe via `cancel.cancelled()`.
+    let shutdown_cancel = cancel.clone();
+    let shutdown_producer = async move {
+        wait_for_shutdown_signal().await;
+        tracing::info!("zeph serve-sessions: shutdown signal received");
+        shutdown_cancel.cancel();
+    };
+    // S1 (code review 2026-07-04): `tokio::join!` runs every future to completion and never
+    // cancels early — without the `.cancel()` call on each future's own completion (`Ok` or
+    // `Err`), a fatal error on one listener would leave `join!` blocked on `shutdown_producer`
+    // (awaiting a signal that may never come) while the *other* listener keeps silently
+    // accepting connections, and the error would only surface after an external SIGTERM/Ctrl-C.
+    // Cancelling here converges any fatal exit on the one shared token immediately, draining the
+    // sibling listener and surfacing the error via the `?`s below without waiting on anything
+    // external. `CancellationToken::cancel()` is idempotent, so this is safe to call redundantly
+    // alongside `shutdown_producer`'s own cancel on a graceful signal-driven shutdown.
+    let http_shutdown_cancel = cancel.clone();
+    let http_done_cancel = cancel.clone();
+    let serve_http = async move {
+        let result = axum::serve(
+            http_listener,
+            http_router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move { http_shutdown_cancel.cancelled().await })
+        .await;
+        http_done_cancel.cancel();
+        result
+    };
+    let acp_shutdown_cancel = cancel.clone();
+    let acp_done_cancel = cancel.clone();
+    let serve_acp = async move {
+        let result = axum::serve(acp_listener, acp_router)
+            .with_graceful_shutdown(async move { acp_shutdown_cancel.cancelled().await })
+            .await;
+        acp_done_cancel.cancel();
+        result
+    };
+
+    let ((), http_result, acp_result) = tokio::join!(shutdown_producer, serve_http, serve_acp);
+    http_result.map_err(|e| anyhow::anyhow!("http server error: {e}"))?;
+    acp_result.map_err(|e| anyhow::anyhow!("ACP http server error: {e}"))?;
+
+    supervisor.shutdown_all(Duration::from_secs(30)).await;
+    tracing::info!("zeph serve-sessions: shutdown complete (combined ACP-HTTP mode)");
+    Ok(())
+}
+
+/// `/sessions*` endpoints can execute shell/file/web tools on behalf of any caller that reaches
+/// this port. If `require_auth` is set but no token could be resolved from the vault,
+/// `auth_middleware` would reject every single request (`AuthConfig::new(None, true)`) — bind
+/// anyway on loopback (still useful for local-only access without a token requirement in
+/// practice), but refuse a non-loopback bind rather than silently serving an API nobody can ever
+/// successfully call, or worse, one where the operator assumes auth is protecting it.
+fn check_require_auth_guard(
+    serve_config: &zeph_config::ServeConfig,
+    http_addr: SocketAddr,
+    has_auth_token: bool,
+) -> anyhow::Result<()> {
+    if serve_config.require_auth && !has_auth_token && !http_addr.ip().is_loopback() {
+        anyhow::bail!(
+            "refusing to bind {http_addr}: [serve] require_auth is true but no auth token was \
+             resolved from the vault key \"{}\" — every request would be rejected. Set that \
+             vault key, bind to a loopback address (127.0.0.1 or ::1), or set \
+             [serve] require_auth = false to disable authentication explicitly.",
+            serve_config.auth_token_vault_key
+        );
+    }
+    if !serve_config.require_auth {
+        tracing::warn!(
+            "[serve] require_auth is false — /sessions* endpoints are unauthenticated; only \
+             bind to loopback or a trusted network"
+        );
+    }
+    Ok(())
+}
+
+/// Mirrors [`check_require_auth_guard`] for the ACP-HTTP listener (M1-security, code review
+/// 2026-07-04). `[acp] auth_token` has no `require_auth` on/off toggle the way `[serve]` does —
+/// an unset token always means unauthenticated, so refusing a non-loopback bind is the correct
+/// parallel to serve's `require_auth = true` path (there is no explicit "I know it's insecure,
+/// disable the check" escape hatch to mirror for the warn-only branch). Without this guard,
+/// `[serve] require_auth = true` gives an operator false confidence that the whole combined
+/// process is authenticated, when the ACP listener — sharing the same `acp_sessions` table
+/// serve's guard protects — could be reachable non-loopback with no token at all.
+///
+/// If `acp_http_bind` doesn't parse to a `SocketAddr` (e.g. a bare hostname), the check is
+/// skipped and the real bind call surfaces any failure instead of a false pre-check rejection —
+/// same tolerance as [`check_acp_http_port_clash`].
+#[cfg(feature = "acp-http")]
+fn check_acp_auth_guard(acp_http_bind: &str, has_acp_auth_token: bool) -> anyhow::Result<()> {
+    let Ok(acp_addr) = acp_http_bind.parse::<SocketAddr>() else {
+        return Ok(());
+    };
+    if !has_acp_auth_token && !acp_addr.ip().is_loopback() {
+        anyhow::bail!(
+            "refusing to bind ACP HTTP {acp_addr}: [acp] auth_token is not set — the ACP \
+             listener would be reachable over the network with no authentication, sharing the \
+             same acp_sessions table [serve] require_auth is meant to protect. Set \
+             [acp] auth_token, or bind [acp] http_bind to a loopback address (127.0.0.1 or ::1)."
+        );
+    }
+    Ok(())
+}
+
+/// N1 (critic round 2): wildcard-aware port-clash pre-check between `[serve] http_addr` and
+/// `[acp] http_bind`. Hard-errors when ports match AND either the IPs are equal or either IP is
+/// unspecified (`0.0.0.0`/`::`, which covers every local address including loopback) — the same
+/// port on two genuinely distinct concrete IPs is legal (logged at `warn!`, since it is unusual
+/// but not wrong). If `acp_http_bind` doesn't parse to a `SocketAddr` (e.g. a bare hostname), the
+/// check is skipped and the real bind call surfaces `EADDRINUSE` instead of a false pre-check
+/// failure.
+///
+/// Cross-IP-family unspecified-vs-concrete combinations (e.g. `0.0.0.0:P` vs `[::1]:P`) are
+/// intentionally treated as a clash even though some platforms (with `bindv6only` disabled,
+/// e.g.) would successfully bind both — safe-by-default over precise dual-stack modeling
+/// (impl-critic M1).
+#[cfg(feature = "acp-http")]
+fn check_acp_http_port_clash(http_addr: SocketAddr, acp_http_bind: &str) -> anyhow::Result<()> {
+    let Ok(acp_addr) = acp_http_bind.parse::<SocketAddr>() else {
+        return Ok(());
+    };
+    let same_port = http_addr.port() == acp_addr.port();
+    let ips_overlap = http_addr.ip() == acp_addr.ip()
+        || http_addr.ip().is_unspecified()
+        || acp_addr.ip().is_unspecified();
+    if same_port && ips_overlap {
+        anyhow::bail!(
+            "port clash: [serve] http_addr ({http_addr}) and [acp] http_bind ({acp_addr}) would \
+             bind overlapping addresses on the same port. Set them to different ports, or bind \
+             each to a distinct concrete IP."
+        );
+    }
+    if same_port {
+        tracing::warn!(
+            serve_addr = %http_addr,
+            acp_addr = %acp_addr,
+            "[serve] http_addr and [acp] http_bind share the same port on distinct concrete \
+             IPs — legal, but double-check this is intentional"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(test, feature = "acp-http"))]
+mod guard_tests {
+    use super::{check_acp_auth_guard, check_acp_http_port_clash};
+
+    fn addr(s: &str) -> std::net::SocketAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn same_port_same_ip_is_a_clash() {
+        let result = check_acp_http_port_clash(addr("127.0.0.1:8080"), "127.0.0.1:8080");
+        assert!(result.is_err(), "identical addr:port must be rejected");
+    }
+
+    #[test]
+    fn same_port_wildcard_vs_concrete_is_a_clash() {
+        let result = check_acp_http_port_clash(addr("0.0.0.0:8080"), "127.0.0.1:8080");
+        assert!(
+            result.is_err(),
+            "an unspecified IP on one side covers every concrete address on that port"
+        );
+    }
+
+    #[test]
+    fn same_port_distinct_concrete_ips_is_legal() {
+        let result = check_acp_http_port_clash(addr("127.0.0.1:8080"), "10.0.0.5:8080");
+        assert!(
+            result.is_ok(),
+            "same port on two genuinely distinct concrete IPs must not be rejected"
+        );
+    }
+
+    #[test]
+    fn unparseable_acp_bind_skips_the_check() {
+        let result = check_acp_http_port_clash(addr("127.0.0.1:8080"), "not-a-valid-socket-addr");
+        assert!(
+            result.is_ok(),
+            "a bare hostname must be tolerated here; the real bind call surfaces any failure"
+        );
+    }
+
+    #[test]
+    fn non_loopback_bind_without_token_is_refused() {
+        let result = check_acp_auth_guard("0.0.0.0:9800", false);
+        assert!(
+            result.is_err(),
+            "a non-loopback ACP bind with no auth token must be refused"
+        );
+    }
+
+    #[test]
+    fn non_loopback_bind_with_token_is_allowed() {
+        let result = check_acp_auth_guard("0.0.0.0:9800", true);
+        assert!(result.is_ok(), "a configured auth token permits any bind");
+    }
+
+    #[test]
+    fn loopback_bind_without_token_is_allowed() {
+        let result = check_acp_auth_guard("127.0.0.1:9800", false);
+        assert!(
+            result.is_ok(),
+            "loopback-only exposure without a token is the same trade-off serve's own guard allows"
+        );
+    }
+
+    #[test]
+    fn unparseable_acp_bind_skips_the_auth_check() {
+        let result = check_acp_auth_guard("not-a-valid-socket-addr", false);
+        assert!(
+            result.is_ok(),
+            "a bare hostname must be tolerated here; the real bind call surfaces any failure"
+        );
+    }
+}
+
+/// Registers `serve.evict` (spec §9.3) on `supervisor` — shared by both the plain and combined
+/// (`--acp`) startup paths.
+fn spawn_evict_task(
+    supervisor: &TaskSupervisor,
+    registry: &Arc<LiveSessionRegistry>,
+    ttl_secs: u64,
+) {
+    let idle_ttl = Duration::from_secs(ttl_secs);
+    let evict_registry = Arc::clone(registry);
+    let evict_cancel = supervisor.cancellation_token();
+    supervisor.spawn(TaskDescriptor {
+        name: "serve.evict",
+        restart: RestartPolicy::Restart {
+            max: 5,
+            base_delay: Duration::from_secs(1),
+        },
+        factory: move || evict_loop(Arc::clone(&evict_registry), idle_ttl, evict_cancel.clone()),
+    });
 }
 
 /// `serve.evict` (spec §9.3): periodically scans `registry` for idle candidates (no attached

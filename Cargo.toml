@@ -390,11 +390,13 @@ zeroize.workspace = true
 [dev-dependencies]
 agent-client-protocol.workspace = true
 bytes.workspace = true
+http-body-util.workspace = true
 insta.workspace = true
 qdrant-client = { workspace = true, features = ["serde"] }
 serial_test.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
+tower = { workspace = true, features = ["util"] }
 zeph-commands.workspace = true
 zeph-core.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }

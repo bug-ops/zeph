@@ -199,8 +199,8 @@ The real overlap is ~80–120 LOC of generic "append a line / read lines / super
 3. **`src/`** (binary) — `zeph serve` command:
    - `Serve(ServeArgs)` variant added to `Command` enum at `cli.rs:306`
    - `ServeArgs`: `http_addr`, `acp` flag, `auth_token_from_vault`, `max_sessions`
-   - Startup: initialize `LiveSessionRegistry`, spawn `serve.http` + optional `serve.acp` + `serve.evict` under `TaskSupervisor`
-   - Graceful shutdown: `supervisor.shutdown_all(30s)` on SIGTERM
+   - Startup: initialize `LiveSessionRegistry`; run `serve.http` and, when `--acp` is set (#5420, requires `acp-http`), a second ACP-HTTP `axum::serve` listener on `[acp] http_bind` sharing one `SemanticMemory`/`SQLite` pool and one `TaskSupervisor`; spawn `serve.evict` under that `TaskSupervisor` — see spec §9.1
+   - Graceful shutdown: one shared `CancellationToken` drives both listeners' graceful shutdown; `supervisor.shutdown_all(30s)` on SIGTERM/Ctrl-C
 
 4. **`src/serve/`** — axum HTTP handler module:
    - All 7 endpoints (§9.4)

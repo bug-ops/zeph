@@ -375,7 +375,17 @@ pub(crate) enum Command {
         /// HTTP/SSE API bind address (overrides `[serve] http_addr`).
         #[arg(long, value_name = "ADDR")]
         http_addr: Option<String>,
-        /// Also run the ACP protocol transport alongside the HTTP/SSE API.
+        /// Also run the ACP-HTTP protocol transport in-process, on a second listener bound to
+        /// `[acp] http_bind` (#5420). Requires the `acp-http` feature (bundled in `ide`).
+        ///
+        /// Distinct from the standalone `zeph --acp` (stdio) and `zeph --acp-http` commands:
+        /// this flag shares serve-sessions' own `SemanticMemory`/`SQLite` pool and
+        /// `TaskSupervisor` with the ACP transport, rather than running a second, independent
+        /// process with its own pool. ACP stdio is never used here — it has no cancellation
+        /// hook and reads immediate EOF under a daemon's `StandardInput=null`, so it can't be
+        /// lifecycle-managed alongside a network daemon; combined mode is HTTP-only for both
+        /// transports. Fails fast if `[serve] http_addr` and `[acp] http_bind` would bind
+        /// overlapping addresses on the same port.
         #[arg(long)]
         acp: bool,
         /// Maximum concurrent live sessions (overrides `[serve] max_sessions`).

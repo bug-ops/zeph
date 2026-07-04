@@ -83,26 +83,32 @@ pub(crate) async fn build_serve_deps(
     let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
     let auth_token = resolve_auth_token(&app).await;
 
-    let (provider, _status_tx, _status_rx) = app.build_provider().await?;
-    let embedding_provider = crate::bootstrap::create_embedding_provider(app.config(), &provider);
-    let budget_tokens = app.auto_budget_tokens(&provider);
-    let registry = Arc::new(RwLock::new(app.build_registry()));
-
     let cancel = tokio_util::sync::CancellationToken::new();
     let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(cancel);
-    let memory = Arc::new(app.build_memory(&provider, &supervisor).await?);
+    let core = crate::acp::build_shared_core(&app, &supervisor).await?;
+    let deps = assemble_serve_deps(&app, &core, &supervisor).await?;
 
-    let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> =
-        registry.read().all_meta().into_iter().cloned().collect();
-    let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta_owned.iter().collect();
-    let matcher = app
-        .build_skill_matcher(&embedding_provider, &all_meta_refs, &memory)
-        .await;
+    Ok((deps, auth_token))
+}
 
+/// Assemble [`ServeAgentDeps`] from an already-built [`crate::acp::SharedCore`] — the tail of
+/// [`build_serve_deps`], extracted so `crate::acp::build_combined_deps` (#5420, `zeph
+/// serve-sessions --acp`) can reuse it against a `SharedCore` shared with the ACP transport
+/// instead of building a second, independent one.
+///
+/// # Errors
+///
+/// Returns an error if the core tool executor cannot be built (audit logger, sandbox
+/// initialization).
+pub(crate) async fn assemble_serve_deps(
+    app: &crate::bootstrap::AppBuilder,
+    core: &crate::acp::SharedCore,
+    supervisor: &zeph_common::task_supervisor::TaskSupervisor,
+) -> anyhow::Result<ServeAgentDeps> {
     let config = app.config();
-    let tool_executor = build_tool_executor(config, &supervisor).await?;
+    let tool_executor = build_tool_executor(config, supervisor).await?;
 
-    let session_config = zeph_core::AgentSessionConfig::from_config(config, budget_tokens);
+    let session_config = zeph_core::AgentSessionConfig::from_config(config, core.budget_tokens);
     let max_active_skills = config.skills.max_active_skills.get();
     let history_limit = config.memory.history_limit;
     let recall_limit = config.memory.semantic.recall_limit;
@@ -111,7 +117,7 @@ pub(crate) async fn build_serve_deps(
     // D-13 (spec-068 §8.1, N3): built once here, where the full `Config` is still in scope —
     // see `ServeAgentDeps::resume_condenser`'s doc comment.
     let (resume_condenser, resume_token_counter) =
-        zeph_core::provider_factory::build_resume_condenser(config, &provider);
+        zeph_core::provider_factory::build_resume_condenser(config, &core.provider);
     // #5450: built once here, where the full `Config` is still in scope — mirrors
     // `src/runner.rs`'s CLI-path snapshot construction, so `/sessions`-created agents get a
     // populated `provider_pool` too (previously left empty, breaking `resolve_background_provider`).
@@ -156,34 +162,32 @@ pub(crate) async fn build_serve_deps(
             .map(|s| s.expose().to_owned()),
     };
 
-    Ok((
-        ServeAgentDeps {
-            provider,
-            embedding_provider,
-            registry,
-            matcher,
-            max_active_skills,
-            tool_executor,
-            memory,
-            history_limit,
-            recall_limit,
-            summarization_threshold,
-            session_config,
-            session_persistence_config,
-            resume_condenser: Arc::new(resume_condenser),
-            resume_token_counter,
-            provider_pool: config.llm.providers.clone(),
-            provider_config_snapshot,
-        },
-        auth_token,
-    ))
+    Ok(ServeAgentDeps {
+        provider: core.provider.clone(),
+        embedding_provider: core.embedding_provider.clone(),
+        registry: Arc::clone(&core.registry),
+        matcher: core.matcher.clone(),
+        max_active_skills,
+        tool_executor,
+        memory: Arc::clone(&core.memory),
+        history_limit,
+        recall_limit,
+        summarization_threshold,
+        session_config,
+        session_persistence_config,
+        resume_condenser: Arc::new(resume_condenser),
+        resume_token_counter,
+        provider_pool: config.llm.providers.clone(),
+        provider_config_snapshot,
+    })
 }
 
 /// Resolves `[serve] auth_token_vault_key` from the vault. `None` when the key is empty
 /// (`require_auth`'s default off-switch) or the vault lookup fails/misses — the caller
-/// (`handle_serve_sessions_command`) decides how to react (refuse to bind non-loopback, or
-/// proceed with `auth_middleware` rejecting every request when `require_auth = true`).
-async fn resolve_auth_token(app: &crate::bootstrap::AppBuilder) -> Option<String> {
+/// (`handle_serve_sessions_command`, or `run_serve_with_acp` for the combined path) decides how
+/// to react (refuse to bind non-loopback, or proceed with `auth_middleware` rejecting every
+/// request when `require_auth = true`).
+pub(crate) async fn resolve_auth_token(app: &crate::bootstrap::AppBuilder) -> Option<String> {
     let key = &app.config().serve.auth_token_vault_key;
     if key.is_empty() {
         return None;

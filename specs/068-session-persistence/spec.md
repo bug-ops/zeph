@@ -399,12 +399,15 @@ Violation of INV-SP-4 causes replay to fold a summary over events that are alrea
 
 ### 9.1 Process Lifecycle
 
-`zeph serve` is a long-running foreground process. Daemonization is delegated to the OS (systemd/launchd). The process owns one `TaskSupervisor` (per spec 039 — no raw `tokio::spawn`).
+`zeph serve-sessions` is a long-running foreground process. Daemonization is delegated to the OS (systemd/launchd). The process owns one `TaskSupervisor` (per spec 039 — no raw `tokio::spawn`).
 
 Supervised named tasks:
 - `serve.http` — axum HTTP/SSE API (see §9.3)
-- `serve.acp` (optional, behind `--acp` flag) — reuses existing `serve_connection`/`serve_stdio` ACP path
 - `serve.evict` — idle-session TTL eviction loop
+
+**`--acp` (#5420, requires the `acp-http` feature):** runs the ACP protocol transport in-process as a **second axum HTTP listener** bound to `[acp] http_bind` (`zeph_acp::acp_router`), NOT the stdio path (`serve_connection`/`serve_stdio`). Two listeners rather than one merged `Router`, because `acp_router` already defines `/health` and `/sessions/{id}/messages` at its root — these collide with serve's own `/health` and `/sessions*` on `.merge()`, and the two `/sessions` surfaces are different data models (ACP's `SqliteStore`-backed CRUD vs serve's `LiveSessionRegistry` + file event-logs) that cannot be unified even in principle. ACP stdio is not viable as a co-tenant supervised task: `serve_stdio` has no cancellation hook and blocks reading `stdin` on a dedicated OS thread, which reads immediate EOF under a daemon's `StandardInput=null` — the combined process would silently run only the HTTP API while `serve.acp` completes instantly doing nothing.
+
+Both listeners share ONE `SemanticMemory`/`SQLite` pool and ONE `TaskSupervisor` (`crate::acp::build_combined_deps`/`crate::acp::build_shared_core`), rather than each transport opening an independent pool on the same database file. A wildcard-aware pre-check rejects overlapping `[serve] http_addr`/`[acp] http_bind` bindings (same port, and either equal IPs or either IP unspecified `0.0.0.0`/`::`) before either listener binds. Exactly one SIGTERM/Ctrl-C handler drives a shared `CancellationToken` that both listeners' graceful shutdown observes.
 
 ### 9.2 Per-Session Actor Model
 

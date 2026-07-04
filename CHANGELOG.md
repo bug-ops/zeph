@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `feat(serve,acp)`: `zeph serve-sessions --acp` now runs the ACP protocol transport in-process
+  instead of hard-erroring (#5420). Combined mode runs ACP-over-HTTP (`zeph_acp::acp_router`)
+  on a **second** `axum::serve` listener bound to `[acp] http_bind`, sharing one
+  `SemanticMemory`/`SQLite` pool and one `TaskSupervisor` with the existing `/sessions*` HTTP
+  API — not two independent pools writing the same database file concurrently, and not ACP
+  stdio (which has no cancellation hook and can't be lifecycle-managed alongside a network
+  daemon). Requires the `acp-http` feature (bundled in `ide`); without it, `--acp` is a hard
+  error naming the feature to rebuild with. A wildcard-aware pre-check rejects
+  `[serve] http_addr`/`[acp] http_bind` combinations that would bind overlapping addresses on
+  the same port before either listener binds. A second guard refuses a non-loopback
+  `[acp] http_bind` when `[acp] auth_token` is unset — mirrors the existing `[serve]
+  require_auth` guard so enabling `require_auth` can't give a false impression that the whole
+  combined process (both listeners share the same `acp_sessions` table) is authenticated. Either
+  listener's fatal error now cancels the other's shutdown immediately (previously a crashed
+  listener could leave its sibling silently serving until an external SIGTERM). Extracted a new
+  spawn-free `build_shared_core` (`src/acp.rs`) used by both `zeph serve-sessions` and standalone
+  ACP session construction, and a new `build_combined_deps` production sharing path for the
+  combined command. No new configuration surface — reuses existing
+  `[serve]`/`[acp]`/`[session]` keys.
+- `test(serve)`: added `src/serve/test_support.rs` — a router-level test harness
+  (`ServeTestHarness`) driving the real production `axum::Router` via
+  `tower::ServiceExt::oneshot`, covering `/health`, the full `/sessions*` CRUD surface, SSE
+  event streaming, and bearer-auth enforcement (#5435). Its `build_combined_deps_shares_one_
+  memory_pool` test asserts `Arc::ptr_eq` against the actual production `build_combined_deps`
+  output, proving the #5420 pool-sharing invariant rather than a hand-reassembled test double.
+
 ### Changed
 
 - `refactor(memory)`: deduplicated `crates/zeph-memory/src/graph/store/mod.rs`. Replaced 8

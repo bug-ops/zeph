@@ -68,6 +68,63 @@ fn log_acp_runtime_paths(config: &zeph_core::config::Config, config_path: &std::
     );
 }
 
+/// Pure, spawn-free resource bundle shared between `zeph serve-sessions` and standalone ACP
+/// session construction (#5420).
+///
+/// Deliberately excludes anything that spawns a supervised task (`overflow_cleanup`,
+/// `egress_drain`, skill/config watchers) — those stay in [`build_acp_deps`] so plain
+/// `serve-sessions` never silently gains them and standalone ACP never silently loses them now
+/// that both call [`build_shared_core`]. Not feature-gated: `zeph serve-sessions` (feature
+/// `session`) needs it even in builds without `acp`/`acp-http`.
+pub(crate) struct SharedCore {
+    pub(crate) provider: zeph_llm::any::AnyProvider,
+    /// Dedicated embedding provider. Never replaced by `/provider switch`.
+    pub(crate) embedding_provider: zeph_llm::any::AnyProvider,
+    pub(crate) registry: std::sync::Arc<parking_lot::RwLock<zeph_skills::registry::SkillRegistry>>,
+    /// Shared skill matcher: `Clone` is cheap for Qdrant (connection-pool sharing), and
+    /// involves copying in-memory embedding vectors only for the `InMemory` variant.
+    pub(crate) matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
+    pub(crate) memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
+    pub(crate) budget_tokens: usize,
+}
+
+/// Build the resources common to `zeph serve-sessions` and standalone ACP session
+/// construction: provider, embedding provider, skill registry/matcher, and semantic memory.
+///
+/// Contains no `supervisor.spawn` calls — callers that need supervised background tasks
+/// (overflow cleanup, egress drain, hot-reload watchers) spawn them themselves, after this
+/// returns, using the same `supervisor`.
+///
+/// # Errors
+///
+/// Returns an error if provider construction or memory (`SQLite`/Qdrant) initialization fails.
+pub(crate) async fn build_shared_core(
+    app: &crate::bootstrap::AppBuilder,
+    supervisor: &zeph_common::TaskSupervisor,
+) -> anyhow::Result<SharedCore> {
+    let (provider, _status_tx, _status_rx) = app.build_provider().await?;
+    let embedding_provider = crate::bootstrap::create_embedding_provider(app.config(), &provider);
+    let budget_tokens = app.auto_budget_tokens(&provider);
+    let registry = std::sync::Arc::new(parking_lot::RwLock::new(app.build_registry()));
+    let memory = std::sync::Arc::new(app.build_memory(&provider, supervisor).await?);
+
+    let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> =
+        registry.read().all_meta().into_iter().cloned().collect();
+    let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta_owned.iter().collect();
+    let matcher = app
+        .build_skill_matcher(&embedding_provider, &all_meta_refs, &memory)
+        .await;
+
+    Ok(SharedCore {
+        provider,
+        embedding_provider,
+        registry,
+        matcher,
+        memory,
+        budget_tokens,
+    })
+}
+
 /// Shared dependencies reused across all ACP sessions.
 ///
 /// Fields in this struct are expensive to create and safe to share across sessions.
@@ -92,7 +149,7 @@ fn log_acp_runtime_paths(config: &zeph_core::config::Config, config_path: &std::
 /// - **ACP-specific** (`acp_*`) — transport-level config; not agent-level.
 /// - **Scheduler runtime** (`scheduler_*`) — runtime broadcast senders; not config-derived.
 #[cfg(feature = "acp")]
-struct SharedAgentDeps {
+pub(crate) struct SharedAgentDeps {
     // Shared runtime objects
     provider: zeph_llm::any::AnyProvider,
     /// Dedicated embedding provider. Never replaced by `/provider switch`.
@@ -128,7 +185,11 @@ struct SharedAgentDeps {
     /// constructed fresh per session, wrapping that session's specific composite.
     adversarial_policy_llm_client: Option<std::sync::Arc<dyn zeph_tools::PolicyLlmClient>>,
     skill_paths: Vec<PathBuf>,
-    memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
+    /// `pub(crate)` (unlike its sibling fields) solely so the `build_combined_deps` test harness
+    /// (`crate::serve::test_support::build_shared_pair`, #5420 N5) can assert `Arc::ptr_eq`
+    /// against [`crate::serve::deps::ServeAgentDeps::memory`] — proving the production sharing
+    /// path actually shares one pool, not a hand-reassembled test double.
+    pub(crate) memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
     history_limit: u32,
     recall_limit: usize,
     summarization_threshold: usize,
@@ -296,26 +357,47 @@ fn broadcast_to_mpsc<T: Clone + Send + 'static>(
     rx
 }
 
-/// Build all agent dependencies from config for the ACP server.
+/// Prebuilt shared resources for [`build_acp_deps`]: the pure [`SharedCore`] bundle plus the
+/// [`zeph_common::TaskSupervisor`] driving it. `None` at the call site means "build fresh" —
+/// today's standalone `--acp`/`--acp-http` behavior.
+#[cfg(feature = "acp")]
+pub(crate) struct PrebuiltAcpCore {
+    pub(crate) core: SharedCore,
+    pub(crate) supervisor: std::sync::Arc<zeph_common::TaskSupervisor>,
+}
+
+/// Build all agent dependencies for the ACP server, from either a [`PrebuiltAcpCore`] (shared
+/// with `zeph serve-sessions`, #5420) or a fresh build from `app` when `prebuilt_core` is `None`
+/// (standalone `--acp`/`--acp-http`, unchanged behavior).
 #[cfg(feature = "acp")]
 #[allow(clippy::too_many_lines)]
 async fn build_acp_deps(
-    config_path: Option<&std::path::Path>,
-    vault_backend: Option<&str>,
-    vault_key: Option<&std::path::Path>,
-    vault_path: Option<&std::path::Path>,
+    app: &AppBuilder,
+    prebuilt_core: Option<PrebuiltAcpCore>,
     prebuilt_mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
 ) -> anyhow::Result<(SharedAgentDeps, Box<dyn std::any::Any>)> {
-    let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
     log_acp_runtime_paths(app.config(), app.config_path());
-    let (provider, _status_tx, _status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
-    let embedding_provider = crate::bootstrap::create_embedding_provider(app.config(), &provider);
-    let budget_tokens = app.auto_budget_tokens(&provider);
-    let registry = std::sync::Arc::new(RwLock::new(app.build_registry()));
-    let acp_mem_cancel = tokio_util::sync::CancellationToken::new();
-    let acp_mem_supervisor = std::sync::Arc::new(zeph_common::TaskSupervisor::new(acp_mem_cancel));
-    let memory = std::sync::Arc::new(app.build_memory(&provider, &acp_mem_supervisor).await?);
+
+    let (
+        SharedCore {
+            provider,
+            embedding_provider,
+            registry,
+            matcher,
+            memory,
+            budget_tokens,
+        },
+        acp_mem_supervisor,
+    ) = if let Some(p) = prebuilt_core {
+        (p.core, p.supervisor)
+    } else {
+        let acp_mem_cancel = tokio_util::sync::CancellationToken::new();
+        let acp_mem_supervisor =
+            std::sync::Arc::new(zeph_common::TaskSupervisor::new(acp_mem_cancel));
+        let core = build_shared_core(app, &acp_mem_supervisor).await?;
+        (core, acp_mem_supervisor)
+    };
 
     {
         let sqlite = memory.sqlite().clone();
@@ -348,12 +430,6 @@ async fn build_acp_deps(
         });
     }
 
-    let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> =
-        registry.read().all_meta().into_iter().cloned().collect();
-    let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta_owned.iter().collect();
-    let matcher = app
-        .build_skill_matcher(&embedding_provider, &all_meta_refs, &memory)
-        .await;
     let config = app.config();
 
     let filter_registry = if config.tools.filters.enabled {
@@ -1901,14 +1977,8 @@ pub(crate) async fn run_acp_server(
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
-    let (mut deps, _keepalive) = Box::pin(build_acp_deps(
-        config_path,
-        vault_backend,
-        vault_key,
-        vault_path,
-        None,
-    ))
-    .await?;
+    let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
+    let (mut deps, _keepalive) = Box::pin(build_acp_deps(&app, None, None)).await?;
     let available_models = std::sync::Arc::clone(&deps.acp_available_models);
     let provider = deps.provider.clone();
     warm_model_caches(provider, available_models).await;
@@ -2088,21 +2158,14 @@ pub(crate) async fn run_acp_http_server(
     tracing::info!("ACP HTTP server listening on {bind_addr}");
     let server_task = tokio::spawn(async move { ::axum::serve(listener, router).await }); // EXEMPT(#5144): awaited at end of fn; joinable lifecycle needed
 
-    let (deps, _keepalive) = match Box::pin(build_acp_deps(
-        config_path,
-        vault_backend,
-        vault_key,
-        vault_path,
-        Some(mcp_manager_for_acp),
-    ))
-    .await
-    {
-        Ok(result) => result,
-        Err(err) => {
-            server_task.abort();
-            return Err(err);
-        }
-    };
+    let (deps, _keepalive) =
+        match Box::pin(build_acp_deps(&app, None, Some(mcp_manager_for_acp))).await {
+            Ok(result) => result,
+            Err(err) => {
+                server_task.abort();
+                return Err(err);
+            }
+        };
 
     let available_models = std::sync::Arc::clone(&deps.acp_available_models);
     let provider = deps.provider.clone();
@@ -2114,6 +2177,96 @@ pub(crate) async fn run_acp_http_server(
     server_task.await??;
 
     Ok(())
+}
+
+/// Build [`crate::serve::deps::ServeAgentDeps`] and [`SharedAgentDeps`] from ONE [`SharedCore`]
+/// and one [`zeph_common::TaskSupervisor`] — the production sharing path for
+/// `zeph serve-sessions --acp` (#5420), called by both `crate::serve::run_serve_with_acp` and
+/// its test harness's `build_shared_pair` (so the pair-sharing assertion exercises real
+/// production wiring, not a test-only re-assembly).
+///
+/// ACP is the sole `McpManager` builder in combined mode (`prebuilt_mcp_manager: None` below):
+/// `serve` wires no MCP tools today (see `crate::serve::deps` module doc), so there is nothing
+/// to share and no duplicate-subprocess risk.
+///
+/// # Errors
+///
+/// Returns an error if either deps bundle's construction fails (provider, memory, or MCP
+/// connection).
+#[cfg(all(feature = "acp-http", feature = "session"))]
+pub(crate) async fn build_combined_deps(
+    app: &AppBuilder,
+    supervisor: &std::sync::Arc<zeph_common::TaskSupervisor>,
+) -> anyhow::Result<(
+    crate::serve::deps::ServeAgentDeps,
+    SharedAgentDeps,
+    Box<dyn std::any::Any>,
+)> {
+    let core = build_shared_core(app, supervisor).await?;
+    let serve_deps = crate::serve::deps::assemble_serve_deps(app, &core, supervisor).await?;
+    let prebuilt_core = PrebuiltAcpCore {
+        core,
+        supervisor: std::sync::Arc::clone(supervisor),
+    };
+    let (acp_deps, keepalive) = Box::pin(build_acp_deps(app, Some(prebuilt_core), None)).await?;
+    Ok((serve_deps, acp_deps, keepalive))
+}
+
+/// Assemble an [`zeph_acp::AcpServerConfig`] for the ACP-HTTP transport from already-built,
+/// ready [`SharedAgentDeps`] — used by `zeph serve-sessions --acp`'s combined orchestrator
+/// (`crate::serve::run_serve_with_acp`).
+///
+/// `ready_notification` is always `None`: readiness is signaled via `GET /health` returning
+/// `200` after `AcpHttpState::mark_ready`, not a stdio JSON-RPC frame — that mechanism belongs
+/// to the standalone `--acp` stdio transport, not the HTTP one.
+#[cfg(all(feature = "acp-http", feature = "session"))]
+pub(crate) fn acp_http_server_config(deps: &mut SharedAgentDeps) -> zeph_acp::AcpServerConfig {
+    zeph_acp::AcpServerConfig {
+        agent_name: deps.acp_agent_name.clone(),
+        agent_version: deps.acp_agent_version.clone(),
+        max_sessions: deps.acp_max_sessions,
+        session_idle_timeout_secs: deps.acp_session_idle_timeout_secs,
+        permission_file: deps.acp_permission_file.clone(),
+        provider_factory: deps.acp_provider_factory.take(),
+        available_models: std::sync::Arc::clone(&deps.acp_available_models),
+        provider_names: deps.acp_provider_names.clone(),
+        mcp_manager: Some(std::sync::Arc::clone(&deps.mcp_manager)),
+        auth_bearer_token: deps.acp_auth_bearer_token.clone(),
+        discovery_enabled: deps.acp_discovery_enabled,
+        terminal_timeout_secs: deps.acp_timeouts.terminal_secs,
+        project_rules: deps.acp_project_rules.clone(),
+        title_max_chars: deps.acp_title_max_chars,
+        max_history: deps.acp_max_history,
+        sqlite_path: Some(deps.sqlite_path.clone()),
+        session_data_dir: deps
+            .session_persistence_config
+            .enabled
+            .then(|| std::path::PathBuf::from(&deps.session_persistence_config.data_dir)),
+        ready_notification: None,
+        additional_directories: deps.acp_additional_directories.clone(),
+        auth_methods: deps.acp_auth_methods.clone(),
+        message_ids_enabled: deps.acp_message_ids_enabled,
+        timeouts: deps.acp_timeouts.clone(),
+        model_config: deps.acp_model_config.clone(),
+    }
+}
+
+/// Warm model caches and build a [`zeph_acp::SendAgentSpawner`] closing over already-ready
+/// `deps` — no `RwLock<Option<Arc<SharedAgentDeps>>>` deferral is needed here, unlike
+/// `run_acp_http_server`'s standalone path: the combined orchestrator builds `deps` fully
+/// before either axum listener starts accepting connections, so the spawner is never invoked
+/// while deps are still being assembled.
+#[cfg(all(feature = "acp-http", feature = "session"))]
+pub(crate) async fn acp_http_ready_spawner(
+    deps: std::sync::Arc<SharedAgentDeps>,
+) -> zeph_acp::SendAgentSpawner {
+    let available_models = std::sync::Arc::clone(&deps.acp_available_models);
+    let provider = deps.provider.clone();
+    warm_model_caches(provider, available_models).await;
+    std::sync::Arc::new(move |channel, acp_ctx, session_ctx| {
+        let shared = std::sync::Arc::clone(&deps);
+        Box::pin(spawn_acp_agent(shared, channel, acp_ctx, session_ctx))
+    })
 }
 
 #[cfg(feature = "acp")]
