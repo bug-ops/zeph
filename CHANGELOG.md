@@ -126,6 +126,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `refine_goal_utility_llm` (now pinned by a dedicated regression test) (#5514). No
   behavior change beyond the one documented eviction.rs edge case above; added direct
   unit test coverage for all three new shared helpers.
+- `refactor(core)`: extracted `build_provider_config_snapshot` and `apply_debug_dumper`
+  into `src/agent_setup.rs`, deduplicating the `ProviderConfigSnapshot` construction
+  previously copy-pasted across `runner.rs`/`acp.rs`/`daemon.rs` (completes the
+  provider-pool-wiring slice left open by the `apply_common_tool_gating` extraction
+  above) and the `DebugDumper::new` match arm across those three plus
+  `serve/agent_factory.rs`. Pure refactor, no behavior change — verified byte-identical
+  field mapping and `Ok`/`Err` semantics at every site. Refs #5610.
 
 ### Fixed
 

@@ -116,13 +116,12 @@ pub(crate) async fn build_agent_factory(
             // Session-id subdirectory prefix (I2, matches spawn_acp_agent) so concurrent
             // `/sessions` agents never share the same timestamped dump directory.
             let session_dump_dir = debug_config.output_dir.join(session_id.as_str());
-            match zeph_core::debug_dump::DebugDumper::new(
+            agent = crate::agent_setup::apply_debug_dumper(
+                agent,
                 session_dump_dir.as_path(),
                 debug_config.format,
-            ) {
-                Ok(dumper) => agent = agent.with_debug_dumper(dumper),
-                Err(e) => tracing::warn!(error = %e, "debug dump initialization failed"),
-            }
+            )
+            .0;
         }
         agent
     }

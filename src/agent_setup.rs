@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -1211,6 +1211,31 @@ pub(crate) fn apply_secret_masking<C: Channel>(
     }
 }
 
+/// Wires a [`zeph_core::debug_dump::DebugDumper`] into `agent` for `dir`/`format`, shared by
+/// every agent entry point that honors `[debug] enabled = true` (CLI, ACP, daemon, serve-sessions).
+///
+/// Logs and falls back to `agent` unchanged on initialization failure rather than propagating
+/// the error, matching the original per-site behavior. Returns the effective dump directory
+/// alongside the agent — the dumper's own per-run subdirectory on success, or `dir` unchanged on
+/// failure — so callers needing the directory for further wiring (e.g. `src/runner.rs`'s
+/// trace-collector setup) don't have to duplicate the `DebugDumper::new` match arm.
+pub(crate) fn apply_debug_dumper<C: Channel>(
+    agent: Agent<C>,
+    dir: &Path,
+    format: zeph_core::debug_dump::DumpFormat,
+) -> (Agent<C>, PathBuf) {
+    match zeph_core::debug_dump::DebugDumper::new(dir, format) {
+        Ok(dumper) => {
+            let session_dir = dumper.dir().to_owned();
+            (agent.with_debug_dumper(dumper), session_dir)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "debug dump initialization failed");
+            (agent, dir.to_owned())
+        }
+    }
+}
+
 pub(crate) async fn apply_code_indexer(
     full_config: &Config,
     qdrant_ops: Option<QdrantOps>,
@@ -1625,6 +1650,55 @@ pub(crate) fn register_mcp_tool_ids(handle: &McpToolIdsHandle, mcp_tools: &[zeph
         .map(zeph_mcp::McpTool::sanitized_id)
         .collect();
     *handle.write() = ids;
+}
+
+/// Builds the [`zeph_core::ProviderConfigSnapshot`] passed to `AgentBuilder::with_provider_pool`
+/// by every agent entry point (CLI, ACP, daemon).
+///
+/// Centralizes the provider-secret and embedding-model extraction from `config.secrets` /
+/// `config.timeouts` / `config.llm` so a populated snapshot reaches `resolve_background_provider`
+/// from all three sites — an empty snapshot broke background-provider lookups (#5450).
+pub(crate) fn build_provider_config_snapshot(config: &Config) -> zeph_core::ProviderConfigSnapshot {
+    zeph_core::ProviderConfigSnapshot {
+        claude_api_key: config
+            .secrets
+            .claude_api_key
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        openai_api_key: config
+            .secrets
+            .openai_api_key
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        gemini_api_key: config
+            .secrets
+            .gemini_api_key
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        compatible_api_keys: config
+            .secrets
+            .compatible_api_keys
+            .iter()
+            .map(|(k, v)| (k.clone(), v.expose().to_owned()))
+            .collect(),
+        llm_request_timeout_secs: config.timeouts.llm_request_timeout_secs,
+        embedding_model: config.llm.embedding_model.clone(),
+        gonka_private_key: config
+            .secrets
+            .gonka_private_key
+            .as_ref()
+            .map(|s| zeroize::Zeroizing::new(s.expose().to_owned())),
+        gonka_address: config
+            .secrets
+            .gonka_address
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        cocoon_access_hash: config
+            .secrets
+            .cocoon_access_hash
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+    }
 }
 
 fn resolve_search_lsp_server_id(config: &Config) -> Option<String> {

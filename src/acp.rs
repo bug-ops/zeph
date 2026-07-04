@@ -828,46 +828,7 @@ async fn build_acp_deps(
     // #5450: built once here, where the full `Config` is still in scope — mirrors
     // `src/runner.rs`'s CLI-path snapshot construction, so ACP sessions get a populated
     // `provider_pool` too (previously left empty, breaking `resolve_background_provider`).
-    let provider_config_snapshot = zeph_core::ProviderConfigSnapshot {
-        claude_api_key: config
-            .secrets
-            .claude_api_key
-            .as_ref()
-            .map(|s| s.expose().to_owned()),
-        openai_api_key: config
-            .secrets
-            .openai_api_key
-            .as_ref()
-            .map(|s| s.expose().to_owned()),
-        gemini_api_key: config
-            .secrets
-            .gemini_api_key
-            .as_ref()
-            .map(|s| s.expose().to_owned()),
-        compatible_api_keys: config
-            .secrets
-            .compatible_api_keys
-            .iter()
-            .map(|(k, v)| (k.clone(), v.expose().to_owned()))
-            .collect(),
-        llm_request_timeout_secs: config.timeouts.llm_request_timeout_secs,
-        embedding_model: config.llm.embedding_model.clone(),
-        gonka_private_key: config
-            .secrets
-            .gonka_private_key
-            .as_ref()
-            .map(|s| zeroize::Zeroizing::new(s.expose().to_owned())),
-        gonka_address: config
-            .secrets
-            .gonka_address
-            .as_ref()
-            .map(|s| s.expose().to_owned()),
-        cocoon_access_hash: config
-            .secrets
-            .cocoon_access_hash
-            .as_ref()
-            .map(|s| s.expose().to_owned()),
-    };
+    let provider_config_snapshot = agent_setup::build_provider_config_snapshot(config);
 
     let deps = SharedAgentDeps {
         provider,
@@ -1570,13 +1531,9 @@ async fn spawn_acp_agent(
         let session_dump_dir = debug_config
             .output_dir
             .join(session_ctx.session_id.to_string());
-        match zeph_core::debug_dump::DebugDumper::new(
-            session_dump_dir.as_path(),
-            debug_config.format,
-        ) {
-            Ok(dumper) => agent = agent.with_debug_dumper(dumper),
-            Err(e) => tracing::warn!(error = %e, "debug dump initialization failed"),
-        }
+        agent =
+            agent_setup::apply_debug_dumper(agent, session_dump_dir.as_path(), debug_config.format)
+                .0;
     }
 
     agent = agent.with_hooks_config(&hooks_config);

@@ -3474,16 +3474,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             });
         if let Some(ref dir) = dump_dir {
             let (agent, session_dir) =
-                match zeph_core::debug_dump::DebugDumper::new(dir.as_path(), effective_format) {
-                    Ok(dumper) => {
-                        let session_dir = dumper.dir().to_owned();
-                        (agent.with_debug_dumper(dumper), session_dir)
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "debug dump initialization failed");
-                        (agent, dir.clone())
-                    }
-                };
+                agent_setup::apply_debug_dumper(agent, dir.as_path(), effective_format);
             // Store trace config so runtime `/dump-format trace` can create a collector (CR-04).
             let agent = agent.with_trace_config(
                 dir.clone(),
@@ -3666,46 +3657,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         .providers
         .iter()
         .any(|e| e.enable_extended_context);
-    let provider_config_snapshot = zeph_core::ProviderConfigSnapshot {
-        claude_api_key: config
-            .secrets
-            .claude_api_key
-            .as_ref()
-            .map(|s| s.expose().to_owned()),
-        openai_api_key: config
-            .secrets
-            .openai_api_key
-            .as_ref()
-            .map(|s| s.expose().to_owned()),
-        gemini_api_key: config
-            .secrets
-            .gemini_api_key
-            .as_ref()
-            .map(|s| s.expose().to_owned()),
-        compatible_api_keys: config
-            .secrets
-            .compatible_api_keys
-            .iter()
-            .map(|(k, v)| (k.clone(), v.expose().to_owned()))
-            .collect(),
-        llm_request_timeout_secs: config.timeouts.llm_request_timeout_secs,
-        embedding_model: config.llm.embedding_model.clone(),
-        gonka_private_key: config
-            .secrets
-            .gonka_private_key
-            .as_ref()
-            .map(|s| zeroize::Zeroizing::new(s.expose().to_owned())),
-        gonka_address: config
-            .secrets
-            .gonka_address
-            .as_ref()
-            .map(|s| s.expose().to_owned()),
-        cocoon_access_hash: config
-            .secrets
-            .cocoon_access_hash
-            .as_ref()
-            .map(|s| s.expose().to_owned()),
-    };
+    let provider_config_snapshot = agent_setup::build_provider_config_snapshot(config);
     let agent = agent
         .with_extended_context(extended_context)
         .with_metrics(metrics_tx)
