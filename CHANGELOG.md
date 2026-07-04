@@ -46,6 +46,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   free function replacing 3 duplicated `CommunityRow` → `Community` conversion blocks. Pure
   refactor, no behavior change — all 4 public BFS entry points keep their original
   signatures. (#5501, #5490)
+- `refactor(memory)`: extracted three DRY helpers out of `zeph-memory`'s duplicated sweep,
+  admission-gate, and background-embed logic. New `crates/zeph-memory/src/sweep_helpers.rs`
+  (`pub(crate)`) holds `cluster_by_cosine_similarity` (generalizes `scenes.rs`'s
+  `cluster_messages` and `tiers.rs`'s `cluster_by_similarity` over a generic candidate type),
+  `embed_batch_with_validation` (shared batch-embed + length-validation), and
+  `llm_call_with_timeout` (shared 15s-timeout LLM call), used by both `scenes.rs` and
+  `tiers.rs` (#5581). `semantic/recall.rs` gained `run_admission_gate` /
+  `run_quality_gate` / `record_admission_sample_opt` private helpers shared by all four
+  `remember*` variants — `remember_tool_output` and `remember_categorized` continue to
+  skip the quality gate, which is unchanged, load-bearing behavior (#5569). The three
+  near-identical `embed_and_store_*_bg` background tasks collapsed into one generic
+  `embed_chunk_and_store_bg` taking a boxed-future per-chunk store closure, with the
+  rate-limited Qdrant-ensure-collection warning extracted into a pure
+  `should_emit_qdrant_warn` predicate plus `warn_qdrant_ensure_failure` (#5565). No
+  behavior change; existing test coverage extended to target the new shared functions
+  directly (moved clustering tests into `sweep_helpers.rs`, added per-`remember*`-variant
+  admission/quality-gate coverage in `semantic/tests/recall.rs`).
 
 ### Fixed
 

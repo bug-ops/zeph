@@ -83,6 +83,7 @@ pub mod reasoning;
 pub mod recall_view;
 pub mod retrieval_failure_logger;
 pub mod scenes;
+mod sweep_helpers;
 pub mod tiered_retrieval;
 pub mod tiers;
 

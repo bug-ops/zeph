@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -91,29 +93,58 @@ pub struct RecalledMessage {
 /// Maximum number of concurrent background embed tasks per `SemanticMemory` instance.
 const MAX_EMBED_BG_TASKS: usize = 64;
 
+/// Rate-limit window (seconds) for the "failed to ensure Qdrant collection" warning.
+const QDRANT_WARN_WINDOW_SECS: u64 = 10;
+
+/// Whether enough time has passed since the last suppressed warning to emit a new one.
+fn should_emit_qdrant_warn(last: u64, now: u64, window_secs: u64) -> bool {
+    now.saturating_sub(last) >= window_secs
+}
+
+/// Log a Qdrant `ensure_collection` failure, rate-limited to one WARN per
+/// [`QDRANT_WARN_WINDOW_SECS`] across all background embed call sites sharing `last_warn`.
+fn warn_qdrant_ensure_failure(last_warn: &AtomicU64, log_tag: &str, err: &MemoryError) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let last = last_warn.load(Ordering::Relaxed);
+    if should_emit_qdrant_warn(last, now, QDRANT_WARN_WINDOW_SECS) {
+        last_warn.store(now, Ordering::Relaxed);
+        tracing::warn!("{log_tag}: failed to ensure Qdrant collection: {err:#}");
+    } else {
+        tracing::debug!("{log_tag}: failed to ensure Qdrant collection (suppressed): {err:#}");
+    }
+}
+
 /// Shared arguments for background embed tasks.
+///
+/// Deliberately slim: only what [`embed_chunk_and_store_bg`] itself needs. Per-chunk store
+/// arguments (`embedding_model`, `conversation_id`, `role`, category/tool metadata) are
+/// captured by the caller-supplied `store_chunk` closure instead, since they vary by variant.
 struct EmbedBgArgs {
     qdrant: Arc<crate::embedding_store::EmbeddingStore>,
     embed_provider: zeph_llm::any::AnyProvider,
-    embedding_model: String,
     message_id: MessageId,
-    conversation_id: ConversationId,
-    role: String,
     content: String,
     last_qdrant_warn: Arc<AtomicU64>,
 }
 
-/// Background task: embed chunks and store as regular message vectors.
+/// Background task: embed content chunks and store each via `store_chunk`.
 ///
-/// All errors are logged as warnings; the function never panics.
-async fn embed_and_store_regular_bg(args: EmbedBgArgs) {
+/// All errors are logged as warnings; the function never panics. Shared by
+/// `embed_and_store_regular`, `embed_chunks_with_tool_context`, and
+/// `embed_and_store_with_category` — the only difference between them is how each chunk
+/// is stored, expressed here as a boxed-future closure to sidestep borrow-checker fights
+/// over an in-loop `.await` on a stored future type.
+async fn embed_chunk_and_store_bg<F>(args: EmbedBgArgs, log_tag: &'static str, store_chunk: F)
+where
+    F: Fn(u32, Vec<f32>) -> Pin<Box<dyn Future<Output = Result<(), MemoryError>> + Send>> + Send,
+{
     let EmbedBgArgs {
         qdrant,
         embed_provider,
-        embedding_model,
         message_id,
-        conversation_id,
-        role,
         content,
         last_qdrant_warn,
     } = args;
@@ -123,7 +154,7 @@ async fn embed_and_store_regular_bg(args: EmbedBgArgs) {
     let vectors = match embed_provider.embed_batch(&chunks).await {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("bg embed_regular: failed to embed chunks for msg {message_id}: {e:#}");
+            tracing::warn!("{log_tag}: failed to embed chunks for msg {message_id}: {e:#}");
             return;
         }
     };
@@ -132,199 +163,29 @@ async fn embed_and_store_regular_bg(args: EmbedBgArgs) {
         return;
     };
     if let Err(e) = qdrant.ensure_collection_for_vector(first).await {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let last = last_qdrant_warn.load(Ordering::Relaxed);
-        if now.saturating_sub(last) >= 10 {
-            last_qdrant_warn.store(now, Ordering::Relaxed);
-            tracing::warn!("bg embed_regular: failed to ensure Qdrant collection: {e:#}");
-        } else {
-            tracing::debug!(
-                "bg embed_regular: failed to ensure Qdrant collection (suppressed): {e:#}"
-            );
-        }
+        warn_qdrant_ensure_failure(&last_qdrant_warn, log_tag, &e);
         return;
     }
 
     for (chunk_index, vector) in vectors.into_iter().enumerate() {
         let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
-        if let Err(e) = qdrant
-            .store(
-                message_id,
-                conversation_id,
-                &role,
-                vector,
-                MessageKind::Regular,
-                &embedding_model,
-                chunk_index_u32,
-            )
-            .await
-        {
+        if let Err(e) = store_chunk(chunk_index_u32, vector).await {
             tracing::warn!(
-                "bg embed_regular: failed to store chunk {chunk_index}/{chunk_count} \
+                "{log_tag}: failed to store chunk {chunk_index}/{chunk_count} \
                  for msg {message_id}: {e:#}"
             );
         }
     }
 }
 
-/// Background task: embed chunks with tool context metadata and store in Qdrant.
-///
-/// All errors are logged as warnings; the function never panics.
-async fn embed_chunks_with_tool_context_bg(args: EmbedBgArgs, embed_ctx: EmbedContext) {
-    let EmbedBgArgs {
-        qdrant,
-        embed_provider,
-        embedding_model,
-        message_id,
-        conversation_id,
-        role,
-        content,
-        last_qdrant_warn,
-    } = args;
-    let chunks = chunk_text(&content);
-    let chunk_count = chunks.len();
-
-    let vectors = match embed_provider.embed_batch(&chunks).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(
-                "bg embed_tool: failed to embed tool-output chunks for msg {message_id}: {e:#}"
-            );
-            return;
-        }
-    };
-
-    if let Some(first) = vectors.first()
-        && let Err(e) = qdrant.ensure_collection_for_vector(first).await
-    {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let last = last_qdrant_warn.load(Ordering::Relaxed);
-        if now.saturating_sub(last) >= 10 {
-            last_qdrant_warn.store(now, Ordering::Relaxed);
-            tracing::warn!("bg embed_tool: failed to ensure Qdrant collection: {e:#}");
-        } else {
-            tracing::debug!(
-                "bg embed_tool: failed to ensure Qdrant collection (suppressed): {e:#}"
-            );
-        }
-        return;
-    }
-
-    for (chunk_index, vector) in vectors.into_iter().enumerate() {
-        let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
-        let result = if let Some(ref tool_name) = embed_ctx.tool_name {
-            qdrant
-                .store_with_tool_context(
-                    message_id,
-                    conversation_id,
-                    &role,
-                    vector,
-                    MessageKind::Regular,
-                    &embedding_model,
-                    chunk_index_u32,
-                    tool_name,
-                    embed_ctx.exit_code,
-                    embed_ctx.timestamp.as_deref(),
-                )
-                .await
-                .map(|_| ())
-        } else {
-            qdrant
-                .store(
-                    message_id,
-                    conversation_id,
-                    &role,
-                    vector,
-                    MessageKind::Regular,
-                    &embedding_model,
-                    chunk_index_u32,
-                )
-                .await
-                .map(|_| ())
-        };
-        if let Err(e) = result {
-            tracing::warn!(
-                "bg embed_tool: failed to store chunk {chunk_index}/{chunk_count} \
-                 for msg {message_id}: {e:#}"
-            );
-        }
-    }
-}
-
-/// Background task: embed chunks with optional category and store in Qdrant.
-///
-/// All errors are logged as warnings; the function never panics.
-async fn embed_and_store_with_category_bg(args: EmbedBgArgs, category: Option<String>) {
-    let EmbedBgArgs {
-        qdrant,
-        embed_provider,
-        embedding_model,
-        message_id,
-        conversation_id,
-        role,
-        content,
-        last_qdrant_warn,
-    } = args;
-    let chunks = chunk_text(&content);
-    let chunk_count = chunks.len();
-
-    let vectors = match embed_provider.embed_batch(&chunks).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(
-                "bg embed_category: failed to embed categorized chunks for msg {message_id}: {e:#}"
-            );
-            return;
-        }
-    };
-
-    let Some(first) = vectors.first() else {
-        return;
-    };
-    if let Err(e) = qdrant.ensure_collection_for_vector(first).await {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let last = last_qdrant_warn.load(Ordering::Relaxed);
-        if now.saturating_sub(last) >= 10 {
-            last_qdrant_warn.store(now, Ordering::Relaxed);
-            tracing::warn!("bg embed_category: failed to ensure Qdrant collection: {e:#}");
-        } else {
-            tracing::debug!(
-                "bg embed_category: failed to ensure Qdrant collection (suppressed): {e:#}"
-            );
-        }
-        return;
-    }
-
-    for (chunk_index, vector) in vectors.into_iter().enumerate() {
-        let chunk_index_u32 = u32::try_from(chunk_index).unwrap_or(u32::MAX);
-        if let Err(e) = qdrant
-            .store_with_category(
-                message_id,
-                conversation_id,
-                &role,
-                vector,
-                MessageKind::Regular,
-                &embedding_model,
-                chunk_index_u32,
-                category.as_deref(),
-            )
-            .await
-        {
-            tracing::warn!(
-                "bg embed_category: failed to store chunk {chunk_index}/{chunk_count} \
-                 for msg {message_id}: {e:#}"
-            );
-        }
-    }
+/// Outcome of [`SemanticMemory::run_admission_gate`].
+enum AdmissionOutcome {
+    /// A-MAC rejected the message; the training sample was already recorded.
+    Reject,
+    /// A-MAC admitted the message (or no `AdmissionControl` is configured), carrying the
+    /// decision onward so the caller can record the training sample once the outcome of
+    /// any downstream quality gate and the `SQLite` write are known.
+    Proceed(Option<AdmissionDecision>),
 }
 
 impl SemanticMemory {
@@ -348,38 +209,18 @@ impl SemanticMemory {
         content: &str,
         goal_text: Option<&str>,
     ) -> Result<Option<MessageId>, MemoryError> {
-        // A-MAC admission gate.
-        let mut admission_decision = None;
-        if let Some(ref admission) = self.admission_control {
-            let decision = admission
-                .evaluate(
-                    content,
-                    role,
-                    self.effective_embed_provider(),
-                    self.qdrant.as_ref(),
-                    goal_text,
-                )
-                .await;
-            let preview: String = content.chars().take(100).collect();
-            log_admission_decision(&decision, &preview, role, admission.threshold());
-            if !decision.admitted {
-                self.record_admission_sample(conversation_id, role, content, &decision, None)
-                    .await;
-                return Ok(None);
-            }
-            admission_decision = Some(decision);
-        }
-
-        if let Some(gate) = &self.quality_gate
-            && gate
-                .evaluate(content, self.effective_embed_provider(), &[])
-                .await
-                .is_some()
+        let admission_decision = match self
+            .run_admission_gate(conversation_id, role, content, goal_text)
+            .await
         {
-            if let Some(decision) = &admission_decision {
-                self.record_admission_sample(conversation_id, role, content, decision, None)
-                    .await;
-            }
+            AdmissionOutcome::Reject => return Ok(None),
+            AdmissionOutcome::Proceed(decision) => decision,
+        };
+
+        if self
+            .run_quality_gate(conversation_id, role, content, admission_decision.as_ref())
+            .await
+        {
             return Ok(None);
         }
 
@@ -388,16 +229,14 @@ impl SemanticMemory {
             .save_message(conversation_id, role, content)
             .await?;
 
-        if let Some(decision) = &admission_decision {
-            self.record_admission_sample(
-                conversation_id,
-                role,
-                content,
-                decision,
-                Some(message_id),
-            )
-            .await;
-        }
+        self.record_admission_sample_opt(
+            conversation_id,
+            role,
+            content,
+            admission_decision.as_ref(),
+            Some(message_id),
+        )
+        .await;
 
         self.embed_and_store_regular(message_id, conversation_id, role, content);
 
@@ -424,38 +263,18 @@ impl SemanticMemory {
         parts_json: &str,
         goal_text: Option<&str>,
     ) -> Result<(Option<MessageId>, bool), MemoryError> {
-        // A-MAC admission gate.
-        let mut admission_decision = None;
-        if let Some(ref admission) = self.admission_control {
-            let decision = admission
-                .evaluate(
-                    content,
-                    role,
-                    self.effective_embed_provider(),
-                    self.qdrant.as_ref(),
-                    goal_text,
-                )
-                .await;
-            let preview: String = content.chars().take(100).collect();
-            log_admission_decision(&decision, &preview, role, admission.threshold());
-            if !decision.admitted {
-                self.record_admission_sample(conversation_id, role, content, &decision, None)
-                    .await;
-                return Ok((None, false));
-            }
-            admission_decision = Some(decision);
-        }
-
-        if let Some(gate) = &self.quality_gate
-            && gate
-                .evaluate(content, self.effective_embed_provider(), &[])
-                .await
-                .is_some()
+        let admission_decision = match self
+            .run_admission_gate(conversation_id, role, content, goal_text)
+            .await
         {
-            if let Some(decision) = &admission_decision {
-                self.record_admission_sample(conversation_id, role, content, decision, None)
-                    .await;
-            }
+            AdmissionOutcome::Reject => return Ok((None, false)),
+            AdmissionOutcome::Proceed(decision) => decision,
+        };
+
+        if self
+            .run_quality_gate(conversation_id, role, content, admission_decision.as_ref())
+            .await
+        {
             return Ok((None, false));
         }
 
@@ -464,16 +283,14 @@ impl SemanticMemory {
             .save_message_with_parts(conversation_id, role, content, parts_json)
             .await?;
 
-        if let Some(decision) = &admission_decision {
-            self.record_admission_sample(
-                conversation_id,
-                role,
-                content,
-                decision,
-                Some(message_id),
-            )
-            .await;
-        }
+        self.record_admission_sample_opt(
+            conversation_id,
+            role,
+            content,
+            admission_decision.as_ref(),
+            Some(message_id),
+        )
+        .await;
 
         let embedding_stored =
             self.embed_and_store_regular(message_id, conversation_id, role, content);
@@ -504,42 +321,29 @@ impl SemanticMemory {
         parts_json: &str,
         embed_ctx: EmbedContext,
     ) -> Result<(Option<MessageId>, bool), MemoryError> {
-        let mut admission_decision = None;
-        if let Some(ref admission) = self.admission_control {
-            let decision = admission
-                .evaluate(
-                    content,
-                    role,
-                    self.effective_embed_provider(),
-                    self.qdrant.as_ref(),
-                    None,
-                )
-                .await;
-            let preview: String = content.chars().take(100).collect();
-            log_admission_decision(&decision, &preview, role, admission.threshold());
-            if !decision.admitted {
-                self.record_admission_sample(conversation_id, role, content, &decision, None)
-                    .await;
-                return Ok((None, false));
-            }
-            admission_decision = Some(decision);
-        }
+        // No quality gate here: tool output is not subject to the reference-completeness /
+        // information-value checks applied to conversational messages.
+        let admission_decision = match self
+            .run_admission_gate(conversation_id, role, content, None)
+            .await
+        {
+            AdmissionOutcome::Reject => return Ok((None, false)),
+            AdmissionOutcome::Proceed(decision) => decision,
+        };
 
         let message_id = self
             .sqlite
             .save_message_with_parts(conversation_id, role, content, parts_json)
             .await?;
 
-        if let Some(decision) = &admission_decision {
-            self.record_admission_sample(
-                conversation_id,
-                role,
-                content,
-                decision,
-                Some(message_id),
-            )
-            .await;
-        }
+        self.record_admission_sample_opt(
+            conversation_id,
+            role,
+            content,
+            admission_decision.as_ref(),
+            Some(message_id),
+        )
+        .await;
 
         let embedding_stored = self.embed_chunks_with_tool_context(
             message_id,
@@ -574,46 +378,113 @@ impl SemanticMemory {
         category: Option<&str>,
         goal_text: Option<&str>,
     ) -> Result<Option<MessageId>, MemoryError> {
-        let mut admission_decision = None;
-        if let Some(ref admission) = self.admission_control {
-            let decision = admission
-                .evaluate(
-                    content,
-                    role,
-                    self.effective_embed_provider(),
-                    self.qdrant.as_ref(),
-                    goal_text,
-                )
-                .await;
-            let preview: String = content.chars().take(100).collect();
-            log_admission_decision(&decision, &preview, role, admission.threshold());
-            if !decision.admitted {
-                self.record_admission_sample(conversation_id, role, content, &decision, None)
-                    .await;
-                return Ok(None);
-            }
-            admission_decision = Some(decision);
-        }
+        // No quality gate here: categorized writes (e.g. persona facts, structured summaries)
+        // bypass the reference-completeness / information-value checks applied to `remember`.
+        let admission_decision = match self
+            .run_admission_gate(conversation_id, role, content, goal_text)
+            .await
+        {
+            AdmissionOutcome::Reject => return Ok(None),
+            AdmissionOutcome::Proceed(decision) => decision,
+        };
 
         let message_id = self
             .sqlite
             .save_message_with_category(conversation_id, role, content, category)
             .await?;
 
-        if let Some(decision) = &admission_decision {
-            self.record_admission_sample(
-                conversation_id,
-                role,
-                content,
-                decision,
-                Some(message_id),
-            )
-            .await;
-        }
+        self.record_admission_sample_opt(
+            conversation_id,
+            role,
+            content,
+            admission_decision.as_ref(),
+            Some(message_id),
+        )
+        .await;
 
         self.embed_and_store_with_category(message_id, conversation_id, role, content, category);
 
         Ok(Some(message_id))
+    }
+
+    /// Evaluate the A-MAC admission gate shared by all `remember*` variants.
+    ///
+    /// On rejection, records the training sample (with no `message_id`, since the message
+    /// is never persisted) and returns [`AdmissionOutcome::Reject`]. When no
+    /// [`crate::admission::AdmissionControl`] is configured, always proceeds with `None`.
+    async fn run_admission_gate(
+        &self,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        goal_text: Option<&str>,
+    ) -> AdmissionOutcome {
+        let Some(admission) = &self.admission_control else {
+            return AdmissionOutcome::Proceed(None);
+        };
+        let decision = admission
+            .evaluate(
+                content,
+                role,
+                self.effective_embed_provider(),
+                self.qdrant.as_ref(),
+                goal_text,
+            )
+            .await;
+        let preview: String = content.chars().take(100).collect();
+        log_admission_decision(&decision, &preview, role, admission.threshold());
+        if !decision.admitted {
+            self.record_admission_sample(conversation_id, role, content, &decision, None)
+                .await;
+            return AdmissionOutcome::Reject;
+        }
+        AdmissionOutcome::Proceed(Some(decision))
+    }
+
+    /// Evaluate the optional quality gate. Only called by [`Self::remember`] and
+    /// [`Self::remember_with_parts`] — `remember_tool_output` and `remember_categorized`
+    /// deliberately skip it (see their doc comments).
+    ///
+    /// Returns `true` when the gate rejects the content, having already recorded the
+    /// training sample (with no `message_id`, since the message is never persisted).
+    async fn run_quality_gate(
+        &self,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        admission_decision: Option<&AdmissionDecision>,
+    ) -> bool {
+        let Some(gate) = &self.quality_gate else {
+            return false;
+        };
+        if gate
+            .evaluate(content, self.effective_embed_provider(), &[])
+            .await
+            .is_none()
+        {
+            return false;
+        }
+        if let Some(decision) = admission_decision {
+            self.record_admission_sample(conversation_id, role, content, decision, None)
+                .await;
+        }
+        true
+    }
+
+    /// Record the admission training sample for a message that passed every gate, when an
+    /// A-MAC decision was made (no-op when `admission_control` is unconfigured).
+    async fn record_admission_sample_opt(
+        &self,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        decision: Option<&AdmissionDecision>,
+        message_id: Option<MessageId>,
+    ) {
+        if let Some(decision) = decision {
+            self.record_admission_sample(conversation_id, role, content, decision, message_id)
+                .await;
+        }
     }
 
     /// Record an A-MAC admission decision as an RL training sample.
@@ -723,18 +594,44 @@ impl SemanticMemory {
         if !embed_provider.supports_embeddings() {
             return false;
         }
-        self.spawn_embed_bg(embed_and_store_with_category_bg(
+        let store_qdrant = Arc::clone(&qdrant);
+        let embedding_model = self.embedding_model.clone();
+        let role = role.to_owned();
+        let category = category.map(str::to_owned);
+        let store_chunk =
+            move |chunk_index: u32,
+                  vector: Vec<f32>|
+                  -> Pin<Box<dyn Future<Output = Result<(), MemoryError>> + Send>> {
+                let qdrant = Arc::clone(&store_qdrant);
+                let embedding_model = embedding_model.clone();
+                let role = role.clone();
+                let category = category.clone();
+                Box::pin(async move {
+                    qdrant
+                        .store_with_category(
+                            message_id,
+                            conversation_id,
+                            &role,
+                            vector,
+                            MessageKind::Regular,
+                            &embedding_model,
+                            chunk_index,
+                            category.as_deref(),
+                        )
+                        .await
+                        .map(|_| ())
+                })
+            };
+        self.spawn_embed_bg(embed_chunk_and_store_bg(
             EmbedBgArgs {
                 qdrant,
                 embed_provider,
-                embedding_model: self.embedding_model.clone(),
                 message_id,
-                conversation_id,
-                role: role.to_owned(),
                 content: content.to_owned(),
                 last_qdrant_warn: Arc::clone(&self.last_qdrant_warn),
             },
-            category.map(str::to_owned),
+            "bg embed_category",
+            store_chunk,
         ))
     }
 
@@ -755,16 +652,42 @@ impl SemanticMemory {
         if !embed_provider.supports_embeddings() {
             return false;
         }
-        self.spawn_embed_bg(embed_and_store_regular_bg(EmbedBgArgs {
-            qdrant,
-            embed_provider,
-            embedding_model: self.embedding_model.clone(),
-            message_id,
-            conversation_id,
-            role: role.to_owned(),
-            content: content.to_owned(),
-            last_qdrant_warn: Arc::clone(&self.last_qdrant_warn),
-        }))
+        let store_qdrant = Arc::clone(&qdrant);
+        let embedding_model = self.embedding_model.clone();
+        let role = role.to_owned();
+        let store_chunk =
+            move |chunk_index: u32,
+                  vector: Vec<f32>|
+                  -> Pin<Box<dyn Future<Output = Result<(), MemoryError>> + Send>> {
+                let qdrant = Arc::clone(&store_qdrant);
+                let embedding_model = embedding_model.clone();
+                let role = role.clone();
+                Box::pin(async move {
+                    qdrant
+                        .store(
+                            message_id,
+                            conversation_id,
+                            &role,
+                            vector,
+                            MessageKind::Regular,
+                            &embedding_model,
+                            chunk_index,
+                        )
+                        .await
+                        .map(|_| ())
+                })
+            };
+        self.spawn_embed_bg(embed_chunk_and_store_bg(
+            EmbedBgArgs {
+                qdrant,
+                embed_provider,
+                message_id,
+                content: content.to_owned(),
+                last_qdrant_warn: Arc::clone(&self.last_qdrant_warn),
+            },
+            "bg embed_regular",
+            store_chunk,
+        ))
     }
 
     /// Embed content chunks, enriching Qdrant payload with tool metadata when present.
@@ -785,18 +708,60 @@ impl SemanticMemory {
         if !embed_provider.supports_embeddings() {
             return false;
         }
-        self.spawn_embed_bg(embed_chunks_with_tool_context_bg(
+        let store_qdrant = Arc::clone(&qdrant);
+        let embedding_model = self.embedding_model.clone();
+        let role = role.to_owned();
+        let store_chunk =
+            move |chunk_index: u32,
+                  vector: Vec<f32>|
+                  -> Pin<Box<dyn Future<Output = Result<(), MemoryError>> + Send>> {
+                let qdrant = Arc::clone(&store_qdrant);
+                let embedding_model = embedding_model.clone();
+                let role = role.clone();
+                let embed_ctx = embed_ctx.clone();
+                Box::pin(async move {
+                    if let Some(tool_name) = embed_ctx.tool_name {
+                        qdrant
+                            .store_with_tool_context(
+                                message_id,
+                                conversation_id,
+                                &role,
+                                vector,
+                                MessageKind::Regular,
+                                &embedding_model,
+                                chunk_index,
+                                &tool_name,
+                                embed_ctx.exit_code,
+                                embed_ctx.timestamp.as_deref(),
+                            )
+                            .await
+                            .map(|_| ())
+                    } else {
+                        qdrant
+                            .store(
+                                message_id,
+                                conversation_id,
+                                &role,
+                                vector,
+                                MessageKind::Regular,
+                                &embedding_model,
+                                chunk_index,
+                            )
+                            .await
+                            .map(|_| ())
+                    }
+                })
+            };
+        self.spawn_embed_bg(embed_chunk_and_store_bg(
             EmbedBgArgs {
                 qdrant,
                 embed_provider,
-                embedding_model: self.embedding_model.clone(),
                 message_id,
-                conversation_id,
-                role: role.to_owned(),
                 content: content.to_owned(),
                 last_qdrant_warn: Arc::clone(&self.last_qdrant_warn),
             },
-            embed_ctx,
+            "bg embed_tool",
+            store_chunk,
         ))
     }
 
@@ -2286,33 +2251,21 @@ mod tests {
 
     #[test]
     fn qdrant_warn_rate_limit_suppresses_within_window() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        let last_warn = Arc::new(AtomicU64::new(0));
-        let window_secs = 10u64;
-
-        // Simulate first call: last=0, now=100 → should emit (diff >= 10)
-        let now1 = 100u64;
-        let last1 = last_warn.load(Ordering::Relaxed);
-        let should_warn1 = now1.saturating_sub(last1) >= window_secs;
-        assert!(should_warn1, "first call must not be suppressed");
-        if should_warn1 {
-            last_warn.store(now1, Ordering::Relaxed);
-        }
-
-        // Simulate second call 5s later: now=105 → should be suppressed (diff < 10)
-        let now2 = 105u64;
-        let last2 = last_warn.load(Ordering::Relaxed);
-        let should_warn2 = now2.saturating_sub(last2) >= window_secs;
-        assert!(!should_warn2, "call within 10s window must be suppressed");
-
-        // Simulate third call 10s after first: now=110 → should emit again
-        let now3 = 110u64;
-        let last3 = last_warn.load(Ordering::Relaxed);
-        let should_warn3 = now3.saturating_sub(last3) >= window_secs;
+        // First call: last=0, now=100 → should emit (diff >= 10)
         assert!(
-            should_warn3,
+            should_emit_qdrant_warn(0, 100, 10),
+            "first call must not be suppressed"
+        );
+
+        // Second call 5s later: now=105, last=100 → should be suppressed (diff < 10)
+        assert!(
+            !should_emit_qdrant_warn(100, 105, 10),
+            "call within 10s window must be suppressed"
+        );
+
+        // Third call 10s after first: now=110, last=100 → should emit again
+        assert!(
+            should_emit_qdrant_warn(100, 110, 10),
             "call after window expiry must not be suppressed"
         );
     }
@@ -2420,29 +2373,46 @@ mod tests {
 
     #[test]
     fn qdrant_warn_rate_limit_shared_across_concurrent_sites() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        // All 3 WARN sites share one Arc<AtomicU64>. Simulate site A warning at t=100,
-        // then site B attempting at t=105 — must be suppressed.
+        // All 3 WARN sites (bg embed_regular/embed_tool/embed_category) share one
+        // Arc<AtomicU64> via `SemanticMemory::last_qdrant_warn`. Simulate site A warning
+        // at t=100, then site B attempting at t=105 — must be suppressed, mirroring the
+        // exact check `warn_qdrant_ensure_failure` performs against the shared atomic.
         let shared = Arc::new(AtomicU64::new(0));
-        let window_secs = 10u64;
 
         let site_a = Arc::clone(&shared);
         let site_b = Arc::clone(&shared);
 
         let now_a = 100u64;
         let last_a = site_a.load(Ordering::Relaxed);
-        if now_a.saturating_sub(last_a) >= window_secs {
+        if should_emit_qdrant_warn(last_a, now_a, QDRANT_WARN_WINDOW_SECS) {
             site_a.store(now_a, Ordering::Relaxed);
         }
 
         let now_b = 105u64;
         let last_b = site_b.load(Ordering::Relaxed);
-        let warn_b = now_b.saturating_sub(last_b) >= window_secs;
+        let warn_b = should_emit_qdrant_warn(last_b, now_b, QDRANT_WARN_WINDOW_SECS);
         assert!(
             !warn_b,
             "site B must be suppressed because site A already warned within the window"
+        );
+    }
+
+    #[test]
+    fn warn_qdrant_ensure_failure_updates_shared_atomic_once() {
+        let shared = Arc::new(AtomicU64::new(0));
+        let err = MemoryError::InvalidInput("boom".into());
+
+        warn_qdrant_ensure_failure(&shared, "site A", &err);
+        let after_first = shared.load(Ordering::Relaxed);
+        assert!(after_first > 0, "first call must record a warn timestamp");
+
+        // Immediately calling again (same instant, well within the window) must not
+        // move the stored timestamp forward, since the second call is suppressed.
+        warn_qdrant_ensure_failure(&shared, "site B", &err);
+        assert_eq!(
+            shared.load(Ordering::Relaxed),
+            after_first,
+            "suppressed call must not overwrite the shared warn timestamp"
         );
     }
 }

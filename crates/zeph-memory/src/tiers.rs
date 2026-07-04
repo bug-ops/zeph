@@ -25,6 +25,9 @@ use zeph_llm::provider::LlmProvider as _;
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::store::messages::PromotionCandidate;
+use crate::sweep_helpers::{
+    EmbedBatchOutcome, cluster_by_cosine_similarity, embed_batch_with_validation,
+};
 use crate::types::ConversationId;
 use zeph_common::math::cosine_similarity;
 
@@ -147,23 +150,12 @@ async fn run_promotion_sweep(
     let embedded: Vec<(PromotionCandidate, Vec<f32>)> = if provider.supports_embeddings() {
         let texts: Vec<&str> = candidates.iter().map(|c| c.content.as_str()).collect();
         let span = tracing::info_span!("memory.tiers.embed_batch", count = texts.len());
-        let vecs = provider.embed_batch(&texts).instrument(span).await;
+        let vecs = embed_batch_with_validation(provider, &texts, "tier promotion")
+            .instrument(span)
+            .await;
         match vecs {
-            Ok(vecs) => {
-                if vecs.len() != texts.len() {
-                    tracing::warn!(
-                        expected = texts.len(),
-                        got = vecs.len(),
-                        "tier promotion: embed_batch length mismatch, skipping sweep"
-                    );
-                    return Ok(stats);
-                }
-                candidates.into_iter().zip(vecs).collect()
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "tier promotion: batch embed failed, skipping sweep");
-                return Ok(stats);
-            }
+            EmbedBatchOutcome::Ok(vecs) => candidates.into_iter().zip(vecs).collect(),
+            EmbedBatchOutcome::Skip => return Ok(stats),
         }
     } else {
         // No embedding support — push all with empty vecs (will become singletons).
@@ -178,7 +170,7 @@ async fn run_promotion_sweep(
     // Each candidate is assigned to the first existing cluster whose centroid
     // representative has similarity >= threshold with it, or starts a new cluster.
     let threshold = config.similarity_threshold;
-    let clusters = cluster_by_similarity(embedded, threshold);
+    let clusters = cluster_by_cosine_similarity(embedded, threshold);
 
     for cluster in clusters {
         if cluster.len() < 2 {
@@ -216,42 +208,6 @@ async fn run_promotion_sweep(
     }
 
     Ok(stats)
-}
-
-/// Cluster candidates by cosine similarity using greedy nearest-neighbor.
-///
-/// Each candidate is compared to the representative (first member) of existing clusters.
-/// If similarity >= threshold, it joins that cluster; otherwise it starts a new one.
-/// This is O(n * k) where k is the number of clusters formed, not O(n^2).
-fn cluster_by_similarity(
-    candidates: Vec<(PromotionCandidate, Vec<f32>)>,
-    threshold: f32,
-) -> Vec<Vec<(PromotionCandidate, Vec<f32>)>> {
-    let mut clusters: Vec<Vec<(PromotionCandidate, Vec<f32>)>> = Vec::new();
-
-    'outer: for candidate in candidates {
-        if candidate.1.is_empty() {
-            // No embedding — own cluster (will be skipped as singleton).
-            clusters.push(vec![candidate]);
-            continue;
-        }
-
-        for cluster in &mut clusters {
-            let rep = &cluster[0].1;
-            if rep.is_empty() {
-                continue;
-            }
-            let sim = cosine_similarity(&candidate.1, rep);
-            if sim >= threshold {
-                cluster.push(candidate);
-                continue 'outer;
-            }
-        }
-
-        clusters.push(vec![candidate]);
-    }
-
-    clusters
 }
 
 /// Call the LLM to merge a cluster and promote the result to semantic tier.
@@ -390,45 +346,12 @@ async fn call_merge_llm(provider: &AnyProvider, contents: &[&str]) -> Result<Str
         },
     ];
 
-    let timeout = Duration::from_secs(15);
-
-    let result = tokio::time::timeout(timeout, provider.chat(&messages))
-        .await
-        .map_err(|_| MemoryError::Timeout("LLM merge timed out after 15s".into()))?
-        .map_err(MemoryError::Llm)?;
-
-    Ok(result)
+    crate::sweep_helpers::llm_call_with_timeout(provider, &messages, "LLM merge").await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cluster_by_similarity_groups_identical() {
-        // Two identical unit vectors should cluster together at any threshold <= 1.0.
-        let v1 = vec![1.0f32, 0.0, 0.0];
-        let v2 = vec![1.0f32, 0.0, 0.0];
-        let v3 = vec![0.0f32, 1.0, 0.0]; // orthogonal
-
-        let candidates = vec![
-            (make_candidate(1), v1),
-            (make_candidate(2), v2),
-            (make_candidate(3), v3),
-        ];
-
-        let clusters = cluster_by_similarity(candidates, 0.92f32);
-        assert_eq!(clusters.len(), 2, "should produce 2 clusters");
-        assert_eq!(clusters[0].len(), 2, "first cluster should have 2 members");
-        assert_eq!(clusters[1].len(), 1, "second cluster is the orthogonal one");
-    }
-
-    #[test]
-    fn cluster_by_similarity_empty_embeddings_become_singletons() {
-        let candidates = vec![(make_candidate(1), vec![]), (make_candidate(2), vec![])];
-        let clusters = cluster_by_similarity(candidates, 0.92);
-        assert_eq!(clusters.len(), 2);
-    }
 
     fn make_candidate(id: i64) -> PromotionCandidate {
         PromotionCandidate {

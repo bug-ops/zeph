@@ -762,6 +762,143 @@ async fn admitted_then_quality_gate_rejected_records_training_sample_with_no_mes
     );
 }
 
+// ── #5569 DRY refactor coverage: run_admission_gate / run_quality_gate /
+//    record_admission_sample_opt shared by all 4 `remember*` variants ───────────
+
+#[tokio::test]
+async fn remember_tool_output_returns_none_when_admission_rejects() {
+    let memory = test_semantic_memory(false)
+        .await
+        .with_admission_control(make_always_reject_admission());
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    let (opt_id, stored) = memory
+        .remember_tool_output(
+            cid,
+            "assistant",
+            "rejected tool output",
+            "[]",
+            EmbedContext::default(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        opt_id.is_none(),
+        "remember_tool_output must return None when A-MAC rejects"
+    );
+    assert!(!stored, "embedding_stored must be false when rejected");
+    assert_eq!(
+        memory.sqlite.count_training_records().await.unwrap(),
+        1,
+        "rejection must still record exactly one training sample"
+    );
+}
+
+#[tokio::test]
+async fn remember_categorized_returns_none_when_admission_rejects() {
+    let memory = test_semantic_memory(false)
+        .await
+        .with_admission_control(make_always_reject_admission());
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    let result = memory
+        .remember_categorized(cid, "user", "rejected categorized content", None, None)
+        .await
+        .unwrap();
+    assert!(
+        result.is_none(),
+        "remember_categorized must return None when A-MAC rejects"
+    );
+    assert_eq!(
+        memory.sqlite.count_training_records().await.unwrap(),
+        1,
+        "rejection must still record exactly one training sample"
+    );
+}
+
+#[tokio::test]
+async fn remember_tool_output_skips_quality_gate() {
+    // Same gate config as `admitted_then_quality_gate_rejected_records_training_sample_with_no_message_id`,
+    // which reliably rejects this exact pronoun-heavy content for `remember()`. Tool output
+    // must NOT go through the quality gate, so it must be persisted here instead.
+    let gate_config = crate::quality_gate::QualityGateConfig {
+        enabled: true,
+        threshold: 0.75,
+        reference_completeness_weight: 0.9,
+        information_value_weight: 0.05,
+        contradiction_weight: 0.05,
+        ..crate::quality_gate::QualityGateConfig::default()
+    };
+    let memory = test_semantic_memory(false)
+        .await
+        .with_admission_control(make_always_admit_admission())
+        .with_quality_gate(Arc::new(crate::quality_gate::QualityGate::new(gate_config)));
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    let (opt_id, _stored) = memory
+        .remember_tool_output(
+            cid,
+            "assistant",
+            "yeah he confirmed it they said so",
+            "[]",
+            EmbedContext::default(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        opt_id.is_some(),
+        "remember_tool_output must skip the quality gate and persist admitted content"
+    );
+}
+
+#[tokio::test]
+async fn remember_categorized_skips_quality_gate() {
+    let gate_config = crate::quality_gate::QualityGateConfig {
+        enabled: true,
+        threshold: 0.75,
+        reference_completeness_weight: 0.9,
+        information_value_weight: 0.05,
+        contradiction_weight: 0.05,
+        ..crate::quality_gate::QualityGateConfig::default()
+    };
+    let memory = test_semantic_memory(false)
+        .await
+        .with_admission_control(make_always_admit_admission())
+        .with_quality_gate(Arc::new(crate::quality_gate::QualityGate::new(gate_config)));
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    let result = memory
+        .remember_categorized(cid, "user", "yeah he confirmed it they said so", None, None)
+        .await
+        .unwrap();
+    assert!(
+        result.is_some(),
+        "remember_categorized must skip the quality gate and persist admitted content"
+    );
+}
+
+#[tokio::test]
+async fn no_admission_control_configured_proceeds_without_recording_sample() {
+    // test_semantic_memory() leaves admission_control = None, so run_admission_gate must
+    // return Proceed(None) unconditionally and no training sample should ever be recorded.
+    let memory = test_semantic_memory(false).await;
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    let result = memory
+        .remember(cid, "user", "no admission control configured", None)
+        .await
+        .unwrap();
+    assert!(
+        result.is_some(),
+        "message must be persisted when no admission control is configured"
+    );
+    assert_eq!(
+        memory.sqlite.count_training_records().await.unwrap(),
+        0,
+        "no training sample should be recorded without an AdmissionDecision"
+    );
+}
+
 // ── effective_depth tests (MM-F1, #3340) ──────────────────────────────────────
 
 #[tokio::test]

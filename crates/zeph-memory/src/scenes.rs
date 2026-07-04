@@ -16,8 +16,10 @@ use zeph_llm::provider::LlmProvider as _;
 
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
+use crate::sweep_helpers::{
+    EmbedBatchOutcome, cluster_by_cosine_similarity, embed_batch_with_validation,
+};
 use crate::types::{MemSceneId, MessageId};
-use zeph_common::math::cosine_similarity;
 
 /// A `MemScene` groups semantically related semantic-tier messages with a stable entity profile.
 ///
@@ -143,27 +145,12 @@ pub async fn consolidate_scenes(
     // Embed all candidates in a single batch call.
     let texts: Vec<&str> = candidates.iter().map(|(_, c)| c.as_str()).collect();
     let span = tracing::info_span!("memory.scenes.embed_batch", count = texts.len());
-    let vecs = provider.embed_batch(&texts).instrument(span).await;
-    let embedded: Vec<(MessageId, String, Vec<f32>)> = match vecs {
-        Ok(vecs) => {
-            if vecs.len() != texts.len() {
-                tracing::warn!(
-                    expected = texts.len(),
-                    got = vecs.len(),
-                    "scene consolidation: embed_batch length mismatch, skipping sweep"
-                );
-                return Ok(stats);
-            }
-            candidates
-                .into_iter()
-                .zip(vecs)
-                .map(|((msg_id, content), vec)| (msg_id, content, vec))
-                .collect()
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "scene consolidation: batch embed failed, skipping sweep");
-            return Ok(stats);
-        }
+    let vecs = embed_batch_with_validation(provider, &texts, "scene consolidation")
+        .instrument(span)
+        .await;
+    let embedded: Vec<((MessageId, String), Vec<f32>)> = match vecs {
+        EmbedBatchOutcome::Ok(vecs) => candidates.into_iter().zip(vecs).collect(),
+        EmbedBatchOutcome::Skip => return Ok(stats),
     };
 
     if embedded.len() < 2 {
@@ -171,15 +158,15 @@ pub async fn consolidate_scenes(
     }
 
     // Cluster by cosine similarity.
-    let clusters = cluster_messages(embedded, config.similarity_threshold);
+    let clusters = cluster_by_cosine_similarity(embedded, config.similarity_threshold);
 
     for cluster in clusters {
         if cluster.len() < 2 {
             continue;
         }
 
-        let contents: Vec<&str> = cluster.iter().map(|(_, c, _)| c.as_str()).collect();
-        let msg_ids: Vec<MessageId> = cluster.iter().map(|(id, _, _)| *id).collect();
+        let contents: Vec<&str> = cluster.iter().map(|((_, c), _)| c.as_str()).collect();
+        let msg_ids: Vec<MessageId> = cluster.iter().map(|((id, _), _)| *id).collect();
 
         match generate_scene_label_and_profile(provider, &contents).await {
             Ok((label, profile)) => {
@@ -210,26 +197,6 @@ pub async fn consolidate_scenes(
     }
 
     Ok(stats)
-}
-
-fn cluster_messages(
-    candidates: Vec<(MessageId, String, Vec<f32>)>,
-    threshold: f32,
-) -> Vec<Vec<(MessageId, String, Vec<f32>)>> {
-    let mut clusters: Vec<Vec<(MessageId, String, Vec<f32>)>> = Vec::new();
-
-    'outer: for candidate in candidates {
-        for cluster in &mut clusters {
-            let rep = &cluster[0].2;
-            if cosine_similarity(&candidate.2, rep) >= threshold {
-                cluster.push(candidate);
-                continue 'outer;
-            }
-        }
-        clusters.push(vec![candidate]);
-    }
-
-    clusters
 }
 
 async fn generate_scene_label_and_profile(
@@ -269,10 +236,8 @@ async fn generate_scene_label_and_profile(
         },
     ];
 
-    let result = tokio::time::timeout(Duration::from_secs(15), provider.chat(&messages))
-        .await
-        .map_err(|_| MemoryError::Timeout("scene LLM call timed out after 15s".into()))?
-        .map_err(MemoryError::Llm)?;
+    let result =
+        crate::sweep_helpers::llm_call_with_timeout(provider, &messages, "scene LLM call").await?;
 
     parse_label_profile(&result)
 }
@@ -326,24 +291,6 @@ pub async fn list_scenes(store: &SqliteStore) -> Result<Vec<MemScene>, MemoryErr
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cluster_messages_groups_similar() {
-        let v1 = vec![1.0f32, 0.0, 0.0];
-        let v2 = vec![1.0f32, 0.0, 0.0];
-        let v3 = vec![0.0f32, 1.0, 0.0];
-
-        let candidates = vec![
-            (MessageId(1), "a".to_owned(), v1),
-            (MessageId(2), "b".to_owned(), v2),
-            (MessageId(3), "c".to_owned(), v3),
-        ];
-
-        let clusters = cluster_messages(candidates, 0.80);
-        assert_eq!(clusters.len(), 2);
-        assert_eq!(clusters[0].len(), 2);
-        assert_eq!(clusters[1].len(), 1);
-    }
 
     #[test]
     fn parse_label_profile_valid_json() {
