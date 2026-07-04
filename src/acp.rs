@@ -74,8 +74,9 @@ fn log_acp_runtime_paths(config: &zeph_core::config::Config, config_path: &std::
 /// Deliberately excludes anything that spawns a supervised task (`overflow_cleanup`,
 /// `egress_drain`, skill/config watchers) — those stay in [`build_acp_deps`] so plain
 /// `serve-sessions` never silently gains them and standalone ACP never silently loses them now
-/// that both call [`build_shared_core`]. Not feature-gated: `zeph serve-sessions` (feature
-/// `session`) needs it even in builds without `acp`/`acp-http`.
+/// that both call [`build_shared_core`]. Gated on `any(session, acp)`, not just `acp`:
+/// `zeph serve-sessions` (feature `session`) needs it even in builds without `acp`/`acp-http`.
+#[cfg(any(feature = "session", feature = "acp"))]
 pub(crate) struct SharedCore {
     pub(crate) provider: zeph_llm::any::AnyProvider,
     /// Dedicated embedding provider. Never replaced by `/provider switch`.
@@ -98,6 +99,7 @@ pub(crate) struct SharedCore {
 /// # Errors
 ///
 /// Returns an error if provider construction or memory (`SQLite`/Qdrant) initialization fails.
+#[cfg(any(feature = "session", feature = "acp"))]
 pub(crate) async fn build_shared_core(
     app: &crate::bootstrap::AppBuilder,
     supervisor: &zeph_common::TaskSupervisor,
