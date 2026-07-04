@@ -246,3 +246,72 @@ async fn flush_orphaned_noop_when_tool_use_already_paired() {
         "no tombstone must be persisted when all ToolUse parts are already paired"
     );
 }
+
+/// FO5 (#5646 regression): if a later turn's message has already been appended after the
+/// still-orphaned assistant `ToolUse` by the time shutdown runs (e.g. resume-then-dispatch
+/// before the previous orphan was sanitized away), the tombstone must be spliced in
+/// immediately after the orphan — not appended at the true end of history, which would leave
+/// the `ToolUse` still not immediately followed by its `ToolResult`.
+#[tokio::test]
+async fn flush_orphaned_inserts_tombstone_immediately_after_orphan_not_at_end() {
+    use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+
+    let provider = mock_provider(vec![]);
+    let memory = flush_test_memory().await;
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+        std::sync::Arc::new(memory),
+        cid,
+        50,
+        5,
+        100,
+    );
+
+    let messages_before = agent.msg.messages.len();
+    agent.msg.messages.push(Message {
+        role: Role::Assistant,
+        content: "[tool_use]".into(),
+        parts: vec![MessagePart::ToolUse {
+            id: "orphan_1".into(),
+            name: "shell".into(),
+            input: serde_json::json!({}),
+        }],
+        metadata: MessageMetadata::default(),
+    });
+    let orphan_idx = agent.msg.messages.len() - 1;
+    // Simulates a later, unrelated turn's message already appended after the orphan before
+    // shutdown fires (the exact #5646 shape).
+    agent.msg.messages.push(Message {
+        role: Role::User,
+        content: "a later, unrelated turn's message".into(),
+        parts: vec![MessagePart::Text {
+            text: "a later, unrelated turn's message".into(),
+        }],
+        metadata: MessageMetadata::default(),
+    });
+
+    agent.flush_orphaned_tool_use_on_shutdown().await;
+
+    assert_eq!(
+        agent.msg.messages.len(),
+        messages_before + 3,
+        "the tombstone must be added without displacing the later message"
+    );
+    assert!(
+        agent.msg.messages[orphan_idx + 1].parts.iter().any(
+            |p| matches!(p, MessagePart::ToolResult { tool_use_id, is_error, .. }
+                if tool_use_id == "orphan_1" && *is_error)
+        ),
+        "the tombstone must be spliced in immediately after the orphan, not appended after the \
+         later message"
+    );
+    assert_eq!(
+        agent.msg.messages[orphan_idx + 2].content,
+        "a later, unrelated turn's message",
+        "the later message must remain after the tombstone, not before it"
+    );
+}

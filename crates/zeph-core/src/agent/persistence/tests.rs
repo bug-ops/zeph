@@ -2151,7 +2151,9 @@ async fn persist_cancelled_tool_results_pairs_tool_use() {
         },
     ];
 
-    agent.persist_cancelled_tool_results(&tool_calls).await;
+    agent
+        .persist_cancelled_tool_results(&tool_calls, None)
+        .await;
 
     let history = agent
         .services

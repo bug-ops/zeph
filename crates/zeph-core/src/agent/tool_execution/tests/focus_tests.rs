@@ -152,7 +152,7 @@ async fn persist_cancelled_tool_results_is_noop_when_all_ids_already_resolved() 
     let message_count_before = agent.msg.messages.len();
 
     agent
-        .persist_cancelled_tool_results(&[tool_use_request("call-1")])
+        .persist_cancelled_tool_results(&[tool_use_request("call-1")], None)
         .await;
 
     assert_eq!(
@@ -175,7 +175,10 @@ async fn persist_cancelled_tool_results_only_tombstones_unresolved_ids() {
     push_tool_result(&mut agent, "call-1", "real output", false);
 
     agent
-        .persist_cancelled_tool_results(&[tool_use_request("call-1"), tool_use_request("call-2")])
+        .persist_cancelled_tool_results(
+            &[tool_use_request("call-1"), tool_use_request("call-2")],
+            None,
+        )
         .await;
 
     assert_eq!(
@@ -210,7 +213,10 @@ async fn persist_cancelled_tool_results_tombstones_all_ids_when_none_resolved() 
     let mut agent = make_agent();
 
     agent
-        .persist_cancelled_tool_results(&[tool_use_request("call-1"), tool_use_request("call-2")])
+        .persist_cancelled_tool_results(
+            &[tool_use_request("call-1"), tool_use_request("call-2")],
+            None,
+        )
         .await;
 
     assert_eq!(tool_result_count(&agent, "call-1"), 1);
@@ -249,7 +255,7 @@ async fn persist_cancelled_tool_results_writes_tombstone_for_id_reused_in_a_new_
 
     // Turn 2's dispatch gets cancelled before completion.
     agent
-        .persist_cancelled_tool_results(&[tool_use_request("call_0")])
+        .persist_cancelled_tool_results(&[tool_use_request("call_0")], None)
         .await;
 
     assert_eq!(
@@ -258,5 +264,65 @@ async fn persist_cancelled_tool_results_writes_tombstone_for_id_reused_in_a_new_
         "turn 2's cancelled call_0 must still receive its own tombstone ToolResult, \
          separate from turn 1's real result — the guard must not treat a new turn's \
          id-reused call as already resolved"
+    );
+}
+
+/// #5646 regression: `persist_cancelled_tool_results`'s `insert_at: Some(index)` branch must
+/// splice the tombstone message at that exact index rather than appending it at the true end —
+/// direct coverage of the branch itself, complementing the indirect coverage via
+/// `flush_orphaned_tests::flush_orphaned_inserts_tombstone_immediately_after_orphan_not_at_end`,
+/// which only exercises it through `flush_orphaned_tool_use_on_shutdown`.
+#[tokio::test]
+async fn persist_cancelled_tool_results_some_index_inserts_at_that_position() {
+    let mut agent = make_agent();
+
+    // system (idx 0), assistant ToolUse (idx 1), a later unrelated message already appended
+    // after it (idx 2) — mirrors the #5646 shape where a later turn's message lands after the
+    // still-orphaned assistant ToolUse before the tombstone is spliced in.
+    agent.msg.messages.push(Message {
+        role: Role::Assistant,
+        content: "[tool_use]".to_owned(),
+        parts: vec![MessagePart::ToolUse {
+            id: "call-1".to_owned(),
+            name: "bash".to_owned(),
+            input: serde_json::json!({}),
+        }],
+        metadata: MessageMetadata::default(),
+    });
+    let orphan_idx = agent.msg.messages.len() - 1;
+    agent.msg.messages.push(Message {
+        role: Role::User,
+        content: "later unrelated message".to_owned(),
+        parts: vec![MessagePart::Text {
+            text: "later unrelated message".to_owned(),
+        }],
+        metadata: MessageMetadata::default(),
+    });
+    let messages_before = agent.msg.messages.len();
+
+    agent
+        .persist_cancelled_tool_results(&[tool_use_request("call-1")], Some(orphan_idx + 1))
+        .await;
+
+    assert_eq!(
+        agent.msg.messages.len(),
+        messages_before + 1,
+        "exactly one tombstone message must be inserted"
+    );
+    assert!(
+        agent.msg.messages[orphan_idx + 1]
+            .parts
+            .iter()
+            .any(|p| matches!(
+                p,
+                MessagePart::ToolResult { tool_use_id, is_error, .. }
+                    if tool_use_id == "call-1" && *is_error
+            )),
+        "the tombstone must be spliced in at insert_at, not appended at the true end"
+    );
+    assert_eq!(
+        agent.msg.messages[orphan_idx + 2].content,
+        "later unrelated message",
+        "the later message must be pushed one slot forward by the insertion, not displaced"
     );
 }

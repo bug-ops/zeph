@@ -147,7 +147,12 @@ impl<C: Channel> Agent<C> {
             count = unpaired.len(),
             "shutdown: persisting tombstone ToolResults for unpaired in-flight tool calls"
         );
-        self.persist_cancelled_tool_results(&unpaired).await;
+        // Splice immediately after the orphaned assistant message rather than appending at the
+        // true end: a later turn may already have appended its own message past `asst_idx` by
+        // the time shutdown runs (see #5646), and appending there would still leave the ToolUse
+        // not immediately followed by its ToolResult.
+        self.persist_cancelled_tool_results(&unpaired, Some(asst_idx + 1))
+            .await;
     }
     /// Generate and store a lightweight session summary at shutdown when no hard compaction fired.
     ///

@@ -97,7 +97,7 @@ impl<C: Channel> Agent<C> {
                 tracing::info!("tool execution cancelled by user");
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
-                self.persist_cancelled_tool_results(tool_calls).await;
+                self.persist_cancelled_tool_results(tool_calls, None).await;
                 return Ok(true);
             }
             let new_result =
@@ -167,7 +167,7 @@ impl<C: Channel> Agent<C> {
                 tracing::info!("tool execution cancelled by user");
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
-                self.persist_cancelled_tool_results(tool_calls).await;
+                self.persist_cancelled_tool_results(tool_calls, None).await;
                 return Ok(true);
             }
             let is_transient = matches!(
@@ -197,7 +197,7 @@ impl<C: Channel> Agent<C> {
                         tracing::info!("tool retry cancelled by user");
                         self.update_metrics(|m| m.cancellations += 1);
                         self.channel.send("[Cancelled]").await?;
-                        self.persist_cancelled_tool_results(tool_calls).await;
+                        self.persist_cancelled_tool_results(tool_calls, None).await;
                         return Ok(true);
                     }
                 };
@@ -232,7 +232,7 @@ impl<C: Channel> Agent<C> {
                                 tracing::info!("retry backoff interrupted by cancellation");
                                 self.update_metrics(|m| m.cancellations += 1);
                                 self.channel.send("[Cancelled]").await?;
-                                self.persist_cancelled_tool_results(tool_calls).await;
+                                self.persist_cancelled_tool_results(tool_calls, None).await;
                                 return Ok(true);
                             }
                         }
@@ -278,7 +278,7 @@ impl<C: Channel> Agent<C> {
                 tracing::info!("parameter reformat phase cancelled by user");
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
-                self.persist_cancelled_tool_results(tool_calls).await;
+                self.persist_cancelled_tool_results(tool_calls, None).await;
                 return Ok(true);
             }
             let needs_reformat = matches!(
@@ -313,7 +313,7 @@ impl<C: Channel> Agent<C> {
                 tracing::info!("parameter reformat phase cancelled by user");
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
-                self.persist_cancelled_tool_results(tool_calls).await;
+                self.persist_cancelled_tool_results(tool_calls, None).await;
                 return Ok(true);
             }
 
@@ -1180,7 +1180,7 @@ impl<C: Channel> Agent<C> {
                 tracing::info!("tool execution cancelled by user");
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
-                self.persist_cancelled_tool_results(tool_calls).await;
+                self.persist_cancelled_tool_results(tool_calls, None).await;
                 return Ok(None);
             }
 
@@ -1991,7 +1991,7 @@ impl<C: Channel> Agent<C> {
                     tracing::info!("tool execution cancelled by user");
                     self.update_metrics(|m| m.cancellations += 1);
                     self.channel.send("[Cancelled]").await?;
-                    self.persist_cancelled_tool_results(tool_calls).await;
+                    self.persist_cancelled_tool_results(tool_calls, None).await;
                     return Ok(None);
                 }
                 event = recv_elicitation(&mut elicitation_rx) => {

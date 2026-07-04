@@ -364,6 +364,14 @@ impl<C: Channel> Agent<C> {
     /// (e.g. Ollama, which assigns `tool_call` ids as `format!("call_{i}")` by batch index) reuse
     /// the same `tool_use_id` across turns; scanning full history would treat an earlier turn's
     /// legitimate result as covering this turn's call and wrongly skip its tombstone.
+    ///
+    /// `insert_at` places the tombstone at a specific index instead of the true end of history —
+    /// required by `flush_orphaned_tool_use_on_shutdown`, which can run after a later turn's
+    /// message has already been appended past the still-orphaned assistant `ToolUse`; splicing the
+    /// tombstone immediately after that assistant message (rather than after the later message)
+    /// preserves the "`ToolUse` immediately followed by `ToolResult`" invariant. All in-turn
+    /// callers (`tier_loop.rs`) pass `None`: nothing can have been appended after the `ToolUse`
+    /// message yet at that point in the turn, so append-at-end and insert-after-orphan coincide.
     #[tracing::instrument(
         name = "core.tool.persist_cancelled_tool_results",
         skip_all,
@@ -372,6 +380,7 @@ impl<C: Channel> Agent<C> {
     pub(crate) async fn persist_cancelled_tool_results(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
+        insert_at: Option<usize>,
     ) {
         let turn_start = self
             .msg
@@ -406,7 +415,10 @@ impl<C: Channel> Agent<C> {
         let user_msg = Message::from_parts(Role::User, result_parts);
         self.persist_message(Role::User, &user_msg.content, &user_msg.parts, false)
             .await;
-        self.push_message(user_msg);
+        match insert_at {
+            Some(index) => self.insert_message(index, user_msg),
+            None => self.push_message(user_msg),
+        }
     }
 
     /// Handle the `request_compaction` tool call (ARC #4020).

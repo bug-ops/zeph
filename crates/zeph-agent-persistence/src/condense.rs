@@ -437,4 +437,89 @@ mod tests {
             SessionEvent::Condensation { .. }
         ));
     }
+
+    /// #5646 regression, D-6 path: `hydrate_and_condense` — the function `context/assembly.rs`'s
+    /// resume-with-condense path actually calls, per `hydrate_and_condense`'s own module doc —
+    /// must inherit the orphaned-`ToolUse` sanitization from `hydrate_from_event_log` rather
+    /// than replaying it verbatim into the condensation input. Locks in the developer's claim
+    /// that this path needs no separate wiring because it delegates straight into
+    /// `hydrate_from_event_log`.
+    #[tokio::test]
+    async fn hydrate_and_condense_sanitizes_orphaned_tool_use_before_condensing() {
+        let memory = zeph_memory::semantic::SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            None,
+            AnyProvider::Mock(MockProvider::default()),
+            "test-model",
+        )
+        .await
+        .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let store = SessionStore::new(memory.sqlite().pool().clone());
+        store.create("s1").await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::UserMessage {
+                text: "run a slow tool".to_owned(),
+                image_refs: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::AssistantMessage {
+                parts: vec![MessagePart::ToolUse {
+                    id: "call_1".to_owned(),
+                    name: "bash".to_owned(),
+                    input: serde_json::json!({}),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        // No ToolResult event: simulates the process being killed mid-tool-call, same as
+        // hydrate.rs's `orphaned_tool_use_from_killed_session_is_sanitized_on_resume`, but
+        // driven through the condense-wrapping entry point instead.
+        drop(log);
+
+        let condenser = make_condenser(&summary_json());
+        let token_counter = WordCountTokenCounter;
+
+        let hydrated = hydrate_and_condense(
+            dir.path(),
+            &store,
+            "s1",
+            cid,
+            &memory,
+            None,
+            &condenser,
+            &token_counter,
+            10,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            hydrated.messages.len(),
+            1,
+            "the orphaned assistant ToolUse message must be stripped before reaching the \
+             condensation input, leaving only the user turn"
+        );
+        assert_eq!(hydrated.messages[0].role, Role::User);
+        assert!(
+            hydrated
+                .messages
+                .iter()
+                .flat_map(|m| m.parts.iter())
+                .all(|p| !matches!(p, MessagePart::ToolUse { .. })),
+            "no ToolUse part may survive into the returned Hydrated.messages unpaired"
+        );
+    }
 }

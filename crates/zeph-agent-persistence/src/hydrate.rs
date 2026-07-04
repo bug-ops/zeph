@@ -123,7 +123,19 @@ pub async fn hydrate_from_event_log(
         if let Err(e) = reconcile_projection(memory, conversation_id, session_id, &events).await {
             tracing::warn!(error = %e, session_id, "INV-SP-3 projection reconciliation failed");
         }
-        state.messages
+        let mut messages = state.messages;
+        // Messages folded here never carry `metadata.db_id` (populated only when loading from
+        // SQLite) — replay is in-memory-only and the durable log itself is not mutated, so any
+        // ids returned by `sanitize_tool_pairs` are safe to drop rather than soft-delete.
+        let (removed, _db_ids) = crate::sanitize::sanitize_tool_pairs(&mut messages);
+        if removed > 0 {
+            tracing::warn!(
+                session_id,
+                removed,
+                "sanitized orphaned tool_use/tool_result messages on hydrate"
+            );
+        }
+        messages
     };
 
     Ok(Hydrated {
@@ -268,5 +280,67 @@ mod tests {
         // wrote through SessionSink/PersistenceService.
         let history = memory.sqlite().load_history(cid, 10).await.unwrap();
         assert_eq!(history.len(), 2);
+    }
+
+    /// #5646 regression: a session killed mid-tool-call (no `ToolResult` event ever appended)
+    /// must have its orphaned assistant `ToolUse` sanitized away on the very next resume,
+    /// instead of being replayed verbatim into a live agent — which previously produced a
+    /// `tool_calls` message with no matching `tool` response and a 400 from `OpenAI`.
+    #[tokio::test]
+    async fn orphaned_tool_use_from_killed_session_is_sanitized_on_resume() {
+        use zeph_llm::provider::{MessagePart, Role};
+        use zeph_session::SessionEvent;
+
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let store = SessionStore::new(memory.sqlite().pool().clone());
+        store.create("s1").await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::UserMessage {
+                text: "run a slow tool".to_owned(),
+                image_refs: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::AssistantMessage {
+                parts: vec![MessagePart::ToolUse {
+                    id: "call_1".to_owned(),
+                    name: "bash".to_owned(),
+                    input: serde_json::json!({}),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        // No ToolResult event: simulates the process being killed mid-tool-call.
+        drop(log);
+
+        let hydrated = hydrate_from_event_log(dir.path(), &store, "s1", cid, &memory, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            hydrated.messages.len(),
+            1,
+            "the orphaned assistant ToolUse message must be stripped, leaving only the user turn"
+        );
+        assert_eq!(hydrated.messages[0].role, Role::User);
+        assert!(
+            hydrated
+                .messages
+                .iter()
+                .flat_map(|m| m.parts.iter())
+                .all(|p| !matches!(p, MessagePart::ToolUse { .. })),
+            "no ToolUse part may survive into the replayed history unpaired"
+        );
     }
 }

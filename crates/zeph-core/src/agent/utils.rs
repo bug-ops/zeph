@@ -257,6 +257,25 @@ impl<C: Channel> Agent<C> {
         self.detect_magic_docs_in_messages();
     }
 
+    /// Like [`Self::push_message`], but splices `msg` at `index` instead of appending it at the
+    /// true end — for repairing an out-of-order shutdown-flush tombstone (see
+    /// `shutdown::flush_orphaned_tool_use_on_shutdown`) where a later turn's message may already
+    /// have been appended after the orphaned assistant message this tombstone must immediately
+    /// follow. Token accounting and `MagicDoc` detection are position-independent, so both are
+    /// shared with `push_message`.
+    pub(super) fn insert_message(&mut self, index: usize, msg: Message) {
+        self.runtime.providers.cached_prompt_tokens +=
+            self.runtime
+                .metrics
+                .token_counter
+                .count_message_tokens(&msg) as u64;
+        if msg.role == zeph_llm::provider::Role::Assistant {
+            self.services.session.last_assistant_at = Some(std::time::Instant::now());
+        }
+        self.msg.messages.insert(index, msg);
+        self.detect_magic_docs_in_messages();
+    }
+
     pub(crate) fn record_cost_and_cache(&self, input_tokens: u64, output_tokens: u64) {
         let (cache_write, cache_read) = self.provider.last_cache_usage().unwrap_or((0, 0));
 
@@ -423,6 +442,63 @@ mod tests {
         assert_eq!(
             agent.runtime.providers.cached_prompt_tokens,
             before + expected_delta
+        );
+    }
+
+    /// #5646: `insert_message` must splice at the given index (not append at the end) while
+    /// still tracking token accounting identically to `push_message` — direct coverage of the
+    /// method itself, complementing its indirect exercise via
+    /// `flush_orphaned_tests::flush_orphaned_inserts_tombstone_immediately_after_orphan_not_at_end`
+    /// and `focus_tests::persist_cancelled_tool_results_some_index_inserts_at_that_position`.
+    #[test]
+    fn insert_message_splices_at_index_and_tracks_tokens() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.msg.messages.push(Message {
+            role: Role::User,
+            content: "first".to_string(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+        agent.msg.messages.push(Message {
+            role: Role::User,
+            content: "third".to_string(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+        let insert_idx = agent.msg.messages.len() - 1;
+        let before_tokens = agent.runtime.providers.cached_prompt_tokens;
+
+        let msg = Message {
+            role: Role::User,
+            content: "second".to_string(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        };
+        let expected_delta = agent
+            .runtime
+            .metrics
+            .token_counter
+            .count_message_tokens(&msg) as u64;
+        agent.insert_message(insert_idx, msg);
+
+        assert_eq!(
+            agent.msg.messages[insert_idx].content, "second",
+            "message must be spliced at the given index"
+        );
+        assert_eq!(
+            agent.msg.messages[insert_idx + 1].content,
+            "third",
+            "the message previously at insert_idx must be pushed one slot forward"
+        );
+        assert_eq!(
+            agent.runtime.providers.cached_prompt_tokens,
+            before_tokens + expected_delta,
+            "insert_message must track token accounting identically to push_message"
         );
     }
 

@@ -157,6 +157,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   re-acquires the write lock to swap in the new registry once the blocking work has finished
   off the async path. A panicked rebuild now logs and leaves the existing registry unchanged
   instead of losing the lock's contents. (#5640)
+- `fix(agent)`: killing `zeph` mid-tool-call and resuming the same session (e.g.
+  `--json --auto` default continuation, ACP resume, `/conv resume`, `zeph serve` reactivation)
+  no longer permanently corrupts message history with orphaned `tool_calls` (3rd occurrence of
+  the defect class previously fixed by #5476 and #5541). Two compounding bugs, both in the
+  spec-068/D-10 unified resume pipeline: (1) `hydrate_from_event_log`
+  (`crates/zeph-agent-persistence/src/hydrate.rs`) never ran `sanitize_tool_pairs` on replayed
+  messages — every D-10 resume path bypassed the sanitizer entirely, since it was wired only
+  into the older SQLite-only `PersistenceService::load_history` path. (2) the shutdown-flush
+  repair (`flush_orphaned_tool_use_on_shutdown` /
+  `persist_cancelled_tool_results`, `crates/zeph-core/src/agent/{shutdown.rs,
+  tool_execution/focus.rs}`) always appended its `[Cancelled]` tombstone at the true end of
+  history via `push_message`, which is only correct when the orphaned `ToolUse` is the last
+  message — not true once a new turn's message has already been appended after it. Fixed by
+  wiring `sanitize_tool_pairs` into `hydrate_from_event_log` (a single shared choke point
+  covering all D-10 resume paths, including the `hydrate_and_condense` D-6 path) and by adding
+  `Agent::insert_message` so the tombstone splices in immediately after the orphaned assistant
+  message instead of always appending at the end. A provider-level pre-serialization guard for
+  OpenAI/compatible (Claude's request builder already has one) is a valid follow-up, deliberately
+  deferred — the two fixes above repair the persisted/replayed history at its source. (#5646)
 - `fix(memory)`: three async/DB hygiene issues in `zeph-memory`.
   - `EntityResolver::llm_disambiguate` (`crates/zeph-memory/src/graph/resolver/mod.rs`) called
     `provider.chat()` with no timeout, violating this project's Await Discipline convention.
