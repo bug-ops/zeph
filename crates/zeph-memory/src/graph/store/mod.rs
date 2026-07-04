@@ -327,7 +327,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the PRAGMA execution fails.
-    #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+    #[cfg(feature = "sqlite")]
     #[tracing::instrument(name = "memory.graph.store.checkpoint_wal", skip_all)]
     pub async fn checkpoint_wal(&self) -> Result<(), MemoryError> {
         zeph_db::query("PRAGMA wal_checkpoint(PASSIVE)")
@@ -2271,7 +2271,7 @@ impl GraphStore {
 
 // ── Dialect helpers ───────────────────────────────────────────────────────────
 
-#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+#[cfg(feature = "sqlite")]
 fn community_ids_sql(placeholders: &str) -> String {
     format!(
         "SELECT CAST(j.value AS INTEGER) AS entity_id, c.id AS community_id

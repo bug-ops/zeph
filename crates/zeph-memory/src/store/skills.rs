@@ -583,7 +583,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the delete fails.
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tracing::instrument(skip_all, name = "memory.skills.prune_skill_versions")]
     pub async fn prune_skill_versions(
         &self,
@@ -728,7 +728,7 @@ impl SqliteStore {
     ///
     /// # Errors
     /// Returns [`MemoryError`] on query failure.
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tracing::instrument(skip_all, name = "memory.skills.find_recurring_patterns")]
     pub async fn find_recurring_patterns(
         &self,
@@ -809,7 +809,7 @@ impl SqliteStore {
     ///
     /// # Errors
     /// Returns [`MemoryError`] on delete failure.
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tracing::instrument(skip_all, name = "memory.skills.prune_tool_usage_log")]
     pub async fn prune_tool_usage_log(&self, retention_days: u32) -> Result<u64, MemoryError> {
         let result = zeph_db::query(sql!(
@@ -869,7 +869,7 @@ impl SqliteStore {
     ///
     /// # Errors
     /// Returns [`MemoryError`] on update failure.
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tracing::instrument(skip_all, name = "memory.skills.increment_heuristic_use_count")]
     pub async fn increment_heuristic_use_count(&self, id: i64) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
@@ -963,7 +963,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns [`MemoryError`] on query failure.
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tracing::instrument(skip_all, name = "memory.skills.find_step_corrections")]
     pub async fn find_step_corrections(
         &self,
@@ -1118,7 +1118,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns [`MemoryError`] on query failure.
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tracing::instrument(skip_all, name = "memory.skills.save_routing_head_weights")]
     pub async fn save_routing_head_weights(
         &self,

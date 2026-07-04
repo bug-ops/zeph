@@ -364,7 +364,7 @@ mod tests {
     // (mirroring `zeph-durable`'s `writer.rs`/`local.rs` test modules): under `--features postgres`
     // `DbConfig::connect()` takes cfg-priority and routes `:memory:` into `connect_postgres`, which
     // fails to parse it as a Postgres URL. See #5608.
-    #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+    #[cfg(feature = "sqlite")]
     mod with_backend {
         use zeph_durable::{DurableBackendEnum, DurableConfig, JournalWriter, LocalBackend};
 

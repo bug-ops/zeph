@@ -1510,7 +1510,7 @@ fn static_entry_tag(tag: &str) -> &'static str {
 // whose `:memory:` pool is SQLite-specific). The dialect-agnostic `sql!()` SQL and `i64`/`Vec<u8>`
 // column types are verified to compile under the Postgres feature; live Postgres parity is exercised
 // by the `#[ignore]`d integration test below.
-#[cfg(all(test, feature = "sqlite", not(feature = "postgres")))]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use std::assert_matches;
 

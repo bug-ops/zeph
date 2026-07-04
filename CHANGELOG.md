@@ -86,6 +86,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   behavior change; existing test coverage extended to target the new shared functions
   directly (moved clustering tests into `sweep_helpers.rs`, added per-`remember*`-variant
   admission/quality-gate coverage in `semantic/tests/recall.rs`).
+- `refactor(cargo)`: split 4 crates' (`zeph-orchestration`, `zeph-memory`, `zeph-tui`,
+  `zeph-acp`) `default` feature arrays that bundled the `sqlite`/`postgres`
+  backend-selection axis with an unrelated functional feature (`llm-planning`,
+  `jsonschema`, `clipboard`, and 6 `unstable-*` ACP features respectively) — a future
+  backend-only change could otherwise silently drop an unrelated feature for any
+  consumer relying on the bundled default instead of an explicit dependency
+  declaration. Every split-out feature was verified to already be declared explicitly
+  by its real consumer (`zeph-core`'s `llm-planning`, `zeph-context`'s `jsonschema`)
+  (#5631). Simplified 45 now-redundant `all(feature = "sqlite", not(feature =
+  "postgres"))` / bare `not(feature = "postgres")` cfg guards to plain `feature =
+  "sqlite"` across 7 crates (`zeph-scheduler`, `zeph-durable`, `zeph-memory`,
+  `zeph-index`, `zeph-core`, `zeph-subagent`, `zeph-orchestration`), mirroring the
+  pattern already applied to `zeph-db` for #5571 — safe because `zeph-db`'s
+  `compile_error!` guarantees both-enabled and neither-enabled are unreachable states,
+  so `not(postgres) ⟺ sqlite` for every state in which the crate compiles (#5632).
+  Also restored `zeph-acp/unstable-session-usage` forwarding in root `Cargo.toml`'s
+  `acp` feature list, recovering 4 unit tests that the `zeph-acp` default-array split
+  had silently dropped from the CI-matching test run. Pure Cargo-hygiene change, no
+  runtime behavior change.
 
 ### Fixed
 

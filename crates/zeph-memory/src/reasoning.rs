@@ -961,7 +961,7 @@ mod tests {
     // These tests hardcode `sqlx::SqlitePool` and are not portable to PostgreSQL;
     // skipped entirely when `postgres` is the active backend (see issue #5364).
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     async fn make_test_pool() -> DbPool {
         let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
         sqlx::query(
@@ -982,7 +982,7 @@ mod tests {
         pool
     }
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     fn make_strategy(id: &str) -> ReasoningStrategy {
         ReasoningStrategy {
             id: id.to_owned(),
@@ -996,7 +996,7 @@ mod tests {
         }
     }
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn insert_and_fetch_by_ids() {
         let pool = make_test_pool().await;
@@ -1011,7 +1011,7 @@ mod tests {
         assert_eq!(rows[0].outcome, Outcome::Success);
     }
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn mark_used_increments_count() {
         let pool = make_test_pool().await;
@@ -1026,7 +1026,7 @@ mod tests {
         assert_eq!(rows[0].use_count, 2);
     }
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn mark_used_empty_is_noop() {
         let pool = make_test_pool().await;
@@ -1035,7 +1035,7 @@ mod tests {
         mem.mark_used(&[]).await.unwrap();
     }
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn count_returns_correct_total() {
         let pool = make_test_pool().await;
@@ -1050,7 +1050,7 @@ mod tests {
         assert_eq!(mem.count().await.unwrap(), 5);
     }
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn evict_lru_cold_rows() {
         let pool = make_test_pool().await;
@@ -1069,7 +1069,7 @@ mod tests {
         assert_eq!(mem.count().await.unwrap(), 3);
     }
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn evict_lru_respects_hot_rows_under_ceiling() {
         let pool = make_test_pool().await;
@@ -1092,7 +1092,7 @@ mod tests {
         assert_eq!(mem.count().await.unwrap(), 5);
     }
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn evict_lru_hard_ceiling_forces_deletion() {
         let pool = make_test_pool().await;
@@ -1114,7 +1114,7 @@ mod tests {
         assert_eq!(remaining, 3, "should be trimmed to store_limit");
     }
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn evict_lru_no_op_when_under_limit() {
         let pool = make_test_pool().await;
@@ -1133,7 +1133,7 @@ mod tests {
 
     // ── mark_used chunked path ────────────────────────────────────────────────
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn mark_used_chunked_over_490_ids() {
         let pool = make_test_pool().await;
@@ -1203,7 +1203,7 @@ mod tests {
 
     // ── process_turn smoke test ───────────────────────────────────────────────
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn process_turn_with_empty_messages_is_noop() {
         use zeph_llm::any::AnyProvider;

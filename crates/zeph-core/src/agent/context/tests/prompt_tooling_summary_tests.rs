@@ -1523,7 +1523,7 @@ use crate::agent::context::chunk_messages;
 
 // ── G3: active_goal appears after <!-- cache:volatile --> ──────────────────────
 
-#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+#[cfg(feature = "sqlite")]
 async fn goal_test_store() -> crate::goal::GoalStore {
     let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
     sqlx::query(
@@ -1547,7 +1547,7 @@ async fn goal_test_store() -> crate::goal::GoalStore {
     crate::goal::GoalStore::new(std::sync::Arc::new(pool))
 }
 
-#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn g3_active_goal_appears_after_volatile_marker() {
     use crate::goal::GoalAccounting;

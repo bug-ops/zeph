@@ -231,23 +231,23 @@ impl IndexWatcher {
 mod tests {
     use super::*;
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     use zeph_llm::any::AnyProvider;
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     use zeph_llm::ollama::OllamaProvider;
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     use zeph_memory::QdrantOps;
 
     // Hardcodes `sqlx::SqlitePool` and is not portable to PostgreSQL; skipped entirely
     // when `postgres` is the active backend (see issue #5364).
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     async fn create_test_pool() -> zeph_db::DbPool {
         zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
             .await
             .unwrap()
     }
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     async fn create_test_indexer() -> Arc<CodeIndexer> {
         let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
         let store = crate::store::CodeStore::with_ops(ops, create_test_pool().await);
@@ -263,7 +263,7 @@ mod tests {
         ))
     }
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn start_with_valid_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -271,7 +271,7 @@ mod tests {
         assert!(watcher.is_ok());
     }
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn start_with_nonexistent_directory_fails() {
         let result = IndexWatcher::start(

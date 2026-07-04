@@ -265,7 +265,7 @@ mod tests {
     // `postgres` features enable `zeph-db/postgres` directly), `DbConfig::connect()` takes
     // cfg-priority and routes `:memory:` into `connect_postgres`, which fails to parse it as a
     // Postgres URL. See #5608.
-    #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn durable_promise_resolve_and_await_roundtrip() {
         use std::sync::Arc;

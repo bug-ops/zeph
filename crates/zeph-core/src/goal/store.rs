@@ -313,7 +313,7 @@ impl GoalRow {
     }
 }
 
-#[cfg(all(test, feature = "sqlite", not(feature = "postgres")))]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use std::assert_matches;
 

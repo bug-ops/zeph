@@ -471,7 +471,7 @@ impl JobStore {
 // Every test in this module opens a real connection pool via the `:memory:` sentinel, which is
 // SQLite-specific: under `--features postgres`, `DbConfig::connect()` takes cfg-priority and routes
 // `:memory:` into `connect_postgres`, which fails to parse it as a Postgres URL. See #5608.
-#[cfg(all(test, feature = "sqlite", not(feature = "postgres")))]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
 

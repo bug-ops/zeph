@@ -358,7 +358,7 @@ mod tests {
         assert_eq!(received, 2, "the over-capacity buffered entry is dropped");
     }
 
-    #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+    #[cfg(feature = "sqlite")]
     mod with_backend {
         use super::*;
         use crate::DurableConfig;

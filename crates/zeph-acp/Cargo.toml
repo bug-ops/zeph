@@ -13,15 +13,7 @@ description = "ACP (Agent Client Protocol) server for IDE embedding"
 readme = "README.md"
 
 [features]
-default = [
-    "sqlite",
-    "unstable-session-delete",
-    "unstable-session-fork",
-    "unstable-session-usage",
-    "unstable-logout",
-    "unstable-elicitation",
-    "unstable-llm-providers",
-]
+default = ["sqlite"]
 # `zeph-memory`/`zeph-db` require a backend to compile; default to `sqlite` so this crate
 # builds in isolation, and expose `postgres` for PostgreSQL deployments (#4956).
 sqlite = ["zeph-memory/sqlite", "zeph-session/sqlite", "zeph-core/sqlite", "zeph-mcp/sqlite", "zeph-tools/sqlite"]

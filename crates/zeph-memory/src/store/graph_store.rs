@@ -61,7 +61,7 @@ impl RawGraphStore for TaskGraphStore {
         Ok(())
     }
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     #[tracing::instrument(skip_all, name = "memory.graph.load_graph")]
     async fn load_graph(&self, id: &str) -> Result<Option<String>, DbError> {
         let row: Option<(String,)> =
@@ -73,7 +73,7 @@ impl RawGraphStore for TaskGraphStore {
         Ok(row.map(|(json,)| json))
     }
 
-    #[cfg(not(feature = "postgres"))]
+    #[cfg(feature = "sqlite")]
     async fn list_graphs(&self, limit: u32) -> Result<Vec<GraphSummary>, DbError> {
         let rows: Vec<(String, String, String, String, Option<String>)> = zeph_db::query_as(sql!(
             "SELECT id, goal, status, created_at, finished_at \

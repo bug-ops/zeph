@@ -312,7 +312,7 @@ impl IngestLedger {
 
 // Hardcodes `sqlx::SqlitePool` and is not portable to PostgreSQL; skipped entirely
 // when `postgres` is the active backend (see issue #5364).
-#[cfg(all(test, not(feature = "postgres")))]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
 

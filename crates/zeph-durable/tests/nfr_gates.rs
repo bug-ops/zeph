@@ -12,7 +12,7 @@
 //! the `src/`-side `with_backend` test modules): under `--features postgres`, `DbConfig::connect()`
 //! takes cfg-priority and routes `:memory:` into `connect_postgres`, which fails to parse it as a
 //! Postgres URL. See #5603.
-#![cfg(all(feature = "sqlite", not(feature = "postgres")))]
+#![cfg(feature = "sqlite")]
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

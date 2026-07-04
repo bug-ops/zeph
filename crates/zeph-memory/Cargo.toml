@@ -47,7 +47,7 @@ zeph-scheduler = { workspace = true, optional = true }
 
 [features]
 profiling = []
-default = ["sqlite", "jsonschema"]
+default = ["sqlite"]
 jsonschema = ["zeph-common/jsonschema"]
 pdf = ["dep:pdf-extract"]
 scheduler = ["dep:zeph-scheduler"]

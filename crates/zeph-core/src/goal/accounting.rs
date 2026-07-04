@@ -177,7 +177,7 @@ impl GoalAccounting {
     }
 }
 
-#[cfg(all(test, feature = "sqlite", not(feature = "postgres")))]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use std::sync::Arc;
 
