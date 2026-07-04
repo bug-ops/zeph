@@ -58,6 +58,7 @@ use zeph_common::SkillTrustLevel;
 
 use crate::error::SkillError;
 use crate::loader::{Skill, SkillMeta, load_skill_body, load_skill_meta, validate_path_within};
+use crate::resource::{SkillResources, discover_resources};
 use crate::scanner::{EscalationResult, ScanResult, check_capability_escalation, scan_skill_body};
 
 /// Maximum directory depth searched for `SKILL.md` files relative to a base directory.
@@ -71,6 +72,7 @@ const MAX_SKILL_DEPTH: usize = 16;
 struct SkillEntry {
     meta: SkillMeta,
     body: OnceLock<String>,
+    resources: OnceLock<SkillResources>,
 }
 
 /// In-process skill registry with lazy body loading and content fingerprinting.
@@ -207,6 +209,7 @@ impl SkillRegistry {
                             entries.push(SkillEntry {
                                 meta,
                                 body: OnceLock::new(),
+                                resources: OnceLock::new(),
                             });
                         } else {
                             tracing::debug!("duplicate skill '{}', skipping", skill_path.display());
@@ -337,13 +340,38 @@ impl SkillRegistry {
         Ok(entry.body.get().map_or("", String::as_str))
     }
 
-    /// Get a full Skill (meta + body) by name.
+    /// Get the discovered resource files (`scripts/`, `references/`, `assets/`) for a
+    /// skill, computing and caching them on first access — mirrors the lazy [`Self::body`]
+    /// cache and is invalidated the same way (a full [`Self::reload`] replaces `self`,
+    /// dropping all `OnceLock`s).
+    ///
+    /// Note: the filesystem watcher (`watcher.rs`) only triggers a reload on `SKILL.md`
+    /// changes, not on changes under `scripts/`/`references/`/`assets/`. Adding or
+    /// removing a resource file without touching `SKILL.md` is not reflected until the
+    /// next `SKILL.md`-triggered reload or restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no skill with that name is registered.
+    pub fn resources(&self, name: &str) -> Result<&SkillResources, SkillError> {
+        let entry = self
+            .entries
+            .iter()
+            .find(|e| e.meta.name == name)
+            .ok_or_else(|| SkillError::NotFound(name.to_string()))?;
+        Ok(entry
+            .resources
+            .get_or_init(|| discover_resources(&entry.meta.skill_dir)))
+    }
+
+    /// Get a full Skill (meta + body + resources) by name.
     ///
     /// # Errors
     ///
     /// Returns an error if the skill is not found or body cannot be loaded.
     pub fn skill(&self, name: &str) -> Result<Skill, SkillError> {
         let body = self.body(name)?.to_owned();
+        let resources = self.resources(name)?.clone();
         let entry = self
             .entries
             .iter()
@@ -353,6 +381,7 @@ impl SkillRegistry {
         Ok(Skill {
             meta: entry.meta.clone(),
             body,
+            resources,
         })
     }
 
@@ -472,12 +501,23 @@ impl SkillRegistry {
                         }
                     },
                 };
+                let resources = entry
+                    .resources
+                    .into_inner()
+                    .unwrap_or_else(|| discover_resources(&entry.meta.skill_dir));
                 Some(Skill {
                     meta: entry.meta,
                     body,
+                    resources,
                 })
             })
             .collect()
+    }
+
+    /// Currently registered hub-managed directories (see [`Self::with_hub_dirs`]).
+    #[must_use]
+    pub fn hub_dirs(&self) -> &[PathBuf] {
+        &self.hub_dirs
     }
 }
 

@@ -759,7 +759,6 @@ impl<C: Channel> Agent<C> {
     }
 
     #[tracing::instrument(name = "core.context.rebuild_system_prompt", skip_all, level = "debug")]
-    #[allow(clippy::too_many_lines)] // system prompt assembly: skills + tools + knowledge sections, tightly coupled formatting
     pub(in crate::agent) async fn rebuild_system_prompt(&mut self, query: &str) {
         let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
             .services
@@ -772,51 +771,334 @@ impl<C: Channel> Agent<C> {
             .collect();
         let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta.iter().collect();
         let all_meta = all_meta_refs;
-        // Tracks only skills that were genuinely scored by the embedding matcher.
-        // Stays empty when falling back to the full skill set (no matcher, embed failure).
-        let mut skills_to_record: Vec<String> = Vec::new();
 
         // A3: optionally rewrite query via a fast LLM call to improve retrieval quality.
-        let rewritten_query: Option<String> = {
-            let provider_name = self.services.skill.query_rewrite_provider_name.clone();
-            if provider_name.is_empty() {
-                None
-            } else {
-                let rewrite_provider = self.resolve_background_provider(&provider_name);
-                let span = tracing::info_span!("skills.matcher.query_rewrite");
-                let prompt = format!(
-                    "Rewrite this user message as a concise skill-matching query. \
-                     Return only the rewritten query, nothing else.\nUser message: {query}"
-                );
-                let messages = vec![zeph_llm::provider::Message::from_legacy(
-                    zeph_llm::provider::Role::User,
-                    prompt,
-                )];
-                // PAAC secret masking (#5437) is structural at the provider boundary —
-                // `rewrite_provider` (via `resolve_background_provider`) masks registered
-                // secrets from `messages` transparently before this dispatch.
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    rewrite_provider.chat(&messages).instrument(span),
-                )
-                .await
-                {
-                    Ok(Ok(response)) => {
-                        let rewritten = response.trim().to_string();
-                        validate_query_rewrite(query, &rewritten)
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!("query rewrite failed: {e:#}; using original query");
-                        None
-                    }
-                    Err(_) => {
-                        tracing::warn!("query rewrite timed out after 5s; using original query");
-                        None
-                    }
-                }
-            }
-        };
+        let rewritten_query = self.rewrite_query_for_skill_matching(query).await;
         let effective_query = rewritten_query.as_deref().unwrap_or(query);
+
+        let (matched_indices, skill_fallback_mode, skills_to_record) = self
+            .match_and_rank_skills(query, effective_query, &all_meta)
+            .await;
+        let matched_indices = self.filter_skills_missing_secrets(&all_meta, matched_indices);
+
+        self.services.skill.active_skill_names = matched_indices
+            .iter()
+            .filter_map(|&i| all_meta.get(i).map(|m| m.name.clone()))
+            .collect();
+
+        let skill_names = self.services.skill.active_skill_names.clone();
+        let total = all_meta.len();
+        self.update_metrics(|m| {
+            m.active_skills = skill_names;
+            m.total_skills = total;
+        });
+
+        if !skills_to_record.is_empty()
+            && let Some(memory) = &self.services.memory.persistence.memory
+        {
+            let names: Vec<&str> = skills_to_record.iter().map(String::as_str).collect();
+            if let Err(e) = memory.sqlite().record_skill_usage(&names).await {
+                tracing::warn!("failed to record skill usage: {e:#}");
+            }
+        }
+        self.update_skill_confidence_metrics().await;
+
+        let (all_skills, active_skills, matched_indices) =
+            self.load_and_filter_skills_by_channel(&all_meta, &matched_indices);
+
+        let (trust_map, remaining_skills) = self
+            .apply_skill_trust_and_gating(&all_skills, &active_skills)
+            .await;
+
+        // Build health_map: skill_name -> (posterior_mean, total_uses) for XML attributes.
+        let health_map: std::collections::HashMap<String, (f64, u32)> = if let Some(memory) =
+            &self.services.memory.persistence.memory
+        {
+            memory
+                .sqlite()
+                .load_skill_outcome_stats()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|m| {
+                    let successes = u32::try_from(m.successes).unwrap_or(0);
+                    let failures = u32::try_from(m.failures).unwrap_or(0);
+                    let total = successes + failures;
+                    let posterior = zeph_skills::trust_score::posterior_mean(successes, failures);
+                    (m.skill_name, (posterior, total))
+                })
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+
+        let (mut skills_prompt, effective_mode) = self.format_active_skills_prompt(
+            &active_skills,
+            &matched_indices,
+            &trust_map,
+            &health_map,
+            skill_fallback_mode,
+        );
+        // ERL: append learned heuristics for active skills (no-op when erl_enabled = false).
+        let erl_suffix = self.build_erl_heuristics_prompt().await;
+        if !erl_suffix.is_empty() {
+            skills_prompt.push_str(&erl_suffix);
+        }
+        let catalog_prompt = format_skills_catalog(&remaining_skills);
+        self.services
+            .skill
+            .last_skills_prompt
+            .clone_from(&skills_prompt);
+        self.services.session.env_context.refresh_git_branch();
+        self.services
+            .session
+            .env_context
+            .model_name
+            .clone_from(&self.runtime.config.model_name);
+
+        // MCP tool discovery (#2321 / #2298): select tools relevant to this turn's query.
+        // Strategy dispatch: Embedding (new), Llm (existing prune_tools_cached), None (all).
+        // Runs before the schema filter so the selected subset feeds into the combined
+        // (native + MCP) tool set that the schema filter operates on.
+        self.discover_mcp_tools_for_turn(query).await;
+
+        // Dynamic tool schema filtering (#2020): compute once per turn, cache for native path.
+        // Query embedding is computed here; when strategy=Embedding already computed it above,
+        // but providers are stateless so a second embed() call is acceptable for MVP.
+        self.filter_tool_schemas_for_turn(query).await;
+
+        self.assemble_final_system_prompt(
+            query,
+            &skills_prompt,
+            &catalog_prompt,
+            effective_mode,
+            skill_fallback_mode,
+        )
+        .await;
+    }
+
+    /// Assembles the final system prompt from `skills_prompt`/`catalog_prompt` plus the
+    /// stable/semi-stable/volatile cache-marker sections (MCP prompt, project context,
+    /// repo map, learned preferences, active goal, guest context, caveman directive,
+    /// budget hint), then writes the result into `self.msg.messages[0]`.
+    #[allow(clippy::too_many_lines)] // strictly sequential prompt-section assembly: stable + semi-stable + volatile blocks, in order
+    async fn assemble_final_system_prompt(
+        &mut self,
+        query: &str,
+        skills_prompt: &str,
+        catalog_prompt: &str,
+        effective_mode: crate::config::SkillPromptMode,
+        skill_fallback_mode: bool,
+    ) {
+        // BLOCK 1: stable within a session — base prompt + skills + tool catalog
+        // Instruction blocks are passed separately and injected in the volatile section.
+        #[allow(unused_mut)]
+        let mut system_prompt = build_system_prompt_with_instructions(
+            skills_prompt,
+            Some(&self.services.session.env_context),
+            &self.runtime.instructions.blocks,
+        );
+
+        // BLOCK 2: semi-stable within a session — skills catalog, MCP, project context, repo map
+        if !catalog_prompt.is_empty() {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(catalog_prompt);
+        }
+
+        system_prompt.push_str("\n<!-- cache:stable -->");
+
+        self.append_mcp_prompt(query, &mut system_prompt).await;
+
+        let cwd = match self.services.session.env_context.working_dir.as_str() {
+            "" | "unknown" => std::env::current_dir().unwrap_or_default(),
+            dir => PathBuf::from(dir),
+        };
+        let project_configs = crate::project::discover_project_configs(&cwd);
+        let project_context = crate::project::load_project_context(&project_configs);
+        if !project_context.is_empty() {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&project_context);
+        }
+
+        if self.services.index.repo_map_tokens > 0 {
+            let now = std::time::Instant::now();
+            let map = if let Some((ref cached, generated_at)) = self.services.index.cached_repo_map
+                && now.duration_since(generated_at) < self.services.index.repo_map_ttl
+            {
+                cached.clone()
+            } else {
+                let cwd2 = cwd.clone();
+                let token_budget = self.services.index.repo_map_tokens;
+                let tc = Arc::clone(&self.runtime.metrics.token_counter);
+                let fresh = tokio::task::spawn_blocking(move || {
+                    zeph_index::repo_map::generate_repo_map(&cwd2, token_budget, &tc)
+                })
+                .await
+                .unwrap_or_else(|_| Ok(String::new()))
+                .unwrap_or_default();
+                self.services.index.cached_repo_map = Some((fresh.clone(), now));
+                fresh
+            };
+            if !map.is_empty() {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(&map);
+            }
+        }
+
+        // BLOCK 3: volatile — dynamic per-turn content, never cached
+        system_prompt.push_str("\n<!-- cache:volatile -->");
+
+        // Inject learned user preferences after the volatile marker so they
+        // do not invalidate the stable/semi-stable cache blocks (S2 fix).
+        self.inject_learned_preferences(&mut system_prompt).await;
+
+        // Inject active goal block (G3 invariant: appears after <!-- cache:volatile -->).
+        // Only injected when goal tracking is enabled and an active goal exists.
+        self.inject_active_goal(&mut system_prompt).await;
+
+        // Inject guest-context annotation for Telegram guest_message queries.
+        // Kept in the volatile block so it does not pollute the prompt cache.
+        if self.services.session.is_guest_context {
+            system_prompt.push_str(
+                "\n\n[CONTEXT: This message comes from a Telegram guest query. \
+                 Provide a concise, self-contained response — \
+                 the recipient may not have prior conversation context.]",
+            );
+        }
+
+        // Inject caveman ultra-compressed output directive (#4985).
+        // Placed in the volatile block so toggling does not invalidate the stable/semi-stable cache.
+        if should_inject_caveman_directive(
+            self.services.session.caveman_active,
+            &self.services.skill.active_skill_names,
+            effective_mode,
+            skill_fallback_mode,
+        ) {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(CAVEMAN_DIRECTIVE);
+        }
+
+        // If memory_save was used this session, remind the model to use memory_search
+        // (not search_code) to recall user-provided facts (#2475).
+        if self
+            .services
+            .tool_state
+            .completed_tool_ids
+            .contains("memory_save")
+        {
+            system_prompt.push_str(
+                "\n\nFacts provided by the user in this session have been saved with memory_save — use memory_search to recall them, not search_code.",
+            );
+        }
+
+        // Budget hint injection (#2267): inject remaining cost and tool call budget so the
+        // LLM can self-regulate. Only injected when budget_hint_enabled = true (default).
+        // Self-suppresses when no budget data sources are available.
+        if self.runtime.config.budget_hint_enabled {
+            let remaining_cost_cents = self.runtime.metrics.cost_tracker.as_ref().and_then(|ct| {
+                let max = ct.max_daily_cents();
+                if max > 0.0 {
+                    Some((max - ct.current_spend()).max(0.0))
+                } else {
+                    None
+                }
+            });
+            let total_budget_cents = self.runtime.metrics.cost_tracker.as_ref().and_then(|ct| {
+                let max = ct.max_daily_cents();
+                if max > 0.0 { Some(max) } else { None }
+            });
+            let max_tool_calls = self.tool_orchestrator.max_iterations;
+            let remaining_tool_calls =
+                max_tool_calls.saturating_sub(self.services.tool_state.current_tool_iteration);
+            let hint = BudgetHint {
+                remaining_cost_cents,
+                total_budget_cents,
+                remaining_tool_calls,
+                max_tool_calls,
+            };
+            if let Some(xml) = hint.format_xml() {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(&xml);
+            }
+        }
+
+        tracing::debug!(
+            len = system_prompt.len(),
+            skills = ?self.services.skill.active_skill_names,
+            "system prompt rebuilt"
+        );
+        tracing::trace!(prompt = %system_prompt, "full system prompt");
+
+        if let Some(msg) = self.msg.messages.first_mut() {
+            msg.content = system_prompt;
+        }
+    }
+
+    /// Rewrites `query` via a fast background-provider LLM call to improve skill-matching
+    /// retrieval (bounded to a 5s timeout). Returns `None` when rewriting is disabled
+    /// (empty `query_rewrite_provider_name`), the call fails, times out, or the rewrite
+    /// fails [`validate_query_rewrite`].
+    async fn rewrite_query_for_skill_matching(&self, query: &str) -> Option<String> {
+        let provider_name = self.services.skill.query_rewrite_provider_name.clone();
+        if provider_name.is_empty() {
+            return None;
+        }
+        let rewrite_provider = self.resolve_background_provider(&provider_name);
+        let span = tracing::info_span!("skills.matcher.query_rewrite");
+        let prompt = format!(
+            "Rewrite this user message as a concise skill-matching query. \
+             Return only the rewritten query, nothing else.\nUser message: {query}"
+        );
+        let messages = vec![zeph_llm::provider::Message::from_legacy(
+            zeph_llm::provider::Role::User,
+            prompt,
+        )];
+        // PAAC secret masking (#5437) is structural at the provider boundary —
+        // `rewrite_provider` (via `resolve_background_provider`) masks registered
+        // secrets from `messages` transparently before this dispatch.
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            rewrite_provider.chat(&messages).instrument(span),
+        )
+        .await
+        {
+            Ok(Ok(response)) => {
+                let rewritten = response.trim().to_string();
+                validate_query_rewrite(query, &rewritten)
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("query rewrite failed: {e:#}; using original query");
+                None
+            }
+            Err(_) => {
+                tracing::warn!("query rewrite timed out after 5s; using original query");
+                None
+            }
+        }
+    }
+
+    /// Runs embedding-based skill matching for `effective_query` against `all_meta`:
+    /// BM25 fusion (if enabled), trust-score rerank, RL-head rerank (past warmup only),
+    /// and disambiguation when the top-2 scores are within `disambiguation_threshold`.
+    ///
+    /// `query` (the pre-rewrite original) is required separately because disambiguation
+    /// prompts use the original wording, not the rewritten retrieval query.
+    ///
+    /// Returns `(matched_indices, skill_fallback_mode, skills_to_record)`:
+    /// - `matched_indices` — indices into `all_meta` selected this turn (all indices when
+    ///   falling back to the full catalog).
+    /// - `skill_fallback_mode` — `true` when the matcher is unavailable or an infra error
+    ///   forced injecting the full, unscored skill set.
+    /// - `skills_to_record` — names of skills genuinely scored by the embedding matcher
+    ///   (for usage-stats recording); empty in fallback mode.
+    #[allow(clippy::too_many_lines)] // embedding match + BM25 fusion + trust rerank + RL rerank + disambiguation: one cohesive retrieval pipeline
+    async fn match_and_rank_skills(
+        &mut self,
+        query: &str,
+        effective_query: &str,
+        all_meta: &[&SkillMeta],
+    ) -> (Vec<usize>, bool, Vec<String>) {
+        let mut skills_to_record: Vec<String> = Vec::new();
 
         let (matched_indices, skill_fallback_mode): (Vec<usize>, bool) = if let Some(matcher) =
             &self.services.skill.matcher
@@ -826,7 +1108,7 @@ impl<C: Channel> Agent<C> {
             let _ = self.channel.send_status("matching skills...").await;
             let match_result = matcher
                 .match_skills(
-                    &all_meta,
+                    all_meta,
                     effective_query,
                     self.services.skill.max_active_skills,
                     self.services.skill.two_stage_matching,
@@ -1025,7 +1307,7 @@ impl<C: Channel> Agent<C> {
                     && (scored[0].score - scored[1].score)
                         < self.services.skill.disambiguation_threshold
                 {
-                    match self.disambiguate_skills(query, &all_meta, &scored).await {
+                    match self.disambiguate_skills(query, all_meta, &scored).await {
                         Some(reordered) => (reordered, false),
                         None => (scored.iter().map(|s| s.index).collect(), false),
                     }
@@ -1043,7 +1325,17 @@ impl<C: Channel> Agent<C> {
             ((0..all_meta.len()).collect(), true)
         };
 
-        let matched_indices: Vec<usize> = matched_indices
+        (matched_indices, skill_fallback_mode, skills_to_record)
+    }
+
+    /// Deactivates skills whose `requires_secrets` are not present in
+    /// `available_custom_secrets`, logging each exclusion at `info` level.
+    fn filter_skills_missing_secrets(
+        &self,
+        all_meta: &[&SkillMeta],
+        matched_indices: Vec<usize>,
+    ) -> Vec<usize> {
+        matched_indices
             .into_iter()
             .filter(|&i| {
                 let Some(meta) = all_meta.get(i) else {
@@ -1071,30 +1363,26 @@ impl<C: Channel> Agent<C> {
                 }
                 true
             })
-            .collect();
+            .collect()
+    }
 
-        self.services.skill.active_skill_names = matched_indices
-            .iter()
-            .filter_map(|&i| all_meta.get(i).map(|m| m.name.clone()))
-            .collect();
-
-        let skill_names = self.services.skill.active_skill_names.clone();
-        let total = all_meta.len();
-        self.update_metrics(|m| {
-            m.active_skills = skill_names;
-            m.total_skills = total;
-        });
-
-        if !skills_to_record.is_empty()
-            && let Some(memory) = &self.services.memory.persistence.memory
-        {
-            let names: Vec<&str> = skills_to_record.iter().map(String::as_str).collect();
-            if let Err(e) = memory.sqlite().record_skill_usage(&names).await {
-                tracing::warn!("failed to record skill usage: {e:#}");
-            }
-        }
-        self.update_skill_confidence_metrics().await;
-
+    /// Loads all skills from the registry and applies the channel allowlist, keeping
+    /// `active_skills` and `matched_indices` 1:1 across BOTH resync passes.
+    ///
+    /// IMPORTANT: keep both existing resync steps in this one function (do not split
+    /// them). The first pass zips `matched_indices` with `active_skill_names` while
+    /// filtering by allowlist; the second pass re-derives `matched_indices` from the
+    /// *post-filter* `active_skills` set by name. Splitting these into two call sites
+    /// reintroduces the exact index-desync bug the inline comments warn about (stale
+    /// positions feed `group_skills()`'s embedding lookups downstream in
+    /// [`Self::format_active_skills_prompt`]). Requires
+    /// `self.services.skill.active_skill_names` to already be set by the caller before
+    /// calling.
+    fn load_and_filter_skills_by_channel(
+        &self,
+        all_meta: &[&SkillMeta],
+        matched_indices: &[usize],
+    ) -> (Vec<Skill>, Vec<Skill>, Vec<usize>) {
         let (all_skills, active_skills, matched_indices): (Vec<Skill>, Vec<Skill>, Vec<usize>) = {
             let reg = self.services.skill.registry.read();
             let all: Vec<Skill> = reg
@@ -1150,10 +1438,26 @@ impl<C: Channel> Agent<C> {
             })
             .collect();
 
+        (all_skills, active_skills, matched_indices)
+    }
+
+    /// Resolves per-skill trust levels, writes the per-turn trust snapshot (so
+    /// `SkillInvokeExecutor` can resolve trust without re-querying the store on every
+    /// tool call), filters `all_skills` down to the non-active catalog skills allowed by
+    /// trust, gates the tool executor to the most restrictive trust level among
+    /// `active_skills`, and fires PASTE speculative activation (#3642).
+    ///
+    /// Returns `(trust_map, remaining_skills)` for use by the prompt-formatting step.
+    async fn apply_skill_trust_and_gating(
+        &mut self,
+        all_skills: &[Skill],
+        active_skills: &[Skill],
+    ) -> (
+        std::collections::HashMap<String, crate::skill_invoker::SkillTrustSnapshot>,
+        Vec<Skill>,
+    ) {
         let trust_map = self.build_skill_trust_map().await;
 
-        // Write the per-turn trust snapshot so SkillInvokeExecutor can resolve trust
-        // without re-querying the store on every tool call.
         self.services
             .skill
             .trust_snapshot
@@ -1194,34 +1498,28 @@ impl<C: Channel> Agent<C> {
         };
         self.tool_executor.set_effective_trust(effective_trust);
 
-        // PASTE: rebuild tool→skill mapping and fire speculative dispatches (#3642).
+        // PASTE: rebuild tool→skill mapping and fire speculative dispatches.
         // Runs only when mode is Pattern or Both and PatternStore is initialized.
-        // Gated before health_map to minimize latency on the hot path when disabled.
-        self.run_paste_skill_activation(&active_skills, &trust_map)
+        self.run_paste_skill_activation(active_skills, &trust_map)
             .await;
 
-        // Build health_map: skill_name -> (posterior_mean, total_uses) for XML attributes.
-        let health_map: std::collections::HashMap<String, (f64, u32)> = if let Some(memory) =
-            &self.services.memory.persistence.memory
-        {
-            memory
-                .sqlite()
-                .load_skill_outcome_stats()
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|m| {
-                    let successes = u32::try_from(m.successes).unwrap_or(0);
-                    let failures = u32::try_from(m.failures).unwrap_or(0);
-                    let total = successes + failures;
-                    let posterior = zeph_skills::trust_score::posterior_mean(successes, failures);
-                    (m.skill_name, (posterior, total))
-                })
-                .collect()
-        } else {
-            std::collections::HashMap::new()
-        };
+        (trust_map, remaining_skills)
+    }
 
+    /// Formats the `<available_skills>` prompt block for `active_skills`: dispatches
+    /// between Compact mode, flat `format_skills_prompt`, and `GoSkills` grouped
+    /// `format_grouped_skills_prompt`, based on `effective_mode` (recomputed here from
+    /// `context_manager.budget` + `services.skill.prompt_mode`), `skill_fallback_mode`,
+    /// and the `GoSkills` similarity threshold. Returns the formatted prompt plus the
+    /// resolved `effective_mode` (also needed later for the caveman-directive check).
+    fn format_active_skills_prompt(
+        &self,
+        active_skills: &[Skill],
+        matched_indices: &[usize],
+        trust_map: &std::collections::HashMap<String, crate::skill_invoker::SkillTrustSnapshot>,
+        health_map: &std::collections::HashMap<String, (f64, u32)>,
+        skill_fallback_mode: bool,
+    ) -> (String, crate::config::SkillPromptMode) {
         let effective_mode = match self.services.skill.prompt_mode {
             crate::config::SkillPromptMode::Auto => {
                 if let Some(ref budget) = self.context_manager.budget
@@ -1235,10 +1533,10 @@ impl<C: Channel> Agent<C> {
             other => other,
         };
 
-        let mut skills_prompt = if effective_mode == crate::config::SkillPromptMode::Compact
+        let skills_prompt = if effective_mode == crate::config::SkillPromptMode::Compact
             || skill_fallback_mode
         {
-            format_skills_prompt_compact(&active_skills)
+            format_skills_prompt_compact(active_skills)
         } else {
             let trust_levels: std::collections::HashMap<String, zeph_common::SkillTrustLevel> =
                 trust_map
@@ -1259,8 +1557,8 @@ impl<C: Channel> Agent<C> {
                     );
                 }
                 let group_result = group_skills(
-                    &active_skills,
-                    &matched_indices,
+                    active_skills,
+                    matched_indices,
                     |idx| matcher.skill_embedding(idx),
                     threshold,
                 );
@@ -1272,42 +1570,33 @@ impl<C: Channel> Agent<C> {
                             threshold,
                             "GoSkills: grouped skill injection"
                         );
-                        format_grouped_skills_prompt(g, &trust_levels, &health_map)
+                        format_grouped_skills_prompt(g, &trust_levels, health_map)
                     }
                     GroupResult::Flat(_) => {
                         tracing::debug!(
                             threshold,
                             "GoSkills: flat fallback (no pair above threshold)"
                         );
-                        format_skills_prompt(&active_skills, &trust_levels, &health_map)
+                        format_skills_prompt(active_skills, &trust_levels, health_map)
                     }
-                    _ => format_skills_prompt(&active_skills, &trust_levels, &health_map),
+                    _ => format_skills_prompt(active_skills, &trust_levels, health_map),
                 }
             } else {
-                format_skills_prompt(&active_skills, &trust_levels, &health_map)
+                format_skills_prompt(active_skills, &trust_levels, health_map)
             }
         };
-        // ERL: append learned heuristics for active skills (no-op when erl_enabled = false).
-        let erl_suffix = self.build_erl_heuristics_prompt().await;
-        if !erl_suffix.is_empty() {
-            skills_prompt.push_str(&erl_suffix);
-        }
-        let catalog_prompt = format_skills_catalog(&remaining_skills);
-        self.services
-            .skill
-            .last_skills_prompt
-            .clone_from(&skills_prompt);
-        self.services.session.env_context.refresh_git_branch();
-        self.services
-            .session
-            .env_context
-            .model_name
-            .clone_from(&self.runtime.config.model_name);
 
-        // MCP tool discovery (#2321 / #2298): select tools relevant to this turn's query.
-        // Strategy dispatch: Embedding (new), Llm (existing prune_tools_cached), None (all).
-        // Runs before the schema filter so the selected subset feeds into the combined
-        // (native + MCP) tool set that the schema filter operates on.
+        (skills_prompt, effective_mode)
+    }
+
+    /// Selects the MCP tool subset relevant to this turn's `query` (#2321/#2298),
+    /// dispatching on `services.mcp.discovery_strategy` (Embedding / Llm / None).
+    /// Mutates `self.services.mcp` sync/pruned tool state and `pruning_cache` in place.
+    ///
+    /// Runs before the schema filter so the selected subset feeds into the combined
+    /// (native + MCP) tool set that the schema filter operates on.
+    #[allow(clippy::too_many_lines)] // strategy dispatch (Embedding/Llm/None) with per-strategy fallback handling
+    async fn discover_mcp_tools_for_turn(&mut self, query: &str) {
         if !self.services.mcp.tools.is_empty() {
             match self.services.mcp.discovery_strategy {
                 zeph_mcp::ToolDiscoveryStrategy::Embedding => {
@@ -1419,10 +1708,14 @@ impl<C: Channel> Agent<C> {
                 }
             }
         }
+    }
 
-        // Dynamic tool schema filtering (#2020): compute once per turn, cache for native path.
-        // Query embedding is computed here; when strategy=Embedding already computed it above,
-        // but providers are stateless so a second embed() call is acceptable for MVP.
+    /// Computes the per-turn dynamic tool schema filter (#2020) plus dependency-graph
+    /// gating, caching the result into `self.services.tool_state.cached_filtered_tool_ids`.
+    /// Always clears the cache first; a fresh `embed()` call is made even when the MCP
+    /// Embedding discovery strategy already computed one this turn (providers are
+    /// stateless — accepted as MVP duplication per the existing code comment).
+    async fn filter_tool_schemas_for_turn(&mut self, query: &str) {
         self.services.tool_state.cached_filtered_tool_ids = None;
         if let Some(ref filter) = self.services.tool_state.tool_schema_filter {
             let defs = self.tool_executor.tool_definitions_erased();
@@ -1491,149 +1784,6 @@ impl<C: Channel> Agent<C> {
                 }
             }
             let _ = self.channel.send_status("").await;
-        }
-
-        // BLOCK 1: stable within a session — base prompt + skills + tool catalog
-        // Instruction blocks are passed separately and injected in the volatile section.
-        #[allow(unused_mut)]
-        let mut system_prompt = build_system_prompt_with_instructions(
-            &skills_prompt,
-            Some(&self.services.session.env_context),
-            &self.runtime.instructions.blocks,
-        );
-
-        // BLOCK 2: semi-stable within a session — skills catalog, MCP, project context, repo map
-        if !catalog_prompt.is_empty() {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&catalog_prompt);
-        }
-
-        system_prompt.push_str("\n<!-- cache:stable -->");
-
-        self.append_mcp_prompt(query, &mut system_prompt).await;
-
-        let cwd = match self.services.session.env_context.working_dir.as_str() {
-            "" | "unknown" => std::env::current_dir().unwrap_or_default(),
-            dir => PathBuf::from(dir),
-        };
-        let project_configs = crate::project::discover_project_configs(&cwd);
-        let project_context = crate::project::load_project_context(&project_configs);
-        if !project_context.is_empty() {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&project_context);
-        }
-
-        if self.services.index.repo_map_tokens > 0 {
-            let now = std::time::Instant::now();
-            let map = if let Some((ref cached, generated_at)) = self.services.index.cached_repo_map
-                && now.duration_since(generated_at) < self.services.index.repo_map_ttl
-            {
-                cached.clone()
-            } else {
-                let cwd2 = cwd.clone();
-                let token_budget = self.services.index.repo_map_tokens;
-                let tc = Arc::clone(&self.runtime.metrics.token_counter);
-                let fresh = tokio::task::spawn_blocking(move || {
-                    zeph_index::repo_map::generate_repo_map(&cwd2, token_budget, &tc)
-                })
-                .await
-                .unwrap_or_else(|_| Ok(String::new()))
-                .unwrap_or_default();
-                self.services.index.cached_repo_map = Some((fresh.clone(), now));
-                fresh
-            };
-            if !map.is_empty() {
-                system_prompt.push_str("\n\n");
-                system_prompt.push_str(&map);
-            }
-        }
-
-        // BLOCK 3: volatile — dynamic per-turn content, never cached
-        system_prompt.push_str("\n<!-- cache:volatile -->");
-
-        // Inject learned user preferences after the volatile marker so they
-        // do not invalidate the stable/semi-stable cache blocks (S2 fix).
-        self.inject_learned_preferences(&mut system_prompt).await;
-
-        // Inject active goal block (G3 invariant: appears after <!-- cache:volatile -->).
-        // Only injected when goal tracking is enabled and an active goal exists.
-        self.inject_active_goal(&mut system_prompt).await;
-
-        // Inject guest-context annotation for Telegram guest_message queries.
-        // Kept in the volatile block so it does not pollute the prompt cache.
-        if self.services.session.is_guest_context {
-            system_prompt.push_str(
-                "\n\n[CONTEXT: This message comes from a Telegram guest query. \
-                 Provide a concise, self-contained response — \
-                 the recipient may not have prior conversation context.]",
-            );
-        }
-
-        // Inject caveman ultra-compressed output directive (#4985).
-        // Placed in the volatile block so toggling does not invalidate the stable/semi-stable cache.
-        if should_inject_caveman_directive(
-            self.services.session.caveman_active,
-            &self.services.skill.active_skill_names,
-            effective_mode,
-            skill_fallback_mode,
-        ) {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(CAVEMAN_DIRECTIVE);
-        }
-
-        // If memory_save was used this session, remind the model to use memory_search
-        // (not search_code) to recall user-provided facts (#2475).
-        if self
-            .services
-            .tool_state
-            .completed_tool_ids
-            .contains("memory_save")
-        {
-            system_prompt.push_str(
-                "\n\nFacts provided by the user in this session have been saved with memory_save — use memory_search to recall them, not search_code.",
-            );
-        }
-
-        // Budget hint injection (#2267): inject remaining cost and tool call budget so the
-        // LLM can self-regulate. Only injected when budget_hint_enabled = true (default).
-        // Self-suppresses when no budget data sources are available.
-        if self.runtime.config.budget_hint_enabled {
-            let remaining_cost_cents = self.runtime.metrics.cost_tracker.as_ref().and_then(|ct| {
-                let max = ct.max_daily_cents();
-                if max > 0.0 {
-                    Some((max - ct.current_spend()).max(0.0))
-                } else {
-                    None
-                }
-            });
-            let total_budget_cents = self.runtime.metrics.cost_tracker.as_ref().and_then(|ct| {
-                let max = ct.max_daily_cents();
-                if max > 0.0 { Some(max) } else { None }
-            });
-            let max_tool_calls = self.tool_orchestrator.max_iterations;
-            let remaining_tool_calls =
-                max_tool_calls.saturating_sub(self.services.tool_state.current_tool_iteration);
-            let hint = BudgetHint {
-                remaining_cost_cents,
-                total_budget_cents,
-                remaining_tool_calls,
-                max_tool_calls,
-            };
-            if let Some(xml) = hint.format_xml() {
-                system_prompt.push_str("\n\n");
-                system_prompt.push_str(&xml);
-            }
-        }
-
-        tracing::debug!(
-            len = system_prompt.len(),
-            skills = ?self.services.skill.active_skill_names,
-            "system prompt rebuilt"
-        );
-        tracing::trace!(prompt = %system_prompt, "full system prompt");
-
-        if let Some(msg) = self.msg.messages.first_mut() {
-            msg.content = system_prompt;
         }
     }
 
@@ -2292,6 +2442,7 @@ mod tests {
                     ..Default::default()
                 },
                 body: "body".into(),
+                resources: zeph_skills::resource::SkillResources::default(),
             }
         }
 
@@ -2360,6 +2511,7 @@ mod tests {
                     ..Default::default()
                 },
                 body: "body".into(),
+                resources: zeph_skills::resource::SkillResources::default(),
             }
         }
 
@@ -2445,6 +2597,7 @@ mod tests {
                     ..Default::default()
                 },
                 body: "body".into(),
+                resources: zeph_skills::resource::SkillResources::default(),
             }
         }
 

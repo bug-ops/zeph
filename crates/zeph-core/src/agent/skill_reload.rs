@@ -8,6 +8,7 @@
 //! filesystem watcher signals a change.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::{Agent, state};
 use crate::channel::Channel;
@@ -15,6 +16,7 @@ use crate::context::build_system_prompt;
 use zeph_llm::provider::LlmProvider;
 use zeph_skills::loader::Skill;
 use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
+use zeph_skills::registry::SkillRegistry;
 
 impl<C: Channel> Agent<C> {
     /// Update trust DB records for all reloaded skills.
@@ -180,7 +182,31 @@ impl<C: Channel> Agent<C> {
         } else {
             self.services.skill.skill_paths.clone()
         };
-        self.services.skill.registry.write().reload(&reload_paths);
+        // Build the reloaded registry off the shared lock entirely (WalkDir + SKILL.md
+        // parsing for every skill is blocking fs I/O), then swap it in with only a brief
+        // write-lock hold. Wrapping the existing `.write().reload(...)` call in
+        // spawn_blocking as-is would move the I/O to a worker thread but still hold the
+        // shared write lock for the full reload duration, stalling any concurrent
+        // `.read()` (e.g. a concurrent `rebuild_system_prompt`) for the same span.
+        let hub_dirs: Vec<std::path::PathBuf> =
+            self.services.skill.registry.read().hub_dirs().to_vec();
+        let span = tracing::info_span!("skills.registry.reload_blocking");
+        match tokio::task::spawn_blocking(move || {
+            let _enter = span.enter();
+            SkillRegistry::load(&reload_paths).with_hub_dirs(hub_dirs)
+        })
+        .await
+        {
+            Ok(new_registry) => {
+                *self.services.skill.registry.write() = new_registry;
+            }
+            Err(e) => {
+                tracing::error!(
+                    "reload_skills: spawn_blocking panicked, skill registry left unchanged: {e}"
+                );
+                return;
+            }
+        }
         if self.services.skill.fingerprint() == old_fp {
             return;
         }
@@ -201,13 +227,23 @@ impl<C: Channel> Agent<C> {
         let all_meta_refs = all_meta.iter().collect::<Vec<_>>();
         self.rebuild_skill_matcher(&all_meta_refs).await;
 
-        let all_skills: Vec<Skill> = {
-            let reg = self.services.skill.registry.read();
+        // `reg.skill()` loads each skill's body (and resources) from disk on first access —
+        // synchronous fs I/O that must not run inline on the agent's async task.
+        let registry_arc = Arc::clone(&self.services.skill.registry);
+        let span = tracing::info_span!("skills.registry.load_bodies_blocking");
+        let all_skills: Vec<Skill> = tokio::task::spawn_blocking(move || {
+            let _enter = span.enter();
+            let reg = registry_arc.read();
             reg.all_meta()
                 .iter()
                 .filter_map(|m| reg.skill(&m.name).ok())
                 .collect()
-        };
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("reload_skills: spawn_blocking for skill bodies panicked: {e}");
+            Vec::new()
+        });
         let trust_map = self.build_skill_trust_map().await;
         let empty_health: HashMap<String, (f64, u32)> = HashMap::new();
         let skills_prompt =

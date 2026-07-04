@@ -38,7 +38,6 @@ use zeph_common::text::xml_escape;
 
 use crate::group::SkillGroup;
 use crate::loader::Skill;
-use crate::resource::discover_resources;
 use crate::trust::SkillTrustLevel;
 
 // XML tag patterns (lowercase) that could break prompt structure if injected verbatim.
@@ -318,7 +317,7 @@ pub fn format_skills_prompt<S: std::hash::BuildHasher, S2: std::hash::BuildHashe
             name = xml_escape(skill.name()),
         );
 
-        let resources = discover_resources(&skill.meta.skill_dir);
+        let resources = &skill.resources;
 
         let ref_names: Vec<&str> = resources
             .references
@@ -473,7 +472,7 @@ fn format_active_skill_tag<S: std::hash::BuildHasher, S2: std::hash::BuildHasher
         name = xml_escape(skill.name()),
     );
 
-    let resources = discover_resources(&skill.meta.skill_dir);
+    let resources = &skill.resources;
     let ref_names: Vec<&str> = resources
         .references
         .iter()
@@ -567,10 +566,12 @@ mod tests {
                 ..Default::default()
             },
             body: body.into(),
+            resources: crate::resource::SkillResources::default(),
         }
     }
 
     fn make_skill_with_dir(name: &str, description: &str, body: &str, dir: PathBuf) -> Skill {
+        let resources = crate::resource::discover_resources(&dir);
         Skill {
             meta: SkillMeta {
                 name: name.into(),
@@ -579,6 +580,7 @@ mod tests {
                 ..Default::default()
             },
             body: body.into(),
+            resources,
         }
     }
 

@@ -36,6 +36,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(core)`: split `Agent::rebuild_system_prompt` (`crates/zeph-core/src/agent/context/assembly.rs`,
+  formerly 877 lines under `#[allow(clippy::too_many_lines)]`) into 9 private methods — query
+  rewrite, embedding-based skill matching/rerank, secret-based filtering, channel-allowlist
+  resync, trust/gating, prompt formatting, MCP tool discovery, tool-schema filtering, and final
+  prompt assembly. Pure mechanical extraction, no behavior change (verified by the existing
+  test suite and a dedicated end-to-end reload test). The `clippy::too_many_lines` suppression
+  on the orchestrator is dropped; three of the extracted methods carry their own narrower,
+  justified suppression instead. (#5465)
+- `perf(skills)`: cached per-skill resource discovery (`scripts/`/`references/`/`assets/`
+  directory listings) on `Skill`/`SkillRegistry` via `OnceLock`, mirroring the existing lazy
+  skill-body cache. Previously `discover_resources()` ran up to 3 synchronous `std::fs::read_dir`
+  calls per active skill on every agent turn; now it runs once per skill per registry load,
+  eliminating blocking filesystem I/O from the turn hot path (measured ~60x faster on a warm
+  cache in a 27-skill test set). Note: the cache is invalidated on skill reload, which the file
+  watcher only triggers on `SKILL.md` changes — a resource-subdirectory change alone will not
+  refresh the cache until the next reload. (#5426)
+- `perf(core)`: `Agent::reload_skills()` (`crates/zeph-core/src/agent/skill_reload.rs`) no longer
+  performs blocking filesystem I/O (directory walk, YAML parsing, per-skill body reads) inline on
+  the agent's async loop while holding the skill registry's write lock. The new registry is now
+  built entirely off-lock inside `tokio::task::spawn_blocking`, then swapped in under a
+  microsecond-scale write lock; per-skill body loading is similarly offloaded. Matches the
+  existing `spawn_blocking` pattern already used in `heuristic_promotion.rs`. (#5421)
+
 - `refactor(memory)`: deduplicated `crates/zeph-memory/src/graph/store/mod.rs`. Replaced 8
   independent local re-declarations of the SQLite bound-parameter batch size (`490`, derived
   from `999 / 2 binds-per-id`) with a single module-level `SQLITE_BATCH_LIMIT_2X` constant;

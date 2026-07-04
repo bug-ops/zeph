@@ -154,6 +154,7 @@ mod tests {
                 ..Default::default()
             },
             body: String::new(),
+            resources: crate::resource::SkillResources::default(),
         }
     }
 

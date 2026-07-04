@@ -147,6 +147,8 @@ pub struct Skill {
     pub meta: SkillMeta,
     /// Raw Markdown body (everything after the closing `---` delimiter).
     pub body: String,
+    /// Discovered `scripts/`, `references/`, and `assets/` resource files.
+    pub resources: crate::resource::SkillResources,
 }
 
 impl Default for SkillMeta {
@@ -847,7 +849,12 @@ pub fn load_skill(path: &Path) -> Result<Skill, SkillError> {
         tracing::warn!(skill = %meta.name, "{warning}");
     }
 
-    Ok(Skill { meta, body })
+    let resources = crate::resource::discover_resources(&meta.skill_dir);
+    Ok(Skill {
+        meta,
+        body,
+        resources,
+    })
 }
 
 #[cfg(test)]

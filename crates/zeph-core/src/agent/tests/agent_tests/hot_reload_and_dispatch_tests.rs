@@ -107,6 +107,50 @@ async fn slash_command_error_is_non_fatal_agent_registry() {
     );
 }
 
+// --- reload_skills() spawn_blocking swap-lock test (#5421) ---
+
+/// `reload_skills()` builds the new registry off-lock via `spawn_blocking` and swaps
+/// it in; verify the end-to-end effect is a correctly reloaded registry (new skill
+/// visible in `all_meta()`) and a system prompt rebuilt from it.
+#[tokio::test]
+async fn reload_skills_offloads_registry_load_and_reflects_new_skills() {
+    let harness = QuickTestAgent::minimal("ok");
+    let mut agent = harness.agent;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let skill_dir = temp_dir.path().join("hot-reload-skill");
+    std::fs::create_dir(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: hot-reload-skill\ndescription: A skill added via hot reload\n---\nSkill body",
+    )
+    .unwrap();
+    agent.services.skill.skill_paths = vec![temp_dir.path().to_path_buf()];
+
+    agent.reload_skills().await;
+
+    let names: Vec<String> = agent
+        .services
+        .skill
+        .registry
+        .read()
+        .all_meta()
+        .iter()
+        .map(|m| m.name.clone())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["hot-reload-skill".to_string()],
+        "registry must reflect the reloaded skill set, not the original test-skill"
+    );
+
+    let system_prompt = &agent.msg.messages.first().unwrap().content;
+    assert!(
+        system_prompt.contains("hot-reload-skill"),
+        "system prompt must be rebuilt from the reloaded registry; got: {system_prompt}"
+    );
+}
+
 /// `/plugins list` is registered in the agent-command registry (fix for #3215).
 /// The command must be routed — agent exits cleanly and the channel receives a reply.
 #[tokio::test]
