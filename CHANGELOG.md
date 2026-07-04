@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `refactor(memory)`: deduplicated `crates/zeph-memory/src/graph/store/mod.rs`. Replaced 8
+  independent local re-declarations of the SQLite bound-parameter batch size (`490`, derived
+  from `999 / 2 binds-per-id`) with a single module-level `SQLITE_BATCH_LIMIT_2X` constant;
+  generalized `edge_select_cols` to take a table-alias prefix instead of duplicating the
+  `graph_edges` SELECT column list at ~10 call sites; merged `bfs_core`/`bfs_core_typed` and
+  `bfs_fetch_results`/`bfs_fetch_results_typed` into single implementations parameterized by
+  `edge_types: &[EdgeType]` (empty slice = untyped path); added a `community_from_row`
+  free function replacing 3 duplicated `CommunityRow` → `Community` conversion blocks. Pure
+  refactor, no behavior change — all 4 public BFS entry points keep their original
+  signatures. (#5501, #5490)
+
 ### Fixed
 
 - `test(tui)`: `detect_unicode_capable()` (`crates/zeph-tui/src/theme/color_mode.rs`) had no

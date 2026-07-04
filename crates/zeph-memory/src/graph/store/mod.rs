@@ -40,6 +40,13 @@ pub struct GraphStore {
     recall_include_imported: bool,
 }
 
+/// Safe chunk size for `SQLite` ID batches, staying under `SQLite`'s
+/// `SQLITE_MAX_VARIABLE_NUMBER` limit (999 by default): `999 / 2 = 499`, rounded down to 490
+/// for headroom. Sized for call sites that bind each id twice per row (e.g. an `IN (...)`
+/// clause matched against both `source_entity_id` and `target_entity_id`); call sites that
+/// only bind each id once reuse the same constant for a uniform, still-safe batch size.
+const SQLITE_BATCH_LIMIT_2X: usize = 490;
+
 impl GraphStore {
     /// Create a new `GraphStore` wrapping `pool`.
     ///
@@ -186,12 +193,11 @@ impl GraphStore {
         &self,
         ids: &[i64],
     ) -> Result<HashMap<i64, String>, MemoryError> {
-        const MAX_BATCH: usize = 490;
         let mut result: HashMap<i64, String> = HashMap::with_capacity(ids.len());
         if ids.is_empty() {
             return Ok(result);
         }
-        for chunk in ids.chunks(MAX_BATCH) {
+        for chunk in ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let placeholders = placeholder_list(1, chunk.len());
             let sql = format!(
                 "SELECT id, canonical_name FROM graph_entities WHERE id IN ({placeholders})"
@@ -669,7 +675,7 @@ impl GraphStore {
     ///
     /// `SQLite` limits the number of bind parameters to `SQLITE_MAX_VARIABLE_NUMBER` (999 by
     /// default). Each entity ID requires two bind slots (source OR target), so batches are
-    /// chunked at `MAX_BATCH_ENTITIES = 490` to stay safely under the limit regardless of
+    /// chunked at [`SQLITE_BATCH_LIMIT_2X`] to stay safely under the limit regardless of
     /// compile-time `SQLite` configuration.
     ///
     /// # Errors
@@ -681,14 +687,9 @@ impl GraphStore {
         entity_ids: &[i64],
         edge_types: &[super::types::EdgeType],
     ) -> Result<Vec<Edge>, MemoryError> {
-        // Safe margin under SQLite SQLITE_MAX_VARIABLE_NUMBER (999):
-        // each entity ID uses 2 bind slots (source_entity_id OR target_entity_id).
-        // 490 * 2 = 980, leaving headroom for future query additions.
-        const MAX_BATCH_ENTITIES: usize = 490;
-
         let mut all_edges: Vec<Edge> = Vec::new();
 
-        for chunk in entity_ids.chunks(MAX_BATCH_ENTITIES) {
+        for chunk in entity_ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let edges = self.query_batch_edges(chunk, edge_types).await?;
             all_edges.extend(edges);
         }
@@ -698,7 +699,7 @@ impl GraphStore {
 
     /// Query active edges for a single chunk of entity IDs (internal helper).
     ///
-    /// Caller is responsible for ensuring `entity_ids.len() <= MAX_BATCH_ENTITIES`.
+    /// Caller is responsible for ensuring `entity_ids.len() <= SQLITE_BATCH_LIMIT_2X`.
     ///
     /// # Errors
     ///
@@ -725,7 +726,7 @@ impl GraphStore {
             " AND origin = 'conversation'".to_owned()
         };
 
-        let edge_cols = edge_select_cols();
+        let edge_cols = edge_select_cols("");
         let sql = if n_types == 0 {
             // placeholders used twice (source IN and target IN)
             let placeholders = placeholder_list(1, n_ids);
@@ -792,7 +793,7 @@ impl GraphStore {
              FROM graph_edges \
              WHERE valid_to IS NULL{origin_filter} \
                AND (source_entity_id = ? OR target_entity_id = ?)",
-            edge_select_cols()
+            edge_select_cols("")
         );
         let query_sql = zeph_db::rewrite_placeholders(&sql);
         let rows: Vec<EdgeRow> = zeph_db::query_as::<_, EdgeRow>(sqlx::AssertSqlSafe(query_sql))
@@ -823,7 +824,7 @@ impl GraphStore {
              WHERE source_entity_id = ? OR target_entity_id = ? \
              ORDER BY graph_edges.valid_from DESC \
              LIMIT ?",
-            edge_select_cols()
+            edge_select_cols("")
         );
         let query_sql = zeph_db::rewrite_placeholders(&raw);
         let rows: Vec<EdgeRow> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
@@ -853,7 +854,7 @@ impl GraphStore {
              WHERE valid_to IS NULL \
                AND ((source_entity_id = ? AND target_entity_id = ?) \
                  OR (source_entity_id = ? AND target_entity_id = ?))",
-            edge_select_cols()
+            edge_select_cols("")
         );
         let query_sql = zeph_db::rewrite_placeholders(&raw);
         let rows: Vec<EdgeRow> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
@@ -884,7 +885,7 @@ impl GraphStore {
              WHERE valid_to IS NULL \
                AND source_entity_id = ? \
                AND target_entity_id = ?",
-            edge_select_cols()
+            edge_select_cols("")
         );
         let query_sql = zeph_db::rewrite_placeholders(&raw);
         let rows: Vec<EdgeRow> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
@@ -1041,22 +1042,7 @@ impl GraphStore {
             .bind(entity_id)
             .fetch_optional(&self.pool)
             .await?;
-        match row {
-            Some(row) => {
-                let raw_ids: Vec<i64> = serde_json::from_str(&row.entity_ids)?;
-                let entity_ids = raw_ids.into_iter().map(EntityId).collect();
-                Ok(Some(Community {
-                    id: row.id,
-                    name: row.name,
-                    summary: row.summary,
-                    entity_ids,
-                    fingerprint: row.fingerprint,
-                    created_at: row.created_at,
-                    updated_at: row.updated_at,
-                }))
-            }
-            None => Ok(None),
-        }
+        row.map(community_from_row).transpose()
     }
 
     /// Get all communities.
@@ -1074,21 +1060,7 @@ impl GraphStore {
             .fetch_all(&self.pool)
             .await?;
 
-        rows.into_iter()
-            .map(|row| {
-                let raw_ids: Vec<i64> = serde_json::from_str(&row.entity_ids)?;
-                let entity_ids = raw_ids.into_iter().map(EntityId).collect();
-                Ok(Community {
-                    id: row.id,
-                    name: row.name,
-                    summary: row.summary,
-                    entity_ids,
-                    fingerprint: row.fingerprint,
-                    created_at: row.created_at,
-                    updated_at: row.updated_at,
-                })
-            })
-            .collect()
+        rows.into_iter().map(community_from_row).collect()
     }
 
     /// Count the total number of communities.
@@ -1157,7 +1129,7 @@ impl GraphStore {
         use futures::StreamExt as _;
         let raw = format!(
             "SELECT {} FROM graph_edges WHERE valid_to IS NULL ORDER BY id ASC",
-            edge_select_cols()
+            edge_select_cols("")
         );
         zeph_db::query_as::<_, EdgeRow>(sqlx::AssertSqlSafe(raw))
             .fetch(&self.pool)
@@ -1192,7 +1164,7 @@ impl GraphStore {
              WHERE valid_to IS NULL AND id > ? \
              ORDER BY id ASC \
              LIMIT ?",
-            edge_select_cols()
+            edge_select_cols("")
         );
         let query_sql = zeph_db::rewrite_placeholders(&raw);
         let rows: Vec<EdgeRow> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
@@ -1219,22 +1191,7 @@ impl GraphStore {
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
-        match row {
-            Some(row) => {
-                let raw_ids: Vec<i64> = serde_json::from_str(&row.entity_ids)?;
-                let entity_ids = raw_ids.into_iter().map(EntityId).collect();
-                Ok(Some(Community {
-                    id: row.id,
-                    name: row.name,
-                    summary: row.summary,
-                    entity_ids,
-                    fingerprint: row.fingerprint,
-                    created_at: row.created_at,
-                    updated_at: row.updated_at,
-                }))
-            }
-            None => Ok(None),
-        }
+        row.map(community_from_row).transpose()
     }
 
     /// Delete all communities (full rebuild before upsert).
@@ -1399,14 +1356,12 @@ impl GraphStore {
         &self,
         entity_ids: &[i64],
     ) -> Result<HashMap<i64, i64>, MemoryError> {
-        const MAX_BATCH: usize = 490;
-
         if entity_ids.is_empty() {
             return Ok(HashMap::new());
         }
 
         let mut result: HashMap<i64, i64> = HashMap::new();
-        for chunk in entity_ids.chunks(MAX_BATCH) {
+        for chunk in entity_ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let placeholders = placeholder_list(1, chunk.len());
 
             let community_sql = community_ids_sql(&placeholders);
@@ -1425,7 +1380,7 @@ impl GraphStore {
     /// Increment `retrieval_count` and set `last_retrieved_at` for a batch of edge IDs.
     ///
     /// Fire-and-forget: errors are logged but not propagated. Caller should log the warning.
-    /// Batched with `MAX_BATCH = 490` to stay safely under `SQLite` bind variable limit.
+    /// Batched with [`SQLITE_BATCH_LIMIT_2X`] to stay safely under `SQLite` bind variable limit.
     /// Each chunk's write is bounded by a 500ms timeout (matching
     /// [`Self::qdrant_point_ids_for_entities`]) so a stuck pool surfaces as a typed
     /// [`MemoryError::Timeout`] instead of hanging the `graph_recall_astar` hot path.
@@ -1435,9 +1390,8 @@ impl GraphStore {
     /// Returns an error if the database query fails or a chunk write times out.
     #[tracing::instrument(name = "memory.graph.store.record_edge_retrieval", skip_all, fields(count = edge_ids.len()))]
     pub async fn record_edge_retrieval(&self, edge_ids: &[i64]) -> Result<(), MemoryError> {
-        const MAX_BATCH: usize = 490;
         let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
-        for chunk in edge_ids.chunks(MAX_BATCH) {
+        for chunk in edge_ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let edge_placeholders = placeholder_list(1, chunk.len());
             let retrieval_sql = format!(
                 "UPDATE graph_edges \
@@ -1462,7 +1416,7 @@ impl GraphStore {
 
     /// Increment `weight` on the set of edges traversed during the current recall (HL-F2, #3344).
     ///
-    /// Mirrors [`Self::record_edge_retrieval`] in shape: same `MAX_BATCH = 490` chunking,
+    /// Mirrors [`Self::record_edge_retrieval`] in shape: same [`SQLITE_BATCH_LIMIT_2X`] chunking,
     /// same `WHERE id IN (…) AND valid_to IS NULL` filter (defensive — traversed edges should
     /// already be active, but this prevents reinforcing tombstoned edges).
     ///
@@ -1485,13 +1439,12 @@ impl GraphStore {
         edge_ids: &[i64],
         delta: f32,
     ) -> Result<(), MemoryError> {
-        // MAX_BATCH chosen to stay under SQLite's 999 host-parameter limit
+        // SQLITE_BATCH_LIMIT_2X chosen to stay under SQLite's 999 host-parameter limit
         // ($1 = delta, $2..$N+1 = edge ids — 1 + 490 = 491 params per chunk).
-        const MAX_BATCH: usize = 490;
         if edge_ids.is_empty() || delta == 0.0 {
             return Ok(());
         }
-        for chunk in edge_ids.chunks(MAX_BATCH) {
+        for chunk in edge_ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let edge_placeholders = placeholder_list(2, chunk.len());
             let sql = format!(
                 "UPDATE graph_edges \
@@ -1518,20 +1471,20 @@ impl GraphStore {
     /// Return the subset of `ids` that exist in `graph_entities`.
     ///
     /// Useful for cross-referencing Qdrant-side entity IDs against the `SQLite` truth.
-    /// Processes in chunks of 490 to stay under the `SQLite` variable limit (~32 k).
+    /// Processes in chunks of [`SQLITE_BATCH_LIMIT_2X`] to stay under the `SQLite` variable
+    /// limit (~32 k).
     ///
     /// # Errors
     ///
     /// Returns an error if the database query fails.
     #[tracing::instrument(name = "memory.graph.store.entity_ids_in", skip_all, fields(count = ids.len()))]
     pub async fn entity_ids_in(&self, ids: &[i64]) -> Result<Vec<i64>, MemoryError> {
-        const MAX_BATCH: usize = 490;
         if ids.is_empty() {
             return Ok(Vec::new());
         }
         // TODO: chunk when ids.len() > 5_000 to guard against extreme cases
         let mut result = Vec::with_capacity(ids.len());
-        for chunk in ids.chunks(MAX_BATCH) {
+        for chunk in ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let placeholders = zeph_db::placeholder_list(1, chunk.len());
             let sql = format!("SELECT id FROM graph_entities WHERE id IN ({placeholders})");
             let mut q = zeph_db::query_as::<_, (i64,)>(sqlx::AssertSqlSafe(sql));
@@ -1559,12 +1512,11 @@ impl GraphStore {
         entity_ids: &[i64],
     ) -> Result<HashMap<i64, String>, MemoryError> {
         // Chunk to stay under SQLite variable limit.
-        const MAX_BATCH: usize = 490;
         if entity_ids.is_empty() {
             return Ok(HashMap::new());
         }
         let mut result: HashMap<i64, String> = HashMap::with_capacity(entity_ids.len());
-        for chunk in entity_ids.chunks(MAX_BATCH) {
+        for chunk in entity_ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let placeholders = zeph_db::placeholder_list(1, chunk.len());
             let sql = format!(
                 "SELECT id, qdrant_point_id \
@@ -1822,7 +1774,7 @@ impl GraphStore {
         // bound parameter, so an explicit `TIMESTAMPTZ_CAST` is required on each placeholder —
         // mirrors `agent_sessions.rs`'s fix for the same class of mismatch.
         let ts_cast = <ActiveDialect as zeph_db::dialect::Dialect>::TIMESTAMPTZ_CAST;
-        let edge_cols = edge_select_cols();
+        let edge_cols = edge_select_cols("");
         let raw = format!(
             "SELECT {edge_cols}
              FROM graph_edges
@@ -1874,7 +1826,7 @@ impl GraphStore {
             .replace('_', "\\_");
         let like_pattern = format!("%{escaped}%");
         let limit = i64::try_from(limit)?;
-        let edge_cols = edge_select_cols();
+        let edge_cols = edge_select_cols("");
         let rows: Vec<EdgeRow> = if let Some(rel) = relation {
             let raw = format!(
                 "SELECT {edge_cols}
@@ -1957,7 +1909,7 @@ impl GraphStore {
         start_entity_id: i64,
         max_hops: u32,
     ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
-        self.bfs_core(start_entity_id, max_hops, None).await
+        self.bfs_core(start_entity_id, max_hops, None, &[]).await
     }
 
     /// BFS traversal considering only edges that were valid at `timestamp`.
@@ -1978,7 +1930,7 @@ impl GraphStore {
         max_hops: u32,
         timestamp: &str,
     ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
-        self.bfs_core(start_entity_id, max_hops, Some(timestamp))
+        self.bfs_core(start_entity_id, max_hops, Some(timestamp), &[])
             .await
     }
 
@@ -2005,17 +1957,17 @@ impl GraphStore {
         max_hops: u32,
         edge_types: &[EdgeType],
     ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
-        if edge_types.is_empty() {
-            return self.bfs_with_depth(start_entity_id, max_hops).await;
-        }
-        self.bfs_core_typed(start_entity_id, max_hops, None, edge_types)
+        self.bfs_core(start_entity_id, max_hops, None, edge_types)
             .await
     }
 
-    /// Shared BFS implementation.
+    /// Shared BFS implementation, optionally scoped to specific edge types.
     ///
     /// When `at_timestamp` is `None`, only active edges (`valid_to IS NULL`) are traversed.
     /// When `at_timestamp` is `Some(ts)`, edges valid at `ts` are traversed (temporal BFS).
+    /// When `edge_types` is empty, all edge types are traversed; otherwise the `edge_type IN
+    /// (...)` clause restricts traversal to the given types (`EdgeType::as_str()` values —
+    /// no user input reaches SQL).
     ///
     /// All IDs used in dynamic SQL come from our own database — no user input reaches the
     /// format string, so there is no SQL injection risk.
@@ -2026,12 +1978,19 @@ impl GraphStore {
         start_entity_id: i64,
         max_hops: u32,
         at_timestamp: Option<&str>,
+        edge_types: &[EdgeType],
     ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
         use std::collections::HashMap;
 
         // SQLite binds frontier IDs 3× per hop; at >333 IDs the IN clause exceeds
         // SQLITE_MAX_VARIABLE_NUMBER (999). Cap to 300 to stay safely within the limit.
         const MAX_FRONTIER: usize = 300;
+
+        let type_strs: Vec<&str> = edge_types.iter().map(|t| t.as_str()).collect();
+        let n_types = type_strs.len();
+        // type_in is constant for the entire BFS — positions 1..=n_types never change.
+        let type_in = (n_types > 0).then(|| placeholder_list(1, n_types));
+        let id_start = n_types + 1;
 
         let mut depth_map: HashMap<i64, u32> = HashMap::new();
         let mut frontier: Vec<i64> = vec![start_entity_id];
@@ -2043,111 +2002,26 @@ impl GraphStore {
             }
             frontier.truncate(MAX_FRONTIER);
             // IDs come from our own DB — no user input, no injection risk.
-            // Three copies of frontier IDs: positions 1..n, n+1..2n, 2n+1..3n.
-            // Timestamp (if any) follows at position 3n+1.
-            let n = frontier.len();
-            let ph1 = placeholder_list(1, n);
-            let ph2 = placeholder_list(n + 1, n);
-            let ph3 = placeholder_list(n * 2 + 1, n);
-            let edge_filter = if at_timestamp.is_some() {
-                let ts_pos = n * 3 + 1;
-                format!(
-                    "valid_from <= {ts} AND (valid_to IS NULL OR valid_to > {ts})",
-                    ts = numbered_placeholder(ts_pos),
-                )
-            } else {
-                "valid_to IS NULL".to_owned()
-            };
-            let neighbour_sql = format!(
-                "SELECT DISTINCT CASE
-                     WHEN source_entity_id IN ({ph1}) THEN target_entity_id
-                     ELSE source_entity_id
-                 END as neighbour_id
-                 FROM graph_edges
-                 WHERE {edge_filter}
-                   AND (source_entity_id IN ({ph2}) OR target_entity_id IN ({ph3}))"
-            );
-            let mut q = zeph_db::query_scalar::<_, i64>(sqlx::AssertSqlSafe(neighbour_sql));
-            for id in &frontier {
-                q = q.bind(*id);
-            }
-            for id in &frontier {
-                q = q.bind(*id);
-            }
-            for id in &frontier {
-                q = q.bind(*id);
-            }
-            if let Some(ts) = at_timestamp {
-                q = q.bind(ts);
-            }
-            let neighbours: Vec<i64> = q.fetch_all(&self.pool).await?;
-            let mut next_frontier: Vec<i64> = Vec::new();
-            for nbr in neighbours {
-                if let std::collections::hash_map::Entry::Vacant(e) = depth_map.entry(nbr) {
-                    e.insert(hop + 1);
-                    next_frontier.push(nbr);
-                }
-            }
-            frontier = next_frontier;
-        }
-
-        self.bfs_fetch_results(depth_map, at_timestamp).await
-    }
-
-    /// BFS implementation scoped to specific edge types.
-    ///
-    /// Builds the IN clause for `edge_type` filtering dynamically from enum values.
-    /// All enum-derived strings come from `EdgeType::as_str()` — no user input reaches SQL.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any database query fails.
-    #[allow(clippy::type_complexity)]
-    #[tracing::instrument(name = "memory.graph.store.bfs_core_typed", skip_all)]
-    async fn bfs_core_typed(
-        &self,
-        start_entity_id: i64,
-        max_hops: u32,
-        at_timestamp: Option<&str>,
-        edge_types: &[EdgeType],
-    ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
-        use std::collections::HashMap;
-
-        const MAX_FRONTIER: usize = 300;
-
-        let type_strs: Vec<&str> = edge_types.iter().map(|t| t.as_str()).collect();
-
-        let mut depth_map: HashMap<i64, u32> = HashMap::new();
-        let mut frontier: Vec<i64> = vec![start_entity_id];
-        depth_map.insert(start_entity_id, 0);
-
-        let n_types = type_strs.len();
-        // type_in is constant for the entire BFS — positions 1..=n_types never change.
-        let type_in = placeholder_list(1, n_types);
-        let id_start = n_types + 1;
-
-        for hop in 0..max_hops {
-            if frontier.is_empty() {
-                break;
-            }
-            frontier.truncate(MAX_FRONTIER);
-
+            // Positions: types first (if any), then 3 copies of frontier IDs, then an
+            // optional timestamp.
             let n_frontier = frontier.len();
-            // Positions: types first (1..n_types), then 3 copies of frontier IDs.
             let fp1 = placeholder_list(id_start, n_frontier);
             let fp2 = placeholder_list(id_start + n_frontier, n_frontier);
             let fp3 = placeholder_list(id_start + n_frontier * 2, n_frontier);
 
+            let type_filter = type_in
+                .as_ref()
+                .map(|type_in| format!("edge_type IN ({type_in}) AND "))
+                .unwrap_or_default();
             let edge_filter = if at_timestamp.is_some() {
                 let ts_pos = id_start + n_frontier * 3;
                 format!(
-                    "edge_type IN ({type_in}) AND valid_from <= {ts} AND (valid_to IS NULL OR valid_to > {ts})",
+                    "{type_filter}valid_from <= {ts} AND (valid_to IS NULL OR valid_to > {ts})",
                     ts = numbered_placeholder(ts_pos),
                 )
             } else {
-                format!("edge_type IN ({type_in}) AND valid_to IS NULL")
+                format!("{type_filter}valid_to IS NULL")
             };
-
             let neighbour_sql = format!(
                 "SELECT DISTINCT CASE
                      WHEN source_entity_id IN ({fp1}) THEN target_entity_id
@@ -2157,13 +2031,10 @@ impl GraphStore {
                  WHERE {edge_filter}
                    AND (source_entity_id IN ({fp2}) OR target_entity_id IN ({fp3}))"
             );
-
             let mut q = zeph_db::query_scalar::<_, i64>(sqlx::AssertSqlSafe(neighbour_sql));
-            // Bind types first
             for t in &type_strs {
                 q = q.bind(*t);
             }
-            // Bind frontier 3 times
             for id in &frontier {
                 q = q.bind(*id);
             }
@@ -2176,7 +2047,6 @@ impl GraphStore {
             if let Some(ts) = at_timestamp {
                 q = q.bind(ts);
             }
-
             let neighbours: Vec<i64> = q.fetch_all(&self.pool).await?;
             let mut next_frontier: Vec<i64> = Vec::new();
             for nbr in neighbours {
@@ -2188,124 +2058,23 @@ impl GraphStore {
             frontier = next_frontier;
         }
 
-        // Fetch results — pass edge_type filter to bfs_fetch_results_typed
-        self.bfs_fetch_results_typed(depth_map, at_timestamp, &type_strs)
+        self.bfs_fetch_results(depth_map, at_timestamp, &type_strs)
             .await
     }
 
-    /// Fetch entities and typed edges for a completed BFS depth map.
-    ///
-    /// Filters returned edges by the provided `edge_type` strings.
+    /// Fetch entities and edges for a completed BFS depth map, optionally filtered by
+    /// `edge_type` (empty `type_strs` = no filter, all types included).
     ///
     /// # Errors
     ///
     /// Returns an error if any database query fails.
-    #[allow(clippy::type_complexity)]
-    #[tracing::instrument(name = "memory.graph.store.bfs_fetch_results_typed", skip_all)]
-    async fn bfs_fetch_results_typed(
-        &self,
-        depth_map: std::collections::HashMap<i64, u32>,
-        at_timestamp: Option<&str>,
-        type_strs: &[&str],
-    ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
-        let mut visited_ids: Vec<i64> = depth_map.keys().copied().collect();
-        if visited_ids.is_empty() {
-            return Ok((Vec::new(), Vec::new(), depth_map));
-        }
-        if visited_ids.len() > 499 {
-            tracing::warn!(
-                total = visited_ids.len(),
-                retained = 499,
-                "bfs_fetch_results_typed: visited entity set truncated to 499"
-            );
-            visited_ids.truncate(499);
-        }
-
-        let n_types = type_strs.len();
-        let n_visited = visited_ids.len();
-
-        // Bind order: types first (1..=n_types), then visited_ids twice, then optional timestamp.
-        let type_in = placeholder_list(1, n_types);
-        let id_start = n_types + 1;
-        let ph_ids1 = placeholder_list(id_start, n_visited);
-        let ph_ids2 = placeholder_list(id_start + n_visited, n_visited);
-
-        let edge_filter = if at_timestamp.is_some() {
-            let ts_pos = id_start + n_visited * 2;
-            format!(
-                "edge_type IN ({type_in}) AND valid_from <= {ts} AND (valid_to IS NULL OR valid_to > {ts})",
-                ts = numbered_placeholder(ts_pos),
-            )
-        } else {
-            format!("edge_type IN ({type_in}) AND valid_to IS NULL")
-        };
-
-        let valid_from_sel =
-            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("valid_from");
-        let valid_to_sel = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("valid_to");
-        let created_at_sel =
-            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
-        let expired_at_sel =
-            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("expired_at");
-        let edge_sql = format!(
-            "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                    {valid_from_sel} AS valid_from, {valid_to_sel} AS valid_to,
-                    {created_at_sel} AS created_at, {expired_at_sel} AS expired_at,
-                    episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
-             FROM graph_edges
-             WHERE {edge_filter}
-               AND source_entity_id IN ({ph_ids1})
-               AND target_entity_id IN ({ph_ids2})"
-        );
-        let mut edge_query = zeph_db::query_as::<_, EdgeRow>(sqlx::AssertSqlSafe(edge_sql));
-        for t in type_strs {
-            edge_query = edge_query.bind(*t);
-        }
-        for id in &visited_ids {
-            edge_query = edge_query.bind(*id);
-        }
-        for id in &visited_ids {
-            edge_query = edge_query.bind(*id);
-        }
-        if let Some(ts) = at_timestamp {
-            edge_query = edge_query.bind(ts);
-        }
-        let edge_rows: Vec<EdgeRow> = edge_query.fetch_all(&self.pool).await?;
-
-        // For entity query, use plain sequential bind positions (no type prefix offset)
-        let first_seen_sel =
-            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("first_seen_at");
-        let last_seen_sel =
-            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("last_seen_at");
-        let entity_sql2 = format!(
-            "SELECT id, name, canonical_name, entity_type, summary, \
-                    {first_seen_sel} AS first_seen_at, {last_seen_sel} AS last_seen_at, qdrant_point_id
-             FROM graph_entities WHERE id IN ({ph})",
-            ph = placeholder_list(1, visited_ids.len()),
-        );
-        let mut entity_query = zeph_db::query_as::<_, EntityRow>(sqlx::AssertSqlSafe(entity_sql2));
-        for id in &visited_ids {
-            entity_query = entity_query.bind(*id);
-        }
-        let entity_rows: Vec<EntityRow> = entity_query.fetch_all(&self.pool).await?;
-
-        let entities: Vec<Entity> = entity_rows
-            .into_iter()
-            .map(entity_from_row)
-            .collect::<Result<Vec<_>, _>>()?;
-        let edges: Vec<Edge> = edge_rows.into_iter().map(edge_from_row).collect();
-
-        Ok((entities, edges, depth_map))
-    }
-
-    /// Fetch entities and edges for a completed BFS depth map.
     #[allow(clippy::type_complexity)]
     #[tracing::instrument(name = "memory.graph.store.bfs_fetch_results", skip_all)]
     async fn bfs_fetch_results(
         &self,
         depth_map: std::collections::HashMap<i64, u32>,
         at_timestamp: Option<&str>,
+        type_strs: &[&str],
     ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
         let mut visited_ids: Vec<i64> = depth_map.keys().copied().collect();
         if visited_ids.is_empty() {
@@ -2322,37 +2091,41 @@ impl GraphStore {
             visited_ids.truncate(499);
         }
 
-        let n = visited_ids.len();
-        let ph_ids1 = placeholder_list(1, n);
-        let ph_ids2 = placeholder_list(n + 1, n);
+        let n_types = type_strs.len();
+        let n_visited = visited_ids.len();
+
+        // Bind order: types first (if any), then visited_ids twice, then optional timestamp.
+        let type_in = (n_types > 0).then(|| placeholder_list(1, n_types));
+        let id_start = n_types + 1;
+        let ph_ids1 = placeholder_list(id_start, n_visited);
+        let ph_ids2 = placeholder_list(id_start + n_visited, n_visited);
+
+        let type_filter = type_in
+            .as_ref()
+            .map(|type_in| format!("edge_type IN ({type_in}) AND "))
+            .unwrap_or_default();
         let edge_filter = if at_timestamp.is_some() {
-            let ts_pos = n * 2 + 1;
+            let ts_pos = id_start + n_visited * 2;
             format!(
-                "valid_from <= {ts} AND (valid_to IS NULL OR valid_to > {ts})",
+                "{type_filter}valid_from <= {ts} AND (valid_to IS NULL OR valid_to > {ts})",
                 ts = numbered_placeholder(ts_pos),
             )
         } else {
-            "valid_to IS NULL".to_owned()
+            format!("{type_filter}valid_to IS NULL")
         };
-        let valid_from_sel =
-            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("valid_from");
-        let valid_to_sel = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("valid_to");
-        let created_at_sel =
-            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
-        let expired_at_sel =
-            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("expired_at");
+
         let edge_sql = format!(
-            "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                    {valid_from_sel} AS valid_from, {valid_to_sel} AS valid_to,
-                    {created_at_sel} AS created_at, {expired_at_sel} AS expired_at,
-                    episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
+            "SELECT {edge_cols}
              FROM graph_edges
              WHERE {edge_filter}
                AND source_entity_id IN ({ph_ids1})
-               AND target_entity_id IN ({ph_ids2})"
+               AND target_entity_id IN ({ph_ids2})",
+            edge_cols = edge_select_cols(""),
         );
         let mut edge_query = zeph_db::query_as::<_, EdgeRow>(sqlx::AssertSqlSafe(edge_sql));
+        for t in type_strs {
+            edge_query = edge_query.bind(*t);
+        }
         for id in &visited_ids {
             edge_query = edge_query.bind(*id);
         }
@@ -2364,15 +2137,10 @@ impl GraphStore {
         }
         let edge_rows: Vec<EdgeRow> = edge_query.fetch_all(&self.pool).await?;
 
-        let first_seen_sel =
-            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("first_seen_at");
-        let last_seen_sel =
-            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("last_seen_at");
         let entity_sql = format!(
-            "SELECT id, name, canonical_name, entity_type, summary, \
-                    {first_seen_sel} AS first_seen_at, {last_seen_sel} AS last_seen_at, qdrant_point_id
-             FROM graph_entities WHERE id IN ({ph})",
-            ph = placeholder_list(1, n),
+            "SELECT {entity_cols} FROM graph_entities WHERE id IN ({ph})",
+            entity_cols = entity_select_cols(),
+            ph = placeholder_list(1, n_visited),
         );
         let mut entity_query = zeph_db::query_as::<_, EntityRow>(sqlx::AssertSqlSafe(entity_sql));
         for id in &visited_ids {
@@ -2484,11 +2252,10 @@ impl GraphStore {
         &self,
         ids: &[crate::types::MessageId],
     ) -> Result<(), MemoryError> {
-        const MAX_BATCH: usize = 490;
         if ids.is_empty() {
             return Ok(());
         }
-        for chunk in ids.chunks(MAX_BATCH) {
+        for chunk in ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let placeholders = placeholder_list(1, chunk.len());
             let sql =
                 format!("UPDATE messages SET graph_processed = TRUE WHERE id IN ({placeholders})");
@@ -2631,21 +2398,34 @@ struct EdgeRow {
 /// `valid_from`/`valid_to`/`created_at`/`expired_at` are `TIMESTAMPTZ` on Postgres (`TEXT` on
 /// `SQLite`); each is projected through `Dialect::select_as_text` and aliased back to its
 /// original name so `#[derive(FromRow)]` still binds them into `EdgeRow`'s `String`/
-/// `Option<String>` fields.
-fn edge_select_cols() -> String {
-    let valid_from_sel = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("valid_from");
-    let valid_to_sel = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("valid_to");
-    let created_at_sel = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
-    let expired_at_sel = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("expired_at");
+/// `Option<String>` fields. `table_prefix` (e.g. `"ge."` or `""`) is prepended to each source
+/// column reference so this helper works both in plain `FROM graph_edges` queries and in joins
+/// with an alias — see [`community_select_cols`].
+fn edge_select_cols(table_prefix: &str) -> String {
+    let valid_from_sel = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text(&format!(
+        "{table_prefix}valid_from"
+    ));
+    let valid_to_sel = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text(&format!(
+        "{table_prefix}valid_to"
+    ));
+    let created_at_sel = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text(&format!(
+        "{table_prefix}created_at"
+    ));
+    let expired_at_sel = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text(&format!(
+        "{table_prefix}expired_at"
+    ));
     format!(
-        "id, source_entity_id, target_entity_id, relation, fact, confidence, \
+        "{table_prefix}id, {table_prefix}source_entity_id, {table_prefix}target_entity_id, \
+         {table_prefix}relation, {table_prefix}fact, {table_prefix}confidence, \
          {valid_from_sel} AS valid_from, {valid_to_sel} AS valid_to, \
          {created_at_sel} AS created_at, {expired_at_sel} AS expired_at, \
-         episode_id, qdrant_point_id, edge_type, retrieval_count, last_retrieved_at, \
-         superseded_by, canonical_relation, supersedes, \
-         CAST(weight AS DOUBLE PRECISION) AS weight, \
-         CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, \
-         CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index"
+         {table_prefix}episode_id, {table_prefix}qdrant_point_id, {table_prefix}edge_type, \
+         {table_prefix}retrieval_count, {table_prefix}last_retrieved_at, \
+         {table_prefix}superseded_by, {table_prefix}canonical_relation, {table_prefix}supersedes, \
+         CAST({table_prefix}weight AS DOUBLE PRECISION) AS weight, \
+         CAST({table_prefix}confidence_fast AS DOUBLE PRECISION) AS confidence_fast, \
+         CAST({table_prefix}confidence_slow AS DOUBLE PRECISION) AS confidence_slow, \
+         {table_prefix}turn_index"
     )
 }
 
@@ -2715,6 +2495,20 @@ fn community_select_cols(table_prefix: &str) -> String {
         "{table_prefix}id, {table_prefix}name, {table_prefix}summary, {table_prefix}entity_ids, \
          {table_prefix}fingerprint, {created_at_sel} AS created_at, {updated_at_sel} AS updated_at"
     )
+}
+
+fn community_from_row(row: CommunityRow) -> Result<Community, MemoryError> {
+    let raw_ids: Vec<i64> = serde_json::from_str(&row.entity_ids)?;
+    let entity_ids = raw_ids.into_iter().map(EntityId).collect();
+    Ok(Community {
+        id: row.id,
+        name: row.name,
+        summary: row.summary,
+        entity_ids,
+        fingerprint: row.fingerprint,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
 }
 
 // ── GAAMA Episode methods ──────────────────────────────────────────────────────
@@ -3277,28 +3071,14 @@ impl GraphStore {
         let src_ph = numbered_placeholder(src_pos);
         let tgt_ph = numbered_placeholder(tgt_pos);
 
-        let valid_from_sel =
-            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("ge.valid_from");
-        let valid_to_sel =
-            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("ge.valid_to");
-        let created_at_sel =
-            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("ge.created_at");
-        let expired_at_sel =
-            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("ge.expired_at");
         let sql = format!(
-            "SELECT ge.id, ge.source_entity_id, ge.target_entity_id, ge.relation, ge.fact,
-                    ge.confidence, {valid_from_sel} AS valid_from, {valid_to_sel} AS valid_to,
-                    {created_at_sel} AS created_at, {expired_at_sel} AS expired_at,
-                    ge.episode_id, ge.qdrant_point_id, ge.edge_type, ge.retrieval_count,
-                    ge.last_retrieved_at, ge.superseded_by, ge.canonical_relation, ge.supersedes,
-                    CAST(ge.weight AS DOUBLE PRECISION) AS weight,
-                    CAST(ge.confidence_fast AS DOUBLE PRECISION) AS confidence_fast,
-                    CAST(ge.confidence_slow AS DOUBLE PRECISION) AS confidence_slow, ge.turn_index
+            "SELECT {edge_cols}
              FROM graph_edges ge
              WHERE ge.edge_type IN ({ph})
                AND ge.valid_to IS NULL
                AND (ge.source_entity_id = {src_ph} OR ge.target_entity_id = {tgt_ph})
-             LIMIT 200"
+             LIMIT 200",
+            edge_cols = edge_select_cols("ge.")
         );
 
         let mut q = zeph_db::query_as::<_, EdgeRow>(sqlx::AssertSqlSafe(sql));
@@ -3318,7 +3098,7 @@ impl GraphStore {
             .collect();
 
         let mut name_map: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
-        for chunk in all_ids.chunks(490) {
+        for chunk in all_ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let ph2 = placeholder_list(1, chunk.len());
             let name_sql =
                 format!("SELECT id, canonical_name FROM graph_entities WHERE id IN ({ph2})");
