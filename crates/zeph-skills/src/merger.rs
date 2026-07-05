@@ -38,6 +38,7 @@
 //!     category: None,
 //!     triggers: vec![],
 //!     parent_skill: None,
+//!     proactive_domain: None,
 //!     extensions: None,
 //! };
 //!
@@ -217,6 +218,7 @@ mod tests {
             category: None,
             triggers: vec![],
             parent_skill: None,
+            proactive_domain: None,
             extensions: None,
         }
     }

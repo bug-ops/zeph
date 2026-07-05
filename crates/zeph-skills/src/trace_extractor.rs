@@ -686,6 +686,7 @@ mod tests {
             category: None,
             triggers: vec![],
             parent_skill: None,
+            proactive_domain: None,
             extensions: None,
         };
         let emb = SkillEmbedding::from_raw(vec![1.0, 0.0]);

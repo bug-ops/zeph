@@ -2739,5 +2739,109 @@ mod tests {
                 "the pre-existing skill must still be present, unreplaced by the mock's canned skill"
             );
         }
+
+        #[tokio::test]
+        async fn prepare_context_proactive_explore_does_not_retrigger_for_known_domain() {
+            // Regression test for #5707: has_knowledge() used to compare against
+            // `domain.to_skill_name()` (e.g. "world-knowledge-git"), which never matched the
+            // LLM-chosen skill name ("world-knowledge-git" here happens to match by luck in the
+            // other fixture tests, but in general the LLM picks its own name) — so every
+            // subsequent turn classifying to the same domain re-ran a full LLM generation call.
+            // Drive `prepare_context` twice with a query that classifies to the same domain and
+            // assert the second call makes zero additional LLM requests.
+            let (mock_provider, recorder) =
+                MockProvider::with_responses(vec![mock_skill_content("terraform-quickref")])
+                    .with_recording();
+            let fixture = setup_fixture(mock_provider);
+
+            let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+
+            // First turn: domain "terraform" is unknown, explore() must run and the registry
+            // must be reloaded with the stamped `proactive_domain` field.
+            {
+                let mut msgs: Vec<Message> = vec![];
+                let mut cached = 0u64;
+                let mut completed = HashSet::new();
+                let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+                let mut ctx_mgr = ContextManager::new();
+                ctx_mgr.budget = Some(ContextBudget::new(100_000, 0.1));
+                let mut sink = NoopSink;
+                let mut last_confidence = None::<f32>;
+                let mut last_skills_prompt = String::new();
+                let mut active_skill_names = Vec::new();
+
+                let mut view = make_view(
+                    &fixture,
+                    &mut last_confidence,
+                    &mut last_skills_prompt,
+                    &mut active_skill_names,
+                    &sanitizer,
+                    &mut ctx_mgr,
+                    &mut sink,
+                );
+
+                let result = ContextService::new()
+                    .prepare_context("tell me about terraform modules", &mut window, &mut view)
+                    .await;
+                assert!(
+                    result.is_ok(),
+                    "first prepare_context must succeed: {result:?}"
+                );
+            }
+
+            assert_eq!(
+                recorder.lock().unwrap().len(),
+                1,
+                "first turn must trigger exactly one LLM generation call"
+            );
+            assert!(
+                fixture
+                    .registry
+                    .read()
+                    .all_meta()
+                    .iter()
+                    .any(|m| m.proactive_domain.as_deref() == Some("terraform")),
+                "reloaded registry must carry the stamped proactive_domain field"
+            );
+
+            // Second turn: same domain, now known via the reloaded registry. has_knowledge()
+            // must short-circuit before explore() is ever called, so no new LLM request fires.
+            {
+                let mut msgs: Vec<Message> = vec![];
+                let mut cached = 0u64;
+                let mut completed = HashSet::new();
+                let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+                let mut ctx_mgr = ContextManager::new();
+                ctx_mgr.budget = Some(ContextBudget::new(100_000, 0.1));
+                let mut sink = NoopSink;
+                let mut last_confidence = None::<f32>;
+                let mut last_skills_prompt = String::new();
+                let mut active_skill_names = Vec::new();
+
+                let mut view = make_view(
+                    &fixture,
+                    &mut last_confidence,
+                    &mut last_skills_prompt,
+                    &mut active_skill_names,
+                    &sanitizer,
+                    &mut ctx_mgr,
+                    &mut sink,
+                );
+
+                let result = ContextService::new()
+                    .prepare_context("tell me more about terraform state", &mut window, &mut view)
+                    .await;
+                assert!(
+                    result.is_ok(),
+                    "second prepare_context must succeed: {result:?}"
+                );
+            }
+
+            assert_eq!(
+                recorder.lock().unwrap().len(),
+                1,
+                "second turn for an already-known domain must NOT trigger another LLM generation call"
+            );
+        }
     }
 }

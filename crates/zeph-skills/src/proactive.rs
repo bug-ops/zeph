@@ -174,10 +174,16 @@ impl ProactiveExplorer {
     }
 
     /// Return `true` if the registry already contains a skill for `domain`.
+    ///
+    /// Matches on the `proactive_domain` frontmatter field stamped by [`Self::explore`],
+    /// not on the skill's `name` — the LLM generating the skill picks its own descriptive
+    /// name, so `name` cannot be relied on to identify the domain it covers.
     #[must_use]
     pub fn has_knowledge(&self, registry: &SkillRegistry, domain: &DomainLabel) -> bool {
-        let name = domain.to_skill_name();
-        registry.all_meta().iter().any(|m| m.name == name)
+        registry
+            .all_meta()
+            .iter()
+            .any(|m| m.proactive_domain.as_deref() == Some(domain.0.as_str()))
     }
 
     /// Return `true` if `domain` is in the configured exclusion list.
@@ -248,7 +254,8 @@ impl ProactiveExplorer {
         }
         tokio::fs::create_dir_all(&skill_dir).await?;
         let skill_path = skill_dir.join("SKILL.md");
-        tokio::fs::write(&skill_path, &skill.content).await?;
+        let content = stamp_proactive_domain(&skill.content, &domain.0);
+        tokio::fs::write(&skill_path, &content).await?;
         tracing::info!(
             domain = %domain.0,
             skill = %skill.name,
@@ -257,6 +264,42 @@ impl ProactiveExplorer {
         );
         Ok(())
     }
+}
+
+/// Insert or overwrite the `proactive_domain:` field in generated SKILL.md frontmatter.
+///
+/// The LLM never emits this field itself — it is stamped in after generation so
+/// [`ProactiveExplorer::has_knowledge`] has a stable identifier independent of the
+/// LLM-chosen `name:`. Inserted right after `name:`; falls back to returning `skill_md`
+/// unchanged if no frontmatter delimiters are found.
+fn stamp_proactive_domain(skill_md: &str, domain: &str) -> String {
+    let Some(after_open) = skill_md.strip_prefix("---") else {
+        return skill_md.to_string();
+    };
+    let Some(close_pos) = after_open.find("---") else {
+        return skill_md.to_string();
+    };
+    let yaml = &after_open[..close_pos];
+    let rest = &after_open[close_pos..];
+
+    let mut lines: Vec<String> = yaml
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("proactive_domain:"))
+        .map(str::to_string)
+        .collect();
+
+    let insert_after = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("name:"))
+        .map_or(lines.len(), |p| p + 1);
+
+    lines.insert(insert_after, format!("proactive_domain: {domain}"));
+
+    format!(
+        "---{}\n---{}",
+        lines.join("\n"),
+        rest.trim_start_matches("---")
+    )
 }
 
 #[cfg(test)]
@@ -368,6 +411,95 @@ mod tests {
             vec![],
         );
 
+        assert!(!explorer.has_knowledge(&registry, &DomainLabel("rust".into())));
+    }
+
+    #[test]
+    fn has_knowledge_matches_by_proactive_domain_not_llm_chosen_name() {
+        // Regression test for #5707: the skill directory/name is whatever the LLM picked
+        // ("terraform-quickref"), never "world-knowledge-terraform" — has_knowledge must
+        // still recognize the domain via the stamped `proactive_domain` field.
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("terraform-quickref");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: terraform-quickref\ndescription: Terraform quick reference.\nproactive_domain: terraform\n---\nbody",
+        )
+        .unwrap();
+        let registry = SkillRegistry::load(&[dir.path()]);
+
+        let generator = SkillGenerator::new(
+            zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            PathBuf::from("/tmp"),
+        );
+        let explorer = ProactiveExplorer::new(
+            generator,
+            None,
+            PathBuf::from("/tmp"),
+            8_000,
+            30_000,
+            vec![],
+        );
+
+        assert!(explorer.has_knowledge(&registry, &DomainLabel("terraform".into())));
+        assert!(!explorer.has_knowledge(&registry, &DomainLabel("rust".into())));
+    }
+
+    #[test]
+    fn stamp_proactive_domain_inserts_after_name() {
+        let skill_md =
+            "---\nname: terraform-quickref\ndescription: Terraform quick reference.\n---\nbody";
+        let stamped = stamp_proactive_domain(skill_md, "terraform");
+        assert!(
+            stamped.contains("name: terraform-quickref\nproactive_domain: terraform\n"),
+            "stamped: {stamped}"
+        );
+        assert!(stamped.contains("body"), "body missing: {stamped}");
+    }
+
+    #[test]
+    fn stamp_proactive_domain_replaces_existing_value() {
+        let skill_md = "---\nname: terraform-quickref\nproactive_domain: stale\ndescription: Terraform quick reference.\n---\nbody";
+        let stamped = stamp_proactive_domain(skill_md, "terraform");
+        assert_eq!(stamped.matches("proactive_domain:").count(), 1);
+        assert!(stamped.contains("proactive_domain: terraform"));
+        assert!(!stamped.contains("stale"));
+    }
+
+    #[tokio::test]
+    async fn explore_then_reload_closes_has_knowledge_gate() {
+        // End-to-end regression guard for #5707: drives the real explore() -> stamp ->
+        // write -> registry reload -> has_knowledge() path with a mocked LLM response whose
+        // frontmatter `name:` deliberately differs from `domain.to_skill_name()`. A
+        // regression that reintroduced name-based matching on either side of the
+        // stamp/has_knowledge pair would fail this test even though the hand-fixture unit
+        // tests above stay green.
+        let dir = tempfile::tempdir().unwrap();
+        let llm_response = "---\nname: terraform-quickref\ndescription: Terraform quick reference.\nallowed-tools: bash\n---\n\n## Usage\n\nRun `terraform plan`.\n";
+        let provider =
+            zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::with_responses(vec![
+                llm_response.to_string(),
+            ]));
+        let generator = SkillGenerator::new(provider, dir.path().to_path_buf());
+        let explorer = ProactiveExplorer::new(
+            generator,
+            None,
+            dir.path().to_path_buf(),
+            8_000,
+            30_000,
+            vec![],
+        );
+
+        let domain = DomainLabel("terraform".into());
+        explorer.explore(&domain).await.unwrap();
+
+        // The skill must be written under the LLM's own name, not "world-knowledge-terraform".
+        assert!(!dir.path().join(domain.to_skill_name()).exists());
+        assert!(dir.path().join("terraform-quickref").exists());
+
+        let registry = SkillRegistry::load(&[dir.path()]);
+        assert!(explorer.has_knowledge(&registry, &domain));
         assert!(!explorer.has_knowledge(&registry, &DomainLabel("rust".into())));
     }
 }

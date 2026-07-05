@@ -172,6 +172,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tool-execution gate (`effective_trust` in `crates/zeph-core/src/agent/context/assembly.rs`) was
   already fail-open to `Trusted` on a missing entry before this fix, so this change aligns
   display/invocation behavior with the existing security boundary rather than weakening it.
+- `fix(skills)`: `has_knowledge()` (`crates/zeph-skills/src/proactive.rs`) compared an
+  already-explored domain against the deterministic `domain.to_skill_name()`
+  (`"world-knowledge-{slug}"`), but `explore()` wrote the generated skill under whatever
+  free-form name the LLM chose in its `SKILL.md` frontmatter — the two never agreed, so the
+  proactive world-knowledge exploration gate (`crates/zeph-agent-context/src/service.rs:552-562`)
+  never recognized a domain as already known and re-ran a full LLM skill-generation call on
+  every subsequent turn classifying to the same domain. `SkillMeta` gains a
+  `proactive_domain: Option<String>` field (`crates/zeph-skills/src/loader.rs`), stamped into
+  generated frontmatter by a new `stamp_proactive_domain` helper inside `explore()` (mirroring
+  the existing `parent_skill` traceability-marker pattern in `heuristic_promotion.rs`);
+  `has_knowledge()` now matches on this stable per-domain marker instead of the LLM-chosen name,
+  so a follow-up turn on a known domain skips exploration entirely and no longer risks creating
+  a second skill directory for the same domain under a differently-named regeneration. (#5707)
 - `fix(llm)`: `TriageRouter::chat_with_tools` (`crates/zeph-llm/src/router/triage.rs`) delegated
   a tool call to whichever tier was selected by classification with no check that the tier's
   provider actually supports tool use, unlike `RouterProvider::chat_with_tools` which explicitly

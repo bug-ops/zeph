@@ -47,6 +47,8 @@
 //! | `x-git-hash` | no | Git commit hash captured at install time |
 //! | `metadata` | no | Arbitrary key-value block for custom attributes |
 //! | `triggers` | no | Comma-separated trigger phrases for embedding-based matching (max 20, each 3–200 chars) |
+//! | `parent_skill` | no | Originating skill name for heuristic-promoted skills |
+//! | `proactive_domain` | no | Canonical domain slug for proactively-generated world-knowledge skills |
 //!
 //! ## Trigger Phrases
 //!
@@ -115,6 +117,15 @@ pub struct SkillMeta {
     /// Set when `source = "heuristic_promotion"`. Used for traceability only — no effect on
     /// skill matching or trust governance.
     pub parent_skill: Option<String>,
+    /// Canonical domain slug for proactively-generated world-knowledge skills
+    /// (`proactive_domain` frontmatter field).
+    ///
+    /// Set by [`crate::proactive::ProactiveExplorer::explore`] to the raw domain slug (the
+    /// `DomainLabel` inner string, e.g. `"terraform"` — not the `world-knowledge-{slug}` form
+    /// produced by `DomainLabel::to_skill_name`) so that `ProactiveExplorer::has_knowledge` can
+    /// identify an already-explored domain regardless of the LLM-chosen skill `name`. `None`
+    /// for skills not produced by proactive exploration.
+    pub proactive_domain: Option<String>,
     /// Optional platform-extension manifest declared in the skill's `extensions:` frontmatter block.
     ///
     /// `None` when the block is absent or fails to parse (a warning is logged on parse failure).
@@ -170,6 +181,7 @@ impl Default for SkillMeta {
             category: None,
             triggers: vec![],
             parent_skill: None,
+            proactive_domain: None,
             extensions: None,
         }
     }
@@ -240,6 +252,7 @@ struct RawFrontmatter {
     category: Option<String>,
     triggers: Vec<String>,
     parent_skill: Option<String>,
+    proactive_domain: Option<String>,
 }
 
 /// Validate a skill category name.
@@ -466,6 +479,11 @@ fn apply_field(raw: &mut RawFrontmatter, key: &str, value: String) {
                 raw.parent_skill = Some(value);
             }
         }
+        "proactive_domain" => {
+            if !value.is_empty() {
+                raw.proactive_domain = Some(value);
+            }
+        }
         "metadata" if value.is_empty() => {
             // Handled by caller — sets in_metadata flag.
         }
@@ -495,6 +513,7 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
         category: None,
         triggers: Vec::new(),
         parent_skill: None,
+        proactive_domain: None,
     };
     let mut in_metadata = false;
 
@@ -687,6 +706,7 @@ pub fn load_skill_meta_from_str(content: &str) -> Result<(SkillMeta, String), Sk
         category: raw.category,
         triggers: raw.triggers,
         parent_skill: raw.parent_skill,
+        proactive_domain: raw.proactive_domain,
         extensions,
     };
 
@@ -771,6 +791,7 @@ pub fn load_skill_meta(path: &Path) -> Result<SkillMeta, SkillError> {
         category: raw.category,
         triggers: raw.triggers,
         parent_skill: raw.parent_skill,
+        proactive_domain: raw.proactive_domain,
         extensions,
     })
 }
@@ -1725,6 +1746,34 @@ mod tests {
         );
         let meta = load_skill_meta(&path).unwrap();
         assert!(meta.parent_skill.is_none());
+    }
+
+    #[test]
+    fn proactive_domain_parsed_from_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "terraform-quickref",
+            "---\nname: terraform-quickref\ndescription: Terraform quick reference.\nproactive_domain: terraform\n---\nbody",
+        );
+        let meta = load_skill_meta(&path).unwrap();
+        assert_eq!(
+            meta.proactive_domain.as_deref(),
+            Some("terraform"),
+            "proactive_domain must be parsed from frontmatter regardless of the skill's own name"
+        );
+    }
+
+    #[test]
+    fn proactive_domain_absent_when_not_in_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "regular-skill",
+            "---\nname: regular-skill\ndescription: A normal skill.\n---\nbody",
+        );
+        let meta = load_skill_meta(&path).unwrap();
+        assert!(meta.proactive_domain.is_none());
     }
 
     #[test]
