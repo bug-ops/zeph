@@ -913,7 +913,10 @@ pub(crate) async fn run_daemon(
 
     let mut agent = agent
         .with_document_config(config.memory.documents.clone())
-        .with_hooks_config(&config.hooks);
+        .with_hooks_config(&config.hooks)
+        // Keep TrustGateExecutor's MCP tool-id registry in sync with MCP servers connected
+        // after startup (#5747) — without this, check_tool_refresh has no handle to update.
+        .with_mcp_tool_ids_handle(mcp_ids_handle);
 
     // #5566: daemon mode (the process that actually serves `[gateway]` long-lived, since
     // `spawn_gateway_server` only forwards webhooks into an already-built agent) never wired

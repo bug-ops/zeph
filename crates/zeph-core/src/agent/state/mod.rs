@@ -426,6 +426,16 @@ pub(crate) struct SecurityState {
     /// When `Some`, `process_tool_result_batch` records a `ShadowEvent` after each tool batch,
     /// then calls `goal_drift_score()` and emits a `GoalDrift` security event when alerted.
     pub(crate) shadow_memory: Option<zeph_sanitizer::ShadowMemory>,
+    /// Handle into `TrustGateExecutor`'s MCP tool-id registry
+    /// (`crates/zeph-tools/src/trust_gate.rs`), used to force-deny all MCP-sourced tools when
+    /// the active skill trust is Quarantined.
+    ///
+    /// `None` when the caller didn't attach a handle (e.g. tests, or an executor tree built
+    /// without `apply_common_tool_gating`). When `Some`, `check_tool_refresh` keeps it in sync
+    /// with `self.services.mcp.tools` so MCP servers connected after startup (`/mcp add`,
+    /// `tools/list_changed`) are folded into the Quarantine-deny set — the handle is otherwise
+    /// only ever populated once, at startup, and goes stale (#5747).
+    pub(crate) mcp_tool_ids: Option<Arc<RwLock<HashSet<String>>>>,
 }
 
 /// Groups debug/diagnostics subsystems (dumper, trace collector, anomaly detector, logging config).

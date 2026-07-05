@@ -913,6 +913,22 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach the shared handle into `TrustGateExecutor`'s MCP tool-id registry
+    /// (`zeph_tools::TrustGateExecutor::mcp_tool_ids_handle`).
+    ///
+    /// Without this, the registry is populated once at startup and never updated, so MCP
+    /// servers connected later (`/mcp add`, `tools/list_changed`) are invisible to the
+    /// Quarantine-deny check (#5747). When attached, `check_tool_refresh` keeps the set in
+    /// sync with the live MCP tool list every turn.
+    #[must_use]
+    pub fn with_mcp_tool_ids_handle(
+        mut self,
+        handle: Arc<RwLock<std::collections::HashSet<String>>>,
+    ) -> Self {
+        self.services.security.mcp_tool_ids = Some(handle);
+        self
+    }
+
     /// Attach a per-turn risk chain accumulator for multi-step attack detection.
     ///
     /// Pass the same `Arc` to `ShellExecutor::with_risk_chain` so the executor records

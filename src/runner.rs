@@ -2902,6 +2902,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     } else {
         agent
     };
+    // Keep TrustGateExecutor's MCP tool-id registry in sync with MCP servers connected after
+    // startup (#5747) — without this, check_tool_refresh has no handle to update.
+    let agent = agent.with_mcp_tool_ids_handle(mcp_ids_handle);
 
     // Load provider-specific and explicit instruction files.
     // base_dir is the process CWD at startup — the most natural project root for local tools.

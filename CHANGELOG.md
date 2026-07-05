@@ -167,6 +167,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   chunk-dispatch concurrency from `embed_concurrency` for future configurability; at the current
   shipped defaults (both 2) it has no additional effect beyond the existing `embed_concurrency`
   gate.
+- `fix(core,tools)`: `TrustGateExecutor::mcp_tool_ids` (`crates/zeph-tools/src/trust_gate.rs`) —
+  the set of MCP-sourced tool ids force-denied when a Quarantined skill is active — was
+  populated exactly once, at agent startup (`register_mcp_tool_ids`), and never refreshed. MCP
+  servers connected later via `/mcp add` or a `tools/list_changed` notification bypassed
+  Quarantine denial entirely, since their tool ids never entered the deny-set (#5747). Added a
+  `SecurityState.mcp_tool_ids` handle and `AgentBuilder::with_mcp_tool_ids_handle` (mirroring the
+  existing `with_shadow_sentinel` attach pattern), wired at all three agent-construction call
+  sites (`src/runner.rs`, `src/daemon.rs`, `src/acp.rs`). `Agent::check_tool_refresh`
+  (`crates/zeph-core/src/agent/mcp.rs`), already called once per turn, now also rebuilds the
+  deny-set from the live `self.services.mcp.tools` via the same `McpTool::sanitized_id`
+  derivation and replace-not-union semantics `register_mcp_tool_ids` uses at startup — both for
+  the `tools/list_changed` trigger and the `/mcp add`/`/mcp remove` trigger.
 - `fix(tools,skills)`: `TrustGateExecutor`'s quarantine-denial message for `QUARANTINE_DENIED`
   tools (`invoke_skill`, `load_skill`, `bash`, `write`, etc.) read `"{tool_id} denied
   (trust=quarantined)"`, which misattributed the denial to the specifically-invoked tool/skill

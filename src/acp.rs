@@ -1537,6 +1537,9 @@ async fn spawn_acp_agent(
     }
 
     agent = agent.with_hooks_config(&hooks_config);
+    // Keep TrustGateExecutor's MCP tool-id registry in sync with MCP servers connected after
+    // startup (#5747) — without this, check_tool_refresh has no handle to update.
+    agent = agent.with_mcp_tool_ids_handle(mcp_ids_handle);
 
     drop(d);
 
