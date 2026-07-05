@@ -134,7 +134,7 @@ impl ToolExecutor for MemoryToolExecutor {
 
                 let key_facts = self
                     .memory
-                    .search_key_facts(&params.query, limit)
+                    .search_key_facts(&params.query, limit, Some(self.conversation_id))
                     .await
                     .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
 

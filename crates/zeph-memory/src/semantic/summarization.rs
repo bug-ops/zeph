@@ -7,6 +7,7 @@ use super::{KEY_FACTS_COLLECTION, SemanticMemory};
 use crate::embedding_store::MessageKind;
 use crate::error::MemoryError;
 use crate::types::{ConversationId, MessageId};
+use crate::vector_store::{FieldCondition, FieldValue, VectorFilter};
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct StructuredSummary {
@@ -350,8 +351,19 @@ impl SemanticMemory {
         vector: Vec<f32>,
         threshold: f32,
     ) {
+        // Scope the near-duplicate check to this conversation, matching the read-side filter in
+        // `search_key_facts`. An unscoped (global) dedup search would let a fact stored under one
+        // conversation silently suppress a near-identical fact for a different conversation, which
+        // is then unrecoverable from that other conversation's conversation-scoped search (#5732).
+        let dedup_filter = Some(VectorFilter {
+            must: vec![FieldCondition {
+                field: "conversation_id".into(),
+                value: FieldValue::Integer(conversation_id.0),
+            }],
+            must_not: vec![],
+        });
         match qdrant
-            .search_collection(KEY_FACTS_COLLECTION, &vector, 1, None)
+            .search_collection(KEY_FACTS_COLLECTION, &vector, 1, dedup_filter)
             .await
         {
             Ok(hits) if hits.first().is_some_and(|h| h.score >= threshold) => {
@@ -383,6 +395,11 @@ impl SemanticMemory {
 
     /// Search key facts extracted from conversation summaries.
     ///
+    /// When `conversation_id` is `Some`, results are restricted to facts scoped to that
+    /// conversation; facts written without a `conversation_id` payload field (e.g. cross-session
+    /// episodic-consolidation facts, or points written before this scoping was introduced) will
+    /// not match. Pass `None` to search across all conversations.
+    ///
     /// # Errors
     ///
     /// Returns an error if embedding or Qdrant search fails.
@@ -390,6 +407,7 @@ impl SemanticMemory {
         &self,
         query: &str,
         limit: usize,
+        conversation_id: Option<ConversationId>,
     ) -> Result<Vec<String>, MemoryError> {
         let Some(qdrant) = &self.qdrant else {
             tracing::debug!("key-facts: skipped, no vector store");
@@ -417,11 +435,24 @@ impl SemanticMemory {
             .ensure_named_collection_for_vector(KEY_FACTS_COLLECTION, &vector)
             .await?;
 
+        let filter = conversation_id.map(|cid| VectorFilter {
+            must: vec![FieldCondition {
+                field: "conversation_id".into(),
+                value: FieldValue::Integer(cid.0),
+            }],
+            must_not: vec![],
+        });
+
         let points = qdrant
-            .search_collection(KEY_FACTS_COLLECTION, &vector, limit, None)
+            .search_collection(KEY_FACTS_COLLECTION, &vector, limit, filter)
             .await?;
 
-        tracing::debug!(results = points.len(), limit, "key-facts: search complete");
+        tracing::debug!(
+            results = points.len(),
+            limit,
+            conversation_id = conversation_id.map(|c| c.0),
+            "key-facts: search complete"
+        );
 
         let facts = points
             .into_iter()

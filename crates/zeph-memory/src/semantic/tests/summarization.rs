@@ -622,7 +622,7 @@ fn summary_debug() {
 #[tokio::test]
 async fn search_key_facts_no_qdrant_empty() {
     let memory = test_semantic_memory(false).await;
-    let facts = memory.search_key_facts("query", 5).await.unwrap();
+    let facts = memory.search_key_facts("query", 5, None).await.unwrap();
     assert!(facts.is_empty());
 }
 
@@ -702,7 +702,10 @@ async fn store_key_facts_first_fact_stored() {
     memory
         .store_key_facts(cid, 1, &["unique fact".to_string()])
         .await;
-    let results = memory.search_key_facts("unique fact", 5).await.unwrap();
+    let results = memory
+        .search_key_facts("unique fact", 5, Some(cid))
+        .await
+        .unwrap();
     assert!(!results.is_empty(), "first fact must be stored");
 }
 
@@ -719,8 +722,41 @@ async fn store_key_facts_duplicate_skipped_at_threshold() {
         .store_key_facts(cid, 2, &["fact A again".to_string()])
         .await;
     // Both embed to the same unit vector (v[0]=1.0); second should be deduplicated.
-    let results = memory.search_key_facts("fact A", 10).await.unwrap();
+    let results = memory
+        .search_key_facts("fact A", 10, Some(cid))
+        .await
+        .unwrap();
     assert_eq!(results.len(), 1, "duplicate fact must be skipped");
+}
+
+#[tokio::test]
+async fn store_key_facts_dedup_scoped_per_conversation() {
+    // S1 regression (#5732 follow-up): the near-duplicate dedup check must be scoped to the
+    // same conversation as the read-side filter. Before the fix, dedup searched globally, so a
+    // fact stored under conversation A would silently suppress storage of a near-identical fact
+    // under conversation B — and B's conversation-scoped search_key_facts would then never see
+    // its own fact at all.
+    let memory = make_embed_memory_with_threshold(0.95).await;
+    let conv_a = memory.sqlite().create_conversation().await.unwrap();
+    let conv_b = memory.sqlite().create_conversation().await.unwrap();
+
+    memory
+        .store_key_facts(conv_a, 1, &["shared fact".to_string()])
+        .await;
+    // Same mock embedding vector as conv_a's fact, so a global dedup search would find it and
+    // (incorrectly) skip storing this one under conv_b.
+    memory
+        .store_key_facts(conv_b, 2, &["shared fact again".to_string()])
+        .await;
+
+    let results_b = memory
+        .search_key_facts("shared fact", 10, Some(conv_b))
+        .await
+        .unwrap();
+    assert!(
+        !results_b.is_empty(),
+        "conversation B's own fact must not be suppressed by conversation A's near-duplicate"
+    );
 }
 
 #[tokio::test]
@@ -735,7 +771,10 @@ async fn store_key_facts_stored_when_threshold_above_one() {
     memory
         .store_key_facts(cid, 2, &["fact C twin".to_string()])
         .await;
-    let results = memory.search_key_facts("fact C", 10).await.unwrap();
+    let results = memory
+        .search_key_facts("fact C", 10, Some(cid))
+        .await
+        .unwrap();
     assert_eq!(
         results.len(),
         2,
@@ -816,6 +855,109 @@ async fn store_key_facts_fail_open_on_search_error() {
         .store_key_facts(cid, 1, &["fact stored despite search error".to_string()])
         .await;
     // Reaching this line confirms: no panic, no propagated error.
+}
+
+// ── Cross-conversation Key Facts isolation (#5732) ─────────────────────────────
+
+#[tokio::test]
+async fn search_key_facts_scoped_excludes_other_conversation_fact() {
+    // threshold=2.0 disables dedup (cosine similarity can never reach it), so the store
+    // is not the thing under test here — cross-conversation filtering is.
+    let memory = make_embed_memory_with_threshold(2.0).await;
+    let cid_a = memory.sqlite().create_conversation().await.unwrap();
+    let cid_b = memory.sqlite().create_conversation().await.unwrap();
+
+    memory
+        .store_key_facts(cid_a, 1, &["Alice's favorite color is blue".to_string()])
+        .await;
+
+    let results_b = memory
+        .search_key_facts("Alice's favorite color", 5, Some(cid_b))
+        .await
+        .unwrap();
+    assert!(
+        results_b.is_empty(),
+        "a fact stored under conversation A must not leak into conversation B's scoped search"
+    );
+
+    let results_a = memory
+        .search_key_facts("Alice's favorite color", 5, Some(cid_a))
+        .await
+        .unwrap();
+    assert!(
+        !results_a.is_empty(),
+        "a fact stored under conversation A must be found when searching scoped to A"
+    );
+    assert!(results_a[0].contains("Alice's favorite color"));
+}
+
+#[tokio::test]
+async fn search_key_facts_unscoped_still_sees_all_conversations() {
+    // Passing `None` preserves the pre-fix, cross-conversation search behavior.
+    let memory = make_embed_memory_with_threshold(2.0).await;
+    let cid_a = memory.sqlite().create_conversation().await.unwrap();
+
+    memory
+        .store_key_facts(cid_a, 1, &["Bob's favorite language is Rust".to_string()])
+        .await;
+
+    let results = memory
+        .search_key_facts("Bob's favorite language", 5, None)
+        .await
+        .unwrap();
+    assert!(
+        !results.is_empty(),
+        "unscoped search (conversation_id = None) must still find facts from any conversation"
+    );
+}
+
+#[tokio::test]
+async fn search_key_facts_excludes_untagged_points_when_scoped() {
+    // Simulates a point written before the #5732 fix (or a cross-conversation
+    // episodic-consolidation fact promoted with no `conversation_id` tag): it must never
+    // match a conversation-scoped search, but must still be visible to an unscoped search.
+    let memory = make_embed_memory_with_threshold(2.0).await;
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+
+    let qdrant = memory.qdrant.as_ref().expect("qdrant must be configured");
+    let vector = {
+        let mut v = vec![0.0f32; 384];
+        v[0] = 1.0;
+        v
+    };
+    qdrant
+        .ensure_named_collection_for_vector(KEY_FACTS_COLLECTION, &vector)
+        .await
+        .unwrap();
+    qdrant
+        .store_to_collection(
+            KEY_FACTS_COLLECTION,
+            serde_json::json!({
+                "fact_text": "untagged legacy fact",
+                "source_summary_id": 1,
+            }),
+            vector,
+        )
+        .await
+        .unwrap();
+
+    let scoped = memory
+        .search_key_facts("untagged legacy fact", 5, Some(cid))
+        .await
+        .unwrap();
+    assert!(
+        scoped.is_empty(),
+        "a point with no conversation_id payload field must not match any conversation-scoped filter"
+    );
+
+    let unscoped = memory
+        .search_key_facts("untagged legacy fact", 5, None)
+        .await
+        .unwrap();
+    assert!(
+        !unscoped.is_empty(),
+        "a point with no conversation_id payload field must still be visible to an unscoped search"
+    );
 }
 
 // ── is_policy_decision_fact ────────────────────────────────────────────────────

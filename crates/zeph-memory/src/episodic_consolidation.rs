@@ -36,9 +36,10 @@ use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
 use crate::semantic::KEY_FACTS_COLLECTION;
 use crate::store::SqliteStore;
+use crate::types::ConversationId;
 
-/// Row fetched from `episodic_events`: `(id, session_id, event_type, summary, message_content, created_at)`.
-type CandidateRow = (i64, String, String, String, String, i64);
+/// Row fetched from `episodic_events`: `(id, conversation_id, session_id, event_type, summary, message_content, created_at)`.
+type CandidateRow = (i64, i64, String, String, String, String, i64);
 
 /// Configuration for the episodic consolidation daemon.
 ///
@@ -77,6 +78,12 @@ pub struct EpisodicConsolidationResult {
 struct ConsolidationCandidate {
     /// Row ID from `episodic_events.id` (NOT `ExperienceId` — these are different tables).
     event_id: i64,
+    /// Owning conversation, derived from the joined `messages.conversation_id`.
+    ///
+    /// Used to scope promoted facts to a single conversation in the Key Facts payload
+    /// when every source event of a fact shares the same conversation (see
+    /// [`promote_fact`]'s `conversation_id` parameter).
+    conversation_id: ConversationId,
     #[allow(dead_code)]
     session_id: String,
     event_type: String,
@@ -185,7 +192,9 @@ pub async fn run_episodic_consolidation_sweep(
 
     // Step 2: compute cognitive weight for each candidate.
     let mut candidates: Vec<ConsolidationCandidate> = Vec::with_capacity(raw_candidates.len());
-    for (event_id, session_id, event_type, summary, message_content, created_at) in raw_candidates {
+    for (event_id, conversation_id, session_id, event_type, summary, message_content, created_at) in
+        raw_candidates
+    {
         let weight = compute_cognitive_weight(&pool, &session_id, created_at).await?;
         if weight < -0.5 {
             result.negative_weight_skipped += 1;
@@ -195,6 +204,7 @@ pub async fn run_episodic_consolidation_sweep(
         }
         candidates.push(ConsolidationCandidate {
             event_id,
+            conversation_id: ConversationId(conversation_id),
             session_id,
             event_type,
             summary,
@@ -320,11 +330,13 @@ pub async fn run_episodic_consolidation_sweep(
         };
 
         for (p, embedding) in pending.into_iter().zip(embeddings) {
+            let conversation_id = single_source_conversation_id(&candidates, &p.valid_source_ids);
             promote_fact(
                 &pool,
                 &p.fact.fact,
                 p.cog_weight_f32,
                 &p.valid_source_ids,
+                conversation_id,
                 qdrant,
                 embedding,
             )
@@ -362,7 +374,7 @@ async fn fetch_candidates(
 
     let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
     let raw = format!(
-        "SELECT e.id, e.session_id, e.event_type, e.summary,
+        "SELECT e.id, m.conversation_id, e.session_id, e.event_type, e.summary,
                 COALESCE(m.compressed_content, m.content) AS message_content,
                 e.created_at
          FROM episodic_events e
@@ -562,17 +574,53 @@ fn is_jaccard_duplicate(fact: &str, existing: &[String], threshold: f32) -> bool
     false
 }
 
+/// Returns the single conversation that every one of `source_event_ids` belongs to, or `None`
+/// when the sources span more than one conversation (or there are no matching candidates).
+///
+/// A single extracted fact can draw on episodic events from different conversations because
+/// [`fetch_candidates`] batches events across sessions for one LLM extraction call. Such
+/// cross-conversation facts are genuinely not owned by a single conversation, so they are
+/// promoted without a `conversation_id` tag — this mirrors the accepted backward-compatibility
+/// behavior for pre-existing untagged points (issue #5732): a fact with no `conversation_id`
+/// simply never matches a conversation-scoped `search_key_facts` filter.
+///
+/// Note: `source_event_ids` is pre-filtered to events that survived candidate selection (see
+/// `valid_source_ids` in the caller), so if a fact's true sources spanned conversations but only
+/// one conversation's events survived filtering (e.g. dropped for negative cognitive weight or
+/// insufficient age), this can return `Some` for that single surviving conversation even though
+/// the fact was partly synthesized from another conversation's now-excluded event. This is judged
+/// an acceptable narrow tradeoff: the alternative (treating it as cross-conversation and storing
+/// untagged) is itself a mild exposure, and the fact is scoped to a conversation that genuinely
+/// contributed at least one surviving source event.
+fn single_source_conversation_id(
+    candidates: &[ConsolidationCandidate],
+    source_event_ids: &[i64],
+) -> Option<ConversationId> {
+    let mut ids = source_event_ids.iter().filter_map(|id| {
+        candidates
+            .iter()
+            .find(|c| c.event_id == *id)
+            .map(|c| c.conversation_id)
+    });
+    let first = ids.next()?;
+    ids.all(|cid| cid == first).then_some(first)
+}
+
 /// Promote a single accepted fact to `SQLite` and optionally Qdrant.
 ///
 /// All `SQLite` writes for one fact happen in one transaction. The `embedding`
 /// parameter carries a pre-computed vector (from `embed_batch` in the caller).
 /// When `None`, Qdrant upsert is skipped (no embedding support, or batch failed).
+/// `conversation_id` is `Some` only when every source event belongs to the same conversation
+/// (see [`single_source_conversation_id`]); it is stored in the Qdrant payload so
+/// `search_key_facts` can scope results to a single conversation.
 #[tracing::instrument(skip_all, name = "memory.episodic.promote_fact")]
 async fn promote_fact(
     pool: &DbPool,
     fact_text: &str,
     cognitive_weight: f32,
     source_event_ids: &[i64],
+    conversation_id: Option<ConversationId>,
     qdrant: Option<&EmbeddingStore>,
     embedding: Option<Vec<f32>>,
 ) -> Result<(), MemoryError> {
@@ -616,12 +664,15 @@ async fn promote_fact(
         {
             tracing::warn!(error = %e, "episodic consolidation: failed to ensure key_facts collection");
         } else {
-            let payload = serde_json::json!({
+            let mut payload = serde_json::json!({
                 "fact_text": fact_text,
                 "source": "episodic_consolidation",
                 "cognitive_weight": cognitive_weight,
                 "consolidated_fact_id": fact_id,
             });
+            if let Some(cid) = conversation_id {
+                payload["conversation_id"] = serde_json::json!(cid.0);
+            }
             if let Err(e) = qdrant
                 .store_to_collection(KEY_FACTS_COLLECTION, payload, vector)
                 .await
@@ -837,6 +888,161 @@ mod tests {
             &existing,
             0.6
         ));
+    }
+
+    // ── single_source_conversation_id (#5732) ──────────────────────────────────
+
+    fn candidate(event_id: i64, conversation_id: i64) -> ConsolidationCandidate {
+        ConsolidationCandidate {
+            event_id,
+            conversation_id: ConversationId(conversation_id),
+            session_id: "test_session".to_owned(),
+            event_type: "tool_call".to_owned(),
+            summary: "summary".to_owned(),
+            message_content: "content".to_owned(),
+            cognitive_weight: 0.0,
+        }
+    }
+
+    #[test]
+    fn single_source_conversation_id_all_sources_share_one_conversation() {
+        let candidates = vec![candidate(1, 10), candidate(2, 10), candidate(3, 10)];
+        assert_eq!(
+            single_source_conversation_id(&candidates, &[1, 2, 3]),
+            Some(ConversationId(10))
+        );
+    }
+
+    #[test]
+    fn single_source_conversation_id_spanning_two_conversations_returns_none() {
+        let candidates = vec![candidate(1, 10), candidate(2, 20)];
+        assert_eq!(single_source_conversation_id(&candidates, &[1, 2]), None);
+    }
+
+    #[test]
+    fn single_source_conversation_id_empty_sources_returns_none() {
+        let candidates = vec![candidate(1, 10)];
+        assert_eq!(single_source_conversation_id(&candidates, &[]), None);
+    }
+
+    #[test]
+    fn single_source_conversation_id_unmatched_ids_return_none() {
+        // source_event_ids referencing no known candidate (e.g. filtered out upstream).
+        let candidates = vec![candidate(1, 10)];
+        assert_eq!(single_source_conversation_id(&candidates, &[999]), None);
+    }
+
+    #[test]
+    fn single_source_conversation_id_single_source_returns_its_conversation() {
+        let candidates = vec![candidate(1, 10), candidate(2, 20)];
+        assert_eq!(
+            single_source_conversation_id(&candidates, &[1]),
+            Some(ConversationId(10))
+        );
+    }
+
+    // ── promote_fact Qdrant payload tagging (#5732) ────────────────────────────
+
+    fn embed_enabled_mock_provider(llm_response: &str) -> AnyProvider {
+        let mut p = MockProvider::default();
+        p.default_response = llm_response.to_owned();
+        p.supports_embeddings = true;
+        p.embedding = vec![0.1_f32; 384];
+        AnyProvider::Mock(p)
+    }
+
+    #[tokio::test]
+    async fn promote_fact_tags_conversation_id_when_sources_share_one_conversation() {
+        let (store, pool) = setup_db().await;
+        let conv_id = store.create_conversation().await.unwrap();
+
+        let (_, ev1) = insert_episodic_event(
+            &pool,
+            conv_id,
+            "Alice uses Rust for systems programming",
+            "Alice prefers Rust",
+            600,
+        )
+        .await;
+
+        let llm_response = format!(
+            r#"[{{"fact":"Alice uses Rust for systems programming","source_event_ids":[{ev1}]}}]"#
+        );
+        let provider = embed_enabled_mock_provider(&llm_response);
+        let config = EpisodicConsolidationConfig {
+            enabled: true,
+            consolidation_provider: ProviderName::default(),
+            interval_secs: 1800,
+            batch_size: 30,
+            min_age_secs: 300,
+            dedup_jaccard_threshold: 0.6,
+        };
+
+        let qdrant = crate::embedding_store::EmbeddingStore::new_sqlite(pool.clone());
+
+        let result =
+            run_episodic_consolidation_sweep(pool.clone(), &provider, &config, Some(&qdrant))
+                .await
+                .unwrap();
+        assert_eq!(result.facts_promoted, 1);
+
+        let points = qdrant
+            .search_collection(KEY_FACTS_COLLECTION, &[0.1_f32; 384], 10, None)
+            .await
+            .unwrap();
+        assert_eq!(points.len(), 1, "one point must be upserted into Qdrant");
+        assert_eq!(
+            points[0]
+                .payload
+                .get("conversation_id")
+                .and_then(serde_json::Value::as_i64),
+            Some(conv_id.0),
+            "conversation_id must be written when every source event shares one conversation"
+        );
+    }
+
+    #[tokio::test]
+    async fn promote_fact_omits_conversation_id_when_sources_span_conversations() {
+        let (store, pool) = setup_db().await;
+        let conv_a = store.create_conversation().await.unwrap();
+        let conv_b = store.create_conversation().await.unwrap();
+
+        let (_, ev1) =
+            insert_episodic_event(&pool, conv_a, "Alice uses Rust", "summary a", 600).await;
+        let (_, ev2) =
+            insert_episodic_event(&pool, conv_b, "Bob also uses Rust", "summary b", 600).await;
+
+        let llm_response = format!(
+            r#"[{{"fact":"Both Alice and Bob use Rust","source_event_ids":[{ev1},{ev2}]}}]"#
+        );
+        let provider = embed_enabled_mock_provider(&llm_response);
+        let config = EpisodicConsolidationConfig {
+            enabled: true,
+            consolidation_provider: ProviderName::default(),
+            interval_secs: 1800,
+            batch_size: 30,
+            min_age_secs: 300,
+            dedup_jaccard_threshold: 0.6,
+        };
+
+        let qdrant = crate::embedding_store::EmbeddingStore::new_sqlite(pool.clone());
+
+        let result =
+            run_episodic_consolidation_sweep(pool.clone(), &provider, &config, Some(&qdrant))
+                .await
+                .unwrap();
+        assert_eq!(result.facts_promoted, 1);
+
+        let points = qdrant
+            .search_collection(KEY_FACTS_COLLECTION, &[0.1_f32; 384], 10, None)
+            .await
+            .unwrap();
+        assert_eq!(points.len(), 1, "one point must be upserted into Qdrant");
+        assert!(
+            !points[0].payload.contains_key("conversation_id"),
+            "a fact whose source events span multiple conversations must not carry a \
+             conversation_id key at all, not merely a null one"
+        );
     }
 
     #[test]
