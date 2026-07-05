@@ -7,19 +7,59 @@
 //! from `HuggingFace` Hub. Returns per-span PII results via [`PiiDetector`].
 //!
 //! Inference runs in `tokio::task::spawn_blocking`. Model is loaded lazily on first call.
+//!
+//! The backbone-plus-head model itself (`DebertaV2TokenClassifier`) lives in the sibling
+//! `deberta_token_model` module, shared with `ner.rs`'s `CandleNerClassifier` — see that
+//! module for the bias-tensor rationale.
+//!
+//! ## #5457 investigation: closed, no candle-port bug found
+//!
+//! After the bias-tensor fix (see `super::deberta_token_model`), the original regression test
+//! (`real_model_detects_email`, checking `"Contact John Smith at john@example.com for
+//! details."`) still failed to detect any PII. Two independent investigations followed:
+//!
+//! 1. A line-by-line audit of `candle-transformers`'s DeBERTa-v2 port (relative
+//!    position building, log-bucket positions, disentangled attention bias, `XSoftmax`,
+//!    embeddings) against the published `HuggingFace` `transformers` reference found every
+//!    path to be a faithful port.
+//! 2. A `model.safetensors` header inspection confirmed every `vb.pp(...)`/`vb.get(...)`
+//!    path in this module and in `candle-transformers`' `DebertaV2Model::load` resolves to
+//!    an existing tensor with the expected shape — no silent prefix/key mismatch.
+//! 3. **Conclusive**: a throwaway `torch`+`transformers` reference harness ran the actual
+//!    `iiiorg/piiranha-v1-detect-personal-information` checkpoint through the real
+//!    `HuggingFace` `PyTorch` implementation on the same input. Its per-token predictions
+//!    matched this crate's candle port *exactly*, to four decimal places, for every one of
+//!    the 14 tokens produced by the test sentence. Only two representative values were
+//!    recorded in this comment (`▁John` → `O` @ 0.9891 in both; `▁john` → `I-USERNAME` @
+//!    0.4839 in both) — the full 14-token comparison table was observed in the terminal
+//!    during the investigation but the throwaway venv was deleted afterward, so it is not
+//!    reproducible from this repository without rebuilding the reference harness. The
+//!    candle port is numerically correct.
+//!
+//! The real finding: this checkpoint is weak at free-text given-name/surname/email
+//! recognition in casual sentences (even in the reference `PyTorch` implementation) but
+//! reliably flags structured PII — SSNs, street addresses, phone numbers — with >0.99
+//! confidence. The original test exercised the model's weak spot, not a code defect.
+//! The regression test was replaced with `real_model_detects_ssn`, which uses an input
+//! verified against the real `PyTorch` model to produce confident, stable predictions. A
+//! characterization test (`free_text_names_yield_no_confident_span`) locks in the known
+//! current weak-spot behavior on the original email/name sentence so a future change in
+//! either direction (regression or improvement) is caught by CI instead of drifting
+//! silently.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use candle_core::{DType, Device, Module, Tensor};
+use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::models::debertav2::{Config as DebertaConfig, DebertaV2Model};
+use candle_transformers::models::debertav2::Config as DebertaConfig;
 use tokenizers::Tokenizer;
 
 use crate::error::LlmError;
 
+use super::deberta_token_model::DebertaV2TokenClassifier;
 use super::{PiiDetector, PiiResult, PiiSpan, verify_sha256};
 
 /// Maximum number of tokens per chunk for NER inference.
@@ -27,102 +67,8 @@ const MAX_CHUNK_TOKENS: usize = 448;
 /// Token overlap between adjacent chunks for NER.
 const CHUNK_OVERLAP_TOKENS: usize = 64;
 
-/// DeBERTa-v2 backbone plus a token-classification head, loaded with a bias term.
-///
-/// `candle_transformers::models::debertav2::DebertaV2NERModel` cannot be used directly:
-/// it builds its classifier layer with `candle_nn::linear_no_bias`, which silently skips
-/// the `classifier.bias` tensor present in real NER checkpoints (confirmed against
-/// `iiiorg/piiranha-v1-detect-personal-information`'s `model.safetensors`). Dropping a
-/// trained bias term corrupts every token's logits, so this type re-implements the same
-/// head using `candle_nn::linear` (with bias) instead to stay faithful to the checkpoint.
-///
-/// ## #5457 investigation: closed, no candle-port bug found
-///
-/// After the bias-tensor fix above, the original regression test (`real_model_detects_email`,
-/// checking `"Contact John Smith at john@example.com for details."`) still failed to detect
-/// any PII. Two independent investigations followed:
-///
-/// 1. A line-by-line audit of `candle-transformers` v0.11.0's DeBERTa-v2 port (relative
-///    position building, log-bucket positions, disentangled attention bias, `XSoftmax`,
-///    embeddings) against the published `HuggingFace` `transformers` reference found every
-///    path to be a faithful port.
-/// 2. A `model.safetensors` header inspection confirmed every `vb.pp(...)`/`vb.get(...)`
-///    path in this module and in `candle-transformers`' `DebertaV2Model::load` resolves to
-///    an existing tensor with the expected shape — no silent prefix/key mismatch.
-/// 3. **Conclusive**: a throwaway `torch`+`transformers` reference harness ran the actual
-///    `iiiorg/piiranha-v1-detect-personal-information` checkpoint through the real
-///    `HuggingFace` `PyTorch` implementation on the same input. Its per-token predictions
-///    matched this crate's candle port *exactly*, to four decimal places, for every one of
-///    the 14 tokens produced by the test sentence. Only two representative values were
-///    recorded in this comment (`▁John` → `O` @ 0.9891 in both; `▁john` → `I-USERNAME` @
-///    0.4839 in both) — the full 14-token comparison table was observed in the terminal
-///    during the investigation but the throwaway venv was deleted afterward, so it is not
-///    reproducible from this repository without rebuilding the reference harness. The
-///    candle port is numerically correct.
-///
-/// The real finding: this checkpoint is weak at free-text given-name/surname/email
-/// recognition in casual sentences (even in the reference `PyTorch` implementation) but
-/// reliably flags structured PII — SSNs, street addresses, phone numbers — with >0.99
-/// confidence. The original test exercised the model's weak spot, not a code defect.
-/// The regression test was replaced with `real_model_detects_ssn`, which uses an input
-/// verified against the real `PyTorch` model to produce confident, stable predictions. A
-/// characterization test (`free_text_names_yield_no_confident_span`) locks in the known
-/// current weak-spot behavior on the original email/name sentence so a future change in
-/// either direction (regression or improvement) is caught by CI instead of drifting
-/// silently.
-struct PiiNerHead {
-    deberta: DebertaV2Model,
-    dropout: candle_nn::Dropout,
-    classifier: candle_nn::Linear,
-}
-
-impl PiiNerHead {
-    /// Load the DeBERTa-v2 backbone under `vb` and a bias-including linear classifier
-    /// head at `vb`'s root `classifier.*` keys, mirroring the checkpoint layout that
-    /// `DebertaV2NERModel::load` targets internally.
-    ///
-    /// Trade-off versus the upstream `linear_no_bias`-based loader: a checkpoint whose
-    /// classifier head has no `classifier.bias` tensor now fails to load
-    /// (`candle_core::Error` from `candle_nn::linear`'s `vb.get_with_hints(.., "bias", ..)`)
-    /// instead of loading silently without it. This is intentional — fail loud on an
-    /// unsupported checkpoint shape rather than silently producing degraded predictions —
-    /// but it does narrow the set of `pii_model` repo IDs this classifier can load.
-    fn load(
-        vb: &VarBuilder,
-        config: &DebertaConfig,
-        id2label_len: usize,
-    ) -> candle_core::Result<Self> {
-        let deberta = DebertaV2Model::load(vb.clone(), config)?;
-        // Dropout probability precision loss from f64 -> f32 is immaterial here.
-        #[allow(clippy::cast_possible_truncation)]
-        let dropout = candle_nn::Dropout::new(config.hidden_dropout_prob as f32);
-        let classifier =
-            candle_nn::linear(config.hidden_size, id2label_len, vb.root().pp("classifier"))?;
-        Ok(Self {
-            deberta,
-            dropout,
-            classifier,
-        })
-    }
-
-    /// Run the backbone followed by the classification head, returning per-token logits
-    /// of shape `[batch, seq_len, num_labels]`.
-    fn forward(
-        &self,
-        input_ids: &Tensor,
-        token_type_ids: Option<Tensor>,
-        attention_mask: Option<Tensor>,
-    ) -> candle_core::Result<Tensor> {
-        let output = self
-            .deberta
-            .forward(input_ids, token_type_ids, attention_mask)?;
-        let output = self.dropout.forward(&output, false)?;
-        self.classifier.forward(&output)
-    }
-}
-
 struct CandlePiiInner {
-    model: PiiNerHead,
+    model: DebertaV2TokenClassifier,
     tokenizer: Tokenizer,
     device: Device,
     /// Index → BIO label string (e.g. `0 → "O"`, `1 → "B-GIVENNAME"`).
@@ -242,7 +188,7 @@ impl CandlePiiClassifier {
 
         // HuggingFace DeBERTa v2/v3 safetensors store backbone weights under the deberta.* namespace
         let deberta_vb = vb.pp("deberta");
-        let model = PiiNerHead::load(&deberta_vb, &config, id2label.len())
+        let model = DebertaV2TokenClassifier::load(&deberta_vb, &config, id2label.len())
             .map_err(|e| LlmError::ModelLoad(format!("failed to load DeBERTa NER model: {e}")))?;
 
         let load_ms = load_t0.elapsed().as_millis();

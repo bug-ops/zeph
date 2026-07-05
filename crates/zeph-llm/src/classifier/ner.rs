@@ -33,19 +33,20 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-use candle_core::{DType, Tensor};
+use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::models::debertav2::{Config as DebertaConfig, DebertaV2NERModel};
+use candle_transformers::models::debertav2::Config as DebertaConfig;
 use tokenizers::Tokenizer;
 
 use crate::error::LlmError;
 
+use super::deberta_token_model::DebertaV2TokenClassifier;
 use super::{ClassificationResult, ClassifierBackend, NerSpan};
 
 use super::{CHUNK_OVERLAP_TOKENS, MAX_CHUNK_CONTENT_TOKENS};
 
 struct CandleNerClassifierInner {
-    model: DebertaV2NERModel,
+    model: DebertaV2TokenClassifier,
     tokenizer: Tokenizer,
     /// Maps label index → label string (e.g. `0 → "O"`, `1 → "B-PER"`).
     id2label: Vec<String>,
@@ -53,6 +54,8 @@ struct CandleNerClassifierInner {
     cls_token_id: u32,
     /// Token ID for `[SEP]` special token, resolved at load time.
     sep_token_id: u32,
+    /// Compute device the model tensors live on, resolved at load time.
+    device: Device,
 }
 
 /// Candle-backed DeBERTa-v2 NER classifier.
@@ -273,6 +276,10 @@ impl CandleNerClassifier {
             .map_err(|e| LlmError::ModelLoad(format!("failed to read DeBERTa config: {e}")))?;
         let config: DebertaConfig = serde_json::from_str(&config_str)?;
 
+        // Falls back to a single "O" label when config.json lacks `id2label`. Real DeBERTa NER
+        // checkpoints always carry `id2label`; this fallback sizes the classifier head to a
+        // single class, which fails to load against any real multi-class checkpoint anyway
+        // (surfaced as `LlmError::ModelLoad` below, same net effect as the missing-config case).
         let id2label: Vec<String> = config.id2label.as_ref().map_or_else(
             || vec!["O".into()],
             |m| {
@@ -301,7 +308,8 @@ impl CandleNerClassifier {
             unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)? };
 
         // HuggingFace DeBERTa v2/v3 safetensors store backbone weights under the deberta.* namespace
-        let model = DebertaV2NERModel::load(vb.pp("deberta"), &config, None)
+        let deberta_vb = vb.pp("deberta");
+        let model = DebertaV2TokenClassifier::load(&deberta_vb, &config, id2label.len())
             .map_err(|e| LlmError::ModelLoad(format!("failed to load DeBERTa NER model: {e}")))?;
 
         Ok(CandleNerClassifierInner {
@@ -310,6 +318,7 @@ impl CandleNerClassifier {
             id2label,
             cls_token_id,
             sep_token_id,
+            device,
         })
     }
 
@@ -321,9 +330,9 @@ impl CandleNerClassifier {
         input_ids: &[u32],
     ) -> Result<Vec<(usize, f32)>, LlmError> {
         let seq_len = input_ids.len();
-        let ids_tensor = Tensor::new(input_ids, &inner.model.device)?.unsqueeze(0)?;
-        let token_type_ids = Tensor::zeros((1, seq_len), DType::I64, &inner.model.device)?;
-        let attention_mask = Tensor::ones((1, seq_len), DType::I64, &inner.model.device)?;
+        let ids_tensor = Tensor::new(input_ids, &inner.device)?.unsqueeze(0)?;
+        let token_type_ids = Tensor::zeros((1, seq_len), DType::I64, &inner.device)?;
+        let attention_mask = Tensor::ones((1, seq_len), DType::I64, &inner.device)?;
 
         // logits: [1, seq_len, num_labels]
         let logits =

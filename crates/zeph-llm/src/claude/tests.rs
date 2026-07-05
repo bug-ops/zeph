@@ -2907,6 +2907,62 @@ fn clone_shares_rejection_flag() {
 }
 
 #[test]
+fn handle_compact_beta_rejection_sets_flags_and_returns_true_on_first_rejection() {
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+        .with_server_compaction(true);
+    let mut retried = false;
+    let handled = provider.handle_compact_beta_rejection(
+        reqwest::StatusCode::BAD_REQUEST,
+        "unknown beta: compact-2026-01-12",
+        &mut retried,
+        "typed",
+    );
+    assert!(handled, "must return true on first observed rejection");
+    assert!(retried, "must flip the retry-once flag");
+    assert!(
+        provider.is_server_compaction_rejected(),
+        "must permanently disable server-side compaction"
+    );
+}
+
+#[test]
+fn handle_compact_beta_rejection_returns_false_when_already_retried() {
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+        .with_server_compaction(true);
+    let mut retried = true;
+    let handled = provider.handle_compact_beta_rejection(
+        reqwest::StatusCode::BAD_REQUEST,
+        "unknown beta: compact-2026-01-12",
+        &mut retried,
+        "",
+    );
+    assert!(!handled, "must not retry a second time");
+    assert!(
+        !provider.is_server_compaction_rejected(),
+        "must not touch the rejection flag once retry budget is exhausted"
+    );
+}
+
+#[test]
+fn handle_compact_beta_rejection_returns_false_for_non_rejection_error() {
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+        .with_server_compaction(true);
+    let mut retried = false;
+    let handled = provider.handle_compact_beta_rejection(
+        reqwest::StatusCode::BAD_REQUEST,
+        r#"{"error":{"message":"max_tokens: field required"}}"#,
+        &mut retried,
+        "streaming",
+    );
+    assert!(
+        !handled,
+        "unrelated 400s must fall through to normal error handling"
+    );
+    assert!(!retried);
+    assert!(!provider.is_server_compaction_rejected());
+}
+
+#[test]
 fn split_messages_structured_compaction_round_trip() {
     // Compaction in an assistant message must be emitted verbatim as an
     // AnthropicContentBlock::Compaction so the API can prune history correctly.

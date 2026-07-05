@@ -14,6 +14,8 @@
 pub mod candle;
 #[cfg(feature = "classifiers")]
 pub mod candle_pii;
+#[cfg(feature = "classifiers")]
+pub(crate) mod deberta_token_model;
 pub mod llm;
 pub mod metrics;
 #[cfg(feature = "classifiers")]

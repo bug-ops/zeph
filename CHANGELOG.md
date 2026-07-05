@@ -695,6 +695,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for a JSON consumer to correlate a `tool_result` event with its originating `tool_call` when
   multiple calls to the same tool occurred in one turn. Both events now emit the real
   `tool_call_id`. (#5680)
+- `fix(llm)`: `CandleNerClassifier` (`crates/zeph-llm/src/classifier/ner.rs`) — wired into the
+  opt-in tool-output PII union-merge pipeline (`[classifiers] enabled` +
+  `security.pii_filter.enabled`, both off by default, `classifiers` feature) via
+  `apply_pii_ner_classifier` (`src/agent_setup.rs`, reachable from `runner.rs`/`daemon.rs`/
+  `acp.rs`) — loaded its DeBERTa-v2 NER model via the upstream
+  `candle_transformers::models::debertav2::DebertaV2NERModel::load`, which builds its
+  classifier head with `candle_nn::linear_no_bias`, silently dropping the `classifier.bias`
+  tensor present in real checkpoints (e.g.
+  `iiiorg/piiranha-v1-detect-personal-information`) and corrupting every token's logits.
+  `crates/zeph-llm/src/classifier/candle_pii.rs`'s `CandlePiiClassifier` (a separate
+  `PiiDetector`-based pipeline for assistant-response PII detection) had already diagnosed and
+  fixed this for itself with a hand-rolled bias-including head, but `CandleNerClassifier` never
+  received the same fix — two independent DeBERTa-v2 NER model loaders, only one correct.
+  Extracted the bias-correct model into a new shared `DebertaV2TokenClassifier`
+  (`crates/zeph-llm/src/classifier/deberta_token_model.rs`); both classifiers now load through
+  it, so `ner.rs` no longer calls the broken upstream loader. No config, trait, or public API
+  changes — issue #5691 was originally filed as "remove dead code", but `CandleNerClassifier`
+  is live; this closes it as a bug fix instead. (#5691)
 
 ### Changed
 
@@ -718,6 +736,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SemanticMemory::base()` helper that builds the struct once from the handful of
   parameters that vary; all four constructors now delegate to it. Pure extraction — no
   behavior change. Closes #5504.
+- `refactor(llm)`: `ClaudeProvider`'s five request call sites (`crates/zeph-llm/src/claude/mod.rs`
+  — `send_request`, `chat_with_tools_stream`, `send_stream_request`, `chat_typed`,
+  `chat_with_tools`) each duplicated the same "detect a `compact-2026-01-12` beta rejection, set
+  `server_compaction_rejected`, warn, retry once" sequence. Extracted a private
+  `handle_compact_beta_rejection` method encapsulating the detect/store/warn/retry-once
+  decision; all five call sites now delegate to it, differing only in a `variant` label passed
+  through to the warning text. Pure extraction — warning text and retry semantics unchanged.
+  Closes #5683.
 
 ### Added
 

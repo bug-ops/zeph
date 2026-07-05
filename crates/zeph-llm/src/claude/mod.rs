@@ -332,6 +332,40 @@ impl ClaudeProvider {
                 || body.contains("context_management"))
     }
 
+    /// Handle a `compact-2026-01-12` beta rejection at a request call site.
+    ///
+    /// When `*retried` is still `false` and `status`/`text` indicate a beta rejection,
+    /// permanently disables server-side compaction for this session, warns once, sets
+    /// `*retried = true`, and returns `true` so the caller can `continue` its retry loop.
+    /// Returns `false` otherwise, in which case the caller must fall through to normal
+    /// error handling. `variant` labels the call site in the warning (e.g. `"streaming"`,
+    /// `"typed"`); pass `""` for the non-streaming, non-tool call site.
+    fn handle_compact_beta_rejection(
+        &self,
+        status: reqwest::StatusCode,
+        text: &str,
+        retried: &mut bool,
+        variant: &str,
+    ) -> bool {
+        if *retried || !Self::is_compact_beta_rejection(status, text) {
+            return false;
+        }
+        self.server_compaction_rejected
+            .store(true, Ordering::Relaxed);
+        let suffix = if variant.is_empty() {
+            String::new()
+        } else {
+            format!(" ({variant})")
+        };
+        tracing::warn!(
+            "compact-2026-01-12 beta header rejected by Claude API{suffix}; \
+            disabling server-side compaction for this session. \
+            Update your config to set `server_compaction = false`."
+        );
+        *retried = true;
+        true
+    }
+
     #[must_use]
     pub fn with_extended_context(mut self, enabled: bool) -> Self {
         self.enable_extended_context = enabled;
@@ -843,15 +877,7 @@ impl ClaudeProvider {
             let (status, text) = crate::http::read_response_body(response).await?;
 
             if !status.is_success() {
-                if !retried && Self::is_compact_beta_rejection(status, &text) {
-                    self.server_compaction_rejected
-                        .store(true, Ordering::Relaxed);
-                    tracing::warn!(
-                        "compact-2026-01-12 beta header rejected by Claude API; \
-                        disabling server-side compaction for this session. \
-                        Update your config to set `server_compaction = false`."
-                    );
-                    retried = true;
+                if self.handle_compact_beta_rejection(status, &text, &mut retried, "") {
                     continue;
                 }
                 tracing::error!("Claude API error {status}: {text}");
@@ -961,15 +987,7 @@ impl ClaudeProvider {
             let status = response.status();
             if !status.is_success() {
                 let text = response.text().await.map_err(LlmError::Http)?;
-                if !retried && Self::is_compact_beta_rejection(status, &text) {
-                    self.server_compaction_rejected
-                        .store(true, Ordering::Relaxed);
-                    tracing::warn!(
-                        "compact-2026-01-12 beta header rejected by Claude API (tool stream); \
-                        disabling server-side compaction for this session. \
-                        Update your config to set `server_compaction = false`."
-                    );
-                    retried = true;
+                if self.handle_compact_beta_rejection(status, &text, &mut retried, "tool stream") {
                     continue;
                 }
                 tracing::error!("Claude API error {status}: {text}");
@@ -995,15 +1013,7 @@ impl ClaudeProvider {
             let status = response.status();
             if !status.is_success() {
                 let text = response.text().await.map_err(LlmError::Http)?;
-                if !retried && Self::is_compact_beta_rejection(status, &text) {
-                    self.server_compaction_rejected
-                        .store(true, Ordering::Relaxed);
-                    tracing::warn!(
-                        "compact-2026-01-12 beta header rejected by Claude API (streaming); \
-                        disabling server-side compaction for this session. \
-                        Update your config to set `server_compaction = false`."
-                    );
-                    retried = true;
+                if self.handle_compact_beta_rejection(status, &text, &mut retried, "streaming") {
                     continue;
                 }
                 tracing::error!("Claude API streaming request error {status}: {text}");
@@ -1160,15 +1170,7 @@ impl LlmProvider for ClaudeProvider {
             .await?;
             let (status, text) = crate::http::read_response_body(response).await?;
             if !status.is_success() {
-                if !retried && Self::is_compact_beta_rejection(status, &text) {
-                    self.server_compaction_rejected
-                        .store(true, Ordering::Relaxed);
-                    tracing::warn!(
-                        "compact-2026-01-12 beta header rejected by Claude API (typed); \
-                        disabling server-side compaction for this session. \
-                        Update your config to set `server_compaction = false`."
-                    );
-                    retried = true;
+                if self.handle_compact_beta_rejection(status, &text, &mut retried, "typed") {
                     continue;
                 }
                 tracing::error!("Claude API error {status}: {text}");
@@ -1353,15 +1355,7 @@ impl LlmProvider for ClaudeProvider {
             let (status, text) = crate::http::read_response_body(response).await?;
 
             if !status.is_success() {
-                if !retried && Self::is_compact_beta_rejection(status, &text) {
-                    self.server_compaction_rejected
-                        .store(true, Ordering::Relaxed);
-                    tracing::warn!(
-                        "compact-2026-01-12 beta header rejected by Claude API (tool use); \
-                        disabling server-side compaction for this session. \
-                        Update your config to set `server_compaction = false`."
-                    );
-                    retried = true;
+                if self.handle_compact_beta_rejection(status, &text, &mut retried, "tool use") {
                     continue;
                 }
                 tracing::error!("Claude API error {status}: {text}");
