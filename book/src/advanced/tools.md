@@ -209,7 +209,7 @@ max_body_bytes = 1048576  # Maximum response body size in bytes (default: 1 MiB)
 
 ## Native Tool Use
 
-All providers use the native API-level tool mechanism for structured tool calling. `LlmProvider::supports_tool_use()` returns `true` by default. Tool definitions, execution, and result handling follow a single unified path.
+All providers use the native API-level tool mechanism for structured tool calling. `LlmProvider::supports_tool_use()` returns `false` by default and is overridden to `true` only by providers that implement `chat_with_tools` — the default keeps `chat_with_tools` and `supports_tool_use` fail-closed and in sync, so a provider without an override never silently drops tool definitions. Tool definitions, execution, and result handling follow a single unified path.
 
 In native mode:
 

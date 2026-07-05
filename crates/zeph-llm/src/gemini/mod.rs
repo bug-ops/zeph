@@ -1301,6 +1301,10 @@ impl LlmProvider for GeminiProvider {
         true
     }
 
+    fn supports_tool_use(&self) -> bool {
+        true
+    }
+
     fn list_models(&self) -> Vec<String> {
         let mut models = vec![
             "gemini-2.5-pro".to_owned(),

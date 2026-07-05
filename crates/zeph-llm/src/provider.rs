@@ -720,7 +720,9 @@ impl Message {
 ///   (requires `Self: Sized`; use [`chat_typed_dyn`](crate::provider_dyn::chat_typed_dyn)
 ///   for trait objects)
 /// - [`supports_vision`](Self::supports_vision) — returns `false`
-/// - [`supports_tool_use`](Self::supports_tool_use) — returns `true`
+/// - [`supports_tool_use`](Self::supports_tool_use) — returns `false`, matching the
+///   [`chat_with_tools`](Self::chat_with_tools) default fallback which silently drops
+///   tool definitions; providers must override both together to opt into tool use
 ///
 /// # Examples
 ///
@@ -829,8 +831,13 @@ pub trait LlmProvider: Send + Sync {
     }
 
     /// Whether this provider supports native `tool_use` / function calling.
+    ///
+    /// Defaults to `false` because [`chat_with_tools`](Self::chat_with_tools) defaults
+    /// to falling back on [`chat`](Self::chat), which silently discards tool
+    /// definitions. Providers implementing real tool calling must override both
+    /// this method and `chat_with_tools` together.
     fn supports_tool_use(&self) -> bool {
-        true
+        false
     }
 
     /// Send messages with tool definitions, returning a structured response.
@@ -1036,6 +1043,19 @@ mod tests {
             response: String::new(),
         };
         assert!(!provider.supports_streaming());
+    }
+
+    #[test]
+    fn supports_tool_use_default_returns_false() {
+        // StubProvider overrides neither `supports_tool_use` nor `chat_with_tools`,
+        // mirroring CandleProvider (crates/zeph-llm/src/candle_provider/mod.rs). The
+        // default must report `false` so callers gating on this method skip providers
+        // that would otherwise silently drop tool definitions via the `chat_with_tools`
+        // fallback (issue #5687).
+        let provider = StubProvider {
+            response: String::new(),
+        };
+        assert!(!provider.supports_tool_use());
     }
 
     #[tokio::test]

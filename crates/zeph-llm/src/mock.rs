@@ -453,6 +453,10 @@ impl LlmProvider for MockProvider {
         self.supports_embeddings
     }
 
+    fn supports_tool_use(&self) -> bool {
+        true
+    }
+
     async fn chat_with_tools(
         &self,
         messages: &[Message],

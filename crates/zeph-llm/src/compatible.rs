@@ -313,6 +313,10 @@ impl LlmProvider for CompatibleProvider {
         self.inner.supports_vision()
     }
 
+    fn supports_tool_use(&self) -> bool {
+        self.inner.supports_tool_use()
+    }
+
     fn debug_request_json(
         &self,
         messages: &[Message],
@@ -476,6 +480,12 @@ mod tests {
     fn supports_vision_delegates_to_inner() {
         // OpenAiProvider always returns true for supports_vision.
         assert!(test_provider().supports_vision());
+    }
+
+    #[test]
+    fn supports_tool_use_delegates_to_inner() {
+        // OpenAiProvider always returns true for supports_tool_use.
+        assert!(test_provider().supports_tool_use());
     }
 
     #[test]

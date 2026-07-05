@@ -65,7 +65,7 @@ trait LlmProvider: Send + Sync {
     fn embed(&self, text: &str) -> impl Future<Output = Result<Vec<f32>, LlmError>> + Send;
     fn supports_streaming(&self) -> bool;
     fn supports_embeddings(&self) -> bool;
-    fn supports_tool_use(&self) -> bool;  // default: true
+    fn supports_tool_use(&self) -> bool;  // default: false
     fn supports_vision(&self) -> bool;
     fn supports_structured_output(&self) -> bool;
     fn debug_request_json(&self, ...) -> serde_json::Value;

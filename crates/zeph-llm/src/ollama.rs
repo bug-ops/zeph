@@ -267,6 +267,10 @@ impl LlmProvider for OllamaProvider {
         true
     }
 
+    fn supports_tool_use(&self) -> bool {
+        true
+    }
+
     #[tracing::instrument(
         name = "llm.chat",
         skip_all,

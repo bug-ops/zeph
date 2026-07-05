@@ -80,7 +80,7 @@ Slash command handlers and the CommandHandler registry (separated from `zeph-cor
 
 LLM provider abstraction and backend implementations.
 
-- `LlmProvider` trait — `chat()`, `chat_typed()`, `chat_stream()`, `embed()`, `supports_streaming()`, `supports_embeddings()`, `supports_vision()`, `supports_tool_use()` (default: `true`)
+- `LlmProvider` trait — `chat()`, `chat_typed()`, `chat_stream()`, `embed()`, `supports_streaming()`, `supports_embeddings()`, `supports_vision()`, `supports_tool_use()` (default: `false`)
 - `MessagePart::Image` — image content part (raw bytes + MIME type) for multimodal input
 - `EmbedFuture` / `EmbedFn` — canonical type aliases for embedding closures, re-exported by downstream crates (`zeph-skills`, `zeph-mcp`)
 - `OllamaProvider` — local inference via ollama-rs

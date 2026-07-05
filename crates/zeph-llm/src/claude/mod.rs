@@ -1195,6 +1195,10 @@ impl LlmProvider for ClaudeProvider {
         true
     }
 
+    fn supports_tool_use(&self) -> bool {
+        true
+    }
+
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
         self.usage.last_cache_usage()
     }
