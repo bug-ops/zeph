@@ -69,6 +69,10 @@ struct CandleNerClassifierInner {
 #[derive(Clone)]
 pub struct CandleNerClassifier {
     repo_id: Arc<str>,
+    /// Minimum softmax score a token's argmax label must reach to be treated as an
+    /// entity label; tokens below this are treated as `"O"`. Mirrors
+    /// [`super::candle_pii::CandlePiiClassifier`]'s threshold gate.
+    threshold: f32,
     hf_token: Option<Arc<str>>,
     inner: Arc<OnceLock<Result<Arc<CandleNerClassifierInner>, String>>>,
 }
@@ -77,6 +81,7 @@ impl std::fmt::Debug for CandleNerClassifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CandleNerClassifier")
             .field("repo_id", &self.repo_id)
+            .field("threshold", &self.threshold)
             .finish_non_exhaustive()
     }
 }
@@ -227,10 +232,15 @@ fn parse_bio_label(label_str: &str) -> (&'static str, &str) {
 
 impl CandleNerClassifier {
     /// Create a new NER classifier that will load `repo_id` from `HuggingFace` Hub on first use.
+    ///
+    /// `threshold` gates span emission: tokens whose argmax softmax score falls below it are
+    /// treated as `"O"` (no entity), same semantics as
+    /// [`super::candle_pii::CandlePiiClassifier::new`].
     #[must_use]
-    pub fn new(repo_id: impl Into<Arc<str>>) -> Self {
+    pub fn new(repo_id: impl Into<Arc<str>>, threshold: f32) -> Self {
         Self {
             repo_id: repo_id.into(),
+            threshold,
             hf_token: None,
             inner: Arc::new(OnceLock::new()),
         }
@@ -370,15 +380,24 @@ impl CandleNerClassifier {
     /// - `S-X` is a single-token span of type X.
     /// - `E-X` closes an open span of type X.
     /// - `O` closes any open span.
+    ///
+    /// Tokens whose `score` falls below `threshold` are treated as `"O"` regardless of their
+    /// argmax label, closing any open span. Mirrors the threshold gate in
+    /// [`super::candle_pii::CandlePiiClassifier`]'s `extract_bio_spans`.
     fn decode_bio_spans(
         id2label: &[String],
         token_labels: &[(usize, f32)],
         offsets: &[(usize, usize)],
+        threshold: f32,
     ) -> Vec<NerSpan> {
         let mut state = BioDecoderState::new(token_labels.len() / 2);
         for (pos, &(label_idx, score)) in token_labels.iter().enumerate() {
             let label_str = id2label.get(label_idx).map_or("O", String::as_str);
             let (offset_start, offset_end) = offsets.get(pos).copied().unwrap_or((0, 0));
+            if score < threshold {
+                state.handle_o();
+                continue;
+            }
             let (prefix, entity_type) = parse_bio_label(label_str);
             match prefix {
                 "B" => state.handle_b(entity_type, offset_start, offset_end, score),
@@ -400,6 +419,7 @@ impl CandleNerClassifier {
     fn classify_sync(
         inner: &CandleNerClassifierInner,
         text: &str,
+        threshold: f32,
     ) -> Result<ClassificationResult, LlmError> {
         let encoding = inner
             .tokenizer
@@ -453,7 +473,7 @@ impl CandleNerClassifier {
                 &[]
             };
             let chunk_spans =
-                Self::decode_bio_spans(&inner.id2label, content_labels, chunk_offsets);
+                Self::decode_bio_spans(&inner.id2label, content_labels, chunk_offsets, threshold);
             all_spans.extend(chunk_spans);
 
             if end == ids.len() {
@@ -523,6 +543,7 @@ impl ClassifierBackend for CandleNerClassifier {
         let inner_lock = Arc::clone(&self.inner);
         let repo_id = Arc::clone(&self.repo_id);
         let hf_token = self.hf_token.clone();
+        let threshold = self.threshold;
 
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
@@ -535,7 +556,7 @@ impl ClassifierBackend for CandleNerClassifier {
                     .map_err(|e| e.to_string())
                 });
                 match loaded {
-                    Ok(inner) => CandleNerClassifier::classify_sync(inner, &text),
+                    Ok(inner) => CandleNerClassifier::classify_sync(inner, &text, threshold),
                     Err(e) => Err(LlmError::ModelLoad(e.clone())),
                 }
             })
@@ -603,7 +624,7 @@ mod tests {
         let id2label = make_id2label(&["O", "B-PER", "I-PER"]);
         let token_labels = vec![(1, 0.95_f32)]; // B-PER
         let offsets = make_offsets(&[(0, 4)]);
-        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &token_labels, &offsets);
+        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &token_labels, &offsets, 0.0);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].label, "PER");
         assert_eq!(spans[0].start, 0);
@@ -617,7 +638,7 @@ mod tests {
         let id2label = make_id2label(&["O", "B-PER", "I-PER"]);
         let token_labels = vec![(1, 0.9_f32), (2, 0.85_f32)];
         let offsets = make_offsets(&[(0, 4), (5, 8)]);
-        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &token_labels, &offsets);
+        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &token_labels, &offsets, 0.0);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].label, "PER");
         assert_eq!(spans[0].start, 0);
@@ -632,7 +653,7 @@ mod tests {
         let id2label = make_id2label(&["O", "B-PER", "B-EMAIL"]);
         let token_labels = vec![(1, 0.9_f32), (0, 0.1_f32), (2, 0.8_f32)];
         let offsets = make_offsets(&[(0, 4), (5, 8), (9, 25)]);
-        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &token_labels, &offsets);
+        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &token_labels, &offsets, 0.0);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].label, "PER");
         assert_eq!(spans[1].label, "EMAIL");
@@ -643,7 +664,7 @@ mod tests {
         let id2label = make_id2label(&["O"]);
         let token_labels = vec![(0, 0.99_f32), (0, 0.98_f32)];
         let offsets = make_offsets(&[(0, 5), (6, 10)]);
-        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &token_labels, &offsets);
+        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &token_labels, &offsets, 0.0);
         assert!(spans.is_empty());
     }
 
@@ -653,7 +674,7 @@ mod tests {
         let id2label = make_id2label(&["O", "S-EMAIL"]);
         let token_labels = vec![(1, 0.92_f32)];
         let offsets = make_offsets(&[(0, 16)]);
-        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &token_labels, &offsets);
+        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &token_labels, &offsets, 0.0);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].label, "EMAIL");
         assert!((spans[0].score - 0.92).abs() < 1e-5);
@@ -665,7 +686,7 @@ mod tests {
         let id2label = make_id2label(&["O", "I-PER"]);
         let token_labels = vec![(1, 0.88_f32)];
         let offsets = make_offsets(&[(0, 4)]);
-        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &token_labels, &offsets);
+        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &token_labels, &offsets, 0.0);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].label, "PER");
     }
@@ -712,8 +733,41 @@ mod tests {
         // The empty-input path in classify_sync returns early without touching the model.
         // We verify this logic path via direct unit test on decode_bio_spans.
         let id2label = make_id2label(&["O"]);
-        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &[], &[]);
+        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &[], &[], 0.0);
         assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn ner_classifier_new_sets_fields() {
+        // Mirrors candle_pii.rs's `pii_classifier_new_sets_fields` — guards the constructor
+        // against a swapped-argument or field-not-stored regression on the `threshold` param.
+        let c = CandleNerClassifier::new("test/repo", 0.75);
+        assert_eq!(&*c.repo_id, "test/repo");
+        assert!((c.threshold - 0.75).abs() < 1e-6);
+        assert!(c.hf_token.is_none());
+    }
+
+    #[test]
+    fn ner_threshold_filters_low_confidence() {
+        // B-ACCOUNTNUM at score 0.60 is below threshold 0.75 → treated as O, no span emitted.
+        // Mirrors candle_pii.rs's `bio_extraction_threshold_filters_low_confidence`, adapted
+        // to CandleNerClassifier's BioDecoderState dispatch shape.
+        let id2label = make_id2label(&["O", "B-ACCOUNTNUM"]);
+        let token_labels = vec![(1, 0.60_f32)];
+        let offsets = make_offsets(&[(0, 18)]);
+        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &token_labels, &offsets, 0.75);
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn ner_threshold_allows_high_confidence() {
+        // Same shape as above but score 0.90 clears the 0.75 threshold — span is emitted.
+        let id2label = make_id2label(&["O", "B-ACCOUNTNUM"]);
+        let token_labels = vec![(1, 0.90_f32)];
+        let offsets = make_offsets(&[(0, 18)]);
+        let spans = CandleNerClassifier::decode_bio_spans(&id2label, &token_labels, &offsets, 0.75);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].label, "ACCOUNTNUM");
     }
 
     // ── [CLS]/[SEP] framing: strip-then-reframe logic ───────────────────────
@@ -784,7 +838,7 @@ mod tests {
             &[]
         };
         let offsets = vec![(0, 4)]; // only one content token: "John" at 0..4
-        let spans = CandleNerClassifier::decode_bio_spans(&id2label, content_labels, &offsets);
+        let spans = CandleNerClassifier::decode_bio_spans(&id2label, content_labels, &offsets, 0.0);
         assert_eq!(
             spans.len(),
             1,
@@ -821,6 +875,57 @@ mod tests {
         assert_eq!(
             last_offsets.last().unwrap(),
             &(last_tok_idx * 5, last_tok_idx * 5 + 5)
+        );
+    }
+
+    // ── Real-model characterization test (#[ignore]) ────────────────────────
+
+    /// Characterization test for #5728: a bare Unix epoch timestamp from `date +%s.%N`
+    /// tool output (e.g. `1783270023.445901000`) was misclassified as `[PII:ACCOUNTNUM]`
+    /// by `CandleNerClassifier` because it had no confidence threshold at all. The fix adds
+    /// a `threshold` gate (mirroring `CandlePiiClassifier`) wired from `classifiers.pii_threshold`
+    /// (default 0.75). This test proves the fix actually closes the bug against the real
+    /// `iiiorg/piiranha-v1-detect-personal-information` checkpoint — the 2 synthetic-score unit
+    /// tests above (`ner_threshold_filters_low_confidence`/`_allows_high_confidence`) only prove
+    /// the gate arithmetic, not that the real model's confidence on this specific input actually
+    /// falls below 0.75. Uses the literal repro string from the debug dump (with trailing
+    /// newline, exactly as `sanitize_tool_output` passes it to `scrub_pii` after stripping the
+    /// `$ date +%s.%N\n` echo line — see `crates/zeph-core/src/agent/tool_execution/sanitize.rs`).
+    #[tokio::test]
+    #[ignore = "requires model download (~280MB, cached in HF_HOME)"]
+    async fn real_model_unix_timestamp_repro_5728() {
+        const REPRO: &str = "1783270023.445901000\n";
+
+        // threshold=0.0 to capture the model's raw top prediction for the record, regardless
+        // of whether it would be gated out at the production threshold.
+        let raw = CandleNerClassifier::new("iiiorg/piiranha-v1-detect-personal-information", 0.0)
+            .classify(REPRO)
+            .await
+            .unwrap();
+        eprintln!(
+            "real_model_unix_timestamp_repro_5728: raw (threshold=0.0) result: label={}, score={}, spans={:?}",
+            raw.label, raw.score, raw.spans
+        );
+
+        // threshold=0.75 is `classifiers.pii_threshold`'s default — the value
+        // `apply_pii_ner_classifier_with_cfg` (src/agent_setup.rs) wires into production.
+        let gated =
+            CandleNerClassifier::new("iiiorg/piiranha-v1-detect-personal-information", 0.75)
+                .classify(REPRO)
+                .await
+                .unwrap();
+        eprintln!(
+            "real_model_unix_timestamp_repro_5728: gated (threshold=0.75) result: label={}, score={}, spans={:?}",
+            gated.label, gated.score, gated.spans
+        );
+
+        assert!(
+            !gated.is_positive,
+            "#5728 regression: bare Unix-timestamp digit run must not survive the 0.75 \
+             confidence threshold. Raw top prediction was label={}, score={} — if that score is \
+             >= 0.75, the threshold fix alone does NOT close #5728 and the shape-based heuristic \
+             fallback is required instead. Surviving spans: {:?}",
+            raw.label, raw.score, gated.spans
         );
     }
 }

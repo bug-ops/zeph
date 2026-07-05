@@ -194,6 +194,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tool-execution gate (`effective_trust` in `crates/zeph-core/src/agent/context/assembly.rs`) was
   already fail-open to `Trusted` on a missing entry before this fix, so this change aligns
   display/invocation behavior with the existing security boundary rather than weakening it.
+- `fix(sanitizer,llm)`: `CandleNerClassifier` (`crates/zeph-llm/src/classifier/ner.rs`), the
+  backend wired into the tool-output PII scanning path (`SecurityState::scrub_pii` ->
+  `run_ner_classifier`), had no confidence threshold on its BIO span decoder — unlike its
+  sibling `CandlePiiClassifier` (used for assistant-response scanning), which already gates on
+  `classifiers.pii_threshold`. A low-confidence NER guess on real tool output (e.g. the bare
+  Unix epoch timestamp from `date +%s.%N`, scored 0.610 by the real
+  `iiiorg/piiranha-v1-detect-personal-information` checkpoint) was promoted straight to a
+  `[PII:ACCOUNTNUM]` redaction, so the agent falsely claimed legitimate command output "contains
+  sensitive information" and withheld it (#5728). This is a residual gap in #5710/#5702's fix,
+  which only closed the equivalent false positive in the regex layer (`PHONE_RE`), not the NER
+  layer. Added a `threshold: f32` field to `CandleNerClassifier`, gating `decode_bio_spans`'s BIO
+  dispatch the same way `CandlePiiClassifier::extract_bio_spans` already does, and wired the
+  existing `classifiers.pii_threshold` config value into the `CandleNerClassifier::new(...)` call
+  site (`src/agent_setup.rs`) — no new configuration surface. Note: raising tool-output NER
+  scanning from an unconditional 0.0 floor to the shared 0.75 default trades some recall on
+  genuinely low-confidence true positives (e.g. `DRIVERLICENSE`/`PASSPORT`/`IBAN`-shaped spans in
+  real command output) for eliminating this false-positive class — bringing tool-output scanning
+  in line with the threshold already applied to assistant-response scanning. A `#[ignore]`-gated
+  characterization test (`real_model_unix_timestamp_repro_5728`) feeds the literal repro string
+  through the real cached model to lock in the 0.610 empirical result.
 - `fix(skills)`: `has_knowledge()` (`crates/zeph-skills/src/proactive.rs`) compared an
   already-explored domain against the deterministic `domain.to_skill_name()`
   (`"world-knowledge-{slug}"`), but `explore()` wrote the generated skill under whatever

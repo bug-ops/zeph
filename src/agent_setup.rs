@@ -961,14 +961,17 @@ pub(crate) fn apply_pii_ner_classifier_with_cfg<C: Channel>(
     if !classifiers.enabled || !pii_filter_enabled {
         return agent;
     }
-    let mut ner_classifier =
-        zeph_llm::classifier::ner::CandleNerClassifier::new(classifiers.pii_model.as_str());
+    let mut ner_classifier = zeph_llm::classifier::ner::CandleNerClassifier::new(
+        classifiers.pii_model.as_str(),
+        classifiers.pii_threshold,
+    );
     if let Some(token) = &classifiers.hf_token {
         ner_classifier = ner_classifier.with_hf_token(token.as_str());
     }
     let backend = std::sync::Arc::new(ner_classifier);
     tracing::info!(
         repo_id = %classifiers.pii_model,
+        threshold = classifiers.pii_threshold,
         "NER PII classifier attached for union merge pipeline (model loads lazily on first use)"
     );
     agent.with_pii_ner_classifier(
@@ -2120,6 +2123,28 @@ mod tests {
         };
         config.llm.providers = vec![entry];
         let result = apply_cost_tracker(agent, &config);
+        drop(result);
+    }
+
+    /// Regression test for #5728: `CandleNerClassifier` used to be constructed with no
+    /// confidence threshold at all, letting low-confidence NER guesses (e.g. a bare Unix
+    /// timestamp digit run) get promoted to a `[PII:ACCOUNTNUM]` redaction. The fix threads
+    /// `classifiers.pii_threshold` into the constructor; this test locks the call site so a
+    /// future revert (e.g. dropping the second constructor argument, or wiring a different
+    /// config field) fails to compile or is caught here rather than silently reopening #5728.
+    #[test]
+    #[cfg(feature = "classifiers")]
+    fn apply_pii_ner_classifier_with_cfg_wires_configured_threshold() {
+        let agent = make_agent();
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.classifiers.enabled = true;
+        config.security.pii_filter.enabled = true;
+        config.classifiers.pii_threshold = 0.42;
+        let result = apply_pii_ner_classifier_with_cfg(
+            agent,
+            &config.classifiers,
+            config.security.pii_filter.enabled,
+        );
         drop(result);
     }
 
