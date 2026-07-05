@@ -12,8 +12,9 @@ use crate::executor::ToolOutput;
 /// Tools that must never have their results cached due to side effects.
 ///
 /// Any tool with side effects (writes, state mutations, external actions) MUST be listed here.
-/// MCP tools (`mcp_` prefix) are non-cacheable by default — they are third-party and opaque.
-/// `memory_search` is excluded to avoid stale results after `memory_save` calls.
+/// MCP-origin tools are non-cacheable by default — they are third-party and opaque — see
+/// `is_cacheable`'s `is_mcp` parameter. `memory_search` is excluded to avoid stale results
+/// after `memory_save` calls.
 static NON_CACHEABLE_TOOLS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
         "bash",          // shell commands have side effects and depend on mutable state
@@ -26,11 +27,15 @@ static NON_CACHEABLE_TOOLS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 
 /// Returns `true` if the tool's results can be safely cached.
 ///
-/// MCP tools (identified by `mcp_` prefix) are always non-cacheable by default
-/// since they are third-party and may have unknown side effects.
+/// `is_mcp` must be resolved by the caller via
+/// [`ToolDef::is_mcp_tool`](crate::registry::ToolDef::is_mcp_tool) (`server_id.is_some()`).
+/// Real MCP tool ids are `{server_id}_{name}` (`McpTool::sanitized_id`) and carry no reliable
+/// string prefix to pattern-match on here (#5712, #5733), so this function cannot infer MCP
+/// origin from `tool_name` alone. MCP-origin tools are always non-cacheable by default since
+/// they are third-party and may have unknown side effects.
 #[must_use]
-pub fn is_cacheable(tool_name: &str) -> bool {
-    if tool_name.starts_with("mcp_") {
+pub fn is_cacheable(tool_name: &str, is_mcp: bool) -> bool {
+    if is_mcp {
         return false;
     }
     !NON_CACHEABLE_TOOLS.contains(tool_name)
@@ -327,27 +332,32 @@ mod tests {
 
     #[test]
     fn is_cacheable_returns_false_for_deny_list() {
-        assert!(!is_cacheable("bash"));
-        assert!(!is_cacheable("memory_save"));
-        assert!(!is_cacheable("memory_search"));
-        assert!(!is_cacheable("scheduler"));
-        assert!(!is_cacheable("write"));
+        assert!(!is_cacheable("bash", false));
+        assert!(!is_cacheable("memory_save", false));
+        assert!(!is_cacheable("memory_search", false));
+        assert!(!is_cacheable("scheduler", false));
+        assert!(!is_cacheable("write", false));
     }
 
+    /// #5733 regression: MCP origin must be resolved by the caller (`ToolDef::is_mcp_tool`),
+    /// not inferred from a `"mcp_"` string prefix — real MCP tool ids are `{server_id}_{name}`
+    /// (`McpTool::sanitized_id`) and never carry that prefix, so the old check silently never
+    /// matched and MCP results WERE being cached, the opposite of the intended behavior.
     #[test]
-    fn is_cacheable_returns_false_for_mcp_prefix() {
-        assert!(!is_cacheable("mcp_github_list_issues"));
-        assert!(!is_cacheable("mcp_send_email"));
-        assert!(!is_cacheable("mcp_"));
+    fn is_cacheable_returns_false_for_mcp_origin() {
+        assert!(!is_cacheable("github_list_issues", true));
+        assert!(!is_cacheable("send_email", true));
+        // A non-deny-listed, non-MCP tool with the exact same real-world id shape is cacheable.
+        assert!(is_cacheable("github_list_issues", false));
     }
 
     #[test]
     fn is_cacheable_returns_true_for_read_only_tools() {
-        assert!(is_cacheable("read"));
-        assert!(is_cacheable("web_scrape"));
-        assert!(is_cacheable("search_code"));
-        assert!(is_cacheable("load_skill"));
-        assert!(is_cacheable("diagnostics"));
+        assert!(is_cacheable("read", false));
+        assert!(is_cacheable("web_scrape", false));
+        assert!(is_cacheable("search_code", false));
+        assert!(is_cacheable("load_skill", false));
+        assert!(is_cacheable("diagnostics", false));
     }
 
     #[test]

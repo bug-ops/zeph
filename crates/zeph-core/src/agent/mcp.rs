@@ -274,6 +274,7 @@ impl<C: Channel> Agent<C> {
             self.services.mcp.pending_semantic_rebuild = false;
             self.rebuild_semantic_index().await;
             self.sync_mcp_registry().await;
+            self.refresh_shadow_sentinel_mcp_tool_ids();
             let mcp_total = self.services.mcp.tools.len();
             let mcp_servers = self
                 .services
@@ -310,6 +311,7 @@ impl<C: Channel> Agent<C> {
         self.services.mcp.pruning_cache.reset();
         self.rebuild_semantic_index().await;
         self.sync_mcp_registry().await;
+        self.refresh_shadow_sentinel_mcp_tool_ids();
         let mcp_total = self.services.mcp.tools.len();
         let mcp_servers = self
             .services
@@ -323,6 +325,29 @@ impl<C: Channel> Agent<C> {
             m.mcp_tool_count = mcp_total;
             m.mcp_server_count = mcp_servers;
         });
+    }
+
+    /// Refreshes `ShadowSentinel`'s registered-MCP-tool-id set from the current
+    /// `services.mcp.tools` list, so a server connected after startup (via `/mcp add` or a live
+    /// `tools/list_changed` notification) is reflected without waiting for a process restart.
+    ///
+    /// Only covers `ShadowSentinel` — `TrustGateExecutor`'s own equivalent set
+    /// (`zeph_tools::TrustGateExecutor::mcp_tool_ids`) has the same startup-only limitation but
+    /// lives entirely inside the binary crate's tool-executor chain, unreachable from here
+    /// without new cross-crate plumbing; tracked as a separate follow-up (#5747), not fixed by
+    /// this call.
+    fn refresh_shadow_sentinel_mcp_tool_ids(&self) {
+        let Some(ref sentinel) = self.services.security.shadow_sentinel else {
+            return;
+        };
+        let ids: std::collections::HashSet<String> = self
+            .services
+            .mcp
+            .tools
+            .iter()
+            .map(zeph_mcp::McpTool::sanitized_id)
+            .collect();
+        *sentinel.mcp_tool_ids_handle().write() = ids;
     }
 
     pub(super) async fn sync_mcp_registry(&mut self) {
@@ -940,6 +965,73 @@ mod tests {
         agent.check_tool_refresh().await;
         assert_eq!(agent.services.mcp.tool_count(), 1);
         assert_eq!(agent.services.mcp.tools[0].name, "refreshed_tool");
+    }
+
+    /// #5736 follow-up (S1): a server connected after startup via a `tools/list_changed`
+    /// notification must be reflected in `ShadowSentinel`'s registered-MCP-tool-id set, not just
+    /// `services.mcp.tools` — otherwise the escalation fix in `classify_tool` stays blind to any
+    /// MCP tool the agent didn't already know about at process start.
+    #[tokio::test]
+    async fn check_tool_refresh_updates_shadow_sentinel_mcp_tool_ids() {
+        use crate::agent::shadow_sentinel::{
+            ProbeVerdict, SafetyProbe, ShadowEventStore, ShadowSentinel,
+        };
+
+        struct NoopProbe;
+        impl SafetyProbe for NoopProbe {
+            fn evaluate<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a serde_json::Value,
+                _: &'a [crate::agent::shadow_sentinel::SentinelEvent],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeVerdict> + Send + 'a>>
+            {
+                Box::pin(async { ProbeVerdict::Allow })
+            }
+        }
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .expect("connect + migrate in-memory sqlite pool");
+        let store = ShadowEventStore::new(pool);
+        let sentinel = std::sync::Arc::new(ShadowSentinel::new(
+            store,
+            Box::new(NoopProbe),
+            zeph_config::ShadowSentinelConfig::default(),
+            "test-session",
+        ));
+        agent.services.security.shadow_sentinel = Some(std::sync::Arc::clone(&sentinel));
+
+        let (tx, rx) = tokio::sync::watch::channel(Vec::<zeph_mcp::McpTool>::new());
+        agent.services.mcp.tool_rx = Some(rx);
+
+        let new_tool = zeph_mcp::McpTool {
+            server_id: "srv".into(),
+            name: "refreshed_tool".into(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            output_schema: None,
+            security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
+        };
+        let expected_id = new_tool.sanitized_id();
+        tx.send(vec![new_tool]).unwrap();
+
+        agent.check_tool_refresh().await;
+
+        assert!(
+            sentinel.mcp_tool_ids_handle().read().contains(&expected_id),
+            "ShadowSentinel's mcp_tool_ids must be refreshed after a tools/list_changed event"
+        );
     }
 
     #[test]

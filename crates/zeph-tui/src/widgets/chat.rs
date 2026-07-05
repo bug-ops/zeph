@@ -504,10 +504,15 @@ fn group_messages(messages: &[crate::app::ChatMessage]) -> Vec<MessageGroup<'_>>
         }
         // tool_name: None maps to ToolKind::Other which is not groupable —
         // intentionally keeping nameless tool messages as individual cells.
+        //
+        // is_mcp: false — `ChatMessage` does not yet carry MCP-origin metadata from the agent
+        // event stream (see #5734); real MCP tool ids have no reliable string marker to infer
+        // it from `tool_name` alone, so passing `false` here is honest rather than guessing.
         let kind = ToolKind::classify(
             msg.tool_name
                 .as_ref()
                 .map_or("tool", zeph_common::ToolName::as_str),
+            false,
         );
         if !kind.is_groupable() {
             groups.push(MessageGroup::Single { idx: i, msg });
@@ -526,6 +531,7 @@ fn group_messages(messages: &[crate::app::ChatMessage]) -> Vec<MessageGroup<'_>>
                 next.tool_name
                     .as_ref()
                     .map_or("tool", zeph_common::ToolName::as_str),
+                false,
             );
             if next_kind != kind {
                 break;

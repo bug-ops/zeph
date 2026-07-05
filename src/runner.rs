@@ -2612,6 +2612,12 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // Register MCP tool IDs so TrustGateExecutor can block ALL MCP tools for
     // Quarantined skills — not just those matching QUARANTINE_DENIED suffixes.
     crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &mcp_tools);
+    // #5736: ShadowSentinel keeps its own MCP tool-id set (mirroring TrustGateExecutor's)
+    // so `classify_tool` can escalate MCP write/edit tools to `ExfilCapable` without a
+    // cross-crate `ToolDef` dependency at its call site.
+    if let Some(ref sentinel) = shadow_sentinel_arc {
+        crate::agent_setup::register_mcp_tool_ids(&sentinel.mcp_tool_ids_handle(), &mcp_tools);
+    }
     let mcp_manager = tool_setup.mcp_manager;
     let mcp_shared_tools = tool_setup.mcp_shared_tools;
     let mcp_tool_rx = tool_setup.mcp_tool_rx;

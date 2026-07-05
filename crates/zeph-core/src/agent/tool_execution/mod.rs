@@ -50,6 +50,11 @@ struct ToolDispatchContext {
     args_hashes: Vec<u64>,
     repeat_blocked: Vec<bool>,
     cache_hits: Vec<Option<zeph_tools::ToolOutput>>,
+    /// Sanitized ids (`ToolDef::server_id`-backed) of tools registered by MCP servers, resolved
+    /// once per dispatch batch from the tool registry. Reused by both the cache-lookup gate
+    /// (`is_cacheable`) and the cache-store gate later in `apply_tier_results`, so the tier
+    /// loop never re-scans the registry per call or per tier (#5733 follow-up, M1).
+    mcp_tool_ids: std::collections::HashSet<String>,
     /// MAGE trajectory risk gate (spec 004-16 FR-005).
     ///
     /// When `Some((score, top_signals))`, all tool calls in this batch are blocked with

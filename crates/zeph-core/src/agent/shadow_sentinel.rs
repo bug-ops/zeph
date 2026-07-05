@@ -29,6 +29,8 @@
 //! Exposing internal risk scores to the LLM would allow prompt injection attacks that
 //! manipulate probe verdicts by crafting tool outputs to lower the perceived risk level.
 
+use parking_lot::RwLock;
+use std::collections::HashSet;
 use std::sync::{
     Arc,
     atomic::{AtomicU32, Ordering},
@@ -481,6 +483,27 @@ pub struct ShadowSentinel {
     /// Bounded set of fire-and-forget DB persist tasks. Prevents unbounded task accumulation
     /// and ensures panics surface at `drain_pending()` instead of being silently swallowed.
     pending_writes: Mutex<JoinSet<()>>,
+    /// Sanitized ids (`ToolDef::server_id`-backed) of tools registered by MCP servers.
+    ///
+    /// Mirrors `TrustGateExecutor::mcp_tool_ids` (`zeph_tools::TrustGateExecutor`): empty until
+    /// populated post-construction via [`mcp_tool_ids_handle`](Self::mcp_tool_ids_handle). This
+    /// is the authoritative way to know a `qualified_tool_id` originates from an MCP server —
+    /// real ids are `{server_id}_{name}` (`McpTool::sanitized_id`) and carry no reliable string
+    /// prefix to pattern-match on (#5736).
+    ///
+    /// # Refresh
+    ///
+    /// Populated at startup from the initial `mcp_tools` list (`src/runner.rs`) and refreshed
+    /// on every subsequent tool-list change — `/mcp add`/`/mcp remove` and a live
+    /// `tools/list_changed` notification both route through
+    /// `Agent::refresh_shadow_sentinel_mcp_tool_ids` (`crates/zeph-core/src/agent/mcp.rs`,
+    /// called from `check_tool_refresh` once per turn) — so a server connected mid-session is
+    /// reflected without a process restart.
+    ///
+    /// **Known gap**: `TrustGateExecutor`'s own equivalent set has no such refresh path (it
+    /// lives entirely in the binary crate's tool-executor chain, unreachable from `Agent`) —
+    /// tracked separately (#5747), not fixed by this refresh.
+    mcp_tool_ids: Arc<RwLock<HashSet<String>>>,
 }
 
 impl ShadowSentinel {
@@ -506,7 +529,20 @@ impl ShadowSentinel {
             probes_this_turn: AtomicU32::new(0),
             session_id: session_id.into(),
             pending_writes: Mutex::new(JoinSet::new()),
+            mcp_tool_ids: Arc::new(RwLock::new(HashSet::new())),
         }
+    }
+
+    /// Returns the shared MCP tool-id set so the caller can populate it once MCP servers have
+    /// connected (mirrors `TrustGateExecutor::mcp_tool_ids_handle`).
+    #[must_use]
+    pub fn mcp_tool_ids_handle(&self) -> Arc<RwLock<HashSet<String>>> {
+        Arc::clone(&self.mcp_tool_ids)
+    }
+
+    /// Returns `true` when `tool_id` was registered by an MCP server.
+    fn is_mcp_tool(&self, tool_id: &str) -> bool {
+        self.mcp_tool_ids.read().contains(tool_id)
     }
 
     /// Classify a fully-qualified tool id into a risk tier.
@@ -545,7 +581,7 @@ impl ShadowSentinel {
                 }
                 if pattern.contains("write") || pattern.contains("edit") || pattern.contains("file")
                 {
-                    if qualified_tool_id.starts_with("mcp:") {
+                    if self.is_mcp_tool(qualified_tool_id) {
                         return ToolRiskCategory::ExfilCapable;
                     }
                     return ToolRiskCategory::FileWrite;
@@ -893,6 +929,34 @@ mod tests {
         assert_eq!(
             sentinel.classify_tool("delete"),
             ToolRiskCategory::FileWrite
+        );
+    }
+
+    /// #5736 regression: MCP-tool escalation must key off the registered `mcp_tool_ids` set
+    /// (`ToolDef::server_id`-backed), not a `"mcp:"` string prefix — real MCP tool ids are
+    /// `"{server_id}_{name}"` (`McpTool::sanitized_id`) and never carry that prefix, so the old
+    /// check silently never escalated any MCP write/edit tool to `ExfilCapable`.
+    #[tokio::test]
+    async fn classify_mcp_tool_write_pattern_escalates_to_exfil_capable() {
+        let config = zeph_config::ShadowSentinelConfig {
+            probe_patterns: vec!["*edit*".to_owned()],
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let sentinel = make_test_sentinel(config).await;
+        // Unregistered: a same-shaped id falls to the ordinary FileWrite tier, not ExfilCapable.
+        assert_eq!(
+            sentinel.classify_tool("github_edit_file"),
+            ToolRiskCategory::FileWrite
+        );
+        // Register it the same way the real MCP wiring does (via the shared handle) and the
+        // identical id must now escalate.
+        sentinel
+            .mcp_tool_ids_handle()
+            .write()
+            .insert("github_edit_file".to_owned());
+        assert_eq!(
+            sentinel.classify_tool("github_edit_file"),
+            ToolRiskCategory::ExfilCapable
         );
     }
 

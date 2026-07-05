@@ -33,12 +33,12 @@ pub use zeph_config::ToolDensity;
 /// ```rust
 /// use zeph_tui::widgets::tool_view::ToolKind;
 ///
-/// assert_eq!(ToolKind::classify("bash"), ToolKind::Run);
-/// assert_eq!(ToolKind::classify("read_file"), ToolKind::Explore);
-/// assert_eq!(ToolKind::classify("write_file"), ToolKind::Edit);
-/// assert_eq!(ToolKind::classify("web_search"), ToolKind::Web);
-/// assert_eq!(ToolKind::classify("mcp__github__list_prs"), ToolKind::Mcp);
-/// assert_eq!(ToolKind::classify("unknown_tool"), ToolKind::Other);
+/// assert_eq!(ToolKind::classify("bash", false), ToolKind::Run);
+/// assert_eq!(ToolKind::classify("read_file", false), ToolKind::Explore);
+/// assert_eq!(ToolKind::classify("write_file", false), ToolKind::Edit);
+/// assert_eq!(ToolKind::classify("web_search", false), ToolKind::Web);
+/// assert_eq!(ToolKind::classify("github_list_prs", true), ToolKind::Mcp);
+/// assert_eq!(ToolKind::classify("unknown_tool", false), ToolKind::Other);
 /// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,28 +51,35 @@ pub enum ToolKind {
     Edit,
     /// Web browsing and search tools (`web_search`, `web_scrape`, `fetch`).
     Web,
-    /// MCP-namespaced tools (name starts with `mcp__`).
+    /// Tools registered by an MCP server (`is_mcp` was `true`).
     Mcp,
     /// Any tool that does not match the above categories.
     Other,
 }
 
 impl ToolKind {
-    /// Classify a tool by its canonical name.
+    /// Classify a tool by its canonical name and MCP origin.
     ///
-    /// Matching is case-sensitive and prefix-based for MCP tools.
+    /// `is_mcp` must be resolved by the caller — real MCP tool ids are `{server_id}_{name}`
+    /// (`McpTool::sanitized_id`) and carry no reliable string prefix to pattern-match on
+    /// (#5712, #5734), so `tool_name` alone can never distinguish an MCP tool from a
+    /// similarly-shaped built-in one. Callers with access to the tool's `ToolDef` should pass
+    /// `ToolDef::is_mcp_tool()`; callers without it (e.g. no wiring yet from the event that
+    /// produced `tool_name`) should pass `false` rather than guess.
+    ///
+    /// Name matching for the non-MCP categories is case-sensitive.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use zeph_tui::widgets::tool_view::ToolKind;
     ///
-    /// assert_eq!(ToolKind::classify("bash"), ToolKind::Run);
-    /// assert_eq!(ToolKind::classify("read_file"), ToolKind::Explore);
+    /// assert_eq!(ToolKind::classify("bash", false), ToolKind::Run);
+    /// assert_eq!(ToolKind::classify("read_file", false), ToolKind::Explore);
     /// ```
     #[must_use]
-    pub fn classify(tool_name: &str) -> Self {
-        if tool_name.starts_with("mcp__") {
+    pub fn classify(tool_name: &str, is_mcp: bool) -> Self {
+        if is_mcp {
             return Self::Mcp;
         }
         match tool_name {
@@ -194,43 +201,52 @@ mod tests {
 
     #[test]
     fn tool_kind_classify_run() {
-        assert_eq!(ToolKind::classify("bash"), ToolKind::Run);
-        assert_eq!(ToolKind::classify("shell"), ToolKind::Run);
-        assert_eq!(ToolKind::classify("run_command"), ToolKind::Run);
+        assert_eq!(ToolKind::classify("bash", false), ToolKind::Run);
+        assert_eq!(ToolKind::classify("shell", false), ToolKind::Run);
+        assert_eq!(ToolKind::classify("run_command", false), ToolKind::Run);
     }
 
     #[test]
     fn tool_kind_classify_explore() {
-        assert_eq!(ToolKind::classify("read_file"), ToolKind::Explore);
-        assert_eq!(ToolKind::classify("list_dir"), ToolKind::Explore);
-        assert_eq!(ToolKind::classify("grep"), ToolKind::Explore);
-        assert_eq!(ToolKind::classify("glob"), ToolKind::Explore);
+        assert_eq!(ToolKind::classify("read_file", false), ToolKind::Explore);
+        assert_eq!(ToolKind::classify("list_dir", false), ToolKind::Explore);
+        assert_eq!(ToolKind::classify("grep", false), ToolKind::Explore);
+        assert_eq!(ToolKind::classify("glob", false), ToolKind::Explore);
     }
 
     #[test]
     fn tool_kind_classify_edit() {
-        assert_eq!(ToolKind::classify("write_file"), ToolKind::Edit);
-        assert_eq!(ToolKind::classify("edit_file"), ToolKind::Edit);
-        assert_eq!(ToolKind::classify("patch"), ToolKind::Edit);
+        assert_eq!(ToolKind::classify("write_file", false), ToolKind::Edit);
+        assert_eq!(ToolKind::classify("edit_file", false), ToolKind::Edit);
+        assert_eq!(ToolKind::classify("patch", false), ToolKind::Edit);
     }
 
     #[test]
     fn tool_kind_classify_web() {
-        assert_eq!(ToolKind::classify("web_search"), ToolKind::Web);
-        assert_eq!(ToolKind::classify("web_scrape"), ToolKind::Web);
-        assert_eq!(ToolKind::classify("fetch"), ToolKind::Web);
+        assert_eq!(ToolKind::classify("web_search", false), ToolKind::Web);
+        assert_eq!(ToolKind::classify("web_scrape", false), ToolKind::Web);
+        assert_eq!(ToolKind::classify("fetch", false), ToolKind::Web);
     }
 
+    /// #5734 regression: MCP origin must come from the caller-supplied `is_mcp` flag (ultimately
+    /// backed by `ToolDef::is_mcp_tool()`), not a `"mcp__"` string prefix — real MCP tool ids are
+    /// `{server_id}_{name}` (`McpTool::sanitized_id`) and never carry that prefix, so the old
+    /// check silently never matched any real MCP tool.
     #[test]
     fn tool_kind_classify_mcp() {
-        assert_eq!(ToolKind::classify("mcp__github__list_prs"), ToolKind::Mcp);
-        assert_eq!(ToolKind::classify("mcp__slack__send"), ToolKind::Mcp);
+        assert_eq!(ToolKind::classify("github_list_prs", true), ToolKind::Mcp);
+        assert_eq!(ToolKind::classify("slack_send", true), ToolKind::Mcp);
+        // A real-world-shaped MCP id without the caller-supplied flag is not misclassified.
+        assert_eq!(
+            ToolKind::classify("github_list_prs", false),
+            ToolKind::Other
+        );
     }
 
     #[test]
     fn tool_kind_classify_other() {
-        assert_eq!(ToolKind::classify("unknown_tool"), ToolKind::Other);
-        assert_eq!(ToolKind::classify("memory_search"), ToolKind::Other);
+        assert_eq!(ToolKind::classify("unknown_tool", false), ToolKind::Other);
+        assert_eq!(ToolKind::classify("memory_search", false), ToolKind::Other);
     }
 
     #[test]

@@ -720,6 +720,7 @@ impl<C: Channel> Agent<C> {
             args_hashes,
             repeat_blocked,
             cache_hits,
+            mcp_tool_ids,
             mage_blocked,
             mut early_stop_hints,
             window_exhausted,
@@ -762,6 +763,7 @@ impl<C: Channel> Agent<C> {
                 &args_hashes,
                 &repeat_blocked,
                 &cache_hits,
+                &mcp_tool_ids,
                 max_parallel,
                 &cancel,
                 &tool_call_ids,
@@ -1016,13 +1018,32 @@ impl<C: Channel> Agent<C> {
                 .push_tool_call(call.tool_id.as_str(), hash);
         }
 
+        // Resolved once per dispatch batch and threaded through `ToolDispatchContext` so both
+        // the cache-lookup gate below and the cache-store gate later in `apply_tier_results`
+        // share one registry scan instead of each re-scanning `tool_definitions_erased()`
+        // per call/per tier (#5733 follow-up, M1). Also sidesteps a borrow-checker conflict:
+        // capturing a whole-`self` method inside the closure below would conflict with that
+        // closure's existing `&mut self.tool_orchestrator` borrow.
+        let mcp_tool_ids: std::collections::HashSet<String> = self
+            .tool_executor
+            .tool_definitions_erased()
+            .into_iter()
+            .filter(zeph_tools::registry::ToolDef::is_mcp_tool)
+            .map(|d| d.id.into_owned())
+            .collect();
+
         // Cache lookup: hits pre-built before dispatch; cache store happens after join_all.
         let cache_hits: Vec<Option<zeph_tools::ToolOutput>> = calls
             .iter()
             .zip(args_hashes.iter())
             .zip(repeat_blocked.iter())
             .map(|((call, &hash), &blocked)| {
-                if blocked || !zeph_tools::is_cacheable(call.tool_id.as_str()) {
+                if blocked
+                    || !zeph_tools::is_cacheable(
+                        call.tool_id.as_str(),
+                        mcp_tool_ids.contains(call.tool_id.as_str()),
+                    )
+                {
                     return None;
                 }
                 let key = zeph_tools::CacheKey::new(call.tool_id.as_str(), hash);
@@ -1047,6 +1068,7 @@ impl<C: Channel> Agent<C> {
             args_hashes,
             repeat_blocked,
             cache_hits,
+            mcp_tool_ids,
             mage_blocked,
             early_stop_hints,
             window_exhausted,
@@ -1165,6 +1187,7 @@ impl<C: Channel> Agent<C> {
         args_hashes: &[u64],
         repeat_blocked: &[bool],
         cache_hits: &[Option<zeph_tools::ToolOutput>],
+        mcp_tool_ids: &std::collections::HashSet<String>,
         max_parallel: usize,
         cancel: &tokio_util::sync::CancellationToken,
         tool_call_ids: &[String],
@@ -1294,6 +1317,7 @@ impl<C: Channel> Agent<C> {
                 tool_calls,
                 calls,
                 cache_hits,
+                mcp_tool_ids,
                 args_hashes,
                 tool_started_ats,
                 &mut failed_ids,
@@ -2058,6 +2082,7 @@ impl<C: Channel> Agent<C> {
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
         calls: &[ToolCall],
         cache_hits: &[Option<zeph_tools::ToolOutput>],
+        mcp_tool_ids: &std::collections::HashSet<String>,
         args_hashes: &[u64],
         tool_started_ats: &[std::time::Instant],
         failed_ids: &mut std::collections::HashSet<String>,
@@ -2082,7 +2107,10 @@ impl<C: Channel> Agent<C> {
             // tool, silently reintroducing the exact stall the mandated-retry bypass fixes.
             if !is_failed
                 && cache_hits[idx].is_none()
-                && zeph_tools::is_cacheable(tool_calls[idx].name.as_str())
+                && zeph_tools::is_cacheable(
+                    tool_calls[idx].name.as_str(),
+                    mcp_tool_ids.contains(tool_calls[idx].name.as_str()),
+                )
                 && let Ok(Some(ref out)) = result
                 && !out.summary.starts_with("[skipped]")
                 && !out.summary.starts_with("[stopped]")

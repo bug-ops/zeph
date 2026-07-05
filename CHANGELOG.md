@@ -205,6 +205,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `calls.len() == tool_calls.len()` is now an unconditional invariant; tafc-stripped positions are
   tracked separately and folded into the existing `pre_exec_blocked` mechanism, which already
   returns a synthetic skip result without dispatching, instead of dropping the entry.
+- `fix(core)`: `ShadowSentinel::classify_tool` (`crates/zeph-core/src/agent/shadow_sentinel.rs`)
+  escalated MCP write/edit tools to `ToolRiskCategory::ExfilCapable` by checking
+  `qualified_tool_id.starts_with("mcp:")` — real MCP tool ids are `"{server_id}_{name}"`
+  (`McpTool::sanitized_id`) and never carry that prefix, so the check silently never matched and
+  MCP write/edit tools were classified as the weaker `FileWrite` category instead (#5736).
+  `ShadowSentinel` now keeps its own registered-MCP-tool-id set (mirroring
+  `TrustGateExecutor::mcp_tool_ids`), exposed via `mcp_tool_ids_handle()`, populated at startup
+  in `src/runner.rs` from the same `mcp_tools` list used for `TrustGateExecutor`, and refreshed
+  on every subsequent tool-list change: `Agent::refresh_shadow_sentinel_mcp_tool_ids`
+  (`crates/zeph-core/src/agent/mcp.rs`) runs from `check_tool_refresh` whenever `/mcp add`/
+  `/mcp remove` or a live `tools/list_changed` notification updates the tool list, so a server
+  connected mid-session is picked up without a process restart. **Known gap**:
+  `TrustGateExecutor`'s own equivalent set has no such refresh path — it lives entirely inside
+  the binary crate's tool-executor chain (`src/agent_setup.rs`), unreachable from `zeph-core`'s
+  `Agent` without new cross-crate plumbing, so a Quarantined skill can still reach a
+  dynamically-connected MCP server's tools via the weakest-link Quarantine-deny check; filed as
+  a separate, higher-priority follow-up (#5747) since that gap is a security-enforcement bypass,
+  not just a defense-in-depth classification miss like `ShadowSentinel`'s (which
+  `PolicyGateExecutor`/`TrajectorySentinel` continue to back up regardless).
+- `fix(tools)`: `is_cacheable` (`crates/zeph-tools/src/cache.rs`) checked
+  `tool_name.starts_with("mcp_")` to exclude MCP tool results from caching — real MCP tool ids
+  are `"{server_id}_{name}"` and never carry that prefix, so the check silently never matched
+  and MCP tool results WERE being cached, the opposite of the function's documented intent
+  (#5733). `is_cacheable` now takes an explicit `is_mcp: bool` parameter that callers resolve via
+  `ToolDef::is_mcp_tool()`. `ToolDispatchContext` (`crates/zeph-core/src/agent/tool_execution/
+  mod.rs`) gained an `mcp_tool_ids` field, resolved once per dispatch batch in
+  `prepare_tool_dispatch` and threaded through `run_tier_execution_loop` into both call sites
+  (`prepare_tool_dispatch`'s cache-lookup gate and `apply_tier_results`'s cache-store gate) so
+  they share one tool-registry scan per batch instead of each re-scanning
+  `tool_definitions_erased()` independently.
+- `fix(tui)`: `ToolKind::classify` (`crates/zeph-tui/src/widgets/tool_view.rs`) checked
+  `tool_name.starts_with("mcp__")` to group MCP tools under a distinct icon in the TUI — real
+  MCP tool ids never carry that (or any) reliable prefix, so MCP tools were never classified as
+  `ToolKind::Mcp`. `classify` now takes an explicit `is_mcp: bool` parameter instead of guessing
+  from the name, closing the dead-heuristic part of #5734. **Partial fix**: `chat.rs`'s two call
+  sites still pass `false` unconditionally, since `ChatMessage` does not yet carry MCP-origin
+  metadata from the agent event stream — so `ToolKind::Mcp` is still never actually produced in
+  the running TUI today. Threading real data through would require adding an `is_mcp` field to
+  `ToolStartEvent`/`ToolOutputEvent` (`crates/zeph-core/src/channel.rs`), which is shared by
+  every channel implementation (CLI, Telegram, Discord, Slack, ACP, TUI) — filed as a follow-up
+  (#5743) rather than bundled into this fix, which only corrects the classification logic itself
+  and its test coverage.
 - `fix(core)`: `Agent::build_experiment_engine` (`crates/zeph-core/src/agent/experiment_cmd.rs`)
   read the configured benchmark TOML synchronously via `BenchmarkSet::from_file`, which performs
   blocking filesystem I/O (`std::fs::canonicalize` x2, `std::fs::metadata`, `std::fs::
