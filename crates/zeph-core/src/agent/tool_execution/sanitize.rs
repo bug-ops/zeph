@@ -332,9 +332,18 @@ impl<C: Channel> Agent<C> {
         tool_name: &str,
         has_injection_flags: bool,
     ) -> Option<(String, bool)> {
+        // `tool_name` here is always the qualified `server:tool` form (`ToolOutput.tool_name` is
+        // deliberately set to `qualified_name()`, not `sanitized_id()` — see the invariant note
+        // in `crates/zeph-mcp/src/executor.rs`), since this function only runs for
+        // `ContentSourceKind::McpResponse`, which `build_tool_output_source` only assigns when
+        // `tool_name.contains(':')`. Mirrors the reference split in
+        // `crates/zeph-tools/src/policy_gate.rs`.
+        let mcp_server_id = tool_name
+            .split_once(':')
+            .map(|(server, _)| server.to_owned());
         tracing::warn!(
             tool = %tool_name,
-            mcp_server_id = tool_name.split(':').next().unwrap_or("unknown"),
+            mcp_server_id = mcp_server_id.as_deref().unwrap_or("unknown"),
             "MCP tool result crossing ACP trust boundary"
         );
         self.push_security_event(
@@ -353,7 +362,7 @@ impl<C: Channel> Agent<C> {
                 error_domain: Some("security".to_owned()),
                 error_phase: None,
                 claim_source: None,
-                mcp_server_id: tool_name.split(':').next().map(ToOwned::to_owned),
+                mcp_server_id,
                 injection_flagged: has_injection_flags,
                 embedding_anomalous: false,
                 cross_boundary_mcp_to_acp: true,

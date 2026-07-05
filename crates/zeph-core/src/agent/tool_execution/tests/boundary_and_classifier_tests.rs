@@ -412,6 +412,116 @@ async fn sanitize_tool_output_cross_boundary_disabled_skips_quarantine() {
     );
 }
 
+/// Regression test for #5744: `handle_cross_boundary_quarantine` must resolve
+/// `mcp_server_id` to the real MCP server id (`ToolDef::server_id`), not the
+/// full tool identifier.
+///
+/// The `tool_name` reaching this function is always `McpTool::qualified_name()`
+/// (`"{server_id}:{name}"`) — `McpToolExecutor::execute_tool_call` sets
+/// `ToolOutput.tool_name` to the qualified form specifically so
+/// `build_tool_output_source`'s `tool_name.contains(':')` check classifies the
+/// content as `ContentSourceKind::McpResponse` in the first place (see
+/// `crates/zeph-mcp/src/executor.rs`, `execute_tool_call`). `ToolDef::id` (used
+/// for LLM-facing dispatch and registered via `McpTool::sanitized_id()`) is the
+/// underscore-joined form and never contains `:`. This test uses that real
+/// qualified `tool_name` shape rather than the ad hoc `no_tools()` fixtures used
+/// by the tests above, to catch a `ToolDef.id`-vs-`tool_name` format mismatch.
+#[tokio::test]
+async fn sanitize_tool_output_cross_boundary_resolves_real_mcp_server_id() {
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use tokio::sync::watch;
+    use zeph_llm::mock::MockProvider;
+    use zeph_sanitizer::QuarantineConfig;
+    use zeph_sanitizer::quarantine::QuarantinedSummarizer;
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
+    use zeph_tools::registry::{InvocationHint, ToolDef};
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+
+    // Definition as registered by `McpToolExecutor::tool_definitions()`: `id` is the
+    // sanitized (underscore) dispatch id, `server_id` is the authoritative server id.
+    let tool_def = ToolDef {
+        id: "github_create_issue".into(),
+        description: "create a GitHub issue".into(),
+        schema: schemars::Schema::default(),
+        invocation: InvocationHint::ToolCall,
+        output_schema: None,
+        server_id: Some("github".to_owned()),
+    };
+    let executor = MockToolExecutor::no_tools().with_definitions(vec![tool_def]);
+    let (tx, _rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+    let quarantine_provider = zeph_llm::any::AnyProvider::Mock(MockProvider::with_responses(vec![
+        "Extracted: safe summary".to_owned(),
+    ]));
+    let qcfg = QuarantineConfig {
+        enabled: true,
+        sources: vec![],
+        model: "mock".to_owned(),
+        timeout_ms: 30_000,
+    };
+    let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
+
+    let dir = tempfile::tempdir().unwrap();
+    let audit_path = dir.path().join("audit.jsonl");
+    let audit_cfg = zeph_config::tools::AuditConfig {
+        enabled: true,
+        destination: zeph_config::tools::AuditDestination::File(audit_path.clone()),
+        tool_risk_summary: false,
+    };
+    let audit_logger = zeph_tools::AuditLogger::from_config(&audit_cfg, false)
+        .await
+        .expect("audit logger over a tempdir file must construct");
+
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
+        .with_metrics(tx)
+        .with_acp_session(true)
+        .with_quarantine_summarizer(qs)
+        .with_audit_logger(std::sync::Arc::new(audit_logger));
+    agent.services.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+        enabled: true,
+        spotlight_untrusted: true,
+        flag_injection_patterns: false,
+        mcp_to_acp_boundary: true,
+        ..Default::default()
+    });
+
+    // Real dispatch shape: `ToolOutput.tool_name` / `ToolCall.name` is the qualified
+    // "{server_id}:{name}" form, NOT the sanitized `ToolDef.id` ("github_create_issue").
+    let (result, _) = agent
+        .sanitize_tool_output("malicious MCP payload", "github:create_issue")
+        .await;
+    assert!(
+        result.contains("Extracted: safe summary"),
+        "cross-boundary MCP result must still be quarantined: {result}"
+    );
+
+    // Flush the fire-and-forget audit write spawned via `BackgroundSupervisor`.
+    agent.runtime.lifecycle.supervisor.join_all_for_test().await;
+
+    let logged = tokio::fs::read_to_string(&audit_path)
+        .await
+        .expect("audit log file must have been written");
+    let entry: serde_json::Value = logged
+        .lines()
+        .next()
+        .and_then(|line| serde_json::from_str(line).ok())
+        .expect("audit log must contain one well-formed JSON entry");
+
+    assert_eq!(
+        entry
+            .get("mcp_server_id")
+            .and_then(serde_json::Value::as_str),
+        Some("github"),
+        "mcp_server_id must resolve to the real MCP server id for the qualified \
+         tool_name shape actually produced by McpToolExecutor, got: {entry}"
+    );
+}
+
 #[tokio::test]
 async fn sanitize_tool_output_non_acp_session_normal_path() {
     use crate::agent::agent_tests::{
