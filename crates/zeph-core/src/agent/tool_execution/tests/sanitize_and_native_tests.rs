@@ -110,6 +110,57 @@ async fn sanitize_tool_output_bash_uses_tool_output_wrapper() {
     assert_tool_output!("bash", "command output");
 }
 
+// Regression test for #5702 + #5647: PII scrubbing must run on the raw tool-output
+// payload before the spotlight wrapper is applied. Previously it ran on the fully
+// wrapped string, so a bare epoch-timestamp-shaped digit run in the body was misredacted
+// as `[PII:phone]`, and the wrapper's `name="bash"` attribute was itself in-scope for
+// scanning. This test exercises only the regex `PiiFilter` path (no NER backend is
+// attached here, so `pii_ner_backend` stays `None` and `run_ner_classifier` is a no-op);
+// the NER-specific misclassification of symbol-heavy tokens (e.g. `+%s.%N`) and the
+// bash/shell echo-line exemption (`split_bash_echo_prefix`) are covered separately by
+// `pii_ner_circuit_breaker::bash_command_echo_line_exempt_from_ner_pii` in
+// `boundary_and_classifier_tests.rs`, which requires the `classifiers` feature to attach a
+// mock NER backend.
+#[tokio::test]
+async fn sanitize_tool_output_does_not_redact_epoch_timestamp_or_tool_identifier() {
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+    let cfg = zeph_sanitizer::ContentIsolationConfig {
+        enabled: true,
+        spotlight_untrusted: true,
+        flag_injection_patterns: false,
+        ..Default::default()
+    };
+    agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
+    agent.services.security.pii_filter =
+        zeph_sanitizer::pii::PiiFilter::new(zeph_sanitizer::pii::PiiFilterConfig {
+            enabled: true,
+            ..Default::default()
+        });
+
+    let body = "$ date +%s.%N\n1783259155.445901000\n";
+    let (result, _) = agent.sanitize_tool_output(body, "bash").await;
+
+    assert!(
+        result.contains("1783259155.445901000"),
+        "bare epoch timestamp must not be misredacted as phone PII: {result}"
+    );
+    assert!(
+        result.contains("name=\"bash\""),
+        "tool identifier must never be routed through PII scanning: {result}"
+    );
+    assert!(
+        !result.contains("[PII:"),
+        "no PII should be flagged for this body: {result}"
+    );
+}
+
 // R-06: disabled sanitizer returns raw body unchanged
 #[tokio::test]
 async fn sanitize_tool_output_disabled_returns_raw_body() {
@@ -218,6 +269,72 @@ async fn sanitize_tool_output_quarantine_web_scrape_invoked() {
     assert_eq!(
         snap.quarantine_failures, 0,
         "quarantine_failures should be 0"
+    );
+}
+
+// Regression test for the #5702/#5647 reorder's side effect: quarantine paths used to
+// return early *before* `scrub_pii_union` ran, so quarantined content was never
+// PII-scrubbed at all. After the reorder, PII scrubbing happens unconditionally before
+// quarantine can short-circuit, so the quarantine LLM must only ever see already-scrubbed
+// content. Uses `with_recording` to inspect the actual prompt sent to the quarantine
+// provider, since the mock response itself doesn't reflect input content.
+#[tokio::test]
+async fn sanitize_tool_output_quarantine_receives_pii_scrubbed_content() {
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use zeph_llm::mock::MockProvider;
+    use zeph_sanitizer::QuarantineConfig;
+    use zeph_sanitizer::quarantine::QuarantinedSummarizer;
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let (quarantine_provider, recorded) =
+        MockProvider::with_responses(vec!["Fact: page title is Zeph".to_owned()]).with_recording();
+    let quarantine_provider = zeph_llm::any::AnyProvider::Mock(quarantine_provider);
+    let qcfg = QuarantineConfig {
+        enabled: true,
+        sources: vec!["web_scrape".to_owned()],
+        model: "claude".to_owned(),
+        timeout_ms: 30_000,
+    };
+    let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
+
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
+        .with_quarantine_summarizer(qs);
+    agent.services.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+        enabled: true,
+        spotlight_untrusted: true,
+        flag_injection_patterns: false,
+        ..Default::default()
+    });
+    agent.services.security.pii_filter =
+        zeph_sanitizer::pii::PiiFilter::new(zeph_sanitizer::pii::PiiFilterConfig {
+            enabled: true,
+            ..Default::default()
+        });
+
+    let body = "contact us at 555-123-4567 for details";
+    let _ = agent.sanitize_tool_output(body, "web_scrape").await;
+
+    let calls = recorded.lock().unwrap();
+    assert_eq!(calls.len(), 1, "quarantine provider should be called once");
+    let prompt = calls[0]
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !prompt.contains("555-123-4567"),
+        "quarantine LLM must not see raw PII in the prompt: {prompt}"
+    );
+    assert!(
+        prompt.contains("[PII:phone]"),
+        "quarantine LLM prompt should contain the scrubbed marker: {prompt}"
     );
 }
 

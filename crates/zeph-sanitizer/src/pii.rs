@@ -56,8 +56,26 @@ pub(crate) static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// US phone numbers, optional country code.
+///
+/// At least one delimiter (a closing parenthesis after the area code, or a separator
+/// between digit groups) is required somewhere in the number. A bare, undelimited run of
+/// 10 digits (e.g. a Unix epoch timestamp such as `1783259155`, a PID, or a byte count)
+/// satisfies `\d{3}\d{3}\d{4}` and is indistinguishable from a real phone number without
+/// this requirement — this was the root cause of ordinary numeric tool output being
+/// misredacted as `[PII:phone]` (#5702). The three alternatives below each force a
+/// delimiter in a different position so that `555-123-4567`, `(555) 123-4567`, and
+/// `555.123.4567` all still match.
+///
+/// `\b` cannot match immediately before a leading `(` (both are non-word-adjacent-to-space,
+/// so no boundary exists there); as with the pre-existing `+` handling below, the opening
+/// parenthesis is therefore left unredacted and the match starts at the digits, using the
+/// closing `)` as the delimiter signal instead — consistent with the already-documented
+/// behavior that a leading `+` is left in the clear (see `scrubs_us_phone_with_country_code`).
 static PHONE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b").expect("valid PHONE_RE")
+    Regex::new(
+        r"\b(\+?1[-.\s]?)?(?:\d{3}\)[-.\s]?\d{3}[-.\s]?\d{4}|\d{3}[-.\s]\d{3}[-.\s]?\d{4}|\d{3}[-.\s]?\d{3}[-.\s]\d{4})\b",
+    )
+    .expect("valid PHONE_RE")
 });
 
 /// US Social Security Number (NNN-NN-NNNN).
@@ -623,6 +641,55 @@ mod tests {
         let result = f.scrub("call +1-800-555-1234 now");
         // The regex uses \b which won't anchor before '+', so '+' is left behind.
         assert_eq!(result, "call +[PII:phone] now");
+    }
+
+    #[test]
+    fn scrubs_phone_with_parens() {
+        let f = filter_all();
+        let result = f.scrub("call (555) 123-4567 now");
+        // The regex uses \b which won't anchor before '(', so '(' is left behind —
+        // same documented leak behavior as the leading '+' in scrubs_us_phone_with_country_code.
+        assert_eq!(result, "call ([PII:phone] now");
+    }
+
+    #[test]
+    fn scrubs_phone_with_dots() {
+        let f = filter_all();
+        let result = f.scrub("call 555.123.4567 now");
+        assert_eq!(result, "call [PII:phone] now");
+    }
+
+    #[test]
+    fn scrubs_phone_with_country_code_and_spaces() {
+        let f = filter_all();
+        let result = f.scrub("call +1 555 123 4567 now");
+        assert_eq!(result, "call +[PII:phone] now");
+    }
+
+    // --- phone false positive: bare digit runs (#5702) ---
+
+    #[test]
+    fn does_not_scrub_bare_epoch_timestamp_as_phone() {
+        let f = filter_all();
+        // Unix epoch seconds — a bare 10-digit run with no delimiters must not be
+        // misclassified as a phone number (#5702 root cause).
+        let text = "timestamp 1783259155.445901000 recorded";
+        let result = f.scrub(text);
+        assert_eq!(
+            result, text,
+            "bare undelimited 10-digit run must not be detected as phone: {result}"
+        );
+    }
+
+    #[test]
+    fn does_not_scrub_bare_digit_run_without_country_code_as_phone() {
+        let f = filter_all();
+        let text = "pid 5551234567 exited";
+        let result = f.scrub(text);
+        assert_eq!(
+            result, text,
+            "bare undelimited digit run must not be detected as phone: {result}"
+        );
     }
 
     // --- SSN ---

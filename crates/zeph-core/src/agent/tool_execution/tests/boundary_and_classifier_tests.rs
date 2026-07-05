@@ -878,6 +878,123 @@ mod pii_ner_circuit_breaker {
             "circuit breaker must not trip when threshold = 0"
         );
     }
+
+    // --- bash/shell command-echo line exemption from NER PII scanning (#5702) ---
+    //
+    // A real NER model tends to misclassify symbol-heavy command-echo tokens (e.g. `+%s.%N`
+    // from `date +%s.%N`) as PII categories such as PASSWORD. That echo line
+    // (`"$ {command}\n"`) is Zeph-generated text, not real command output — see
+    // `split_bash_echo_prefix` in `crates/zeph-core/src/agent/tool_execution/sanitize.rs`,
+    // called from `sanitize_tool_output` before PII scrubbing. Unlike the ML injection
+    // classifier's `is_internal_tool` exemption (which excludes an internal tool's *entire*
+    // output), only the literal echo line is exempt here: `bash`/`shell` output after that
+    // line is genuine command output that can legitimately contain real PII (e.g.
+    // `cat customer_data.csv`) and must still be fully scanned. These tests exercise the
+    // actual `sanitize_tool_output` pipeline with a mock NER backend that flags a marker
+    // token, proving the echo line is exempt, real output after it is not, and the
+    // exemption is scoped to `bash`/`shell` only.
+
+    /// Backend that flags a fixed marker substring as a positive NER span, simulating a real
+    /// model misclassifying a symbol-heavy command-echo token as PII.
+    struct MarkerFlaggingBackend;
+
+    const NER_TEST_MARKER: &str = "+%s.%N";
+
+    impl ClassifierBackend for MarkerFlaggingBackend {
+        fn classify<'a>(
+            &'a self,
+            text: &'a str,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<ClassificationResult, zeph_llm::error::LlmError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                if let Some(byte_pos) = text.find(NER_TEST_MARKER) {
+                    // The marker is ASCII-only, so byte offset == char offset here.
+                    let start = byte_pos;
+                    let end = start + NER_TEST_MARKER.len();
+                    Ok(ClassificationResult {
+                        label: "PASSWORD".into(),
+                        score: 0.97,
+                        is_positive: true,
+                        spans: vec![zeph_llm::classifier::NerSpan {
+                            label: "PASSWORD".into(),
+                            score: 0.97,
+                            start,
+                            end,
+                        }],
+                    })
+                } else {
+                    Ok(ClassificationResult {
+                        label: "O".into(),
+                        score: 0.0,
+                        is_positive: false,
+                        spans: vec![],
+                    })
+                }
+            })
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "marker_flagging"
+        }
+    }
+
+    #[tokio::test]
+    async fn bash_command_echo_line_exempt_from_ner_pii() {
+        let mut agent = make_agent_with_ner(Arc::new(MarkerFlaggingBackend), 5000, 2);
+        let body = "$ date +%s.%N\n1783259155.445901000\n";
+
+        let (result, _) = agent.sanitize_tool_output(body, "bash").await;
+
+        assert!(
+            result.contains(NER_TEST_MARKER),
+            "echo line must survive unredacted: {result}"
+        );
+        assert!(
+            !result.contains("[PII:PASSWORD]"),
+            "echo line must not be NER-scanned: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bash_output_after_echo_line_still_scanned_by_ner() {
+        // Proves the exemption is scoped to the echo line only — real command output after
+        // it (which can legitimately contain PII) must still be fully NER-scanned.
+        let mut agent = make_agent_with_ner(Arc::new(MarkerFlaggingBackend), 5000, 2);
+        let body = format!("$ cat notes.txt\nvalue {NER_TEST_MARKER} here\n");
+
+        let (result, _) = agent.sanitize_tool_output(&body, "bash").await;
+
+        assert!(
+            result.contains("[PII:PASSWORD]"),
+            "real command output must still be NER-scanned: {result}"
+        );
+        assert!(!result.contains(NER_TEST_MARKER));
+        assert!(
+            result.contains("$ cat notes.txt"),
+            "echo line itself must remain untouched: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_bash_tool_output_not_exempted_even_with_dollar_prefix() {
+        // Proves the echo-line split is scoped by tool name, not just by a leading "$ "
+        // marker — a non-bash/shell tool whose body happens to start with "$ " must still
+        // be fully NER-scanned.
+        let mut agent = make_agent_with_ner(Arc::new(MarkerFlaggingBackend), 5000, 2);
+        let body = format!("$ {NER_TEST_MARKER} looks like an echo but isn't\n");
+
+        let (result, _) = agent.sanitize_tool_output(&body, "web-scrape").await;
+
+        assert!(
+            result.contains("[PII:PASSWORD]"),
+            "non-bash/shell tool output must not get the echo-line exemption: {result}"
+        );
+    }
 }
 
 // ── HistogramRecorder wiring tests (#2874) ────────────────────────────────

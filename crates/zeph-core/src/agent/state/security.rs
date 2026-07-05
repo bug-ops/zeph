@@ -134,6 +134,14 @@ impl SecurityState {
     ///
     /// Updates `ner_timeouts` and `circuit_breaker_tripped` accumulators in place.
     /// No-op when the circuit breaker is already tripped or no backend is configured.
+    ///
+    /// Callers are responsible for excluding any Zeph-generated (non-command-output) text
+    /// from `text` before calling this — e.g. `sanitize_tool_output`
+    /// (`crates/zeph-core/src/agent/tool_execution/sanitize.rs`) strips the bash/shell
+    /// command-echo line via `split_bash_echo_prefix` before invoking the PII scrub, since
+    /// that echo line is Zeph-generated and NER-prone to false positives on it (#5702), while
+    /// the rest of `bash`/`shell` output is genuine command output that can legitimately
+    /// contain real PII and must still be fully scanned here.
     #[cfg(feature = "classifiers")]
     async fn run_ner_classifier(
         &mut self,

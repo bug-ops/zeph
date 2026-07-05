@@ -53,6 +53,34 @@ fn is_internal_tool(tool_name: &str) -> bool {
     !tool_name.contains(':') && INTERNAL_TOOLS.contains(&tool_name)
 }
 
+/// Splits off the literal `"$ {command}\n"` echo line that `bash`/`shell` tool output is
+/// prefixed with (`crates/zeph-tools/src/shell/mod.rs`'s `execute_block`/
+/// `execute_block_with_context`, `format!("$ {command}\n{filtered}")`), so that this
+/// Zeph-generated echo text is never subject to PII scanning (regex or NER) — only the
+/// actual command output after it is.
+///
+/// Unlike [`is_internal_tool`], which exempts an internal tool's *entire* output from the
+/// ML injection classifier (safe there because injection payloads must be attacker-authored
+/// text), `bash`/`shell` output legitimately CAN contain real PII from the command's actual
+/// output (e.g. `cat customer_data.csv`). So only the literal echo line — never real command
+/// output — is exempt here; everything after the first line still goes through full PII
+/// scanning unchanged (#5702).
+///
+/// Returns `(prefix, remainder)`: `prefix` must be reattached unscanned (includes the
+/// trailing newline), and `remainder` is what the PII scrubber should run on. For any tool
+/// other than `bash`/`shell`, or when the body doesn't start with the exact `"$ "` echo
+/// marker (e.g. a snapshot-rollback warning line precedes it — a narrow, accepted gap since
+/// that shape is rare), returns `("", body)` unchanged so full PII scanning applies as before.
+fn split_bash_echo_prefix<'a>(body: &'a str, tool_name: &str) -> (&'a str, &'a str) {
+    if !matches!(tool_name, "bash" | "shell") || !body.starts_with("$ ") {
+        return ("", body);
+    }
+    match body.find('\n') {
+        Some(idx) => body.split_at(idx + 1),
+        None => ("", body),
+    }
+}
+
 /// Build the `ContentSource` that describes a tool's trust level for the sanitizer.
 fn build_tool_output_source(tool_name: &str) -> ContentSource {
     if tool_name.contains(':') || tool_name == "mcp" {
@@ -87,7 +115,27 @@ impl<C: Channel> Agent<C> {
         let memory_hint = source.memory_hint;
         #[cfg(not(feature = "classifiers"))]
         let _ = source.memory_hint;
-        let sanitized = self.services.security.sanitizer.sanitize(body, source);
+
+        // Scrub PII on the raw payload BEFORE `ContentSanitizer::sanitize` wraps it in the
+        // <tool-output>/<external-data> spotlight XML. Scanning after wrapping (the previous
+        // order) let the regex/NER scan redact structural wrapper text — including the tool
+        // identifier in the `name` attribute (#5647) — instead of only the actual tool output
+        // content, which is also how ordinary numeric output got misredacted (#5702).
+        //
+        // For bash/shell, the leading "$ {command}\n" echo line is Zeph-generated text (not
+        // real command output) and is split off first so it's never PII-scanned either —
+        // command-echo tokens like `+%s.%N` were otherwise misclassified by the NER model as
+        // e.g. `[PII:PASSWORD]` (#5702). Everything after that line is real command output and
+        // still goes through full PII scanning, since it can legitimately contain real PII.
+        let (echo_prefix, scrub_target) = split_bash_echo_prefix(body, tool_name);
+        let scrubbed_remainder = self.scrub_pii_union(scrub_target, tool_name).await;
+        let body = if echo_prefix.is_empty() {
+            scrubbed_remainder
+        } else {
+            format!("{echo_prefix}{scrubbed_remainder}")
+        };
+
+        let sanitized = self.services.security.sanitizer.sanitize(&body, source);
         let has_injection_flags = !sanitized.injection_flags.is_empty();
         self.record_injection_flags(&sanitized, tool_name);
         if sanitized.was_truncated {
@@ -102,7 +150,7 @@ impl<C: Channel> Agent<C> {
 
         #[cfg(feature = "classifiers")]
         if let Some(result) = self
-            .apply_classifier_verdict(body, tool_name, memory_hint)
+            .apply_classifier_verdict(&body, tool_name, memory_hint)
             .await
         {
             return result;
@@ -133,7 +181,7 @@ impl<C: Channel> Agent<C> {
             return result;
         }
 
-        let body = self.scrub_pii_union(&sanitized.body, tool_name).await;
+        let body = sanitized.body;
         self.record_nli_verdict(&body, tool_name).await;
         let body = self.apply_guardrail_to_tool_output(body, tool_name).await;
 
@@ -417,6 +465,52 @@ impl<C: Channel> Agent<C> {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod split_bash_echo_prefix_tests {
+    use super::split_bash_echo_prefix;
+
+    #[test]
+    fn splits_bash_echo_line() {
+        let body = "$ date +%s.%N\n1783259155.445901000\n";
+        let (prefix, remainder) = split_bash_echo_prefix(body, "bash");
+        assert_eq!(prefix, "$ date +%s.%N\n");
+        assert_eq!(remainder, "1783259155.445901000\n");
+    }
+
+    #[test]
+    fn splits_shell_echo_line() {
+        let body = "$ ls -la\ntotal 0\n";
+        let (prefix, remainder) = split_bash_echo_prefix(body, "shell");
+        assert_eq!(prefix, "$ ls -la\n");
+        assert_eq!(remainder, "total 0\n");
+    }
+
+    #[test]
+    fn non_bash_shell_tool_not_split() {
+        let body = "$ date +%s.%N\n1783259155.445901000\n";
+        let (prefix, remainder) = split_bash_echo_prefix(body, "web-scrape");
+        assert_eq!(prefix, "");
+        assert_eq!(remainder, body);
+    }
+
+    #[test]
+    fn body_without_dollar_prefix_not_split() {
+        let body = "no echo line here\nsome output\n";
+        let (prefix, remainder) = split_bash_echo_prefix(body, "bash");
+        assert_eq!(prefix, "");
+        assert_eq!(remainder, body);
+    }
+
+    #[test]
+    fn body_without_newline_not_split() {
+        // No trailing newline after the echo line — nothing to safely split off.
+        let body = "$ date +%s.%N";
+        let (prefix, remainder) = split_bash_echo_prefix(body, "bash");
+        assert_eq!(prefix, "");
+        assert_eq!(remainder, body);
     }
 }
 

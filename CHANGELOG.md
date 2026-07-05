@@ -179,6 +179,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `0.5` as the fallthrough arm and no real MCP tool id has that literal prefix. Migration step
   76 adds a commented `high_gain_tools = []` advisory under `[tools.utility]`; default is an
   empty list, so existing configs are unaffected. (#5659)
+- `fix(sanitizer,core)`: tool output PII scrubbing ran on the fully spotlight-wrapped
+  `<tool-output>`/`<external-data>` string (`sanitize_tool_output`,
+  `crates/zeph-core/src/agent/tool_execution/sanitize.rs`) instead of on the raw payload,
+  so the regex/NER scan could redact structural wrapper text — the tool identifier in the
+  `name`/`ref` attribute got misclassified and replaced with `[PII:USERNAME]`-style markers
+  (#5647), and command-echo/preamble noise around the actual output confused the NER model.
+  Combined with `PHONE_RE` (`crates/zeph-sanitizer/src/pii.rs`) matching any bare,
+  undelimited run of 10 digits — including Unix epoch timestamps, PIDs, and byte counts —
+  ordinary tool output such as `date +%s.%N`'s timestamp was corrupted into
+  `[PII:phone]` before ever reaching the LLM, causing the agent to falsely report that the
+  command had failed (#5702). PII scrubbing now runs on the raw tool-output body before
+  `ContentSanitizer::sanitize` wraps it, so the tool identifier and wrapper markup never
+  enter the PII scan; `PHONE_RE` now requires at least one delimiter (a separator between
+  digit groups, or a closing parenthesis after the area code) so a bare 10-digit run is no
+  longer treated as a phone number, while `555-123-4567`, `(555) 123-4567`,
+  `+1 555 123 4567`, and `555.123.4567` are still detected. The reorder alone stopped the
+  wrapper from being scanned, but the `bash`/`shell` command-echo line itself (`"$
+  {command}\n"`, prepended to real output by `crates/zeph-tools/src/shell/mod.rs`) is
+  Zeph-generated text, not command output, and symbol-heavy tokens in it (e.g. `+%s.%N`)
+  could still be NER-misclassified as `[PII:PASSWORD]`-style markers. A new
+  `split_bash_echo_prefix` helper (`sanitize.rs`) now splits that literal echo line off
+  before PII scrubbing and reattaches it unscanned — deliberately narrower than exempting
+  the tool's entire output (as the ML injection classifier's `is_internal_tool` does),
+  since real `bash`/`shell` command output (e.g. `cat customer_data.csv`) can legitimately
+  contain real PII and must remain fully scanned.
 - `fix(llm)`: `OpenAiProvider::chat_with_tools` (`crates/zeph-llm/src/openai/mod.rs`) sent its
   request directly via `.send().await?` with a manual one-shot 429 special case, instead of
   going through the shared `send_with_retry` helper used by every other request path on the
