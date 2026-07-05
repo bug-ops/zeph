@@ -19,13 +19,19 @@ pub enum ComponentStatus {
 }
 
 #[non_exhaustive]
-/// Error type for daemon component task failures.
+/// Error type for daemon component task failures and pid file guard acquisition.
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
     #[error("task error: {0}")]
     Task(String),
     #[error("shutdown error: {0}")]
     Shutdown(String),
+    #[error(
+        "another daemon instance is already running (PID {pid}); stop it before starting a new one"
+    )]
+    AlreadyRunning { pid: u32 },
+    #[error("pid file error: {0}")]
+    PidFile(#[from] std::io::Error),
 }
 
 pub struct ComponentHandle {
@@ -210,6 +216,125 @@ pub fn remove_pid_file(path: &str) -> std::io::Result<()> {
     }
 }
 
+/// Exclusive, `flock(2)`-backed guard on the daemon's pid file.
+///
+/// Replaces the previous check-then-act sequence (read pid file, check liveness, remove if
+/// stale, then write) with a single atomic lock acquisition: only one process can ever hold the
+/// advisory lock on the pid file, so a second concurrent `--daemon` invocation fails immediately
+/// with [`DaemonError::AlreadyRunning`] instead of racing the first to write the file. Dropping
+/// the guard unlinks the pid file and releases the lock.
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_core::daemon::PidGuard;
+///
+/// let guard = PidGuard::acquire("/tmp/zeph-daemon.pid").expect("no other instance running");
+/// // ... run the daemon ...
+/// drop(guard); // releases the lock and removes the pid file
+/// ```
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct PidGuard {
+    #[allow(dead_code)] // held for its Drop impl (closes fd, releasing the flock)
+    fd: rustix::fd::OwnedFd,
+    path: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl PidGuard {
+    /// Acquire an exclusive lock on the pid file at `path`, creating it if necessary, and write
+    /// the current process id into it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DaemonError::AlreadyRunning`] if another process already holds the lock, or
+    /// [`DaemonError::PidFile`] for filesystem failures.
+    pub fn acquire(path: &str) -> Result<Self, DaemonError> {
+        use rustix::fs::{FlockOperation, Mode, OFlags};
+
+        let expanded = expand_tilde(path);
+        let path = std::path::Path::new(&expanded);
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let fd = rustix::fs::open(
+            path,
+            OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o644),
+        )
+        .map_err(std::io::Error::from)?;
+
+        rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive).map_err(|e| {
+            if e == rustix::io::Errno::WOULDBLOCK {
+                let pid = read_pid_file(path.to_string_lossy().as_ref()).unwrap_or(0);
+                DaemonError::AlreadyRunning { pid }
+            } else {
+                DaemonError::PidFile(e.into())
+            }
+        })?;
+
+        rustix::fs::ftruncate(&fd, 0).map_err(std::io::Error::from)?;
+        rustix::io::write(&fd, std::process::id().to_string().as_bytes())
+            .map_err(std::io::Error::from)?;
+
+        Ok(Self {
+            fd,
+            path: path.to_owned(),
+        })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for PidGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Exclusive guard on the daemon's pid file (non-Unix fallback).
+///
+/// `flock(2)` is unavailable outside Unix, so this falls back to the create-then-check
+/// sequence: [`write_pid_file`] already uses an atomic exclusive create, so two processes
+/// racing to start fresh are still serialized correctly; only recovery from a stale pid file
+/// left by a crashed process re-opens a (narrow) TOCTOU window between the liveness check and
+/// the write.
+#[cfg(not(unix))]
+#[derive(Debug)]
+pub struct PidGuard {
+    path: String,
+}
+
+#[cfg(not(unix))]
+impl PidGuard {
+    /// Acquire the pid file guard at `path`, removing a stale (dead-process) file first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DaemonError::AlreadyRunning`] if the existing pid file names a live process, or
+    /// [`DaemonError::PidFile`] for filesystem failures.
+    pub fn acquire(path: &str) -> Result<Self, DaemonError> {
+        if let Ok(existing_pid) = read_pid_file(path) {
+            if is_process_alive(existing_pid) {
+                return Err(DaemonError::AlreadyRunning { pid: existing_pid });
+            }
+            remove_pid_file(path)?;
+        }
+        write_pid_file(path)?;
+        Ok(Self {
+            path: path.to_owned(),
+        })
+    }
+}
+
+#[cfg(not(unix))]
+impl Drop for PidGuard {
+    fn drop(&mut self) {
+        let _ = remove_pid_file(&self.path);
+    }
+}
+
 fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/")
         && let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
@@ -253,6 +378,35 @@ mod tests {
     #[test]
     fn remove_nonexistent_pid_file_ok() {
         assert!(remove_pid_file("/tmp/nonexistent_zeph_test.pid").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_guard_acquire_writes_pid_and_removes_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("guard.pid");
+        let path_str = path.to_string_lossy().to_string();
+
+        let guard = PidGuard::acquire(&path_str).expect("acquire should succeed");
+        let pid = read_pid_file(&path_str).expect("pid file must exist");
+        assert_eq!(pid, std::process::id());
+        drop(guard);
+        assert!(!path.exists(), "pid file must be removed on drop");
+    }
+
+    /// Regression test for #5679: a second concurrent acquisition attempt on a pid file
+    /// already locked by a live guard must fail closed with `AlreadyRunning`, not silently
+    /// overwrite the file or proceed.
+    #[cfg(unix)]
+    #[test]
+    fn pid_guard_second_acquire_fails_with_already_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("guard-race.pid");
+        let path_str = path.to_string_lossy().to_string();
+
+        let _first = PidGuard::acquire(&path_str).expect("first acquire must succeed");
+        let err = PidGuard::acquire(&path_str).expect_err("second acquire must fail");
+        assert_matches!(err, DaemonError::AlreadyRunning { .. });
     }
 
     #[test]

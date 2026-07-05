@@ -156,6 +156,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `LlmError::Unavailable` when the last-seen status before exhaustion was 503, and
   `LlmError::RateLimited` only when it was 429, so the router takes the correct
   retry-vs-fallback branch. (#5685)
+- `fix(core)`: `run_daemon` (`src/daemon.rs`) guarded against a second `zeph --daemon`
+  instance with a check-then-act sequence — read the pid file, check liveness, remove if
+  stale, then write — that let two daemons started concurrently both pass the liveness
+  check before either wrote, and treated any `write_pid_file` failure as a non-fatal
+  warning, letting startup continue with no single-instance protection at all. Added
+  `DaemonError::AlreadyRunning` and `daemon::PidGuard` (`crates/zeph-core/src/daemon.rs`),
+  an exclusive `flock(2)`-backed guard mirroring `zeph-scheduler::pidfile::PidFile::acquire`:
+  mutual exclusion now comes entirely from kernel lock atomicity instead of a separate
+  read-check-remove-write sequence, closing the TOCTOU window. A second instance now fails
+  fast with a clear "another daemon instance is already running" error and non-zero exit
+  code instead of silently starting a duplicate set of background supervisors against the
+  same session state. Non-Unix builds keep the previous check-then-write sequence but now
+  propagate `write_pid_file` failure as fatal rather than logging and continuing. (#5679)
 - `fix(channels)`: `JsonCliChannel::try_recv` (`crates/zeph-channels/src/json_cli.rs`) did not
   recognize `exit`/`quit`/`/exit`/`/quit` the way `recv` already did, so an exit command
   arriving via the queued/merge path (`Agent::drain_channel`'s 500ms merge window in

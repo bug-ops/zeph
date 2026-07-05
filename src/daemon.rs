@@ -265,33 +265,15 @@ pub(crate) async fn run_daemon(
     vault_key: Option<&std::path::Path>,
     vault_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    use zeph_core::daemon::{
-        ComponentHandle, DaemonSupervisor, is_process_alive, read_pid_file, remove_pid_file,
-        write_pid_file,
-    };
+    use zeph_core::daemon::{ComponentHandle, DaemonSupervisor, PidGuard};
 
     let app = AppBuilder::new(config_path, vault, vault_key, vault_path).await?;
     let config = app.config();
 
-    // Check for a stale or live PID file before writing a new one.
-    if let Ok(existing_pid) = read_pid_file(&config.daemon.pid_file) {
-        if is_process_alive(existing_pid) {
-            anyhow::bail!(
-                "another daemon instance is already running (PID {existing_pid}); \
-                 stop it before starting a new one"
-            );
-        }
-        tracing::info!(
-            pid = existing_pid,
-            "removing stale PID file from previous run"
-        );
-        if let Err(e) = remove_pid_file(&config.daemon.pid_file) {
-            tracing::warn!("failed to remove stale PID file: {e}");
-        }
-    }
-    if let Err(e) = write_pid_file(&config.daemon.pid_file) {
-        tracing::warn!("failed to write PID file: {e}");
-    }
+    // Atomically acquire the daemon pid file lock — fails fast with `AlreadyRunning` if another
+    // instance already holds it, instead of racing it via a separate check-then-write sequence.
+    let pid_guard = PidGuard::acquire(&config.daemon.pid_file)
+        .map_err(|e| anyhow::anyhow!("failed to acquire daemon pid file lock: {e}"))?;
     tracing::info!(pid_file = %config.daemon.pid_file, "daemon started");
 
     let (provider, status_tx, _status_rx) = app.build_provider().await?;
@@ -977,7 +959,6 @@ pub(crate) async fn run_daemon(
         );
     }
 
-    let pid_file = config.daemon.pid_file.clone();
     let mut supervisor = DaemonSupervisor::new(&config.daemon, shutdown_rx.clone());
 
     let shutdown_tx_signal = shutdown_tx.clone();
@@ -1041,9 +1022,8 @@ pub(crate) async fn run_daemon(
     shutdown_mcp_manager.shutdown_all_shared().await;
     agent.shutdown().await;
 
-    if let Err(e) = remove_pid_file(&pid_file) {
-        tracing::warn!("failed to remove PID file: {e}");
-    }
+    // Dropping the guard releases the flock and unlinks the pid file.
+    drop(pid_guard);
 
     Ok(())
 }

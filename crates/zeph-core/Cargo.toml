@@ -89,6 +89,10 @@ zeph-vault.workspace = true
 zeroize.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
+# Advisory `flock(2)` locking for the daemon pid file guard (`daemon::PidGuard`); Unix only.
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs", "std"] }
+
 [[bench]]
 name = "context_building"
 harness = false

@@ -10636,6 +10636,7 @@ dependencies = [
  "regex",
  "reqwest 0.13.4",
  "rmcp",
+ "rustix 1.1.4",
  "schemars 1.2.1",
  "serde",
  "serde_json",
