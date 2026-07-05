@@ -14,7 +14,7 @@ use zeph_experiments::{
 
 impl<C: Channel> Agent<C> {
     /// Build an [`ExperimentEngine`] from validated config, returning `Err(message)` on failure.
-    fn build_experiment_engine(
+    async fn build_experiment_engine(
         &mut self,
         config: crate::config::ExperimentConfig,
     ) -> Result<ExperimentEngine, String> {
@@ -24,8 +24,13 @@ impl<C: Channel> Agent<C> {
             return Err("experiments.benchmark_file is not set in config.".to_owned());
         };
 
-        let benchmark = BenchmarkSet::from_file(&benchmark_path)
-            .map_err(|e| format!("Failed to load benchmark: {e}"))?;
+        // Load benchmark via spawn_blocking: from_file uses blocking std::fs I/O
+        // (canonicalize, metadata, read_to_string), which must not run on the async worker.
+        let benchmark =
+            tokio::task::spawn_blocking(move || BenchmarkSet::from_file(&benchmark_path))
+                .await
+                .map_err(|e| format!("Benchmark load task panicked: {e}"))?
+                .map_err(|e| format!("Failed to load benchmark: {e}"))?;
 
         let provider_arc = Arc::new(self.provider.clone());
         // Use a dedicated eval provider when `eval_provider` is configured, so the judge is
@@ -71,7 +76,7 @@ impl<C: Channel> Agent<C> {
                 let max_override = args
                     .strip_prefix("start")
                     .and_then(|s| s.trim().parse::<u32>().ok());
-                Ok(self.experiment_start(max_override))
+                Ok(self.experiment_start(max_override).await)
             }
             _ => Ok(
                 "Unknown /experiment subcommand. Available: /experiment start [N], \
@@ -193,7 +198,7 @@ impl<C: Channel> Agent<C> {
         Ok(msg)
     }
 
-    fn experiment_start(&mut self, max_override: Option<u32>) -> String {
+    async fn experiment_start(&mut self, max_override: Option<u32>) -> String {
         if self
             .services
             .experiments
@@ -215,7 +220,7 @@ impl<C: Channel> Agent<C> {
             return format!("Experiment config is invalid: {e}");
         }
         let max_n = config.max_experiments;
-        let engine = match self.build_experiment_engine(config) {
+        let engine = match self.build_experiment_engine(config).await {
             Ok(e) => e,
             Err(msg) => return msg,
         };
@@ -396,8 +401,8 @@ mod tests {
     /// Uses a real temporary benchmark TOML so the code reaches the `.with_tolerate_subject_errors`
     /// call site. Success (no error returned) confirms the builder chain is invoked correctly;
     /// the underlying field value is passed through without transformation.
-    #[test]
-    fn build_experiment_engine_forwards_tolerate_subject_errors() {
+    #[tokio::test]
+    async fn build_experiment_engine_forwards_tolerate_subject_errors() {
         use std::io::Write as _;
         use zeph_config::ExperimentConfig;
 
@@ -413,10 +418,35 @@ mod tests {
 
         let mut agent = make_agent();
         // build_experiment_engine must succeed and silently forward the flag to the Evaluator.
-        let result = agent.build_experiment_engine(config);
+        let result = agent.build_experiment_engine(config).await;
         assert!(
             result.is_ok(),
             "build_experiment_engine must succeed with a valid benchmark file"
         );
+    }
+
+    /// Verify that a missing benchmark file surfaces its error through the
+    /// `spawn_blocking(...).await.map_err(...)?.map_err(...)?` chain, rather than being
+    /// swallowed or turned into a panic message by the async conversion.
+    #[tokio::test]
+    async fn build_experiment_engine_missing_benchmark_file_surfaces_error() {
+        use zeph_config::ExperimentConfig;
+
+        let config = ExperimentConfig {
+            enabled: true,
+            benchmark_file: Some(std::path::PathBuf::from("/nonexistent/path/benchmark.toml")),
+            ..ExperimentConfig::default()
+        };
+
+        let mut agent = make_agent();
+        match agent.build_experiment_engine(config).await {
+            Err(msg) => assert!(
+                msg.contains("Failed to load benchmark"),
+                "expected benchmark-load error to surface through spawn_blocking, got: {msg}"
+            ),
+            Ok(_) => {
+                panic!("expected build_experiment_engine to fail for a missing benchmark file")
+            }
+        }
     }
 }
