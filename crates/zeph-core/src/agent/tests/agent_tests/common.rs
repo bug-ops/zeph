@@ -95,6 +95,11 @@ pub(crate) struct MockChannel {
     pub(crate) tool_starts: Arc<Mutex<Vec<ToolStartEvent>>>,
     pub(crate) exit_supported: bool,
     pub(crate) input_sanitization_required: bool,
+    /// When `true`, `send()` fails with `ChannelError::ChannelClosed` instead of recording the
+    /// message — simulates a disconnected adapter (closed mpsc receiver, dropped
+    /// Telegram/Discord connection) for testing that callers do not depend on the notification
+    /// send succeeding (#5717).
+    pub(crate) fail_send: bool,
 }
 
 impl MockChannel {
@@ -108,7 +113,14 @@ impl MockChannel {
             tool_starts: Arc::new(Mutex::new(Vec::new())),
             exit_supported: true,
             input_sanitization_required: false,
+            fail_send: false,
         }
+    }
+
+    /// Make every call to `Channel::send` fail with `ChannelError::ChannelClosed` (#5717).
+    pub(crate) fn with_failing_send(mut self) -> Self {
+        self.fail_send = true;
+        self
     }
 
     pub(crate) fn without_exit_support(mut self) -> Self {
@@ -163,6 +175,9 @@ impl Channel for MockChannel {
     }
 
     async fn send(&mut self, text: &str) -> Result<(), crate::channel::ChannelError> {
+        if self.fail_send {
+            return Err(crate::channel::ChannelError::ChannelClosed);
+        }
         self.sent.lock().unwrap().push(text.to_string());
         Ok(())
     }
@@ -226,6 +241,26 @@ impl MockToolExecutor {
 
     pub(crate) fn no_tools() -> Self {
         Self::new(vec![Ok(None)])
+    }
+
+    /// Executor that returns a single successful tool output with the given summary.
+    pub(crate) fn with_output(
+        tool_name: impl Into<zeph_tools::ToolName>,
+        summary: impl Into<String>,
+    ) -> Self {
+        let output = ToolOutput {
+            tool_name: tool_name.into(),
+            summary: summary.into(),
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+            claim_source: None,
+        };
+        Self::new(vec![Ok(Some(output))])
     }
 
     /// Attach tool definitions returned by `tool_definitions()`/`tool_definitions_erased()`, for

@@ -820,6 +820,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   worker thread rather than being bounded by the timeout. `refresh_git_branch` is now `async`
   and dispatches the git subprocess call via `tokio::task::spawn_blocking`, keeping the tokio
   worker thread free while awaiting the blocking-pool result. (#5670)
+- `fix(tools,core)`: `UtilityScorer::recommend_action`'s `Retrieve` rule (gain `>= 0.5` tier,
+  covering `find_path`/`list_directory`/`grep`/`glob`/`search_code`) skipped a tool call and
+  injected a hint mandating the LLM retry it with the same arguments — but the retry's
+  identical `(tool_id, params)` hash then scored `redundancy == 1.0`, and the redundancy rule
+  vetoed the mandated retry as a duplicate before it ever executed, stalling the tool
+  permanently and producing a fabricated "restriction" apology from the LLM (4th occurrence of
+  the Retrieve-then-redundant-Respond defect class after #2620/#5650/#5659). `UtilityScorer`
+  now tracks a per-turn set of call hashes vetoed by the `Retrieve` rule
+  (`mark_mandated_retry`/`take_mandated_retry`); `UtilityContext` gained a `mandated_retry`
+  field that `recommend_action` checks before every other rule, unconditionally allowing the
+  one mandated retry through as `ToolCall`. Also fixed a related cache-poisoning bug found
+  while testing the retry path: `apply_tier_results` (`crates/zeph-core/src/agent/tool_execution/tier_loop.rs`)
+  cached the utility gate's synthetic `[skipped]`/`[stopped]` output for any cacheable tool
+  (none of the affected tools are in the cache's deny-list), so even with the bypass in place
+  the mandated retry could still replay stale skip text from the result cache instead of
+  executing; the cache-store guard now excludes both prefixes. (#5719)
+- `fix(tools)`: `UtilityScorer::contains_tool_name` (backing both `is_exempt` and
+  `is_high_gain`) matched `high_gain_tools`/`exempt_tools` entries only case-insensitively,
+  with no normalization between the colon-separated `McpTool::qualified_name()` form
+  (`"{server_id}:{name}"`, the only form ever displayed to an operator, via the TUI's
+  `mcp:list` command) and the underscore-separated `McpTool::sanitized_id()` form
+  (`"{server_id}_{name}"`, the only form ever dispatched as `call.tool_id`). An id copied
+  straight from `mcp:list` into config therefore never matched at runtime. Both the configured
+  entries and the incoming tool id are now normalized (`:` → `_`, lowercased) before
+  comparison, so either written form matches. (#5713)
+- `fix(core)`: `Agent::cancel_tool_batch` (`crates/zeph-core/src/agent/tool_execution/tier_loop.rs`,
+  the shared cancellation-checkpoint helper introduced by #5654/#5715's dedup pass) sent the
+  `[Cancelled]` channel notification with `.await?` *before* persisting the tombstone
+  `ToolResult`s, so a channel-send failure (closed mpsc receiver, a disconnected
+  Telegram/Discord adapter) propagated immediately via `?` and skipped
+  `persist_cancelled_tool_results` entirely — reintroducing the orphaned-`tool_calls` defect
+  class already fixed 3 times over (#5464, #5513, #5646). The tombstone persist now runs first,
+  and a subsequent notification-send failure is logged rather than propagated, so it can never
+  again suppress the tombstone write. (#5717)
 
 ### Changed
 

@@ -6,7 +6,7 @@
 //! Computes a scalar utility score for each candidate tool call before execution.
 //! Calls below the configured threshold are skipped (fail-closed on scoring errors).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::LazyLock;
 
@@ -122,6 +122,16 @@ pub struct UtilityContext {
     /// command or when the user message contains an unambiguous tool-invocation phrase detected
     /// by [`has_explicit_tool_request`]. Must NOT be set from LLM call content or tool outputs.
     pub user_requested: bool,
+    /// True when this exact call is the mandated retry the `Retrieve` rule itself asked for:
+    /// the same `(tool_id, params)` call was vetoed by rule 8 earlier this turn, and the
+    /// injected system hint explicitly instructed the LLM to call it again with the same
+    /// arguments. Set via [`UtilityScorer::take_mandated_retry`].
+    ///
+    /// When `true`, `recommend_action` must not re-veto the retry through the redundancy
+    /// (`Respond`) rule — doing so fabricates a rejection despite the model correctly
+    /// complying with the gate's own hint, stalling tools like `find_path`/`list_directory`
+    /// in a doomed Retrieve-then-redundant-Respond cycle (#5719).
+    pub mandated_retry: bool,
 }
 
 #[non_exhaustive]
@@ -162,6 +172,11 @@ pub struct UtilityScorer {
     recent_calls: HashMap<u64, u32>,
     /// Count of consecutive non-`ToolCall` recommendations since the last `ToolCall` or turn reset.
     consecutive_low: usize,
+    /// Hashes of `(tool_name, params)` calls vetoed by the `Retrieve` rule this turn that are
+    /// awaiting the mandated retry the injected hint requested (#5719). Entries are consumed by
+    /// [`take_mandated_retry`](Self::take_mandated_retry) so the bypass applies exactly once per
+    /// veto — a genuine subsequent duplicate call is scored normally.
+    mandated_retries: HashSet<u64>,
 }
 
 impl UtilityScorer {
@@ -172,6 +187,7 @@ impl UtilityScorer {
             config,
             recent_calls: HashMap::new(),
             consecutive_low: 0,
+            mandated_retries: HashSet::new(),
         }
     }
 
@@ -238,14 +254,17 @@ impl UtilityScorer {
     /// Decision tree (thresholds from arXiv:2603.19896):
     /// 1. `user_requested` → always `ToolCall` (bypass policy).
     /// 2. Scoring disabled → always `ToolCall`.
-    /// 3. `score` is `None` (invalid score, scoring enabled) → `Stop` (fail-closed).
-    /// 4. `cost > 0.9` (budget nearly exhausted) → `Stop`.
-    /// 5. `redundancy == 1.0` (duplicate call) → `Respond`.
-    /// 6. `gain >= 0.7 && total >= threshold` → `ToolCall`.
-    /// 7. `gain >= 0.5 && uncertainty > 0.5` → `Retrieve`.
-    /// 8. `total < threshold && tool_calls_this_turn > 0` → `Verify`.
-    /// 9. `total >= threshold` → `ToolCall`.
-    /// 10. Default → `Respond`.
+    /// 3. `mandated_retry` → always `ToolCall` — this is the retry the `Retrieve` rule (8)
+    ///    itself demanded via the injected hint; the gate must honor its own contract instead
+    ///    of re-vetoing compliance as a redundant duplicate (#5719).
+    /// 4. `score` is `None` (invalid score, scoring enabled) → `Stop` (fail-closed).
+    /// 5. `cost > 0.9` (budget nearly exhausted) → `Stop`.
+    /// 6. `redundancy == 1.0` (duplicate call) → `Respond`.
+    /// 7. `gain >= 0.7 && total >= threshold` → `ToolCall`.
+    /// 8. `gain >= 0.5 && uncertainty > 0.5` → `Retrieve`.
+    /// 9. `total < threshold && tool_calls_this_turn > 0` → `Verify`.
+    /// 10. `total >= threshold` → `ToolCall`.
+    /// 11. Default → `Respond`.
     #[must_use]
     pub fn recommend_action(
         &self,
@@ -258,6 +277,10 @@ impl UtilityScorer {
         }
         // Pass-through: scoring disabled → always execute.
         if !self.config.enabled {
+            return UtilityAction::ToolCall;
+        }
+        // Bypass: this call is the mandated retry the Retrieve rule itself asked for (#5719).
+        if ctx.mandated_retry {
             return UtilityAction::ToolCall;
         }
         let Some(s) = score else {
@@ -305,6 +328,26 @@ impl UtilityScorer {
     pub fn clear(&mut self) {
         self.recent_calls.clear();
         self.consecutive_low = 0;
+        self.mandated_retries.clear();
+    }
+
+    /// Marks `call` as an in-flight mandated retry after the `Retrieve` rule instructs the LLM
+    /// to call it again with the same arguments (#5719).
+    ///
+    /// Called by the tool loop when it injects the "you MUST call it again" hint. The next
+    /// occurrence of the identical call this turn bypasses the redundancy veto — see
+    /// [`take_mandated_retry`](Self::take_mandated_retry).
+    pub fn mark_mandated_retry(&mut self, call: &ToolCall) {
+        self.mandated_retries.insert(call_hash(call));
+    }
+
+    /// Returns `true` and consumes the pending mandated-retry marker for `call`, if any.
+    ///
+    /// Consuming rather than merely peeking ensures the bypass applies exactly once per
+    /// `Retrieve` veto: a genuine third identical call afterward is scored normally instead of
+    /// being exempted forever.
+    pub fn take_mandated_retry(&mut self, call: &ToolCall) -> bool {
+        self.mandated_retries.remove(&call_hash(call))
     }
 
     /// Record the recommended action and check whether the consecutive-low-utility window is
@@ -330,9 +373,17 @@ impl UtilityScorer {
     ///
     /// Shared lookup behind `is_exempt` and `is_high_gain` — both are "does a configured
     /// tool-name list contain this `tool_id`" checks and must use identical matching rules.
+    ///
+    /// Normalizes `:` to `_` on both sides before comparing (#5713): MCP tool ids are dispatched
+    /// as `McpTool::sanitized_id()` ("`{server_id}_{name}`", underscore-separated), but the only
+    /// runtime surface that lists them to an operator — the TUI `mcp:list` command — displays
+    /// `McpTool::qualified_name()` ("`{server_id}:{name}`", colon-separated). Without this
+    /// normalization, an id copied straight from `mcp:list` into config never matches the
+    /// incoming `tool_id`.
     fn contains_tool_name(list: &[String], tool_name: &str) -> bool {
-        let lower = tool_name.to_lowercase();
-        list.iter().any(|e| e.to_lowercase() == lower)
+        let normalize = |s: &str| s.to_lowercase().replace(':', "_");
+        let normalized = normalize(tool_name);
+        list.iter().any(|e| normalize(e) == normalized)
     }
 
     /// Returns `true` when `tool_name` is in the exempt list (case-insensitive).
@@ -395,6 +446,7 @@ mod tests {
             tokens_consumed: 0,
             token_budget: 1000,
             user_requested: false,
+            mandated_retry: false,
         }
     }
 
@@ -1116,6 +1168,187 @@ mod tests {
             (score.gain - 0.5).abs() < f32::EPSILON,
             "unlisted tool must keep its default_gain value, got {}",
             score.gain
+        );
+    }
+
+    // ── high_gain_tools colon/underscore dual-form matching (#5713) ─────────
+
+    #[test]
+    fn is_high_gain_matches_qualified_name_config_against_sanitized_id_call() {
+        // Operator copies the colon-separated `McpTool::qualified_name()` form from `mcp:list`
+        // into config, but the incoming tool_id is always the underscore-separated
+        // `McpTool::sanitized_id()` dispatch form.
+        let scorer = UtilityScorer::new(UtilityScoringConfig {
+            enabled: true,
+            high_gain_tools: vec!["myserver:mytool".to_owned()],
+            ..UtilityScoringConfig::default()
+        });
+        assert!(scorer.is_high_gain("myserver_mytool"));
+    }
+
+    #[test]
+    fn is_high_gain_matches_sanitized_id_config_against_qualified_name_call() {
+        // Symmetric case: config already uses the underscore form, incoming id uses colons.
+        let scorer = UtilityScorer::new(UtilityScoringConfig {
+            enabled: true,
+            high_gain_tools: vec!["myserver_mytool".to_owned()],
+            ..UtilityScoringConfig::default()
+        });
+        assert!(scorer.is_high_gain("myserver:mytool"));
+    }
+
+    #[test]
+    fn is_exempt_matches_qualified_name_config_against_sanitized_id_call() {
+        // is_exempt shares contains_tool_name with is_high_gain and must get the same fix.
+        let scorer = UtilityScorer::new(UtilityScoringConfig {
+            enabled: true,
+            exempt_tools: vec!["myserver:mytool".to_owned()],
+            ..UtilityScoringConfig::default()
+        });
+        assert!(scorer.is_exempt("myserver_mytool"));
+    }
+
+    #[test]
+    fn is_high_gain_dual_form_still_case_insensitive() {
+        let scorer = UtilityScorer::new(UtilityScoringConfig {
+            enabled: true,
+            high_gain_tools: vec!["MyServer:MyTool".to_owned()],
+            ..UtilityScoringConfig::default()
+        });
+        assert!(scorer.is_high_gain("myserver_mytool"));
+        assert!(scorer.is_high_gain("MYSERVER_MYTOOL"));
+    }
+
+    #[test]
+    fn is_high_gain_dual_form_does_not_match_unrelated_tool() {
+        let scorer = UtilityScorer::new(UtilityScoringConfig {
+            enabled: true,
+            high_gain_tools: vec!["myserver:mytool".to_owned()],
+            ..UtilityScoringConfig::default()
+        });
+        assert!(!scorer.is_high_gain("otherserver_othertool"));
+    }
+
+    // ── mandated-retry bypass (#5719) ────────────────────────────────────────
+    //
+    // Reproduces the stall reported in #5719: find_path/list_directory (default_gain 0.65)
+    // trigger rule 8 (Retrieve) on a fresh first call. The injected hint tells the LLM to
+    // retry with the same arguments, but record_call() already logged the call hash, so the
+    // identical retry scores redundancy=1.0 and rule 6 (Respond) vetoes it a second time —
+    // the tool never executes and the turn ends with a fabricated "restriction" apology.
+
+    #[test]
+    fn mark_and_take_mandated_retry_is_consumed_exactly_once() {
+        let mut scorer = UtilityScorer::new(default_config());
+        let call = make_call("find_path", json!({"pattern": "*.rs"}));
+
+        assert!(
+            !scorer.take_mandated_retry(&call),
+            "no marker set yet — must not report a pending retry"
+        );
+
+        scorer.mark_mandated_retry(&call);
+        assert!(
+            scorer.take_mandated_retry(&call),
+            "marker set — first take must report the pending retry"
+        );
+        assert!(
+            !scorer.take_mandated_retry(&call),
+            "marker consumed — second take must not report a pending retry again"
+        );
+    }
+
+    #[test]
+    fn recommend_action_mandated_retry_bypasses_redundancy_veto() {
+        let scorer = UtilityScorer::new(default_config());
+        // Simulate the exact retry scenario: identical call already recorded (redundancy=1.0),
+        // which alone would trigger rule 6 (Respond).
+        let score = UtilityScore {
+            gain: 0.65,
+            cost: 0.1,
+            redundancy: 1.0,
+            uncertainty: 0.7,
+            total: 0.5,
+        };
+        let ctx = UtilityContext {
+            mandated_retry: true,
+            ..default_ctx()
+        };
+        assert_eq!(
+            scorer.recommend_action(Some(&score), &ctx),
+            UtilityAction::ToolCall,
+            "mandated retry must bypass the redundancy veto and execute"
+        );
+    }
+
+    #[test]
+    fn find_path_retrieve_then_mandated_retry_executes_not_redundant_respond() {
+        let mut scorer = UtilityScorer::new(default_config());
+        let ctx = default_ctx(); // tool_calls_this_turn: 0 -> uncertainty == 1.0
+        let call = make_call("find_path", json!({"pattern": "*.rs"}));
+
+        // First attempt: gain 0.65 (>= 0.5) with high uncertainty -> Retrieve (rule 8).
+        let first_score = scorer.score(&call, &ctx).unwrap();
+        assert_eq!(
+            scorer.recommend_action(Some(&first_score), &ctx),
+            UtilityAction::Retrieve
+        );
+        // record_call() always runs regardless of the recommended action (mirrors
+        // compute_utility_actions in tier_loop.rs), and the tool loop marks the call as an
+        // in-flight mandated retry when it injects the "you MUST call it again" hint.
+        scorer.record_call(&call);
+        scorer.mark_mandated_retry(&call);
+
+        // Without the fix: the retry's redundancy is 1.0 (same hash already recorded), which
+        // would trigger rule 6 (Respond) — reproducing the fabricated-restriction stall.
+        let retry_ctx = UtilityContext {
+            mandated_retry: scorer.take_mandated_retry(&call),
+            ..default_ctx()
+        };
+        assert!(
+            retry_ctx.mandated_retry,
+            "retry must be recognized as mandated"
+        );
+        let retry_score = scorer.score(&call, &retry_ctx).unwrap();
+        assert!(
+            (retry_score.redundancy - 1.0).abs() < f32::EPSILON,
+            "retry is indeed flagged redundant by the raw score — the bypass must come from \
+             recommend_action, not from suppressing the redundancy component"
+        );
+        assert_eq!(
+            scorer.recommend_action(Some(&retry_score), &retry_ctx),
+            UtilityAction::ToolCall,
+            "mandated retry must execute instead of being re-vetoed as a redundant duplicate"
+        );
+
+        // A genuine third identical call afterward (not requested by any hint) is scored
+        // normally again — the bypass must not persist beyond the one mandated retry.
+        scorer.record_call(&call);
+        let third_ctx = UtilityContext {
+            mandated_retry: scorer.take_mandated_retry(&call),
+            ..default_ctx()
+        };
+        assert!(
+            !third_ctx.mandated_retry,
+            "marker was consumed by the mandated retry — a third call is not exempted"
+        );
+        let third_score = scorer.score(&call, &third_ctx).unwrap();
+        assert_eq!(
+            scorer.recommend_action(Some(&third_score), &third_ctx),
+            UtilityAction::Respond,
+            "a genuine third identical call must be treated as a redundant duplicate"
+        );
+    }
+
+    #[test]
+    fn clear_resets_mandated_retries() {
+        let mut scorer = UtilityScorer::new(default_config());
+        let call = make_call("find_path", json!({}));
+        scorer.mark_mandated_retry(&call);
+        scorer.clear();
+        assert!(
+            !scorer.take_mandated_retry(&call),
+            "clear() must reset mandated-retry state at turn start"
         );
     }
 

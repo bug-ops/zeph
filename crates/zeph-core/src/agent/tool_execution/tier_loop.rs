@@ -77,11 +77,15 @@ impl<C: Channel> Agent<C> {
         Ok(false)
     }
 
-    /// Resets skill env, records the cancellation, sends the `[Cancelled]` notice, and
-    /// persists the tombstone tool results — the fixed sequence every cancellation
-    /// checkpoint in this file must follow (#5654). Skipping or reordering a step here
-    /// has previously left orphaned `ToolUse` messages with no matching `ToolResult`
-    /// (#5464, #5513, #5646) — see the recurring defect-class notes in issue history.
+    /// Resets skill env, records the cancellation, persists the tombstone tool results, and
+    /// sends the `[Cancelled]` notice — the fixed sequence every cancellation checkpoint in
+    /// this file must follow (#5654). Skipping or reordering a step here has previously left
+    /// orphaned `ToolUse` messages with no matching `ToolResult` (#5464, #5513, #5646) — see
+    /// the recurring defect-class notes in issue history.
+    ///
+    /// The tombstone persist runs before the notification send and its failure is logged
+    /// rather than propagated: a closed/dropped channel receiver or disconnected adapter must
+    /// never skip the tombstone and reintroduce the orphaned-`tool_calls` defect (#5717).
     async fn cancel_tool_batch(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
@@ -90,8 +94,13 @@ impl<C: Channel> Agent<C> {
         self.tool_executor.set_skill_env(None);
         tracing::info!("{log_msg}");
         self.update_metrics(|m| m.cancellations += 1);
-        self.channel.send("[Cancelled]").await?;
         self.persist_cancelled_tool_results(tool_calls, None).await;
+        if let Err(e) = self.channel.send("[Cancelled]").await {
+            tracing::warn!(
+                error = %e,
+                "cancel_tool_batch: failed to notify channel of cancellation"
+            );
+        }
         Ok(())
     }
 
@@ -623,11 +632,20 @@ impl<C: Channel> Agent<C> {
                 actions.push(zeph_tools::UtilityAction::ToolCall);
                 continue;
             }
+            // Consume any pending mandated-retry marker before scoring: a call that was vetoed
+            // by the Retrieve rule earlier this turn, and that the injected hint told the LLM
+            // to retry with the same arguments, must not be re-vetoed as a redundant duplicate
+            // when the LLM complies (#5719).
+            let mandated_retry = self
+                .tool_orchestrator
+                .utility_scorer
+                .take_mandated_retry(call);
             let ctx = zeph_tools::UtilityContext {
                 tool_calls_this_turn: tool_calls_this_turn + idx,
                 tokens_consumed,
                 token_budget,
                 user_requested: explicit_request,
+                mandated_retry,
             };
             let score = self.tool_orchestrator.utility_scorer.score(call, &ctx);
             let action = self
@@ -1455,6 +1473,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         idx: usize,
         tc: &zeph_llm::provider::ToolUseRequest,
+        call: &ToolCall,
         pending_system_hints: &mut Vec<String>,
     ) -> Result<Option<(usize, ToolExecFut)>, crate::agent::error::AgentError> {
         if self.tool_orchestrator.has_retryable_failure_this_turn() {
@@ -1485,6 +1504,11 @@ impl<C: Channel> Agent<C> {
              the '{}' tool again with the same arguments.",
             tc.name, tc.name
         ));
+        // The hint above mandates a retry of this exact call — mark it so the utility gate
+        // does not re-veto the compliant retry as a redundant duplicate (#5719).
+        self.tool_orchestrator
+            .utility_scorer
+            .mark_mandated_retry(call);
         Ok(Some(ready_fut(
             idx,
             skipped_output(
@@ -1502,6 +1526,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         idx: usize,
         tc: &zeph_llm::provider::ToolUseRequest,
+        call: &ToolCall,
         utility_actions: &[zeph_tools::UtilityAction],
         pending_system_hints: &mut Vec<String>,
     ) -> Result<Option<(usize, ToolExecFut)>, crate::agent::error::AgentError> {
@@ -1524,7 +1549,7 @@ impl<C: Channel> Agent<C> {
                 )))
             }
             zeph_tools::UtilityAction::Retrieve => {
-                self.handle_retrieve_action(idx, tc, pending_system_hints)
+                self.handle_retrieve_action(idx, tc, call, pending_system_hints)
                     .await
             }
             zeph_tools::UtilityAction::Verify => {
@@ -1618,6 +1643,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         idx: usize,
         tc: &zeph_llm::provider::ToolUseRequest,
+        call: &ToolCall,
         has_failed_dep: bool,
         quota_blocked: bool,
         pre_exec_blocked: &[bool],
@@ -1679,7 +1705,7 @@ impl<C: Channel> Agent<C> {
             )));
         }
         if let Some(fut) = self
-            .handle_utility_gate(idx, tc, utility_actions, pending_system_hints)
+            .handle_utility_gate(idx, tc, call, utility_actions, pending_system_hints)
             .await?
         {
             let reason = format!(
@@ -1864,6 +1890,7 @@ impl<C: Channel> Agent<C> {
                 .check_call_gates(
                     idx,
                     tc,
+                    call,
                     has_failed_dep,
                     quota_blocked,
                     pre_exec_blocked,
@@ -2030,11 +2057,17 @@ impl<C: Channel> Agent<C> {
                 failed_ids.insert(tool_calls[idx].id.clone());
             }
 
-            // Store successful, non-cached results in the tool result cache.
+            // Store successful, non-cached results in the tool result cache. Utility-gate
+            // synthetic outputs ("[skipped]"/"[stopped]") are never real execution results and
+            // must not be cached: caching one would make a later mandated retry (#5719) replay
+            // the stale skip text under the same args hash instead of actually executing the
+            // tool, silently reintroducing the exact stall the mandated-retry bypass fixes.
             if !is_failed
                 && cache_hits[idx].is_none()
                 && zeph_tools::is_cacheable(tool_calls[idx].name.as_str())
                 && let Ok(Some(ref out)) = result
+                && !out.summary.starts_with("[skipped]")
+                && !out.summary.starts_with("[stopped]")
             {
                 let key =
                     zeph_tools::CacheKey::new(tool_calls[idx].name.to_string(), args_hashes[idx]);
@@ -3262,6 +3295,13 @@ mod tests {
         }
     }
 
+    fn make_tool_call(name: &str) -> ToolCall {
+        ToolCall {
+            tool_id: zeph_common::ToolName::new(name),
+            ..Default::default()
+        }
+    }
+
     fn make_agent_with_shadow(enabled: bool) -> Agent<crate::testing::MockChannel> {
         use crate::testing::{MockChannel, MockToolExecutor, mock_provider};
         use zeph_skills::registry::SkillRegistry;
@@ -3459,7 +3499,7 @@ mod tests {
         let tc = make_tool_req("bash");
         let mut hints = Vec::new();
         let result = agent
-            .handle_retrieve_action(0, &tc, &mut hints)
+            .handle_retrieve_action(0, &tc, &make_tool_call("bash"), &mut hints)
             .await
             .unwrap();
 
@@ -3497,7 +3537,7 @@ mod tests {
         let tc = make_tool_req("bash");
         let mut hints = Vec::new();
         let result = agent
-            .handle_retrieve_action(0, &tc, &mut hints)
+            .handle_retrieve_action(0, &tc, &make_tool_call("bash"), &mut hints)
             .await
             .unwrap();
 
@@ -3539,7 +3579,7 @@ mod tests {
         let tc = make_tool_req("bash");
         let mut hints = Vec::new();
         let result = agent
-            .handle_retrieve_action(0, &tc, &mut hints)
+            .handle_retrieve_action(0, &tc, &make_tool_call("bash"), &mut hints)
             .await
             .unwrap();
 
@@ -4368,6 +4408,164 @@ mod tests {
             assert!(
                 has_tombstone,
                 "last message must be the [Cancelled] tombstone for id-e2e, got: {last:?}"
+            );
+        }
+
+        /// #5717 regression: `cancel_tool_batch` previously ran
+        /// `self.channel.send("[Cancelled]").await?` before `persist_cancelled_tool_results`,
+        /// using `?` to propagate any send failure immediately. A channel-send failure (closed
+        /// mpsc receiver, dropped Telegram/Discord connection) therefore short-circuited the
+        /// function and skipped the tombstone persist entirely, leaving the in-flight `ToolUse`
+        /// batch without a matching `ToolResult` — the same orphaned-`tool_calls` defect class
+        /// already fixed 3 times over (#5464, #5513, #5646). The fix persists the tombstone
+        /// first and only logs (never propagates) a subsequent send failure.
+        #[tokio::test]
+        async fn cancel_tool_batch_persists_tombstone_even_when_channel_send_fails() {
+            let provider = mock_provider(vec![]);
+            let channel = MockChannel::new(vec![]).with_failing_send();
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::no_tools();
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+            let tool_calls = vec![zeph_llm::provider::ToolUseRequest {
+                id: "id-cancel".to_owned(),
+                name: "bash".to_owned().into(),
+                input: serde_json::json!({}),
+            }];
+
+            let result = agent
+                .cancel_tool_batch(&tool_calls, "test cancellation with failing channel")
+                .await;
+            assert!(
+                result.is_ok(),
+                "cancel_tool_batch must not fail even when channel.send fails, got {result:?}"
+            );
+
+            let matches = tool_result_ids(&agent, "id-cancel");
+            assert_eq!(
+                matches.len(),
+                1,
+                "tombstone must be persisted even when the notification send fails, got {}",
+                matches.len()
+            );
+        }
+    }
+
+    mod mandated_retry_regression_tests {
+        use super::*;
+        use crate::agent::agent_tests::*;
+
+        fn tool_result_content(agent: &Agent<MockChannel>, id: &str) -> Option<(String, bool)> {
+            agent.msg.messages.iter().find_map(|m| {
+                m.parts.iter().find_map(|p| match p {
+                    MessagePart::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    } if tool_use_id == id => Some((content.clone(), *is_error)),
+                    _ => None,
+                })
+            })
+        }
+
+        /// #5719 end-to-end regression: `find_path` (`default_gain` 0.65) triggers the
+        /// `Retrieve` rule on a fresh first call and is skipped with a hint instructing the LLM
+        /// to call it again with the same arguments. Before the fix, that mandated retry was
+        /// re-vetoed by the redundancy (`Respond`) rule on the very next round — the tool never
+        /// executed and the turn ended with a fabricated "restriction" apology. The retry must
+        /// now execute for real.
+        #[tokio::test]
+        async fn find_path_mandated_retry_executes_instead_of_redundant_respond() {
+            let provider = mock_provider(vec![]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::with_output("find_path", "src/main.rs\nsrc/lib.rs");
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent
+                .tool_orchestrator
+                .set_utility_config(zeph_tools::UtilityScoringConfig {
+                    enabled: true,
+                    ..zeph_tools::UtilityScoringConfig::default()
+                });
+
+            let args = serde_json::json!({"pattern": "*.rs"});
+            let round1 = vec![zeph_llm::provider::ToolUseRequest {
+                id: "call-1".to_owned(),
+                name: "find_path".to_owned().into(),
+                input: args.clone(),
+            }];
+            agent.handle_native_tool_calls(None, &round1).await.unwrap();
+
+            let (content1, _) =
+                tool_result_content(&agent, "call-1").expect("call-1 must have a ToolResult");
+            assert!(
+                content1.contains("[skipped]"),
+                "first call must be skipped by the Retrieve rule, got: {content1}"
+            );
+
+            // Second round: identical tool name + args under a fresh tool_use_id, as a real LLM
+            // would assign, mimicking compliance with the injected "you MUST call it again" hint.
+            let round2 = vec![zeph_llm::provider::ToolUseRequest {
+                id: "call-2".to_owned(),
+                name: "find_path".to_owned().into(),
+                input: args,
+            }];
+            agent.handle_native_tool_calls(None, &round2).await.unwrap();
+
+            let (content2, is_error2) =
+                tool_result_content(&agent, "call-2").expect("call-2 must have a ToolResult");
+            assert!(
+                content2.contains("src/main.rs") && !is_error2,
+                "mandated retry must execute for real instead of being re-vetoed as a \
+                 redundant duplicate, got: {content2}"
+            );
+        }
+
+        /// #5719 companion regression, found while writing the test above: the utility gate's
+        /// synthetic `[skipped]` output must never be written into the tool result cache.
+        /// `find_path`/`list_directory`/`grep`/`glob`/`search_code` are all cacheable (none are
+        /// in the cache's deny-list), so a Retrieve-skipped call poisoned the cache under the
+        /// real args hash — even after the mandated-retry bypass correctly recommended
+        /// `ToolCall`, the tier loop served the stale `[skipped]` text back from cache instead
+        /// of actually executing the tool, silently reintroducing the stall the bypass fixes.
+        #[tokio::test]
+        async fn retrieve_skip_output_is_never_cached() {
+            let provider = mock_provider(vec![]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::with_output("find_path", "src/main.rs");
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent
+                .tool_orchestrator
+                .set_utility_config(zeph_tools::UtilityScoringConfig {
+                    enabled: true,
+                    ..zeph_tools::UtilityScoringConfig::default()
+                });
+
+            let args = serde_json::json!({"pattern": "*.rs"});
+            let round1 = vec![zeph_llm::provider::ToolUseRequest {
+                id: "call-1".to_owned(),
+                name: "find_path".to_owned().into(),
+                input: args.clone(),
+            }];
+            agent.handle_native_tool_calls(None, &round1).await.unwrap();
+
+            let (content1, _) =
+                tool_result_content(&agent, "call-1").expect("call-1 must have a ToolResult");
+            assert!(content1.contains("[skipped]"));
+
+            let params = match &args {
+                serde_json::Value::Object(m) => m.clone(),
+                _ => serde_json::Map::new(),
+            };
+            let hash = tool_args_hash(&params);
+            let cached = agent
+                .tool_orchestrator
+                .result_cache
+                .get(&zeph_tools::CacheKey::new("find_path", hash));
+            assert!(
+                cached.is_none(),
+                "utility-gate skip output must never be cached, got: {cached:?}"
             );
         }
     }

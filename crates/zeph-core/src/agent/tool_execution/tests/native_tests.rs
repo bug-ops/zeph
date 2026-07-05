@@ -403,6 +403,7 @@ fn clear_utility_state_resets_per_turn_redundancy_tracking() {
         tokens_consumed: 0,
         token_budget: 1000,
         user_requested: false,
+        mandated_retry: false,
     };
 
     // Record the call to create redundancy state.
