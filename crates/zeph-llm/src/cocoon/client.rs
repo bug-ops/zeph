@@ -15,6 +15,12 @@ use serde::Deserialize;
 use tracing::Instrument as _;
 
 use crate::error::LlmError;
+use crate::provider::StatusTx;
+use crate::retry::send_with_retry;
+
+/// Bounded retry count for transient 429/503 responses from the sidecar,
+/// matching the Claude/OpenAI/Gemini `send_with_retry` convention.
+const MAX_RETRIES: u32 = 3;
 
 /// Health status parsed from the sidecar `/stats` endpoint.
 #[derive(Debug, Clone, Deserialize)]
@@ -159,37 +165,55 @@ impl CocoonClient {
         .await
     }
 
-    /// POST a multipart form to `{base_url}{path}`.
+    /// POST a multipart form to `{base_url}{path}`, retrying transient 429/503 responses.
     ///
     /// Used for audio transcription (`/v1/audio/transcriptions`). Attaches
     /// `X-Access-Hash` header when `access_hash` is `Some`. The request is
     /// bounded by the same LLM timeout configured at construction.
     ///
+    /// [`reqwest::multipart::Form`] cannot be cloned or reused across retries, so
+    /// `build_form` is invoked once per attempt (up to `MAX_RETRIES` retries) to
+    /// construct a fresh form.
+    ///
     /// # Errors
     ///
-    /// Returns [`LlmError::Unavailable`] on connection failure or timeout.
-    pub async fn post_multipart(
+    /// Returns [`LlmError::Http`] on connection failure, or [`LlmError::RateLimited`]
+    /// once retries against repeated 429/503 responses are exhausted.
+    pub async fn post_multipart<F>(
         &self,
         path: &str,
-        form: reqwest::multipart::Form,
-    ) -> Result<reqwest::Response, LlmError> {
+        status_tx: Option<&StatusTx>,
+        mut build_form: F,
+    ) -> Result<reqwest::Response, LlmError>
+    where
+        F: FnMut() -> Result<reqwest::multipart::Form, reqwest::Error>,
+    {
         let span = tracing::info_span!("llm.cocoon.request", path);
         async {
             let url = format!("{}{path}", self.base_url);
-            let mut req = self.client.post(&url).multipart(form);
-            if let Some(ref hash) = self.access_hash {
-                req = req.header("X-Access-Hash", hash.as_str());
-            }
-            req.send().await.map_err(|e| {
+            send_with_retry("cocoon", MAX_RETRIES, status_tx, || {
+                // Build synchronously so the `FnMut` borrow of `build_form` doesn't
+                // need to escape into the returned future.
+                let form_result = build_form();
+                async {
+                    let form = form_result?;
+                    let mut req = self.client.post(&url).multipart(form);
+                    if let Some(ref hash) = self.access_hash {
+                        req = req.header("X-Access-Hash", hash.as_str());
+                    }
+                    req.send().await
+                }
+            })
+            .await
+            .inspect_err(|e| {
                 tracing::warn!(error = %e, "cocoon multipart HTTP error");
-                LlmError::Unavailable
             })
         }
         .instrument(span)
         .await
     }
 
-    /// POST `body` to `{base_url}{path}`.
+    /// POST `body` to `{base_url}{path}`, retrying transient 429/503 responses.
     ///
     /// Attaches `X-Access-Hash` header when `access_hash` is `Some`.
     /// The full request lifecycle (connect + send + body read) is bounded by the
@@ -197,27 +221,36 @@ impl CocoonClient {
     ///
     /// # Errors
     ///
-    /// Returns [`LlmError::Unavailable`] on connection failure or timeout.
-    pub async fn post(&self, path: &str, body: &[u8]) -> Result<reqwest::Response, LlmError> {
+    /// Returns [`LlmError::Http`] on connection failure, or [`LlmError::RateLimited`]
+    /// once retries against repeated 429/503 responses are exhausted.
+    pub async fn post(
+        &self,
+        path: &str,
+        body: &[u8],
+        status_tx: Option<&StatusTx>,
+    ) -> Result<reqwest::Response, LlmError> {
         let span = tracing::info_span!("llm.cocoon.request", path);
         async {
             let url = format!("{}{path}", self.base_url);
 
-            let mut req = self
-                .client
-                .post(&url)
-                .header("Content-Type", "application/json")
-                .body(body.to_vec());
+            send_with_retry("cocoon", MAX_RETRIES, status_tx, || {
+                let mut req = self
+                    .client
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .body(body.to_vec());
 
-            if let Some(ref hash) = self.access_hash {
-                req = req.header("X-Access-Hash", hash.as_str());
-            }
+                if let Some(ref hash) = self.access_hash {
+                    req = req.header("X-Access-Hash", hash.as_str());
+                }
 
-            req.send().await.map_err(|e| {
+                req.send()
+            })
+            .await
+            .inspect_err(|e| {
                 // MINOR-1: log SSE/mid-stream drops as cocoon-specific so they are
                 // distinguishable from OpenAI failures in traces.
                 tracing::warn!(error = %e, "cocoon HTTP error (may be mid-stream drop)");
-                LlmError::Unavailable
             })
         }
         .instrument(span)

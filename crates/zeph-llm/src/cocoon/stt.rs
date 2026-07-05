@@ -103,24 +103,28 @@ impl SpeechToText for CocoonSttProvider {
         let span = tracing::info_span!("llm.cocoon.stt.transcribe", model = %self.model);
         let audio = audio.to_vec();
         let fname = filename.unwrap_or("audio.wav").to_string();
+        let model = self.model.clone();
+        let language = self.language.clone();
         Box::pin(
             async move {
-                let part = reqwest::multipart::Part::bytes(audio)
-                    .file_name(fname)
-                    .mime_str("application/octet-stream")
-                    .map_err(|e| LlmError::TranscriptionFailed(e.to_string()))?;
-
-                let mut form = reqwest::multipart::Form::new()
-                    .text("model", self.model.clone())
-                    .text("response_format", "json")
-                    .part("file", part);
-                if let Some(ref lang) = self.language {
-                    form = form.text("language", lang.clone());
-                }
-
+                // `build_form` runs once per retry attempt since `reqwest::multipart::Form`
+                // cannot be cloned or reused.
                 let resp = self
                     .client
-                    .post_multipart("/v1/audio/transcriptions", form)
+                    .post_multipart("/v1/audio/transcriptions", None, move || {
+                        let part = reqwest::multipart::Part::bytes(audio.clone())
+                            .file_name(fname.clone())
+                            .mime_str("application/octet-stream")?;
+
+                        let mut form = reqwest::multipart::Form::new()
+                            .text("model", model.clone())
+                            .text("response_format", "json")
+                            .part("file", part);
+                        if let Some(ref lang) = language {
+                            form = form.text("language", lang.clone());
+                        }
+                        Ok(form)
+                    })
                     .await?;
 
                 if !resp.status().is_success() {

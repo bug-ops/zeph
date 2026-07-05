@@ -277,7 +277,7 @@ impl LlmProvider for CocoonProvider {
 
             let response = self
                 .client
-                .post("/v1/chat/completions", &body_bytes)
+                .post("/v1/chat/completions", &body_bytes, self.status_tx.as_ref())
                 .await?;
             let status = response.status();
             let text = response.text().await.map_err(LlmError::Http)?;
@@ -317,7 +317,7 @@ impl LlmProvider for CocoonProvider {
 
             let response = self
                 .client
-                .post("/v1/chat/completions", &body_bytes)
+                .post("/v1/chat/completions", &body_bytes, self.status_tx.as_ref())
                 .await?;
             let status = response.status();
             if !status.is_success() {
@@ -350,7 +350,10 @@ impl LlmProvider for CocoonProvider {
             let body_bytes = serde_json::to_vec(&body)
                 .map_err(|e| LlmError::Other(format!("embed body serialization: {e}")))?;
 
-            let response = self.client.post("/v1/embeddings", &body_bytes).await?;
+            let response = self
+                .client
+                .post("/v1/embeddings", &body_bytes, self.status_tx.as_ref())
+                .await?;
             let status = response.status();
             let body_text = response.text().await.map_err(LlmError::Http)?;
 
@@ -407,7 +410,10 @@ impl LlmProvider for CocoonProvider {
             let body_bytes = serde_json::to_vec(&body)
                 .map_err(|e| LlmError::Other(format!("embed_batch body serialization: {e}")))?;
 
-            let response = self.client.post("/v1/embeddings", &body_bytes).await?;
+            let response = self
+                .client
+                .post("/v1/embeddings", &body_bytes, self.status_tx.as_ref())
+                .await?;
             let status = response.status();
             let body_text = response.text().await.map_err(LlmError::Http)?;
 
@@ -453,7 +459,10 @@ impl LlmProvider for CocoonProvider {
             let body = serde_json::to_vec(&self.inner.debug_request_json(messages, tools, false))
                 .map_err(|e| LlmError::Other(format!("body serialization: {e}")))?;
 
-            let response = self.client.post("/v1/chat/completions", &body).await?;
+            let response = self
+                .client
+                .post("/v1/chat/completions", &body, self.status_tx.as_ref())
+                .await?;
             let status = response.status();
             let text = response.text().await.map_err(LlmError::Http)?;
 
@@ -503,7 +512,7 @@ impl LlmProvider for CocoonProvider {
 
             let response = self
                 .client
-                .post("/v1/chat/completions", &body_bytes)
+                .post("/v1/chat/completions", &body_bytes, self.status_tx.as_ref())
                 .await?;
             let status = response.status();
             let text = response.text().await.map_err(LlmError::Http)?;

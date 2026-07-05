@@ -114,7 +114,7 @@ async fn cocoon_post_with_access_hash() {
 
     let client = make_client(&server.uri(), Some("test-hash-value".into()));
     let result = client
-        .post("/v1/chat/completions", b"{\"messages\":[]}")
+        .post("/v1/chat/completions", b"{\"messages\":[]}", None)
         .await;
     assert!(result.is_ok());
 }
@@ -136,13 +136,113 @@ async fn cocoon_post_without_access_hash() {
 
     let client = make_client(&server.uri(), None);
     let result = client
-        .post("/v1/chat/completions", b"{\"messages\":[]}")
+        .post("/v1/chat/completions", b"{\"messages\":[]}", None)
         .await;
     assert!(result.is_ok());
     let reqs = server.received_requests().await.unwrap();
     assert!(
         reqs[0].headers.get("x-access-hash").is_none(),
         "X-Access-Hash must not be present when access_hash is None"
+    );
+}
+
+/// Regression test for #5693: a transient 503 from the sidecar is retried and the
+/// request succeeds on the next attempt, instead of failing the whole call immediately.
+/// Modeled on `gonka_retry_on_endpoint_failure` in `gonka/tests.rs`.
+#[tokio::test]
+async fn cocoon_retry_on_transient_503_then_succeeds() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "0"))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(CHAT_RESPONSE),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = make_provider(&server.uri());
+    let result = provider.chat(&user_message("retry test")).await;
+    assert!(
+        result.is_ok(),
+        "expected success after retry, got: {result:?}"
+    );
+    assert_eq!(result.unwrap(), "hello");
+}
+
+/// Regression test for #5693: once retries against a persistently unavailable sidecar
+/// are exhausted, the call surfaces `LlmError::RateLimited` instead of hanging or
+/// failing on the very first 503.
+#[tokio::test]
+async fn cocoon_retry_exhausted_returns_rate_limited() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "0"))
+        .mount(&server)
+        .await;
+
+    let provider = make_provider(&server.uri());
+    let result = provider.chat(&user_message("fail test")).await;
+    assert!(
+        matches!(result, Err(crate::error::LlmError::RateLimited)),
+        "expected RateLimited after exhausting retries, got: {result:?}"
+    );
+}
+
+/// Regression test for #5693: `post_multipart` also retries a transient 503, rebuilding
+/// the (non-cloneable) `Form` once per attempt via the `build_form` closure.
+#[tokio::test]
+async fn cocoon_post_multipart_retries_and_rebuilds_form() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/audio/transcriptions"))
+        .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "0"))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/audio/transcriptions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(r#"{"text":"hello"}"#),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&server.uri(), None);
+    let build_calls = std::sync::atomic::AtomicU32::new(0);
+    let result = client
+        .post_multipart("/v1/audio/transcriptions", None, || {
+            build_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(reqwest::multipart::Form::new().text("model", "whisper-1"))
+        })
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "expected success after retry, got: {result:?}"
+    );
+    assert_eq!(
+        build_calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "build_form must be invoked once per attempt"
     );
 }
 
