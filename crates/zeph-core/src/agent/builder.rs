@@ -3225,6 +3225,91 @@ mod tests {
         );
     }
 
+    /// Verify `resolve_background_provider` matches pool entries case-insensitively (#5681):
+    /// the call site previously used a case-sensitive helper, so a config-vs-lookup case
+    /// mismatch silently fell back to the primary provider instead of the registered one.
+    #[test]
+    fn resolve_background_provider_matches_case_insensitively() {
+        use zeph_llm::provider::LlmProvider;
+
+        let snapshot = crate::agent::state::ProviderConfigSnapshot {
+            claude_api_key: None,
+            openai_api_key: None,
+            gemini_api_key: None,
+            compatible_api_keys: std::collections::HashMap::new(),
+            llm_request_timeout_secs: 30,
+            embedding_model: String::new(),
+            gonka_private_key: None,
+            gonka_address: None,
+            cocoon_access_hash: None,
+        };
+        let named_entry = ProviderEntry {
+            name: Some("Named-Test".into()),
+            model: Some("llama3.2".into()),
+            ..Default::default()
+        };
+        let agent = make_agent().with_provider_pool(vec![named_entry], snapshot);
+
+        // Looked up with different casing than the registered entry's name.
+        let resolved = agent.resolve_background_provider("named-test");
+        assert_eq!(
+            resolved.name(),
+            "ollama",
+            "resolve_background_provider must match pool entries case-insensitively"
+        );
+    }
+
+    /// Verify `resolve_background_provider` falls back to `effective_name()` (the provider-type
+    /// string) when a pool entry has no explicit `name` field — matching the convention used
+    /// throughout `[[llm.providers]]` config for single-provider-per-type setups.
+    #[test]
+    fn resolve_background_provider_matches_effective_name_fallback() {
+        use zeph_llm::provider::LlmProvider;
+
+        let snapshot = crate::agent::state::ProviderConfigSnapshot {
+            claude_api_key: None,
+            openai_api_key: None,
+            gemini_api_key: None,
+            compatible_api_keys: std::collections::HashMap::new(),
+            llm_request_timeout_secs: 30,
+            embedding_model: String::new(),
+            gonka_private_key: None,
+            gonka_address: None,
+            cocoon_access_hash: None,
+        };
+        // No explicit `name` — defaults to ProviderKind::Ollama, so effective_name() == "ollama".
+        let unnamed_entry = ProviderEntry {
+            name: None,
+            model: Some("llama3.2".into()),
+            ..Default::default()
+        };
+        let agent = make_agent().with_provider_pool(vec![unnamed_entry], snapshot);
+
+        let resolved = agent.resolve_background_provider("ollama");
+        assert_eq!(
+            resolved.name(),
+            "ollama",
+            "resolve_background_provider must match via effective_name() type-derived fallback"
+        );
+        assert_eq!(resolved.model_identifier(), "llama3.2");
+    }
+
+    /// Verify `resolve_background_provider` falls back to the primary provider (rather than
+    /// erroring) when `provider_name` does not match any pool entry — the acceptance criterion
+    /// for #5681's warn-on-miss behavior.
+    #[test]
+    fn resolve_background_provider_falls_back_on_unresolvable_name() {
+        use zeph_llm::provider::LlmProvider;
+
+        let agent = make_agent();
+        let resolved = agent.resolve_background_provider("totally-unregistered");
+        assert_eq!(
+            resolved.name(),
+            "mock",
+            "unresolvable provider name must fall back to the primary Mock provider"
+        );
+    }
+
     #[test]
     fn with_skill_matching_config_sets_fields() {
         let agent = make_agent().with_skill_matching_config(0.7, true, 0.85);

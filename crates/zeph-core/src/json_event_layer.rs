@@ -49,7 +49,7 @@ impl RuntimeLayer for JsonEventLayer {
         self.sink.emit(&JsonEvent::ToolCall {
             tool: call.tool_id.as_ref(),
             args: &args_value,
-            id: call.tool_id.as_ref(),
+            id: call.tool_call_id.as_str(),
         });
         Box::pin(std::future::ready(None))
     }
@@ -77,10 +77,82 @@ impl RuntimeLayer for JsonEventLayer {
         };
         self.sink.emit(&JsonEvent::ToolResult {
             tool: call.tool_id.as_ref(),
-            id: call.tool_id.as_ref(),
+            id: call.tool_call_id.as_str(),
             output,
             is_error,
         });
         Box::pin(std::future::ready(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    use crate::runtime_layer::LayerContext;
+
+    use super::*;
+
+    /// `Write` impl backed by a shared buffer so the test can read back what `JsonEventSink`
+    /// wrote after it takes ownership of the writer.
+    #[derive(Clone)]
+    struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().write(buf)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn make_call(tool_id: &str, tool_call_id: &str) -> ToolCall {
+        ToolCall {
+            tool_id: zeph_common::ToolName::new(tool_id),
+            tool_call_id: tool_call_id.to_owned(),
+            ..Default::default()
+        }
+    }
+
+    fn emitted_ids(buf: &[u8], event_name: &str) -> Vec<String> {
+        String::from_utf8_lossy(buf)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|v| v["event"] == event_name)
+            .map(|v| v["id"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    /// Regression for #5680: `before_tool`/`after_tool` must emit `tool_call_id` (unique per
+    /// invocation) as the JSON event `id`, not `tool_id` (the tool's name, shared across every
+    /// call to the same tool in a turn). Two calls to the same tool with distinct
+    /// `tool_call_id`s must produce distinct `id` values in the emitted events.
+    #[tokio::test]
+    async fn before_and_after_tool_emit_distinct_ids_for_same_tool() {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::new(JsonEventSink::with_writer(SharedBuffer(buf.clone())));
+        let layer = JsonEventLayer::new(sink);
+        let ctx = LayerContext {
+            conversation_id: None,
+            turn_number: 0,
+        };
+
+        let call_a = make_call("shell", "call-a");
+        let call_b = make_call("shell", "call-b");
+        let ok_result: Result<Option<ToolOutput>, ToolError> = Ok(None);
+
+        layer.before_tool(&ctx, &call_a).await;
+        layer.before_tool(&ctx, &call_b).await;
+        layer.after_tool(&ctx, &call_a, &ok_result).await;
+        layer.after_tool(&ctx, &call_b, &ok_result).await;
+
+        let snapshot = buf.lock().unwrap().clone();
+        let call_ids = emitted_ids(&snapshot, "tool_call");
+        let result_ids = emitted_ids(&snapshot, "tool_result");
+
+        assert_eq!(call_ids, vec!["call-a", "call-b"]);
+        assert_eq!(result_ids, vec!["call-a", "call-b"]);
     }
 }

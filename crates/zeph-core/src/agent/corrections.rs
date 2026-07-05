@@ -131,6 +131,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     user_msg_owned,
                     assistant_snippet,
                     confidence_threshold,
+                    judge_timeout,
                     classifier_metrics_bg,
                     metrics_tx_bg,
                     memory_arc,
@@ -447,17 +448,27 @@ async fn evaluate_with_llm_classifier(
     user_msg: String,
     assistant: String,
     confidence_threshold: f32,
+    timeout: std::time::Duration,
     classifier_metrics_bg: Option<std::sync::Arc<zeph_llm::ClassifierMetrics>>,
     metrics_tx_bg: Option<tokio::sync::watch::Sender<crate::metrics::MetricsSnapshot>>,
     memory_arc: Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
     conv_id: Option<zeph_memory::ConversationId>,
     skill_name: String,
 ) {
-    match llm_classifier
-        .classify_feedback(&user_msg, &assistant, confidence_threshold)
-        .await
-    {
-        Ok(verdict) => {
+    let result = tokio::time::timeout(
+        timeout,
+        llm_classifier.classify_feedback(&user_msg, &assistant, confidence_threshold),
+    )
+    .await;
+
+    match result {
+        Err(_) => {
+            tracing::warn!(?timeout, "llm-classifier timed out");
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("llm-classifier failed: {e:#}");
+        }
+        Ok(Ok(verdict)) => {
             if let (Some(ref cm), Some(ref tx)) = (classifier_metrics_bg, metrics_tx_bg) {
                 let snap = cm.snapshot();
                 tx.send_modify(|ms| ms.classifier = snap);
@@ -482,9 +493,6 @@ async fn evaluate_with_llm_classifier(
                 )
                 .await;
             }
-        }
-        Err(e) => {
-            tracing::warn!("llm-classifier failed: {e:#}");
         }
     }
 }
@@ -534,5 +542,107 @@ async fn evaluate_with_judge(
         Err(e) => {
             tracing::warn!("judge detector failed: {e:#}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::classifier::llm::LlmClassifier;
+    use zeph_llm::mock::MockProvider;
+    use zeph_memory::semantic::SemanticMemory;
+
+    use super::evaluate_with_llm_classifier;
+
+    /// A verdict that, if not discarded by the timeout, would be recorded as a correction.
+    fn correction_verdict_json() -> String {
+        serde_json::json!({
+            "is_correction": true,
+            "kind": "explicit_rejection",
+            "confidence": 0.9,
+            "reasoning": "user said no"
+        })
+        .to_string()
+    }
+
+    async fn test_memory() -> SemanticMemory {
+        let provider = AnyProvider::Mock(MockProvider::default());
+        SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            None,
+            provider,
+            "test-model",
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Regression for #5689: an `LlmClassifier` backed by a provider that never responds in
+    /// time must not hang `evaluate_with_llm_classifier` indefinitely, and must not record a
+    /// correction for the (never-received) verdict. `MockProvider`'s artificial delay is kept
+    /// short (well above the timeout) so this test completes quickly on real wall-clock time
+    /// without needing tokio's `test-util` feature (not enabled for this crate's dev-dependencies).
+    #[tokio::test]
+    async fn evaluate_with_llm_classifier_timeout_skips_correction() {
+        let memory = Arc::new(test_memory().await);
+        let classifier = LlmClassifier::new(Arc::new(AnyProvider::Mock(
+            MockProvider::with_responses(vec![correction_verdict_json()]).with_delay(300),
+        )));
+
+        evaluate_with_llm_classifier(
+            classifier,
+            "no that's wrong".to_owned(),
+            "previous response".to_owned(),
+            0.6,
+            Duration::from_millis(20),
+            None,
+            None,
+            Some(memory.clone()),
+            None,
+            String::new(),
+        )
+        .await;
+
+        let recent = memory.sqlite().load_recent_corrections(10).await.unwrap();
+        assert!(
+            recent.is_empty(),
+            "timed-out classifier call must not record a correction"
+        );
+    }
+
+    /// Control for the test above: without a timeout in the way, the same correction verdict
+    /// is recorded. Confirms the timeout test actually exercises the `Err(_)` (elapsed) branch
+    /// rather than passing vacuously.
+    #[tokio::test]
+    async fn evaluate_with_llm_classifier_success_records_correction() {
+        let memory = Arc::new(test_memory().await);
+        let classifier = LlmClassifier::new(Arc::new(AnyProvider::Mock(
+            MockProvider::with_responses(vec![correction_verdict_json()]),
+        )));
+
+        evaluate_with_llm_classifier(
+            classifier,
+            "no that's wrong".to_owned(),
+            "previous response".to_owned(),
+            0.6,
+            Duration::from_millis(200),
+            None,
+            None,
+            Some(memory.clone()),
+            None,
+            String::new(),
+        )
+        .await;
+
+        let recent = memory.sqlite().load_recent_corrections(10).await.unwrap();
+        assert_eq!(
+            recent.len(),
+            1,
+            "non-timed-out classifier call with a correction verdict must record one correction"
+        );
     }
 }

@@ -632,6 +632,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `$query` would silently freeze at its first-seen value) — all ~620 `sql!(` invocations
   pass a string literal. Delivers the per-call-site caching acceptance criterion
   originally stated but never implemented for #2387. Closes #5431.
+- `fix(core)`: `evaluate_with_llm_classifier` (`crates/zeph-core/src/agent/corrections.rs`)
+  awaited `LlmClassifier::classify_feedback` with no timeout, unlike the sibling
+  `evaluate_with_judge` path which already bounds its LLM call. A hung or slow classification
+  provider could stall implicit-correction feedback detection indefinitely. Now wrapped in the
+  same bounded `tokio::time::timeout` used by `evaluate_with_judge`. (#5689)
+- `fix(core)`: `Agent::resolve_consolidation_provider` (`crates/zeph-core/src/agent/autodream.rs`)
+  duplicated `Agent::resolve_background_provider` (`crates/zeph-core/src/agent/learning/arise.rs`)
+  with a weaker, diverged match rule — case-sensitive `name` field comparison with no
+  `effective_name()` type-fallback and no warning logged on a failed lookup — silently
+  falling back to the primary provider for `consolidation_provider` names that only differed
+  in case or relied on the type-derived default name. Removed the duplicate method; autoDream
+  consolidation now resolves its provider via the same `resolve_background_provider` used
+  elsewhere. (#5681)
+- `fix(core)`: `--json` mode's `tool_call`/`tool_result` events emitted the tool's name
+  (e.g. `"shell"`) as the `id` field instead of the actual `tool_call_id`, making it impossible
+  for a JSON consumer to correlate a `tool_result` event with its originating `tool_call` when
+  multiple calls to the same tool occurred in one turn. Both events now emit the real
+  `tool_call_id`. (#5680)
 
 ### Changed
 
