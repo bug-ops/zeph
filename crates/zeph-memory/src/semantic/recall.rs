@@ -2303,7 +2303,9 @@ mod tests {
         .await
         .expect("failed to connect to PG");
 
-        let pg_store = crate::store::SqliteStore::from_pool(pool.clone());
+        let pg_store = crate::store::SqliteStore::from_pool(pool.clone())
+            .await
+            .unwrap();
         let cid = pg_store.create_conversation().await.unwrap();
 
         // Session starts at a fixed epoch; one message is "fresh" (created at session

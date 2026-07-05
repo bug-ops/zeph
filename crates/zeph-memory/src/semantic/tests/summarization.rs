@@ -695,6 +695,84 @@ async fn make_embed_memory_with_threshold(threshold: f32) -> super::super::Seman
     }
 }
 
+/// Like [`make_embed_memory_with_threshold`], but the returned memory's `EmbeddingStore` is
+/// tagged with `db_instance_id` and backed by `shared_vector_pool` instead of its own private
+/// `SqliteStore` pool — simulating a second physical database sharing one Qdrant instance with
+/// whatever other store(s) were also built against `shared_vector_pool` (#5742).
+///
+/// The returned memory keeps its own private `SqliteStore` for conversation/message ids, so
+/// calling `.sqlite().create_conversation()` on two memories built this way independently
+/// starts each at `conversation_id = 1` — exactly the collision scenario the issue describes.
+async fn make_embed_memory_with_db_instance(
+    threshold: f32,
+    db_instance_id: &str,
+    shared_vector_pool: zeph_db::DbPool,
+) -> super::super::SemanticMemory {
+    let mut mock = MockProvider::default();
+    mock.supports_embeddings = true;
+    // Use a non-zero unit-ish vector so cosine similarity is well-defined (not 0/0).
+    mock.embedding = {
+        let mut v = vec![0.0f32; 384];
+        v[0] = 1.0;
+        v
+    };
+    let provider = AnyProvider::Mock(mock);
+
+    let sqlite = SqliteStore::new(":memory:").await.unwrap();
+    let pool = sqlite.pool().clone();
+    let store = crate::embedding_store::EmbeddingStore::with_store(
+        Box::new(DbVectorStore::new(shared_vector_pool)),
+        pool,
+    )
+    .with_db_instance_id(db_instance_id);
+
+    super::super::SemanticMemory {
+        sqlite,
+        qdrant: Some(Arc::new(store)),
+        provider,
+        embed_provider: None,
+        embedding_model: "test-model".into(),
+        vector_weight: 0.7,
+        keyword_weight: 0.3,
+        temporal_decay: TemporalDecay::Disabled,
+        temporal_decay_half_life_days: 30,
+        mmr_reranking: MmrReranking::Disabled,
+        mmr_lambda: 0.7,
+        importance_scoring: ImportanceScoring::Disabled,
+        importance_weight: 0.15,
+        token_counter: Arc::new(TokenCounter::new()),
+        graph_store: None,
+        experience: None,
+        community_detection_failures: Arc::new(AtomicU64::new(0)),
+        graph_extraction_count: Arc::new(AtomicU64::new(0)),
+        graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+        last_qdrant_warn: Arc::new(AtomicU64::new(0)),
+        tier_boost_semantic: 1.3,
+        admission_control: None,
+        quality_gate: None,
+        key_facts_dedup_threshold: threshold,
+        embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+        retrieval_depth: 0,
+        search_prompt_template: String::new(),
+        depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        reasoning: None,
+        query_bias_correction: QueryBiasCorrection::Disabled,
+        query_bias_profile_weight: 0.25,
+        profile_centroid: tokio::sync::RwLock::new(None),
+        profile_centroid_ttl_secs: 300,
+        hebbian_reinforcement: HebbianReinforcement::Disabled,
+        hebbian_lr: 0.1,
+        hebbian_spread: crate::HelaSpreadRuntime::default(),
+        retrieval_failure_logger: None,
+        summarization_llm_timeout_secs: 60,
+        query_sensitive_cost: false,
+        five_signal: None,
+        embed_timeout: std::time::Duration::from_secs(5),
+        graph_cancel: std::sync::Mutex::new(Vec::new()),
+    }
+}
+
 #[tokio::test]
 async fn store_key_facts_first_fact_stored() {
     let memory = make_embed_memory_with_threshold(0.95).await;
@@ -756,6 +834,47 @@ async fn store_key_facts_dedup_scoped_per_conversation() {
     assert!(
         !results_b.is_empty(),
         "conversation B's own fact must not be suppressed by conversation A's near-duplicate"
+    );
+}
+
+#[tokio::test]
+async fn store_key_facts_dedup_not_falsely_matched_across_db_instances() {
+    // #5742 regression: two independent databases (own conversation_id counters, each starting
+    // at 1) share one backing vector store. Without db_instance_id in the dedup filter, db-b's
+    // fact under conversation_id=1 would be (incorrectly) treated as a near-duplicate of db-a's
+    // fact under the same conversation_id and silently skipped.
+    let shared = SqliteStore::new(":memory:").await.unwrap();
+    let shared_pool = shared.pool().clone();
+
+    let memory_a = make_embed_memory_with_db_instance(0.95, "db-a", shared_pool.clone()).await;
+    let memory_b = make_embed_memory_with_db_instance(0.95, "db-b", shared_pool.clone()).await;
+
+    let cid_a = memory_a.sqlite().create_conversation().await.unwrap();
+    let cid_b = memory_b.sqlite().create_conversation().await.unwrap();
+    assert_eq!(
+        cid_a, cid_b,
+        "both databases must independently start at conversation_id=1"
+    );
+
+    memory_a
+        .store_key_facts(cid_a, 1, &["shared fact".to_string()])
+        .await;
+    // Same mock embedding vector as db-a's fact and the same conversation_id — a dedup filter
+    // that omits db_instance_id would find db-a's fact and (incorrectly) skip storing this one.
+    memory_b
+        .store_key_facts(cid_b, 2, &["shared fact again".to_string()])
+        .await;
+
+    let results_b = memory_b
+        .search_key_facts("shared fact", 10, Some(cid_b))
+        .await
+        .unwrap();
+    // Assert on the exact text (not just non-emptiness): db-b's search filter is itself scoped by
+    // db_instance_id, so a leaked read of db-a's fact would also make `results_b` non-empty
+    // without proving db-b's own insert actually happened.
+    assert!(
+        results_b.iter().any(|f| f.contains("shared fact again")),
+        "db-b's own fact must not be suppressed by db-a's near-duplicate under the same conversation_id: {results_b:?}"
     );
 }
 
@@ -889,6 +1008,55 @@ async fn search_key_facts_scoped_excludes_other_conversation_fact() {
         "a fact stored under conversation A must be found when searching scoped to A"
     );
     assert!(results_a[0].contains("Alice's favorite color"));
+}
+
+#[tokio::test]
+async fn search_key_facts_scoped_excludes_other_database_same_conversation_id() {
+    // #5742 regression: two independent databases (own conversation_id counters, each starting
+    // at 1) share one backing vector store, simulating two SQLite databases pointed at the same
+    // Qdrant instance. Before the fix, a `conversation_id`-only filter would let db-b's fact leak
+    // into db-a's scoped search and vice versa.
+    let shared = SqliteStore::new(":memory:").await.unwrap();
+    let shared_pool = shared.pool().clone();
+
+    let memory_a = make_embed_memory_with_db_instance(2.0, "db-a", shared_pool.clone()).await;
+    let memory_b = make_embed_memory_with_db_instance(2.0, "db-b", shared_pool.clone()).await;
+
+    let cid_a = memory_a.sqlite().create_conversation().await.unwrap();
+    let cid_b = memory_b.sqlite().create_conversation().await.unwrap();
+    assert_eq!(
+        cid_a, cid_b,
+        "both databases must independently start at conversation_id=1"
+    );
+
+    memory_a
+        .store_key_facts(cid_a, 1, &["Alice's favorite color is blue".to_string()])
+        .await;
+    memory_b
+        .store_key_facts(cid_b, 1, &["Bob's favorite color is green".to_string()])
+        .await;
+
+    let results_a = memory_a
+        .search_key_facts("favorite color", 5, Some(cid_a))
+        .await
+        .unwrap();
+    assert_eq!(
+        results_a.len(),
+        1,
+        "db-a's scoped search must not see db-b's fact even though both use conversation_id=1"
+    );
+    assert!(results_a[0].contains("Alice"));
+
+    let results_b = memory_b
+        .search_key_facts("favorite color", 5, Some(cid_b))
+        .await
+        .unwrap();
+    assert_eq!(
+        results_b.len(),
+        1,
+        "db-b's scoped search must not see db-a's fact even though both use conversation_id=1"
+    );
+    assert!(results_b[0].contains("Bob"));
 }
 
 #[tokio::test]

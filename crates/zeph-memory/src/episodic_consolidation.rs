@@ -669,6 +669,7 @@ async fn promote_fact(
                 "source": "episodic_consolidation",
                 "cognitive_weight": cognitive_weight,
                 "consolidated_fact_id": fact_id,
+                "db_instance_id": qdrant.db_instance_id(),
             });
             if let Some(cid) = conversation_id {
                 payload["conversation_id"] = serde_json::json!(cid.0);

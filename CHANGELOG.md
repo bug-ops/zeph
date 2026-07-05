@@ -155,6 +155,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(memory,db)`: `ConversationId` (`crates/zeph-memory/src/types.rs`) wraps a per-database
+  autoincrementing `i64` with no per-database salt, so two independent `SQLite`/`PostgreSQL`
+  databases sharing one Qdrant instance both started at `conversation_id=1` and collided across
+  6 Qdrant filter/payload call sites in `zeph-memory` (#5742, follow-up to #5732). The worst case
+  was a write-time clobber, not just a read-time leak: `store_session_summary`'s Qdrant point id
+  was `Uuid::new_v5(NAMESPACE_OID, conversation_id)` alone, so two databases' first shutdown
+  summary silently overwrote the same Qdrant point. Fixed by generating a random UUID v4 once per
+  physical database (`db_instance` singleton table, `zeph-db` migration 107 for both dialects;
+  race-safe `get_or_create_instance_id`) and combining it with `conversation_id` as a second
+  required condition/payload field — never a concatenated string, since several read paths
+  deserialize `conversation_id` back out as a typed `i64` — at all 6 sites: `embedding_store.rs`
+  store/search, `cross_session.rs` `store_session_summary`/`search_session_summaries` (the latter's
+  unscoped branch was previously entirely unfiltered across every database sharing the Qdrant
+  instance, now always scopes to the owning database), `summarization.rs`
+  `search_key_facts`/`store_key_fact_if_unique`, `episodic_consolidation.rs` `promote_fact`.
+  `DbStore::from_pool` is now async/fallible to compute the id; `EmbeddingStore` gained a
+  `with_db_instance_id` builder (no constructor signature change). Legacy Qdrant points written
+  before this fix lack the field and simply stop matching scoped searches — same accepted
+  degradation pattern as #5732, no backfill needed.
 - `fix(index)`: full-repo indexing at session start could push ordinary interactive tool-calling
   turns to 200-400+s wall-clock on large workspaces (500-800% CPU), caused by a quadratic
   `merge_small_chunks` chunker algorithm and unthrottled full-repo batch processing (#5720). The

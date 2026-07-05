@@ -543,10 +543,11 @@ impl SemanticMemory {
         pool_size: u32,
     ) -> Result<Self, MemoryError> {
         let sqlite = SqliteStore::with_pool_size(sqlite_path, pool_size).await?;
+        let db_instance_id = sqlite.db_instance_id().to_owned();
         let pool = sqlite.pool().clone();
 
         let qdrant = match EmbeddingStore::new(qdrant_url, api_key, pool) {
-            Ok(store) => Some(Arc::new(store)),
+            Ok(store) => Some(Arc::new(store.with_db_instance_id(db_instance_id))),
             Err(e) => {
                 tracing::warn!("Qdrant unavailable, semantic search disabled: {e:#}");
                 None
@@ -583,7 +584,8 @@ impl SemanticMemory {
     ) -> Result<Self, MemoryError> {
         let sqlite = SqliteStore::with_pool_size(sqlite_path, pool_size).await?;
         let pool = sqlite.pool().clone();
-        let store = EmbeddingStore::with_store(Box::new(ops), pool);
+        let store = EmbeddingStore::with_store(Box::new(ops), pool)
+            .with_db_instance_id(sqlite.db_instance_id());
 
         Ok(Self::base(
             sqlite,
@@ -1157,7 +1159,7 @@ impl SemanticMemory {
     ) -> Result<Self, MemoryError> {
         let sqlite = SqliteStore::with_pool_size(sqlite_path, pool_size).await?;
         let pool = sqlite.pool().clone();
-        let store = EmbeddingStore::new_sqlite(pool);
+        let store = EmbeddingStore::new_sqlite(pool).with_db_instance_id(sqlite.db_instance_id());
 
         Ok(Self::base(
             sqlite,

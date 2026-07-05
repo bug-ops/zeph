@@ -356,10 +356,16 @@ impl SemanticMemory {
         // conversation silently suppress a near-identical fact for a different conversation, which
         // is then unrecoverable from that other conversation's conversation-scoped search (#5732).
         let dedup_filter = Some(VectorFilter {
-            must: vec![FieldCondition {
-                field: "conversation_id".into(),
-                value: FieldValue::Integer(conversation_id.0),
-            }],
+            must: vec![
+                FieldCondition {
+                    field: "conversation_id".into(),
+                    value: FieldValue::Integer(conversation_id.0),
+                },
+                FieldCondition {
+                    field: "db_instance_id".into(),
+                    value: FieldValue::Text(qdrant.db_instance_id().to_owned()),
+                },
+            ],
             must_not: vec![],
         });
         match qdrant
@@ -382,6 +388,7 @@ impl SemanticMemory {
 
         let payload = serde_json::json!({
             "conversation_id": conversation_id.0,
+            "db_instance_id": qdrant.db_instance_id(),
             "fact_text": fact,
             "source_summary_id": source_summary_id,
         });
@@ -436,10 +443,16 @@ impl SemanticMemory {
             .await?;
 
         let filter = conversation_id.map(|cid| VectorFilter {
-            must: vec![FieldCondition {
-                field: "conversation_id".into(),
-                value: FieldValue::Integer(cid.0),
-            }],
+            must: vec![
+                FieldCondition {
+                    field: "conversation_id".into(),
+                    value: FieldValue::Integer(cid.0),
+                },
+                FieldCondition {
+                    field: "db_instance_id".into(),
+                    value: FieldValue::Text(qdrant.db_instance_id().to_owned()),
+                },
+            ],
             must_not: vec![],
         });
 

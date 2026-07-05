@@ -388,7 +388,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn messages_batch_id_lookups() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         let cid = store.create_conversation().await.unwrap();
         let m1 = store.save_message(cid, "user", "hello").await.unwrap();
@@ -413,7 +413,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn messages_update_fidelity_tags_case_batch() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         let cid = store.create_conversation().await.unwrap();
         let m1 = store.save_message(cid, "user", "one").await.unwrap();
@@ -453,7 +453,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn replace_conversation_writes_compacted_at_on_postgres() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         let cid = store.create_conversation().await.unwrap();
         let m1 = store.save_message(cid, "user", "one").await.unwrap();
@@ -491,7 +491,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn apply_tool_pair_summaries_writes_compacted_at_on_postgres() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         let cid = store.create_conversation().await.unwrap();
         let tool_use = store
@@ -546,7 +546,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn messages_forgetting_sweep_downscale_and_prune() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool.clone());
+        let store = SqliteStore::from_pool(pool.clone()).await.unwrap();
 
         let cid = store.create_conversation().await.unwrap();
         let low = store
@@ -613,7 +613,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn messages_get_eviction_candidates_decodes_timestamps_and_access_count_postgres() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         let cid = store.create_conversation().await.unwrap();
         let msg = store.save_message(cid, "user", "hello").await.unwrap();
@@ -646,7 +646,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn messages_consolidation_merge_links_sources() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool.clone());
+        let store = SqliteStore::from_pool(pool.clone()).await.unwrap();
 
         let cid = store.create_conversation().await.unwrap();
         let s1 = store.save_message(cid, "user", "part one").await.unwrap();
@@ -689,7 +689,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn messages_consolidation_update_links_additional_sources() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool.clone());
+        let store = SqliteStore::from_pool(pool.clone()).await.unwrap();
 
         let cid = store.create_conversation().await.unwrap();
         let target = store.save_message(cid, "user", "original").await.unwrap();
@@ -743,7 +743,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn episodic_graph_causal_recall_walks_hops() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
         let session_id = SessionId::new("sess-causal-1");
 
         // episodic_events.message_id has a FK into messages(id); real rows are required
@@ -905,7 +905,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn compression_guidelines_mark_failure_pairs_used() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         let cid = store.create_conversation().await.unwrap();
         let id1 = store
@@ -944,7 +944,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn compression_guidelines_meta_decodes_version_and_created_at_postgres() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         store
             .save_compression_guidelines("first guideline", 4, None)
@@ -973,7 +973,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn mem_scenes_insert_links_all_members() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool.clone());
+        let store = SqliteStore::from_pool(pool.clone()).await.unwrap();
 
         let cid = store.create_conversation().await.unwrap();
         let m1 = store.save_message(cid, "user", "a").await.unwrap();
@@ -1028,7 +1028,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn acp_sessions_create_is_idempotent() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool.clone());
+        let store = SqliteStore::from_pool(pool.clone()).await.unwrap();
 
         store.create_acp_session("sess-1").await.unwrap();
         // Calling twice must not error (INSERT_IGNORE / ON CONFLICT DO NOTHING).
@@ -1069,7 +1069,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn acp_sessions_list_and_get_include_timestamps_postgres() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         store.create_acp_session("sess-ts-1").await.unwrap();
 
@@ -1106,7 +1106,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn session_config_round_trips_thinking_enabled_true() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         store.create_acp_session("sess-1").await.unwrap();
         let snapshot = AcpSessionConfigSnapshot {
@@ -1138,7 +1138,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn session_config_round_trips_thinking_enabled_false() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         store.create_acp_session("sess-1").await.unwrap();
         let snapshot = AcpSessionConfigSnapshot {
@@ -1170,7 +1170,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn session_config_missing_snapshot_returns_none() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         store.create_acp_session("sess-1").await.unwrap();
         assert!(
@@ -1183,7 +1183,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn session_config_unknown_session_returns_none() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         assert!(
             store.get_session_config("no-such").await.unwrap().is_none(),
@@ -1197,7 +1197,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn snapshot_export_then_import_round_trip() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool.clone());
+        let store = SqliteStore::from_pool(pool.clone()).await.unwrap();
 
         let cid = store.create_conversation().await.unwrap();
         store.save_message(cid, "user", "hello").await.unwrap();
@@ -1210,7 +1210,7 @@ mod pg {
         // Import into a second, empty database to exercise the INSERT_IGNORE path
         // (re-importing into the same DB would just hit the "already exists" branch).
         let (pool2, _container2) = start_pg().await;
-        let store2 = SqliteStore::from_pool(pool2.clone());
+        let store2 = SqliteStore::from_pool(pool2.clone()).await.unwrap();
 
         let stats = snapshot::import_snapshot(&store2, exported).await.unwrap();
         assert_eq!(stats.conversations_imported, 1);
@@ -1257,7 +1257,7 @@ mod pg {
         use zeph_memory::five_signal::access_frequency::AccessFrequencyCache;
 
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool.clone());
+        let store = SqliteStore::from_pool(pool.clone()).await.unwrap();
         let cache = AccessFrequencyCache::new(pool.clone());
 
         let cid = store.create_conversation().await.unwrap();
@@ -1304,7 +1304,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn admission_training_mark_recalled_batch() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool.clone());
+        let store = SqliteStore::from_pool(pool.clone()).await.unwrap();
 
         let cid = store.create_conversation().await.unwrap();
         let m1 = store.save_message(cid, "user", "x").await.unwrap();
@@ -1348,7 +1348,7 @@ mod pg {
         use zeph_memory::five_signal::access_frequency::AccessFrequencyCache;
 
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool.clone());
+        let store = SqliteStore::from_pool(pool.clone()).await.unwrap();
         let cache = AccessFrequencyCache::new(pool.clone());
 
         let cid = store.create_conversation().await.unwrap();
@@ -1560,7 +1560,7 @@ mod pg {
         use zeph_scheduler::TaskHandler as _;
 
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool.clone());
+        let store = SqliteStore::from_pool(pool.clone()).await.unwrap();
         let graph_store = std::sync::Arc::new(GraphStore::new(pool.clone()));
 
         let cid = store.create_conversation().await.unwrap();
@@ -1630,7 +1630,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn agent_sessions_upsert_and_list_postgres() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         let row = AgentSessionRow {
             id: "sess-pg-1".to_owned(),
@@ -1685,7 +1685,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn episodic_consolidation_sweep_promotes_fact_postgres() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool.clone());
+        let store = SqliteStore::from_pool(pool.clone()).await.unwrap();
         let session_id = SessionId::new("sess-consolidation-1");
 
         let cid = store.create_conversation().await.unwrap();
@@ -1867,7 +1867,7 @@ mod pg {
         use zeph_memory::optical_forgetting::run_optical_forgetting_sweep;
 
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool.clone());
+        let store = SqliteStore::from_pool(pool.clone()).await.unwrap();
 
         let cid = store.create_conversation().await.unwrap();
         let msg_id = store
@@ -2079,7 +2079,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn experiments_list_best_and_since_decode_on_postgres() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         store
             .insert_experiment_result(&NewExperimentResult {
@@ -2122,7 +2122,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn admission_training_get_training_batch_decodes_on_postgres() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
         let cid = store.create_conversation().await.unwrap();
 
         store
@@ -2150,7 +2150,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn retrieval_failures_purge_old_deletes_by_timestamptz_cutoff() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool.clone());
+        let store = SqliteStore::from_pool(pool.clone()).await.unwrap();
 
         store
             .record_retrieval_failure(&RetrievalFailureRecord {
@@ -2192,7 +2192,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn persona_load_facts_decodes_timestamptz_columns() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         store
             .upsert_persona_fact("preference", "prefers dark mode", 0.9, None, None)
@@ -2212,7 +2212,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn skills_load_versions_decodes_timestamptz_column() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         let v1 = store
             .save_skill_version("git", 1, "body v1", "Git helper", "manual", None, None)
@@ -2240,7 +2240,7 @@ mod pg {
     #[ignore = "requires Docker"]
     async fn skills_predecessor_version_decodes_integer_columns() {
         let (pool, _container) = start_pg().await;
-        let store = SqliteStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool).await.unwrap();
 
         let v1 = store
             .save_skill_version("git", 1, "body v1", "Git helper", "manual", None, None)

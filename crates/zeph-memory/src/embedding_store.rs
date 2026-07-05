@@ -67,6 +67,11 @@ pub struct EmbeddingStore {
     ops: Box<dyn VectorStore>,
     collection: String,
     pool: DbPool,
+    /// Stable per-database identity (#5742), combined with `conversation_id` in Qdrant
+    /// filters/payloads to disambiguate conversations across databases sharing one Qdrant
+    /// instance. Empty string in all constructors by default — set via
+    /// [`Self::with_db_instance_id`] at production bootstrap.
+    db_instance_id: String,
 }
 
 impl std::fmt::Debug for EmbeddingStore {
@@ -135,6 +140,7 @@ impl EmbeddingStore {
             ops: Box::new(ops),
             collection: COLLECTION_NAME.into(),
             pool,
+            db_instance_id: String::new(),
         })
     }
 
@@ -148,6 +154,7 @@ impl EmbeddingStore {
             ops: Box::new(ops),
             collection: COLLECTION_NAME.into(),
             pool,
+            db_instance_id: String::new(),
         }
     }
 
@@ -161,7 +168,26 @@ impl EmbeddingStore {
             ops: store,
             collection: COLLECTION_NAME.into(),
             pool,
+            db_instance_id: String::new(),
         }
+    }
+
+    /// Attach this database's stable [`db_instance_id`](Self::db_instance_id) (#5742).
+    ///
+    /// Production bootstrap paths chain this after construction so every Qdrant write/read
+    /// this store performs is scoped to the owning physical database. Test constructors leave
+    /// it at the default empty string, which is fine as long as a given test never mixes two
+    /// different `db_instance_id` values while asserting on isolation semantics.
+    #[must_use]
+    pub fn with_db_instance_id(mut self, id: impl Into<String>) -> Self {
+        self.db_instance_id = id.into();
+        self
+    }
+
+    /// This store's stable per-database identity (#5742).
+    #[must_use]
+    pub fn db_instance_id(&self) -> &str {
+        &self.db_instance_id
     }
 
     /// Return `true` if the backing store is reachable and healthy.
@@ -364,6 +390,10 @@ impl EmbeddingStore {
                 "conversation_id".to_owned(),
                 serde_json::json!(conversation_id.0),
             ),
+            (
+                "db_instance_id".to_owned(),
+                serde_json::json!(self.db_instance_id),
+            ),
             ("role".to_owned(), serde_json::json!(role)),
             (
                 "is_summary".to_owned(),
@@ -439,6 +469,10 @@ impl EmbeddingStore {
                 must.push(FieldCondition {
                     field: "conversation_id".into(),
                     value: FieldValue::Integer(cid.0),
+                });
+                must.push(FieldCondition {
+                    field: "db_instance_id".into(),
+                    value: FieldValue::Text(self.db_instance_id.clone()),
                 });
             }
             if let Some(ref role) = f.role {
@@ -897,6 +931,7 @@ impl EmbeddingStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db_vector_store::DbVectorStore;
     use crate::in_memory_store::InMemoryVectorStore;
     use crate::store::SqliteStore;
 
@@ -996,6 +1031,101 @@ mod tests {
         assert_eq!(results[0].message_id, msg_id);
         assert_eq!(results[0].conversation_id, cid);
         assert!((results[0].score - 1.0).abs() < 0.001);
+    }
+
+    /// #5742 regression: two independent databases (own `conversation_id` counters, each starting
+    /// at 1) share one backing vector store. Before the fix, `search()`'s `conversation_id`-only
+    /// filter would let a message stored under db-b leak into db-a's scoped search and vice versa.
+    #[tokio::test]
+    async fn embedding_store_search_scoped_excludes_other_db_instance_same_conversation_id() {
+        let shared = SqliteStore::new(":memory:").await.unwrap();
+        let shared_pool = shared.pool().clone();
+
+        let sqlite_a = SqliteStore::new(":memory:").await.unwrap();
+        let store_a = EmbeddingStore::with_store(
+            Box::new(DbVectorStore::new(shared_pool.clone())),
+            sqlite_a.pool().clone(),
+        )
+        .with_db_instance_id("db-a");
+        store_a.ensure_collection(4).await.unwrap();
+
+        let sqlite_b = SqliteStore::new(":memory:").await.unwrap();
+        let store_b = EmbeddingStore::with_store(
+            Box::new(DbVectorStore::new(shared_pool.clone())),
+            sqlite_b.pool().clone(),
+        )
+        .with_db_instance_id("db-b");
+
+        let cid_a = sqlite_a.create_conversation().await.unwrap();
+        let cid_b = sqlite_b.create_conversation().await.unwrap();
+        assert_eq!(
+            cid_a, cid_b,
+            "both databases must independently start at conversation_id=1"
+        );
+
+        let msg_a = sqlite_a
+            .save_message(cid_a, "user", "message in db a")
+            .await
+            .unwrap();
+        let msg_b = sqlite_b
+            .save_message(cid_b, "user", "message in db b")
+            .await
+            .unwrap();
+
+        store_a
+            .store(
+                msg_a,
+                cid_a,
+                "user",
+                vec![1.0, 0.0, 0.0, 0.0],
+                MessageKind::Regular,
+                "test-model",
+                0,
+            )
+            .await
+            .unwrap();
+        store_b
+            .store(
+                msg_b,
+                cid_b,
+                "user",
+                vec![1.0, 0.0, 0.0, 0.0],
+                MessageKind::Regular,
+                "test-model",
+                0,
+            )
+            .await
+            .unwrap();
+
+        let filter_a = Some(SearchFilter {
+            conversation_id: Some(cid_a),
+            role: None,
+            category: None,
+        });
+        let results_a = store_a
+            .search(&[1.0, 0.0, 0.0, 0.0], 5, filter_a)
+            .await
+            .unwrap();
+        assert_eq!(
+            results_a.len(),
+            1,
+            "db-a's scoped search must not see db-b's message even though both use conversation_id=1"
+        );
+
+        let filter_b = Some(SearchFilter {
+            conversation_id: Some(cid_b),
+            role: None,
+            category: None,
+        });
+        let results_b = store_b
+            .search(&[1.0, 0.0, 0.0, 0.0], 5, filter_b)
+            .await
+            .unwrap();
+        assert_eq!(
+            results_b.len(),
+            1,
+            "db-b's scoped search must not see db-a's message even though both use conversation_id=1"
+        );
     }
 
     /// `store_with_category` must write a `category` payload field when given `Some` (#5486

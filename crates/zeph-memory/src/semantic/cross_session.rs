@@ -117,10 +117,12 @@ impl SemanticMemory {
 
         let point_id = {
             const NS: uuid::Uuid = uuid::Uuid::NAMESPACE_OID;
-            uuid::Uuid::new_v5(&NS, conversation_id.0.to_string().as_bytes()).to_string()
+            let name = format!("{}:{}", qdrant.db_instance_id(), conversation_id.0);
+            uuid::Uuid::new_v5(&NS, name.as_bytes()).to_string()
         };
         let payload = serde_json::json!({
             "conversation_id": conversation_id.0,
+            "db_instance_id": qdrant.db_instance_id(),
             "summary_text": summary_text,
         });
 
@@ -178,12 +180,22 @@ impl SemanticMemory {
             .ensure_named_collection_for_vector(SESSION_SUMMARIES_COLLECTION, &vector)
             .await?;
 
-        let filter = exclude_conversation_id.map(|cid| VectorFilter {
-            must: vec![],
-            must_not: vec![FieldCondition {
-                field: "conversation_id".into(),
-                value: FieldValue::Integer(cid.0),
+        // Always scope to this database (#5742): without a db_instance_id condition, this
+        // search would otherwise span every conversation in every database sharing this
+        // Qdrant instance whenever exclude_conversation_id is None (the common case).
+        let filter = Some(VectorFilter {
+            must: vec![FieldCondition {
+                field: "db_instance_id".into(),
+                value: FieldValue::Text(qdrant.db_instance_id().to_owned()),
             }],
+            must_not: exclude_conversation_id
+                .map(|cid| {
+                    vec![FieldCondition {
+                        field: "conversation_id".into(),
+                        value: FieldValue::Integer(cid.0),
+                    }]
+                })
+                .unwrap_or_default(),
         });
 
         let points = qdrant
@@ -307,21 +319,27 @@ mod tests {
         );
     }
 
+    /// Mirrors the point-id computation in `store_session_summary` so the assertion stays
+    /// meaningful if the production format string changes shape.
+    fn point_id_name(db_instance_id: &str, cid: ConversationId) -> String {
+        format!("{db_instance_id}:{}", cid.0)
+    }
+
     #[test]
     fn store_session_summary_point_id_is_deterministic() {
-        // Same conversation_id must always produce the same UUID v5 point ID,
-        // ensuring that repeated compaction calls upsert rather than insert a new point.
+        // Same (db_instance_id, conversation_id) must always produce the same UUID v5 point
+        // ID, ensuring that repeated compaction calls upsert rather than insert a new point.
         const NS: uuid::Uuid = uuid::Uuid::NAMESPACE_OID;
         let cid = ConversationId(42);
-        let id1 = uuid::Uuid::new_v5(&NS, cid.0.to_string().as_bytes()).to_string();
-        let id2 = uuid::Uuid::new_v5(&NS, cid.0.to_string().as_bytes()).to_string();
+        let id1 = uuid::Uuid::new_v5(&NS, point_id_name("", cid).as_bytes()).to_string();
+        let id2 = uuid::Uuid::new_v5(&NS, point_id_name("", cid).as_bytes()).to_string();
         assert_eq!(
             id1, id2,
-            "point_id must be deterministic for the same conversation_id"
+            "point_id must be deterministic for the same inputs"
         );
 
         let cid2 = ConversationId(43);
-        let id3 = uuid::Uuid::new_v5(&NS, cid2.0.to_string().as_bytes()).to_string();
+        let id3 = uuid::Uuid::new_v5(&NS, point_id_name("", cid2).as_bytes()).to_string();
         assert_ne!(
             id1, id3,
             "different conversation_ids must produce different point_ids"
@@ -334,11 +352,11 @@ mod tests {
         // valid, distinct, and stable UUIDs.
         const NS: uuid::Uuid = uuid::Uuid::NAMESPACE_OID;
 
-        let id_zero_a = uuid::Uuid::new_v5(&NS, ConversationId(0).0.to_string().as_bytes());
-        let id_zero_b = uuid::Uuid::new_v5(&NS, ConversationId(0).0.to_string().as_bytes());
+        let id_zero_a = uuid::Uuid::new_v5(&NS, point_id_name("", ConversationId(0)).as_bytes());
+        let id_zero_b = uuid::Uuid::new_v5(&NS, point_id_name("", ConversationId(0)).as_bytes());
         assert_eq!(id_zero_a, id_zero_b, "zero conversation_id must be stable");
 
-        let id_neg = uuid::Uuid::new_v5(&NS, ConversationId(-1).0.to_string().as_bytes());
+        let id_neg = uuid::Uuid::new_v5(&NS, point_id_name("", ConversationId(-1)).as_bytes());
         assert_ne!(
             id_zero_a, id_neg,
             "zero and -1 conversation_ids must produce different point_ids"
@@ -350,6 +368,107 @@ mod tests {
             5,
             "generated UUID must be version 5"
         );
+    }
+
+    /// Regression test for the write-time clobber finding in #5742: two databases whose
+    /// `conversation_id` sequences both reach the same value must not collide on the same
+    /// Qdrant point id.
+    #[test]
+    fn store_session_summary_point_id_differs_across_db_instances() {
+        const NS: uuid::Uuid = uuid::Uuid::NAMESPACE_OID;
+        let cid = ConversationId(1);
+        let id_db_a = uuid::Uuid::new_v5(&NS, point_id_name("db-a", cid).as_bytes());
+        let id_db_b = uuid::Uuid::new_v5(&NS, point_id_name("db-b", cid).as_bytes());
+        assert_ne!(
+            id_db_a, id_db_b,
+            "same conversation_id in two different databases must produce different point_ids"
+        );
+    }
+
+    /// Builds a memory whose `EmbeddingStore` is tagged with `db_instance_id` and backed by
+    /// `shared_vector_pool` instead of its own private pool — simulating a second physical
+    /// database sharing one Qdrant instance with whatever other store(s) were also built against
+    /// `shared_vector_pool` (#5742). The memory keeps its own private `SqliteStore`, so two
+    /// memories built this way independently start at `conversation_id = 1`.
+    async fn make_embed_memory_with_db_instance(
+        db_instance_id: &str,
+        shared_vector_pool: zeph_db::DbPool,
+    ) -> SemanticMemory {
+        let mut mock = MockProvider::default();
+        mock.supports_embeddings = true;
+        mock.embedding = vec![1.0, 0.0, 0.0, 0.0];
+        let provider = AnyProvider::Mock(mock);
+
+        let sqlite = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite.pool().clone();
+        let store = crate::embedding_store::EmbeddingStore::with_store(
+            Box::new(crate::db_vector_store::DbVectorStore::new(
+                shared_vector_pool,
+            )),
+            pool,
+        )
+        .with_db_instance_id(db_instance_id);
+
+        SemanticMemory::base(
+            sqlite,
+            Some(std::sync::Arc::new(store)),
+            provider,
+            "test-model".into(),
+            0.7,
+            0.3,
+            std::sync::Arc::new(crate::token_counter::TokenCounter::new()),
+        )
+    }
+
+    /// #5742 regression: two independent databases (own `conversation_id` counters, each starting
+    /// at 1) share one backing vector store. `search_session_summaries`'s unscoped branch
+    /// (`exclude_conversation_id = None`, the common cross-session-recall case) must not surface
+    /// a summary written by a different database, even when their `conversation_id` values match.
+    #[tokio::test]
+    async fn search_session_summaries_scoped_excludes_other_database_same_conversation_id() {
+        let shared = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        let shared_pool = shared.pool().clone();
+
+        let memory_a = make_embed_memory_with_db_instance("db-a", shared_pool.clone()).await;
+        let memory_b = make_embed_memory_with_db_instance("db-b", shared_pool.clone()).await;
+
+        let cid_a = memory_a.sqlite().create_conversation().await.unwrap();
+        let cid_b = memory_b.sqlite().create_conversation().await.unwrap();
+        assert_eq!(
+            cid_a, cid_b,
+            "both databases must independently start at conversation_id=1"
+        );
+
+        memory_a
+            .store_session_summary(cid_a, "summary from database A")
+            .await
+            .unwrap();
+        memory_b
+            .store_session_summary(cid_b, "summary from database B")
+            .await
+            .unwrap();
+
+        let results_a = memory_a
+            .search_session_summaries("summary", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            results_a.len(),
+            1,
+            "db-a's unscoped cross-session recall must not see db-b's summary"
+        );
+        assert_eq!(results_a[0].summary_text, "summary from database A");
+
+        let results_b = memory_b
+            .search_session_summaries("summary", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            results_b.len(),
+            1,
+            "db-b's unscoped cross-session recall must not see db-a's summary"
+        );
+        assert_eq!(results_b[0].summary_text, "summary from database B");
     }
 
     #[tokio::test]

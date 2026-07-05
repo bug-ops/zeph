@@ -86,6 +86,7 @@ pub type SqliteStore = DbStore;
 #[derive(Debug, Clone)]
 pub struct DbStore {
     pool: DbPool,
+    db_instance_id: String,
 }
 
 impl DbStore {
@@ -111,23 +112,45 @@ impl DbStore {
         }
         .connect()
         .await?;
+        let db_instance_id = zeph_db::get_or_create_instance_id(&pool).await?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            db_instance_id,
+        })
     }
 
     /// Create a store from an already-open pool (no migrations run).
     ///
     /// Use this when the pool was obtained from an existing store (e.g. the main
     /// agent memory store) to avoid redundant migration runs.
-    #[must_use]
-    pub fn from_pool(pool: DbPool) -> Self {
-        Self { pool }
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this database's stable [`Self::db_instance_id`] cannot be
+    /// fetched or created (#5742).
+    pub async fn from_pool(pool: DbPool) -> Result<Self, MemoryError> {
+        let db_instance_id = zeph_db::get_or_create_instance_id(&pool).await?;
+        Ok(Self {
+            pool,
+            db_instance_id,
+        })
     }
 
     /// Expose the underlying pool for shared access by other stores.
     #[must_use]
     pub fn pool(&self) -> &DbPool {
         &self.pool
+    }
+
+    /// Stable UUID identifying this physical database (#5742).
+    ///
+    /// Generated once and persisted in the `db_instance` table. Used to disambiguate
+    /// autoincrementing IDs (e.g. `conversation_id`) when multiple independent databases
+    /// share one Qdrant instance.
+    #[must_use]
+    pub fn db_instance_id(&self) -> &str {
+        &self.db_instance_id
     }
 
     /// Run all migrations on the given pool.

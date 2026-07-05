@@ -176,7 +176,13 @@ async fn run_promotion_scan(
         return;
     };
 
-    let store = zeph_memory::store::SqliteStore::from_pool(pool.clone());
+    let store = match zeph_memory::store::SqliteStore::from_pool(pool.clone()).await {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::warn!(error = %e, "heuristic_promotion: failed to open store from pool");
+            return;
+        }
+    };
 
     let candidates = match store
         .count_heuristics_by_skill(min_confidence, threshold)
