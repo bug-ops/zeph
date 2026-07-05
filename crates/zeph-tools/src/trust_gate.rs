@@ -24,7 +24,7 @@ use crate::registry::ToolDef;
 /// cycle.
 pub use zeph_common::quarantine::QUARANTINE_DENIED;
 
-fn is_quarantine_denied(tool_id: &str) -> bool {
+pub(crate) fn is_quarantine_denied(tool_id: &str) -> bool {
     QUARANTINE_DENIED
         .iter()
         .any(|denied| tool_id == *denied || tool_id.ends_with(&format!("_{denied}")))
@@ -41,7 +41,7 @@ fn is_quarantine_denied(tool_id: &str) -> bool {
 /// gate cannot verify: this denial means the turn's *combined* trust floor is quarantined
 /// (weakest-link policy, see `assembly.rs` and this module's doc comment) — it may or may not
 /// be about the specific tool/skill targeted by this call.
-fn quarantine_denial_message(tool_id: &str, active_skills: &[String]) -> String {
+pub(crate) fn quarantine_denial_message(tool_id: &str, active_skills: &[String]) -> String {
     if active_skills.is_empty() {
         format!("{tool_id} denied (trust=quarantined)")
     } else {
@@ -54,7 +54,7 @@ fn quarantine_denial_message(tool_id: &str, active_skills: &[String]) -> String 
     }
 }
 
-fn trust_to_u8(level: SkillTrustLevel) -> u8 {
+pub(crate) fn trust_to_u8(level: SkillTrustLevel) -> u8 {
     match level {
         SkillTrustLevel::Trusted => 0,
         SkillTrustLevel::Verified => 1,
@@ -63,7 +63,7 @@ fn trust_to_u8(level: SkillTrustLevel) -> u8 {
     }
 }
 
-fn u8_to_trust(v: u8) -> SkillTrustLevel {
+pub(crate) fn u8_to_trust(v: u8) -> SkillTrustLevel {
     match v {
         0 => SkillTrustLevel::Trusted,
         1 => SkillTrustLevel::Verified,

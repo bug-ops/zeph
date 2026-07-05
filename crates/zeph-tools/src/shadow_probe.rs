@@ -12,6 +12,19 @@
 //! `PolicyGateExecutor` — the policy gate remains as a second defence-in-depth layer for
 //! calls that pass the probe.
 //!
+//! # Quarantine short-circuit (#5740)
+//!
+//! Because `ShadowProbeExecutor` sits outside `TrustGateExecutor` (deep in the `PolicyGateExecutor`
+//! chain), a quarantine-denied call would otherwise reach the LLM probe first, which frequently
+//! denies it with a generic reason instead of `TrustGateExecutor`'s named, deterministic
+//! `quarantine_denial_message`. To avoid this, `execute_tool_call`/`execute_tool_call_confirmed`
+//! check the turn's effective trust and the tool id against the same `QUARANTINE_DENIED` set
+//! `TrustGateExecutor` uses, and short-circuit to the identical denial message before invoking
+//! the probe. The outcome is still recorded via `ProbeGate::record` (as `"quarantine
+//! short-circuit: {reason}"`), so cross-session shadow-event detection (#5494/#5449) keeps
+//! seeing these denials even though the LLM probe itself never ran. All other trust levels and
+//! non-quarantine-denied tools still go through the LLM probe exactly as before.
+//!
 //! # Legacy path
 //!
 //! `execute()` and `execute_confirmed()` bypass the probe (no structured tool id available).
@@ -22,8 +35,12 @@ use std::sync::Arc;
 
 use tracing::{Instrument as _, info_span};
 
+use crate::SkillTrustLevel;
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use crate::registry::ToolDef;
+use crate::trust_gate::{
+    is_quarantine_denied, quarantine_denial_message, trust_to_u8, u8_to_trust,
+};
 
 /// Probe interface required by `ShadowProbeExecutor`.
 ///
@@ -95,6 +112,10 @@ pub struct ShadowProbeExecutor<T: ToolExecutor> {
     turn_number: Arc<std::sync::atomic::AtomicU64>,
     /// Current risk level string for shadow event recording.
     risk_level: Arc<parking_lot::RwLock<String>>,
+    /// Effective trust level mirrored from `set_effective_trust`, used to short-circuit
+    /// quarantine-denied tool calls before the LLM probe runs (#5740) — see
+    /// `quarantine_denial_reason`.
+    effective_trust: std::sync::atomic::AtomicU8,
 }
 
 impl<T: ToolExecutor + std::fmt::Debug> std::fmt::Debug for ShadowProbeExecutor<T> {
@@ -126,6 +147,9 @@ impl<T: ToolExecutor> ShadowProbeExecutor<T> {
             probe,
             turn_number,
             risk_level,
+            effective_trust: std::sync::atomic::AtomicU8::new(trust_to_u8(
+                SkillTrustLevel::Trusted,
+            )),
         }
     }
 
@@ -135,6 +159,37 @@ impl<T: ToolExecutor> ShadowProbeExecutor<T> {
 
     fn current_risk_level(&self) -> String {
         self.risk_level.read().clone()
+    }
+
+    fn effective_trust(&self) -> SkillTrustLevel {
+        u8_to_trust(
+            self.effective_trust
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// Returns the quarantine denial reason (deterministic, no LLM call) for `call` if the
+    /// turn's effective trust is Quarantined and `call.tool_id` is in the quarantine-denied set.
+    ///
+    /// Mirrors `TrustGateExecutor::check_trust`'s Quarantined branch so the caller never
+    /// reaches this executor's LLM safety probe for a call that `TrustGateExecutor` would
+    /// deny anyway — the probe would otherwise frequently deny it first with a generic,
+    /// unnamed reason, hiding the informative `quarantine_denial_message` (#5740).
+    ///
+    /// Returns only the reason string (not a `ToolError`) because the caller must still
+    /// `record()` the outcome in the shadow event stream before returning the error — the
+    /// same as every other denial path in this executor.
+    fn quarantine_denial_reason(&self, call: &ToolCall) -> Option<String> {
+        if self.effective_trust() == SkillTrustLevel::Quarantined
+            && is_quarantine_denied(call.tool_id.as_str())
+        {
+            let active_skills = call.skill_name.as_deref().unwrap_or(&[]);
+            return Some(quarantine_denial_message(
+                call.tool_id.as_str(),
+                active_skills,
+            ));
+        }
+        None
     }
 
     /// Summarise a tool execution result for the shadow event stream's `context_summary`.
@@ -167,14 +222,32 @@ impl<T: ToolExecutor> ToolExecutor for ShadowProbeExecutor<T> {
     /// Returns `ToolError::SafetyDenied` if the probe returns `Deny`.
     /// Delegates to `inner` on `Allow` or `Skip`.
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        let turn = self.current_turn();
+        let risk = self.current_risk_level();
+
+        if let Some(reason) = self.quarantine_denial_reason(call) {
+            tracing::warn!(
+                tool_id = %call.tool_id,
+                reason = %reason,
+                "ShadowProbeExecutor: quarantine short-circuit denied tool call"
+            );
+            self.probe
+                .record(
+                    call.tool_id.as_str(),
+                    turn,
+                    &risk,
+                    &format!("quarantine short-circuit: {reason}"),
+                )
+                .await;
+            return Err(ToolError::SafetyDenied { reason });
+        }
+
         let span = info_span!(
             "security.shadow.probe_executor",
             tool_id = %call.tool_id
         );
 
         let args = serde_json::Value::Object(call.params.clone());
-        let turn = self.current_turn();
-        let risk = self.current_risk_level();
 
         let outcome = self
             .probe
@@ -224,14 +297,32 @@ impl<T: ToolExecutor> ToolExecutor for ShadowProbeExecutor<T> {
         &self,
         call: &ToolCall,
     ) -> Result<Option<ToolOutput>, ToolError> {
+        let turn = self.current_turn();
+        let risk = self.current_risk_level();
+
+        if let Some(reason) = self.quarantine_denial_reason(call) {
+            tracing::warn!(
+                tool_id = %call.tool_id,
+                reason = %reason,
+                "ShadowProbeExecutor: quarantine short-circuit denied confirmed tool call"
+            );
+            self.probe
+                .record(
+                    call.tool_id.as_str(),
+                    turn,
+                    &risk,
+                    &format!("quarantine short-circuit: {reason}"),
+                )
+                .await;
+            return Err(ToolError::SafetyDenied { reason });
+        }
+
         let span = info_span!(
             "security.shadow.probe_executor_confirmed",
             tool_id = %call.tool_id
         );
 
         let args = serde_json::Value::Object(call.params.clone());
-        let turn = self.current_turn();
-        let risk = self.current_risk_level();
 
         let outcome = self
             .probe
@@ -278,6 +369,8 @@ impl<T: ToolExecutor> ToolExecutor for ShadowProbeExecutor<T> {
     }
 
     fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
+        self.effective_trust
+            .store(trust_to_u8(level), std::sync::atomic::Ordering::Relaxed);
         self.inner.set_effective_trust(level);
     }
 
@@ -347,6 +440,24 @@ mod tests {
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeOutcome> + Send + 'a>>
         {
             Box::pin(async { ProbeOutcome::Skip })
+        }
+    }
+
+    /// Test double whose `probe()` panics if invoked. Used to prove the quarantine
+    /// short-circuit never reaches the LLM probe, rather than merely returning the right
+    /// message (which `DenyProbe` alone cannot distinguish from "probe ran and happened to
+    /// deny with a different reason").
+    struct PanicProbe;
+    impl ProbeGate for PanicProbe {
+        fn probe<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a serde_json::Value,
+            _: u64,
+            _: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeOutcome> + Send + 'a>>
+        {
+            panic!("probe() must not be invoked when the quarantine short-circuit applies")
         }
     }
 
@@ -451,6 +562,17 @@ mod tests {
         }
     }
 
+    fn make_call_with_skills(tool: &str, skills: &[&str]) -> ToolCall {
+        ToolCall {
+            tool_id: ToolName::new(tool),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: Some(skills.iter().map(ToString::to_string).collect()),
+        }
+    }
+
     fn make_executor<P: ProbeGate + 'static>(probe: P) -> ShadowProbeExecutor<OkInner> {
         ShadowProbeExecutor::new(
             OkInner,
@@ -507,6 +629,159 @@ mod tests {
             }
             other => panic!("expected SafetyDenied on confirmed call, got {other:?}"),
         }
+    }
+
+    // ── quarantine short-circuit (#5740) ──────────────────────────────────────
+
+    /// Regression for #5740: when the turn's effective trust is Quarantined and the tool is
+    /// in `QUARANTINE_DENIED`, the deterministic message must win over the probe's own denial
+    /// reason — proving the probe was never invoked (its reason would otherwise leak through).
+    #[tokio::test]
+    async fn quarantined_short_circuits_before_probe_runs() {
+        // PanicProbe proves the LLM probe is never invoked — a DenyProbe could only prove
+        // the returned message differs, not that probe() was skipped entirely.
+        let exec = make_executor(PanicProbe);
+        exec.set_effective_trust(SkillTrustLevel::Quarantined);
+
+        let call = make_call_with_skills("bash", &["disk-usage"]);
+        let result = exec.execute_tool_call(&call).await;
+        match result {
+            Err(ToolError::SafetyDenied { reason }) => {
+                assert!(
+                    reason.contains("disk-usage"),
+                    "expected quarantine_denial_message naming active skills, got: {reason}"
+                );
+            }
+            other => panic!("expected SafetyDenied, got {other:?}"),
+        }
+    }
+
+    /// Same short-circuit must apply on the confirmed path — user confirmation does not
+    /// bypass the quarantine trust floor any more than it bypasses the probe.
+    #[tokio::test]
+    async fn quarantined_short_circuits_confirmed_path() {
+        let exec = make_executor(PanicProbe);
+        exec.set_effective_trust(SkillTrustLevel::Quarantined);
+
+        let call = make_call_with_skills("bash", &["disk-usage"]);
+        let result = exec.execute_tool_call_confirmed(&call).await;
+        match result {
+            Err(ToolError::SafetyDenied { reason }) => {
+                assert!(reason.contains("disk-usage"));
+            }
+            other => panic!("expected SafetyDenied on confirmed call, got {other:?}"),
+        }
+    }
+
+    /// A tool outside `QUARANTINE_DENIED` (e.g. a read) must still go through the probe
+    /// even when the turn is Quarantined — the short-circuit is scoped to denied tools only.
+    #[tokio::test]
+    async fn quarantined_non_denied_tool_still_runs_probe() {
+        let exec = make_executor(AllowProbe);
+        exec.set_effective_trust(SkillTrustLevel::Quarantined);
+
+        let result = exec.execute_tool_call(&make_call("read")).await;
+        assert!(result.unwrap().is_some());
+    }
+
+    /// When trust is not Quarantined, a `QUARANTINE_DENIED`-listed tool (e.g. "bash") must
+    /// still go through the probe as before — the short-circuit must not fire at other trust
+    /// levels.
+    #[tokio::test]
+    async fn non_quarantined_trust_still_runs_probe_for_denied_tool_name() {
+        let exec = make_executor(DenyProbe);
+        exec.set_effective_trust(SkillTrustLevel::Trusted);
+
+        let result = exec.execute_tool_call(&make_call("bash")).await;
+        match result {
+            Err(ToolError::SafetyDenied { reason }) => {
+                assert_eq!(
+                    reason, "test denial",
+                    "probe must still run at Trusted level"
+                );
+            }
+            other => panic!("expected SafetyDenied from probe, got {other:?}"),
+        }
+    }
+
+    /// Confirmed-path counterpart of `quarantined_non_denied_tool_still_runs_probe`.
+    #[tokio::test]
+    async fn quarantined_non_denied_tool_still_runs_probe_confirmed_path() {
+        let exec = make_executor(AllowProbe);
+        exec.set_effective_trust(SkillTrustLevel::Quarantined);
+
+        let result = exec.execute_tool_call_confirmed(&make_call("read")).await;
+        assert!(result.unwrap().is_some());
+    }
+
+    /// Confirmed-path counterpart of `non_quarantined_trust_still_runs_probe_for_denied_tool_name`.
+    #[tokio::test]
+    async fn non_quarantined_trust_still_runs_probe_for_denied_tool_name_confirmed_path() {
+        let exec = make_executor(DenyProbe);
+        exec.set_effective_trust(SkillTrustLevel::Trusted);
+
+        let result = exec.execute_tool_call_confirmed(&make_call("bash")).await;
+        match result {
+            Err(ToolError::SafetyDenied { reason }) => {
+                assert_eq!(
+                    reason, "test denial",
+                    "probe must still run at Trusted level"
+                );
+            }
+            other => panic!("expected SafetyDenied from probe, got {other:?}"),
+        }
+    }
+
+    /// Regression for the S1 review finding on #5740: the quarantine short-circuit must still
+    /// record a shadow event, otherwise cross-session detection (#5494/#5449) silently loses
+    /// visibility into every quarantine denial that used to flow through `ProbeOutcome::Deny`.
+    #[tokio::test]
+    async fn quarantine_short_circuit_still_records_event() {
+        let probe = Arc::new(RecordingProbe::new(ProbeOutcome::Allow));
+        let gate: Arc<dyn ProbeGate> = probe.clone();
+        let exec = ShadowProbeExecutor::new(
+            OkInner,
+            gate,
+            Arc::new(std::sync::atomic::AtomicU64::new(7)),
+            Arc::new(parking_lot::RwLock::new("elevated".to_owned())),
+        );
+        exec.set_effective_trust(SkillTrustLevel::Quarantined);
+
+        let call = make_call_with_skills("bash", &["disk-usage"]);
+        let result = exec.execute_tool_call(&call).await;
+        assert!(matches!(result, Err(ToolError::SafetyDenied { .. })));
+
+        let recorded = probe.recorded.lock().unwrap();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "quarantine short-circuit must record exactly one event"
+        );
+        let (tool_id, turn, risk, summary) = &recorded[0];
+        assert_eq!(tool_id, "bash");
+        assert_eq!(*turn, 7);
+        assert_eq!(risk, "elevated");
+        assert!(summary.starts_with("quarantine short-circuit:"));
+        assert!(summary.contains("disk-usage"));
+    }
+
+    /// Same recording contract on the confirmed path.
+    #[tokio::test]
+    async fn quarantine_short_circuit_confirmed_path_still_records_event() {
+        let probe = Arc::new(RecordingProbe::new(ProbeOutcome::Allow));
+        let gate: Arc<dyn ProbeGate> = probe.clone();
+        let exec = ShadowProbeExecutor::new(
+            OkInner,
+            gate,
+            Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            Arc::new(parking_lot::RwLock::new("calm".to_owned())),
+        );
+        exec.set_effective_trust(SkillTrustLevel::Quarantined);
+
+        let call = make_call_with_skills("bash", &["disk-usage"]);
+        let result = exec.execute_tool_call_confirmed(&call).await;
+        assert!(matches!(result, Err(ToolError::SafetyDenied { .. })));
+        assert_eq!(probe.recorded.lock().unwrap().len(), 1);
     }
 
     #[test]
