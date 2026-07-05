@@ -181,6 +181,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and `MockMcpServer::tool_definitions` (`crates/zeph-mcp/src/testing.rs`); all other `ToolDef`
   construction sites default it to `None`. `extract_mcp_tool_names` now filters on
   `ToolDef::is_mcp_tool` instead of the dead name-prefix check.
+- `fix(core)`: `Agent::prepare_tool_dispatch` (`crates/zeph-core/src/agent/tool_execution/tier_loop.rs`)
+  used `.filter_map()` to silently drop a tool call from `calls` when the model produced a
+  tafc-stripped "think-only" call (no real arguments), shortening `calls` and every per-call
+  vector derived from iterating it (`pre_exec_blocked`, `args_hashes`, `repeat_blocked`,
+  `cache_hits`, `utility_actions`) below `tool_calls.len()` — while the rest of the tier loop
+  (including `ToolCallDag::build`) indexes these by the original, unfiltered `tool_calls`
+  position. If the dropped call wasn't last in the batch, every subsequent call was accessed one
+  slot early, executing under the wrong call's identity/timing/logging; if it was last, an
+  out-of-bounds panic (#5731). Changed `calls` construction from `.filter_map()` to `.map()` so
+  `calls.len() == tool_calls.len()` is now an unconditional invariant; tafc-stripped positions are
+  tracked separately and folded into the existing `pre_exec_blocked` mechanism, which already
+  returns a synthetic skip result without dispatching, instead of dropping the entry.
 - `fix(core)`: `Agent::build_experiment_engine` (`crates/zeph-core/src/agent/experiment_cmd.rs`)
   read the configured benchmark TOML synchronously via `BenchmarkSet::from_file`, which performs
   blocking filesystem I/O (`std::fs::canonicalize` x2, `std::fs::metadata`, `std::fs::

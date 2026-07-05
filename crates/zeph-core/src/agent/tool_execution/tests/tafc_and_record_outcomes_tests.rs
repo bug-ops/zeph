@@ -2136,3 +2136,240 @@ fn schema_complexity_many_flat_params_score() {
         "8 flat properties must score higher than 2"
     );
 }
+
+// ── #5731 regression: tafc-stripped call must not desync `calls` vs `tool_calls` ──
+//
+// `prepare_tool_dispatch` used to `filter_map` out a tool call whose input was
+// think-only (`strip_tafc_fields` erroring), shrinking `calls` relative to the
+// original `tool_calls`. Every per-call vector downstream (`tool_started_ats`,
+// `pre_exec_blocked`, `args_hashes`, `repeat_blocked`, `cache_hits`,
+// `utility_actions`) — plus the tool-call DAG itself, built from `tool_calls` — is
+// indexed by the *original* position, so the drop caused every subsequent real call
+// in the batch to execute under an earlier call's identity (or panic, if the dropped
+// call was last). These tests reproduce both shapes at the `handle_native_tool_calls`
+// entry point (`prepare_tool_dispatch` itself is private to `tier_loop`'s module tree
+// and unreachable from here).
+
+/// Records every dispatched `(tool_id, params)` pair, in dispatch order, so a test can
+/// assert that a call executed with its own arguments rather than a neighboring call's.
+/// Following the `MockToolExecutor::captured_env` convention: the recording `Arc` is a
+/// public field so a test can `Arc::clone` it before the executor is moved into
+/// `Agent::new` (which type-erases it behind `dyn ErasedToolExecutor`).
+struct RecordingExecutor {
+    calls: std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>,
+}
+
+impl RecordingExecutor {
+    fn new() -> Self {
+        Self {
+            calls: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl ToolExecutor for RecordingExecutor {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
+    }
+
+    fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        let tool_id = call.tool_id.clone();
+        self.calls.lock().unwrap().push((
+            tool_id.as_str().to_owned(),
+            serde_json::Value::Object(call.params.clone()),
+        ));
+        async move {
+            Ok(Some(ToolOutput {
+                tool_name: tool_id,
+                summary: "ok".into(),
+                blocks_executed: 1,
+                diff: None,
+                filter_stats: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+            }))
+        }
+    }
+}
+
+fn tafc_only_think_request(id: &str, name: &str) -> zeph_llm::provider::ToolUseRequest {
+    zeph_llm::provider::ToolUseRequest {
+        id: id.into(),
+        name: name.into(),
+        input: serde_json::json!({"_tafc_think": "reasoning only, no real params"}),
+    }
+}
+
+fn real_call_request(id: &str, name: &str, cmd: &str) -> zeph_llm::provider::ToolUseRequest {
+    zeph_llm::provider::ToolUseRequest {
+        id: id.into(),
+        name: name.into(),
+        input: serde_json::json!({"cmd": cmd}),
+    }
+}
+
+fn result_parts_by_id(
+    agent: &crate::agent::Agent<crate::agent::agent_tests::MockChannel>,
+) -> std::collections::HashMap<String, (String, bool)> {
+    agent
+        .msg
+        .messages
+        .iter()
+        .flat_map(|m| &m.parts)
+        .filter_map(|p| {
+            if let zeph_llm::provider::MessagePart::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } = p
+            {
+                Some((tool_use_id.clone(), (content.clone(), *is_error)))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+// #5731 case 1: the tafc-only-think call is in the MIDDLE of the batch. Before the fix,
+// `filter_map` dropped it from `calls`, so the real call after it (id-3/tool-c) was
+// executed one slot early under id-2's original DAG index — i.e. dispatched with
+// tool-c's identity but treated internally as occupying id-2's position, corrupting
+// `tool_started_ats`/`pre_exec_blocked`/etc. for every following index.
+#[tokio::test]
+async fn tafc_stripped_call_mid_batch_does_not_shift_subsequent_calls() {
+    use crate::agent::agent_tests::{MockChannel, create_test_registry, mock_provider};
+
+    let executor = RecordingExecutor::new();
+    let recorded_calls = std::sync::Arc::clone(&executor.calls);
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+    agent.tool_orchestrator.tafc.enabled = true;
+
+    let tool_calls = vec![
+        real_call_request("id-1", "tool-a", "echo a"),
+        tafc_only_think_request("id-2", "tool-b"),
+        real_call_request("id-3", "tool-c", "echo c"),
+    ];
+
+    agent
+        .handle_native_tool_calls(None, &tool_calls)
+        .await
+        .unwrap();
+
+    let recorded = recorded_calls.lock().unwrap().clone();
+    assert_eq!(
+        recorded.len(),
+        2,
+        "only the two real calls should reach the executor, got: {recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|(id, params)| id == "tool-a" && params["cmd"] == "echo a"),
+        "tool-a must dispatch with its own params, got: {recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|(id, params)| id == "tool-c" && params["cmd"] == "echo c"),
+        "tool-c must dispatch with its own params, not id-2's slot, got: {recorded:?}"
+    );
+
+    let results = result_parts_by_id(&agent);
+    assert_eq!(
+        results.len(),
+        3,
+        "every original tool_use_id needs a ToolResult"
+    );
+
+    let (blocked_content, _) = &results["id-2"];
+    assert!(
+        blocked_content.contains("blocked by pre-execution verifier")
+            || blocked_content.contains("was blocked"),
+        "tafc-stripped call must be synthetically skipped, not dispatched: {blocked_content}"
+    );
+
+    let (first_result_content, first_result_is_error) = &results["id-1"];
+    assert!(
+        !first_result_is_error && !first_result_content.contains("blocked"),
+        "tool-a (before the stripped call) must complete normally: {first_result_content}"
+    );
+
+    let (last_result_content, last_result_is_error) = &results["id-3"];
+    assert!(
+        !last_result_is_error && !last_result_content.contains("blocked"),
+        "tool-c (after the stripped call) must complete normally, not inherit id-2's block: \
+         {last_result_content}"
+    );
+}
+
+// #5731 case 2: the tafc-only-think call is LAST in the batch. Before the fix, dropping
+// it from `calls` made `calls[idx]` (and every sibling vector sized to `calls.len()`)
+// out-of-bounds the moment tier execution reached the final original index — this test
+// guards against that panic as well as confirming correct behavior.
+#[tokio::test]
+async fn tafc_stripped_call_last_in_batch_does_not_panic() {
+    use crate::agent::agent_tests::{MockChannel, create_test_registry, mock_provider};
+
+    let executor = RecordingExecutor::new();
+    let recorded_calls = std::sync::Arc::clone(&executor.calls);
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+    agent.tool_orchestrator.tafc.enabled = true;
+
+    let tool_calls = vec![
+        real_call_request("id-1", "tool-a", "echo a"),
+        real_call_request("id-2", "tool-b", "echo b"),
+        tafc_only_think_request("id-3", "tool-c"),
+    ];
+
+    agent
+        .handle_native_tool_calls(None, &tool_calls)
+        .await
+        .unwrap();
+
+    let recorded = recorded_calls.lock().unwrap().clone();
+    assert_eq!(
+        recorded.len(),
+        2,
+        "only the two real calls should reach the executor, got: {recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|(id, params)| id == "tool-a" && params["cmd"] == "echo a")
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|(id, params)| id == "tool-b" && params["cmd"] == "echo b")
+    );
+
+    let results = result_parts_by_id(&agent);
+    assert_eq!(
+        results.len(),
+        3,
+        "every original tool_use_id needs a ToolResult"
+    );
+
+    let (blocked_content, _) = &results["id-3"];
+    assert!(
+        blocked_content.contains("blocked by pre-execution verifier")
+            || blocked_content.contains("was blocked"),
+        "trailing tafc-stripped call must be synthetically skipped, not panic: {blocked_content}"
+    );
+}

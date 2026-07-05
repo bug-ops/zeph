@@ -907,10 +907,18 @@ impl<C: Channel> Agent<C> {
         let mut unmask_misses = 0usize;
         let mut unmask_miss_tools: Vec<String> = Vec::new();
 
+        // INVARIANT: `calls` must stay the same length as `tool_calls`, with `calls[i]`
+        // always corresponding to `tool_calls[i]`. The tool-call DAG (built from `tool_calls`)
+        // and every per-call vector below (tool_started_ats, pre_exec_blocked, args_hashes,
+        // repeat_blocked, cache_hits, utility_actions) are all indexed by that same original
+        // position downstream — dropping an entry here would desynchronize every one of them
+        // against `tool_calls`, silently misattributing timing/state or executing the wrong
+        // tool call under another call's identity (#5731).
+        let mut tafc_stripped = vec![false; tool_calls.len()];
         let calls: Vec<ToolCall> = tool_calls
             .iter()
             .enumerate()
-            .filter_map(|(idx, tc)| {
+            .map(|(idx, tc)| {
                 let mut params: serde_json::Map<String, serde_json::Value> =
                     if let serde_json::Value::Object(map) = &tc.input {
                         map.clone()
@@ -931,17 +939,18 @@ impl<C: Channel> Agent<C> {
                     }
                 }
                 if tafc_enabled && strip_tafc_fields(&mut params, tc.name.as_str()).is_err() {
-                    // Model produced only think fields — skip this tool call.
-                    return None;
+                    // Model produced only think fields — keep the slot (see invariant above)
+                    // but mark it so the existing pre-exec gate skips it without dispatch.
+                    tafc_stripped[idx] = true;
                 }
-                Some(ToolCall {
+                ToolCall {
                     tool_id: tc.name.clone(),
                     params,
                     caller_id: None,
                     context: task_ctx.clone(),
                     tool_call_id: tool_call_ids[idx].clone(),
                     skill_name: self.skill_attribution(),
-                })
+                }
             })
             .collect();
 
@@ -964,6 +973,15 @@ impl<C: Channel> Agent<C> {
         let mut pre_exec_blocked = self.run_pre_execution_verifiers(&calls);
 
         self.apply_channel_tool_allowlist(&calls, &mut pre_exec_blocked);
+
+        // TAFC-stripped calls (kept as placeholders above to preserve index alignment)
+        // are routed through the existing pre-exec gate so they skip dispatch with a
+        // synthetic result instead of being silently dropped from `calls`.
+        for (idx, stripped) in tafc_stripped.into_iter().enumerate() {
+            if stripped {
+                pre_exec_blocked[idx] = true;
+            }
+        }
 
         // Utility gate: score each call and recommend an action (#2477).
         // user_requested is from the last user message only (prompt-injection guard).
