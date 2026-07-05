@@ -334,6 +334,61 @@ impl TriageRouter {
         }
         best
     }
+
+    /// Ensure the tier selected by classification supports tool use, escalating to the
+    /// nearest tool-capable tier if it does not — mirroring `RouterProvider::chat_with_tools`'s
+    /// `supports_tool_use()` gate. Prefers escalating to a higher tier first, falling back to a
+    /// lower tier when no higher tier supports tools.
+    ///
+    /// Every candidate — in both scan directions — must also fit `context_tokens` within its
+    /// context window (if known), using the same 80%-of-window threshold as
+    /// `maybe_escalate_for_context`. Without this, escalating to a different tier for tool
+    /// support could silently undo the context-fit guarantee `maybe_escalate_for_context`
+    /// already established for `idx`. The check is applied uniformly to both directions rather
+    /// than relying on tiers having non-decreasing context windows.
+    ///
+    /// Returns `None` when no configured tier supports tool use within the required context
+    /// budget.
+    fn escalate_for_tool_support(&self, idx: usize, context_tokens: usize) -> Option<usize> {
+        if self.tier_providers[idx].1.supports_tool_use() {
+            return Some(idx);
+        }
+        let current_tier = self.tier_providers[idx].0;
+        let fits_context = |provider: &AnyProvider| {
+            provider
+                .context_window()
+                .is_none_or(|window| context_tokens <= window * 4 / 5)
+        };
+        let escalated = ComplexityTier::ascending()
+            .into_iter()
+            .filter(|t| t.index() > current_tier.index())
+            .find_map(|t| {
+                self.tier_providers
+                    .iter()
+                    .position(|(pt, p)| *pt == t && p.supports_tool_use() && fits_context(p))
+            })
+            .or_else(|| {
+                ComplexityTier::ascending()
+                    .into_iter()
+                    .rev()
+                    .filter(|t| t.index() < current_tier.index())
+                    .find_map(|t| {
+                        self.tier_providers.iter().position(|(pt, p)| {
+                            *pt == t && p.supports_tool_use() && fits_context(p)
+                        })
+                    })
+            });
+        if let Some(new_idx) = escalated {
+            self.metrics.escalations.fetch_add(1, Ordering::Relaxed);
+            tracing::debug!(
+                original_tier = current_tier.as_str(),
+                escalated_tier = self.tier_providers[new_idx].0.as_str(),
+                context_tokens,
+                "triage: escalated for tool-use support"
+            );
+        }
+        escalated
+    }
 }
 
 fn build_triage_prompt(messages: &[Message]) -> String {
@@ -556,6 +611,10 @@ impl LlmProvider for TriageRouter {
             let context_tokens: usize = messages.iter().map(|m| estimate_tokens(&m.content)).sum();
             let idx = router.classify(&messages).await;
             let idx = router.maybe_escalate_for_context(idx, context_tokens);
+            let Some(idx) = router.escalate_for_tool_support(idx, context_tokens) else {
+                tracing::warn!("triage: no tier provider supports tool use");
+                return Err(LlmError::NoProviders);
+            };
             let (tier, provider) = &router.tier_providers[idx];
             tracing::debug!(
                 tier = tier.as_str(),
@@ -1023,6 +1082,266 @@ mod tests {
         // Simple tier is OllamaProvider → would return model: "simple-model".
         // If the fix is correct, json_after must NOT contain "simple-model".
         assert_ne!(json_after["model"].as_str().unwrap_or(""), "simple-model");
+    }
+
+    // ── chat_with_tools tool-support escalation (#5688) ───────────────────────
+
+    fn mock_provider_no_tools(name: &str) -> AnyProvider {
+        let mut p = MockProvider::default().without_tool_use();
+        p.name_override = Some(name.to_owned());
+        AnyProvider::Mock(p)
+    }
+
+    #[test]
+    fn escalate_for_tool_support_no_op_when_supported() {
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![(ComplexityTier::Simple, mock_provider("p"))],
+            5,
+            50,
+        );
+        assert_eq!(router.escalate_for_tool_support(0, 0), Some(0));
+        assert_eq!(router.metrics.escalations.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn escalate_for_tool_support_prefers_higher_tier() {
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![
+                (ComplexityTier::Simple, mock_provider_no_tools("simple-p")),
+                (ComplexityTier::Medium, mock_provider_no_tools("medium-p")),
+                (ComplexityTier::Complex, mock_provider("complex-p")),
+            ],
+            5,
+            50,
+        );
+        assert_eq!(router.escalate_for_tool_support(0, 0), Some(2));
+        assert_eq!(router.metrics.escalations.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn escalate_for_tool_support_prefers_higher_over_lower_when_both_qualify() {
+        // Medium (current, lacks support) is sandwiched between Simple and Complex, both of
+        // which support tools. Must pick Complex (higher), not Simple (lower).
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"medium"}"#),
+            vec![
+                (ComplexityTier::Simple, mock_provider("simple-p")),
+                (ComplexityTier::Medium, mock_provider_no_tools("medium-p")),
+                (ComplexityTier::Complex, mock_provider("complex-p")),
+            ],
+            5,
+            50,
+        );
+        assert_eq!(router.escalate_for_tool_support(1, 0), Some(2));
+        assert_eq!(router.metrics.escalations.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn escalate_for_tool_support_falls_back_to_lower_tier() {
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"expert"}"#),
+            vec![
+                (ComplexityTier::Simple, mock_provider("simple-p")),
+                (ComplexityTier::Expert, mock_provider_no_tools("expert-p")),
+            ],
+            5,
+            50,
+        );
+        assert_eq!(router.escalate_for_tool_support(1, 0), Some(0));
+        assert_eq!(router.metrics.escalations.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn escalate_for_tool_support_none_when_no_tier_supports_tools() {
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![(ComplexityTier::Simple, mock_provider_no_tools("simple-p"))],
+            5,
+            50,
+        );
+        assert_eq!(router.escalate_for_tool_support(0, 0), None);
+    }
+
+    #[test]
+    fn escalate_for_tool_support_lower_tier_fallback_respects_context_fit() {
+        // Expert (current, lacks support) has no higher tier to escalate to. Simple supports
+        // tools but its context window (100) can't fit context_tokens (99, > 80% of 100), so it
+        // must be rejected — must NOT undo the context-fit guarantee `maybe_escalate_for_context`
+        // established when it originally escalated up to Expert.
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"expert"}"#),
+            vec![
+                (ComplexityTier::Simple, ollama_with_window(100)),
+                (ComplexityTier::Expert, mock_provider_no_tools("expert-p")),
+            ],
+            5,
+            50,
+        );
+        assert_eq!(router.escalate_for_tool_support(1, 99), None);
+    }
+
+    #[test]
+    fn escalate_for_tool_support_lower_tier_fallback_accepts_fitting_context() {
+        // Same shape as above, but context_tokens (10) comfortably fits Simple's window (100).
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"expert"}"#),
+            vec![
+                (ComplexityTier::Simple, ollama_with_window(100)),
+                (ComplexityTier::Expert, mock_provider_no_tools("expert-p")),
+            ],
+            5,
+            50,
+        );
+        assert_eq!(router.escalate_for_tool_support(1, 10), Some(0));
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_errors_when_no_tier_supports_tools() {
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![(ComplexityTier::Simple, mock_provider_no_tools("simple-p"))],
+            5,
+            50,
+        );
+        let messages = vec![make_user_msg("hi")];
+        let result = router.chat_with_tools(&messages, &[]).await;
+        assert!(matches!(result, Err(LlmError::NoProviders)));
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_escalates_to_tool_capable_tier() {
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![
+                (ComplexityTier::Simple, mock_provider_no_tools("simple-p")),
+                (
+                    ComplexityTier::Expert,
+                    AnyProvider::Mock(MockProvider::with_responses(vec![
+                        "expert answer".to_owned(),
+                    ])),
+                ),
+            ],
+            5,
+            50,
+        );
+        let messages = vec![make_user_msg("hi")];
+        let result = router.chat_with_tools(&messages, &[]).await.unwrap();
+        assert!(matches!(result, ChatResponse::Text(t) if t == "expert answer"));
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_combines_context_and_tool_support_escalation() {
+        // Simple's tiny window forces `maybe_escalate_for_context` to move to Medium. Medium's
+        // provider has plenty of context room but lacks tool support, forcing a second
+        // escalation via `escalate_for_tool_support` up to Complex. Exercises both escalation
+        // stages composed inside the real `chat_with_tools` path, not just the isolated helpers.
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![
+                (ComplexityTier::Simple, ollama_with_window(100)),
+                (
+                    ComplexityTier::Medium,
+                    AnyProvider::Mock(
+                        MockProvider::default()
+                            .without_tool_use()
+                            .with_context_window(10_000),
+                    ),
+                ),
+                (
+                    ComplexityTier::Complex,
+                    AnyProvider::Mock(MockProvider::with_responses(vec![
+                        "complex answer".to_owned(),
+                    ])),
+                ),
+            ],
+            5,
+            50,
+        );
+        // ~100 estimated tokens (400 chars / 4): exceeds Simple's 80-token (80% of 100) threshold.
+        let messages = vec![make_user_msg(&"a".repeat(400))];
+        let result = router.chat_with_tools(&messages, &[]).await.unwrap();
+        assert!(matches!(result, ChatResponse::Text(t) if t == "complex answer"));
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_rejects_when_context_escalated_tier_lacks_tools_and_lower_tier_misfits()
+     {
+        // Simple's tiny window forces `maybe_escalate_for_context` to actively move the
+        // selection up to Medium to fit the large message. Medium lacks tool support and no
+        // higher tier is configured, so `escalate_for_tool_support` falls back toward Simple —
+        // but Simple's window is exactly what stage one already determined is too small for
+        // this message. The composed path must reject with `NoProviders`, not silently
+        // dispatch back to the tier stage one moved away from.
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![
+                (ComplexityTier::Simple, ollama_with_window(100)),
+                (
+                    ComplexityTier::Medium,
+                    AnyProvider::Mock(
+                        MockProvider::default()
+                            .without_tool_use()
+                            .with_context_window(10_000),
+                    ),
+                ),
+            ],
+            5,
+            50,
+        );
+        // ~100 estimated tokens: exceeds Simple's 80-token (80% of 100) threshold, which is why
+        // maybe_escalate_for_context moves off Simple in the first place.
+        let messages = vec![make_user_msg(&"a".repeat(400))];
+        let result = router.chat_with_tools(&messages, &[]).await;
+        assert!(matches!(result, Err(LlmError::NoProviders)));
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_lower_tier_fallback_rejects_context_misfit_end_to_end() {
+        // Expert (the only tier classified, no higher tier configured) lacks tool support.
+        // Simple supports tools but its context window is too small for the actual
+        // context_tokens computed by chat_with_tools — the composed path must fail with
+        // NoProviders rather than silently selecting Simple and reintroducing a context-window
+        // overflow that `maybe_escalate_for_context` exists to prevent.
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"expert","reason":"long task"}"#),
+            vec![
+                (ComplexityTier::Simple, ollama_with_window(100)),
+                (ComplexityTier::Expert, mock_provider_no_tools("expert-p")),
+            ],
+            5,
+            50,
+        );
+        // ~100 estimated tokens: exceeds Simple's 80-token (80% of 100) threshold.
+        let messages = vec![make_user_msg(&"a".repeat(400))];
+        let result = router.chat_with_tools(&messages, &[]).await;
+        assert!(matches!(result, Err(LlmError::NoProviders)));
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_lower_tier_fallback_accepts_context_fit_end_to_end() {
+        // Same shape as above, but the message is short enough that Simple's window (still
+        // `Some(100)`, exercising the same fits_context branch) comfortably fits — the
+        // lower-tier fallback must succeed and dispatch to Simple.
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"expert","reason":"short task"}"#),
+            vec![
+                (
+                    ComplexityTier::Simple,
+                    AnyProvider::Mock(
+                        MockProvider::with_responses(vec!["simple answer".to_owned()])
+                            .with_context_window(100),
+                    ),
+                ),
+                (ComplexityTier::Expert, mock_provider_no_tools("expert-p")),
+            ],
+            5,
+            50,
+        );
+        let messages = vec![make_user_msg("hi")];
+        let result = router.chat_with_tools(&messages, &[]).await.unwrap();
+        assert!(matches!(result, ChatResponse::Text(t) if t == "simple answer"));
     }
 
     // ── build_triage_prompt has no context size metadata (#2228) ─────────────

@@ -20,6 +20,15 @@ pub struct MockProvider {
     pub supports_embeddings: bool,
     pub streaming: bool,
     pub fail_chat: bool,
+    /// Whether `supports_tool_use()` reports `true`. Defaults to `true` (the trait itself now
+    /// defaults to `false` per #5687, but most existing tests use `MockProvider` to simulate a
+    /// tool-capable provider); set via [`MockProvider::without_tool_use`] to test tool-support
+    /// escalation paths.
+    pub supports_tool_use: bool,
+    /// Value returned by `context_window()`. Defaults to `None`, matching the trait default;
+    /// set via [`MockProvider::with_context_window`] to test context-fit escalation paths
+    /// without needing a real `OllamaProvider`.
+    pub context_window: Option<usize>,
     /// Milliseconds to sleep before returning a response.
     pub delay_ms: u64,
     /// Sequence of errors to return before switching to normal responses.
@@ -77,6 +86,8 @@ impl Default for MockProvider {
             supports_embeddings: false,
             streaming: false,
             fail_chat: false,
+            supports_tool_use: true,
+            context_window: None,
             delay_ms: 0,
             errors: Arc::new(Mutex::new(VecDeque::new())),
             recorded: None,
@@ -336,6 +347,23 @@ impl MockProvider {
         let counter = Arc::clone(&self.tool_call_count);
         (self, counter)
     }
+
+    /// Make `supports_tool_use()` report `false`. Used to test router/triage escalation
+    /// logic that must avoid delegating tool calls to a provider without tool support.
+    #[must_use]
+    pub fn without_tool_use(mut self) -> Self {
+        self.supports_tool_use = false;
+        self
+    }
+
+    /// Set the value returned by `context_window()`. Mirrors `OllamaProvider::set_context_window`
+    /// so tests can combine a specific context window with other mock behavior (e.g. no tool
+    /// support) on a single provider instance.
+    #[must_use]
+    pub fn with_context_window(mut self, window: usize) -> Self {
+        self.context_window = Some(window);
+        self
+    }
 }
 
 impl LlmProvider for MockProvider {
@@ -454,7 +482,11 @@ impl LlmProvider for MockProvider {
     }
 
     fn supports_tool_use(&self) -> bool {
-        true
+        self.supports_tool_use
+    }
+
+    fn context_window(&self) -> Option<usize> {
+        self.context_window
     }
 
     async fn chat_with_tools(

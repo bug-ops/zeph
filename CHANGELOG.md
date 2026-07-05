@@ -136,6 +136,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(llm)`: `TriageRouter::chat_with_tools` (`crates/zeph-llm/src/router/triage.rs`) delegated
+  a tool call to whichever tier was selected by classification with no check that the tier's
+  provider actually supports tool use, unlike `RouterProvider::chat_with_tools` which explicitly
+  filters on `supports_tool_use()`. A new private `escalate_for_tool_support` escalates to the
+  nearest tool-capable tier (higher tiers first, then lower), applying the same context-window
+  fit guard `maybe_escalate_for_context` already uses so a tool-support escalation can never
+  silently reintroduce a context-overflow the prior escalation stage had already fixed; returns
+  `LlmError::NoProviders` if no tier both supports tools and fits context, matching
+  `RouterProvider`'s existing behavior for the equivalent case. (#5688)
 - `fix(llm)`: `OpenAiProvider::chat_with_tools` (`crates/zeph-llm/src/openai/mod.rs`) sent its
   request directly via `.send().await?` with a manual one-shot 429 special case, instead of
   going through the shared `send_with_retry` helper used by every other request path on the
