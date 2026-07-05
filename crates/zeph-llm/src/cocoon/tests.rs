@@ -182,10 +182,11 @@ async fn cocoon_retry_on_transient_503_then_succeeds() {
 }
 
 /// Regression test for #5693: once retries against a persistently unavailable sidecar
-/// are exhausted, the call surfaces `LlmError::RateLimited` instead of hanging or
-/// failing on the very first 503.
+/// are exhausted, the call surfaces `LlmError::Unavailable` (per #5695's classification —
+/// the last-seen status before exhaustion was 503) instead of hanging or failing on the
+/// very first 503.
 #[tokio::test]
-async fn cocoon_retry_exhausted_returns_rate_limited() {
+async fn cocoon_retry_exhausted_returns_unavailable() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
@@ -196,8 +197,8 @@ async fn cocoon_retry_exhausted_returns_rate_limited() {
     let provider = make_provider(&server.uri());
     let result = provider.chat(&user_message("fail test")).await;
     assert!(
-        matches!(result, Err(crate::error::LlmError::RateLimited)),
-        "expected RateLimited after exhausting retries, got: {result:?}"
+        matches!(result, Err(crate::error::LlmError::Unavailable)),
+        "expected Unavailable after exhausting retries, got: {result:?}"
     );
 }
 
