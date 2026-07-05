@@ -186,12 +186,23 @@ pub struct CandleInlineConfig {
     pub local_path: String,
     #[serde(default)]
     pub filename: Option<String>,
+    /// Optional SHA-256 hex digest of the chat model file (GGUF).
+    ///
+    /// When set, the file is verified before loading. Mismatch aborts startup with an error.
+    /// Useful for security-sensitive deployments to detect corruption or tampering.
+    #[serde(default)]
+    pub chat_model_sha256: Option<String>,
     #[serde(default = "default_chat_template")]
     pub chat_template: String,
     #[serde(default)]
     pub device: CandleDevice,
     #[serde(default)]
     pub embedding_repo: Option<String>,
+    /// Optional SHA-256 hex digest of the embedding model safetensors file.
+    ///
+    /// When set, the file is verified before loading. Mismatch aborts startup with an error.
+    #[serde(default)]
+    pub embedding_model_sha256: Option<String>,
     /// Resolved `HuggingFace` Hub API token for authenticated model downloads.
     #[serde(default)]
     pub hf_token: Option<String>,
@@ -211,9 +222,11 @@ impl Default for CandleInlineConfig {
             source: CandleSource::default(),
             local_path: String::new(),
             filename: None,
+            chat_model_sha256: None,
             chat_template: default_chat_template(),
             device: CandleDevice::default(),
             embedding_repo: None,
+            embedding_model_sha256: None,
             hf_token: None,
             generation: GenerationParams::default(),
             inference_timeout_secs: default_inference_timeout_secs(),

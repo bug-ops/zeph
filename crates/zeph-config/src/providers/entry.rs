@@ -88,6 +88,13 @@ pub struct ProviderEntry {
     #[serde(default)]
     pub stt_model: Option<String>,
 
+    /// Optional SHA-256 hex digest of the Candle-local Whisper model safetensors file.
+    ///
+    /// Only consulted when `provider_type = "candle"`. When set, the file is verified
+    /// before loading; mismatch aborts startup with an error.
+    #[serde(default)]
+    pub stt_model_sha256: Option<String>,
+
     /// Mark this entry as the embedding provider (handles `embed()` calls).
     #[serde(default)]
     pub embed: bool,
@@ -201,6 +208,7 @@ impl Default for ProviderEntry {
             max_tokens: None,
             embedding_model: None,
             stt_model: None,
+            stt_model_sha256: None,
             embed: false,
             default: false,
             thinking: None,

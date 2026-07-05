@@ -43,11 +43,19 @@ fn device_name(d: &Device) -> &'static str {
 impl CandleWhisperProvider {
     /// Load a Whisper model from a `HuggingFace` repo.
     ///
+    /// When `expected_sha256` is set, the downloaded safetensors file is verified against
+    /// it before loading; a mismatch aborts the load without ever memory-mapping the file.
+    ///
     /// # Errors
     ///
-    /// Returns `LlmError::ModelLoad` if downloading or loading fails.
+    /// Returns `LlmError::ModelLoad` if downloading, hash verification, or loading fails.
     #[allow(unsafe_code)]
-    pub fn load(repo_id: &str, device: Option<Device>, language: &str) -> Result<Self, LlmError> {
+    pub fn load(
+        repo_id: &str,
+        device: Option<Device>,
+        language: &str,
+        expected_sha256: Option<&str>,
+    ) -> Result<Self, LlmError> {
         let device = device.unwrap_or_else(crate::device::detect_device);
         tracing::info!(
             repo = repo_id,
@@ -68,6 +76,10 @@ impl CandleWhisperProvider {
         let weights_path = repo
             .get("model.safetensors")
             .map_err(|e| LlmError::ModelLoad(format!("model.safetensors: {e}")))?;
+
+        if let Some(expected_hash) = expected_sha256 {
+            crate::classifier::verify_sha256(&weights_path, expected_hash)?;
+        }
 
         let config: Config = serde_json::from_reader(std::io::BufReader::new(
             std::fs::File::open(&config_path)

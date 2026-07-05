@@ -188,6 +188,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `tokio::time::timeout` gated on `embed_timeout_ms` — violating the project's await-discipline
   rule that every external `.await` must have a bound. `embed_batch()` now applies the same
   timeout wrapping as `embed()`. (#5686)
+- `fix(llm)`: Candle-backed model loaders downloaded `HuggingFace` weights with no (or only
+  structural) integrity verification, so a compromised or tampered mirror could silently swap
+  in malicious weights. `CandleClassifier` (`crates/zeph-llm/src/classifier/candle.rs`, the
+  Phase 1 injection detector) gained a `with_sha256` builder mirroring its
+  `CandleThreeClassClassifier`/`CandlePiiClassifier` siblings, closing the gap where
+  `classifiers.injection_model_sha256` was already a config field but had no code path to
+  consume it (#5690). `candle_provider::loader::load_chat_model` (GGUF chat models),
+  `candle_provider::embed::EmbedModel::load` (BERT embedding models), and
+  `candle_whisper::CandleWhisperProvider::load` (Whisper STT) now accept an optional expected
+  SHA-256 digest and verify it — via the shared `classifier::verify_sha256` helper, now
+  `pub(crate)` and gated on the `candle` feature instead of `classifiers` so every loader in
+  the crate can reuse it — right after download and before the file is memory-mapped. New
+  `chat_model_sha256`/`embedding_model_sha256` fields on `CandleInlineConfig` (the
+  `[[llm.providers]]` inline `candle` section — the only Candle config path that actually builds
+  a provider) and `stt_model_sha256` on `ProviderEntry` plumb the digest from config through
+  `provider_factory::build_candle_provider` and `agent_setup::apply_candle_stt`; all three are
+  optional and verification is skipped (as before) when unset. (#5692, #5690)
 - `fix(channels)`: `JsonCliChannel::try_recv` (`crates/zeph-channels/src/json_cli.rs`) did not
   recognize `exit`/`quit`/`/exit`/`/quit` the way `recv` already did, so an exit command
   arriving via the queued/merge path (`Agent::drain_channel`'s 500ms merge window in

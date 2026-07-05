@@ -863,6 +863,9 @@ pub(crate) fn apply_injection_classifier_with_cfg<C: Channel>(
     }
     let mut classifier =
         zeph_llm::classifier::candle::CandleClassifier::new(classifiers.injection_model.as_str());
+    if let Some(hash) = &classifiers.injection_model_sha256 {
+        classifier = classifier.with_sha256(hash.as_str());
+    }
     if let Some(token) = &classifiers.hf_token {
         classifier = classifier.with_hf_token(token.as_str());
     }
@@ -1725,7 +1728,12 @@ pub(crate) fn apply_candle_stt<C: Channel>(
     language: &str,
 ) -> zeph_core::agent::Agent<C> {
     let model = entry.stt_model.as_deref().unwrap_or("openai/whisper-tiny");
-    match zeph_llm::candle_whisper::CandleWhisperProvider::load(model, None, language) {
+    match zeph_llm::candle_whisper::CandleWhisperProvider::load(
+        model,
+        None,
+        language,
+        entry.stt_model_sha256.as_deref(),
+    ) {
         Ok(provider) => {
             tracing::info!("STT enabled via candle-whisper (model: {model})");
             agent.with_stt(Box::new(provider))

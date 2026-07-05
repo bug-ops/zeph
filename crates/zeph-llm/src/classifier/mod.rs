@@ -91,11 +91,15 @@ pub trait PiiDetector: Send + Sync {
 
 /// Verify the SHA-256 digest of a file against an expected hex string.
 ///
+/// Shared by every Candle model loader in this crate (classifiers, chat/embed models,
+/// Whisper STT) so downloaded `HuggingFace` weights can be checked for tampering or
+/// corruption before being memory-mapped.
+///
 /// # Errors
 ///
 /// Returns `LlmError::ModelLoad` if the file cannot be read or the digest mismatches.
-#[cfg(feature = "classifiers")]
-pub(super) fn verify_sha256(path: &std::path::Path, expected: &str) -> Result<(), LlmError> {
+#[cfg(feature = "candle")]
+pub(crate) fn verify_sha256(path: &std::path::Path, expected: &str) -> Result<(), LlmError> {
     use hex;
     use sha2::{Digest, Sha256};
     use std::io::Read;
@@ -114,7 +118,7 @@ pub(super) fn verify_sha256(path: &std::path::Path, expected: &str) -> Result<()
         hasher.update(&buf[..n]);
     }
     let computed = hex::encode(hasher.finalize());
-    if computed != expected.to_lowercase() {
+    if computed != expected.trim().to_lowercase() {
         return Err(LlmError::ModelLoad(format!(
             "SHA-256 mismatch for {}: expected {}, got {} \
              (file may be corrupt or tampered — do not auto-retry)",
@@ -187,7 +191,7 @@ pub trait ClassifierBackend: Send + Sync {
     fn backend_name(&self) -> &'static str;
 }
 
-#[cfg(all(test, feature = "classifiers"))]
+#[cfg(all(test, feature = "candle"))]
 mod sha256_tests {
     use std::io::Write;
 
@@ -219,6 +223,14 @@ mod sha256_tests {
         let data = b"case test";
         let f = write_tmp(data);
         let expected = sha256_hex(data).to_uppercase();
+        assert!(verify_sha256(f.path(), &expected).is_ok());
+    }
+
+    #[test]
+    fn verify_sha256_whitespace_padded_expected_accepted() {
+        let data = b"padded case";
+        let f = write_tmp(data);
+        let expected = format!("  {}\n", sha256_hex(data));
         assert!(verify_sha256(f.path(), &expected).is_ok());
     }
 

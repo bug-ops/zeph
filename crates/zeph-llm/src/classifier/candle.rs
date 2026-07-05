@@ -58,6 +58,7 @@ struct CandleClassifierInner {
 pub struct CandleClassifier {
     repo_id: Arc<str>,
     hf_token: Option<Arc<str>>,
+    sha256: Option<Arc<str>>,
     inner: Arc<OnceLock<Result<Arc<CandleClassifierInner>, String>>>,
 }
 
@@ -76,6 +77,7 @@ impl CandleClassifier {
         Self {
             repo_id: repo_id.into(),
             hf_token: None,
+            sha256: None,
             inner: Arc::new(OnceLock::new()),
         }
     }
@@ -84,6 +86,16 @@ impl CandleClassifier {
     #[must_use]
     pub fn with_hf_token(mut self, token: impl Into<Arc<str>>) -> Self {
         self.hf_token = Some(token.into());
+        self
+    }
+
+    /// Set expected SHA-256 hex digest of the model safetensors file.
+    ///
+    /// When set, the file is verified before loading. Mismatch aborts the load with
+    /// `LlmError::ModelLoad` (cached by the `OnceLock` like any other load failure).
+    #[must_use]
+    pub fn with_sha256(mut self, digest: impl Into<Arc<str>>) -> Self {
+        self.sha256 = Some(digest.into());
         self
     }
 
@@ -211,6 +223,7 @@ impl CandleClassifier {
     fn load_inner(
         repo_id: &str,
         hf_token: Option<&str>,
+        sha256: Option<&str>,
     ) -> Result<CandleClassifierInner, LlmError> {
         let api = hf_hub::api::sync::ApiBuilder::new()
             .with_token(hf_token.map(str::to_owned))
@@ -235,6 +248,10 @@ impl CandleClassifier {
                 "failed to download model.safetensors from {repo_id}: {e}"
             ))
         })?;
+
+        if let Some(expected_hash) = sha256 {
+            super::verify_sha256(&weights_path, expected_hash)?;
+        }
 
         let config_str = std::fs::read_to_string(&config_path)
             .map_err(|e| LlmError::ModelLoad(format!("failed to read DeBERTa config: {e}")))?;
@@ -339,13 +356,14 @@ impl ClassifierBackend for CandleClassifier {
         let inner_lock = Arc::clone(&self.inner);
         let repo_id = Arc::clone(&self.repo_id);
         let hf_token = self.hf_token.clone();
+        let sha256 = self.sha256.clone();
 
         Box::pin(async move {
             // spawn_blocking: model is already loaded (OnceLock), inference is CPU-bound.
             // Uses tokio's bounded blocking pool (default 512 threads, shared across callers).
             tokio::task::spawn_blocking(move || {
                 let loaded = inner_lock.get_or_init(|| {
-                    CandleClassifier::load_inner(&repo_id, hf_token.as_deref())
+                    CandleClassifier::load_inner(&repo_id, hf_token.as_deref(), sha256.as_deref())
                         .map(Arc::new)
                         .map_err(|e| e.to_string())
                 });
@@ -389,7 +407,7 @@ pub fn download_model(
 
     std::thread::spawn(move || {
         let result =
-            CandleClassifier::load_inner(&repo_id_owned, token_owned.as_deref()).map(|_| ());
+            CandleClassifier::load_inner(&repo_id_owned, token_owned.as_deref(), None).map(|_| ());
         let _ = tx.send(result);
     });
 
@@ -553,6 +571,23 @@ mod tests {
         assert!(
             classifier.hf_token.is_none(),
             "hf_token must be None when not explicitly set"
+        );
+    }
+
+    // --- sha256 propagation (issue #5690) ---
+
+    #[test]
+    fn candle_classifier_with_sha256() {
+        let classifier = CandleClassifier::new("test/model").with_sha256("abc123");
+        assert_eq!(classifier.sha256.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn candle_classifier_sha256_absent_by_default() {
+        let classifier = CandleClassifier::new("test/model");
+        assert!(
+            classifier.sha256.is_none(),
+            "sha256 must be None when not explicitly set"
         );
     }
 

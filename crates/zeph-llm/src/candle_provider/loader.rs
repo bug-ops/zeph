@@ -19,6 +19,11 @@ pub enum ModelSource {
     HuggingFace {
         repo_id: String,
         filename: Option<String>,
+        /// Optional expected SHA-256 hex digest of the downloaded model file.
+        ///
+        /// When set, [`load_chat_model`] verifies the digest before parsing the GGUF
+        /// weights. Mismatch aborts the load — see `classifier::verify_sha256`.
+        sha256: Option<String>,
     },
 }
 
@@ -53,7 +58,11 @@ pub fn load_chat_model(
                 eos_token_id,
             })
         }
-        ModelSource::HuggingFace { repo_id, filename } => {
+        ModelSource::HuggingFace {
+            repo_id,
+            filename,
+            sha256,
+        } => {
             let api = hf_hub::api::sync::ApiBuilder::new()
                 .with_token(hf_token.map(str::to_owned))
                 .build()
@@ -74,6 +83,10 @@ pub fn load_chat_model(
                     "failed to download tokenizer.json from {repo_id}: {e}"
                 ))
             })?;
+
+            if let Some(expected_hash) = sha256 {
+                crate::classifier::verify_sha256(&model_path, expected_hash)?;
+            }
 
             let weights = load_gguf_weights(&model_path, device)?;
             let tokenizer = load_tokenizer(&tokenizer_path)?;
@@ -143,6 +156,7 @@ mod tests {
         let source = ModelSource::HuggingFace {
             repo_id: "TheBloke/Mistral-7B".into(),
             filename: Some("model.Q4_K_M.gguf".into()),
+            sha256: None,
         };
         let debug = format!("{source:?}");
         assert!(debug.contains("HuggingFace"));

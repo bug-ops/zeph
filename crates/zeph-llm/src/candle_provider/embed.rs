@@ -28,11 +28,19 @@ impl std::fmt::Debug for EmbedModel {
 impl EmbedModel {
     /// Load a BERT embedding model from `HuggingFace` Hub.
     ///
+    /// When `expected_sha256` is set, the downloaded safetensors file is verified against
+    /// it before loading; a mismatch aborts the load without ever memory-mapping the file.
+    ///
     /// # Errors
     ///
-    /// Returns an error if model download or loading fails.
+    /// Returns an error if model download, hash verification, or loading fails.
     #[allow(unsafe_code)]
-    pub fn load(repo_id: &str, hf_token: Option<&str>, device: &Device) -> Result<Self, LlmError> {
+    pub fn load(
+        repo_id: &str,
+        hf_token: Option<&str>,
+        device: &Device,
+        expected_sha256: Option<&str>,
+    ) -> Result<Self, LlmError> {
         let api = hf_hub::api::sync::ApiBuilder::new()
             .with_token(hf_token.map(str::to_owned))
             .build()
@@ -56,6 +64,10 @@ impl EmbedModel {
                 "failed to download model.safetensors from {repo_id}: {e}"
             ))
         })?;
+
+        if let Some(expected_hash) = expected_sha256 {
+            crate::classifier::verify_sha256(&weights_path, expected_hash)?;
+        }
 
         let config_str = std::fs::read_to_string(&config_path)
             .map_err(|e| LlmError::ModelLoad(format!("failed to read BERT config: {e}")))?;

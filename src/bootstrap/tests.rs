@@ -300,6 +300,7 @@ async fn health_check_candle_logs_device() {
     let source = zeph_llm::candle_provider::loader::ModelSource::HuggingFace {
         repo_id: "test/model".to_string(),
         filename: Some("model.gguf".to_string()),
+        sha256: None,
     };
     let template = zeph_llm::candle_provider::template::ChatTemplate::parse_str(
         "{{ bos_token }}{{ messages[0].content }}",
@@ -320,6 +321,7 @@ async fn health_check_candle_logs_device() {
         template,
         gen_config,
         Some("embed/model"),
+        None,
         None,
         device,
     );

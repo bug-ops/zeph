@@ -26,7 +26,7 @@ use zeroize::Zeroizing;
 
 use crate::agent::state::ProviderConfigSnapshot;
 #[cfg(feature = "candle")]
-use crate::config::{CandleDevice, CandleSource};
+use crate::config::{CandleDevice, CandleInlineConfig, CandleSource};
 use crate::config::{Config, ProviderEntry, ProviderKind};
 
 #[non_exhaustive]
@@ -662,16 +662,28 @@ pub fn spawn_cocoon_health_checks(
     }
 }
 
+/// Pure data resolved from a `[[llm.providers]]` Candle entry, prior to the fallible device
+/// selection and model-loading steps in [`build_candle_provider`].
+///
+/// Split out so the config → loader-args mapping (including SHA-256 threading) is unit-testable
+/// without touching the network-calling `CandleProvider::new_with_timeout`.
 #[cfg(feature = "candle")]
-fn build_candle_provider(
+struct CandleLoadParams {
+    source: zeph_llm::candle_provider::loader::ModelSource,
+    template: zeph_llm::candle_provider::template::ChatTemplate,
+    gen_config: zeph_llm::candle_provider::generate::GenerationConfig,
+    embedding_repo: Option<String>,
+    embedding_sha256: Option<String>,
+    hf_token: Option<String>,
+    inference_timeout: std::time::Duration,
+}
+
+#[cfg(feature = "candle")]
+fn resolve_candle_load_params(
     entry: &ProviderEntry,
+    candle: &CandleInlineConfig,
     config: &Config,
-) -> Result<AnyProvider, BootstrapError> {
-    let candle = entry.candle.as_ref().ok_or_else(|| {
-        BootstrapError::Provider(
-            "candle provider requires 'candle' section in [[llm.providers]]".into(),
-        )
-    })?;
+) -> CandleLoadParams {
     let source = match candle.source {
         CandleSource::Local => zeph_llm::candle_provider::loader::ModelSource::Local {
             path: std::path::PathBuf::from(&candle.local_path),
@@ -682,6 +694,7 @@ fn build_candle_provider(
                 .clone()
                 .unwrap_or_else(|| config.llm.effective_model().to_owned()),
             filename: candle.filename.clone(),
+            sha256: candle.chat_model_sha256.clone(),
         },
     };
     let template =
@@ -695,18 +708,41 @@ fn build_candle_provider(
         repeat_penalty: candle.generation.repeat_penalty,
         repeat_last_n: candle.generation.repeat_last_n,
     };
-    let device = select_device(candle.device)?;
     // Floor at 1s so that inference_timeout_secs = 0 does not cause every request to
     // immediately time out.
     let inference_timeout = std::time::Duration::from_secs(candle.inference_timeout_secs.max(1));
-    zeph_llm::candle_provider::CandleProvider::new_with_timeout(
-        &source,
+    CandleLoadParams {
+        source,
         template,
         gen_config,
-        candle.embedding_repo.as_deref(),
-        candle.hf_token.as_deref(),
-        device,
+        embedding_repo: candle.embedding_repo.clone(),
+        embedding_sha256: candle.embedding_model_sha256.clone(),
+        hf_token: candle.hf_token.clone(),
         inference_timeout,
+    }
+}
+
+#[cfg(feature = "candle")]
+fn build_candle_provider(
+    entry: &ProviderEntry,
+    config: &Config,
+) -> Result<AnyProvider, BootstrapError> {
+    let candle = entry.candle.as_ref().ok_or_else(|| {
+        BootstrapError::Provider(
+            "candle provider requires 'candle' section in [[llm.providers]]".into(),
+        )
+    })?;
+    let params = resolve_candle_load_params(entry, candle, config);
+    let device = select_device(candle.device)?;
+    zeph_llm::candle_provider::CandleProvider::new_with_timeout(
+        &params.source,
+        params.template,
+        params.gen_config,
+        params.embedding_repo.as_deref(),
+        params.embedding_sha256.as_deref(),
+        params.hf_token.as_deref(),
+        device,
+        params.inference_timeout,
     )
     .map(AnyProvider::Candle)
     .map_err(|e| BootstrapError::Provider(e.to_string()))
@@ -786,6 +822,68 @@ mod tests {
         let result = select_device(CandleDevice::Cuda);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cuda feature"));
+    }
+
+    // --- sha256 config threading (issues #5692/#5690 follow-up: guards against a future
+    // field-drop regression in `resolve_candle_load_params`) ---
+
+    #[cfg(feature = "candle")]
+    #[test]
+    fn resolve_candle_load_params_threads_chat_and_embedding_sha256() {
+        use super::resolve_candle_load_params;
+        use crate::config::{CandleInlineConfig, Config};
+        use zeph_config::providers::ProviderEntry;
+
+        let candle = CandleInlineConfig {
+            chat_model_sha256: Some("deadbeef".into()),
+            embedding_repo: Some("org/embed-model".into()),
+            embedding_model_sha256: Some("cafef00d".into()),
+            ..CandleInlineConfig::default()
+        };
+        let entry = ProviderEntry {
+            model: Some("org/chat-model".into()),
+            candle: Some(candle.clone()),
+            ..ProviderEntry::default()
+        };
+        let config = Config::default();
+
+        let params = resolve_candle_load_params(&entry, &candle, &config);
+
+        if let zeph_llm::candle_provider::loader::ModelSource::HuggingFace { sha256, .. } =
+            params.source
+        {
+            assert_eq!(sha256.as_deref(), Some("deadbeef"));
+        } else {
+            panic!("expected HuggingFace source for CandleSource::default()")
+        }
+        assert_eq!(params.embedding_sha256.as_deref(), Some("cafef00d"));
+    }
+
+    #[cfg(feature = "candle")]
+    #[test]
+    fn resolve_candle_load_params_sha256_absent_by_default() {
+        use super::resolve_candle_load_params;
+        use crate::config::{CandleInlineConfig, Config};
+        use zeph_config::providers::ProviderEntry;
+
+        let candle = CandleInlineConfig::default();
+        let entry = ProviderEntry {
+            model: Some("org/chat-model".into()),
+            candle: Some(candle.clone()),
+            ..ProviderEntry::default()
+        };
+        let config = Config::default();
+
+        let params = resolve_candle_load_params(&entry, &candle, &config);
+
+        if let zeph_llm::candle_provider::loader::ModelSource::HuggingFace { sha256, .. } =
+            params.source
+        {
+            assert!(sha256.is_none());
+        } else {
+            panic!("expected HuggingFace source for CandleSource::default()")
+        }
+        assert!(params.embedding_sha256.is_none());
     }
 
     use super::{build_provider_from_entry, resolve_named_provider};

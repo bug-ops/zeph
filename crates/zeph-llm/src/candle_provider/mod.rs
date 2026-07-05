@@ -36,7 +36,7 @@
 //!
 //! ```rust,no_run
 //! # #[cfg(feature = "candle")]
-//! # {
+//! # fn example() -> Result<(), zeph_llm::LlmError> {
 //! use zeph_llm::candle_provider::{CandleProvider, Device};
 //! use zeph_llm::candle_provider::loader::ModelSource;
 //! use zeph_llm::candle_provider::template::ChatTemplate;
@@ -44,18 +44,22 @@
 //!
 //! let source = ModelSource::HuggingFace {
 //!     repo_id: "microsoft/Phi-3-mini-4k-instruct".into(),
-//!     revision: None,
+//!     filename: None,
+//!     sha256: None, // set to verify the downloaded weights before loading
 //! };
 //! let provider = CandleProvider::new(
 //!     &source,
 //!     ChatTemplate::Phi3,
 //!     GenerationConfig::default(),
 //!     Some("sentence-transformers/all-MiniLM-L6-v2"),
+//!     None, // no embedding-model hash pinned
 //!     None, // no HF token needed for public models
 //!     Device::Cpu,
 //! )?;
-//! # Ok::<(), zeph_llm::LlmError>(())
+//! # Ok(())
 //! # }
+//! # #[cfg(not(feature = "candle"))]
+//! # fn example() {}
 //! ```
 
 pub mod embed;
@@ -146,6 +150,7 @@ impl CandleProvider {
         template: ChatTemplate,
         generation_config: GenerationConfig,
         embedding_repo: Option<&str>,
+        embedding_sha256: Option<&str>,
         hf_token: Option<&str>,
         device: Device,
     ) -> Result<Self, LlmError> {
@@ -154,6 +159,7 @@ impl CandleProvider {
             template,
             generation_config,
             embedding_repo,
+            embedding_sha256,
             hf_token,
             device,
             Duration::from_secs(DEFAULT_INFERENCE_TIMEOUT_SECS),
@@ -165,11 +171,13 @@ impl CandleProvider {
     /// # Errors
     ///
     /// Returns an error if model loading or embedding model initialization fails.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_timeout(
         source: &ModelSource,
         template: ChatTemplate,
         generation_config: GenerationConfig,
         embedding_repo: Option<&str>,
+        embedding_sha256: Option<&str>,
         hf_token: Option<&str>,
         device: Device,
         inference_timeout: Duration,
@@ -182,7 +190,10 @@ impl CandleProvider {
 
         let embed_model = if let Some(repo) = embedding_repo {
             Some(std::sync::Arc::new(EmbedModel::load(
-                repo, hf_token, &device,
+                repo,
+                hf_token,
+                &device,
+                embedding_sha256,
             )?))
         } else {
             None
