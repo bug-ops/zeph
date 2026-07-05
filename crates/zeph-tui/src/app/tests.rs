@@ -2000,6 +2000,7 @@ fn tool_output_with_prior_tool_start_no_chunks_appends_output() {
         tool_name: "bash".into(),
         command: "ls -la".into(),
         tool_call_id: "call-a".into(),
+        is_mcp: false,
     });
     // Path C: ToolOutput arrives with no prior chunks.
     app.handle_agent_event(AgentEvent::ToolOutput {
@@ -2027,6 +2028,7 @@ fn tool_output_with_prior_tool_start_and_chunks_does_not_duplicate() {
         tool_name: "bash".into(),
         command: "echo hello".into(),
         tool_call_id: "call-b".into(),
+        is_mcp: false,
     });
     // Path B: streaming chunks arrive.
     app.handle_agent_event(AgentEvent::ToolOutputChunk {

@@ -116,6 +116,8 @@ pub struct ChatMessage {
     /// Whether the tool call succeeded. `None` while streaming, `Some(true)` on
     /// success, `Some(false)` on error.
     pub success: Option<bool>,
+    /// Whether this tool call originates from an MCP server rather than a native tool.
+    pub is_mcp: bool,
 }
 
 impl ChatMessage {
@@ -143,6 +145,7 @@ impl ChatMessage {
             paste_line_count: None,
             tool_call_id: None,
             success: None,
+            is_mcp: false,
         }
     }
 
@@ -199,6 +202,25 @@ impl ChatMessage {
     #[must_use]
     pub fn with_tool_call_id(mut self, id: String) -> Self {
         self.tool_call_id = Some(id);
+        self
+    }
+
+    /// Mark whether this tool call originates from an MCP server.
+    ///
+    /// Used by the chat widget to classify the message's `ToolKind` for icon/color
+    /// selection.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tui::{ChatMessage, MessageRole};
+    ///
+    /// let msg = ChatMessage::new(MessageRole::Tool, "").with_is_mcp(true);
+    /// assert!(msg.is_mcp);
+    /// ```
+    #[must_use]
+    pub fn with_is_mcp(mut self, is_mcp: bool) -> Self {
+        self.is_mcp = is_mcp;
         self
     }
 }

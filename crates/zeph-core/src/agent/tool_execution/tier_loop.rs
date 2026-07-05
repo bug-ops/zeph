@@ -1263,6 +1263,7 @@ impl<C: Channel> Agent<C> {
                     tool_call_ids,
                     tool_started_ats,
                     speculation_engine.as_ref(),
+                    mcp_tool_ids,
                 )
                 .await?;
 
@@ -1278,6 +1279,7 @@ impl<C: Channel> Agent<C> {
                 tool_calls,
                 tool_call_ids,
                 tool_started_ats,
+                mcp_tool_ids,
             )
             .await?;
 
@@ -1402,12 +1404,13 @@ impl<C: Channel> Agent<C> {
         pending_focus_checkpoint
     }
 
-    async fn stamp_and_send_tier_start(
+    pub(super) async fn stamp_and_send_tier_start(
         &mut self,
         tier_indices: &[usize],
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
         tool_call_ids: &[String],
         tool_started_ats: &mut [std::time::Instant],
+        mcp_tool_ids: &std::collections::HashSet<String>,
     ) -> Result<(), crate::agent::error::AgentError> {
         let tier_start = std::time::Instant::now();
         for &idx in tier_indices {
@@ -1424,6 +1427,7 @@ impl<C: Channel> Agent<C> {
                     started_at: std::time::Instant::now(),
                     speculative: false,
                     sandbox_profile: None,
+                    is_mcp: mcp_tool_ids.contains(tc.name.as_str()),
                 })
                 .await?;
         }
@@ -1437,6 +1441,7 @@ impl<C: Channel> Agent<C> {
         fields(tier_size = tier_indices.len()),
         err
     )]
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn commit_speculative_tier(
         &mut self,
         tier_indices: &[usize],
@@ -1445,6 +1450,7 @@ impl<C: Channel> Agent<C> {
         tool_call_ids: &[String],
         tool_started_ats: &mut [std::time::Instant],
         engine: Option<&std::sync::Arc<crate::agent::speculative::SpeculationEngine>>,
+        mcp_tool_ids: &std::collections::HashSet<String>,
     ) -> Result<
         std::collections::HashMap<
             usize,
@@ -1499,6 +1505,7 @@ impl<C: Channel> Agent<C> {
                         started_at: tool_started_ats[idx],
                         speculative: true,
                         sandbox_profile: None,
+                        is_mcp: mcp_tool_ids.contains(tc.name.as_str()),
                     })
                     .await?;
             }

@@ -408,6 +408,7 @@ mod tests {
                 started_at: std::time::Instant::now(),
                 speculative: false,
                 sandbox_profile: None,
+                is_mcp: false,
             })
             .await
             .is_ok()

@@ -295,6 +295,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `classify_tool`'s pattern-based categorization was also extended to treat a `"delete"` substring
   the same as `"write"`/`"edit"` (escalating to `FileWrite`/`ExfilCapable` rather than falling to
   the catch-all `ExfilCapable` branch regardless of MCP origin).
+- `fix(core,tui)`: MCP-origin tools were never classified as `ToolKind::Mcp` in the running TUI
+  because `zeph_tui::types::ChatMessage` had no field carrying MCP-origin metadata, so
+  `widgets::chat::group_messages`'s two `ToolKind::classify(...)` call sites always passed a
+  hardcoded `false` (#5743, follow-up to #5748/#5736). Added `is_mcp: bool` to `ToolStartEvent`
+  (`crates/zeph-core/src/channel.rs`), threaded from the `mcp_tool_ids: HashSet<String>` already
+  resolved per dispatch batch in `Agent::prepare_tool_dispatch` through `run_tier_execution_loop`
+  → `stamp_and_send_tier_start`/`commit_speculative_tier`
+  (`crates/zeph-core/src/agent/tool_execution/tier_loop.rs`). `TuiChannel::send_tool_start`
+  (`crates/zeph-tui/src/channel.rs`) forwards it onto a new `AgentEvent::ToolStart.is_mcp` field,
+  and a new `ChatMessage::with_is_mcp` builder (`crates/zeph-tui/src/types.rs`) carries it onto
+  the chat message so `group_messages` can classify grouped tool cells correctly.
+  `AgentChannelView::send_tool_start`/`send_tool_output` (`crates/zeph-core/src/agent/channel_impl.rs`)
+  is dead code with no production callers and no `ToolDef`/server-id data available at its
+  input type, so it sets `is_mcp: false` with an explanatory comment rather than inventing new
+  cross-crate plumbing for an unreachable path. `ToolOutputEvent` intentionally does NOT carry
+  `is_mcp` — output events locate-and-mutate an already-classified `ChatMessage` by
+  `tool_call_id` rather than creating a new one, so there is no consumer for the value on that
+  path (an initial revision added and threaded it through `process_one_tool_result` before
+  review caught it as write-only dead weight; reverted before merge). Added regression tests
+  proving the field actually flows end-to-end rather than only compiling: a mixed-batch
+  `stamp_and_send_tier_start` test asserting `ToolStartEvent.is_mcp` is `true`/`false` per tool
+  name (`crates/zeph-core/src/agent/tool_execution/tests/native_tests.rs`), and two
+  `group_messages` tests asserting `ToolKind::Mcp` classification and that same-named
+  MCP/native calls are not folded into one group (`crates/zeph-tui/src/widgets/chat.rs`).
 - `fix(tools)`: `is_cacheable` (`crates/zeph-tools/src/cache.rs`) checked
   `tool_name.starts_with("mcp_")` to exclude MCP tool results from caching — real MCP tool ids
   are `"{server_id}_{name}"` and never carry that prefix, so the check silently never matched

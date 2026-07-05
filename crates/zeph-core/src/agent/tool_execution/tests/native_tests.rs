@@ -769,6 +769,7 @@ async fn commit_speculative_tier_no_engine_returns_empty() {
             &tool_call_ids,
             &mut tool_started_ats,
             None,
+            &std::collections::HashSet::new(),
         )
         .await
         .expect("commit_speculative_tier must not fail with no engine");
@@ -799,6 +800,7 @@ async fn commit_speculative_tier_cache_miss_returns_empty() {
             &tool_call_ids,
             &mut tool_started_ats,
             Some(&engine),
+            &std::collections::HashSet::new(),
         )
         .await
         .expect("commit_speculative_tier must not fail on cache miss");
@@ -832,6 +834,7 @@ async fn commit_speculative_tier_ok_result_stamps_and_emits_event() {
             &tool_call_ids,
             &mut tool_started_ats,
             Some(&engine),
+            &std::collections::HashSet::new(),
         )
         .await
         .expect("commit_speculative_tier must not fail on cache hit");
@@ -890,6 +893,7 @@ async fn commit_speculative_tier_err_result_still_in_map() {
             &tool_call_ids,
             &mut tool_started_ats,
             Some(&engine),
+            &std::collections::HashSet::new(),
         )
         .await
         .expect("commit_speculative_tier must not fail when committed result is Err");
@@ -901,5 +905,43 @@ async fn commit_speculative_tier_err_result_still_in_map() {
     assert!(
         commits[&0].is_err(),
         "AlwaysErrSpecExec must produce Err result"
+    );
+}
+
+/// Regression test for #5743: `stamp_and_send_tier_start` must resolve `is_mcp` per call from
+/// `mcp_tool_ids`, not leave it always `false`. A mixed batch (one MCP-registered tool name, one
+/// not) must emit `ToolStartEvent.is_mcp == true` only for the contained id.
+#[tokio::test]
+async fn stamp_and_send_tier_start_sets_is_mcp_from_mcp_tool_ids() {
+    let mut agent = make_agent();
+    let tool_calls = [
+        test_tool_use_request("github_search_issues"),
+        test_tool_use_request("bash"),
+    ];
+    let tool_call_ids = ["id-mcp".to_string(), "id-native".to_string()];
+    let mut tool_started_ats = [Instant::now(), Instant::now()];
+    let mcp_tool_ids: std::collections::HashSet<String> =
+        std::iter::once("github_search_issues".to_string()).collect();
+
+    agent
+        .stamp_and_send_tier_start(
+            &[0, 1],
+            &tool_calls,
+            &tool_call_ids,
+            &mut tool_started_ats,
+            &mcp_tool_ids,
+        )
+        .await
+        .expect("stamp_and_send_tier_start must not fail");
+
+    let starts = agent.channel.tool_starts.lock().unwrap();
+    assert_eq!(starts.len(), 2, "one ToolStartEvent per tier index");
+    assert!(
+        starts[0].is_mcp,
+        "MCP-registered tool name must set is_mcp: true"
+    );
+    assert!(
+        !starts[1].is_mcp,
+        "non-MCP tool name must set is_mcp: false, not leak the prior call's value"
     );
 }

@@ -514,6 +514,8 @@ pub struct ToolStartEvent {
     ///
     /// `None` means no sandbox was applied (not configured or not a subprocess executor).
     pub sandbox_profile: Option<zeph_tools::SandboxProfile>,
+    /// True when this tool call originates from an MCP server rather than a native tool.
+    pub is_mcp: bool,
 }
 
 /// Event carrying data for a completed tool output, emitted after execution.
@@ -1173,6 +1175,7 @@ mod tests {
                 started_at: std::time::Instant::now(),
                 speculative: false,
                 sandbox_profile: None,
+                is_mcp: false,
             })
             .await
             .unwrap();
@@ -1200,6 +1203,7 @@ mod tests {
                 started_at: std::time::Instant::now(),
                 speculative: false,
                 sandbox_profile: None,
+                is_mcp: false,
             })
             .await
             .unwrap();
@@ -1223,6 +1227,7 @@ mod tests {
                 started_at: std::time::Instant::now(),
                 speculative: false,
                 sandbox_profile: None,
+                is_mcp: false,
             })
             .await;
         assert_matches!(result, Err(ChannelError::ChannelClosed));

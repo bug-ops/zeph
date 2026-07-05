@@ -504,15 +504,11 @@ fn group_messages(messages: &[crate::app::ChatMessage]) -> Vec<MessageGroup<'_>>
         }
         // tool_name: None maps to ToolKind::Other which is not groupable —
         // intentionally keeping nameless tool messages as individual cells.
-        //
-        // is_mcp: false — `ChatMessage` does not yet carry MCP-origin metadata from the agent
-        // event stream (see #5734); real MCP tool ids have no reliable string marker to infer
-        // it from `tool_name` alone, so passing `false` here is honest rather than guessing.
         let kind = ToolKind::classify(
             msg.tool_name
                 .as_ref()
                 .map_or("tool", zeph_common::ToolName::as_str),
-            false,
+            msg.is_mcp,
         );
         if !kind.is_groupable() {
             groups.push(MessageGroup::Single { idx: i, msg });
@@ -531,7 +527,7 @@ fn group_messages(messages: &[crate::app::ChatMessage]) -> Vec<MessageGroup<'_>>
                 next.tool_name
                     .as_ref()
                     .map_or("tool", zeph_common::ToolName::as_str),
-                false,
+                next.is_mcp,
             );
             if next_kind != kind {
                 break;
@@ -2018,6 +2014,18 @@ mod tests {
         msg
     }
 
+    fn make_mcp_msg(tool_name: &str) -> crate::app::ChatMessage {
+        let mut msg = crate::app::ChatMessage::new(
+            crate::app::MessageRole::Tool,
+            format!("{tool_name}\nout"),
+        );
+        msg.tool_name = Some(tool_name.into());
+        msg.is_mcp = true;
+        msg.success = Some(true);
+        msg.timestamp = "10:00".to_owned();
+        msg
+    }
+
     #[test]
     fn group_messages_folds_five_reads() {
         let msgs: Vec<_> = (0..5)
@@ -2100,6 +2108,48 @@ mod tests {
         let groups = group_messages(&msgs);
         assert_eq!(groups.len(), 1, "write_file is Edit — now groupable");
         assert_matches!(groups[0], MessageGroup::Grouped { .. });
+    }
+
+    /// Regression test for #5743: `group_messages` must read `ChatMessage.is_mcp` (set via
+    /// `with_is_mcp`/the agent-event path) rather than always classifying as a non-MCP kind.
+    #[test]
+    fn group_messages_mcp_tool_classified_as_mcp() {
+        let msgs = vec![
+            make_mcp_msg("github_search_issues"),
+            make_mcp_msg("github_create_issue"),
+        ];
+        let groups = group_messages(&msgs);
+        assert_eq!(
+            groups.len(),
+            1,
+            "two MCP tool calls must fold into one group"
+        );
+        match &groups[0] {
+            MessageGroup::Grouped { kind, members, .. } => {
+                assert_eq!(*kind, ToolKind::Mcp);
+                assert_eq!(members.len(), 2);
+            }
+            MessageGroup::Single { .. } => panic!("expected Grouped"),
+        }
+    }
+
+    /// An MCP-origin call and a native call sharing the same tool name must NOT be folded into
+    /// the same group — `is_mcp` must dominate `tool_name` in the `ToolKind` used for grouping.
+    #[test]
+    fn group_messages_mcp_and_native_same_name_not_grouped_together() {
+        let mut native = make_shell_msg("ls");
+        native.tool_name = Some("bash".into());
+        let mut mcp = make_mcp_msg("bash");
+        mcp.tool_name = Some("bash".into());
+        let msgs = vec![native, mcp];
+        let groups = group_messages(&msgs);
+        assert_eq!(
+            groups.len(),
+            2,
+            "same tool_name but different is_mcp must break the group"
+        );
+        assert_matches!(groups[0], MessageGroup::Single { .. });
+        assert_matches!(groups[1], MessageGroup::Single { .. });
     }
 
     #[test]

@@ -126,13 +126,15 @@ impl App {
                 tool_name,
                 command,
                 tool_call_id,
+                is_mcp,
             } => {
                 self.sessions.current_mut().status_label = None;
                 self.sessions.current_mut().messages.push(
                     ChatMessage::new(MessageRole::Tool, format!("$ {command}\n"))
                         .streaming()
                         .with_tool(tool_name)
-                        .with_tool_call_id(tool_call_id),
+                        .with_tool_call_id(tool_call_id)
+                        .with_is_mcp(is_mcp),
                 );
                 self.trim_messages();
                 self.auto_scroll();

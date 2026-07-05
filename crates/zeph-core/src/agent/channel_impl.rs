@@ -101,6 +101,8 @@ impl<C: Channel + Send> AgentChannel for AgentChannelView<'_, C> {
             started_at: Instant::now(),
             speculative: false,
             sandbox_profile: None,
+            // ToolEventStart carries no ToolDef/server-id data, so MCP origin is unknown here.
+            is_mcp: false,
         };
         self.channel
             .send_tool_start(canonical)

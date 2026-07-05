@@ -164,6 +164,8 @@ pub enum AgentEvent {
         command: String,
         /// Opaque tool-call identifier for correlating subsequent events.
         tool_call_id: String,
+        /// True when this tool call originates from an MCP server rather than a native tool.
+        is_mcp: bool,
     },
     /// An incremental output chunk from a long-running tool (e.g. streaming shell output).
     ToolOutputChunk {

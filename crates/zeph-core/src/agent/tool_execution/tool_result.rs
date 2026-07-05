@@ -667,6 +667,7 @@ impl<C: Channel> Agent<C> {
                 started_at: std::time::Instant::now(),
                 speculative: false,
                 sandbox_profile: None,
+                is_mcp: false,
             })
             .await?;
         if let Some(ref d) = self.runtime.debug.debug_dumper {
@@ -764,6 +765,7 @@ impl<C: Channel> Agent<C> {
                         started_at: std::time::Instant::now(),
                         speculative: false,
                         sandbox_profile: None,
+                        is_mcp: false,
                     })
                     .await?;
                 if let Some(ref d) = self.runtime.debug.debug_dumper {

@@ -293,6 +293,7 @@ impl Channel for TuiChannel {
             tool_name: event.tool_name,
             command,
             tool_call_id: event.tool_call_id,
+            is_mcp: event.is_mcp,
         });
         Ok(())
     }
@@ -613,6 +614,7 @@ mod tests {
             started_at: std::time::Instant::now(),
             speculative: false,
             sandbox_profile: None,
+            is_mcp: false,
         })
         .await
         .unwrap();
@@ -636,6 +638,7 @@ mod tests {
             started_at: std::time::Instant::now(),
             speculative: false,
             sandbox_profile: None,
+            is_mcp: false,
         })
         .await
         .unwrap();
@@ -659,6 +662,7 @@ mod tests {
             started_at: std::time::Instant::now(),
             speculative: false,
             sandbox_profile: None,
+            is_mcp: false,
         })
         .await
         .unwrap();
