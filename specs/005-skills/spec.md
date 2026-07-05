@@ -452,6 +452,7 @@ The tool returns a confirmation message with the skill's name and first 200 char
 
 - `invoke_skill` is always exempt from the utility gate and the adversarial policy gate — listed in both `UtilityScoringConfig::exempt_tools` and `AdversarialPolicyConfig::exempt_tools` by default
 - `invoke_skill` and `load_skill` are both in `QUARANTINE_DENIED` — they cannot be triggered by quarantined skill content
+- The trust check applied to `invoke_skill`/`load_skill` is a per-turn weakest-link fold (`TrustGateExecutor::effective_trust`, computed in `zeph_core::agent::context::assembly`), not a per-skill check: if ANY skill active this turn is `Quarantined`, the call is denied for the whole turn regardless of which skill is targeted. A denial reflects the turn's overall trust floor and is not necessarily about the specific skill/tool targeted by the call — it may or may not itself be the quarantined one — see #5729 and `TrustGateExecutor`'s doc comment
 - `invoke_skill` carries intent-to-apply semantics: the invoked skill IS injected; `load_skill` is preview-only and does NOT update the active skill
 - NEVER invoke a `Quarantined` skill via this tool — trust gate must check before injection
 

@@ -155,6 +155,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tools,skills)`: `TrustGateExecutor`'s quarantine-denial message for `QUARANTINE_DENIED`
+  tools (`invoke_skill`, `load_skill`, `bash`, `write`, etc.) read `"{tool_id} denied
+  (trust=quarantined)"`, which misattributed the denial to the specifically-invoked tool/skill
+  when `effective_trust` is actually a weakest-link fold (`SkillTrustLevel::min_trust`) across
+  ALL skills active in the turn (`crates/zeph-core/src/agent/context/assembly.rs`) — an
+  `invoke_skill` call for a brand-new, non-active, trust-map-missing skill was denied solely
+  because two entirely unrelated co-active skills happened to be quarantined (#5729). The gate's
+  turn-wide weakest-link policy itself is intentional defense-in-depth (documented in
+  `crates/zeph-common/src/quarantine.rs`: prevents a quarantined skill's content from using
+  `invoke_skill`/`load_skill` as a side channel) and is unchanged. `check_trust`
+  (`crates/zeph-tools/src/trust_gate.rs`) now names the turn's active skill set
+  (`ToolCall::skill_name`) in the denial message instead of implying the targeted tool/skill is
+  itself untrusted. Documented the weakest-link policy in `trust_gate.rs`, `assembly.rs`,
+  `specs/005-skills/spec.md`, and a new `specs/006-tools/spec.md` "Trust Gate" section.
 - `fix(core)`: `Agent::build_experiment_engine` (`crates/zeph-core/src/agent/experiment_cmd.rs`)
   read the configured benchmark TOML synchronously via `BenchmarkSet::from_file`, which performs
   blocking filesystem I/O (`std::fs::canonicalize` x2, `std::fs::metadata`, `std::fs::

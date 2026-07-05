@@ -1483,7 +1483,15 @@ impl<C: Channel> Agent<C> {
             .cloned()
             .collect();
 
-        // Apply the most restrictive trust level among active skills to the executor gate.
+        // Deliberate weakest-link policy: fold the most restrictive trust level among ALL
+        // skills active this turn into a single `effective_trust` value applied to the
+        // executor gate (`TrustGateExecutor::set_effective_trust`). If ANY co-active skill is
+        // Quarantined, QUARANTINE_DENIED tools are denied for the WHOLE turn, regardless of
+        // which specific skill/tool a call targets — this prevents a Quarantined (potentially
+        // prompt-injected) skill's content from steering the model into invoking other
+        // tools/skills as a side channel. See #5729 for the resulting UX gap (an unrelated,
+        // non-quarantined skill's own `invoke_skill` call is also denied) and
+        // `TrustGateExecutor::check_trust`'s doc comment for the matching rationale.
         let effective_trust = if self.services.skill.active_skill_names.is_empty() {
             zeph_common::SkillTrustLevel::Trusted
         } else {

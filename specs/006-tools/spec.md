@@ -718,6 +718,47 @@ exempt_tools = ["memory_save", "memory_search", "read_overflow", "load_skill", "
 
 ---
 
+## Trust Gate
+
+`TrustGateExecutor` (`crates/zeph-tools/src/trust_gate.rs`) wraps the inner executor chain and
+enforces per-call trust policy ahead of `PermissionPolicy` checks.
+
+### Executor Chain Order
+
+```
+PolicyGateExecutor → AdversarialPolicyGateExecutor → TrustGateExecutor → ...
+```
+
+### Config
+
+`effective_trust` is not user-configured directly — it is recomputed every turn by
+`zeph_core::agent::context::assembly` and pushed into the gate via
+`TrustGateExecutor::set_effective_trust`.
+
+### Key Invariants
+
+- `effective_trust` is a turn-scoped weakest-link fold, NOT a per-skill value: it is
+  `SkillTrustLevel::min_trust` folded across every skill active in the current turn (see
+  `assembly.rs`). A single `Quarantined` co-active skill drags the whole turn's
+  `effective_trust` to `Quarantined`.
+- When `effective_trust == Quarantined`, any tool in `QUARANTINE_DENIED` (see
+  `zeph_common::quarantine`), including `invoke_skill`/`load_skill`, is denied outright for the
+  WHOLE turn — independent of which specific tool call or skill is the actual target. This is
+  intentional defense-in-depth: it prevents a Quarantined (potentially prompt-injected) skill's
+  content from steering the model into invoking other tools/skills as a side channel.
+- The denial message names the turn's full active-skill set (`ToolCall::skill_name`) rather
+  than implying the specific tool/skill being invoked is itself untrusted — see #5729, which
+  fixed the prior misleading `"{tool_id} denied (trust=quarantined)"` message that read as if
+  `tool_id` (or its target skill) was the untrusted party.
+- `effective_trust == Blocked` denies ALL tools unconditionally, before any `QUARANTINE_DENIED`
+  or MCP-registry check.
+- `mcp_tool_ids` registers MCP-sourced tool IDs; under `Quarantined`, any registered MCP tool is
+  denied regardless of whether its name matches `QUARANTINE_DENIED` by pattern.
+- The legacy fenced-block paths (`execute`/`execute_confirmed`) have no `ToolCall`/`tool_id`
+  available, so they deny entirely under `Quarantined`/`Blocked` rather than selectively.
+
+---
+
 ## Tool Invocation Phase Taxonomy
 
 

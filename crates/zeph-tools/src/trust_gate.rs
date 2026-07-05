@@ -30,6 +30,30 @@ fn is_quarantine_denied(tool_id: &str) -> bool {
         .any(|denied| tool_id == *denied || tool_id.ends_with(&format!("_{denied}")))
 }
 
+/// Builds the denial message for a Quarantined-trust block.
+///
+/// `active_skills` is the turn's full active-skill list (`ToolCall::skill_name`), not just
+/// the specific skill(s) whose trust caused the fold — `TrustGateExecutor` only tracks the
+/// already-folded `effective_trust`, not per-skill levels, so it cannot name exactly which
+/// skill(s) are Quarantined, nor whether `tool_id`'s own target skill (e.g. `invoke_skill`'s
+/// `skill_name` param) is among them. Naming the turn's active skill set instead of flatly
+/// blaming `tool_id` resolves the misattribution from #5729 without asserting anything the
+/// gate cannot verify: this denial means the turn's *combined* trust floor is quarantined
+/// (weakest-link policy, see `assembly.rs` and this module's doc comment) — it may or may not
+/// be about the specific tool/skill targeted by this call.
+fn quarantine_denial_message(tool_id: &str, active_skills: &[String]) -> String {
+    if active_skills.is_empty() {
+        format!("{tool_id} denied (trust=quarantined)")
+    } else {
+        format!(
+            "{tool_id} denied: this turn's active skill set {active_skills:?} has a combined \
+             trust floor of quarantined (weakest-link policy over all co-active skills this \
+             turn; this reflects the turn's overall trust floor and may not be about the \
+             specific tool/skill you targeted)"
+        )
+    }
+}
+
 fn trust_to_u8(level: SkillTrustLevel) -> u8 {
     match level {
         SkillTrustLevel::Trusted => 0,
@@ -104,7 +128,26 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
         self.mcp_tool_ids.read().contains(tool_id)
     }
 
-    fn check_trust(&self, tool_id: &str, input: &str) -> Result<(), ToolError> {
+    /// Enforces per-call trust policy.
+    ///
+    /// `effective_trust` (see [`set_effective_trust`](Self::set_effective_trust)) is a single
+    /// value folded via `SkillTrustLevel::min_trust` across ALL skills active in the current
+    /// turn — computed in `zeph_core::agent::context::assembly`. This is a deliberate
+    /// weakest-link policy: if ANY skill active this turn is Quarantined,
+    /// [`QUARANTINE_DENIED`] tools (including `invoke_skill`/`load_skill`) are denied for the
+    /// WHOLE turn, regardless of which specific skill/tool a call targets — this guards
+    /// against a Quarantined (potentially prompt-injected) skill's content steering the model
+    /// into invoking other tools/skills as a side channel. See #5729 for the resulting UX gap
+    /// (an unrelated, non-quarantined skill's own `invoke_skill` call is also denied) and why
+    /// the policy itself is intentionally kept — `active_skills` is used only to make the
+    /// denial message name the turn's active skill set instead of misattributing the block to
+    /// `tool_id` itself.
+    fn check_trust(
+        &self,
+        tool_id: &str,
+        input: &str,
+        active_skills: &[String],
+    ) -> Result<(), ToolError> {
         match self.effective_trust() {
             SkillTrustLevel::Blocked => {
                 return Err(ToolError::Blocked {
@@ -115,7 +158,7 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
                 if is_quarantine_denied(tool_id) || self.is_mcp_tool(tool_id) =>
             {
                 return Err(ToolError::Blocked {
-                    command: format!("{tool_id} denied (trust=quarantined)"),
+                    command: quarantine_denial_message(tool_id, active_skills),
                 });
             }
             _ => {}
@@ -199,7 +242,11 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
             .or_else(|| call.params.get("uri"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        self.check_trust(call.tool_id.as_str(), input)?;
+        self.check_trust(
+            call.tool_id.as_str(),
+            input,
+            call.skill_name.as_deref().unwrap_or(&[]),
+        )?;
         self.inner.execute_tool_call(call).await
     }
 
@@ -208,7 +255,8 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
         call: &ToolCall,
     ) -> Result<Option<ToolOutput>, ToolError> {
         // Bypass check_trust: caller already obtained user approval.
-        // Still enforce Blocked/Quarantined trust level constraints.
+        // Still enforce Blocked/Quarantined trust level constraints. This match intentionally
+        // mirrors check_trust's Blocked/Quarantined branches above — keep the two in sync.
         match self.effective_trust() {
             SkillTrustLevel::Blocked => {
                 return Err(ToolError::Blocked {
@@ -220,7 +268,10 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
                     || self.is_mcp_tool(call.tool_id.as_str()) =>
             {
                 return Err(ToolError::Blocked {
-                    command: format!("{} denied (trust=quarantined)", call.tool_id),
+                    command: quarantine_denial_message(
+                        call.tool_id.as_str(),
+                        call.skill_name.as_deref().unwrap_or(&[]),
+                    ),
                 });
             }
             _ => {}
@@ -261,7 +312,11 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         matches!(
-            self.check_trust(call.tool_id.as_str(), input),
+            self.check_trust(
+                call.tool_id.as_str(),
+                input,
+                call.skill_name.as_deref().unwrap_or(&[]),
+            ),
             Err(ToolError::ConfirmationRequired { .. })
         )
     }
@@ -320,6 +375,25 @@ mod tests {
 
             tool_call_id: String::new(),
             skill_name: None,
+        }
+    }
+
+    fn make_call_with_skills(tool_id: &str, skills: &[&str]) -> ToolCall {
+        ToolCall {
+            tool_id: tool_id.into(),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+
+            tool_call_id: String::new(),
+            skill_name: Some(skills.iter().map(ToString::to_string).collect()),
+        }
+    }
+
+    fn blocked_command(result: Result<Option<ToolOutput>, ToolError>) -> String {
+        match result {
+            Err(ToolError::Blocked { command }) => command,
+            other => panic!("expected Err(ToolError::Blocked {{ .. }}), got {other:?}"),
         }
     }
 
@@ -529,6 +603,99 @@ mod tests {
 
         let result = gate.execute_tool_call(&make_call("web_scrape")).await;
         assert_matches!(result, Err(ToolError::Blocked { .. }));
+    }
+
+    /// Regression test for #5729: the denial message must name the turn's actual co-active
+    /// skill set instead of implying `invoke_skill` itself is the untrusted party. The gate
+    /// behavior (deny) is unchanged — only the message wording is under test here.
+    #[tokio::test]
+    async fn quarantined_denial_message_names_active_skills_not_target_tool() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
+
+        let call =
+            make_call_with_skills("invoke_skill", &["disk-usage", "persona-customer-support"]);
+        let result = gate.execute_tool_call(&call).await;
+        let message = blocked_command(result);
+
+        assert!(
+            message.contains("disk-usage") && message.contains("persona-customer-support"),
+            "message should name the actual active skills, got: {message}"
+        );
+        assert_ne!(
+            message, "invoke_skill denied (trust=quarantined)",
+            "message must not read as if invoke_skill itself is the untrusted party"
+        );
+    }
+
+    /// Regression test for #5729: when no active skills are recorded on the call
+    /// (`skill_name: None`), the denial message must remain exactly the pre-fix format —
+    /// this guards backward compatibility for all pre-existing tests in this module, which
+    /// all use `make_call`/`make_call_with_cmd` (both hardcode `skill_name: None`).
+    #[tokio::test]
+    async fn quarantined_denial_message_unchanged_when_no_active_skills() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
+
+        let result = gate.execute_tool_call(&make_call("invoke_skill")).await;
+        let message = blocked_command(result);
+
+        assert_eq!(message, "invoke_skill denied (trust=quarantined)");
+    }
+
+    /// Same as `quarantined_denial_message_unchanged_when_no_active_skills`, but with an
+    /// explicit empty skill list rather than `None` — both must produce the old message.
+    #[tokio::test]
+    async fn quarantined_denial_message_unchanged_when_active_skills_empty() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
+
+        let result = gate
+            .execute_tool_call(&make_call_with_skills("invoke_skill", &[]))
+            .await;
+        let message = blocked_command(result);
+
+        assert_eq!(message, "invoke_skill denied (trust=quarantined)");
+    }
+
+    /// Regression test for #5729 via the `execute_tool_call_confirmed` path, which has its
+    /// own duplicate inline Quarantined check rather than routing through `check_trust`.
+    #[tokio::test]
+    async fn quarantined_denial_message_names_active_skills_confirmed_path() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
+
+        let call =
+            make_call_with_skills("invoke_skill", &["disk-usage", "persona-customer-support"]);
+        let result = gate.execute_tool_call_confirmed(&call).await;
+        let message = blocked_command(result);
+
+        assert!(
+            message.contains("disk-usage") && message.contains("persona-customer-support"),
+            "confirmed path message should name the actual active skills, got: {message}"
+        );
+        assert_ne!(
+            message, "invoke_skill denied (trust=quarantined)",
+            "confirmed path message must not read as if invoke_skill itself is untrusted"
+        );
+    }
+
+    /// Regression test for #5729: the message fix must apply uniformly to any
+    /// `QUARANTINE_DENIED` tool, not just `invoke_skill` — verified here with `bash`.
+    #[tokio::test]
+    async fn quarantined_denial_message_names_active_skills_for_non_skill_tool() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
+
+        let call = make_call_with_skills("bash", &["disk-usage", "persona-customer-support"]);
+        let result = gate.execute_tool_call(&call).await;
+        let message = blocked_command(result);
+
+        assert!(
+            message.contains("disk-usage") && message.contains("persona-customer-support"),
+            "message for a non-skill tool should also name the active skills, got: {message}"
+        );
+        assert_ne!(message, "bash denied (trust=quarantined)");
     }
 
     #[derive(Debug)]
