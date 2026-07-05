@@ -26,6 +26,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 
 use crate::error::MemoryError;
+use crate::graph::string_similarity::levenshtein_distance;
 use crate::graph::types::{Edge, EdgeType};
 
 pub use zeph_common::config::memory::BeliefRevisionConfig;
@@ -34,6 +35,14 @@ pub use zeph_common::config::memory::BeliefRevisionConfig;
 ///
 /// Returns 1.0 for equal strings, 0.0 when distance equals max length.
 /// Used to check whether two relation strings are in the same domain.
+///
+/// Normalizes by **byte** length, unlike [`string_similarity::normalized_similarity`]
+/// (char-based) — this preserves the original pre-dedup behavior of this call site
+/// exactly. Do not "fix" this into char-based normalization: for non-ASCII relation
+/// strings (e.g. Cyrillic, common since this project also runs in Russian) the two
+/// normalizations diverge and changing it would alter which edges get superseded.
+///
+/// [`string_similarity::normalized_similarity`]: crate::graph::string_similarity::normalized_similarity
 #[must_use]
 fn relation_similarity(a: &str, b: &str) -> f32 {
     if a == b {
@@ -43,35 +52,13 @@ fn relation_similarity(a: &str, b: &str) -> f32 {
     if max_len == 0 {
         return 1.0;
     }
-    let dist = edit_distance(a, b);
+    let dist = levenshtein_distance(a, b);
     // max_len <= string byte length, bounded by MAX_RELATION_BYTES (256); cast is safe.
     #[allow(clippy::cast_precision_loss)]
     let max_len_f = max_len as f32;
     #[allow(clippy::cast_precision_loss)]
     let dist_f = dist as f32;
     1.0 - dist_f / max_len_f
-}
-
-/// Simple byte-level edit distance (Levenshtein) between two strings.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let m = a.len();
-    let n = b.len();
-    let mut prev: Vec<usize> = (0..=n).collect();
-    let mut curr = vec![0usize; n + 1];
-    for i in 1..=m {
-        curr[0] = i;
-        for j in 1..=n {
-            curr[j] = if a[i - 1] == b[j - 1] {
-                prev[j - 1]
-            } else {
-                1 + prev[j].min(curr[j - 1]).min(prev[j - 1])
-            };
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[n]
 }
 
 /// Embed a fact string with the given provider.
@@ -231,21 +218,7 @@ mod tests {
         assert!(!is_same_relation_domain("works_at", "knows"));
     }
 
-    #[test]
-    fn edit_distance_empty_strings() {
-        assert_eq!(edit_distance("", ""), 0);
-    }
-
-    #[test]
-    fn edit_distance_one_empty() {
-        assert_eq!(edit_distance("abc", ""), 3);
-        assert_eq!(edit_distance("", "xyz"), 3);
-    }
-
-    #[test]
-    fn edit_distance_single_substitution() {
-        assert_eq!(edit_distance("works_at", "work_at"), 1);
-    }
+    // Edit-distance algorithm coverage lives in `graph::string_similarity` tests.
 
     // --- find_superseded_edges tests (provider-free paths) ---
 

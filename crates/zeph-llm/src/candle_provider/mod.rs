@@ -72,6 +72,7 @@ pub use candle_core::Device;
 
 use std::time::Duration;
 use tokenizers::Tokenizer;
+use zeph_common::text::truncate_to_bytes_ref;
 
 use crate::error::LlmError;
 
@@ -291,10 +292,7 @@ impl LlmProvider for CandleProvider {
         let mut chunks: Vec<Result<StreamChunk, LlmError>> = Vec::new();
         let mut start = 0;
         while start < text.len() {
-            let mut end = (start + 32).min(text.len());
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
+            let end = start + truncate_to_bytes_ref(&text[start..], 32).len();
             chunks.push(Ok(StreamChunk::Content(text[start..end].to_string())));
             start = end;
         }

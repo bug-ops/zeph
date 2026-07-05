@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
+use zeph_common::llm_response::extract_json_array_slice;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider as _, Message, Role};
 
@@ -134,10 +135,8 @@ fn build_extraction_prompt(messages: &[&Message]) -> String {
 fn parse_extraction_response(response: &str) -> Vec<TrajectoryEntry> {
     let raw: Vec<RawEntry> = if let Ok(v) = serde_json::from_str(response) {
         v
-    } else if let (Some(start), Some(end)) = (response.find('['), response.rfind(']'))
-        && end > start
-    {
-        serde_json::from_str(&response[start..=end]).unwrap_or_default()
+    } else if let Some(slice) = extract_json_array_slice(response) {
+        serde_json::from_str(slice).unwrap_or_default()
     } else {
         tracing::warn!(
             "trajectory extraction: failed to parse response (len={}): {:.200}",

@@ -13,6 +13,7 @@
 
 use std::fmt::Write as _;
 
+use zeph_common::llm_response::extract_json_array_slice;
 use zeph_llm::LlmError;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
@@ -367,13 +368,7 @@ fn parse_name_array(response: &str) -> Result<Vec<String>, PruningError> {
         .join("\n");
 
     // Find the first `[` and last `]` to isolate the JSON array.
-    let start = stripped.find('[').ok_or(PruningError::ParseError)?;
-    let end = stripped.rfind(']').ok_or(PruningError::ParseError)?;
-    if end <= start {
-        return Err(PruningError::ParseError);
-    }
-
-    let json_fragment = &stripped[start..=end];
+    let json_fragment = extract_json_array_slice(&stripped).ok_or(PruningError::ParseError)?;
     let names: Vec<String> =
         serde_json::from_str(json_fragment).map_err(|_| PruningError::ParseError)?;
     Ok(names)

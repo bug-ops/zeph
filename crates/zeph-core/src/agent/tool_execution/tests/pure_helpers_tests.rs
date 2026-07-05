@@ -1,8 +1,25 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::agent::tool_execution::{normalize_for_doom_loop, tool_def_to_definition};
+use crate::agent::tool_execution::{
+    normalize_for_doom_loop, tool_def_to_definition, truncate_utf8,
+};
 use zeph_agent_tools::doom_loop_hash;
+
+#[test]
+fn truncate_utf8_under_limit_returns_unchanged() {
+    assert_eq!(truncate_utf8("hello", 256), "hello");
+}
+
+#[test]
+fn truncate_utf8_truncates_at_char_boundary() {
+    // Each '日' is 3 bytes; 256 is not a multiple of 3, so a naive byte slice
+    // at exactly 256 would land mid-character and panic.
+    let s = "日".repeat(100); // 300 bytes
+    let truncated = truncate_utf8(&s, 256);
+    assert!(truncated.len() <= 256);
+    assert!(s.is_char_boundary(truncated.len()));
+}
 
 #[test]
 fn tool_def_strips_schema_and_title() {

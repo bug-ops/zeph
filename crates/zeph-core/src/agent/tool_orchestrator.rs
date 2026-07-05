@@ -4,6 +4,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
+use zeph_common::text::truncate_to_bytes_ref;
 use zeph_tools::{
     OverflowConfig, ResultCacheConfig, TafcConfig, ToolResultCache, UtilityScorer,
     UtilityScoringConfig,
@@ -77,14 +78,7 @@ pub(crate) struct ToolOrchestrator {
 /// names always match when the original name exceeds the limit.
 fn truncate_tool_name(name: &str) -> &str {
     const MAX_TOOL_NAME_BYTES: usize = 256;
-    if name.len() <= MAX_TOOL_NAME_BYTES {
-        return name;
-    }
-    let mut idx = MAX_TOOL_NAME_BYTES;
-    while !name.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    &name[..idx]
+    truncate_to_bytes_ref(name, MAX_TOOL_NAME_BYTES)
 }
 
 impl ToolOrchestrator {

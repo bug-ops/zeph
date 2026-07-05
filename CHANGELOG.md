@@ -36,6 +36,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(common,memory,mcp,context,llm,core)`: deduplicated three hand-rolled utility
+  patterns onto shared helpers. UTF-8 char-boundary truncation (5 call sites in
+  `zeph-context`, `zeph-llm`, `zeph-memory`, `zeph-core`) now calls the existing
+  `zeph_common::text::truncate_to_bytes`/`truncate_to_bytes_ref` (#5672). Char-level
+  Levenshtein edit distance (`zeph-memory/src/graph/implicit_conflict.rs` and
+  `belief_revision.rs`) now shares its DP computation via a new
+  `zeph_memory::graph::string_similarity` module; `belief_revision::relation_similarity`
+  keeps its original byte-length normalization (only the distance computation is shared,
+  not the normalization) to avoid changing behavior for non-ASCII relation strings (#5536).
+  Bracket-matching JSON-array extraction from LLM prose (5 call sites in `zeph-memory` and
+  `zeph-mcp`) now calls a new `zeph_common::llm_response::extract_json_array_slice`; each
+  call site keeps its own existing failure policy (hard error in `zeph-mcp::pruning`,
+  empty-result fallback elsewhere) (#5520). No behavior change.
 - `refactor(core)`: split `Agent::rebuild_system_prompt` (`crates/zeph-core/src/agent/context/assembly.rs`,
   formerly 877 lines under `#[allow(clippy::too_many_lines)]`) into 9 private methods — query
   rewrite, embedding-based skill matching/rerank, secret-based filtering, channel-allowlist

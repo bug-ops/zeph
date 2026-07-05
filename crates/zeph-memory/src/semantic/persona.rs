@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
+use zeph_common::llm_response::extract_json_array_slice;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider as _, Message, Role};
 
@@ -219,13 +220,10 @@ fn parse_extraction_response(response: &str) -> Vec<ExtractedFact> {
     }
 
     // Try to find JSON array within the response (LLM may wrap in prose).
-    if let (Some(start), Some(end)) = (response.find('['), response.rfind(']'))
-        && end > start
+    if let Some(slice) = extract_json_array_slice(response)
+        && let Ok(facts) = serde_json::from_str::<Vec<ExtractedFact>>(slice)
     {
-        let slice = &response[start..=end];
-        if let Ok(facts) = serde_json::from_str::<Vec<ExtractedFact>>(slice) {
-            return facts;
-        }
+        return facts;
     }
 
     tracing::warn!(
