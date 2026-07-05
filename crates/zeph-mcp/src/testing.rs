@@ -126,6 +126,7 @@ impl ToolExecutor for MockMcpServer {
                     .unwrap_or_else(|_| schemars::Schema::default()),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: Some(t.server_id.clone()),
             })
             .collect()
     }

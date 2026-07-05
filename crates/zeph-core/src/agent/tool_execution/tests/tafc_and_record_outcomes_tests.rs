@@ -1929,6 +1929,7 @@ fn tool_def_to_definition_with_tafc_augments_when_enabled() {
         schema,
         invocation: InvocationHint::ToolCall,
         output_schema: None,
+        server_id: None,
     };
     let tafc = TafcConfig {
         enabled: true,
@@ -1955,6 +1956,7 @@ fn tool_def_to_definition_with_tafc_skips_when_disabled() {
         schema,
         invocation: InvocationHint::ToolCall,
         output_schema: None,
+        server_id: None,
     };
     let tafc = TafcConfig {
         enabled: false,

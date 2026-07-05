@@ -78,6 +78,7 @@ impl ToolExecutor for SetCwdExecutor {
             schema: schemars::schema_for!(SetCwdParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         }]
     }
 

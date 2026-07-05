@@ -66,6 +66,7 @@ mod tests {
                     schema: schemars::schema_for!(String),
                     invocation: crate::registry::InvocationHint::ToolCall,
                     output_schema: None,
+                    server_id: None,
                 },
                 ToolDef {
                     id: "glob".into(),
@@ -73,6 +74,7 @@ mod tests {
                     schema: schemars::schema_for!(String),
                     invocation: crate::registry::InvocationHint::ToolCall,
                     output_schema: None,
+                    server_id: None,
                 },
                 ToolDef {
                     id: "edit".into(),
@@ -80,6 +82,7 @@ mod tests {
                     schema: schemars::schema_for!(String),
                     invocation: crate::registry::InvocationHint::ToolCall,
                     output_schema: None,
+                    server_id: None,
                 },
             ]
         }

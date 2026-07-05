@@ -96,6 +96,7 @@ impl ToolExecutor for MemoryToolExecutor {
                 schema: schemars::schema_for!(MemorySearchParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "memory_save".into(),
@@ -103,6 +104,7 @@ impl ToolExecutor for MemoryToolExecutor {
                 schema: schemars::schema_for!(MemorySaveParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
         ]
     }

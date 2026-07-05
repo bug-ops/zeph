@@ -61,6 +61,7 @@ impl ToolExecutor for DagAwareToolExecutor {
                 schema: schemars::Schema::default(),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "tool_b".into(),
@@ -68,6 +69,7 @@ impl ToolExecutor for DagAwareToolExecutor {
                 schema: schemars::Schema::default(),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "tool_c".into(),
@@ -75,6 +77,7 @@ impl ToolExecutor for DagAwareToolExecutor {
                 schema: schemars::Schema::default(),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
         ]
     }

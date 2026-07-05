@@ -475,6 +475,7 @@ impl ToolExecutor for SchedulerExecutor {
                 schema: schemars::schema_for!(PeriodicParams),
                 invocation: InvocationHint::FencedBlock("schedule_periodic"),
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "schedule_deferred".into(),
@@ -482,6 +483,7 @@ impl ToolExecutor for SchedulerExecutor {
                 schema: schemars::schema_for!(DeferredParams),
                 invocation: InvocationHint::FencedBlock("schedule_deferred"),
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "cancel_task".into(),
@@ -489,6 +491,7 @@ impl ToolExecutor for SchedulerExecutor {
                 schema: schemars::schema_for!(CancelParams),
                 invocation: InvocationHint::FencedBlock("cancel_task"),
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "list_tasks".into(),
@@ -496,6 +499,7 @@ impl ToolExecutor for SchedulerExecutor {
                 schema: schemars::schema_for!(ListTasksParams),
                 invocation: InvocationHint::FencedBlock("list_tasks"),
                 output_schema: None,
+                server_id: None,
             },
         ]
     }

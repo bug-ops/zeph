@@ -293,6 +293,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                 schema: schemars::schema_for!(ReadFileParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             });
             defs.push(ToolDef {
                 id: "list_directory".into(),
@@ -300,6 +301,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                 schema: schemars::schema_for!(ListDirectoryParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             });
             defs.push(ToolDef {
                 id: "find_path".into(),
@@ -307,6 +309,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                 schema: schemars::schema_for!(FindPathParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             });
         }
         // REQ-P31-1: write_file requires a permission gate (diff preview must have an approver).
@@ -317,6 +320,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
                 schema: schemars::schema_for!(WriteFileParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             });
         }
         defs

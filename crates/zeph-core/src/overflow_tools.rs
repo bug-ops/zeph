@@ -50,6 +50,7 @@ impl ToolExecutor for OverflowToolExecutor {
             schema: schemars::schema_for!(ReadOverflowParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         }]
     }
 

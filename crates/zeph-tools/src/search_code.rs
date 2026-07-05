@@ -484,6 +484,7 @@ impl ToolExecutor for SearchCodeExecutor {
             schema: schemars::schema_for!(SearchCodeParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         }]
     }
 }

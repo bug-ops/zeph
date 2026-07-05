@@ -341,6 +341,7 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
             schema: schemars::schema_for!(BashParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         }];
         // REQ-P23-2: bash_stdin only available when a permission gate is present.
         if self.permission_gate.is_some() {
@@ -350,6 +351,7 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
                 schema: schemars::schema_for!(BashStdinParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             });
         }
         defs

@@ -10,6 +10,8 @@
 
 use std::sync::Arc;
 
+use zeph_tools::registry::ToolDef;
+
 use super::{Agent, error};
 use crate::channel::Channel;
 
@@ -676,7 +678,7 @@ impl<C: Channel> Agent<C> {
         self.tool_executor
             .tool_definitions_erased()
             .into_iter()
-            .filter(|t| t.id.starts_with("mcp_"))
+            .filter(ToolDef::is_mcp_tool)
             .map(|t| t.id.to_string())
             .collect()
     }
@@ -945,6 +947,38 @@ fn sanitize_parent_messages(
 mod tests {
     use super::*;
     use crate::agent::agent_tests::*;
+
+    /// #5712 regression: MCP tool identification must key off `ToolDef::server_id`, not a
+    /// `"mcp_"` name prefix that real `McpTool::sanitized_id()` output never produces.
+    #[tokio::test]
+    async fn extract_mcp_tool_names_uses_server_id_not_name_prefix() {
+        use zeph_tools::registry::InvocationHint;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools().with_definitions(vec![
+            ToolDef {
+                id: "read".into(),
+                description: "built-in tool".into(),
+                schema: schemars::Schema::default(),
+                invocation: InvocationHint::ToolCall,
+                output_schema: None,
+                server_id: None,
+            },
+            ToolDef {
+                id: "github_create_issue".into(),
+                description: "MCP tool".into(),
+                schema: schemars::Schema::default(),
+                invocation: InvocationHint::ToolCall,
+                output_schema: None,
+                server_id: Some("github".into()),
+            },
+        ]);
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        assert_eq!(agent.extract_mcp_tool_names(), vec!["github_create_issue"]);
+    }
 
     /// Agent with `durable_ctx` populated via the real `ensure_session_durable_ctx` bootstrap
     /// path (mirrors `durable_bootstrap::tests::agent_with_conversation`), with

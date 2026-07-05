@@ -169,6 +169,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`ToolCall::skill_name`) in the denial message instead of implying the targeted tool/skill is
   itself untrusted. Documented the weakest-link policy in `trust_gate.rs`, `assembly.rs`,
   `specs/005-skills/spec.md`, and a new `specs/006-tools/spec.md` "Trust Gate" section.
+- `fix(core,tools,mcp)`: `Agent::extract_mcp_tool_names`
+  (`crates/zeph-core/src/agent/subagent_commands.rs`) identified MCP-registered tools by
+  checking `tool_id.starts_with("mcp_")`, but real MCP tool ids are built by
+  `McpTool::sanitized_id()` as `"{server_id}_{name}"` and never carry a literal `"mcp_"`
+  prefix — the filter never matched any tool, so spawned sub-agents never received an
+  "Available MCP Tools" annotation in their system prompt regardless of how many MCP servers
+  were connected (#5712). Added `server_id: Option<String>` to `zeph_tools::registry::ToolDef`
+  (`ToolDef::is_mcp_tool()` helper) as the authoritative MCP-origin marker, set at
+  construction time in `McpToolExecutor::tool_definitions` (`crates/zeph-mcp/src/executor.rs`)
+  and `MockMcpServer::tool_definitions` (`crates/zeph-mcp/src/testing.rs`); all other `ToolDef`
+  construction sites default it to `None`. `extract_mcp_tool_names` now filters on
+  `ToolDef::is_mcp_tool` instead of the dead name-prefix check.
 - `fix(core)`: `Agent::build_experiment_engine` (`crates/zeph-core/src/agent/experiment_cmd.rs`)
   read the configured benchmark TOML synchronously via `BenchmarkSet::from_file`, which performs
   blocking filesystem I/O (`std::fs::canonicalize` x2, `std::fs::metadata`, `std::fs::

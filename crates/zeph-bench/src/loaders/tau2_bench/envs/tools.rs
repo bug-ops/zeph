@@ -196,6 +196,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(CalculateParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "cancel_pending_order".into(),
@@ -203,6 +204,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(CancelPendingOrderParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "exchange_delivered_order_items".into(),
@@ -210,6 +212,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(ExchangeDeliveredOrderItemsParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "find_user_id_by_email".into(),
@@ -217,6 +220,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(FindUserIdByEmailParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "find_user_id_by_name_zip".into(),
@@ -224,6 +228,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(FindUserIdByNameZipParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "get_order_details".into(),
@@ -231,6 +236,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(GetOrderDetailsParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "get_product_details".into(),
@@ -238,6 +244,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(GetProductDetailsParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "get_item_details".into(),
@@ -245,6 +252,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(GetItemDetailsParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "get_user_details".into(),
@@ -252,6 +260,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(GetUserDetailsParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "list_all_product_types".into(),
@@ -259,6 +268,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: empty_object_schema(),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "modify_pending_order_address".into(),
@@ -266,6 +276,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(ModifyPendingOrderAddressParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "modify_pending_order_items".into(),
@@ -273,6 +284,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(ModifyPendingOrderItemsParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "modify_pending_order_payment".into(),
@@ -280,6 +292,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(ModifyPendingOrderPaymentParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "modify_user_address".into(),
@@ -287,6 +300,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(ModifyUserAddressParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "return_delivered_order_items".into(),
@@ -294,6 +308,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(ReturnDeliveredOrderItemsParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "transfer_to_human_agents".into(),
@@ -301,6 +316,7 @@ pub fn retail_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(TransferToHumanAgentsParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
     ]
 }
@@ -421,6 +437,7 @@ pub(super) struct GetFlightStatusParams {
 
 /// Return all tool definitions for the airline domain.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn airline_definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
@@ -429,6 +446,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(BookReservationParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "calculate".into(),
@@ -436,6 +454,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(CalculateParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "cancel_reservation".into(),
@@ -443,6 +462,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(CancelReservationParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "get_reservation_details".into(),
@@ -450,6 +470,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(GetReservationDetailsParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "get_user_details".into(),
@@ -457,6 +478,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(GetAirlineUserDetailsParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "list_all_airports".into(),
@@ -464,6 +486,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
             schema: empty_object_schema(),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "search_direct_flight".into(),
@@ -471,6 +494,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(SearchDirectFlightParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "search_onestop_flight".into(),
@@ -478,6 +502,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(SearchOnestopFlightParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "send_certificate".into(),
@@ -485,6 +510,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(SendCertificateParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "transfer_to_human_agents".into(),
@@ -492,6 +518,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(TransferToHumanAgentsParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "update_reservation_baggages".into(),
@@ -499,6 +526,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(UpdateReservationBaggagesParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "update_reservation_flights".into(),
@@ -506,6 +534,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(UpdateReservationFlightsParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "update_reservation_passengers".into(),
@@ -513,6 +542,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(UpdateReservationPassengersParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
         ToolDef {
             id: "get_flight_status".into(),
@@ -520,6 +550,7 @@ pub fn airline_definitions() -> Vec<ToolDef> {
             schema: schemars::schema_for!(GetFlightStatusParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         },
     ]
 }

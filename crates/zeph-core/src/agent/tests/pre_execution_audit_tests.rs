@@ -28,6 +28,7 @@ impl ToolExecutor for NoOpExecutor {
             schema: schemars::Schema::default(),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         }]
     }
 

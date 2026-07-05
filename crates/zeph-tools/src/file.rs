@@ -664,6 +664,7 @@ impl ToolExecutor for FileExecutor {
                 schema: schemars::schema_for!(ReadParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "write".into(),
@@ -671,6 +672,7 @@ impl ToolExecutor for FileExecutor {
                 schema: schemars::schema_for!(WriteParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "edit".into(),
@@ -678,6 +680,7 @@ impl ToolExecutor for FileExecutor {
                 schema: schemars::schema_for!(EditParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "find_path".into(),
@@ -685,6 +688,7 @@ impl ToolExecutor for FileExecutor {
                 schema: schemars::schema_for!(FindPathParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "grep".into(),
@@ -692,6 +696,7 @@ impl ToolExecutor for FileExecutor {
                 schema: schemars::schema_for!(GrepParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "list_directory".into(),
@@ -699,6 +704,7 @@ impl ToolExecutor for FileExecutor {
                 schema: schemars::schema_for!(ListDirectoryParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "create_directory".into(),
@@ -706,6 +712,7 @@ impl ToolExecutor for FileExecutor {
                 schema: schemars::schema_for!(CreateDirectoryParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "delete_path".into(),
@@ -713,6 +720,7 @@ impl ToolExecutor for FileExecutor {
                 schema: schemars::schema_for!(DeletePathParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "move_path".into(),
@@ -720,6 +728,7 @@ impl ToolExecutor for FileExecutor {
                 schema: schemars::schema_for!(MovePathParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "copy_path".into(),
@@ -727,6 +736,7 @@ impl ToolExecutor for FileExecutor {
                 schema: schemars::schema_for!(CopyPathParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
         ]
     }

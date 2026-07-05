@@ -3608,6 +3608,7 @@ mod tests {
                 schema: schemars::Schema::default(),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             }
         }
 

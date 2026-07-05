@@ -242,6 +242,7 @@ impl ToolExecutor for WebScrapeExecutor {
                 schema: schemars::schema_for!(ScrapeInstruction),
                 invocation: InvocationHint::FencedBlock("scrape"),
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "fetch".into(),
@@ -249,6 +250,7 @@ impl ToolExecutor for WebScrapeExecutor {
                 schema: schemars::schema_for!(FetchParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
         ]
     }

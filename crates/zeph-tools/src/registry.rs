@@ -23,6 +23,20 @@ pub struct ToolDef {
     ///
     /// DO NOT convert to `schemars::Schema` — lossy; see #2931 critique P0-1.
     pub output_schema: Option<serde_json::Value>,
+    /// ID of the MCP server that registered this tool, or `None` for built-in tools.
+    ///
+    /// This is the authoritative way to determine whether a tool originates from an MCP
+    /// server — `id` is a sanitized, server-namespaced string with no reliable prefix to
+    /// pattern-match on (see #5712).
+    pub server_id: Option<String>,
+}
+
+impl ToolDef {
+    /// Returns `true` if this tool was registered by an MCP server.
+    #[must_use]
+    pub fn is_mcp_tool(&self) -> bool {
+        self.server_id.is_some()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -151,6 +165,7 @@ mod tests {
                 schema: schemars::schema_for!(BashParams),
                 invocation: InvocationHint::FencedBlock("bash"),
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "read".into(),
@@ -158,6 +173,7 @@ mod tests {
                 schema: schemars::schema_for!(ReadParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
         ]
     }

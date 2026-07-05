@@ -865,3 +865,48 @@ mod make_hook_env_tests {
         assert!(args.is_char_boundary(args.len()));
     }
 }
+
+#[cfg(test)]
+mod build_effective_system_prompt_tests {
+    use super::*;
+
+    /// #5712 regression: confirms the "Available MCP Tools" annotation actually reaches
+    /// the effective system prompt when `extract_mcp_tool_names` returns non-empty names —
+    /// the end of the pipeline that the dead `"mcp_"` prefix check silently starved.
+    #[test]
+    fn appends_mcp_tool_annotation_when_names_present() {
+        let mcp_tool_names = vec!["github_create_issue".to_owned(), "slack_post".to_owned()];
+        let effective =
+            build_effective_system_prompt("base prompt".to_owned(), None, &mcp_tool_names);
+
+        assert!(effective.starts_with("base prompt"));
+        assert!(effective.contains("## Available MCP Tools"));
+        assert!(effective.contains("- github_create_issue"));
+        assert!(effective.contains("- slack_post"));
+    }
+
+    #[test]
+    fn omits_mcp_annotation_when_names_empty() {
+        let effective = build_effective_system_prompt("base prompt".to_owned(), None, &[]);
+        assert_eq!(effective, "base prompt");
+    }
+
+    #[test]
+    fn combines_skills_block_and_mcp_annotation() {
+        let skills = Some(vec!["skill body".to_owned()]);
+        let mcp_tool_names = vec!["github_create_issue".to_owned()];
+        let effective =
+            build_effective_system_prompt("base prompt".to_owned(), skills, &mcp_tool_names);
+
+        let skills_idx = effective
+            .find("```skills")
+            .expect("skills block must be present");
+        let mcp_idx = effective
+            .find("## Available MCP Tools")
+            .expect("mcp annotation must be present");
+        assert!(
+            skills_idx < mcp_idx,
+            "skills block must precede the mcp annotation"
+        );
+    }
+}

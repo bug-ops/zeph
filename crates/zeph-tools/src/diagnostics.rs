@@ -195,6 +195,7 @@ impl ToolExecutor for DiagnosticsExecutor {
             schema: schemars::schema_for!(DiagnosticsParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         }]
     }
 }

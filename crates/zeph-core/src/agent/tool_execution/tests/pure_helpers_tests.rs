@@ -25,6 +25,7 @@ fn tool_def_strips_schema_and_title() {
         schema,
         invocation: InvocationHint::ToolCall,
         output_schema: None,
+        server_id: None,
     };
 
     let result = tool_def_to_definition(&def);

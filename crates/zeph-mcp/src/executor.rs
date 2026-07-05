@@ -84,6 +84,7 @@ impl ToolExecutor for McpToolExecutor {
                     .unwrap_or_else(|_| schemars::Schema::default()),
                 invocation: InvocationHint::ToolCall,
                 output_schema: t.output_schema.clone(),
+                server_id: Some(t.server_id.clone()),
             })
             .collect()
     }

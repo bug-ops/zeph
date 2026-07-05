@@ -183,6 +183,7 @@ impl ToolExecutor for SkillInvokeExecutor {
             schema: schemars::schema_for!(InvokeSkillParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         }]
     }
 

@@ -445,6 +445,7 @@ mod tests {
                 schema: schemars::Schema::default(),
                 invocation: InvocationHint::FencedBlock(self.tag),
                 output_schema: None,
+                server_id: None,
             }]
         }
 
@@ -518,6 +519,7 @@ mod tests {
                     schema: schemars::Schema::default(),
                     invocation: InvocationHint::ToolCall,
                     output_schema: None,
+                    server_id: None,
                 })
                 .collect()
         }

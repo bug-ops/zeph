@@ -273,6 +273,7 @@ impl<B: ReactionModerationBackend + std::fmt::Debug> ToolExecutor for Moderation
                 schema: schemars::schema_for!(DeleteReactionParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
             ToolDef {
                 id: "telegram_delete_all_reactions".into(),
@@ -287,6 +288,7 @@ impl<B: ReactionModerationBackend + std::fmt::Debug> ToolExecutor for Moderation
                 schema: schemars::schema_for!(DeleteAllReactionsParams),
                 invocation: InvocationHint::ToolCall,
                 output_schema: None,
+                server_id: None,
             },
         ]
     }

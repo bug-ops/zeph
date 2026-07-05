@@ -1760,6 +1760,7 @@ impl ToolExecutor for ShellExecutor {
             schema: schemars::schema_for!(BashParams),
             invocation: InvocationHint::FencedBlock("bash"),
             output_schema: None,
+            server_id: None,
         }]
     }
 

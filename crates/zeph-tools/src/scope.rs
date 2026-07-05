@@ -731,6 +731,7 @@ mod tests {
             schema: schemars::schema_for!(String),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         }
     }
 

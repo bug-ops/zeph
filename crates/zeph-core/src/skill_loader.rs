@@ -44,6 +44,7 @@ impl ToolExecutor for SkillLoaderExecutor {
             schema: schemars::schema_for!(LoadSkillParams),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
+            server_id: None,
         }]
     }
 

@@ -241,6 +241,7 @@ fn tool_symbol_definition() -> ToolDef {
         schema: schemars::schema_for!(SymbolDefinitionParams),
         invocation: InvocationHint::ToolCall,
         output_schema: None,
+        server_id: None,
     }
 }
 
@@ -251,6 +252,7 @@ fn tool_find_text_references() -> ToolDef {
         schema: schemars::schema_for!(FindTextReferencesParams),
         invocation: InvocationHint::ToolCall,
         output_schema: None,
+        server_id: None,
     }
 }
 
@@ -265,6 +267,7 @@ fn tool_call_graph() -> ToolDef {
         schema: schemars::schema_for!(CallGraphParams),
         invocation: InvocationHint::ToolCall,
         output_schema: None,
+        server_id: None,
     }
 }
 
@@ -277,6 +280,7 @@ fn tool_module_summary() -> ToolDef {
         schema: schemars::schema_for!(ModuleSummaryParams),
         invocation: InvocationHint::ToolCall,
         output_schema: None,
+        server_id: None,
     }
 }
 
