@@ -20,16 +20,18 @@ pub(crate) fn retry_delay(response: &reqwest::Response, attempt: u32) -> Duratio
     Duration::from_secs(BASE_BACKOFF_SECS << attempt)
 }
 
-/// Send an HTTP request, retrying up to `max_retries` times on 429 responses.
+/// Send an HTTP request, retrying up to `max_retries` times on 429 or 503 responses.
 ///
-/// `f` must return a `reqwest::Response`. On each rate-limited attempt, emits a status
-/// message and waits before retrying. Returns the successful `Response` for further
-/// processing by the caller, or an error.
+/// `f` must return a `reqwest::Response`. On each rate-limited or unavailable attempt,
+/// emits a status message and waits before retrying. Returns the successful `Response`
+/// for further processing by the caller, or an error.
 ///
 /// # Errors
 ///
-/// Returns `LlmError::RateLimited` if all attempts are exhausted, or the underlying
-/// `reqwest::Error` wrapped as `LlmError::Http` for other failures.
+/// If all attempts are exhausted, returns `LlmError::RateLimited` when the last response
+/// was `429 Too Many Requests`, or `LlmError::Unavailable` when it was `503 Service
+/// Unavailable`. The underlying `reqwest::Error` is wrapped as `LlmError::Http` for other
+/// failures.
 pub(crate) async fn send_with_retry<F, Fut>(
     provider_name: &str,
     max_retries: u32,
@@ -48,7 +50,11 @@ where
             || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
         {
             if attempt == max_retries {
-                return Err(LlmError::RateLimited);
+                return Err(if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                    LlmError::Unavailable
+                } else {
+                    LlmError::RateLimited
+                });
             }
             let delay = retry_delay(&response, attempt);
             let msg = format!(
@@ -160,6 +166,93 @@ mod tests {
         assert!(
             matches!(result, Err(LlmError::RateLimited)),
             "expected RateLimited, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_exhausts_retries_returns_unavailable() {
+        // All responses are 503 with Retry-After: 0 to not slow down the test
+        let unavailable_response =
+            "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 0\r\nContent-Length: 0\r\n\r\n";
+        let (port, _handle) =
+            spawn_mock_server(vec![unavailable_response, unavailable_response]).await;
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/test");
+
+        // max_retries=1 means: attempt 0 (503 → retry), attempt 1 (503 → fail)
+        let result = send_with_retry("test", 1, None, || {
+            let req = client.get(&url).build().unwrap();
+            let c = client.clone();
+            async move { c.execute(req).await }
+        })
+        .await;
+
+        assert!(
+            matches!(result, Err(LlmError::Unavailable)),
+            "expected Unavailable, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_mixed_429_then_503_returns_unavailable() {
+        // attempt 0: 429 (retry), attempt 1: 503 (retry), attempt 2: 503 (exhausted).
+        // The LAST status seen (503), not the first (429), must decide the error variant.
+        let rate_limit_response =
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 0\r\n\r\n";
+        let unavailable_response =
+            "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 0\r\nContent-Length: 0\r\n\r\n";
+        let (port, _handle) = spawn_mock_server(vec![
+            rate_limit_response,
+            unavailable_response,
+            unavailable_response,
+        ])
+        .await;
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/test");
+
+        let result = send_with_retry("test", 2, None, || {
+            let req = client.get(&url).build().unwrap();
+            let c = client.clone();
+            async move { c.execute(req).await }
+        })
+        .await;
+
+        assert!(
+            matches!(result, Err(LlmError::Unavailable)),
+            "last status (503) must win over the earlier 429, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_mixed_503_then_429_returns_rate_limited() {
+        // attempt 0: 503 (retry), attempt 1: 429 (retry), attempt 2: 429 (exhausted).
+        // The LAST status seen (429), not the first (503), must decide the error variant.
+        let rate_limit_response =
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 0\r\n\r\n";
+        let unavailable_response =
+            "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 0\r\nContent-Length: 0\r\n\r\n";
+        let (port, _handle) = spawn_mock_server(vec![
+            unavailable_response,
+            rate_limit_response,
+            rate_limit_response,
+        ])
+        .await;
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/test");
+
+        let result = send_with_retry("test", 2, None, || {
+            let req = client.get(&url).build().unwrap();
+            let c = client.clone();
+            async move { c.execute(req).await }
+        })
+        .await;
+
+        assert!(
+            matches!(result, Err(LlmError::RateLimited)),
+            "last status (429) must win over the earlier 503, got: {result:?}"
         );
     }
 

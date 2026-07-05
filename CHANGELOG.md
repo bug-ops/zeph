@@ -136,6 +136,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(llm)`: `OpenAiProvider::chat_with_tools` (`crates/zeph-llm/src/openai/mod.rs`) sent its
+  request directly via `.send().await?` with a manual one-shot 429 special case, instead of
+  going through the shared `send_with_retry` helper used by every other request path on the
+  same provider (`chat()`/`chat_with_extras` via `send_request`, `chat_stream()` via
+  `send_stream_request`). Since `chat_with_tools` is the path used whenever the agent has any
+  tools registered — virtually every real turn — a single transient rate-limit response failed
+  the entire tool-calling turn immediately with zero retries, unlike the tool-less path.
+  `chat_with_tools` now routes through `send_with_retry`, matching `ClaudeProvider`'s existing
+  behavior; `CompatibleProvider::chat_with_tools` is fixed transitively since it delegates to
+  the same method. (#5684)
+- `fix(llm)`: `send_with_retry` (`crates/zeph-llm/src/retry.rs`) retried on both `429 Too Many
+  Requests` and `503 Service Unavailable`, but once retries were exhausted it unconditionally
+  returned `LlmError::RateLimited` regardless of which status code caused the exhaustion — a
+  genuine server outage was indistinguishable from a quota/rate-limit condition to every
+  downstream caller, including `RouterProvider::embed`/`embed_batch`
+  (`crates/zeph-llm/src/router/provider_impl.rs`), which branches on `is_rate_limited()` to
+  retry the same provider instead of falling back immediately. `send_with_retry` now returns
+  `LlmError::Unavailable` when the last-seen status before exhaustion was 503, and
+  `LlmError::RateLimited` only when it was 429, so the router takes the correct
+  retry-vs-fallback branch. (#5685)
 - `fix(channels)`: `JsonCliChannel::try_recv` (`crates/zeph-channels/src/json_cli.rs`) did not
   recognize `exit`/`quit`/`/exit`/`/quit` the way `recv` already did, so an exit command
   arriving via the queued/merge path (`Agent::drain_channel`'s 500ms merge window in

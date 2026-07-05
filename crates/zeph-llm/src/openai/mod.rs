@@ -1040,17 +1040,14 @@ impl LlmProvider for OpenAiProvider {
             presence_penalty,
         };
 
-        let response = self
-            .openai_post(format!("{}/chat/completions", self.base_url))
-            .json(&body)
-            .send()
-            .await?;
+        let response = send_with_retry("OpenAI", MAX_RETRIES, self.status_tx.as_ref(), || {
+            self.openai_post(format!("{}/chat/completions", self.base_url))
+                .json(&body)
+                .send()
+        })
+        .await?;
 
         let (status, text) = crate::http::read_response_body(response).await?;
-
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(LlmError::RateLimited);
-        }
 
         if status == reqwest::StatusCode::BAD_REQUEST {
             tracing::warn!("OpenAI tool chat 400 bad request: {text}");

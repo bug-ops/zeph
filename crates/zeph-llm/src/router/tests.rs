@@ -848,6 +848,42 @@ async fn embed_falls_back_after_all_retries_exhausted() {
     assert_eq!(result, vec![9.0, 8.0]);
 }
 
+/// A genuine outage (`Unavailable`, e.g. exhausted 503 retries at the HTTP layer) must
+/// not be treated as `RateLimited`: the router should fall back to the next provider on
+/// the very first `Unavailable` error instead of retrying the same provider up to
+/// `EMBED_MAX_RETRIES` times. Giving `p1` only one error (not four, unlike the
+/// `RateLimited` exhaustion test above) proves this — if the router mistakenly retried,
+/// the second call to `p1` would succeed (its error queue would be empty) and return
+/// `p1`'s own embedding instead of falling back to `p2`.
+#[tokio::test]
+async fn embed_falls_back_immediately_on_unavailable() {
+    use crate::mock::MockProvider;
+
+    let p1_mock = {
+        let mut m = MockProvider::default()
+            .with_errors(vec![LlmError::Unavailable])
+            .with_name("p1");
+        m.supports_embeddings = true;
+        m
+    };
+    let p1_embed_calls = Arc::clone(&p1_mock.embed_call_count);
+    let p1 = AnyProvider::Mock(p1_mock);
+    let p2 = AnyProvider::Mock({
+        let mut m = MockProvider::default().with_name("p2");
+        m.supports_embeddings = true;
+        m.embedding = vec![9.0, 8.0];
+        m
+    });
+    let r = RouterProvider::new(vec![p1, p2]);
+    let result = r.embed("text").await.unwrap();
+    assert_eq!(result, vec![9.0, 8.0]);
+    assert_eq!(
+        p1_embed_calls.load(Ordering::Relaxed),
+        1,
+        "p1 must be called exactly once — Unavailable must not enter the embed-retry loop"
+    );
+}
+
 /// Provider returns `RateLimited` twice then succeeds via `embed_batch`.
 #[tokio::test]
 async fn embed_batch_retries_on_rate_limited_then_succeeds() {

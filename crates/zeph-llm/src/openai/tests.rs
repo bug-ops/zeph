@@ -1471,6 +1471,105 @@ async fn chat_500_server_error_propagates() {
     assert!(result.is_err());
 }
 
+/// Spawn a minimal HTTP server that returns a fixed response for each connection in order.
+/// Mirrors the mock server used in `retry.rs` and `gemini/tests.rs` to exercise real
+/// retry-then-succeed behavior over the wire (wiremock has no built-in way to fail N
+/// times then succeed on the same route).
+async fn spawn_sequenced_mock_server(
+    responses: Vec<&'static str>,
+) -> (u16, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let handle = tokio::spawn(async move {
+        for resp in responses {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let (reader, mut writer) = stream.split();
+                let mut buf_reader = BufReader::new(reader);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    buf_reader.read_line(&mut line).await.unwrap_or(0);
+                    if line == "\r\n" || line == "\n" || line.is_empty() {
+                        break;
+                    }
+                }
+                writer.write_all(resp.as_bytes()).await.ok();
+            });
+        }
+    });
+
+    (port, handle)
+}
+
+#[tokio::test]
+async fn chat_with_tools_retries_on_429_then_succeeds() {
+    let rate_limit_response =
+        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 0\r\n\r\n";
+    let ok_body = serde_json::json!({
+        "choices": [{
+            "message": {
+                "content": "done",
+                "tool_calls": null
+            }
+        }]
+    })
+    .to_string();
+    let ok_response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        ok_body.len(),
+        ok_body
+    );
+    let (port, _handle) = spawn_sequenced_mock_server(vec![
+        rate_limit_response,
+        Box::leak(ok_response.into_boxed_str()),
+    ])
+    .await;
+
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "sk-test".into(),
+        base_url: format!("http://127.0.0.1:{port}"),
+        model: "gpt-4o".into(),
+        max_tokens: 256,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+    });
+    let messages = vec![Message {
+        role: Role::User,
+        content: "hi".into(),
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    }];
+    let tools = vec![ToolDefinition {
+        name: "bash".into(),
+        description: "Execute a shell command".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"]
+        }),
+        output_schema: None,
+    }];
+
+    let result = p.chat_with_tools(&messages, &tools).await;
+    assert!(
+        result.is_ok(),
+        "expected chat_with_tools to retry past a transient 429 and succeed, got: {result:?}"
+    );
+    match result.unwrap() {
+        ChatResponse::Text(text) => assert_eq!(text, "done"),
+        other => panic!("expected Text response, got {other:?}"),
+    }
+}
+
 #[test]
 fn with_generation_overrides_stores_overrides() {
     let provider = OpenAiProvider::new(OpenAiConfig {
