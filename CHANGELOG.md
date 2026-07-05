@@ -133,6 +133,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   above) and the `DebugDumper::new` match arm across those three plus
   `serve/agent_factory.rs`. Pure refactor, no behavior change — verified byte-identical
   field mapping and `Ok`/`Err` semantics at every site. Refs #5610.
+- `refactor(core)`: deduplicated the 8 near-identical cancellation-handling blocks in
+  `crates/zeph-core/src/agent/tool_execution/tier_loop.rs` (`handle_confirmation_phase`,
+  `handle_retry_phase`'s entry check and its two `tokio::select!` branches,
+  `handle_reformat_phase`'s entry and post-await checks, `run_tier_execution_loop`'s
+  per-tier check, and `execute_tier_join`'s cancellation branch) into a single
+  `cancel_tool_batch` helper. Preserves the exact step order (skill-env reset, log,
+  metrics, `[Cancelled]` send, tombstone persist) at every call site — that ordering is
+  what prevents the recurring "orphaned tool_calls corrupts history" defect class
+  (#5464, #5513, #5646). Pure structural dedup, no behavior change; all existing
+  cancellation/tombstone tests pass unchanged. (#5654)
+- `refactor(core)`: deduplicated the session-digest generation pipeline in
+  `crates/zeph-core/src/agent/session_digest.rs`. The `/new`-triggered fire-and-forget
+  `generate_and_store_digest` and the shutdown-path `Agent::maybe_store_session_digest`
+  independently rebuilt the identical summarizer prompt, LLM-call-under-timeout, and
+  sanitize/truncate/store pipeline; both now delegate to a single private
+  `generate_and_persist_digest` helper, parameterized only by the log wording each call
+  site already used. Pure structural dedup, no behavior change — same prompt text, same
+  30s timeout semantics, same storage call per call site; added direct unit test coverage
+  for the shared helper's success and LLM-failure paths. (#5678)
 
 ### Fixed
 
@@ -728,6 +747,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it, so `ner.rs` no longer calls the broken upstream loader. No config, trait, or public API
   changes — issue #5691 was originally filed as "remove dead code", but `CandleNerClassifier`
   is live; this closes it as a bug fix instead. (#5691)
+- `fix(core)`: `EnvironmentContext::refresh_git_branch` (`crates/zeph-core/src/context.rs`)
+  ran `git branch --show-current` via a blocking `std::process::Command::output()` call
+  directly inline on the async agent turn path (`Agent::rebuild_system_prompt`, invoked every
+  turn from `advance_context_lifecycle`), stalling the tokio worker thread for the duration of
+  the subprocess call. The surrounding `advance_context_lifecycle_guarded`'s
+  `tokio::time::timeout` cannot preempt a thread blocked in a synchronous syscall, so a
+  hung/slow git invocation (e.g. stale lock file, slow filesystem) would stall the whole
+  worker thread rather than being bounded by the timeout. `refresh_git_branch` is now `async`
+  and dispatches the git subprocess call via `tokio::task::spawn_blocking`, keeping the tokio
+  worker thread free while awaiting the blocking-pool result. (#5670)
 
 ### Changed
 

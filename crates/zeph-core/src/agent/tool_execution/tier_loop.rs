@@ -77,6 +77,24 @@ impl<C: Channel> Agent<C> {
         Ok(false)
     }
 
+    /// Resets skill env, records the cancellation, sends the `[Cancelled]` notice, and
+    /// persists the tombstone tool results — the fixed sequence every cancellation
+    /// checkpoint in this file must follow (#5654). Skipping or reordering a step here
+    /// has previously left orphaned `ToolUse` messages with no matching `ToolResult`
+    /// (#5464, #5513, #5646) — see the recurring defect-class notes in issue history.
+    async fn cancel_tool_batch(
+        &mut self,
+        tool_calls: &[zeph_llm::provider::ToolUseRequest],
+        log_msg: &str,
+    ) -> Result<(), crate::agent::error::AgentError> {
+        self.tool_executor.set_skill_env(None);
+        tracing::info!("{log_msg}");
+        self.update_metrics(|m| m.cancellations += 1);
+        self.channel.send("[Cancelled]").await?;
+        self.persist_cancelled_tool_results(tool_calls, None).await;
+        Ok(())
+    }
+
     #[tracing::instrument(
         name = "core.tool.handle_confirmation_phase",
         skip_all,
@@ -93,11 +111,8 @@ impl<C: Channel> Agent<C> {
     ) -> Result<bool, crate::agent::error::AgentError> {
         for idx in 0..tool_results.len() {
             if cancel.is_cancelled() {
-                self.tool_executor.set_skill_env(None);
-                tracing::info!("tool execution cancelled by user");
-                self.update_metrics(|m| m.cancellations += 1);
-                self.channel.send("[Cancelled]").await?;
-                self.persist_cancelled_tool_results(tool_calls, None).await;
+                self.cancel_tool_batch(tool_calls, "tool execution cancelled by user")
+                    .await?;
                 return Ok(true);
             }
             let new_result =
@@ -163,11 +178,8 @@ impl<C: Channel> Agent<C> {
         let retry_max_ms = self.tool_orchestrator.retry_max_ms;
         for idx in 0..tool_results.len() {
             if cancel.is_cancelled() {
-                self.tool_executor.set_skill_env(None);
-                tracing::info!("tool execution cancelled by user");
-                self.update_metrics(|m| m.cancellations += 1);
-                self.channel.send("[Cancelled]").await?;
-                self.persist_cancelled_tool_results(tool_calls, None).await;
+                self.cancel_tool_batch(tool_calls, "tool execution cancelled by user")
+                    .await?;
                 return Ok(true);
             }
             let is_transient = matches!(
@@ -193,11 +205,8 @@ impl<C: Channel> Agent<C> {
                         tracing::info_span!("tool_exec_retry", tool_name = %tc.name, idx = %tc.id)
                     ) => r,
                     () = cancel.cancelled() => {
-                        self.tool_executor.set_skill_env(None);
-                        tracing::info!("tool retry cancelled by user");
-                        self.update_metrics(|m| m.cancellations += 1);
-                        self.channel.send("[Cancelled]").await?;
-                        self.persist_cancelled_tool_results(tool_calls, None).await;
+                        self.cancel_tool_batch(tool_calls, "tool retry cancelled by user")
+                            .await?;
                         return Ok(true);
                     }
                 };
@@ -228,11 +237,11 @@ impl<C: Channel> Agent<C> {
                         tokio::select! {
                             () = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
                             () = cancel.cancelled() => {
-                                self.tool_executor.set_skill_env(None);
-                                tracing::info!("retry backoff interrupted by cancellation");
-                                self.update_metrics(|m| m.cancellations += 1);
-                                self.channel.send("[Cancelled]").await?;
-                                self.persist_cancelled_tool_results(tool_calls, None).await;
+                                self.cancel_tool_batch(
+                                    tool_calls,
+                                    "retry backoff interrupted by cancellation",
+                                )
+                                .await?;
                                 return Ok(true);
                             }
                         }
@@ -274,11 +283,8 @@ impl<C: Channel> Agent<C> {
         let reformat_start = std::time::Instant::now();
         for idx in 0..tool_results.len() {
             if cancel.is_cancelled() {
-                self.tool_executor.set_skill_env(None);
-                tracing::info!("parameter reformat phase cancelled by user");
-                self.update_metrics(|m| m.cancellations += 1);
-                self.channel.send("[Cancelled]").await?;
-                self.persist_cancelled_tool_results(tool_calls, None).await;
+                self.cancel_tool_batch(tool_calls, "parameter reformat phase cancelled by user")
+                    .await?;
                 return Ok(true);
             }
             let needs_reformat = matches!(
@@ -309,11 +315,8 @@ impl<C: Channel> Agent<C> {
             let _ = self.channel.send_status("").await;
 
             if cancel.is_cancelled() {
-                self.tool_executor.set_skill_env(None);
-                tracing::info!("parameter reformat phase cancelled by user");
-                self.update_metrics(|m| m.cancellations += 1);
-                self.channel.send("[Cancelled]").await?;
-                self.persist_cancelled_tool_results(tool_calls, None).await;
+                self.cancel_tool_batch(tool_calls, "parameter reformat phase cancelled by user")
+                    .await?;
                 return Ok(true);
             }
 
@@ -1176,11 +1179,8 @@ impl<C: Channel> Agent<C> {
 
         for (tier_idx, tier) in tiers.into_iter().enumerate() {
             if cancel.is_cancelled() {
-                self.tool_executor.set_skill_env(None);
-                tracing::info!("tool execution cancelled by user");
-                self.update_metrics(|m| m.cancellations += 1);
-                self.channel.send("[Cancelled]").await?;
-                self.persist_cancelled_tool_results(tool_calls, None).await;
+                self.cancel_tool_batch(tool_calls, "tool execution cancelled by user")
+                    .await?;
                 return Ok(None);
             }
 
@@ -1987,11 +1987,8 @@ impl<C: Channel> Agent<C> {
                 results = &mut join_fut => break results,
                 () = cancel.cancelled() => {
                     self.services.mcp.elicitation_rx = elicitation_rx;
-                    self.tool_executor.set_skill_env(None);
-                    tracing::info!("tool execution cancelled by user");
-                    self.update_metrics(|m| m.cancellations += 1);
-                    self.channel.send("[Cancelled]").await?;
-                    self.persist_cancelled_tool_results(tool_calls, None).await;
+                    self.cancel_tool_batch(tool_calls, "tool execution cancelled by user")
+                        .await?;
                     return Ok(None);
                 }
                 event = recv_elicitation(&mut elicitation_rx) => {

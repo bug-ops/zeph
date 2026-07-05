@@ -849,7 +849,7 @@ impl<C: Channel> Agent<C> {
             .skill
             .last_skills_prompt
             .clone_from(&skills_prompt);
-        self.services.session.env_context.refresh_git_branch();
+        self.services.session.env_context.refresh_git_branch().await;
         self.services
             .session
             .env_context

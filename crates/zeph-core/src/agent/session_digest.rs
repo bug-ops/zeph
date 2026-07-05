@@ -106,6 +106,88 @@ fn format_and_sanitize_conversation(
     result
 }
 
+/// Core digest pipeline shared by the `/new`-triggered fire-and-forget path
+/// (`generate_and_store_digest`) and the shutdown path (`Agent::maybe_store_session_digest`).
+///
+/// Builds the summarizer prompt from `message_refs`, calls `provider.chat` under a fixed
+/// 30s timeout, sanitizes and truncates the response to `max_tokens`, and persists it via
+/// `memory.sqlite().save_session_digest`. `log_prefix` and `stored_msg` let each call site
+/// keep its own log wording. Returns the stored `(text, token_count)` on success, or `None`
+/// if the LLM call times out, fails, or storage fails — each logged as a warning.
+///
+/// PAAC secret masking (#5437) is structural at the provider boundary — callers pass an
+/// already-masked `provider`.
+#[allow(clippy::too_many_arguments)] // pipeline has many required, non-groupable inputs; a *Params struct would be more verbose without simplifying the call sites
+async fn generate_and_persist_digest(
+    provider: &zeph_llm::any::AnyProvider,
+    memory: &zeph_memory::semantic::SemanticMemory,
+    conversation_id: zeph_memory::ConversationId,
+    message_refs: &[&Message],
+    sanitizer: &zeph_sanitizer::ContentSanitizer,
+    max_tokens: usize,
+    tc: &zeph_memory::TokenCounter,
+    log_prefix: &str,
+    stored_msg: &str,
+) -> Option<(String, i64)> {
+    let conv_text = format_and_sanitize_conversation(message_refs, sanitizer);
+
+    let prompt = format!(
+        "You are a session summarizer. Read the following conversation excerpt and produce \
+         a compact digest (under {max_tokens} tokens) of the key facts, decisions, outcomes, \
+         and open questions from this session. Be specific and concise. \
+         Output ONLY the digest text, no preamble.\n\n\
+         Conversation:\n{conv_text}\n\
+         Digest:"
+    );
+
+    let chat_messages = vec![Message {
+        role: Role::User,
+        content: prompt,
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    }];
+
+    let timeout = Duration::from_secs(30);
+    let digest_text = tokio::select! {
+        () = async { tokio::time::sleep(timeout).await } => {
+            tracing::warn!("{log_prefix}: LLM call timed out");
+            return None;
+        }
+        result = provider.chat(&chat_messages) => {
+            match result {
+                Ok(text) => text,
+                Err(e) => {
+                    tracing::warn!("{log_prefix}: LLM call failed: {e:#}");
+                    return None;
+                }
+            }
+        }
+    };
+
+    let clean = sanitize_digest(&digest_text);
+    let final_text = truncate_digest(&clean, max_tokens, tc);
+    let token_count = i64::try_from(tc.count_tokens(&final_text)).unwrap_or(i64::MAX);
+
+    match memory
+        .sqlite()
+        .save_session_digest(conversation_id, &final_text, token_count)
+        .await
+    {
+        Ok(()) => {
+            tracing::info!(
+                conversation_id = conversation_id.0,
+                tokens = token_count,
+                "{stored_msg}"
+            );
+            Some((final_text, token_count))
+        }
+        Err(e) => {
+            tracing::warn!("{log_prefix}: storage failed: {e:#}");
+            None
+        }
+    }
+}
+
 /// Generate and persist a digest for a completed conversation from a background task.
 ///
 /// Called fire-and-forget from `reset_conversation`. All errors are logged as warnings
@@ -132,60 +214,20 @@ pub(super) async fn generate_and_store_digest(
         messages
     };
 
-    let refs: Vec<&zeph_llm::provider::Message> = slice.iter().collect();
-    let conv_text = format_and_sanitize_conversation(&refs, sanitizer);
+    let refs: Vec<&Message> = slice.iter().collect();
 
-    let prompt = format!(
-        "You are a session summarizer. Read the following conversation excerpt and produce \
-         a compact digest (under {max_tokens} tokens) of the key facts, decisions, outcomes, \
-         and open questions from this session. Be specific and concise. \
-         Output ONLY the digest text, no preamble.\n\n\
-         Conversation:\n{conv_text}\n\
-         Digest:"
-    );
-
-    let chat_messages = vec![zeph_llm::provider::Message {
-        role: zeph_llm::provider::Role::User,
-        content: prompt,
-        parts: vec![],
-        metadata: zeph_llm::provider::MessageMetadata::default(),
-    }];
-    // PAAC secret masking (#5437) is structural at the provider boundary — the caller passes an
-    // already-masked `provider` (the Agent's own, wrapped via `Agent::with_secret_registry`).
-    let timeout = Duration::from_secs(30);
-    let digest_text = tokio::select! {
-        () = async { tokio::time::sleep(timeout).await } => {
-            tracing::warn!("session digest (/new): LLM call timed out");
-            return;
-        }
-        result = provider.chat(&chat_messages) => {
-            match result {
-                Ok(text) => text,
-                Err(e) => {
-                    tracing::warn!("session digest (/new): LLM call failed: {e:#}");
-                    return;
-                }
-            }
-        }
-    };
-
-    let clean = sanitize_digest(&digest_text);
-    let final_text = truncate_digest(&clean, max_tokens, tc);
-    let token_count = i64::try_from(tc.count_tokens(&final_text)).unwrap_or(i64::MAX);
-
-    if let Err(e) = memory
-        .sqlite()
-        .save_session_digest(conversation_id, &final_text, token_count)
-        .await
-    {
-        tracing::warn!("session digest (/new): storage failed: {e:#}");
-    } else {
-        tracing::info!(
-            conversation_id = conversation_id.0,
-            tokens = token_count,
-            "session digest stored (via /new)"
-        );
-    }
+    generate_and_persist_digest(
+        provider,
+        memory,
+        conversation_id,
+        &refs,
+        sanitizer,
+        max_tokens,
+        tc,
+        "session digest (/new)",
+        "session digest stored (via /new)",
+    )
+    .await;
 }
 
 /// Pure predicate for the `/recap` deduplication check (#3144).
@@ -246,79 +288,36 @@ impl<C: Channel> Agent<C> {
             &non_system[..]
         };
 
-        let conv_text = format_and_sanitize_conversation(slice, &self.services.security.sanitizer);
-
-        let prompt = format!(
-            "You are a session summarizer. Read the following conversation excerpt and produce \
-             a compact digest (under {max_tokens} tokens) of the key facts, decisions, outcomes, \
-             and open questions from this session. Be specific and concise. \
-             Output ONLY the digest text, no preamble.\n\n\
-             Conversation:\n{conv_text}\n\
-             Digest:"
-        );
-
-        let chat_messages = vec![Message {
-            role: Role::User,
-            content: prompt,
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-        // PAAC secret masking (#5437) is structural at the provider boundary — `self.provider`
-        // masks registered secrets from `chat_messages` transparently before this dispatch.
-
         let _ = self
             .channel
             .send_status("Generating session digest...")
             .await;
 
-        let timeout = Duration::from_secs(30);
-        let digest_text = tokio::select! {
-            () = async { tokio::time::sleep(timeout).await } => {
-                tracing::warn!("session digest: LLM call timed out");
-                let _ = self.channel.send_status("").await;
-                return;
-            }
-            result = self.provider.chat(&chat_messages) => {
-                match result {
-                    Ok(text) => text,
-                    Err(e) => {
-                        tracing::warn!("session digest: LLM call failed: {e:#}");
-                        let _ = self.channel.send_status("").await;
-                        return;
-                    }
-                }
-            }
-        };
-
-        // Sanitize to prevent injection via LLM-generated content (strip role prefixes).
-        let sanitized = sanitize_digest(&digest_text);
-
-        // Truncate to max_tokens budget.
+        // PAAC secret masking (#5437) is structural at the provider boundary — `self.provider`
+        // masks registered secrets from `chat_messages` transparently before this dispatch.
         let tc = &self.runtime.metrics.token_counter;
-        let final_text = truncate_digest(&sanitized, max_tokens, tc);
+        let result = generate_and_persist_digest(
+            &self.provider,
+            &memory,
+            conversation_id,
+            slice,
+            &self.services.security.sanitizer,
+            max_tokens,
+            tc,
+            "session digest",
+            "session digest stored",
+        )
+        .await;
 
-        let token_count = i64::try_from(tc.count_tokens(&final_text)).unwrap_or(i64::MAX);
+        let _ = self.channel.send_status("").await;
 
-        if let Err(e) = memory
-            .sqlite()
-            .save_session_digest(conversation_id, &final_text, token_count)
-            .await
-        {
-            tracing::warn!("session digest: storage failed: {e:#}");
-        } else {
-            tracing::info!(
-                conversation_id = conversation_id.0,
-                tokens = token_count,
-                "session digest stored"
-            );
-            // Update the cached digest so it is available in the same session if re-used.
+        // Update the cached digest so it is available in the same session if re-used.
+        if let Some((final_text, token_count)) = result {
             self.services.memory.compaction.cached_session_digest = Some((
                 final_text,
                 usize::try_from(token_count).unwrap_or(max_tokens),
             ));
         }
-
-        let _ = self.channel.send_status("").await;
     }
 
     /// Load the session digest from `SQLite` and cache it in `MemoryState`.
@@ -536,11 +535,17 @@ impl<C: Channel> Agent<C> {
 
 #[cfg(test)]
 mod tests {
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
     use zeph_llm::provider::{Message, MessageMetadata, Role};
     use zeph_memory::TokenCounter;
+    use zeph_memory::semantic::SemanticMemory;
     use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
-    use super::{format_and_sanitize_conversation, sanitize_digest, truncate_digest};
+    use super::{
+        format_and_sanitize_conversation, generate_and_persist_digest, sanitize_digest,
+        truncate_digest,
+    };
 
     fn make_sanitizer() -> ContentSanitizer {
         ContentSanitizer::new(&ContentIsolationConfig::default())
@@ -675,6 +680,81 @@ mod tests {
         assert!(result.len() < text.len());
         // Must not panic or produce content longer than original.
         assert!(tc.count_tokens(&result) <= 5 || result.is_empty());
+    }
+
+    // ----- generate_and_persist_digest (shared pipeline, #5678) -----
+
+    async fn make_memory_with_conversation() -> (SemanticMemory, zeph_memory::ConversationId) {
+        let memory = SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            None,
+            AnyProvider::Mock(MockProvider::default()),
+            "test-model",
+        )
+        .await
+        .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        (memory, cid)
+    }
+
+    #[tokio::test]
+    async fn generate_and_persist_digest_success_round_trips_through_storage() {
+        let (memory, cid) = make_memory_with_conversation().await;
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec![
+            "a compact digest".into(),
+        ]));
+        let sanitizer = make_sanitizer();
+        let tc = make_token_counter();
+        let msg = user_msg("hello world");
+        let refs = [&msg];
+
+        let result = generate_and_persist_digest(
+            &provider,
+            &memory,
+            cid,
+            &refs,
+            &sanitizer,
+            100,
+            &tc,
+            "test digest",
+            "test digest stored",
+        )
+        .await;
+
+        let (text, token_count) = result.expect("success case must return Some");
+        assert_eq!(text, "a compact digest");
+        assert!(token_count > 0);
+
+        let stored = memory.sqlite().load_session_digest(cid).await.unwrap();
+        assert_eq!(stored.expect("digest must be persisted").digest, text);
+    }
+
+    #[tokio::test]
+    async fn generate_and_persist_digest_llm_failure_returns_none_and_stores_nothing() {
+        let (memory, cid) = make_memory_with_conversation().await;
+        let provider = AnyProvider::Mock(MockProvider::failing());
+        let sanitizer = make_sanitizer();
+        let tc = make_token_counter();
+        let msg = user_msg("hello world");
+        let refs = [&msg];
+
+        let result = generate_and_persist_digest(
+            &provider,
+            &memory,
+            cid,
+            &refs,
+            &sanitizer,
+            100,
+            &tc,
+            "test digest",
+            "test digest stored",
+        )
+        .await;
+
+        assert!(result.is_none());
+        let stored = memory.sqlite().load_session_digest(cid).await.unwrap();
+        assert!(stored.is_none());
     }
 
     // ----- T3: C3-bis invariant -----

@@ -175,14 +175,28 @@ impl EnvironmentContext {
     }
 
     /// Update only the git branch, leaving all other fields unchanged.
-    pub fn refresh_git_branch(&mut self) {
+    ///
+    /// The underlying `git` subprocess call is dispatched to the blocking thread
+    /// pool via [`tokio::task::spawn_blocking`] so it never stalls the tokio
+    /// worker thread driving the agent turn loop (this is called on every turn).
+    pub async fn refresh_git_branch(&mut self) {
         if matches!(self.working_dir.as_str(), "" | "unknown") {
             self.git_branch = None;
             return;
         }
-        let refreshed =
-            Self::gather_for_dir(&self.model_name, std::path::Path::new(&self.working_dir));
-        self.git_branch = refreshed.git_branch;
+        let model_name = self.model_name.clone();
+        let working_dir = self.working_dir.clone();
+        self.git_branch = match tokio::task::spawn_blocking(move || {
+            Self::gather_for_dir(&model_name, std::path::Path::new(&working_dir)).git_branch
+        })
+        .await
+        {
+            Ok(branch) => branch,
+            Err(e) => {
+                tracing::warn!("git branch refresh task panicked: {e:#}");
+                None
+            }
+        };
     }
 
     #[must_use]
@@ -232,14 +246,14 @@ mod tests {
         assert_eq!(env.model_name, "test-model");
     }
 
-    #[test]
-    fn refresh_git_branch_does_not_panic() {
+    #[tokio::test]
+    async fn refresh_git_branch_does_not_panic() {
         let mut env = EnvironmentContext::gather("test-model");
         let original_dir = env.working_dir.clone();
         let original_os = env.os.clone();
         let original_model = env.model_name.clone();
 
-        env.refresh_git_branch();
+        env.refresh_git_branch().await;
 
         // Other fields must remain unchanged.
         assert_eq!(env.working_dir, original_dir);
@@ -251,15 +265,15 @@ mod tests {
         assert!(formatted.ends_with("</environment>"));
     }
 
-    #[test]
-    fn refresh_git_branch_overwrites_previous_branch() {
+    #[tokio::test]
+    async fn refresh_git_branch_overwrites_previous_branch() {
         let mut env = EnvironmentContext {
             working_dir: "/tmp".into(),
             git_branch: Some("old-branch".into()),
             os: "linux".into(),
             model_name: "test".into(),
         };
-        env.refresh_git_branch();
+        env.refresh_git_branch().await;
         // After refresh, git_branch reflects the actual git state (Some or None).
         // Importantly the call must not panic and must no longer hold "old-branch"
         // when running outside a git repo with that branch name.
