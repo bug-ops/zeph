@@ -326,8 +326,15 @@ fn default_shadow_probe_patterns() -> Vec<String> {
         "builtin:shell".to_owned(),
         "builtin:write".to_owned(),
         "builtin:edit".to_owned(),
-        "mcp:*/file_*".to_owned(),
-        "mcp:*/exec_*".to_owned(),
+        // Substring patterns (not `mcp:`-prefixed): real MCP tool ids are
+        // `"{server_id}_{name}"` and never carry a `mcp:` prefix or `/` separator, so a
+        // prefix/segment-based glob can never match them. Scoped to write/edit/delete/exec
+        // keywords (not a bare `*file*`) so pure-read tools like `fs-test_read_file` are not
+        // swept in.
+        "*write*".to_owned(),
+        "*edit*".to_owned(),
+        "*delete*".to_owned(),
+        "*exec*".to_owned(),
     ]
 }
 
@@ -368,7 +375,9 @@ pub struct ShadowSentinelConfig {
     pub max_probes_per_turn: usize,
     /// Glob patterns over fully-qualified tool ids that trigger the safety probe.
     ///
-    /// Default covers shell execution, file writes, and MCP file/exec tools.
+    /// Default covers shell execution and write/edit/delete/exec-capable tools, matched by
+    /// substring on the tool id so both builtin ids (`builtin:write`) and real MCP tool ids
+    /// (`"{server_id}_{name}"`, e.g. `fs-test_write_file` — never `mcp:`-prefixed) are caught.
     #[serde(default = "default_shadow_probe_patterns")]
     pub probe_patterns: Vec<String>,
     /// When `true`, a probe timeout or LLM error causes the tool call to be denied.

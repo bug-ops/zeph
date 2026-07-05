@@ -849,9 +849,19 @@ probe_provider = "fast"          # [[llm.providers]] name; empty = main provider
 max_context_events = 50
 probe_timeout_ms = 2000
 max_probes_per_turn = 3
-probe_patterns = ["builtin:shell*", "builtin:write", "builtin:edit", "mcp:*/file_*", "builtin:exec*"]
+probe_patterns = ["builtin:shell", "builtin:write", "builtin:edit", "*write*", "*edit*", "*delete*", "*exec*"]
 deny_on_timeout = false
 ```
+
+**Pattern shape (fix #5736)**: `probe_patterns` entries must match the real qualified tool id
+shape they are checked against. Built-in ids are `"builtin:{name}"`; MCP tool ids are
+`"{server_id}_{name}"` (`McpTool::sanitized_id`) — never `"mcp:"`-prefixed or `/`-separated, so a
+pattern like `"mcp:*/file_*"` never matches a real MCP tool id and silently disables the probe
+for every MCP tool. The default patterns above are substring globs (`"*write*"` etc.) that match
+the risky-keyword regardless of whether the tool is built-in or MCP-origin; `classify_tool`
+additionally uses `ToolDef::is_mcp_tool()` (not string matching) to decide whether a
+write/edit-capable match escalates to `ExfilCapable` (MCP-origin) or the ordinary `FileWrite`
+(local-origin).
 
 ### `classify_tool` fast-path — bare tool IDs (fix #3744)
 

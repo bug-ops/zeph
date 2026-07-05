@@ -223,7 +223,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   dynamically-connected MCP server's tools via the weakest-link Quarantine-deny check; filed as
   a separate, higher-priority follow-up (#5747) since that gap is a security-enforcement bypass,
   not just a defense-in-depth classification miss like `ShadowSentinel`'s (which
-  `PolicyGateExecutor`/`TrajectorySentinel` continue to back up regardless).
+  `PolicyGateExecutor`/`TrajectorySentinel` continue to back up regardless). **Follow-up**: a live
+  verification session found the `is_mcp_tool()` fix above was necessary but not sufficient —
+  `default_shadow_probe_patterns()` (`crates/zeph-config/src/security.rs`) shipped
+  `"mcp:*/file_*"`/`"mcp:*/exec_*"`, glob patterns that assumed the same wrong
+  `"mcp:"`-prefixed id shape the original bug assumed. Since real MCP tool ids never carry that
+  prefix, the outer glob-matching loop in `classify_tool` never matched any real MCP tool id at
+  all under the shipped default config, so every MCP tool (write/edit/exec included) fell through
+  to `ToolRiskCategory::Low` and the safety probe was skipped entirely — a complete bypass, not
+  just a downgrade to `FileWrite` as originally described. Replaced the two `mcp:`-prefixed
+  patterns with substring patterns (`"*write*"`, `"*edit*"`, `"*delete*"`, `"*exec*"`) that match
+  the real `"{server_id}_{name}"` id shape regardless of origin; scoped to write/edit/delete/exec
+  keywords (not a bare `"*file*"`) so pure-read tools like `fs-test_read_file` are not swept in.
+  `classify_tool`'s pattern-based categorization was also extended to treat a `"delete"` substring
+  the same as `"write"`/`"edit"` (escalating to `FileWrite`/`ExfilCapable` rather than falling to
+  the catch-all `ExfilCapable` branch regardless of MCP origin).
 - `fix(tools)`: `is_cacheable` (`crates/zeph-tools/src/cache.rs`) checked
   `tool_name.starts_with("mcp_")` to exclude MCP tool results from caching — real MCP tool ids
   are `"{server_id}_{name}"` and never carry that prefix, so the check silently never matched

@@ -579,7 +579,10 @@ impl ShadowSentinel {
                 if pattern.contains("shell") || pattern.contains("exec") {
                     return ToolRiskCategory::Shell;
                 }
-                if pattern.contains("write") || pattern.contains("edit") || pattern.contains("file")
+                if pattern.contains("write")
+                    || pattern.contains("edit")
+                    || pattern.contains("delete")
+                    || pattern.contains("file")
                 {
                     if self.is_mcp_tool(qualified_tool_id) {
                         return ToolRiskCategory::ExfilCapable;
@@ -956,6 +959,28 @@ mod tests {
             .insert("github_edit_file".to_owned());
         assert_eq!(
             sentinel.classify_tool("github_edit_file"),
+            ToolRiskCategory::ExfilCapable
+        );
+    }
+
+    /// #5736 follow-up (CI-1239): `ShadowSentinelConfig::default()` — not a hand-tuned override —
+    /// must escalate a real MCP write tool. Real MCP tool ids are `"{server_id}_{name}"`
+    /// (`McpTool::sanitized_id`), e.g. `"fs-test_write_file"`; the shipped default
+    /// `probe_patterns` (`"mcp:*/file_*"`, `"mcp:*/exec_*"`) assumed a `"mcp:"`-prefixed id
+    /// shape that no real id ever has, so the outer glob-matching loop in `classify_tool` never
+    /// even entered the branch containing the `is_mcp_tool()` check — every MCP tool silently
+    /// fell through to `ToolRiskCategory::Low` (probe skipped entirely), a complete bypass, not
+    /// just a downgrade to `FileWrite`.
+    #[tokio::test]
+    async fn classify_mcp_tool_write_under_default_config_escalates_to_exfil_capable() {
+        let config = zeph_config::ShadowSentinelConfig::default();
+        let sentinel = make_test_sentinel(config).await;
+        sentinel
+            .mcp_tool_ids_handle()
+            .write()
+            .insert("fs-test_write_file".to_owned());
+        assert_eq!(
+            sentinel.classify_tool("fs-test_write_file"),
             ToolRiskCategory::ExfilCapable
         );
     }
