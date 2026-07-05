@@ -409,6 +409,7 @@ impl LlmProvider for RouterProvider {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // retry + timeout + fallback + availability tracking: splitting would break the shared `last_err` accumulator
     fn embed_batch(
         &self,
         texts: &[&str],
@@ -418,6 +419,7 @@ impl LlmProvider for RouterProvider {
         let owned = owned_strs(texts);
         let router = self.clone();
         let semaphore = self.state.embed_semaphore.clone();
+        let embed_timeout_ms = self.embed_timeout_ms;
         let model = self.model_identifier().to_owned();
         let fut = Box::pin(async move {
             // Acquire embed semaphore permit before any HTTP work to cap concurrency.
@@ -444,7 +446,25 @@ impl LlmProvider for RouterProvider {
                         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                     }
                     let start = std::time::Instant::now();
-                    match p.embed_batch(&refs).await {
+                    // Apply per-call timeout when configured (embed_timeout_ms > 0).
+                    let embed_result: Result<Vec<Vec<f32>>, LlmError> = if embed_timeout_ms > 0 {
+                        let timeout = std::time::Duration::from_millis(embed_timeout_ms);
+                        match tokio::time::timeout(timeout, p.embed_batch(&refs)).await {
+                            Ok(inner) => inner,
+                            Err(_elapsed) => {
+                                tracing::warn!(
+                                    provider = p.name(),
+                                    timeout_ms = embed_timeout_ms,
+                                    "embed_batch: provider timed out, falling back"
+                                );
+                                last_err = Some(LlmError::Timeout);
+                                break;
+                            }
+                        }
+                    } else {
+                        p.embed_batch(&refs).await
+                    };
+                    match embed_result {
                         Ok(r) => {
                             router.record_availability(
                                 p.name(),

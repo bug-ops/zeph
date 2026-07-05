@@ -1120,6 +1120,47 @@ async fn embed_timeout_falls_back_to_next_provider() {
     assert_eq!(result, vec![1.0, 2.0, 3.0]);
 }
 
+/// When the only provider's `embed_batch()` exceeds `embed_timeout_ms`, the router
+/// exhausts the fallback list and returns `LlmError::NoProviders`.
+#[tokio::test]
+async fn embed_batch_timeout_single_provider_returns_no_providers() {
+    use crate::mock::MockProvider;
+
+    let p = AnyProvider::Mock(
+        MockProvider::default()
+            .with_embed_delay(200)
+            .with_name("slow"),
+    );
+    let r = RouterProvider::new(vec![p]).with_embed_timeout(10);
+    let err = r.embed_batch(&["hello"]).await.unwrap_err();
+    assert!(
+        matches!(err, LlmError::NoProviders),
+        "expected NoProviders after timeout, got {err:?}"
+    );
+}
+
+/// After a timeout on the first provider, the router falls back to the next
+/// embed-capable provider and returns its successful `embed_batch` result.
+#[tokio::test]
+async fn embed_batch_timeout_falls_back_to_next_provider() {
+    use crate::mock::MockProvider;
+
+    let p1 = AnyProvider::Mock(
+        MockProvider::default()
+            .with_embed_delay(200)
+            .with_name("slow"),
+    );
+    let p2 = AnyProvider::Mock({
+        let mut m = MockProvider::default().with_name("fast");
+        m.supports_embeddings = true;
+        m.embedding = vec![1.0, 2.0, 3.0];
+        m
+    });
+    let r = RouterProvider::new(vec![p1, p2]).with_embed_timeout(10);
+    let result = r.embed_batch(&["hello"]).await.unwrap();
+    assert_eq!(result, vec![vec![1.0, 2.0, 3.0]]);
+}
+
 // ── quality_gate tests ────────────────────────────────────────────────────
 
 /// `with_quality_gate()` happy path: when cosine similarity >= threshold the

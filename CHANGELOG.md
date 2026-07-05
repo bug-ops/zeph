@@ -169,6 +169,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   code instead of silently starting a duplicate set of background supervisors against the
   same session state. Non-Unix builds keep the previous check-then-write sequence but now
   propagate `write_pid_file` failure as fatal rather than logging and continuing. (#5679)
+- `fix(llm)`: `CocoonClient::post`/`post_multipart` (`crates/zeph-llm/src/cocoon/client.rs`) issued
+  a single `reqwest` request with no retry of any kind, unlike Claude/OpenAI/Gemini/Compatible
+  (`retry.rs::send_with_retry`) and Gonka (endpoint-pool retry), so a transient 429/503 from the
+  sidecar failed the request immediately. Both now route through `send_with_retry`
+  (`MAX_RETRIES=3`). `post_multipart`'s signature changed from an owned `reqwest::multipart::Form`
+  (not `Clone`) to a `build_form` closure rebuilt once per retry attempt; the sole caller
+  (`CocoonSttProvider::transcribe` in `stt.rs`) was updated accordingly. (#5693)
+- `fix(llm)`: `LlmProvider::supports_tool_use()`'s trait default (`crates/zeph-llm/src/provider.rs`)
+  returned `true` while `chat_with_tools()`'s default silently falls back to plain `chat()` and
+  drops tool definitions — a contradiction that let `CandleProvider` (the one provider relying on
+  both inherited defaults) report tool support it didn't have. The default now returns `false`,
+  matching `chat_with_tools()`'s actual behavior; explicit `true` overrides were added to
+  `ClaudeProvider`, `OpenAiProvider`, `CompatibleProvider`, `OllamaProvider`, `GeminiProvider`, and
+  `MockProvider`, which previously relied on the old default without declaring it. (#5687)
+- `fix(llm)`: `RouterProvider::embed_batch()` (`crates/zeph-llm/src/router/provider_impl.rs`) called
+  the provider directly with no timeout, unlike `embed()`, which already wraps its call in a
+  `tokio::time::timeout` gated on `embed_timeout_ms` — violating the project's await-discipline
+  rule that every external `.await` must have a bound. `embed_batch()` now applies the same
+  timeout wrapping as `embed()`. (#5686)
 - `fix(channels)`: `JsonCliChannel::try_recv` (`crates/zeph-channels/src/json_cli.rs`) did not
   recognize `exit`/`quit`/`/exit`/`/quit` the way `recv` already did, so an exit command
   arriving via the queued/merge path (`Agent::drain_channel`'s 500ms merge window in
