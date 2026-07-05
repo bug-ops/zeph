@@ -612,6 +612,17 @@ pub struct UtilityScoringConfig {
     /// The counter resets between outer loop iterations.
     #[serde(default)]
     pub utility_window: usize,
+    /// Tool names that always receive the `0.75` "direct action" gain tier, matching
+    /// `diagnostics`/`edit`/etc in the built-in `default_gain` table.
+    ///
+    /// Opt-in override for tool ids the built-in table has no entry for — most notably
+    /// MCP-registered tools, whose ids are `{server_id}_{name}` (see
+    /// `McpTool::sanitized_id`) and therefore never match a hardcoded name. Without an
+    /// entry here, such a tool falls to the generic `0.5` bucket and can stall behind a
+    /// `Retrieve -> redundant retry -> vetoed` cycle on its first call (#5659). Default:
+    /// empty (no behavior change for existing configs).
+    #[serde(default)]
+    pub high_gain_tools: Vec<String>,
 }
 
 impl Default for UtilityScoringConfig {
@@ -625,6 +636,7 @@ impl Default for UtilityScoringConfig {
             uncertainty_bonus: default_utility_uncertainty_bonus(),
             exempt_tools: default_utility_exempt_tools(),
             utility_window: 0,
+            high_gain_tools: Vec::new(),
         }
     }
 }
@@ -1536,6 +1548,32 @@ destination = "/var/log/zeph-audit.log""#,
         let json = serde_json::to_string(&w.utility_scoring).unwrap();
         let back: UtilityScoringConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.utility_window, 3);
+    }
+
+    #[test]
+    fn high_gain_tools_default_is_empty() {
+        let config = UtilityScoringConfig::default();
+        assert!(config.high_gain_tools.is_empty());
+    }
+
+    #[test]
+    fn high_gain_tools_serde_roundtrip() {
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            utility_scoring: UtilityScoringConfig,
+        }
+
+        let toml_str =
+            "[utility_scoring]\nenabled = true\nhigh_gain_tools = [\"github_create_issue\"]\n";
+        let w: Wrapper = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            w.utility_scoring.high_gain_tools,
+            vec!["github_create_issue"]
+        );
+
+        let json = serde_json::to_string(&w.utility_scoring).unwrap();
+        let back: UtilityScoringConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.high_gain_tools, vec!["github_create_issue"]);
     }
 
     #[test]

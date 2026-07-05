@@ -744,6 +744,13 @@ enabled = false
 threshold = 0.1
 # Consecutive low-utility calls before early-stopping the whole tool loop for the turn. 0 = disabled.
 # utility_window = 0
+# Tool ids that always receive the 0.75 "direct action" gain tier, bypassing the Retrieve
+# detour on their first call. Useful for MCP-registered tools, whose ids ("{server_id}_{name}")
+# never match the built-in default_gain table (#5659).
+# Note: the TUI command palette's "mcp:list" entry displays "server_id:name" (qualified_name),
+# but the id actually dispatched at runtime — and required here — is the sanitized
+# "server_id_name" form (colon replaced with underscore).
+# high_gain_tools = []
 
 [tools.retry]
 # Maximum retry attempts for transient errors per tool call (0 = disabled)

@@ -145,6 +145,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   silently reintroduce a context-overflow the prior escalation stage had already fixed; returns
   `LlmError::NoProviders` if no tier both supports tools and fits context, matching
   `RouterProvider`'s existing behavior for the equivalent case. (#5688)
+- `fix(tools)`: `UtilityScoringConfig` gains `high_gain_tools: Vec<String>` — an opt-in list of
+  tool ids that always receive the same `0.75` "direct action" gain as
+  `diagnostics`/`edit`/etc, checked in `UtilityScorer::score` before falling through to the
+  hardcoded `default_gain` table. #5658 fixed this stall for a handful of built-in tool names,
+  but the hardcoded table structurally cannot cover dynamically registered tools — most
+  notably MCP tools, whose ids are `{server_id}_{name}` (`McpTool::sanitized_id`), not a
+  literal `"mcp_"` prefix. Any MCP tool (or future built-in tool without a table entry) still
+  fell to the neutral `0.5` bucket and could stall behind a `Retrieve -> redundant retry ->
+  vetoed` cycle on its first call. `high_gain_tools` lets operators opt individual tool ids
+  into the high-gain tier via config, with case-insensitive matching mirroring the existing
+  `exempt_tools` list (both now share a private `contains_tool_name` lookup). Also removed the
+  `default_gain` `tool_name.starts_with("mcp_")` branch — dead code, since it returned the same
+  `0.5` as the fallthrough arm and no real MCP tool id has that literal prefix. Migration step
+  76 adds a commented `high_gain_tools = []` advisory under `[tools.utility]`; default is an
+  empty list, so existing configs are unaffected. (#5659)
 - `fix(llm)`: `OpenAiProvider::chat_with_tools` (`crates/zeph-llm/src/openai/mod.rs`) sent its
   request directly via `.send().await?` with a manual one-shot 429 special case, instead of
   going through the shared `send_with_retry` helper used by every other request path on the

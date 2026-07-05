@@ -35,7 +35,8 @@
 //! step 73 adds a `[security.content_isolation.secret_masking]` advisory block (#5437);
 //! step 74 adds a commented `filter_names = false` advisory to an existing
 //! `[security.pii_filter]` table (#5530);
-//! step 75 adds a commented `qdrant_timeout_secs = 10` advisory under `[memory]`.
+//! step 75 adds a commented `qdrant_timeout_secs = 10` advisory under `[memory]`;
+//! step 76 adds a commented `high_gain_tools = []` advisory under `[tools.utility]` (#5659).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -69,8 +70,8 @@ use super::{
     migrate_shell_checkpoints_config, migrate_shell_transactional, migrate_stt_to_provider,
     migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
     migrate_trace_metadata, migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config,
-    migrate_tui_theme_defaults, migrate_vigil_config, migrate_worktree_config,
-    migrate_worktree_git_timeout,
+    migrate_tui_theme_defaults, migrate_utility_high_gain_tools, migrate_vigil_config,
+    migrate_worktree_config, migrate_worktree_git_timeout,
 };
 
 // ── Wrapper structs for all 73 sequential migration steps ───────────────────────────────────────
@@ -910,5 +911,17 @@ impl Migration for MigrateQdrantTimeoutSecs {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_qdrant_timeout_secs(toml_src)
+    }
+}
+
+/// Step 76 — adds a commented `high_gain_tools = []` advisory under `[tools.utility]` (#5659).
+pub(super) struct MigrateUtilityHighGainTools;
+impl Migration for MigrateUtilityHighGainTools {
+    fn name(&self) -> &'static str {
+        "migrate_utility_high_gain_tools"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_utility_high_gain_tools(toml_src)
     }
 }

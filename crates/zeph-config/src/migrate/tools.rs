@@ -271,6 +271,40 @@ pub fn migrate_policy_provider_and_utility_window(
     })
 }
 
+/// Add a commented-out `high_gain_tools` hint under `[tools.utility]` when absent.
+///
+/// Introduced alongside `UtilityScoringConfig::high_gain_tools` (#5659): an opt-in list of
+/// tool ids that always receive the same `0.75` "direct action" gain tier as
+/// `diagnostics`/`edit`/etc, most useful for MCP-registered tools whose ids the built-in
+/// `default_gain` table can never match. The field has `#[serde(default)]` (empty `Vec`), so
+/// existing configs parse unchanged; this step only surfaces the option so users can
+/// discover it.
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
+pub fn migrate_utility_high_gain_tools(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("high_gain_tools") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Tool ids that always receive the 0.75 \"direct action\" gain tier, bypassing\n\
+         # the Retrieve detour on their first call. Useful for MCP-registered tools, whose\n\
+         # ids (\"{server_id}_{name}\") never match the built-in default_gain table (#5659).\n\
+         # [tools.utility]\n\
+         # high_gain_tools = []\n";
+
+    Ok(MigrationResult {
+        output: format!("{toml_src}{comment}"),
+        changed_count: 1,
+        sections_changed: vec!["tools.utility.high_gain_tools".to_owned()],
+    })
+}
+
 /// Add `checkpoints_enabled` and `max_checkpoints` to `[tools.shell]` as commented-out defaults.
 ///
 /// # Errors

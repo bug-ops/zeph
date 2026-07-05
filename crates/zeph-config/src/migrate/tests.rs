@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        75,
-        "MIGRATIONS registry must contain all 75 sequential steps"
+        76,
+        "MIGRATIONS registry must contain all 76 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1645,7 +1645,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 75);
+    assert_eq!(MIGRATIONS.len(), 76);
 }
 
 #[test]
@@ -1684,7 +1684,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–74).
+    // Names must follow the documented step order (steps 1–76).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1761,6 +1761,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_secret_masking_config",
         "migrate_pii_filter_names",
         "migrate_qdrant_timeout_secs",
+        "migrate_utility_high_gain_tools",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -1881,6 +1882,56 @@ fn migrate_qdrant_timeout_secs_idempotent_on_commented_output() {
     let first = migrate_qdrant_timeout_secs(base).unwrap();
     assert_eq!(first.changed_count, 1);
     let second = migrate_qdrant_timeout_secs(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0, "second run must not double-append");
+    assert_eq!(second.output, first.output);
+}
+
+// ── migrate_utility_high_gain_tools tests (#5659) ─────────────────────────
+
+#[test]
+fn migrate_utility_high_gain_tools_adds_comment_when_absent() {
+    let src = "[tools.utility]\nenabled = false\nthreshold = 0.1\n";
+    let result = migrate_utility_high_gain_tools(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result
+            .sections_changed
+            .contains(&"tools.utility.high_gain_tools".to_owned())
+    );
+    assert!(result.output.contains("# high_gain_tools = []"));
+}
+
+#[test]
+fn migrate_utility_high_gain_tools_is_noop_when_present() {
+    let src = "[tools.utility]\nhigh_gain_tools = [\"github_create_issue\"]\n";
+    let result = migrate_utility_high_gain_tools(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn migrate_utility_high_gain_tools_appends_when_tools_utility_section_absent() {
+    // Unlike migrate_qdrant_timeout_secs (step 75), this migration never parses the TOML
+    // with toml_edit — it only string-matches "high_gain_tools" and appends a fully
+    // commented-out block. Confirm this holds even when [tools.utility] is missing
+    // entirely, and that the output remains valid TOML.
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_utility_high_gain_tools(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# high_gain_tools = []"));
+    result
+        .output
+        .parse::<toml_edit::DocumentMut>()
+        .expect("migrated output must remain valid TOML");
+}
+
+#[test]
+fn migrate_utility_high_gain_tools_idempotent_on_commented_output() {
+    let base = "[tools.utility]\nenabled = false\n";
+    let first = migrate_utility_high_gain_tools(base).unwrap();
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_utility_high_gain_tools(&first.output).unwrap();
     assert_eq!(second.changed_count, 0, "second run must not double-append");
     assert_eq!(second.output, first.output);
 }

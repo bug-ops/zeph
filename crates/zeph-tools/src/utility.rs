@@ -61,12 +61,17 @@ pub fn has_explicit_tool_request(user_message: &str) -> bool {
 /// through "retrieve context first, then retry": there is no missing context a
 /// memory search could supply, so forcing that detour only produces a stalled
 /// retry that then gets vetoed again as a redundant duplicate call (#5650).
+///
+/// This table only covers built-in tool ids known at compile time. Dynamically
+/// registered tools — most notably MCP tools, whose ids are `{server_id}_{name}`
+/// (see `McpTool::sanitized_id`) — never match a hardcoded name here and fall to the
+/// generic `0.5` bucket, exposing them to the same stall #5650 fixed for built-ins.
+/// `UtilityScorer::score` checks `UtilityScoringConfig::high_gain_tools` before
+/// calling this function so operators can opt individual MCP (or future built-in)
+/// tool ids into the `0.75` tier without a code change (#5659).
 fn default_gain(tool_name: &str) -> f32 {
     if tool_name.starts_with("memory") {
         return 0.8;
-    }
-    if tool_name.starts_with("mcp_") {
-        return 0.5;
     }
     match tool_name {
         "bash" | "shell" => 0.6,
@@ -187,7 +192,11 @@ impl UtilityScorer {
             return None;
         }
 
-        let gain = default_gain(call.tool_id.as_str());
+        let gain = if self.is_high_gain(call.tool_id.as_str()) {
+            0.75
+        } else {
+            default_gain(call.tool_id.as_str())
+        };
 
         let cost = if ctx.token_budget > 0 {
             #[allow(clippy::cast_precision_loss)]
@@ -317,16 +326,32 @@ impl UtilityScorer {
         self.config.utility_window > 0 && self.consecutive_low >= self.config.utility_window
     }
 
+    /// Returns `true` when `tool_name` case-insensitively matches an entry in `list`.
+    ///
+    /// Shared lookup behind `is_exempt` and `is_high_gain` — both are "does a configured
+    /// tool-name list contain this `tool_id`" checks and must use identical matching rules.
+    fn contains_tool_name(list: &[String], tool_name: &str) -> bool {
+        let lower = tool_name.to_lowercase();
+        list.iter().any(|e| e.to_lowercase() == lower)
+    }
+
     /// Returns `true` when `tool_name` is in the exempt list (case-insensitive).
     ///
     /// Exempt tools bypass the utility gate unconditionally and always receive `ToolCall`.
     #[must_use]
     pub fn is_exempt(&self, tool_name: &str) -> bool {
-        let lower = tool_name.to_lowercase();
-        self.config
-            .exempt_tools
-            .iter()
-            .any(|e| e.to_lowercase() == lower)
+        Self::contains_tool_name(&self.config.exempt_tools, tool_name)
+    }
+
+    /// Returns `true` when `tool_name` is in the `high_gain_tools` opt-in list (case-insensitive).
+    ///
+    /// Tools in this list receive the same `0.75` "direct action" gain as
+    /// `diagnostics`/`edit`/etc, regardless of whether `default_gain` has a hardcoded entry
+    /// for them. Intended for MCP-registered tools whose ids `default_gain` can never match
+    /// (#5659).
+    #[must_use]
+    pub fn is_high_gain(&self, tool_name: &str) -> bool {
+        Self::contains_tool_name(&self.config.high_gain_tools, tool_name)
     }
 
     /// The configured threshold.
@@ -1020,6 +1045,78 @@ mod tests {
     fn is_exempt_empty_list_returns_false() {
         let scorer = UtilityScorer::new(UtilityScoringConfig::default());
         assert!(!scorer.is_exempt("read"));
+    }
+
+    // ── high_gain_tools opt-in tests (#5659) ─────────────────────────────────
+
+    #[test]
+    fn is_high_gain_matches_case_insensitively() {
+        let scorer = UtilityScorer::new(UtilityScoringConfig {
+            enabled: true,
+            high_gain_tools: vec!["Github_create_issue".to_owned()],
+            ..UtilityScoringConfig::default()
+        });
+        assert!(scorer.is_high_gain("github_create_issue"));
+        assert!(scorer.is_high_gain("GITHUB_CREATE_ISSUE"));
+        assert!(!scorer.is_high_gain("bash"));
+    }
+
+    #[test]
+    fn is_high_gain_empty_list_returns_false() {
+        let scorer = UtilityScorer::new(UtilityScoringConfig::default());
+        assert!(!scorer.is_high_gain("github_create_issue"));
+    }
+
+    #[test]
+    fn default_gain_unconfigured_mcp_shaped_tool_id_stays_neutral() {
+        // Real MCP tool ids are "{server_id}_{name}" (McpTool::sanitized_id), not literally
+        // prefixed with "mcp_". Without an opt-in high_gain_tools entry, such an id has no
+        // hardcoded match and stays in the generic 0.5 bucket.
+        assert!((default_gain("github_create_issue") - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn score_high_gain_tools_overrides_default_gain_for_mcp_shaped_tool_id() {
+        // Reproduces the #5659 gap: an MCP tool id ("github_create_issue", shaped like
+        // McpTool::sanitized_id's "{server_id}_{name}") has no entry in default_gain's
+        // hardcoded table and would default to 0.5. Opting it into high_gain_tools must
+        // raise its gain to 0.75 and let it take the direct ToolCall branch on the first
+        // call, exactly like the #5650 fix does for built-in direct-action tools.
+        let scorer = UtilityScorer::new(UtilityScoringConfig {
+            enabled: true,
+            high_gain_tools: vec!["github_create_issue".to_owned()],
+            ..UtilityScoringConfig::default()
+        });
+        let ctx = default_ctx(); // tool_calls_this_turn: 0 -> uncertainty == 1.0
+        let call = make_call("github_create_issue", json!({}));
+        let score = scorer.score(&call, &ctx).unwrap();
+        assert!(
+            (score.gain - 0.75).abs() < f32::EPSILON,
+            "high_gain_tools entry should raise gain to 0.75, got {}",
+            score.gain
+        );
+        assert_eq!(
+            scorer.recommend_action(Some(&score), &ctx),
+            UtilityAction::ToolCall,
+            "high-gain MCP tool should execute immediately on first call, not stall on Retrieve"
+        );
+    }
+
+    #[test]
+    fn score_high_gain_tools_does_not_affect_unlisted_tools() {
+        let scorer = UtilityScorer::new(UtilityScoringConfig {
+            enabled: true,
+            high_gain_tools: vec!["github_create_issue".to_owned()],
+            ..UtilityScoringConfig::default()
+        });
+        let ctx = default_ctx();
+        let call = make_call("fetch", json!({}));
+        let score = scorer.score(&call, &ctx).unwrap();
+        assert!(
+            (score.gain - 0.5).abs() < f32::EPSILON,
+            "unlisted tool must keep its default_gain value, got {}",
+            score.gain
+        );
     }
 
     #[test]

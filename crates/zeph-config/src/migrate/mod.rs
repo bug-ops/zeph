@@ -619,10 +619,11 @@ use steps::{
     MigrateShellCheckpointsConfig, MigrateShellTransactional, MigrateSttToProvider,
     MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
     MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig,
-    MigrateTuiThemeDefaults, MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
+    MigrateTuiThemeDefaults, MigrateUtilityHighGainTools, MigrateVigilConfig,
+    MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–75).
+/// Ordered registry of all sequential migration steps (steps 1–76).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -756,6 +757,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigratePiiFilterNames),
             // Step 75 — add qdrant_timeout_secs advisory under [memory]
             Box::new(MigrateQdrantTimeoutSecs),
+            // Step 76 — add high_gain_tools advisory under [tools.utility] (#5659)
+            Box::new(MigrateUtilityHighGainTools),
         ]
     });
 

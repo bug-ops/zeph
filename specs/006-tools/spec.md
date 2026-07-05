@@ -618,9 +618,25 @@ Write commands are detected via `WRITE_INDICATORS` heuristic (keywords like `rm`
 enabled = false
 threshold = 0.0   # calls below this score are skipped
 utility_window = 0  # consecutive low-utility calls before early-stopping the turn; 0 = disabled
+high_gain_tools = []  # tool ids opted into the 0.75 "direct action" gain tier
 ```
 
 `utility_window` — number of consecutive non-`ToolCall` recommendations (i.e., calls scored below threshold) before the entire tool loop terminates early for the current turn. Default `0` preserves the existing per-call skip behavior exactly — no loop break occurs.
+
+`high_gain_tools` — opt-in list of tool ids that always receive the same `0.75` gain as the
+built-in "direct action" tools (`diagnostics`, `edit`, `format`, etc), bypassing the `Retrieve`
+detour on their first call. The hardcoded `default_gain` table only recognizes built-in tool
+names; dynamically registered tools — most notably MCP tools, whose ids are
+`{server_id}_{name}` (see `McpTool::sanitized_id`) — never match it and default to the neutral
+`0.5` bucket, exposing them to the same `Retrieve -> redundant retry -> vetoed` stall #5650
+fixed for built-ins. `high_gain_tools` lets operators opt a specific MCP (or future built-in)
+tool id into the high-gain tier without a code change (#5659). Matching is case-insensitive,
+mirroring `exempt_tools`. Default: empty (no behavior change).
+
+**Note on id format**: the TUI command palette's `mcp:list` entry lists MCP tools via
+`McpTool::qualified_name()` (`"server_id:name"`, colon-separated). That is a *display* format
+only — the id actually dispatched at runtime, and therefore the value `high_gain_tools` must
+contain, is `McpTool::sanitized_id()` (`"server_id_name"`, colon replaced with underscore).
 
 ### Key Invariants
 
