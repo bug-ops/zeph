@@ -149,8 +149,16 @@ impl<C: Channel> Agent<C> {
         let Some(memory) = memory else {
             return HashMap::new();
         };
-        let Ok(rows) = memory.sqlite().load_all_skill_trust().await else {
-            return HashMap::new();
+        let rows = match memory.sqlite().load_all_skill_trust().await {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "build_skill_trust_map: load_all_skill_trust failed, skills will render \
+                     with no trust-map entry this turn"
+                );
+                return HashMap::new();
+            }
         };
         rows.into_iter()
             .map(|r| {

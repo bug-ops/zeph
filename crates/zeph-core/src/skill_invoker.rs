@@ -197,7 +197,9 @@ impl ToolExecutor for SkillInvokeExecutor {
         tracing::Span::current().record("skill", skill_name.as_str());
 
         let snapshot = self.resolve_snapshot(&skill_name);
-        let trust = snapshot.as_ref().map(|s| s.trust_level).unwrap_or_default();
+        let trust = snapshot
+            .as_ref()
+            .map_or(SkillTrustLevel::MISSING_ENTRY_FALLBACK, |s| s.trust_level);
         // Sanitize skill_name before it appears in any tool output: it originates from the LLM
         // and could carry injection markers (e.g. `<|im_start|>`).
         let skill_name_safe = sanitize_skill_text(&skill_name);
@@ -422,8 +424,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_trust_row_defaults_to_quarantined_behavior() {
-        // Default trust is Quarantined — fail-closed.
+    async fn no_trust_row_defaults_to_trusted_behavior() {
+        // A missing trust-map entry means "never classified yet", not "known untrusted" —
+        // it must resolve to Trusted (SkillTrustLevel::MISSING_ENTRY_FALLBACK), matching the
+        // documented contract in zeph-common. Falling back to Quarantined here would
+        // spuriously wrap legitimate skills whenever the trust map is transiently empty.
         let dir = tempfile::tempdir().unwrap();
         let body = "Some body";
         let registry = make_registry_with_skill(dir.path(), "unknown-skill", body);
@@ -433,8 +438,9 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        // Quarantined path: body is wrapped.
-        assert!(result.summary.contains("QUARANTINED"));
+        // Trusted path: body is returned unwrapped.
+        assert!(!result.summary.contains("QUARANTINED"));
+        assert!(result.summary.contains(body));
     }
 
     #[tokio::test]

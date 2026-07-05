@@ -279,7 +279,10 @@ pub fn format_skills_prompt<S: std::hash::BuildHasher, S2: std::hash::BuildHashe
     let mut out = String::from("<available_skills>\n");
 
     for skill in skills {
-        let trust = trust_levels.get(skill.name()).copied().unwrap_or_default();
+        let trust = trust_levels
+            .get(skill.name())
+            .copied()
+            .unwrap_or(SkillTrustLevel::MISSING_ENTRY_FALLBACK);
         let raw_body = if trust == SkillTrustLevel::Trusted {
             skill.body.clone()
         } else {
@@ -398,7 +401,10 @@ pub fn format_grouped_skills_prompt<S: std::hash::BuildHasher, S2: std::hash::Bu
 
     // Emit support skills, skipping quarantined ones.
     for skill in &group.support {
-        let trust = trust_levels.get(skill.name()).copied().unwrap_or_default();
+        let trust = trust_levels
+            .get(skill.name())
+            .copied()
+            .unwrap_or(SkillTrustLevel::MISSING_ENTRY_FALLBACK);
         if trust == SkillTrustLevel::Quarantined {
             tracing::debug!(
                 skill = skill.name(),
@@ -439,7 +445,10 @@ fn format_active_skill_tag<S: std::hash::BuildHasher, S2: std::hash::BuildHasher
     trust_levels: &HashMap<String, SkillTrustLevel, S>,
     health_map: &HashMap<String, (f64, u32), S2>,
 ) {
-    let trust = trust_levels.get(skill.name()).copied().unwrap_or_default();
+    let trust = trust_levels
+        .get(skill.name())
+        .copied()
+        .unwrap_or(SkillTrustLevel::MISSING_ENTRY_FALLBACK);
     let raw_body = if trust == SkillTrustLevel::Trusted {
         skill.body.clone()
     } else {
@@ -597,12 +606,11 @@ mod tests {
     fn single_skill_format() {
         let skills = vec![make_skill("test", "A test.", "# Hello\nworld")];
 
-        // No trust entry → default (Quarantined) → description wrapped in data-description.
+        // No trust entry → MISSING_ENTRY_FALLBACK (Trusted) → description not wrapped.
         let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
         assert!(output.starts_with("<available_skills>"));
         assert!(output.ends_with("</available_skills>"));
         assert!(output.contains("<skill name=\"test\">"));
-        // Untrusted: description is wrapped in data-description boundary tags.
         assert!(output.contains("<description>"));
         assert!(output.contains("A test."));
         assert!(output.contains("# Hello\nworld"));
@@ -718,6 +726,41 @@ mod tests {
         let output = format_skills_prompt(&skills, &trust, &HashMap::new());
         assert!(!output.contains("QUARANTINED"));
         assert!(output.contains("do stuff"));
+    }
+
+    // Regression test for #5694: a skill absent from `trust_levels` (e.g. because the
+    // trust DB read failed or memory isn't wired yet) must render exactly like an
+    // explicitly Trusted skill — not fall back to Quarantined and leak
+    // `wrap_quarantined()`'s "restricted tool access" wording into the system prompt.
+    #[test]
+    fn missing_trust_entry_not_quarantined() {
+        let body = "Some </skill> raw content.";
+        let skills = vec![make_skill("bundled-skill", "desc", body)];
+        // Empty map == "no trust DB row for this skill" (memory unset / transient DB error).
+        let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
+        assert!(!output.contains("QUARANTINED"), "got: {output}");
+        assert!(!output.contains("restricted tool access"), "got: {output}");
+        assert!(!output.contains("data-description"), "got: {output}");
+        // Trusted path: body returned verbatim, not sanitized/escaped.
+        assert!(output.contains(body), "got: {output}");
+    }
+
+    #[test]
+    fn missing_trust_entry_distinct_from_explicit_quarantine() {
+        // Same skill name and body, only the trust map contents differ — proves the
+        // fallback path is hit strictly when the entry is *absent*, not whenever the
+        // resolved level happens to not be Trusted.
+        let body = "shared body";
+        let skills = vec![make_skill("shared-name", "desc", body)];
+
+        let missing = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
+        let mut trust = HashMap::new();
+        trust.insert("shared-name".into(), SkillTrustLevel::Quarantined);
+        let explicit_quarantine = format_skills_prompt(&skills, &trust, &HashMap::new());
+
+        assert!(!missing.contains("QUARANTINED"));
+        assert!(explicit_quarantine.contains("[QUARANTINED SKILL: shared-name]"));
+        assert_ne!(missing, explicit_quarantine);
     }
 
     #[test]
@@ -1267,6 +1310,25 @@ mod tests {
             out.contains("name=\"safe\""),
             "trusted support skill must be present"
         );
+    }
+
+    // Regression test for #5694: a support skill with no entry in `trust_levels` at all
+    // (distinct from a genuinely Quarantined one) must NOT be excluded from the group —
+    // it must render as Trusted, matching format_skills_prompt's documented contract.
+    #[test]
+    fn grouped_prompt_missing_trust_entry_support_not_excluded() {
+        let group = make_skill_group("entry", &["safe", "unclassified"]);
+        let mut trust = HashMap::new();
+        trust.insert("entry".to_owned(), SkillTrustLevel::Trusted);
+        trust.insert("safe".to_owned(), SkillTrustLevel::Trusted);
+        // "unclassified" deliberately has no entry in `trust`.
+        let out = format_grouped_skills_prompt(&group, &trust, &HashMap::new());
+        assert!(
+            out.contains("name=\"unclassified\""),
+            "support skill missing from trust map must not be excluded like a quarantined one: {out}"
+        );
+        assert!(!out.contains("QUARANTINED"), "got: {out}");
+        assert!(!out.contains("restricted tool access"), "got: {out}");
     }
 
     #[test]

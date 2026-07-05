@@ -43,6 +43,28 @@ pub enum SkillTrustLevel {
 }
 
 impl SkillTrustLevel {
+    /// Trust level to assume when a skill has no entry in the trust map.
+    ///
+    /// A missing entry means "never classified yet" (e.g. persistence not wired, or a
+    /// transient trust-map read failure), not "known untrusted" — callers must not fall
+    /// back to [`SkillTrustLevel::default`] ([`Quarantined`](Self::Quarantined)) for this
+    /// case, as that would misclassify legitimately trusted, already-vetted skills.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_common::SkillTrustLevel;
+    ///
+    /// let trust_levels: std::collections::HashMap<String, SkillTrustLevel> =
+    ///     std::collections::HashMap::new();
+    /// let trust = trust_levels
+    ///     .get("some-skill")
+    ///     .copied()
+    ///     .unwrap_or(SkillTrustLevel::MISSING_ENTRY_FALLBACK);
+    /// assert_eq!(trust, SkillTrustLevel::Trusted);
+    /// ```
+    pub const MISSING_ENTRY_FALLBACK: Self = Self::Trusted;
+
     /// Ordered severity: lower value = more trusted.
     ///
     /// # Examples

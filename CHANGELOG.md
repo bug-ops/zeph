@@ -155,6 +155,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(skills)`: a skill missing from the trust map (e.g. `memory.persistence.memory` not yet
+  wired, or a transient `load_all_skill_trust` read failure) was treated as
+  `SkillTrustLevel::Quarantined` at 4 call sites (`crates/zeph-skills/src/prompt.rs`'s
+  `format_skills_prompt`, `format_grouped_skills_prompt`, `format_active_skill_tag`, and
+  `crates/zeph-core/src/skill_invoker.rs`'s `SkillInvokeExecutor::execute_tool_call`), via
+  `.unwrap_or_default()` — contradicting `format_skills_prompt`'s own documented contract that a
+  missing entry means `Trusted`. On a transient trust-map miss, every skill matched into
+  `active_skills` that turn was spuriously wrapped by `wrap_quarantined()`, injecting literal
+  "quarantined ... restricted tool access (no bash, file_write, web_scrape)" text into the
+  system prompt for skills that were never actually quarantined — which the model could then
+  echo when declining an unrelated tool call, as though a real restriction applied (#5694). Added
+  a shared `SkillTrustLevel::MISSING_ENTRY_FALLBACK` (`Trusted`) constant used at all 4 sites, and
+  `tracing::warn!` on `build_skill_trust_map`'s (`crates/zeph-core/src/agent/trust_commands.rs`)
+  previously-silent DB-read-error fallback so a future occurrence is observable. The real
+  tool-execution gate (`effective_trust` in `crates/zeph-core/src/agent/context/assembly.rs`) was
+  already fail-open to `Trusted` on a missing entry before this fix, so this change aligns
+  display/invocation behavior with the existing security boundary rather than weakening it.
 - `fix(llm)`: `TriageRouter::chat_with_tools` (`crates/zeph-llm/src/router/triage.rs`) delegated
   a tool call to whichever tier was selected by classification with no check that the tier's
   provider actually supports tool use, unlike `RouterProvider::chat_with_tools` which explicitly
