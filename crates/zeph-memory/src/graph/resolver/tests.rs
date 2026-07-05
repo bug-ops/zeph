@@ -29,6 +29,60 @@ fn make_mock_provider_with_embedding(embedding: Vec<f32>) -> zeph_llm::mock::Moc
     p
 }
 
+// ── #5492: sanitize_relation / sanitize_fact ────────────────────────────────
+
+#[test]
+fn sanitize_relation_lowercases_and_trims() {
+    assert_eq!(sanitize_relation("  Uses  "), "uses");
+}
+
+#[test]
+fn sanitize_relation_strips_control_chars() {
+    let dirty = "us\u{0007}es"; // embedded ASCII BEL control char
+    assert_eq!(sanitize_relation(dirty), "uses");
+}
+
+#[test]
+fn sanitize_relation_strips_bidi_override_chars() {
+    let dirty = "us\u{202A}es"; // LEFT-TO-RIGHT EMBEDDING bidi override
+    assert_eq!(sanitize_relation(dirty), "uses");
+}
+
+#[test]
+fn sanitize_relation_truncates_oversized_input() {
+    let long = "a".repeat(MAX_RELATION_BYTES + 100);
+    let result = sanitize_relation(&long);
+    assert_eq!(result.len(), MAX_RELATION_BYTES);
+}
+
+#[test]
+fn sanitize_relation_truncates_at_utf8_char_boundary() {
+    // Each '日' is 3 bytes — a naive byte-index truncation at MAX_RELATION_BYTES would
+    // split a char and panic; the shared helper must clamp to a valid boundary instead.
+    let long = "日".repeat(MAX_RELATION_BYTES);
+    let result = sanitize_relation(&long);
+    assert!(result.len() <= MAX_RELATION_BYTES);
+    assert!(!result.is_empty());
+}
+
+#[test]
+fn sanitize_fact_trims_and_strips_control_chars() {
+    let dirty = "  Alice us\u{0007}es Rust  ";
+    assert_eq!(sanitize_fact(dirty), "Alice uses Rust");
+}
+
+#[test]
+fn sanitize_fact_preserves_case() {
+    assert_eq!(sanitize_fact("Alice Uses Rust"), "Alice Uses Rust");
+}
+
+#[test]
+fn sanitize_fact_truncates_oversized_input() {
+    let long = "b".repeat(MAX_FACT_BYTES + 100);
+    let result = sanitize_fact(&long);
+    assert_eq!(result.len(), MAX_FACT_BYTES);
+}
+
 // ── Existing tests (resolve() with no embedding store — exact match only) ──
 
 #[tokio::test]

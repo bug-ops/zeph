@@ -19,7 +19,7 @@ use zeph_llm::provider::{Message, Role};
 use crate::error::MemoryError;
 
 use super::store::GraphStore;
-use super::types::Entity;
+use super::types::{Edge, Entity};
 
 const MAX_LABEL_PROPAGATION_ITERATIONS: usize = 50;
 
@@ -99,6 +99,31 @@ struct CommunityData {
 
 type UndirectedGraph = Graph<i64, (), petgraph::Undirected>;
 
+/// Fold a single edge into the graph and the fact/id accumulator maps.
+///
+/// Shared by both the streaming and paginated branches of
+/// `build_entity_graph_and_maps` so their per-edge handling cannot drift apart.
+fn fold_edge(
+    edge: &Edge,
+    node_map: &HashMap<i64, NodeIndex>,
+    graph: &mut UndirectedGraph,
+    edge_facts_map: &mut HashMap<(i64, i64), Vec<String>>,
+    edge_id_map: &mut HashMap<(i64, i64), Vec<i64>>,
+) {
+    if let (Some(&src_idx), Some(&tgt_idx)) = (
+        node_map.get(&edge.source_entity_id),
+        node_map.get(&edge.target_entity_id),
+    ) {
+        graph.add_edge(src_idx, tgt_idx, ());
+    }
+    let key = (edge.source_entity_id, edge.target_entity_id);
+    edge_facts_map
+        .entry(key)
+        .or_default()
+        .push(edge.fact.clone());
+    edge_id_map.entry(key).or_default().push(edge.id);
+}
+
 async fn build_entity_graph_and_maps(
     store: &GraphStore,
     entities: &[Entity],
@@ -125,18 +150,13 @@ async fn build_entity_graph_and_maps(
     if edge_chunk_size == 0 {
         let edges: Vec<_> = store.all_active_edges_stream().try_collect().await?;
         for edge in &edges {
-            if let (Some(&src_idx), Some(&tgt_idx)) = (
-                node_map.get(&edge.source_entity_id),
-                node_map.get(&edge.target_entity_id),
-            ) {
-                graph.add_edge(src_idx, tgt_idx, ());
-            }
-            let key = (edge.source_entity_id, edge.target_entity_id);
-            edge_facts_map
-                .entry(key)
-                .or_default()
-                .push(edge.fact.clone());
-            edge_id_map.entry(key).or_default().push(edge.id);
+            fold_edge(
+                edge,
+                &node_map,
+                &mut graph,
+                &mut edge_facts_map,
+                &mut edge_id_map,
+            );
         }
     } else {
         let limit = i64::try_from(edge_chunk_size).unwrap_or(i64::MAX);
@@ -148,18 +168,13 @@ async fn build_entity_graph_and_maps(
             }
             last_id = chunk.last().expect("non-empty chunk has a last element").id;
             for edge in &chunk {
-                if let (Some(&src_idx), Some(&tgt_idx)) = (
-                    node_map.get(&edge.source_entity_id),
-                    node_map.get(&edge.target_entity_id),
-                ) {
-                    graph.add_edge(src_idx, tgt_idx, ());
-                }
-                let key = (edge.source_entity_id, edge.target_entity_id);
-                edge_facts_map
-                    .entry(key)
-                    .or_default()
-                    .push(edge.fact.clone());
-                edge_id_map.entry(key).or_default().push(edge.id);
+                fold_edge(
+                    edge,
+                    &node_map,
+                    &mut graph,
+                    &mut edge_facts_map,
+                    &mut edge_id_map,
+                );
             }
         }
     }

@@ -9,6 +9,24 @@ use crate::metrics::{MetricsSnapshot, SECURITY_EVENT_CAP, SecurityEvent};
 use zeph_common::SecurityEventCategory;
 use zeph_tools::FilterStats;
 
+/// Fetch entity/edge/community counts from `store`, defaulting each to `0` on a per-metric error.
+///
+/// Shared by [`Agent::sync_graph_counts`] and the background graph-count-sync tasks in
+/// `persistence::extract` (post-extraction refresh and the periodic count-sync task) so the
+/// three call sites cannot drift apart.
+pub(super) async fn fetch_graph_counts(store: &zeph_memory::graph::GraphStore) -> (u64, u64, u64) {
+    let (entities, edges, communities) = tokio::join!(
+        store.entity_count(),
+        store.active_edge_count(),
+        store.community_count()
+    );
+    (
+        entities.unwrap_or(0).cast_unsigned(),
+        edges.unwrap_or(0).cast_unsigned(),
+        communities.unwrap_or(0).cast_unsigned(),
+    )
+}
+
 impl<C: Channel> Agent<C> {
     /// Read the community-detection failure counter from `SemanticMemory` and update metrics.
     pub fn sync_community_detection_failures(&self) {
@@ -40,15 +58,11 @@ impl<C: Channel> Agent<C> {
         let Some(store) = memory.graph_store.as_ref() else {
             return;
         };
-        let (entities, edges, communities) = tokio::join!(
-            store.entity_count(),
-            store.active_edge_count(),
-            store.community_count()
-        );
+        let (entities, edges, communities) = fetch_graph_counts(store).await;
         self.update_metrics(|m| {
-            m.graph_entities_total = entities.unwrap_or(0).cast_unsigned();
-            m.graph_edges_total = edges.unwrap_or(0).cast_unsigned();
-            m.graph_communities_total = communities.unwrap_or(0).cast_unsigned();
+            m.graph_entities_total = entities;
+            m.graph_edges_total = edges;
+            m.graph_communities_total = communities;
         });
     }
 
@@ -417,6 +431,76 @@ mod tests {
     };
     use super::*;
     use zeph_llm::provider::{MessageMetadata, MessagePart};
+    use zeph_memory::graph::GraphStore;
+    use zeph_memory::graph::types::EntityType;
+    use zeph_memory::store::SqliteStore;
+
+    async fn setup_graph_store() -> GraphStore {
+        let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        GraphStore::new(sqlite.pool().clone())
+    }
+
+    #[tokio::test]
+    async fn fetch_graph_counts_empty_store_returns_zeros() {
+        let store = setup_graph_store().await;
+        assert_eq!(fetch_graph_counts(&store).await, (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn fetch_graph_counts_reflects_actual_counts() {
+        let store = setup_graph_store().await;
+        let a = store
+            .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
+            .await
+            .unwrap()
+            .0;
+        let b = store
+            .upsert_entity("Bob", "Bob", EntityType::Person, None, None)
+            .await
+            .unwrap()
+            .0;
+        store
+            .insert_edge(a, b, "knows", "Alice knows Bob", 1.0, None, None)
+            .await
+            .unwrap();
+        store
+            .upsert_community("cluster", "summary", &[a, b], None)
+            .await
+            .unwrap();
+
+        assert_eq!(fetch_graph_counts(&store).await, (2, 1, 1));
+    }
+
+    /// #5677 follow-up: each of the 3 metrics must fall back to `0` independently on its own
+    /// query error, not abort the other two — verified by breaking only `graph_communities`
+    /// while `graph_entities`/`graph_edges` stay intact and populated.
+    #[tokio::test]
+    async fn fetch_graph_counts_falls_back_to_zero_per_field_on_error() {
+        let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite.pool().clone();
+        let store = GraphStore::new(pool.clone());
+        let a = store
+            .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
+            .await
+            .unwrap()
+            .0;
+        let b = store
+            .upsert_entity("Bob", "Bob", EntityType::Person, None, None)
+            .await
+            .unwrap()
+            .0;
+        store
+            .insert_edge(a, b, "knows", "Alice knows Bob", 1.0, None, None)
+            .await
+            .unwrap();
+
+        sqlx::query("DROP TABLE graph_communities")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(fetch_graph_counts(&store).await, (2, 1, 0));
+    }
 
     #[test]
     fn push_message_increments_cached_tokens() {

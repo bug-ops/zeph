@@ -143,17 +143,14 @@ impl<C: Channel> Agent<C> {
                 // After extraction completes, refresh graph count metrics.
                 if let (Some(store), Some(tx)) = (graph_store, metrics_tx) {
                     let _ = extraction_handle.await;
-                    let (entities, edges, communities) = tokio::join!(
-                        store.entity_count(),
-                        store.active_edge_count(),
-                        store.community_count()
-                    );
+                    let (entities, edges, communities) =
+                        super::super::utils::fetch_graph_counts(&store).await;
                     let elapsed = start_time.elapsed().as_secs();
                     tx.send_modify(|m| {
                         m.uptime_seconds = elapsed;
-                        m.graph_entities_total = entities.unwrap_or(0).cast_unsigned();
-                        m.graph_edges_total = edges.unwrap_or(0).cast_unsigned();
-                        m.graph_communities_total = communities.unwrap_or(0).cast_unsigned();
+                        m.graph_entities_total = entities;
+                        m.graph_edges_total = edges;
+                        m.graph_communities_total = communities;
                     });
                 } else {
                     let _ = extraction_handle.await;
@@ -183,17 +180,14 @@ impl<C: Channel> Agent<C> {
                 };
                 let Some(tx) = metrics_tx_sync else { return };
 
-                let (entities, edges, communities) = tokio::join!(
-                    store.entity_count(),
-                    store.active_edge_count(),
-                    store.community_count()
-                );
+                let (entities, edges, communities) =
+                    super::super::utils::fetch_graph_counts(&store).await;
                 let elapsed = start_time_sync.elapsed().as_secs();
                 tx.send_modify(|m| {
                     m.uptime_seconds = elapsed;
-                    m.graph_entities_total = entities.unwrap_or(0).cast_unsigned();
-                    m.graph_edges_total = edges.unwrap_or(0).cast_unsigned();
-                    m.graph_communities_total = communities.unwrap_or(0).cast_unsigned();
+                    m.graph_entities_total = entities;
+                    m.graph_edges_total = edges;
+                    m.graph_communities_total = communities;
                 });
 
                 // Sync guidelines status.

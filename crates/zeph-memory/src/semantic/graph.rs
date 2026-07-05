@@ -18,6 +18,7 @@ use zeph_llm::provider::LlmProvider as _;
 use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
 use crate::graph::extractor::ExtractionResult as ExtractorResult;
+use crate::graph::resolver::{MAX_RELATION_BYTES, sanitize_fact, sanitize_relation};
 use crate::graph::types::GraphProvenance;
 use crate::vector_store::VectorFilter;
 
@@ -164,10 +165,6 @@ pub struct LinkingStats {
 /// Qdrant collection name for entity embeddings (mirrors the constant in `resolver.rs`).
 const ENTITY_COLLECTION: &str = "zeph_graph_entities";
 
-/// Mirrors the constant from `graph/resolver/mod.rs` — used for sanitizing APEX-MEM inputs.
-const MAX_RELATION_BYTES: usize = 256;
-/// Mirrors the constant from `graph/resolver/mod.rs` — used for sanitizing APEX-MEM inputs.
-const MAX_FACT_BYTES: usize = 2048;
 /// Fallback confidence used when the LLM omits the `confidence` field in an extracted edge.
 const DEFAULT_EDGE_CONFIDENCE: f32 = 0.8;
 
@@ -633,11 +630,8 @@ async fn insert_edges(
             let relation_display_clean = strip_control_chars(relation_trimmed);
             let relation_display =
                 truncate_to_bytes_ref(&relation_display_clean, MAX_RELATION_BYTES).to_owned();
-            let canonical_clean = strip_control_chars(&relation_trimmed.to_lowercase());
-            let canonical_relation =
-                truncate_to_bytes_ref(&canonical_clean, MAX_RELATION_BYTES).to_owned();
-            let fact_clean = strip_control_chars(edge.fact.trim());
-            let normalized_fact = truncate_to_bytes_ref(&fact_clean, MAX_FACT_BYTES).to_owned();
+            let canonical_relation = sanitize_relation(relation_trimmed);
+            let normalized_fact = sanitize_fact(&edge.fact);
             match resolver
                 .graph_store()
                 .insert_or_supersede_with_turn_index_and_metrics(

@@ -26,9 +26,26 @@ const MIN_ENTITY_NAME_BYTES: usize = 3;
 /// Maximum byte length for entity names stored in the graph.
 const MAX_ENTITY_NAME_BYTES: usize = 512;
 /// Maximum byte length for relation strings.
-const MAX_RELATION_BYTES: usize = 256;
+///
+/// `pub(crate)` so `semantic::graph` can share this cap instead of re-declaring it.
+pub(crate) const MAX_RELATION_BYTES: usize = 256;
 /// Maximum byte length for fact strings.
-const MAX_FACT_BYTES: usize = 2048;
+///
+/// `pub(crate)` so `semantic::graph` can share this cap instead of re-declaring it.
+pub(crate) const MAX_FACT_BYTES: usize = 2048;
+
+/// Sanitize a relation string for use as an edge dedup key: strip control chars, lowercase,
+/// trim, then truncate to [`MAX_RELATION_BYTES`].
+pub(crate) fn sanitize_relation(relation: &str) -> String {
+    let cleaned = strip_control_chars(&relation.trim().to_lowercase());
+    truncate_to_bytes_ref(&cleaned, MAX_RELATION_BYTES).to_owned()
+}
+
+/// Sanitize a fact string: strip control chars, trim, then truncate to [`MAX_FACT_BYTES`].
+pub(crate) fn sanitize_fact(fact: &str) -> String {
+    let cleaned = strip_control_chars(fact.trim());
+    truncate_to_bytes_ref(&cleaned, MAX_FACT_BYTES).to_owned()
+}
 
 /// Qdrant collection for entity embeddings.
 const ENTITY_COLLECTION: &str = "zeph_graph_entities";
@@ -954,12 +971,8 @@ impl<'a> EntityResolver<'a> {
         confidence: f32,
         episode_id: Option<MessageId>,
     ) -> Result<Option<i64>, MemoryError> {
-        let relation_clean = strip_control_chars(&relation.trim().to_lowercase());
-        let normalized_relation =
-            truncate_to_bytes_ref(&relation_clean, MAX_RELATION_BYTES).to_owned();
-
-        let fact_clean = strip_control_chars(fact.trim());
-        let normalized_fact = truncate_to_bytes_ref(&fact_clean, MAX_FACT_BYTES).to_owned();
+        let normalized_relation = sanitize_relation(relation);
+        let normalized_fact = sanitize_fact(fact);
 
         // Fetch only exact-direction edges — no reverse edges to filter out
         let existing_edges = self.store.edges_exact(source_id, target_id).await?;
@@ -1021,12 +1034,8 @@ impl<'a> EntityResolver<'a> {
         belief_revision: Option<&crate::graph::BeliefRevisionConfig>,
         provenance: Option<&GraphProvenance>,
     ) -> Result<Option<i64>, MemoryError> {
-        let relation_clean = strip_control_chars(&relation.trim().to_lowercase());
-        let normalized_relation =
-            truncate_to_bytes_ref(&relation_clean, MAX_RELATION_BYTES).to_owned();
-
-        let fact_clean = strip_control_chars(fact.trim());
-        let normalized_fact = truncate_to_bytes_ref(&fact_clean, MAX_FACT_BYTES).to_owned();
+        let normalized_relation = sanitize_relation(relation);
+        let normalized_fact = sanitize_fact(fact);
 
         let existing_edges = self.store.edges_exact(source_id, target_id).await?;
 
