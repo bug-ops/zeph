@@ -155,6 +155,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(core)`: `ShadowSentinel::classify_tool` (`crates/zeph-core/src/agent/shadow_sentinel.rs`)
+  gated probe engagement for MCP-origin tools entirely on a fixed keyword-substring list
+  (`*write*`/`*edit*`/`*delete*`/`*exec*`); a tool named with a different verb (`remove`,
+  `update`, `run`, `upload`, ...) silently fell through to `ToolRiskCategory::Low` and skipped
+  the probe even though it was MCP-origin (#5750). Added a new `ToolRiskCategory::McpUnclassified`
+  fallback: any tool where `ToolDef::is_mcp_tool()` is true but no keyword matches is now probed
+  by default instead of defaulting to `Low`, decoupling probe *engagement* (is this tool
+  MCP-origin) from keyword-based risk *tiering*. To keep this fallback from starving the
+  per-turn probe budget, `McpUnclassified`'s effective cap is unconditionally
+  `max_probes_per_turn.saturating_sub(1)` (holds at every budget value, including 0 and 1),
+  reserving at least one slot for `Shell`/`FileWrite`/`ExfilCapable` calls in the same turn.
+  Also gave `ToolRiskCategory::ExfilCapable` and `FileWrite` the distinct consumer #5749 asked
+  for: previously both categories took an identical probe path with no differentiating
+  behavior. `ExfilCapable` (MCP-origin, keyword-matched write-capable — the highest-confidence
+  risk signal) now has its own finite budget (`max_probes_per_turn.saturating_mul(2)`, tracked
+  by a separate `exfil_probes_this_turn` counter) so it cannot be starved by unrelated
+  `Shell`/`FileWrite`/`McpUnclassified` calls in the same turn, while remaining bounded rather
+  than unconditionally exempt from the budget (an earlier draft made it fully exempt, which
+  would have let a false-positive keyword match on a benign MCP tool probe unthrottled —
+  caught in review before merge).
 - `fix(memory,db)`: `ConversationId` (`crates/zeph-memory/src/types.rs`) wraps a per-database
   autoincrementing `i64` with no per-database salt, so two independent `SQLite`/`PostgreSQL`
   databases sharing one Qdrant instance both started at `conversation_id=1` and collided across
