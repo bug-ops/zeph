@@ -155,6 +155,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(core)`: `Agent::build_experiment_engine` (`crates/zeph-core/src/agent/experiment_cmd.rs`)
+  read the configured benchmark TOML synchronously via `BenchmarkSet::from_file`, which performs
+  blocking filesystem I/O (`std::fs::canonicalize` x2, `std::fs::metadata`, `std::fs::
+  read_to_string`), directly on the agent turn loop from the `/experiment start` slash-command
+  handler — violating the project's non-blocking-hot-path contract and contending with any other
+  work scheduled on that tokio worker for the duration of the read (#5721). Wrapped the call in
+  `tokio::task::spawn_blocking`, matching the two other call sites that already did this correctly
+  (`src/scheduler.rs`, `src/runner.rs`).
 - `fix(skills)`: a skill missing from the trust map (e.g. `memory.persistence.memory` not yet
   wired, or a transient `load_all_skill_trust` read failure) was treated as
   `SkillTrustLevel::Quarantined` at 4 call sites (`crates/zeph-skills/src/prompt.rs`'s
