@@ -53,8 +53,21 @@ use crate::agent::error::AgentError;
 
 /// Classifies a tool into a risk tier for probe gating.
 ///
-/// Only `Shell`, `FileWrite`, and `ExfilCapable` tools trigger a safety probe.
+/// `Shell`, `FileWrite`, `ExfilCapable`, and `McpUnclassified` tools trigger a safety probe.
 /// `Low` tools bypass the probe entirely, adding zero latency.
+///
+/// # Why `ExfilCapable` and `FileWrite` are distinct variants
+///
+/// Both are keyword-matched (write/edit/delete) and both trigger a probe, but they draw from
+/// different per-turn budgets in `check_tool_call` (#5749): `ExfilCapable` — a write-capable
+/// tool that also originates from an untrusted MCP server — has its own independent, higher
+/// budget (`2 * max_probes_per_turn`) so it can never be silently waved through
+/// (`ProbeVerdict::Skip`, which behaves like `Allow` under the fail-open default) purely because
+/// unrelated earlier probes in the same turn exhausted the shared counter. That budget is still
+/// finite — not unconditional — because `ExfilCapable` requires only MCP origin plus a keyword
+/// match, so an untrusted MCP server naming its tools accordingly could otherwise trigger
+/// unbounded LLM probe calls. `FileWrite` (builtin-only, no network egress path) has no separate
+/// budget and draws from the ordinary shared counter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ToolRiskCategory {
@@ -64,6 +77,15 @@ pub enum ToolRiskCategory {
     FileWrite,
     /// Network-capable MCP tools that could exfiltrate data.
     ExfilCapable,
+    /// MCP-origin tool whose name matched no configured risk keyword pattern.
+    ///
+    /// Engaged unconditionally because MCP origin is itself an untrusted-provenance signal
+    /// (#5750): `probe_patterns` can never fully enumerate every risky verb (`remove`,
+    /// `rename`, `upload`, `spawn`, ...), so gating probe engagement entirely on keyword match
+    /// would silently skip the probe for any MCP tool using a verb outside the list. This tier
+    /// still triggers the probe, but at reduced budget priority relative to the keyword-matched
+    /// tiers above (see `check_tool_call`).
+    McpUnclassified,
     /// All other tools — probe is skipped.
     Low,
 }
@@ -476,9 +498,25 @@ pub struct ShadowSentinel {
     store: ShadowEventStore,
     probe: Box<dyn SafetyProbe>,
     config: zeph_config::ShadowSentinelConfig,
-    /// Counter of probe calls made in the current turn. Uses `AtomicU32` so all
-    /// probe-checking methods can take `&self` even under parallel tool execution.
+    /// Counter of `Shell`/`FileWrite`/`McpUnclassified` probe calls made in the current turn.
+    /// Uses `AtomicU32` so all probe-checking methods can take `&self` even under parallel tool
+    /// execution.
+    ///
+    /// `ToolRiskCategory::McpUnclassified` calls are capped at `max_probes_per_turn - 1` so at
+    /// least one slot always stays reserved for `Shell`/`FileWrite` (#5750).
+    /// `ToolRiskCategory::ExfilCapable` never touches this counter — it has its own independent
+    /// budget, see `exfil_probes_this_turn` (#5749).
     probes_this_turn: AtomicU32,
+    /// Independent per-turn counter for `ToolRiskCategory::ExfilCapable` calls (#5749).
+    ///
+    /// `ExfilCapable` is the highest-confidence risk signal (MCP-origin AND write-capable), so
+    /// it must not compete with — or be starved by — the shared `probes_this_turn` budget. But
+    /// giving it *unconditional* exemption would let a false-positive keyword match on an
+    /// MCP-origin tool (#5750's over-inclusion case) generate unbounded LLM probe calls with no
+    /// cost ceiling at all. This counter gives `ExfilCapable` its own finite cap
+    /// (`2 * max_probes_per_turn`, see `probe_budget_exhausted`) — high priority, but still
+    /// bounded.
+    exfil_probes_this_turn: AtomicU32,
     session_id: SessionId,
     /// Bounded set of fire-and-forget DB persist tasks. Prevents unbounded task accumulation
     /// and ensures panics surface at `drain_pending()` instead of being silently swallowed.
@@ -527,6 +565,7 @@ impl ShadowSentinel {
             probe,
             config,
             probes_this_turn: AtomicU32::new(0),
+            exfil_probes_this_turn: AtomicU32::new(0),
             session_id: session_id.into(),
             pending_writes: Mutex::new(JoinSet::new()),
             mcp_tool_ids: Arc::new(RwLock::new(HashSet::new())),
@@ -593,7 +632,67 @@ impl ShadowSentinel {
             }
         }
 
+        // #5750: an MCP-origin tool is inherently less trusted, even when its name doesn't
+        // match any configured keyword pattern — engage a lightweight probe unconditionally
+        // rather than gating engagement entirely on keyword match.
+        if self.is_mcp_tool(qualified_tool_id) {
+            return ToolRiskCategory::McpUnclassified;
+        }
+
         ToolRiskCategory::Low
+    }
+
+    /// Checks and consumes per-turn probe budget for `category`, returning `true` when the
+    /// budget is exhausted (the caller must skip the probe).
+    ///
+    /// `ExfilCapable` (#5749) draws from its own independent, finite budget
+    /// (`2 * max_probes_per_turn`, `exfil_probes_this_turn`) rather than the shared counter: it
+    /// is the highest-confidence risk signal (MCP-origin AND write-capable), so it must not be
+    /// starved by unrelated earlier probes in the same turn — but it must still be bounded, or a
+    /// false-positive keyword match on an MCP-origin tool (#5750's over-inclusion case) could
+    /// generate unbounded LLM probe calls with no cost ceiling.
+    ///
+    /// `McpUnclassified` (#5750) — engaged by MCP origin alone, not a keyword risk signal — is
+    /// capped at `max_probes_per_turn - 1` (saturating), always reserving at least one slot in
+    /// the shared counter for `Shell`/`FileWrite` so a burst of low-signal MCP engagement early
+    /// in the turn can never fully starve out a higher-confidence probe later in the same turn,
+    /// at any `max_probes_per_turn` value (including `0` or `1`).
+    fn probe_budget_exhausted(&self, category: ToolRiskCategory) -> bool {
+        let max_probes = u32::try_from(self.config.max_probes_per_turn).unwrap_or(u32::MAX);
+
+        if category == ToolRiskCategory::ExfilCapable {
+            let exfil_max = max_probes.saturating_mul(2);
+            let count = self.exfil_probes_this_turn.fetch_add(1, Ordering::Relaxed);
+            if count >= exfil_max {
+                self.exfil_probes_this_turn.fetch_sub(1, Ordering::Relaxed);
+                tracing::debug!(
+                    max = exfil_max,
+                    "ShadowSentinel: ExfilCapable probe budget exhausted for this turn, skipping"
+                );
+                return true;
+            }
+            return false;
+        }
+
+        // Check per-turn probe budget using relaxed atomics (false sharing is acceptable here).
+        let count = self.probes_this_turn.fetch_add(1, Ordering::Relaxed);
+        let effective_max = if category == ToolRiskCategory::McpUnclassified {
+            max_probes.saturating_sub(1)
+        } else {
+            max_probes
+        };
+
+        if count >= effective_max {
+            // Undo the increment so future fast-path checks are accurate.
+            self.probes_this_turn.fetch_sub(1, Ordering::Relaxed);
+            tracing::debug!(
+                max = self.config.max_probes_per_turn,
+                ?category,
+                "ShadowSentinel: probe budget exhausted for this turn, skipping"
+            );
+            return true;
+        }
+        false
     }
 
     /// Evaluate a proposed tool call and return a probe verdict.
@@ -602,6 +701,14 @@ impl ShadowSentinel {
     /// - The tool is not in a high-risk category.
     /// - The feature is disabled.
     /// - The per-turn probe budget (`max_probes_per_turn`) is exhausted.
+    ///
+    /// `ToolRiskCategory::ExfilCapable` calls (#5749) draw from their own independent, higher
+    /// budget (`2 * max_probes_per_turn`) instead of the shared counter, so unrelated earlier
+    /// probes in the same turn can never wave one through — but the budget is still finite, not
+    /// unconditional. `ToolRiskCategory::McpUnclassified` calls (#5750) get a reduced share of
+    /// the shared budget — at least one slot is always reserved for keyword-matched
+    /// (higher-confidence) categories so a burst of low-signal MCP engagement cannot starve them
+    /// out within the same turn, at any `max_probes_per_turn` value.
     ///
     /// This method takes `&self` so it can be called from parallel tool dispatch.
     ///
@@ -626,16 +733,7 @@ impl ShadowSentinel {
             return ProbeVerdict::Skip;
         }
 
-        // Check per-turn probe budget using relaxed atomics (false sharing is acceptable here).
-        let count = self.probes_this_turn.fetch_add(1, Ordering::Relaxed);
-        let max_probes = u32::try_from(self.config.max_probes_per_turn).unwrap_or(u32::MAX);
-        if count >= max_probes {
-            // Undo the increment so future fast-path checks are accurate.
-            self.probes_this_turn.fetch_sub(1, Ordering::Relaxed);
-            tracing::debug!(
-                max = self.config.max_probes_per_turn,
-                "ShadowSentinel: probe budget exhausted for this turn, skipping"
-            );
+        if self.probe_budget_exhausted(category) {
             return ProbeVerdict::Skip;
         }
 
@@ -812,12 +910,13 @@ impl ShadowSentinel {
         }
     }
 
-    /// Reset the per-turn probe counter.
+    /// Reset the per-turn probe counters.
     ///
     /// Must be called once per turn BEFORE any tool calls, alongside
     /// `TrajectorySentinel::advance_turn()`.
     pub fn advance_turn(&self) {
         self.probes_this_turn.store(0, Ordering::Release);
+        self.exfil_probes_this_turn.store(0, Ordering::Release);
     }
 }
 
@@ -910,6 +1009,35 @@ mod tests {
         );
         assert_eq!(
             sentinel.classify_tool("builtin:search"),
+            ToolRiskCategory::Low
+        );
+    }
+
+    /// #5750: an MCP-origin tool whose name matches no configured keyword pattern must still
+    /// be probed (as `McpUnclassified`), not silently fall through to `Low`. Verbs like
+    /// `frobnicate` can never be fully enumerated in `probe_patterns`.
+    #[tokio::test]
+    async fn classify_mcp_tool_with_no_keyword_match_is_mcp_unclassified() {
+        let config = zeph_config::ShadowSentinelConfig::default();
+        let sentinel = make_test_sentinel(config).await;
+        sentinel
+            .mcp_tool_ids_handle()
+            .write()
+            .insert("some-server_frobnicate".to_owned());
+        assert_eq!(
+            sentinel.classify_tool("some-server_frobnicate"),
+            ToolRiskCategory::McpUnclassified
+        );
+    }
+
+    /// The same non-keyword-matching name for a tool NOT registered as MCP-origin must remain
+    /// `Low` — engagement is gated on MCP origin, not merely on failing to match Low's fast path.
+    #[tokio::test]
+    async fn classify_non_mcp_tool_with_no_keyword_match_stays_low() {
+        let config = zeph_config::ShadowSentinelConfig::default();
+        let sentinel = make_test_sentinel(config).await;
+        assert_eq!(
+            sentinel.classify_tool("some-server_frobnicate"),
             ToolRiskCategory::Low
         );
     }
@@ -1059,6 +1187,253 @@ mod tests {
             v3,
             ProbeVerdict::Skip,
             "third call must be skipped (budget exhausted)"
+        );
+    }
+
+    /// #5749: `ExfilCapable` calls must never be skipped due to *shared* per-turn budget
+    /// exhaustion — they draw from their own independent counter. Exhaust the shared budget with
+    /// `Shell` calls first, then confirm a subsequent `ExfilCapable` call still probes.
+    #[tokio::test]
+    async fn check_tool_call_exfil_capable_bypasses_shared_budget_exhaustion() {
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            max_probes_per_turn: 1,
+            probe_patterns: vec!["*edit*".to_owned()],
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let sentinel = make_test_sentinel(config).await;
+        sentinel
+            .mcp_tool_ids_handle()
+            .write()
+            .insert("server_edit_file".to_owned());
+        assert_eq!(
+            sentinel.classify_tool("server_edit_file"),
+            ToolRiskCategory::ExfilCapable
+        );
+
+        let args = serde_json::Value::Object(serde_json::Map::new());
+
+        // Exhaust the shared budget (max_probes_per_turn = 1) with a Shell call.
+        let v1 = sentinel
+            .check_tool_call("builtin:shell", &args, 1, "calm")
+            .await;
+        assert_ne!(v1, ProbeVerdict::Skip, "first Shell call within budget");
+        let v2 = sentinel
+            .check_tool_call("builtin:shell", &args, 1, "calm")
+            .await;
+        assert_eq!(
+            v2,
+            ProbeVerdict::Skip,
+            "second Shell call must be skipped — budget exhausted"
+        );
+
+        // ExfilCapable call must still probe despite the exhausted shared budget.
+        let v3 = sentinel
+            .check_tool_call("server_edit_file", &args, 1, "calm")
+            .await;
+        assert_ne!(
+            v3,
+            ProbeVerdict::Skip,
+            "ExfilCapable must not be starved by the shared per-turn budget"
+        );
+    }
+
+    /// #5749 follow-up (critic SIGNIFICANT-1): `ExfilCapable`'s independent budget must still be
+    /// finite (`2 * max_probes_per_turn`), not unconditional — otherwise a false-positive
+    /// keyword match on an MCP-origin tool name generates unbounded LLM probe calls.
+    #[tokio::test]
+    async fn check_tool_call_exfil_capable_has_finite_cap() {
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            max_probes_per_turn: 1,
+            probe_patterns: vec!["*edit*".to_owned()],
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let sentinel = make_test_sentinel(config).await;
+        sentinel
+            .mcp_tool_ids_handle()
+            .write()
+            .insert("server_edit_file".to_owned());
+
+        let args = serde_json::Value::Object(serde_json::Map::new());
+
+        // exfil_max = 2 * max_probes_per_turn = 2 — first two calls must probe.
+        let v1 = sentinel
+            .check_tool_call("server_edit_file", &args, 1, "calm")
+            .await;
+        let v2 = sentinel
+            .check_tool_call("server_edit_file", &args, 1, "calm")
+            .await;
+        assert_ne!(
+            v1,
+            ProbeVerdict::Skip,
+            "first ExfilCapable call within its own budget"
+        );
+        assert_ne!(
+            v2,
+            ProbeVerdict::Skip,
+            "second ExfilCapable call within its own budget"
+        );
+
+        // Third call exceeds the independent cap → must skip, not run unbounded.
+        let v3 = sentinel
+            .check_tool_call("server_edit_file", &args, 1, "calm")
+            .await;
+        assert_eq!(
+            v3,
+            ProbeVerdict::Skip,
+            "ExfilCapable's own budget must still be finite (2 * max_probes_per_turn)"
+        );
+    }
+
+    /// #5750: `McpUnclassified` calls (engaged by MCP origin alone) must be capped at
+    /// `max_probes_per_turn - 1`, reserving at least one slot for keyword-matched categories so
+    /// a burst of low-signal MCP probes cannot starve out a later high-confidence probe.
+    #[tokio::test]
+    async fn check_tool_call_mcp_unclassified_reserves_budget_slot() {
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            max_probes_per_turn: 2,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let sentinel = make_test_sentinel(config).await;
+        sentinel
+            .mcp_tool_ids_handle()
+            .write()
+            .insert("some-server_frobnicate".to_owned());
+        assert_eq!(
+            sentinel.classify_tool("some-server_frobnicate"),
+            ToolRiskCategory::McpUnclassified
+        );
+
+        let args = serde_json::Value::Object(serde_json::Map::new());
+
+        // First McpUnclassified call consumes the one slot it's allowed (max - 1 = 1).
+        let v1 = sentinel
+            .check_tool_call("some-server_frobnicate", &args, 1, "calm")
+            .await;
+        assert_ne!(
+            v1,
+            ProbeVerdict::Skip,
+            "first McpUnclassified call within reserved share"
+        );
+
+        // Second McpUnclassified call must be skipped — reserved share (1) already used, even
+        // though the shared counter (1/2) has not reached max_probes_per_turn.
+        let v2 = sentinel
+            .check_tool_call("some-server_frobnicate", &args, 1, "calm")
+            .await;
+        assert_eq!(
+            v2,
+            ProbeVerdict::Skip,
+            "second McpUnclassified call must be skipped — reserved share exhausted"
+        );
+
+        // A Shell call must still get through using the slot reserved for it.
+        let v3 = sentinel
+            .check_tool_call("builtin:shell", &args, 1, "calm")
+            .await;
+        assert_ne!(
+            v3,
+            ProbeVerdict::Skip,
+            "Shell call must still probe using the slot reserved for non-McpUnclassified categories"
+        );
+    }
+
+    /// #5750 follow-up (critic SIGNIFICANT-2): at `max_probes_per_turn == 1` there is only one
+    /// slot total, so reserving it for `Shell`/`FileWrite` means `McpUnclassified` gets NO share
+    /// at all (`saturating_sub` floors at 0) rather than the whole budget. This is what makes
+    /// the "cannot starve a higher-confidence probe" guarantee hold unconditionally, at the cost
+    /// of never probing `McpUnclassified` when the turn's total budget is 1.
+    #[tokio::test]
+    async fn check_tool_call_mcp_unclassified_fully_reserved_out_at_budget_one() {
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            max_probes_per_turn: 1,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let sentinel = make_test_sentinel(config).await;
+        sentinel
+            .mcp_tool_ids_handle()
+            .write()
+            .insert("some-server_frobnicate".to_owned());
+
+        let args = serde_json::Value::Object(serde_json::Map::new());
+
+        // Even the FIRST McpUnclassified call must be skipped — the single slot is fully
+        // reserved for keyword-matched categories, never handed to McpUnclassified.
+        let v1 = sentinel
+            .check_tool_call("some-server_frobnicate", &args, 1, "calm")
+            .await;
+        assert_eq!(
+            v1,
+            ProbeVerdict::Skip,
+            "McpUnclassified must get zero share when max_probes_per_turn == 1"
+        );
+
+        // A subsequent Shell call must still probe using the untouched slot — proving the
+        // McpUnclassified attempt above did not consume or starve it.
+        let v2 = sentinel
+            .check_tool_call("builtin:shell", &args, 1, "calm")
+            .await;
+        assert_ne!(
+            v2,
+            ProbeVerdict::Skip,
+            "Shell must not be starved by a prior McpUnclassified attempt at max_probes_per_turn == 1"
+        );
+    }
+
+    /// Boundary: `max_probes_per_turn == 0` must skip every category through the shared budget
+    /// (`Shell`, `FileWrite`, `McpUnclassified`) AND the independent `ExfilCapable` budget
+    /// (`2 * 0 == 0`) — an operator disabling the probe budget entirely must not leave any
+    /// category unbounded.
+    #[tokio::test]
+    async fn check_tool_call_all_categories_skip_at_budget_zero() {
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            max_probes_per_turn: 0,
+            probe_patterns: vec!["*edit*".to_owned()],
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let sentinel = make_test_sentinel(config).await;
+        sentinel
+            .mcp_tool_ids_handle()
+            .write()
+            .insert("server_edit_file".to_owned());
+        sentinel
+            .mcp_tool_ids_handle()
+            .write()
+            .insert("some-server_frobnicate".to_owned());
+        assert_eq!(
+            sentinel.classify_tool("server_edit_file"),
+            ToolRiskCategory::ExfilCapable
+        );
+        assert_eq!(
+            sentinel.classify_tool("some-server_frobnicate"),
+            ToolRiskCategory::McpUnclassified
+        );
+
+        let args = serde_json::Value::Object(serde_json::Map::new());
+        assert_eq!(
+            sentinel
+                .check_tool_call("builtin:shell", &args, 1, "calm")
+                .await,
+            ProbeVerdict::Skip,
+            "Shell must skip when max_probes_per_turn == 0"
+        );
+        assert_eq!(
+            sentinel
+                .check_tool_call("some-server_frobnicate", &args, 1, "calm")
+                .await,
+            ProbeVerdict::Skip,
+            "McpUnclassified must skip when max_probes_per_turn == 0"
+        );
+        assert_eq!(
+            sentinel
+                .check_tool_call("server_edit_file", &args, 1, "calm")
+                .await,
+            ProbeVerdict::Skip,
+            "ExfilCapable's independent budget (2 * 0 == 0) must also skip, not run unbounded"
         );
     }
 
