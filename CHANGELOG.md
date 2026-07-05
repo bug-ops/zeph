@@ -174,6 +174,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `with_db_instance_id` builder (no constructor signature change). Legacy Qdrant points written
   before this fix lack the field and simply stop matching scoped searches — same accepted
   degradation pattern as #5732, no backfill needed.
+- `fix(llm)`: `CandleProvider` now explicitly overrides `supports_tool_use()` to return `false`
+  (#5698), matching every other `LlmProvider` implementation which declares this explicitly
+  rather than relying on the trait default — closing the gap that caused the #5687 regression.
+- `test(llm)`: confirmed the `candle_provider/mod.rs` module doc-test (#5709) already passes
+  under `--features "candle,classifiers,gonka,cocoon,metal,testing"`; the stale `revision` field
+  reference was already resolved by the `ModelSource::HuggingFace` field rename in #5705.
 - `fix(index)`: full-repo indexing at session start could push ordinary interactive tool-calling
   turns to 200-400+s wall-clock on large workspaces (500-800% CPU), caused by a quadratic
   `merge_small_chunks` chunker algorithm and unthrottled full-repo batch processing (#5720). The

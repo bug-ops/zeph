@@ -305,6 +305,12 @@ impl LlmProvider for CandleProvider {
         true
     }
 
+    // Explicit override, not reliance on the trait default: CandleProvider has no
+    // chat_with_tools() implementation, so this must stay false even if the default changes.
+    fn supports_tool_use(&self) -> bool {
+        false
+    }
+
     #[tracing::instrument(
         name = "llm.candle.embed",
         skip_all,
