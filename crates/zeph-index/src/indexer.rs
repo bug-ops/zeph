@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use futures::StreamExt as _;
 use tokio::sync::watch;
+use tracing::Instrument as _;
 
 use crate::chunker::{ChunkerConfig, CodeChunk, chunk_file};
 use crate::context::contextualize_for_embedding;
@@ -71,7 +72,12 @@ static CHUNK_TASK_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub struct IndexerConfig {
     /// Chunker configuration controlling chunk size thresholds.
     pub chunker: ChunkerConfig,
-    /// Number of files to process concurrently within each memory batch. Default: 2.
+    /// Bounds concurrent CPU-bound chunk-parse (tree-sitter) dispatches via an internal
+    /// semaphore. Default: 2.
+    ///
+    /// Only reduces concurrency below whatever `embed_concurrency` separately admits into
+    /// flight via `buffer_unordered` in `index_batch` — has no effect when set >=
+    /// `embed_concurrency` (the shipped default for both is 2).
     pub concurrency: usize,
     /// Maximum number of new chunks to upsert per Qdrant call. Default: 16.
     ///
@@ -105,6 +111,14 @@ pub struct IndexerConfig {
     /// [`crate::error::IndexError::EmbedTimeout`] and skips the batch rather than
     /// blocking the indexer indefinitely.
     pub embed_batch_timeout_secs: u64,
+    /// Delay in milliseconds inserted after each memory batch during the *initial*
+    /// full-repo pass ([`CodeIndexer::index_project`]) only. Default: 75.
+    ///
+    /// Not applied to [`CodeIndexer::reindex_file`] (the file-watcher's incremental,
+    /// single-file path), which must stay fast. Spreads CPU-bound chunk parsing over
+    /// more wall-clock time so the OS scheduler has slack to service an interactive
+    /// agent turn instead of round-robining against saturated blocking threads.
+    pub initial_pass_batch_delay_ms: u64,
 }
 
 impl Default for IndexerConfig {
@@ -118,6 +132,7 @@ impl Default for IndexerConfig {
             embed_concurrency: 1,
             embedding_provider: String::new(),
             embed_batch_timeout_secs: 60,
+            initial_pass_batch_delay_ms: 75,
         }
     }
 }
@@ -210,6 +225,10 @@ pub struct CodeIndexer {
     spawner: Option<Arc<dyn BlockingSpawner>>,
     /// Re-entrancy guard: prevents concurrent `index_project` runs on the same indexer.
     indexing: Arc<AtomicBool>,
+    /// Bounds the number of concurrent CPU-bound `chunk_file` dispatches, independent of
+    /// [`IndexerConfig::embed_concurrency`] (which bounds embedding-API call concurrency, not
+    /// parsing). Sized from [`IndexerConfig::concurrency`].
+    chunk_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl CodeIndexer {
@@ -219,12 +238,14 @@ impl CodeIndexer {
     /// the concurrent file-processing tasks.
     #[must_use]
     pub fn new(store: CodeStore, provider: Arc<AnyProvider>, config: IndexerConfig) -> Self {
+        let chunk_semaphore = Arc::new(tokio::sync::Semaphore::new(config.concurrency.max(1)));
         Self {
             store,
             provider,
             config,
             spawner: None,
             indexing: Arc::new(AtomicBool::new(false)),
+            chunk_semaphore,
         }
     }
 
@@ -389,6 +410,7 @@ impl CodeIndexer {
         let provider = Arc::clone(&self.provider);
         let config = self.config.clone();
         let spawner = self.spawner.clone();
+        let chunk_semaphore = Arc::clone(&self.chunk_semaphore);
         let concurrency = self.config.embed_concurrency.max(1);
 
         let file_pairs = make_file_pairs(batch, root);
@@ -399,12 +421,14 @@ impl CodeIndexer {
                 let provider = Arc::clone(&provider);
                 let config = config.clone();
                 let spawner = spawner.clone();
+                let chunk_semaphore = Arc::clone(&chunk_semaphore);
                 async move {
                     let worker = FileIndexWorker {
                         store,
                         provider,
                         config,
                         spawner,
+                        chunk_semaphore,
                     };
                     let result = worker.index_file(&abs_path, &rel_path).await;
                     (rel_path, result)
@@ -445,6 +469,16 @@ impl CodeIndexer {
         // Drop stream to release all in-flight future state before the next batch.
         drop(stream);
         tokio::task::yield_now().await;
+
+        let delay_ms = self.config.initial_pass_batch_delay_ms;
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms))
+                .instrument(tracing::info_span!(
+                    "index.indexer.batch_throttle",
+                    delay_ms
+                ))
+                .await;
+        }
     }
 
     #[tracing::instrument(name = "index.indexer.cleanup_removed_files", skip_all)]
@@ -485,6 +519,7 @@ impl CodeIndexer {
             provider: Arc::clone(&self.provider),
             config: self.config.clone(),
             spawner: self.spawner.clone(),
+            chunk_semaphore: Arc::clone(&self.chunk_semaphore),
         };
         let (created, _) = worker.index_file(abs_path, &rel_path).await?;
         Ok(created)
@@ -497,6 +532,8 @@ struct FileIndexWorker {
     provider: Arc<AnyProvider>,
     config: IndexerConfig,
     spawner: Option<Arc<dyn BlockingSpawner>>,
+    /// Shared with the parent [`CodeIndexer`]; gates concurrent `chunk_file` dispatches.
+    chunk_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl FileIndexWorker {
@@ -519,37 +556,9 @@ impl FileIndexWorker {
         let source = tokio::fs::read_to_string(abs_path).await?;
         let lang = detect_language(abs_path).ok_or(IndexError::UnsupportedLanguage)?;
 
-        let rel_path_owned = rel_path.to_owned();
-        let chunker_config = self.config.chunker.clone();
-        let chunks = if let Some(ref spawner) = self.spawner {
-            // Route through the supervised spawner so the task appears in registry.
-            // BlockingSpawner::spawn_blocking_named is object-safe (returns JoinHandle<()>),
-            // so we communicate the typed result via a oneshot channel.
-            //
-            // Each spawn gets a unique name to prevent the supervisor's "abort if same
-            // name already exists" logic from silently aborting concurrent in-flight tasks
-            // when embed_concurrency > 1.
-            let task_id = CHUNK_TASK_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let task_name: std::sync::Arc<str> =
-                std::sync::Arc::from(format!("chunk_file_{task_id}").as_str());
-            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-            let _join = spawner.spawn_blocking_named(
-                task_name,
-                Box::new(move || {
-                    let result = chunk_file(&source, &rel_path_owned, lang, &chunker_config);
-                    let _ = result_tx.send(result);
-                }),
-            );
-            result_rx
-                .await
-                .map_err(|_| IndexError::Other("chunk_file task dropped result".to_owned()))??
-        } else {
-            tokio::task::spawn_blocking(move || {
-                chunk_file(&source, &rel_path_owned, lang, &chunker_config)
-            })
-            .await
-            .map_err(|e| IndexError::Other(format!("chunk_file panicked: {e}")))??
-        };
+        let chunks = self
+            .dispatch_chunk_file(source, rel_path.to_owned(), lang)
+            .await?;
 
         // Batch-check which hashes already exist to avoid N individual queries.
         let all_hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
@@ -619,6 +628,55 @@ impl FileIndexWorker {
         }
 
         Ok((created, skipped))
+    }
+
+    /// Chunk a single file's source under `chunk_semaphore`, dispatching the CPU-bound
+    /// tree-sitter parse to a blocking thread (supervised when a spawner is attached, otherwise
+    /// bare `spawn_blocking`). The permit is held for the duration of the blocking call and
+    /// released as soon as it returns, before any embedding/storage work begins.
+    async fn dispatch_chunk_file(
+        &self,
+        source: String,
+        rel_path_owned: String,
+        lang: crate::languages::Lang,
+    ) -> Result<Vec<CodeChunk>> {
+        let chunker_config = self.config.chunker.clone();
+        let chunk_permit = self
+            .chunk_semaphore
+            .acquire()
+            .await
+            .map_err(|_| IndexError::Other("chunk_semaphore closed unexpectedly".to_owned()))?;
+        let chunks = if let Some(ref spawner) = self.spawner {
+            // Route through the supervised spawner so the task appears in registry.
+            // BlockingSpawner::spawn_blocking_named is object-safe (returns JoinHandle<()>),
+            // so we communicate the typed result via a oneshot channel.
+            //
+            // Each spawn gets a unique name to prevent the supervisor's "abort if same
+            // name already exists" logic from silently aborting concurrent in-flight tasks
+            // when embed_concurrency > 1.
+            let task_id = CHUNK_TASK_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let task_name: std::sync::Arc<str> =
+                std::sync::Arc::from(format!("chunk_file_{task_id}").as_str());
+            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+            let _join = spawner.spawn_blocking_named(
+                task_name,
+                Box::new(move || {
+                    let result = chunk_file(&source, &rel_path_owned, lang, &chunker_config);
+                    let _ = result_tx.send(result);
+                }),
+            );
+            result_rx
+                .await
+                .map_err(|_| IndexError::Other("chunk_file task dropped result".to_owned()))??
+        } else {
+            tokio::task::spawn_blocking(move || {
+                chunk_file(&source, &rel_path_owned, lang, &chunker_config)
+            })
+            .await
+            .map_err(|e| IndexError::Other(format!("chunk_file panicked: {e}")))??
+        };
+        drop(chunk_permit);
+        Ok(chunks)
     }
 }
 
@@ -750,6 +808,7 @@ mod tests {
         assert_eq!(config.embed_concurrency, 1);
         assert_eq!(config.embedding_provider, "");
         assert_eq!(config.embed_batch_timeout_secs, 60);
+        assert_eq!(config.initial_pass_batch_delay_ms, 75);
     }
 
     #[test]
@@ -842,6 +901,7 @@ mod tests {
             provider,
             config: IndexerConfig::default(),
             spawner: None,
+            chunk_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
         };
 
         // First call: all hashes exist → (0, chunk_count).
@@ -903,6 +963,7 @@ mod tests {
             provider,
             config: IndexerConfig::default(),
             spawner: Some(Arc::new(MockBlockingSpawner)),
+            chunk_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
         };
 
         // With all hashes absent from SQLite the Qdrant upsert would be attempted, but
@@ -1032,6 +1093,7 @@ mod tests {
             provider: Arc::clone(&slow_provider),
             config,
             spawner: None,
+            chunk_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
         };
         let result = worker.index_file(&rs_path, "slow.rs").await;
 
@@ -1072,6 +1134,302 @@ mod tests {
             flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok(),
             "third caller should succeed after reset"
+        );
+    }
+
+    /// `chunk_semaphore` must never be constructed with zero permits — a `concurrency: 0`
+    /// config would otherwise deadlock every `dispatch_chunk_file` call forever.
+    #[tokio::test]
+    async fn code_indexer_new_clamps_zero_concurrency_to_one_permit() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_memory::QdrantOps;
+
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_string(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .unwrap();
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
+        let store = crate::store::CodeStore::with_ops(ops, pool);
+        let provider = Arc::new(AnyProvider::Mock(
+            MockProvider::default().with_embedding(vec![0.0_f32; 384]),
+        ));
+        let config = IndexerConfig {
+            concurrency: 0,
+            ..IndexerConfig::default()
+        };
+        let indexer = CodeIndexer::new(store, provider, config);
+        assert_eq!(
+            indexer.chunk_semaphore.available_permits(),
+            1,
+            "concurrency: 0 must be clamped to at least 1 permit, not 0 (which would \
+             deadlock every chunk dispatch)"
+        );
+    }
+
+    /// Verify `chunk_semaphore` actually gates concurrent `chunk_file` dispatches: with more
+    /// concurrent callers than permits, a background sampler must observe the semaphore fully
+    /// saturated (`available_permits() == 0`) at some point — proving `acquire()` is really
+    /// exercised and not silently bypassed — and permits must fully return once every dispatch
+    /// completes, proving no permit leak.
+    #[tokio::test]
+    async fn dispatch_chunk_file_gates_concurrency_via_semaphore() {
+        use std::fmt::Write as _;
+        use std::sync::atomic::AtomicUsize;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_memory::QdrantOps;
+
+        const LIMIT: usize = 2;
+        const CALLERS: usize = 6;
+
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_string(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .unwrap();
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
+        let store = crate::store::CodeStore::with_ops(ops, pool);
+        let provider = Arc::new(AnyProvider::Mock(
+            MockProvider::default().with_embedding(vec![0.0_f32; 384]),
+        ));
+
+        let chunk_semaphore = Arc::new(tokio::sync::Semaphore::new(LIMIT));
+
+        // Large enough that tree-sitter parsing takes measurable wall-clock time, widening
+        // the window during which concurrent dispatches can overlap.
+        let mut source = String::new();
+        for i in 0..3000 {
+            let _ = writeln!(source, "const A{i}: i32 = {i};");
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let min_seen = Arc::new(AtomicUsize::new(LIMIT));
+        let monitor = tokio::spawn({
+            let chunk_semaphore = Arc::clone(&chunk_semaphore);
+            let stop = Arc::clone(&stop);
+            let min_seen = Arc::clone(&min_seen);
+            async move {
+                while !stop.load(Ordering::Relaxed) {
+                    let available = chunk_semaphore.available_permits();
+                    min_seen.fetch_min(available, Ordering::Relaxed);
+                    tokio::time::sleep(Duration::from_micros(200)).await;
+                }
+            }
+        });
+
+        let mut handles = Vec::new();
+        for i in 0..CALLERS {
+            let worker = FileIndexWorker {
+                store: store.clone(),
+                provider: Arc::clone(&provider),
+                config: IndexerConfig::default(),
+                spawner: None,
+                chunk_semaphore: Arc::clone(&chunk_semaphore),
+            };
+            let source = source.clone();
+            handles.push(tokio::spawn(async move {
+                worker
+                    .dispatch_chunk_file(source, format!("f{i}.rs"), crate::languages::Lang::Rust)
+                    .await
+            }));
+        }
+        for h in handles {
+            h.await.unwrap().unwrap();
+        }
+        stop.store(true, Ordering::Relaxed);
+        monitor.await.unwrap();
+
+        assert_eq!(
+            min_seen.load(Ordering::Relaxed),
+            0,
+            "with {CALLERS} concurrent dispatches against {LIMIT} permits, the semaphore \
+             must have been fully saturated at some point — a min > 0 means acquire() is \
+             not actually gating concurrency"
+        );
+        assert_eq!(
+            chunk_semaphore.available_permits(),
+            LIMIT,
+            "all permits must be released once every dispatch completes — no permit leak"
+        );
+    }
+
+    /// Pre-seed `chunk_metadata` with the hashes `chunk_file` will produce for `path`, so
+    /// `existing_hashes` short-circuits `FileIndexWorker::index_file` before any real `Qdrant`
+    /// call — mirrors `index_file_spawn_blocking_dedup_path` above. Returns the chunk count.
+    ///
+    /// Rows are stored under `stored_file_path`, which must differ from the `rel_path` the
+    /// caller will later pass to `reindex_file`/`index_batch`: `existing_hashes` matches by
+    /// content hash alone (file-path-agnostic), but `remove_file_chunks` filters by exact
+    /// `file_path` — using a distinct stored path means `remove_file_chunks(rel_path)` finds no
+    /// rows and returns `Ok(0)` without any real `Qdrant` delete call, while the hash is still
+    /// found by `existing_hashes` to keep the dedup path Qdrant-free end-to-end.
+    async fn preseed_chunk_hashes(
+        pool: &zeph_db::DbPool,
+        path: &Path,
+        rel_path: &str,
+        stored_file_path: &str,
+    ) -> usize {
+        let source = std::fs::read_to_string(path).unwrap();
+        let lang = crate::languages::detect_language(path).unwrap();
+        let chunks =
+            crate::chunker::chunk_file(&source, rel_path, lang, &ChunkerConfig::default()).unwrap();
+        for (i, chunk) in chunks.iter().enumerate() {
+            zeph_db::query(zeph_db::sql!(
+                "INSERT INTO chunk_metadata \
+                 (qdrant_id, file_path, content_hash, line_start, line_end, language, node_type) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+            ))
+            .bind(format!("preseed{i}"))
+            .bind(stored_file_path)
+            .bind(&chunk.content_hash)
+            .bind(i64::try_from(chunk.line_range.0).unwrap_or(i64::MAX))
+            .bind(i64::try_from(chunk.line_range.1).unwrap_or(i64::MAX))
+            .bind("rust")
+            .bind("function_item")
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        chunks.len()
+    }
+
+    /// `index_batch` (the loop body driven by `index_project`) must apply
+    /// `initial_pass_batch_delay_ms` after processing each memory batch. Uses
+    /// `tokio::time::pause`/`advance` for deterministic virtual-time control (same technique
+    /// as `ensure_collection_timeout_returns_embed_timeout_error` above). Calls the private
+    /// `index_batch` directly (rather than `index_project`) to avoid `ensure_collection`'s
+    /// real `Qdrant` handshake; hashes are pre-seeded so `index_file` never reaches
+    /// `upsert_chunks_batch` either.
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn index_batch_applies_initial_pass_delay() {
+        use tempfile::TempDir;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_memory::QdrantOps;
+
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("a.rs");
+        std::fs::write(&file_path, "fn a() {}\n").unwrap();
+
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_string(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .unwrap();
+        preseed_chunk_hashes(&pool, &file_path, "a.rs", "a.rs").await;
+
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
+        let store = crate::store::CodeStore::with_ops(ops, pool);
+        let provider = Arc::new(AnyProvider::Mock(
+            MockProvider::default().with_embedding(vec![0.0_f32; 384]),
+        ));
+        let config = IndexerConfig {
+            initial_pass_batch_delay_ms: 200,
+            ..IndexerConfig::default()
+        };
+        let indexer = Arc::new(CodeIndexer::new(store, provider, config));
+
+        let entries: Vec<ignore::DirEntry> = ignore::WalkBuilder::new(dir.path())
+            .hidden(true)
+            .git_ignore(true)
+            .build()
+            .flatten()
+            .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()))
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "temp dir must contain exactly one walked file"
+        );
+
+        tokio::time::pause();
+
+        let root = dir.path().to_path_buf();
+        let batch_indexer = Arc::clone(&indexer);
+        let handle = tokio::spawn(async move {
+            let mut files_done = 0usize;
+            let mut report = IndexReport::default();
+            batch_indexer
+                .index_batch(&entries, &root, 1, &mut files_done, &mut report, None)
+                .await;
+            (files_done, report)
+        }); // EXEMPT: test-only mock time
+
+        // Advance just short of the configured delay: the task must still be waiting.
+        tokio::time::advance(Duration::from_millis(199)).await;
+        assert!(
+            !handle.is_finished(),
+            "index_batch must still be waiting on the inter-batch delay"
+        );
+        // Advance past the delay (plus slack) to let it finish.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let (files_done, report) = handle.await.unwrap();
+        assert_eq!(files_done, 1);
+        assert_eq!(report.files_scanned, 1);
+    }
+
+    /// `reindex_file` (the file-watcher's single-file path) must NOT apply
+    /// `initial_pass_batch_delay_ms` — it must stay fast for live incremental updates. Uses a
+    /// generous configured delay (2 s) against a tight real-wall-clock timeout (300 ms) so a
+    /// regression that accidentally routes this path through the delayed loop fails fast
+    /// instead of hanging the test.
+    #[tokio::test]
+    async fn reindex_file_skips_initial_pass_delay() {
+        use tempfile::TempDir;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_memory::QdrantOps;
+
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("a.rs");
+        std::fs::write(&file_path, "fn a() {}\n").unwrap();
+
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_string(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .unwrap();
+        // Stored under a different file_path than "a.rs" so `reindex_file`'s
+        // `remove_file_chunks("a.rs")` call finds no rows and skips its `Qdrant` delete —
+        // `existing_hashes` still matches by content hash alone, keeping the dedup path
+        // `Qdrant`-free end-to-end (see `preseed_chunk_hashes` doc comment).
+        let chunk_count = preseed_chunk_hashes(&pool, &file_path, "a.rs", "other.rs").await;
+
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
+        let store = crate::store::CodeStore::with_ops(ops, pool);
+        let provider = Arc::new(AnyProvider::Mock(
+            MockProvider::default().with_embedding(vec![0.0_f32; 384]),
+        ));
+        let config = IndexerConfig {
+            initial_pass_batch_delay_ms: 2_000,
+            ..IndexerConfig::default()
+        };
+        let indexer = CodeIndexer::new(store, provider, config);
+
+        let created = tokio::time::timeout(
+            Duration::from_millis(300),
+            indexer.reindex_file(dir.path(), &file_path),
+        )
+        .await
+        .expect(
+            "reindex_file took >= 300ms with a 2s initial_pass_batch_delay_ms configured — \
+             it must not apply the batch delay",
+        )
+        .unwrap();
+        assert_eq!(
+            created, 0,
+            "hash was pre-seeded ({chunk_count} chunks) so no new chunk should be created"
         );
     }
 }

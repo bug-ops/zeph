@@ -155,6 +155,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(index)`: full-repo indexing at session start could push ordinary interactive tool-calling
+  turns to 200-400+s wall-clock on large workspaces (500-800% CPU), caused by a quadratic
+  `merge_small_chunks` chunker algorithm and unthrottled full-repo batch processing (#5720). The
+  `merge_small_chunks` pass (`crates/zeph-index/src/chunker.rs`) is now O(n) instead of O(n²).
+  The initial full-repo indexing pass now applies a short inter-batch throttle
+  (`initial_pass_batch_delay_ms`, default 75ms) between memory batches to reduce CPU contention
+  with the interactive turn; incremental single-file reindexing (the live file-watcher path) is
+  unaffected. Indexing progress is now surfaced via the existing cross-channel status mechanism
+  (TUI/Telegram/Discord), not just a one-shot CLI message. A new `chunk_semaphore` decouples
+  chunk-dispatch concurrency from `embed_concurrency` for future configurability; at the current
+  shipped defaults (both 2) it has no additional effect beyond the existing `embed_concurrency`
+  gate.
 - `fix(tools,skills)`: `TrustGateExecutor`'s quarantine-denial message for `QUARANTINE_DENIED`
   tools (`invoke_skill`, `load_skill`, `bash`, `write`, etc.) read `"{tool_id} denied
   (trust=quarantined)"`, which misattributed the denial to the specifically-invoked tool/skill

@@ -67,7 +67,7 @@ fn default_index_max_chunks() -> usize {
 }
 
 fn default_index_concurrency() -> usize {
-    4
+    2
 }
 
 fn default_index_batch_size() -> usize {
@@ -84,6 +84,10 @@ fn default_index_max_file_bytes() -> usize {
 
 fn default_index_embed_concurrency() -> usize {
     2
+}
+
+fn default_initial_pass_batch_delay_ms() -> u64 {
+    75
 }
 
 fn default_index_score_threshold() -> f32 {
@@ -668,9 +672,20 @@ pub struct IndexConfig {
     /// startup. Relative paths are resolved relative to the process working directory.
     #[serde(default)]
     pub workspace_root: Option<std::path::PathBuf>,
-    /// Number of files to process concurrently during initial indexing. Default: 4.
+    /// Bounds concurrent CPU-bound chunk-parse (tree-sitter) dispatches via an internal
+    /// semaphore. Default: 2.
+    ///
+    /// Only reduces concurrency below whatever `embed_concurrency` separately admits into
+    /// flight via `buffer_unordered` in `index_batch` — has no effect when set >=
+    /// `embed_concurrency` (the shipped default for both is 2).
     #[serde(default = "default_index_concurrency")]
     pub concurrency: usize,
+    /// Delay in milliseconds inserted after each memory batch during the *initial* full-repo
+    /// indexing pass only (not applied to incremental single-file reindex via the file
+    /// watcher). Spreads CPU-bound chunk parsing over more wall-clock time so an interactive
+    /// agent turn isn't starved for OS threads on large workspaces. Default: 75.
+    #[serde(default = "default_initial_pass_batch_delay_ms")]
+    pub initial_pass_batch_delay_ms: u64,
     /// Maximum number of new chunks to batch into a single Qdrant upsert per file. Default: 32.
     #[serde(default = "default_index_batch_size")]
     pub batch_size: usize,
@@ -710,6 +725,7 @@ impl Default for IndexConfig {
             mcp_enabled: false,
             workspace_root: None,
             concurrency: default_index_concurrency(),
+            initial_pass_batch_delay_ms: default_initial_pass_batch_delay_ms(),
             batch_size: default_index_batch_size(),
             memory_batch_size: default_index_memory_batch_size(),
             max_file_bytes: default_index_max_file_bytes(),
@@ -1123,8 +1139,9 @@ mod tests {
         assert!(!cfg.enabled);
         assert!(cfg.search_enabled);
         assert!(!cfg.watch);
-        assert_eq!(cfg.concurrency, 4);
+        assert_eq!(cfg.concurrency, 2);
         assert_eq!(cfg.batch_size, 32);
+        assert_eq!(cfg.initial_pass_batch_delay_ms, 75);
         assert!(cfg.workspace_root.is_none());
     }
 
@@ -1164,8 +1181,9 @@ mod tests {
         assert!(cfg.enabled);
         assert_eq!(cfg.max_chunks, 20);
         assert!(cfg.workspace_root.is_none());
-        assert_eq!(cfg.concurrency, 4);
+        assert_eq!(cfg.concurrency, 2);
         assert_eq!(cfg.batch_size, 32);
+        assert_eq!(cfg.initial_pass_batch_delay_ms, 75);
     }
 
     #[test]

@@ -312,33 +312,47 @@ fn extend_scope(parent_scope: &str, node: &Node, source: &str) -> String {
     }
 }
 
+/// Merge adjacent chunks below `min_size` into their left neighbour, in a single forward pass.
+///
+/// Builds a new `Vec` instead of mutating in place: `Vec::remove` on the original approach
+/// shifts every trailing element on each merge, and rescanning `non_ws_len` over the
+/// already-merged, growing string on every iteration made the whole function O(n * merge-run
+/// length) for a file with many small consecutive items. Tracking each accumulator's
+/// non-whitespace length incrementally (simple addition per merge) avoids the rescan; only the
+/// `blake3_hex` recompute remains per-merge, since it must reflect the final merged content.
+#[tracing::instrument(name = "index.chunker.merge_small_chunks", skip_all)]
 fn merge_small_chunks(chunks: &mut Vec<CodeChunk>, config: &ChunkerConfig) {
     if chunks.len() < 2 {
         return;
     }
 
-    let mut i = 0;
-    while i < chunks.len() - 1 {
-        let cur_nws = non_ws_len(&chunks[i].code);
-        let next_nws = non_ws_len(&chunks[i + 1].code);
+    let mut merged: Vec<CodeChunk> = Vec::with_capacity(chunks.len());
+    let mut merged_nws: Vec<usize> = Vec::with_capacity(chunks.len());
 
-        if cur_nws < config.min_size
-            && cur_nws + next_nws <= config.target_size
-            && chunks[i].file_path == chunks[i + 1].file_path
+    for chunk in chunks.drain(..) {
+        let chunk_nws = non_ws_len(&chunk.code);
+
+        if let (Some(last), Some(last_nws)) = (merged.last_mut(), merged_nws.last_mut())
+            && *last_nws < config.min_size
+            && *last_nws + chunk_nws <= config.target_size
+            && last.file_path == chunk.file_path
         {
-            let next = chunks.remove(i + 1);
-            let cur = &mut chunks[i];
-            cur.code.push('\n');
-            cur.code.push_str(&next.code);
-            cur.line_range.1 = next.line_range.1;
-            cur.content_hash = blake3_hex(&cur.code);
-            if cur.entity_name.is_none() {
-                cur.entity_name = next.entity_name;
+            last.code.push('\n');
+            last.code.push_str(&chunk.code);
+            last.line_range.1 = chunk.line_range.1;
+            if last.entity_name.is_none() {
+                last.entity_name = chunk.entity_name;
             }
-        } else {
-            i += 1;
+            last.content_hash = blake3_hex(&last.code);
+            *last_nws += chunk_nws;
+            continue;
         }
+
+        merged_nws.push(chunk_nws);
+        merged.push(chunk);
     }
+
+    *chunks = merged;
 }
 
 #[cfg(test)]
@@ -515,5 +529,66 @@ class Greeter:
 "#;
         let chunks = chunk_file(source, "app.py", Lang::Python, &default_config()).unwrap();
         assert!(!chunks.is_empty());
+    }
+
+    /// Pins `merge_small_chunks`'s output for a long run of small consecutive chunks (the
+    /// pattern that made the old `Vec::remove` + per-iteration `non_ws_len` rescan quadratic,
+    /// common in files with many small `const`/`enum` items). Rather than asserting on timing,
+    /// this checks the correctness contract that must hold before and after the refactor: every
+    /// merged chunk is an exact, ordered, gap-free, newline-joined concatenation of the original
+    /// chunks, and no merged chunk exceeds `target_size`.
+    #[test]
+    fn merge_small_chunks_large_run_partitions_correctly() {
+        let config = ChunkerConfig::default();
+        let n = 60;
+        let originals: Vec<CodeChunk> = (0..n)
+            .map(|i| {
+                let code = format!("const A{i}: i32 = {i};");
+                CodeChunk {
+                    content_hash: blake3_hex(&code),
+                    code,
+                    file_path: "src/consts.rs".to_string(),
+                    language: Lang::Rust,
+                    node_type: "const_item".to_string(),
+                    entity_name: Some(format!("A{i}")),
+                    line_range: (i + 1, i + 1),
+                    scope_chain: String::new(),
+                    imports: String::new(),
+                }
+            })
+            .collect();
+
+        let mut chunks = originals.clone();
+        merge_small_chunks(&mut chunks, &config);
+
+        assert!(
+            chunks.len() < originals.len(),
+            "expected many small items to merge"
+        );
+
+        // Every merged chunk must reconstruct a contiguous, ordered, gap-free subsequence
+        // of `originals`, joined by '\n' exactly as `merge_small_chunks` does.
+        let mut cursor = 0usize;
+        for merged in &chunks {
+            let parts: Vec<&str> = merged.code.split('\n').collect();
+            for part in &parts {
+                assert_eq!(
+                    *part, originals[cursor].code,
+                    "chunk boundary mismatch at original index {cursor}"
+                );
+                cursor += 1;
+            }
+            assert_eq!(
+                merged.line_range.0,
+                originals[cursor - parts.len()].line_range.0
+            );
+            assert_eq!(merged.line_range.1, originals[cursor - 1].line_range.1);
+            assert!(non_ws_len(&merged.code) <= config.target_size);
+        }
+        assert_eq!(
+            cursor,
+            originals.len(),
+            "every original chunk must appear exactly once, in order"
+        );
     }
 }

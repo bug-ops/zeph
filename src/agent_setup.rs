@@ -1279,6 +1279,7 @@ pub(crate) async fn apply_code_indexer(
                 max_file_bytes: config.max_file_bytes,
                 embed_concurrency: config.embed_concurrency,
                 embedding_provider: embedding_provider_name,
+                initial_pass_batch_delay_ms: config.initial_pass_batch_delay_ms,
                 ..IndexerConfig::default()
             },
         );
@@ -1311,6 +1312,7 @@ pub(crate) async fn apply_code_indexer(
                 workspace_root.clone(),
                 progress_tx,
                 cli_mode,
+                status_tx.clone(),
                 supervisor.clone(),
             );
             tracing::info!("code indexer started");
@@ -1362,8 +1364,13 @@ fn spawn_background_indexer(
     root: std::path::PathBuf,
     progress_tx: tokio::sync::watch::Sender<zeph_index::IndexProgress>,
     cli_mode: bool,
+    status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     supervisor: Option<zeph_common::TaskSupervisor>,
 ) {
+    if let Some(tx) = status_tx {
+        spawn_index_progress_status_forwarder(progress_tx.subscribe(), tx, supervisor.clone());
+    }
+
     let fut = async move {
         match indexer.index_project(&root, Some(&progress_tx)).await {
             Ok(report) => {
@@ -1409,6 +1416,49 @@ fn spawn_background_indexer(
         });
     } else {
         tokio::spawn(fut); // EXEMPT(#5143): no-supervisor fallback for spawn_background_indexer — None branch
+    }
+}
+
+/// Forward `IndexProgress` updates to `status_tx` during the initial full-repo pass, so TUI,
+/// Telegram, and Discord all see the same "Indexing repository…" signal (CLI additionally gets
+/// `spawn_index_progress_printer`'s one-shot eprintln, kept separate for its own convention).
+fn spawn_index_progress_status_forwarder(
+    mut progress_rx: tokio::sync::watch::Receiver<zeph_index::IndexProgress>,
+    status_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    supervisor: Option<zeph_common::TaskSupervisor>,
+) {
+    let fut = async move {
+        while progress_rx.changed().await.is_ok() {
+            let p = progress_rx.borrow_and_update().clone();
+            if p.files_total == 0 {
+                continue;
+            }
+            let _ = status_tx.send(format!(
+                "Indexing repository… ({}/{} files)",
+                p.files_done, p.files_total
+            ));
+            if p.files_done >= p.files_total {
+                let _ = status_tx.send("Indexing complete".to_owned());
+                break;
+            }
+        }
+    };
+    if let Some(sup) = supervisor {
+        let fut_cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+        sup.spawn(zeph_common::TaskDescriptor {
+            name: "index_project_progress",
+            restart: zeph_common::RestartPolicy::RunOnce,
+            factory: move || {
+                let f = fut_cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
+        });
+    } else {
+        tokio::spawn(fut); // EXEMPT(#5143): no-supervisor fallback, mirrors spawn_background_indexer's None branch
     }
 }
 
@@ -2524,6 +2574,74 @@ mod tests {
         )
         .await;
         assert!(watcher.is_none()); // watch = false
+    }
+
+    /// `spawn_index_progress_status_forwarder` must forward each `IndexProgress` update as a
+    /// human-readable status string, then send a completion message once `files_done` reaches
+    /// `files_total` and stop — the next real status message (e.g. from the file watcher)
+    /// overwrites it naturally, matching `IndexWatcher`'s own convention. This is the mechanism
+    /// that closes the "no status visibility during the initial index pass" gap (#5720 item D)
+    /// for TUI/Telegram/Discord — previously only the CLI got a one-shot `eprintln!`.
+    #[tokio::test]
+    async fn spawn_index_progress_status_forwarder_forwards_progress_and_completes() {
+        let (progress_tx, _keepalive) =
+            tokio::sync::watch::channel(zeph_index::IndexProgress::default());
+        let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        spawn_index_progress_status_forwarder(progress_tx.subscribe(), status_tx, None);
+
+        progress_tx
+            .send(zeph_index::IndexProgress {
+                files_done: 1,
+                files_total: 2,
+                chunks_created: 3,
+            })
+            .unwrap();
+        assert_eq!(
+            status_rx.recv().await.unwrap(),
+            "Indexing repository… (1/2 files)"
+        );
+
+        progress_tx
+            .send(zeph_index::IndexProgress {
+                files_done: 2,
+                files_total: 2,
+                chunks_created: 5,
+            })
+            .unwrap();
+        assert_eq!(
+            status_rx.recv().await.unwrap(),
+            "Indexing repository… (2/2 files)"
+        );
+        assert_eq!(status_rx.recv().await.unwrap(), "Indexing complete");
+
+        // The forwarder stops after sending the completion message — no further sends,
+        // and the channel closes once the forwarder task exits.
+        assert!(status_rx.recv().await.is_none());
+    }
+
+    /// A zero-file project (`files_total == 0`) never sends any `IndexProgress` update from
+    /// `index_project`'s batch loop (the `entries.chunks(..)` iterator is empty). In
+    /// `spawn_background_indexer`, `progress_tx` is owned by the `fut` async block and is
+    /// dropped once `index_project` returns and that block's scope ends — even having sent
+    /// zero updates. This test reproduces that by dropping `progress_tx` directly: the
+    /// forwarder's `progress_rx.changed()` must observe the closed channel and exit its loop
+    /// cleanly, without hanging forever and without emitting a spurious completion/clear
+    /// message for a project that had nothing to index.
+    #[tokio::test]
+    async fn spawn_index_progress_status_forwarder_exits_cleanly_for_zero_file_project() {
+        let (progress_tx, _keepalive) =
+            tokio::sync::watch::channel(zeph_index::IndexProgress::default());
+        let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        spawn_index_progress_status_forwarder(progress_tx.subscribe(), status_tx, None);
+        drop(progress_tx); // closes the watch channel, as if index_project finished with no updates
+
+        assert!(
+            status_rx.recv().await.is_none(),
+            "with zero updates ever sent, the forwarder must exit on channel closure without \
+             emitting any status message"
+        );
     }
 
     #[tokio::test]
