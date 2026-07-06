@@ -1434,6 +1434,15 @@ in `zeph-core` that references `SqliteStore` directly.
 backward compatibility. Callers are migrated incrementally. The alias is removed
 after all callers are updated (separate PR).
 
+**Amendment 3 [2026-07-06]**: The migration above never took hold in practice —
+`SqliteStore` remained the dominant name at ~485 call sites vs. 44 for `DbStore`
+across the workspace, pre-1.0.0. Issue #5550 reverses course: the concrete
+struct is renamed `DbStore` → `SqliteStore`, the `SqliteStore = DbStore` alias
+is removed, and its 44 call sites are migrated to `SqliteStore` directly. This
+is a one-off named exception for `SqliteStore` (see Key Invariant #9 below) —
+it does not change the general mitigation strategy: type-alias-based incremental
+migration remains the standard approach for any *future* backend-generic rename.
+
 ### 11.7 Vector Storage in SQLite
 
 **Risk**: `SqliteVectorStore` stores vectors as BLOBs with in-memory cosine
@@ -1487,6 +1496,16 @@ only valid when `database_backend = "sqlite"`.
    (c) backward-compatible type aliases (`SqliteStore = DbStore`, `SqliteVectorStore`).
    New code must use the generic forms.
 
+   **Amendment 3 [2026-07-06]**: Exception for `SqliteStore` (issue #5550) — the
+   concrete generic store type itself is renamed `DbStore` → `SqliteStore`, so the
+   backend name now appears in (d) the primary generic store type's public name,
+   not only in a backward-compatible alias. This is a single named exception,
+   granted because `SqliteStore` was already the empirically dominant name in
+   practice (~485 vs 44 call sites) and the incremental migration toward `DbStore`
+   never took hold. It does **not** relax Invariant 9 in general: `DbVectorStore<D>`,
+   `Store<D>`, and any future generic store/driver type must still avoid embedding
+   backend names, per the original rule and the `Never` list in §13.
+
 ---
 
 ## 13. Agent Boundaries
@@ -1501,7 +1520,11 @@ only valid when `database_backend = "sqlite"`.
 ### Ask First
 - Adding the `zeph-db` crate to the workspace.
 - Moving migration files from `zeph-memory` to `zeph-db`.
-- Renaming `SqliteStore` to `DbStore`.
+- Renaming `SqliteStore` to `DbStore`. **Resolved [2026-07-06]**: reversed by
+  explicit user decision under issue #5550 — the concrete struct is renamed
+  back `DbStore` → `SqliteStore` and the alias is removed (see §11.6 Amendment 3,
+  Key Invariant #9 Amendment 3). Any *further* rename of the concrete generic
+  store type still requires asking first.
 - Amending the constitution to allow same-layer infrastructure crate imports.
 
 ### Never
@@ -1509,7 +1532,10 @@ only valid when `database_backend = "sqlite"`.
 - Remove SQLite support or make PostgreSQL the default.
 - Introduce `openssl-sys` via `sqlx/tls-native-tls` feature.
 - Mix placeholder styles (`?` and `$N`) in the same query string.
-- Embed backend names ("Sqlite", "Postgres") in new generic type names (Invariant 9).
+- Embed backend names ("Sqlite", "Postgres") in new generic type names
+  (Invariant 9). The `SqliteStore` exception (Invariant 9, Amendment 3) is a
+  single named, grandfathered case — not a license to introduce further
+  backend-named generic types.
 
 ---
 
@@ -2846,6 +2872,21 @@ struct with proper Rust generics and traits.
 | 28 | 4.7 | `begin()`/`begin_write()` free functions delegate to `ActiveDriver::begin()`/`ActiveDriver::begin_write()`. Generic code uses `D::begin()` directly. |
 | 29 | 12 | Added Key Invariant #9: no backend name in generic types — use `D: DatabaseDriver` type parameters. Backend names allowed only in driver/dialect implementors and backward-compatible aliases. |
 
+### Amendment 3: `SqliteStore` Rename Reversal (issue #5550) [2026-07-06]
+
+Not triggered by a review artifact — an explicit user decision to reverse the
+Amendment 2 migration direction. Pre-1.0.0, `SqliteStore` was empirically
+dominant in practice (~485 vs 44 call sites for `DbStore`), and the incremental
+migration toward `DbStore` mandated by Amendment 2 never took hold. Consolidating
+on the dominant name was judged preferable to completing a migration nobody was
+actually following.
+
+| # | Section(s) | Change |
+|---|-----------|--------|
+| 30 | 11.6 | Reversed the `SqliteStore`/`DbStore` mitigation: the concrete struct is renamed `DbStore` → `SqliteStore`, the alias is removed, and all 44 `DbStore` call sites are migrated to `SqliteStore`. |
+| 31 | 12 (Key Invariant #9) | Added a single named exception: `SqliteStore` may embed the backend name in the primary generic store type itself, not only in a backward-compatible alias. Scoped to `SqliteStore` only — all other generic store/driver types still follow the original rule. |
+| 32 | 13 (Ask First, Never) | Marked the "Renaming `SqliteStore` to `DbStore`" Ask-First entry Resolved (direction reversed). Clarified the Never-list backend-name entry: the `SqliteStore` exception does not license further backend-named generic types. |
+
 ---
 
 ## 20. Implementation State
@@ -2860,7 +2901,7 @@ struct with proper Rust generics and traits.
 - `DbConfig`, `redact_url()`, `FullDriver` blanket trait implemented
 - All 49 SQLite migrations moved to `crates/zeph-db/migrations/sqlite/`
 - `zeph-memory`, `zeph-scheduler`, `zeph-mcp`, `zeph-orchestration` depend on `zeph-db`
-- `SqliteStore` → `DbStore` rename with backward-compatible alias
+- `SqliteStore` → `DbStore` rename with backward-compatible alias (reversed 2026-07-06 per Amendment 3 in §19 — the concrete struct is now `SqliteStore`, alias removed; see #5550)
 
 ### PostgreSQL Backend Stage: Implemented
 

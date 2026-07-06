@@ -151,10 +151,10 @@ impl RawGraphStore for TaskGraphStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::DbStore;
+    use crate::store::SqliteStore;
 
     async fn make_store() -> TaskGraphStore {
-        let db = DbStore::new(":memory:").await.expect("DbStore");
+        let db = SqliteStore::new(":memory:").await.expect("SqliteStore");
         TaskGraphStore::new(db.pool().clone())
     }
 

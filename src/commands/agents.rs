@@ -236,7 +236,7 @@ async fn handle_fleet(
     let config_file = resolve_config_path(config_path);
     let config = load_config_or_default(&config_file);
     let db_path = &config.memory.sqlite_path;
-    let store = zeph_memory::store::DbStore::new(db_path)
+    let store = zeph_memory::store::SqliteStore::new(db_path)
         .await
         .context("failed to open database")?;
 

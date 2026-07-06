@@ -3,7 +3,7 @@
 
 use zeph_db::{ActiveDialect, query, query_as, query_scalar, sql};
 
-use super::DbStore;
+use super::SqliteStore;
 use crate::error::MemoryError;
 
 /// A single persona fact row from the `persona_memory` table.
@@ -20,7 +20,7 @@ pub struct PersonaFactRow {
     pub updated_at: String,
 }
 
-impl DbStore {
+impl SqliteStore {
     /// Upsert a persona fact.
     ///
     /// On exact-content conflict within the same category: increments `evidence_count`
@@ -199,8 +199,8 @@ impl DbStore {
 mod tests {
     use super::*;
 
-    async fn make_store() -> DbStore {
-        DbStore::with_pool_size(":memory:", 1)
+    async fn make_store() -> SqliteStore {
+        SqliteStore::with_pool_size(":memory:", 1)
             .await
             .expect("in-memory store")
     }

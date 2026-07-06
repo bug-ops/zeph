@@ -11,9 +11,9 @@
 //!
 //! ```rust,no_run
 //! # async fn example() -> Result<(), zeph_memory::MemoryError> {
-//! use zeph_memory::store::DbStore;
+//! use zeph_memory::store::SqliteStore;
 //!
-//! let store = DbStore::new(":memory:").await?;
+//! let store = SqliteStore::new(":memory:").await?;
 //! store.upsert_channel_preference("cli", "", "provider", "fast").await?;
 //! let value = store.load_channel_preference("cli", "", "provider").await?;
 //! assert_eq!(value.as_deref(), Some("fast"));

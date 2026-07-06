@@ -5,7 +5,7 @@
 //!
 //! `zeph-memory` implements a two-backend hybrid memory system:
 //!
-//! - **[`store::DbStore`]** (`SqliteStore`) — relational persistence for messages, summaries,
+//! - **[`store::SqliteStore`]** — relational persistence for messages, summaries,
 //!   persona facts, trajectory entries, and session metadata.
 //! - **[`embedding_store::EmbeddingStore`]** — Qdrant-backed vector index for semantic recall.
 //!   Falls back gracefully to [`db_vector_store::DbVectorStore`] when Qdrant is unavailable.

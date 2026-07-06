@@ -339,11 +339,11 @@ impl VectorStore for DbVectorStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::DbStore;
+    use crate::store::SqliteStore;
     use crate::vector_store::FieldCondition;
 
-    async fn setup() -> (DbVectorStore, DbStore) {
-        let store = DbStore::new(":memory:").await.unwrap();
+    async fn setup() -> (DbVectorStore, SqliteStore) {
+        let store = SqliteStore::new(":memory:").await.unwrap();
         let pool = store.pool().clone();
         let vs = DbVectorStore::new(pool);
         (vs, store)

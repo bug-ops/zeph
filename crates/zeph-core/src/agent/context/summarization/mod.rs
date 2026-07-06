@@ -102,7 +102,7 @@ impl<C: Channel> Agent<C> {
         let Some(memory) = memory else {
             return String::new();
         };
-        // Clone DbStore before .await to avoid holding &SemanticMemory across the await
+        // Clone SqliteStore before .await to avoid holding &SemanticMemory across the await
         // boundary (SemanticMemory contains AnyProvider which is !Sync → &SM is !Send).
         let sqlite = memory.sqlite().clone();
         match sqlite.load_compression_guidelines(conv_id).await {

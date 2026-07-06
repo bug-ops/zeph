@@ -44,7 +44,7 @@ use zeph_memory::{
     BatchIdResolution, ClaudeCodeJsonl, CodexJsonl, Document, DocumentMetadata, GraphStore,
     ImportBatchId, IngestBatchConfig, IngestLedger, IngestSourceAdapter, IngestionPipeline,
     QdrantOps, SharedPostExtractValidator, SplitterConfig, SubagentJsonl, TextSplitter,
-    store::DbStore,
+    store::SqliteStore,
 };
 
 use crate::bootstrap::{AppBuilder, create_named_provider, find_repo_root};
@@ -1709,7 +1709,7 @@ async fn handle_rollback(
     let app = AppBuilder::new(config_path, None, None, None).await?;
     let config = app.config();
 
-    let store = DbStore::new(&config.memory.sqlite_path)
+    let store = SqliteStore::new(&config.memory.sqlite_path)
         .await
         .map_err(|e| anyhow::anyhow!("failed to open database: {e}"))?;
     let pool = store.pool().clone();
@@ -1797,7 +1797,7 @@ async fn handle_status(config_path: Option<&Path>) -> anyhow::Result<()> {
     let app = AppBuilder::new(config_path, None, None, None).await?;
     let config = app.config();
 
-    let store = DbStore::new(&config.memory.sqlite_path)
+    let store = SqliteStore::new(&config.memory.sqlite_path)
         .await
         .map_err(|e| anyhow::anyhow!("failed to open database: {e}"))?;
     let ledger = IngestLedger::new(store.pool().clone());

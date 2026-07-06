@@ -3,8 +3,8 @@
 
 //! SQLite-backed relational store for all persistent agent data.
 //!
-//! [`DbStore`] (aliased as [`SqliteStore`]) wraps a [`zeph_db::DbPool`] and provides
-//! typed sub-store modules for every data domain:
+//! [`SqliteStore`] wraps a [`zeph_db::DbPool`] and provides typed sub-store modules
+//! for every data domain:
 //!
 //! | Module | Contents |
 //! |--------|----------|
@@ -65,31 +65,28 @@ pub use skills::{SkillMetricsRow, SkillUsageRow, SkillVersionRow};
 pub use trajectory::{NewTrajectoryEntry, TrajectoryEntryRow};
 pub use trust::{SkillTrustRow, SourceKind};
 
-/// Backward-compatible type alias. Prefer [`DbStore`] in new code.
-pub type SqliteStore = DbStore;
-
 /// Primary relational data store backed by a [`DbPool`].
 ///
-/// Opening a `DbStore` runs all pending `SQLite` migrations automatically.
+/// Opening a `SqliteStore` runs all pending `SQLite` migrations automatically.
 ///
 /// # Examples
 ///
 /// ```rust,no_run
 /// # async fn example() -> Result<(), zeph_memory::MemoryError> {
-/// use zeph_memory::store::DbStore;
+/// use zeph_memory::store::SqliteStore;
 ///
-/// let store = DbStore::new(":memory:").await?;
+/// let store = SqliteStore::new(":memory:").await?;
 /// let cid = store.create_conversation().await?;
 /// # Ok(())
 /// # }
 /// ```
 #[derive(Debug, Clone)]
-pub struct DbStore {
+pub struct SqliteStore {
     pool: DbPool,
     db_instance_id: String,
 }
 
-impl DbStore {
+impl SqliteStore {
     /// Open (or create) the database and run migrations.
     ///
     /// # Errors
@@ -177,7 +174,7 @@ mod tests {
         let file = NamedTempFile::new().expect("tempfile");
         let path = file.path().to_str().expect("valid path");
 
-        let store = DbStore::new(path).await.expect("DbStore::new");
+        let store = SqliteStore::new(path).await.expect("SqliteStore::new");
 
         let mode: String = zeph_db::query_scalar(sql!("PRAGMA journal_mode"))
             .fetch_one(store.pool())
@@ -192,7 +189,7 @@ mod tests {
         let file = NamedTempFile::new().expect("tempfile");
         let path = file.path().to_str().expect("valid path");
 
-        let store = DbStore::new(path).await.expect("DbStore::new");
+        let store = SqliteStore::new(path).await.expect("SqliteStore::new");
 
         let timeout_ms: i64 = zeph_db::query_scalar(sql!("PRAGMA busy_timeout"))
             .fetch_one(store.pool())
@@ -210,13 +207,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let deep = dir.path().join("a/b/c/zeph.db");
         let path = deep.to_str().expect("valid path");
-        let _store = DbStore::new(path).await.expect("DbStore::new");
+        let _store = SqliteStore::new(path).await.expect("SqliteStore::new");
         assert!(deep.exists(), "database file should exist");
     }
 
     #[tokio::test]
     async fn with_pool_size_accepts_custom_size() {
-        let store = DbStore::with_pool_size(":memory:", 2)
+        let store = SqliteStore::with_pool_size(":memory:", 2)
             .await
             .expect("with_pool_size");
         // Verify the store is operational with the custom pool size.

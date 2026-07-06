@@ -18,7 +18,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider as _, Message, Role};
 
 use crate::error::MemoryError;
-use crate::store::DbStore;
+use crate::store::SqliteStore;
 use crate::store::persona::PersonaFactRow;
 
 const EXTRACTION_SYSTEM_PROMPT: &str = "\
@@ -93,7 +93,7 @@ pub fn contains_self_referential_language(text: &str) -> bool {
     tracing::instrument(name = "memory.persona_extract", skip_all, fields(fact_count = tracing::field::Empty))
 )]
 pub async fn extract_persona_facts(
-    store: &DbStore,
+    store: &SqliteStore,
     provider: &AnyProvider,
     user_messages: &[&str],
     config: &PersonaExtractionConfig,
@@ -237,10 +237,10 @@ fn parse_extraction_response(response: &str) -> Vec<ExtractedFact> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::DbStore;
+    use crate::store::SqliteStore;
 
-    async fn make_store() -> DbStore {
-        DbStore::with_pool_size(":memory:", 1)
+    async fn make_store() -> SqliteStore {
+        SqliteStore::with_pool_size(":memory:", 1)
             .await
             .expect("in-memory store")
     }

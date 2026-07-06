@@ -3,7 +3,7 @@
 
 use zeph_db::{ActiveDialect, query, query_as, query_scalar, sql};
 
-use super::DbStore;
+use super::SqliteStore;
 use crate::error::MemoryError;
 use crate::store::compression_guidelines::redact_sensitive;
 
@@ -34,7 +34,7 @@ pub struct TrajectoryEntryRow {
     pub updated_at: String,
 }
 
-impl DbStore {
+impl SqliteStore {
     /// Insert a trajectory entry.
     ///
     /// Returns the id of the inserted row.
@@ -194,8 +194,8 @@ impl DbStore {
 mod tests {
     use super::*;
 
-    async fn make_store() -> DbStore {
-        DbStore::with_pool_size(":memory:", 1)
+    async fn make_store() -> SqliteStore {
+        SqliteStore::with_pool_size(":memory:", 1)
             .await
             .expect("in-memory store")
     }

@@ -3,7 +3,7 @@
 
 use zeph_db::{ActiveDialect, query, query_as, query_scalar, sql};
 
-use super::DbStore;
+use super::SqliteStore;
 use crate::error::MemoryError;
 
 /// A single memory tree node row from the `memory_tree` table.
@@ -19,7 +19,7 @@ pub struct MemoryTreeRow {
     pub created_at: String,
 }
 
-impl DbStore {
+impl SqliteStore {
     /// Insert a leaf node (level 0) into the memory tree.
     ///
     /// Returns the id of the new row.
@@ -341,8 +341,8 @@ impl DbStore {
 mod tests {
     use super::*;
 
-    async fn make_store() -> DbStore {
-        DbStore::with_pool_size(":memory:", 1)
+    async fn make_store() -> SqliteStore {
+        SqliteStore::with_pool_size(":memory:", 1)
             .await
             .expect("in-memory store")
     }

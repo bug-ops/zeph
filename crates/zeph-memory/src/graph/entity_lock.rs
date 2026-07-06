@@ -204,10 +204,10 @@ impl EntityLockManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::DbStore;
+    use crate::store::SqliteStore;
 
     async fn make_lock_manager(session_id: &str) -> EntityLockManager {
-        let store = DbStore::with_pool_size(":memory:", 1)
+        let store = SqliteStore::with_pool_size(":memory:", 1)
             .await
             .expect("in-memory store");
         EntityLockManager::new(store.pool().clone(), session_id)
@@ -217,7 +217,7 @@ mod tests {
         session_a: &str,
         session_b: &str,
     ) -> (EntityLockManager, EntityLockManager) {
-        let store = DbStore::with_pool_size(":memory:", 2)
+        let store = SqliteStore::with_pool_size(":memory:", 2)
             .await
             .expect("in-memory store");
         let pool = store.pool().clone();
@@ -259,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_lock_is_reclaimed_by_new_session() {
-        let store = DbStore::with_pool_size(":memory:", 2)
+        let store = SqliteStore::with_pool_size(":memory:", 2)
             .await
             .expect("in-memory store");
         let pool = store.pool().clone();

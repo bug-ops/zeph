@@ -348,7 +348,7 @@ impl CompactionPersistence for AgentPersistence {
                 return (false, None);
             };
 
-            // Synchronous SQLite persist — clone DbStore so no &SemanticMemory survives .await.
+            // Synchronous SQLite persist — clone SqliteStore so no &SemanticMemory survives .await.
             let sqlite = memory.sqlite().clone();
             let ids = sqlite
                 .oldest_message_ids(cid, u32::try_from(compacted_count + 1).unwrap_or(u32::MAX))

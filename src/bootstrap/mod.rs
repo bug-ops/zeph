@@ -546,7 +546,7 @@ impl AppBuilder {
 
     fn build_retrieval_failure_logger(
         &self,
-        sqlite: &zeph_memory::store::DbStore,
+        sqlite: &zeph_memory::store::SqliteStore,
         supervisor: &zeph_common::TaskSupervisor,
     ) -> Option<zeph_memory::RetrievalFailureLogger> {
         if !self.config.memory.retrieval_failures.enabled {
