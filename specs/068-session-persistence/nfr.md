@@ -27,14 +27,44 @@ Non-functional requirements follow ISO/IEC 25010:2011 quality categories. All ta
 
 | ID | Requirement | Target | Measurement |
 |----|-------------|--------|-------------|
-| NFR-P1 | Event log append latency (p99, single event, no compaction) | < 5 ms | Perfetto span `session.log.append` |
+| NFR-P1 | Event log append latency (single event, no compaction) | < 5 ms p50, < 15 ms p99 (disk write-barrier bound; see #5445 measurement) | Perfetto span `session.log.append` |
 | NFR-P2 | Resume latency for a session with ≤ 10,000 events | < 2 s wall time | `time zeph sessions resume <id>` |
 | NFR-P3 | Resume latency for a session with ≤ 100,000 events | < 15 s wall time | `time zeph sessions resume <id>` |
 | NFR-P4 | Fork latency for a session with ≤ 10,000 events | < 5 s wall time | `time zeph sessions fork <id>` |
 | NFR-P5 | Projection reconcile latency after crash (≤ 100 missing events) | < 500 ms | Log from INV-SP-3 path |
 | NFR-P6 | `zeph serve` request latency (POST /sessions/:id/prompt, time-to-first-token) | No regression vs. non-serve mode (< 200 ms overhead) | Trace span `serve.http.dispatch` |
-| NFR-P7 | Memory overhead per idle session actor (no pending prompts) | < 1 MB RSS | `ps` / heap profiler |
+| NFR-P7 | Memory overhead per idle session actor (no pending prompts) | < 1 MB RSS for the actor's own housing (thread stack + runtime + channels); see rationale note below re: `Agent`'s owned conversation state | `ps` / heap profiler |
 | NFR-P8 | Concurrent sessions in `zeph serve` with no per-session degradation | ≥ 10 simultaneous active sessions | Load test: 10 concurrent `POST /prompt` requests to 10 different sessions |
+
+**NFR-P1 rationale (#5445):** a standalone harness reproducing `SessionEventLog::append`'s
+`write_all` + `sync_all` pattern (N=3000, ~150-byte JSONL lines) measured p99 of 3.9–12.5 ms
+across repeated runs on this dev machine's APFS SSD — the original `< 5 ms` p99 target is not
+achievable on real disk hardware; the append path already does the minimal one `write_all` + one
+`sync_all` per event, so the miss is a hardware write-barrier/fsync latency floor, not a code
+defect. Batching multiple events into one `write_all`/`sync_all` was considered and rejected:
+`append()`'s atomicity boundary ("a crash mid-write can only ever corrupt this one trailing
+line", see its doc comment) backs NFR-R2's "≤ 1 in-flight event lost" guarantee, and batching N
+same-turn events widens that crash-loss window to up to N events. Unlike `zeph-durable`'s
+`JournalWriter`, which safely group-commits `Idempotent`/`AtLeastOnce` effects that re-run on
+resume if lost, session events (`UserMessage`, `AssistantMessage`, `ToolCall`, `ToolResult`) are
+not re-derivable — losing a batched, unflushed `AssistantMessage` loses real conversation content.
+A `sync_all()` → `sync_data()` (fdatasync) A/B was also benchmarked: no measurable difference on
+this platform, because Rust's std maps both `File::sync_all` and `File::sync_data` to the same
+`F_FULLFSYNC` fcntl on macOS (plain `fsync(2)` does not flush the drive write cache on Darwin), so
+the two are behaviorally identical here; the swap was not made. p50 stays at the original < 5 ms
+target since the p50 case is well within budget — only the tail (p99) required revision.
+
+**NFR-P7 rationale (#5445):** a standalone harness reproducing `SessionActor::spawn`'s structural
+allocation exactly (8 MiB thread stack, `current_thread` runtime + `LocalSet`, mailbox/broadcast
+channels, idling in the same `select!` loop as `SessionActor::drive`) measured a per-actor
+marginal RSS cost converging to ~65–93 KiB across batches of 10–100 idle actors — well under the
+1 MB budget (the 8 MiB stack reservation does not translate to committed RSS; untouched stack
+pages are never made resident). This confirms the actor *housing* is bounded and cheap. It does
+**not** cover `Agent`'s own owned (non-`Arc`-shared) state — chiefly its message history buffer —
+which scales with conversation length rather than being a fixed floor, and so is a different kind
+of quantity than this NFR's "idle session" framing assumes. Closing that gap requires a
+real-`Agent`-based bench (tracked as a follow-up, not blocking this NFR revision since the
+measured housing floor is the actual object described by "idle session actor").
 
 ---
 

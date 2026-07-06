@@ -27,6 +27,7 @@
 //!   lock (Unix only) and fails with [`SessionError::AlreadyLocked`] if another writer
 //!   already holds the session directory.
 
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -39,6 +40,10 @@ use crate::event::{SessionEvent, SessionEventEnvelope};
 
 const EVENTS_FILE_NAME: &str = "events.jsonl";
 const LOCK_FILE_NAME: &str = "events.jsonl.lock";
+
+/// Chunk size for [`SessionEventLog::read_chunked`] (spec §6.2 step 3: "bounded buffer, ≤ 100
+/// events in memory at once").
+const REPLAY_CHUNK_SIZE: usize = 100;
 
 /// Append-only JSONL log for one conversation-session's `events.jsonl`.
 ///
@@ -201,6 +206,109 @@ impl SessionEventLog {
         let (events, _) = read_events(&self.events_path, self.lock.is_some()).await?;
         Ok(events)
     }
+
+    /// Read this log's events in bounded chunks of at most [`REPLAY_CHUNK_SIZE`], invoking
+    /// `on_chunk` per chunk instead of materializing the whole file's parsed events into one
+    /// `Vec` the way [`Self::read_all`] does (spec §6.2 step 3). Used by
+    /// [`crate::replay::ReplayEngine::replay`] to keep peak memory bounded when replaying large
+    /// session logs.
+    ///
+    /// `on_chunk` returns [`ControlFlow::Break`] to stop reading early (e.g. once a replay
+    /// `up_to` bound is reached) — remaining lines, including any torn tail beyond the stop
+    /// point, are then left uninspected.
+    ///
+    /// Same torn-tail detection/repair gating as [`Self::read_all`]: only physically repairs
+    /// the file when this handle was opened via [`Self::open_exclusive`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::Io`] if the file cannot be read.
+    #[tracing::instrument(name = "session.log.read_chunked", skip_all, level = "debug")]
+    pub(crate) async fn read_chunked(
+        &self,
+        on_chunk: impl FnMut(Vec<SessionEventEnvelope>) -> ControlFlow<()>,
+    ) -> Result<(), SessionError> {
+        read_events_chunked(&self.events_path, self.lock.is_some(), on_chunk).await
+    }
+}
+
+/// The outcome of parsing one physical line from an `events.jsonl` file.
+enum LineOutcome {
+    /// End of file reached (0 bytes read).
+    Eof,
+    /// A blank line (allowed, e.g. trailing newline) — no envelope produced.
+    Blank,
+    /// A well-formed, newline-terminated envelope.
+    Event(SessionEventEnvelope),
+    /// A garbled or unterminated line — the torn tail (INV-SP-2). Can only be the final line
+    /// because appends are serialized through a single writer (INV-D2).
+    Torn,
+}
+
+/// Line-oriented cursor over an `events.jsonl` file, shared by [`read_events`] (whole-file,
+/// `Vec`-accumulating) and [`read_events_chunked`] (bounded-chunk streaming) so both read paths
+/// apply identical per-line validation (INV-SP-2).
+struct EventLineReader {
+    reader: BufReader<File>,
+    line: String,
+    offset: u64,
+    valid_len: u64,
+}
+
+impl EventLineReader {
+    /// Opens `path`, returning `None` if the file does not exist (an empty/absent log).
+    async fn open(path: &Path) -> Result<Option<Self>, SessionError> {
+        let file = match File::open(path).await {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(Some(Self {
+            reader: BufReader::new(file),
+            line: String::new(),
+            offset: 0,
+            valid_len: 0,
+        }))
+    }
+
+    async fn next_line(&mut self) -> Result<LineOutcome, SessionError> {
+        self.line.clear();
+        let bytes_read = self.reader.read_line(&mut self.line).await? as u64;
+        if bytes_read == 0 {
+            return Ok(LineOutcome::Eof);
+        }
+
+        let is_terminated = self.line.ends_with('\n');
+        let trimmed = self.line.trim_end_matches(['\n', '\r']);
+        if trimmed.is_empty() {
+            self.offset += bytes_read;
+            if is_terminated {
+                self.valid_len = self.offset;
+            }
+            return Ok(LineOutcome::Blank);
+        }
+
+        match serde_json::from_str::<SessionEventEnvelope>(trimmed) {
+            Ok(envelope) if is_terminated => {
+                self.offset += bytes_read;
+                self.valid_len = self.offset;
+                Ok(LineOutcome::Event(envelope))
+            }
+            _ => Ok(LineOutcome::Torn),
+        }
+    }
+}
+
+/// Physically truncates `path` to `valid_len` if it is shorter than the file's actual length,
+/// repairing a torn tail on disk (INV-SP-2). Only called when `repair` gating (see
+/// [`SessionEventLog::open_exclusive`]) has already authorized it.
+async fn repair_torn_tail(path: &Path, valid_len: u64) -> Result<(), SessionError> {
+    let actual_len = fs::metadata(path).await?.len();
+    if valid_len < actual_len {
+        let file = OpenOptions::new().write(true).open(path).await?;
+        file.set_len(valid_len).await?;
+    }
+    Ok(())
 }
 
 /// Read every valid line of `path`, dropping a garbled/incomplete trailing line from the
@@ -217,54 +325,33 @@ async fn read_events(
     path: &Path,
     repair: bool,
 ) -> Result<(Vec<SessionEventEnvelope>, Option<u64>), SessionError> {
-    let file = match File::open(path).await {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), None)),
-        Err(e) => return Err(e.into()),
+    let Some(mut lines) = EventLineReader::open(path).await? else {
+        return Ok((Vec::new(), None));
     };
 
-    let mut reader = BufReader::new(file);
     let mut events = Vec::new();
     let mut max_seq = None;
-    let mut valid_len: u64 = 0;
-    let mut offset: u64 = 0;
-    let mut line = String::new();
     let mut torn = false;
 
     loop {
-        line.clear();
-        let bytes_read = reader.read_line(&mut line).await? as u64;
-        if bytes_read == 0 {
-            break;
-        }
-
-        let is_terminated = line.ends_with('\n');
-        let trimmed = line.trim_end_matches(['\n', '\r']);
-        if trimmed.is_empty() {
-            offset += bytes_read;
-            if is_terminated {
-                valid_len = offset;
-            }
-            continue;
-        }
-
-        match serde_json::from_str::<SessionEventEnvelope>(trimmed) {
-            Ok(envelope) if is_terminated => {
+        match lines.next_line().await? {
+            LineOutcome::Eof => break,
+            LineOutcome::Blank => {}
+            LineOutcome::Event(envelope) => {
                 // Track the true running maximum, not just the last line's value: a
                 // file whose physical order doesn't match seq order (e.g. from a
                 // pre-fix #5487 race) must still yield the correct next seq.
                 max_seq = Some(max_seq.map_or(envelope.seq, |m: u64| m.max(envelope.seq)));
                 events.push(envelope);
-                offset += bytes_read;
-                valid_len = offset;
             }
-            _ => {
+            LineOutcome::Torn => {
                 torn = true;
                 break;
             }
         }
     }
-    drop(reader);
+    let valid_len = lines.valid_len;
+    drop(lines);
 
     if torn {
         tracing::warn!(
@@ -276,14 +363,78 @@ async fn read_events(
     }
 
     if repair {
-        let actual_len = fs::metadata(path).await?.len();
-        if valid_len < actual_len {
-            let file = OpenOptions::new().write(true).open(path).await?;
-            file.set_len(valid_len).await?;
-        }
+        repair_torn_tail(path, valid_len).await?;
     }
 
     Ok((events, max_seq))
+}
+
+/// Read `path`'s events in bounded chunks of at most [`REPLAY_CHUNK_SIZE`], invoking `on_chunk`
+/// for each chunk instead of materializing the whole file into one `Vec` (spec §6.2 step 3).
+/// Torn-tail detection/repair semantics match [`read_events`] exactly — the torn check happens
+/// once, when EOF is reached (or not at all, if `on_chunk` breaks early).
+async fn read_events_chunked(
+    path: &Path,
+    repair: bool,
+    mut on_chunk: impl FnMut(Vec<SessionEventEnvelope>) -> ControlFlow<()>,
+) -> Result<(), SessionError> {
+    let Some(mut lines) = EventLineReader::open(path).await? else {
+        return Ok(());
+    };
+
+    let mut chunk = Vec::with_capacity(REPLAY_CHUNK_SIZE);
+    let mut torn = false;
+    let mut broke_early = false;
+
+    loop {
+        match lines.next_line().await? {
+            LineOutcome::Eof => break,
+            LineOutcome::Blank => {}
+            LineOutcome::Event(envelope) => {
+                chunk.push(envelope);
+                if chunk.len() >= REPLAY_CHUNK_SIZE {
+                    let flushed =
+                        std::mem::replace(&mut chunk, Vec::with_capacity(REPLAY_CHUNK_SIZE));
+                    if on_chunk(flushed).is_break() {
+                        broke_early = true;
+                        break;
+                    }
+                }
+            }
+            LineOutcome::Torn => {
+                torn = true;
+                break;
+            }
+        }
+    }
+
+    if !broke_early && !chunk.is_empty() && on_chunk(chunk).is_break() {
+        broke_early = true;
+    }
+
+    // An early `Break` means the caller (e.g. replay's `up_to` bound) stopped before EOF —
+    // whatever lies beyond that point, torn or not, is irrelevant to this read.
+    if broke_early {
+        return Ok(());
+    }
+
+    let valid_len = lines.valid_len;
+    drop(lines);
+
+    if torn {
+        tracing::warn!(
+            path = %path.display(),
+            valid_len,
+            repair,
+            "dropped torn tail in session event log (INV-SP-2)"
+        );
+    }
+
+    if repair {
+        repair_torn_tail(path, valid_len).await?;
+    }
+
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -670,5 +821,59 @@ mod tests {
                 "physical line {i} must carry seq {i}; seq and write order diverged"
             );
         }
+    }
+
+    /// Regression test for #5445 Finding 3: `read_events_chunked` must never hold more than
+    /// [`REPLAY_CHUNK_SIZE`] raw envelopes at once, and the concatenation of all chunks must
+    /// exactly reproduce what `read_events` (the whole-file `Vec` path) returns, in order.
+    #[tokio::test]
+    async fn test_read_chunked_bounds_memory_and_matches_whole_file_read() {
+        const N: u64 = 733; // comfortably > REPLAY_CHUNK_SIZE, not an exact multiple of it
+
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        for i in 0..N {
+            log.append(
+                None,
+                None,
+                SessionEvent::UserMessage {
+                    text: format!("msg-{i}"),
+                    image_refs: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let (whole_file_events, _) = read_events(log.path(), false).await.unwrap();
+        assert_eq!(whole_file_events.len(), usize::try_from(N).unwrap());
+
+        let mut chunked_events = Vec::new();
+        let mut chunk_sizes = Vec::new();
+        read_events_chunked(log.path(), false, |chunk| {
+            assert!(
+                chunk.len() <= REPLAY_CHUNK_SIZE,
+                "a single chunk must never exceed REPLAY_CHUNK_SIZE ({REPLAY_CHUNK_SIZE}), got {}",
+                chunk.len()
+            );
+            chunk_sizes.push(chunk.len());
+            chunked_events.extend(chunk);
+            ControlFlow::Continue(())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            chunked_events.len(),
+            whole_file_events.len(),
+            "chunked read must yield the same total event count as the whole-file read"
+        );
+        for (whole, chunked) in whole_file_events.iter().zip(chunked_events.iter()) {
+            assert_eq!(whole.seq, chunked.seq);
+        }
+        assert!(
+            chunk_sizes.len() > 1,
+            "expected multiple chunks for N={N} events with REPLAY_CHUNK_SIZE={REPLAY_CHUNK_SIZE}"
+        );
     }
 }

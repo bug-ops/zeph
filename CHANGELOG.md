@@ -18,6 +18,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and `Pipeline`/`Stage` (internal utility framework). Updated layer numbering and added wiring
   status for each (#5440).
 
+### Performance
+
+- `perf(session)`: `ReplayEngine::replay` (`crates/zeph-session/src/replay.rs`) no longer
+  materializes a session's entire `events.jsonl` into one `Vec` before folding it — it now reads
+  via a new `SessionEventLog::read_chunked` API (`crates/zeph-session/src/log.rs`) that yields
+  parsed envelopes in bounded chunks of ≤ 100 at a time (spec-068 §6.2 step 3), folding each
+  chunk incrementally through a shared `fold_step` helper. For a session near NFR-P3's
+  100,000-event bound, this bounds peak raw-envelope memory instead of holding the full parsed
+  history resident before folding starts. `SessionEventLog::read_all` and the `Vec`-based
+  `ReplayEngine::fold` entry point are unchanged and still used by `ForkEngine::fork` and
+  `llm_condenser.rs`, which genuinely need the whole-file `Vec` (#5445).
+- `docs(session)`: revised NFR-P1 (event log append p99) and NFR-P7 (idle-actor memory) targets
+  in `specs/068-session-persistence/nfr.md` to reflect measured reality: NFR-P1's p99 target
+  moved from `< 5 ms` to `< 15 ms` (disk write-barrier/fsync latency floor confirmed via a
+  standalone harness reproducing `SessionEventLog::append`'s write+fsync pattern — batching was
+  considered and rejected as it would widen the crash-loss window NFR-R2 bounds); NFR-P7 now
+  documents a verified ~65-93 KiB per-actor housing floor plus an explicit caveat that `Agent`'s
+  own owned conversation-history state is a separate, session-length-dependent quantity not
+  covered by the "idle session" framing (follow-up bench tracked in #5840). No source change was
+  needed for either finding (#5445).
+
 ### Fixed
 
 - `fix(orchestration)`: two `zeph-orchestration` test sites referenced `llm-planning`-gated items

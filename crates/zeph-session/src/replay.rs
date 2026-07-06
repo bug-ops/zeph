@@ -7,6 +7,7 @@
 //! previously recorded events. This is the correctness guarantee behind AC-2 (byte-identical
 //! replay) and the foundation `ForkEngine` (spec §7) builds on.
 
+use std::ops::ControlFlow;
 use std::path::Path;
 
 use zeph_llm::provider::{Message, MessagePart, Role};
@@ -36,6 +37,14 @@ impl ReplayEngine {
     /// `up_to`, if set, is an *exclusive* upper bound on `seq` (used by `ForkEngine` to replay
     /// only the prefix being copied). `None` replays the full log (resume).
     ///
+    /// Reads the log in bounded chunks (spec §6.2 step 3: ≤ 100 raw envelopes in memory at
+    /// once) rather than materializing the whole file's parsed events into one `Vec` first —
+    /// unlike [`Self::fold`], which operates on an already-materialized `Vec` for callers that
+    /// already hold the events in memory (e.g. `llm_condenser.rs`, which folds an
+    /// already-sliced sub-`Vec`). `ForkEngine::fork` copies raw events via
+    /// `SessionEventLog::read_all` directly and calls this method (not `Self::fold`) only to
+    /// validate the cut point.
+    ///
     /// # Errors
     ///
     /// Returns [`SessionError::Io`] if the log cannot be opened/read.
@@ -45,13 +54,31 @@ impl ReplayEngine {
         up_to: Option<u64>,
     ) -> Result<ReconstructedState, SessionError> {
         let log = SessionEventLog::open(session_dir).await?;
-        let events = log.read_all().await?;
-        Ok(Self::fold(events, up_to))
+
+        let mut messages: Vec<Message> = Vec::new();
+        let mut origin_seqs: Vec<u64> = Vec::new();
+        let mut state = ReconstructedState::default();
+
+        log.read_chunked(|chunk| {
+            for envelope in chunk {
+                if fold_step(&mut state, &mut messages, &mut origin_seqs, envelope, up_to)
+                    .is_break()
+                {
+                    return ControlFlow::Break(());
+                }
+            }
+            ControlFlow::Continue(())
+        })
+        .await?;
+
+        state.messages = messages;
+        Ok(state)
     }
 
     /// Fold a sequence of envelopes already read from disk. Exposed separately from
     /// [`Self::replay`] so callers that already hold the events (e.g. a live `SessionActor`
-    /// applying its own just-appended event) can fold incrementally without re-reading the file.
+    /// applying its own just-appended event, or `llm_condenser.rs`'s condense step folding an
+    /// already-sliced sub-`Vec`) can fold incrementally without re-reading the file.
     #[must_use]
     #[tracing::instrument(
         name = "session.replay.fold",
@@ -67,104 +94,113 @@ impl ReplayEngine {
         let mut state = ReconstructedState::default();
 
         for envelope in events {
-            if let Some(bound) = up_to
-                && envelope.seq >= bound
-            {
+            if fold_step(&mut state, &mut messages, &mut origin_seqs, envelope, up_to).is_break() {
                 break;
-            }
-            let seq = envelope.seq;
-            state.last_seq = Some(seq);
-
-            match envelope.kind {
-                SessionEvent::SessionStarted {
-                    cwd,
-                    provider_name,
-                    model,
-                    ..
-                } => {
-                    state.cwd = cwd;
-                    state.provider_name = provider_name;
-                    state.model = model;
-                }
-                SessionEvent::UserMessage { text, .. } => {
-                    messages.push(Message::from_legacy(Role::User, text));
-                    origin_seqs.push(seq);
-                }
-                SessionEvent::AssistantMessage { parts } => {
-                    messages.push(Message::from_parts(Role::Assistant, parts));
-                    origin_seqs.push(seq);
-                }
-                SessionEvent::ToolCall { id, name, input } => {
-                    push_part_to_last_assistant(
-                        &mut messages,
-                        &mut origin_seqs,
-                        seq,
-                        MessagePart::ToolUse { id, name, input },
-                    );
-                }
-                SessionEvent::ToolResult {
-                    id,
-                    output,
-                    is_error,
-                    ..
-                } => {
-                    push_part_to_tool_result_batch(
-                        &mut messages,
-                        &mut origin_seqs,
-                        seq,
-                        MessagePart::ToolResult {
-                            tool_use_id: id,
-                            content: output,
-                            is_error,
-                        },
-                    );
-                }
-                SessionEvent::Condensation {
-                    replaced_seq_range: (lo, hi),
-                    summary,
-                    ..
-                } => {
-                    replace_range(
-                        &mut messages,
-                        &mut origin_seqs,
-                        lo,
-                        hi,
-                        summary.to_markdown(),
-                    );
-                }
-                SessionEvent::Compaction { summary, .. } => {
-                    // Compaction's schema (spec §4.3) does not carry an explicit
-                    // `replaced_seq_range` the way `Condensation` does — it is emitted from the
-                    // live in-memory compactor, which prunes by message count, not by logged
-                    // seq. Until P2 wires real emission (zeph-agent-persistence) and settles the
-                    // exact seq-range accounting, fold conservatively: a recorded summary
-                    // replaces everything folded so far. No-op when `summary` is absent (a
-                    // soft-tier prune that dropped raw tool output but produced no summary).
-                    if let Some(summary) = summary {
-                        let hi = origin_seqs.last().copied().unwrap_or(seq);
-                        replace_range(
-                            &mut messages,
-                            &mut origin_seqs,
-                            0,
-                            hi,
-                            summary.to_markdown(),
-                        );
-                    }
-                }
-                SessionEvent::ModelChanged {
-                    provider_name,
-                    model,
-                } => {
-                    state.provider_name = provider_name;
-                    state.model = model;
-                }
-                SessionEvent::ForkPoint { .. } | SessionEvent::SessionEnded { .. } => {}
             }
         }
 
         state.messages = messages;
         state
     }
+}
+
+/// Applies one envelope's effect to the running replay state (`state`, `messages`,
+/// `origin_seqs`). Shared by [`ReplayEngine::fold`] (iterating an in-memory `Vec`) and
+/// [`ReplayEngine::replay`] (iterating envelopes as they arrive from a chunked file read) so both
+/// paths apply identical fold semantics.
+///
+/// Returns [`ControlFlow::Break`] once `up_to` is reached, without applying `envelope` —
+/// callers must stop folding further envelopes.
+fn fold_step(
+    state: &mut ReconstructedState,
+    messages: &mut Vec<Message>,
+    origin_seqs: &mut Vec<u64>,
+    envelope: SessionEventEnvelope,
+    up_to: Option<u64>,
+) -> ControlFlow<()> {
+    if let Some(bound) = up_to
+        && envelope.seq >= bound
+    {
+        return ControlFlow::Break(());
+    }
+    let seq = envelope.seq;
+    state.last_seq = Some(seq);
+
+    match envelope.kind {
+        SessionEvent::SessionStarted {
+            cwd,
+            provider_name,
+            model,
+            ..
+        } => {
+            state.cwd = cwd;
+            state.provider_name = provider_name;
+            state.model = model;
+        }
+        SessionEvent::UserMessage { text, .. } => {
+            messages.push(Message::from_legacy(Role::User, text));
+            origin_seqs.push(seq);
+        }
+        SessionEvent::AssistantMessage { parts } => {
+            messages.push(Message::from_parts(Role::Assistant, parts));
+            origin_seqs.push(seq);
+        }
+        SessionEvent::ToolCall { id, name, input } => {
+            push_part_to_last_assistant(
+                messages,
+                origin_seqs,
+                seq,
+                MessagePart::ToolUse { id, name, input },
+            );
+        }
+        SessionEvent::ToolResult {
+            id,
+            output,
+            is_error,
+            ..
+        } => {
+            push_part_to_tool_result_batch(
+                messages,
+                origin_seqs,
+                seq,
+                MessagePart::ToolResult {
+                    tool_use_id: id,
+                    content: output,
+                    is_error,
+                },
+            );
+        }
+        SessionEvent::Condensation {
+            replaced_seq_range: (lo, hi),
+            summary,
+            ..
+        } => {
+            replace_range(messages, origin_seqs, lo, hi, summary.to_markdown());
+        }
+        SessionEvent::Compaction { summary, .. } => {
+            // Compaction's schema (spec §4.3) does not carry an explicit `replaced_seq_range`
+            // the way `Condensation` does — it is emitted from the live in-memory compactor,
+            // which prunes by message count, not by logged seq. Until P2 wires real emission
+            // (zeph-agent-persistence) and settles the exact seq-range accounting, fold
+            // conservatively: a recorded summary replaces everything folded so far. No-op when
+            // `summary` is absent (a soft-tier prune that dropped raw tool output but produced
+            // no summary).
+            if let Some(summary) = summary {
+                let hi = origin_seqs.last().copied().unwrap_or(seq);
+                replace_range(messages, origin_seqs, 0, hi, summary.to_markdown());
+            }
+        }
+        SessionEvent::ModelChanged {
+            provider_name,
+            model,
+        } => {
+            state.provider_name = provider_name;
+            state.model = model;
+        }
+        SessionEvent::ForkPoint { .. } | SessionEvent::SessionEnded { .. } => {}
+    }
+
+    ControlFlow::Continue(())
 }
 
 /// Append `part` (a `MessagePart::ToolUse`) to the last message if it is a pending `Assistant`
@@ -541,5 +577,205 @@ mod tests {
         let state = ReplayEngine::fold(events, Some(2));
         assert_eq!(state.messages.len(), 2);
         assert_eq!(state.last_seq, Some(1));
+    }
+
+    /// Seeds `dir` with a synthetic log spanning `n_turns` turns, exercising all 10
+    /// `SessionEvent` variants `fold_step` handles: a tool-call/tool-result pair every 7th turn,
+    /// a plain-text assistant reply otherwise, a `Condensation` and a `Compaction` partway
+    /// through (both exercise `replace_range`, via distinct range-computation logic), and a
+    /// trailing `ForkPoint`/`SessionEnded`/`ModelChanged` (the first two are no-ops in
+    /// `fold_step`; included for completeness). Returns the opened log so the caller can read it
+    /// back either whole-file or chunked.
+    #[allow(clippy::too_many_lines)] // exhaustive fixture covering every SessionEvent variant
+    async fn seed_large_synthetic_log(dir: &Path, n_turns: u64) -> SessionEventLog {
+        use crate::event::CompactionTier;
+        use zeph_common::memory::AnchoredSummary;
+
+        let log = SessionEventLog::open(dir).await.unwrap();
+
+        log.append(
+            None,
+            None,
+            SessionEvent::SessionStarted {
+                session_id: "s1".to_owned(),
+                cwd: "/repo".to_owned(),
+                provider_name: "claude".to_owned(),
+                model: "opus".to_owned(),
+                forked_from: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        for turn in 0..n_turns {
+            log.append(
+                Some(turn),
+                None,
+                SessionEvent::UserMessage {
+                    text: format!("user turn {turn}"),
+                    image_refs: vec![],
+                },
+            )
+            .await
+            .unwrap();
+
+            if turn % 7 == 0 {
+                // A tool-call/tool-result pair every 7th turn.
+                log.append(
+                    Some(turn),
+                    None,
+                    SessionEvent::AssistantMessage { parts: vec![] },
+                )
+                .await
+                .unwrap();
+                log.append(
+                    Some(turn),
+                    None,
+                    SessionEvent::ToolCall {
+                        id: format!("tc-{turn}"),
+                        name: "shell".to_owned(),
+                        input: serde_json::json!({"cmd": "ls"}),
+                    },
+                )
+                .await
+                .unwrap();
+                log.append(
+                    Some(turn),
+                    None,
+                    SessionEvent::ToolResult {
+                        id: format!("tc-{turn}"),
+                        name: "shell".to_owned(),
+                        output: format!("output-{turn}"),
+                        is_error: false,
+                        duration_ms: 3,
+                    },
+                )
+                .await
+                .unwrap();
+            } else {
+                log.append(
+                    Some(turn),
+                    None,
+                    SessionEvent::AssistantMessage {
+                        parts: vec![MessagePart::Text {
+                            text: format!("assistant reply {turn}"),
+                        }],
+                    },
+                )
+                .await
+                .unwrap();
+            }
+
+            if turn == 100 {
+                // A condensation partway through, replacing an already-folded range.
+                log.append(
+                    Some(turn),
+                    None,
+                    SessionEvent::Condensation {
+                        replaced_seq_range: (0, 10),
+                        summary: AnchoredSummary {
+                            session_intent: "test".to_owned(),
+                            files_modified: vec![],
+                            decisions_made: vec![],
+                            open_questions: vec![],
+                            next_steps: vec!["continue".to_owned()],
+                        },
+                        tokens_before: 500,
+                        tokens_after: 50,
+                    },
+                )
+                .await
+                .unwrap();
+            }
+
+            if turn == 150 {
+                // A live hard-compaction partway through, replacing everything folded so far
+                // (Compaction's range-computation differs from Condensation's: it has no
+                // explicit `replaced_seq_range`, see fold_step's comment on this variant).
+                log.append(
+                    Some(turn),
+                    None,
+                    SessionEvent::Compaction {
+                        tier: CompactionTier::Hard,
+                        cleared_count: 42,
+                        summary: Some(AnchoredSummary {
+                            session_intent: "test".to_owned(),
+                            files_modified: vec![],
+                            decisions_made: vec![],
+                            open_questions: vec![],
+                            next_steps: vec!["keep going".to_owned()],
+                        }),
+                    },
+                )
+                .await
+                .unwrap();
+            }
+        }
+
+        // Trailing metadata/no-op events: ForkPoint and SessionEnded are no-ops in `fold_step`,
+        // included so this fixture genuinely covers all 10 SessionEvent variants as documented.
+        log.append(
+            None,
+            None,
+            SessionEvent::ForkPoint {
+                new_session_id: "child-of-s1".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::SessionEnded {
+                reason: "user_quit".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::ModelChanged {
+                provider_name: "openai".to_owned(),
+                model: "gpt-5.4".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+        log
+    }
+
+    /// Regression test for #5445 Finding 3: `ReplayEngine::replay`'s new chunked-read path must
+    /// produce output equivalent to the old whole-file-`Vec` + `fold` path on a large synthetic
+    /// log spanning several hundred events and every `SessionEvent` variant `fold_step` handles.
+    #[tokio::test]
+    async fn test_replay_streaming_matches_vec_based_fold_on_large_log() {
+        const N_TURNS: u64 = 250; // produces well over 100 events (> one REPLAY_CHUNK_SIZE)
+
+        let dir = tempfile::tempdir().unwrap();
+        let log = seed_large_synthetic_log(dir.path(), N_TURNS).await;
+
+        // Old path: whole-file Vec read + Vec-based fold.
+        let all_events = log.read_all().await.unwrap();
+        assert!(
+            all_events.len() > 100,
+            "synthetic log must exceed one REPLAY_CHUNK_SIZE to exercise multi-chunk streaming"
+        );
+        let vec_based = ReplayEngine::fold(all_events, None);
+
+        // New path: chunked streaming read via ReplayEngine::replay.
+        let streamed = ReplayEngine::replay(dir.path(), None).await.unwrap();
+
+        assert_eq!(streamed.last_seq, vec_based.last_seq);
+        assert_eq!(streamed.provider_name, vec_based.provider_name);
+        assert_eq!(streamed.model, vec_based.model);
+        assert_eq!(streamed.cwd, vec_based.cwd);
+        assert_eq!(streamed.messages.len(), vec_based.messages.len());
+        assert_eq!(
+            serde_json::to_string(&streamed.messages).unwrap(),
+            serde_json::to_string(&vec_based.messages).unwrap(),
+            "streaming replay must be byte-identical to the old Vec-based fold"
+        );
     }
 }
