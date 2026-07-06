@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(skills)`: `SkillMatcherBackend::refresh_skill_embeddings` (introduced by #5804) failed
+  `clippy -D warnings` when built without the `qdrant` feature (#5809) — with `Qdrant` cfg'd
+  out, the `meta`/`scored` parameters and the `async` marker had no user in the remaining
+  `InMemory` no-op arm. Both are genuinely qdrant-only (the doc comment already states this is
+  a no-op for `InMemory`), so the fix scopes `#[allow(unused_variables, clippy::unused_async)]`
+  to the `not(feature = "qdrant")` build via `cfg_attr` rather than prefixing the parameters
+  with `_`, which would have silenced the lint in the `qdrant`-enabled build too.
 - `fix(orchestration,mcp)`: follow-up to the `record_skill_usage` fix above (#5802) — the same
   Postgres `ON CONFLICT DO UPDATE` self-reference ambiguity existed at two more call sites
   (#5803), found via adversarial review of #5802's fix. `PlanCache::cache_plan`
