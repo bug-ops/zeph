@@ -10,7 +10,7 @@ use zeph_tools::{
     UtilityScoringConfig,
 };
 
-use super::DOOM_LOOP_WINDOW;
+use super::{DOOM_LOOP_WINDOW, MAX_RETRIEVE_MANDATES_PER_TURN};
 
 pub(crate) struct ToolOrchestrator {
     pub(super) doom_loop_history: Vec<u64>,
@@ -70,6 +70,14 @@ pub(crate) struct ToolOrchestrator {
     /// re-issuing a mandatory retry hint against a dependency that is still down.
     /// Cleared alongside `recent_tool_calls` at the start of each user turn.
     pub(super) last_tool_error: HashMap<String, zeph_tools::error_taxonomy::ToolErrorCategory>,
+    /// Count of *consecutive* `Retrieve` mandates issued with no intervening real dispatch
+    /// (incremented by [`record_retrieve_mandate`](Self::record_retrieve_mandate), reset by
+    /// [`reset_retrieve_mandate_count`](Self::reset_retrieve_mandate_count) on forward
+    /// progress). Defense-in-depth circuit breaker for #5774: caps any undiscovered variant
+    /// of the utility-gate retry loop, independent of the memory-search-specific bypass in
+    /// `has_blocked_retrieval_this_turn`. Also cleared alongside `recent_tool_calls` at the
+    /// start of each user turn.
+    pub(super) retrieve_mandate_count: usize,
 }
 
 /// Truncate a tool name to at most 256 bytes, respecting UTF-8 char boundaries.
@@ -107,6 +115,7 @@ impl ToolOrchestrator {
             hook_block_count: 0,
             hook_block_cap: 8,
             last_tool_error: HashMap::new(),
+            retrieve_mandate_count: 0,
         }
     }
 
@@ -217,6 +226,7 @@ impl ToolOrchestrator {
     pub(super) fn clear_recent_tool_calls(&mut self) {
         self.recent_tool_calls.clear();
         self.last_tool_error.clear();
+        self.retrieve_mandate_count = 0;
     }
 
     /// Record the outcome of a dispatched tool call for `last_tool_error` tracking.
@@ -241,18 +251,64 @@ impl ToolOrchestrator {
     }
 
     /// Returns `true` when `memory_search` — the retrieval tool the `Retrieve` branch's
-    /// hint recommends — most recently failed this turn with a retryable/network-class
-    /// error (e.g. a down Qdrant).
+    /// hint recommends — most recently failed this turn with an error that makes it
+    /// unusable as a retrieval detour: a retryable/network-class error (e.g. a down Qdrant),
+    /// or `ConfirmationRequired` (#5774 — a sanitizer/exfiltration-guard check on the query
+    /// content blocks `memory_search` itself, so mandating "retrieve context, then retry"
+    /// again just re-triggers the same confirmation prompt on the identical query forever).
     ///
     /// Scoped to `memory_search` specifically rather than "any tool this turn": an
-    /// unrelated tool's transient retryable failure (e.g. a `web_fetch` 503) must not
-    /// suppress the `Retrieve` optimization for the rest of the turn once the actual
-    /// retrieval dependency is healthy or was never involved.
+    /// unrelated tool's transient failure (e.g. a `web_fetch` 503) must not suppress the
+    /// `Retrieve` optimization for the rest of the turn once the actual retrieval
+    /// dependency is healthy or was never involved.
     #[must_use]
-    pub(super) fn has_retryable_failure_this_turn(&self) -> bool {
-        self.last_tool_error
-            .get("memory_search")
-            .is_some_and(|c| c.is_retryable())
+    pub(super) fn has_blocked_retrieval_this_turn(&self) -> bool {
+        self.last_tool_error.get("memory_search").is_some_and(|c| {
+            c.is_retryable()
+                || *c == zeph_tools::error_taxonomy::ToolErrorCategory::ConfirmationRequired
+        })
+    }
+
+    /// Record that the `Retrieve` gate issued another "you MUST call it again" mandate,
+    /// consecutively since the last real dispatch (see
+    /// [`reset_retrieve_mandate_count`](Self::reset_retrieve_mandate_count)).
+    pub(super) fn record_retrieve_mandate(&mut self) {
+        self.retrieve_mandate_count = self.retrieve_mandate_count.saturating_add(1);
+    }
+
+    /// Resets the consecutive-mandate counter once a call *other than the retrieval detour
+    /// itself* (i.e. not `memory_search`) actually reaches real dispatch
+    /// (`UtilityAction::ToolCall`) instead of being gated into another `Retrieve` cycle.
+    ///
+    /// Critic-flagged gap (S2, #5774): counting *lifetime* mandates per turn would false-trip
+    /// on a legitimate long turn containing more than `MAX_RETRIEVE_MANDATES_PER_TURN`
+    /// distinct, genuinely-uncertain tool calls that each individually resolve fine — the
+    /// breaker must only fire on *consecutive* stalls with no forward progress in between.
+    /// Called from `handle_utility_gate`'s fallthrough arm, which is reached exactly when the
+    /// call under evaluation is not being intercepted by `Respond`/`Retrieve`/`Verify`/`Stop`.
+    ///
+    /// Critic-flagged gap (S3, #5774): the caller must NOT reset when the dispatched call is
+    /// `memory_search` itself. `memory_search` always reaches this arm (gain 0.8 takes the
+    /// direct `ToolCall` branch), so an unconditional reset fired on every single cycle of the
+    /// "retrieve, dispatch, decline" loop this counter exists to catch — the repeated-decline
+    /// case (the issue's own "answering the dialog does not break the cycle" observation) never
+    /// tripped the breaker. Only a *different* tool reaching real dispatch is genuine forward
+    /// progress on the user's actual request.
+    pub(super) fn reset_retrieve_mandate_count(&mut self) {
+        self.retrieve_mandate_count = 0;
+    }
+
+    /// Returns `true` once `record_retrieve_mandate` has been called
+    /// `MAX_RETRIEVE_MANDATES_PER_TURN` times in a row without an intervening
+    /// [`reset_retrieve_mandate_count`](Self::reset_retrieve_mandate_count).
+    ///
+    /// Defense-in-depth circuit breaker for #5774: `has_blocked_retrieval_this_turn` fixes
+    /// the specific memory-search-confirmation cycle, but this bound catches any other
+    /// undiscovered variant of "utility gate keeps recommending `Retrieve` and the detour
+    /// never resolves" instead of looping silently for the rest of the turn.
+    #[must_use]
+    pub(super) fn retrieve_mandate_limit_reached(&self) -> bool {
+        self.retrieve_mandate_count >= MAX_RETRIEVE_MANDATES_PER_TURN
     }
 
     /// Returns `true` if the last `DOOM_LOOP_WINDOW` hashes are identical.
@@ -664,5 +720,53 @@ mod tests {
         o.clear_cache();
         assert_eq!(o.session_tool_call_count, 0);
         assert_eq!(o.check_quota(), None);
+    }
+
+    // ── retrieve-mandate circuit breaker (#5774) ─────────────────────────────
+
+    #[test]
+    fn retrieve_mandate_limit_reached_after_consecutive_mandates() {
+        let mut o = ToolOrchestrator::new();
+        assert!(!o.retrieve_mandate_limit_reached());
+        o.record_retrieve_mandate();
+        assert!(!o.retrieve_mandate_limit_reached());
+        o.record_retrieve_mandate();
+        assert!(!o.retrieve_mandate_limit_reached());
+        o.record_retrieve_mandate();
+        assert!(
+            o.retrieve_mandate_limit_reached(),
+            "3 consecutive mandates must trip the breaker"
+        );
+    }
+
+    // Critic-flagged S2 regression: the breaker must count *consecutive* stalls, not a
+    // lifetime-per-turn total — a legitimate long turn with several genuinely-uncertain
+    // tool calls that each resolve fine (real dispatch in between) must not false-trip.
+    #[test]
+    fn reset_retrieve_mandate_count_prevents_false_trip_on_legitimate_long_turn() {
+        let mut o = ToolOrchestrator::new();
+        o.record_retrieve_mandate();
+        o.record_retrieve_mandate();
+        // Forward progress: some call reached real dispatch, breaking the stall streak.
+        o.reset_retrieve_mandate_count();
+        assert!(!o.retrieve_mandate_limit_reached());
+        o.record_retrieve_mandate();
+        o.record_retrieve_mandate();
+        assert!(
+            !o.retrieve_mandate_limit_reached(),
+            "2 mandates after a reset must not trip a breaker requiring 3 consecutive"
+        );
+    }
+
+    #[test]
+    fn clear_recent_tool_calls_resets_retrieve_mandate_count() {
+        let mut o = ToolOrchestrator::new();
+        o.record_retrieve_mandate();
+        o.record_retrieve_mandate();
+        o.record_retrieve_mandate();
+        assert!(o.retrieve_mandate_limit_reached());
+        o.clear_recent_tool_calls();
+        assert!(!o.retrieve_mandate_limit_reached());
+        assert_eq!(o.retrieve_mandate_count, 0);
     }
 }

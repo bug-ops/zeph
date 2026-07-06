@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `fix(core)`: the utility gate's `Retrieve` action (`crates/zeph-core/src/agent/tool_execution/tier_loop.rs`,
+  `handle_retrieve_action`) could enter an unbreakable loop when the mandated `memory_search`
+  detour itself failed with `confirmation_required` (e.g. the query content trips a
+  sanitizer/exfiltration-guard check) — `has_retryable_failure_this_turn` only recognized
+  retryable/network-class failures, so `memory_search` was mandated again and again, failing
+  identically every time, with escalating cost and no automatic termination (#5774). Two
+  complementary fixes, neither alone sufficient for every reachable path: (1) renamed
+  `has_retryable_failure_this_turn` to `has_blocked_retrieval_this_turn` and broadened it to also
+  treat `ConfirmationRequired` as "retrieval unusable this turn" — reliably breaks the loop for
+  the sub-case where the user confirms and the re-execution itself still fails (e.g. a
+  misconfigured executor stack re-triggers the same sanitizer check), proven by a new
+  integration test driving the real `handle_confirmation_phase` → classification →
+  `record_gate_feedback` pipeline end-to-end, not a hand-inserted error-map entry; (2) a
+  defense-in-depth circuit breaker (`MAX_RETRIEVE_MANDATES_PER_TURN = 3`,
+  `ToolOrchestrator::retrieve_mandate_count`) that stops mandating further retrieval detours
+  after 3 *consecutive* `Retrieve` cycles with no intervening real tool dispatch — this is the
+  path that actually terminates the loop for sub-cases (1) cannot reach, e.g. the user
+  repeatedly declining confirmation (which self-heals `last_tool_error` back to `None` each
+  time) or any other undiscovered variant. The counter resets on forward progress
+  (`ToolOrchestrator::reset_retrieve_mandate_count`, called from `handle_utility_gate`'s
+  dispatch-fallthrough arm) so a legitimate long turn with several distinct, genuinely-uncertain
+  tool calls that each resolve fine cannot false-trip the breaker — but the reset deliberately
+  excludes `memory_search`'s own dispatch. An earlier revision of this fix reset the counter
+  unconditionally on any real dispatch. Because `memory_search`'s gain score (0.8) is high enough
+  to always take the direct `ToolCall` dispatch branch, regardless of turn uncertainty, that
+  unconditional reset cleared the counter on every single cycle of the exact repeated-decline
+  loop the breaker exists to catch, so the breaker never actually tripped for that sub-case
+  despite the claim above. Fixed and proven with a new regression test,
+  `repeated_decline_still_trips_circuit_breaker`, that alternates 3 Retrieve-mandate rounds
+  (each a distinct tool) with 3 real `memory_search` dispatch-and-decline rounds through the real
+  `handle_native_tool_calls` pipeline and confirms the 4th distinct tool dispatches directly.
+
 ### Added
 
 - `test(core)`: added timeout-branch coverage for the graph-query timeout helper
