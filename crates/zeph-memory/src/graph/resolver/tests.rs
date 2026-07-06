@@ -878,6 +878,77 @@ async fn merge_corrects_stale_cross_db_entity_id() {
     );
 }
 
+// ── #5816 (gap 2): the LLM-disambiguated ambiguous-score path must also correct a
+// stale cross-DB payload entity_id. Every other ambiguous-path test
+// (`resolve_ambiguous_score_llm_says_merge` et al.) seeds a real matching row via
+// `seed_entity_with_vector`, so `payload_entity_id` is never stale there — this is the
+// only test exercising `handle_ambiguous_candidate` -> `merge_entity` with a payload id
+// that has no corresponding local SQLite row.
+
+#[tokio::test]
+#[tracing_test::traced_test]
+async fn resolve_ambiguous_llm_disambiguated_corrects_stale_cross_db_id() {
+    // No local row exists under this id — simulates a Qdrant point left over from a
+    // different, now-gone SQLite instance (mirrors `merge_corrects_stale_cross_db_entity_id`,
+    // but through the LLM-disambiguated ambiguous-score path instead of the direct
+    // above-threshold `EmbeddingMatch` path).
+    const STALE_CROSS_DB_ID: i64 = 135_791_357;
+
+    let (gs, emb) = setup_with_embedding().await;
+
+    let mock_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
+    emb.ensure_named_collection(ENTITY_COLLECTION, 4)
+        .await
+        .unwrap();
+    let payload = serde_json::json!({
+        "entity_id": STALE_CROSS_DB_ID,
+        "canonical_name": "stale ambiguous entity",
+        "name": "stale ambiguous entity",
+        "entity_type": "concept",
+        "summary": "old info",
+    });
+    emb.store_to_collection(ENTITY_COLLECTION, payload, mock_vec.clone())
+        .await
+        .unwrap();
+
+    // new entity embeds to [1,1,0,0] -> cosine ~= 0.707 vs [1,0,0,0] -- lands in the
+    // ambiguous range [0.50, 0.85), triggering `handle_ambiguous_candidate`.
+    let provider = make_mock_with_embedding_and_chat(
+        vec![1.0, 1.0, 0.0, 0.0],
+        vec![r#"{"same_entity": true}"#.to_owned()],
+    );
+    let any_provider = zeph_llm::any::AnyProvider::Mock(provider);
+
+    let resolver = EntityResolver::new(&gs)
+        .with_embedding_store(&emb)
+        .with_provider(&any_provider)
+        .with_thresholds(0.85, 0.50);
+
+    let (returned_id, outcome) = resolver
+        .resolve(
+            "stale ambiguous entity variant",
+            "concept",
+            Some("new info"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, ResolutionOutcome::LlmDisambiguated);
+    assert_ne!(
+        returned_id, STALE_CROSS_DB_ID,
+        "resolve() must not return the stale Qdrant-payload entity id verbatim"
+    );
+    assert!(
+        gs.find_entity_by_id(returned_id).await.unwrap().is_some(),
+        "returned entity id must reference a row that actually exists in the local SQLite database"
+    );
+    assert!(
+        logs_contain("corrected to the locally authoritative id"),
+        "drift-correction WARN must fire when the payload id does not match the local row"
+    );
+}
+
 #[tokio::test]
 async fn entity_type_filter_prevents_cross_type_merge() {
     let (gs, emb) = setup_with_embedding().await;

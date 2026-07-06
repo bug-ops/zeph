@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `test(memory)`: closed three low-severity test-coverage gaps left over from #5815's fix for
+  the stale cross-DB entity-id FK-violation bug (#5801, #5816). `resolve_local_target_id`
+  (`crates/zeph-memory/src/semantic/graph.rs`) had no test for its third outcome — a stale or
+  mismatched payload id whose `canonical_name` already resolves to an existing local row, so
+  the slow path reuses it instead of creating a duplicate
+  (`link_memory_notes_stale_id_resolves_existing_canonical_without_creating`).
+  `EntityResolver::handle_ambiguous_candidate`, the LLM-disambiguated call site touched by the
+  same fix, had no stale-id coverage either — every existing ambiguous-path test seeds a real
+  matching row (`resolve_ambiguous_llm_disambiguated_corrects_stale_cross_db_id`). The
+  FK-violation WARN branches added to `insert_edges` (both the APEX-MEM and legacy paths) had
+  no test manufacturing a genuine FK violation on those specific call sites
+  (`insert_edges_apex_mem_logs_warn_on_genuine_fk_violation`,
+  `insert_edges_legacy_logs_warn_on_genuine_fk_violation`), unlike `insert_similarity_edges`.
+  Also added a Postgres-backend regression test for the original #5801 scenario
+  (`note_linking_corrects_stale_cross_db_target_id_postgres`, gated behind the existing
+  `test-utils`/Docker `#[ignore]` convention) — lower-risk since `EntityResolver`/
+  `resolve_local_target_id` share a single backend-agnostic `upsert_entity` implementation
+  already exercised by ~20 other Postgres tests, but this proves the full note-linking path
+  round-trips against a real instance. A full `extract_and_store` -> `insert_edges` end-to-end
+  pipeline test (nice-to-have) was not added: `MockProvider::embed()` returns one fixed vector
+  regardless of input text, so a two-entity extraction batch cannot have only one entity match
+  a seeded stale-id phantom without both colliding at cosine 1.0 — closing this gap needs
+  input-dependent embedding support in `zeph-llm`'s test mock, out of scope for this test-only
+  change. Test-only change, no production code modified.
+
 ### Fixed
 
 - `fix(acp,server,skills)`: ACP sessions (`src/acp.rs::spawn_acp_agent`) and HTTP `/sessions`

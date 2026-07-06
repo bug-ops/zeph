@@ -80,12 +80,14 @@ mod pg {
     use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
     use zeph_memory::db_vector_store::DbVectorStore;
+    use zeph_memory::embedding_store::EmbeddingStore;
     use zeph_memory::graph::EntityLockManager;
     use zeph_memory::graph::activation::ActivatedFact;
     use zeph_memory::graph::belief::{BeliefMemConfig, BeliefStore};
     use zeph_memory::graph::implicit_conflict;
     use zeph_memory::graph::store::GraphStore;
     use zeph_memory::graph::types::{EdgeType, EntityType};
+    use zeph_memory::in_memory_store::InMemoryVectorStore;
     use zeph_memory::store::admission_training::AdmissionTrainingInput;
     use zeph_memory::store::{
         AcpSessionConfigSnapshot, AgentSessionRow, SessionChannel, SessionKind, SessionStatus,
@@ -93,8 +95,8 @@ mod pg {
     };
     use zeph_memory::types::MessageId;
     use zeph_memory::{
-        NewExperimentResult, RetrievalFailureRecord, RetrievalFailureType, VectorStore,
-        episodic_consolidation, episodic_graph, snapshot,
+        NewExperimentResult, NoteLinkingConfig, RetrievalFailureRecord, RetrievalFailureType,
+        VectorStore, episodic_consolidation, episodic_graph, link_memory_notes, snapshot,
     };
 
     // Generous startup timeout: under concurrent CI load (see #5546/#5547), the
@@ -113,6 +115,127 @@ mod pg {
         };
         let pool = config.connect().await.expect("failed to connect to PG");
         (pool, container)
+    }
+
+    // ── #5816 (gap 4): #5801 stale cross-DB entity id regression, on Postgres ──
+    //
+    // `resolve_local_target_id`/`EntityResolver::merge_entity` re-resolve a vector-store
+    // candidate's `entity_id` against the *local* database rather than trusting the
+    // payload verbatim (#5801). That resolution logic never touches backend-specific SQL
+    // directly — it goes through `upsert_entity`'s `RETURNING id`, a single shared
+    // implementation already exercised by the ~20 other tests in this file — but this
+    // test proves the full note-linking path (`link_memory_notes` ->
+    // `resolve_local_target_id` -> `upsert_entity`) round-trips correctly against a real
+    // Postgres instance, mirroring `link_memory_notes_corrects_stale_cross_db_target_id`
+    // in `semantic/tests/graph.rs` (SQLite-only).
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn note_linking_corrects_stale_cross_db_target_id_postgres() {
+        const STALE_CROSS_DB_ID: i64 = 777_777_777;
+
+        let (pool, _container) = start_pg().await;
+        let graph = GraphStore::new(pool.clone());
+
+        let mem_store = Box::new(InMemoryVectorStore::new());
+        let embedding_store =
+            std::sync::Arc::new(EmbeddingStore::with_store(mem_store, pool.clone()));
+        embedding_store
+            .ensure_named_collection("zeph_graph_entities", 384)
+            .await
+            .unwrap();
+
+        let source_id = graph
+            .upsert_entity(
+                "pg_phantom_source",
+                "pg_phantom_source",
+                EntityType::Concept,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .0;
+        let source_point_id = uuid::Uuid::new_v4().to_string();
+        let source_payload = serde_json::json!({
+            "entity_id": source_id,
+            "canonical_name": "pg_phantom_source",
+            "entity_type": "concept",
+            "name": "pg_phantom_source",
+            "summary": "",
+        });
+        embedding_store
+            .upsert_to_collection(
+                "zeph_graph_entities",
+                &source_point_id,
+                source_payload,
+                vec![0.0_f32; 384],
+            )
+            .await
+            .unwrap();
+        graph
+            .set_entity_qdrant_point_id(source_id, &source_point_id)
+            .await
+            .unwrap();
+
+        // Phantom candidate: exists only in the vector store, with an `entity_id` that has
+        // no local row — simulates a point left over from a different, now-gone Postgres
+        // database sharing the same vector collection.
+        let phantom_payload = serde_json::json!({
+            "entity_id": STALE_CROSS_DB_ID,
+            "canonical_name": "pg_phantom_target",
+            "name": "pg_phantom_target",
+            "entity_type": "concept",
+            "summary": "",
+        });
+        embedding_store
+            .upsert_to_collection(
+                "zeph_graph_entities",
+                &uuid::Uuid::new_v4().to_string(),
+                phantom_payload,
+                vec![0.0_f32; 384],
+            )
+            .await
+            .unwrap();
+
+        let mut mock = MockProvider::default();
+        mock.supports_embeddings = true;
+        let provider = AnyProvider::Mock(mock);
+
+        let cfg = NoteLinkingConfig {
+            enabled: true,
+            similarity_threshold: 0.0,
+            top_k: 5,
+            timeout_secs: 10,
+        };
+
+        let stats =
+            link_memory_notes(&[source_id], pool.clone(), embedding_store, provider, &cfg).await;
+
+        assert_eq!(
+            stats.edges_created, 1,
+            "the link edge must still be created via the corrected local id, not silently dropped"
+        );
+
+        let stale_id_referenced: i64 = sqlx::query_scalar(zeph_db::sql!(
+            "SELECT COUNT(*) FROM graph_edges WHERE source_entity_id = ?1 OR target_entity_id = ?1"
+        ))
+        .bind(STALE_CROSS_DB_ID)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            stale_id_referenced, 0,
+            "the created edge must never reference the stale cross-DB id (would violate the FK)"
+        );
+
+        let phantom = graph
+            .find_entity("pg_phantom_target", EntityType::Concept)
+            .await
+            .unwrap();
+        assert!(
+            phantom.is_some(),
+            "a local entity must be created for the stale candidate so the edge has a valid FK target"
+        );
     }
 
     // ── graph/store: add_alias + find_entity_by_alias + bfs + decay ────────────

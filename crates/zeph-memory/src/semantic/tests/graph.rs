@@ -1049,3 +1049,125 @@ async fn link_memory_notes_id_collision_falls_through_to_slow_path() {
         "drift-correction WARN must fire when identity does not match despite the id existing"
     );
 }
+
+// ── #5816 (gap 1): stale id, but canonical_name already resolves locally ────
+//
+// `resolve_local_target_id`'s slow path re-resolves by `canonical_name` when the fast
+// path fails. When that lookup already finds an existing local row, it must reuse that
+// row's id rather than creating a duplicate entity under the same canonical_name.
+
+#[tokio::test]
+#[tracing_test::traced_test]
+async fn link_memory_notes_stale_id_resolves_existing_canonical_without_creating() {
+    // No local row exists under this id — the fast path (`find_entity_by_id`) must fail
+    // and fall through to the slow path.
+    const STALE_ID: i64 = 555_555_555;
+
+    let (memory, embedding_store) = memory_with_in_memory_vector_store().await;
+    let store = GraphStore::new(memory.sqlite.pool().clone());
+
+    let id_a = seed_entity_with_zero_embedding(&store, &embedding_store, "existing_source").await;
+
+    // Pre-existing local row under the candidate's canonical_name — created independently
+    // of note-linking (e.g. by a prior extraction pass), with no Qdrant point of its own.
+    let existing_target_id = store
+        .upsert_entity(
+            "existing_target",
+            "existing_target",
+            EntityType::Concept,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .0;
+
+    // Phantom candidate: payload `entity_id` is stale (no local row), but `canonical_name`
+    // matches the pre-existing "existing_target" row above.
+    let payload = serde_json::json!({
+        "entity_id": STALE_ID,
+        "canonical_name": "existing_target",
+        "name": "existing_target",
+        "entity_type": "concept",
+        "summary": "",
+    });
+    embedding_store
+        .upsert_to_collection(
+            "zeph_graph_entities",
+            &uuid::Uuid::new_v4().to_string(),
+            payload,
+            vec![0.0_f32; 384],
+        )
+        .await
+        .unwrap();
+
+    let cfg = NoteLinkingConfig {
+        enabled: true,
+        similarity_threshold: 0.0,
+        top_k: 5,
+        timeout_secs: 10,
+    };
+
+    let stats = link_memory_notes(
+        &[id_a],
+        memory.sqlite.pool().clone(),
+        embedding_store,
+        embedding_provider(),
+        &cfg,
+    )
+    .await;
+
+    assert_eq!(
+        stats.edges_created, 1,
+        "the link edge must be created via the pre-existing local entity"
+    );
+
+    let pool = memory.sqlite.pool();
+
+    // The edge must reference the pre-existing entity, not the stale id.
+    let edge_to_existing: i64 = zeph_db::query_scalar(sql!(
+        "SELECT COUNT(*) FROM graph_edges
+         WHERE (source_entity_id = ?1 AND target_entity_id = ?2)
+            OR (source_entity_id = ?2 AND target_entity_id = ?1)"
+    ))
+    .bind(id_a)
+    .bind(existing_target_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        edge_to_existing, 1,
+        "edge must link to the pre-existing entity found via canonical_name"
+    );
+
+    let stale_id_referenced: i64 = zeph_db::query_scalar(sql!(
+        "SELECT COUNT(*) FROM graph_edges WHERE source_entity_id = ?1 OR target_entity_id = ?1"
+    ))
+    .bind(STALE_ID)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        stale_id_referenced, 0,
+        "the created edge must never reference the stale id"
+    );
+
+    // No duplicate entity must have been created under the same canonical_name — the slow
+    // path must reuse the existing row instead of calling upsert_entity to create a new one.
+    let entities_under_name: i64 = zeph_db::query_scalar(sql!(
+        "SELECT COUNT(*) FROM graph_entities WHERE canonical_name = ?1"
+    ))
+    .bind("existing_target")
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        entities_under_name, 1,
+        "the slow path must not create a duplicate entity when canonical_name already resolves locally"
+    );
+
+    assert!(
+        logs_contain("note_linking: Qdrant entity_id payload did not match local SQLite row"),
+        "drift-correction WARN must fire even when no new entity needed to be created"
+    );
+}

@@ -2844,4 +2844,96 @@ mod tests {
             "dry-run must not write to knowledge_ingest_ledger (FR-026 / C2)"
         );
     }
+
+    // ── #5816 (gap 3): insert_edges FK-violation WARN branches ──────────────────
+    //
+    // Both the APEX-MEM and legacy branches of `insert_edges` catch a genuine FK
+    // constraint violation and log it at WARN (#5801) instead of silently dropping the
+    // edge at DEBUG. Unlike `insert_similarity_edges` (covered by the stale-cross-DB-id
+    // tests in `semantic/tests/graph.rs`), no test manufactured a real FK violation on
+    // these specific call sites — these two do, by pointing `name_to_id` at ids that do
+    // not exist locally, mirroring the manufactured violation in
+    // `error::tests::is_foreign_key_violation_true_for_real_fk_violation`.
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn insert_edges_apex_mem_logs_warn_on_genuine_fk_violation() {
+        use crate::graph::EntityResolver;
+        use crate::graph::extractor::ExtractedEdge;
+
+        let (gs, _emb) = setup().await;
+        let resolver = EntityResolver::new(&gs);
+
+        // Neither id exists in this fresh database — a genuine FK violation.
+        let mut name_to_id = std::collections::HashMap::new();
+        name_to_id.insert("Ghost A".to_owned(), 111_111_111);
+        name_to_id.insert("Ghost B".to_owned(), 222_222_222);
+
+        let edges = vec![ExtractedEdge {
+            source: "Ghost A".to_owned(),
+            target: "Ghost B".to_owned(),
+            relation: "knows".to_owned(),
+            fact: "Ghost A knows Ghost B".to_owned(),
+            temporal_hint: None,
+            edge_type: "semantic".to_owned(),
+            confidence: Some(0.9),
+        }];
+
+        let config = GraphExtractionConfig {
+            apex_mem_enabled: true,
+            ..Default::default()
+        };
+
+        let inserted = super::insert_edges(&resolver, &edges, &name_to_id, &config).await;
+
+        assert_eq!(
+            inserted, 0,
+            "edge rejected by the FK constraint must not be counted as inserted"
+        );
+        assert!(
+            logs_contain("graph: edge insert (apex) rejected by FK constraint, dropping edge"),
+            "APEX-MEM FK-violation WARN must fire when both endpoints are locally nonexistent"
+        );
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn insert_edges_legacy_logs_warn_on_genuine_fk_violation() {
+        use crate::graph::EntityResolver;
+        use crate::graph::extractor::ExtractedEdge;
+
+        let (gs, _emb) = setup().await;
+        let resolver = EntityResolver::new(&gs);
+
+        // Neither id exists in this fresh database — a genuine FK violation.
+        let mut name_to_id = std::collections::HashMap::new();
+        name_to_id.insert("Ghost C".to_owned(), 333_333_333);
+        name_to_id.insert("Ghost D".to_owned(), 444_444_444);
+
+        let edges = vec![ExtractedEdge {
+            source: "Ghost C".to_owned(),
+            target: "Ghost D".to_owned(),
+            relation: "knows".to_owned(),
+            fact: "Ghost C knows Ghost D".to_owned(),
+            temporal_hint: None,
+            edge_type: "semantic".to_owned(),
+            confidence: Some(0.9),
+        }];
+
+        let config = GraphExtractionConfig {
+            apex_mem_enabled: false,
+            ..Default::default()
+        };
+
+        let inserted = super::insert_edges(&resolver, &edges, &name_to_id, &config).await;
+
+        assert_eq!(
+            inserted, 0,
+            "edge rejected by the FK constraint must not be counted as inserted"
+        );
+        assert!(
+            logs_contain("graph: edge insert rejected by FK constraint, dropping edge"),
+            "legacy-path FK-violation WARN must fire when both endpoints are locally nonexistent"
+        );
+    }
 }
