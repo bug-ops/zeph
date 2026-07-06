@@ -98,6 +98,10 @@ use message_queue::{MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, detect_image_mime};
 use state::MessageState;
 
 pub(crate) const DOOM_LOOP_WINDOW: usize = 3;
+/// Circuit breaker for the utility gate's `Retrieve` action (#5774): once this many
+/// "you MUST call it again" mandates have been issued in a single turn, the gate stops
+/// demanding further retrieval detours and lets the requested tool call proceed directly.
+pub(crate) const MAX_RETRIEVE_MANDATES_PER_TURN: usize = 3;
 // CODE_CONTEXT_PREFIX is re-exported from zeph-agent-context::helpers so callers inside
 // zeph-core that build system-prompt injections can use it without depending on zeph-agent-context
 // directly. SESSION_DIGEST_PREFIX was removed when assembly migrated to ContextService.

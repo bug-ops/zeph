@@ -1515,9 +1515,14 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Handles `UtilityAction::Retrieve` — either mandates a context-retrieval-then-retry
-    /// round, or, when a prior retrieval attempt this turn already failed with a
-    /// retryable/network-class error (e.g. Qdrant unreachable), lets the originally
-    /// requested tool proceed directly instead of demanding another doomed retry (#5584).
+    /// round, or lets the originally requested tool proceed directly instead of demanding
+    /// another doomed retry, when either:
+    /// - a prior retrieval attempt this turn already failed in a way that makes
+    ///   `memory_search` unusable — a retryable/network-class error (e.g. Qdrant
+    ///   unreachable, #5584) or `ConfirmationRequired` (e.g. the query content itself trips
+    ///   a sanitizer check, #5774); or
+    /// - the gate has already issued `MAX_RETRIEVE_MANDATES_PER_TURN` mandates this turn,
+    ///   as a defense-in-depth circuit breaker against any other variant of the same stall.
     async fn handle_retrieve_action(
         &mut self,
         idx: usize,
@@ -1525,7 +1530,7 @@ impl<C: Channel> Agent<C> {
         call: &ToolCall,
         pending_system_hints: &mut Vec<String>,
     ) -> Result<Option<(usize, ToolExecFut)>, crate::agent::error::AgentError> {
-        if self.tool_orchestrator.has_retryable_failure_this_turn() {
+        if self.tool_orchestrator.has_blocked_retrieval_this_turn() {
             let _ = self
                 .channel
                 .send_status(&format!(
@@ -1537,6 +1542,27 @@ impl<C: Channel> Agent<C> {
                 "[utility:retrieve] Context retrieval failed and appears unavailable. \
                  Proceed with the '{}' tool call using the best information already \
                  available rather than retrying the failed retrieval.",
+                tc.name
+            ));
+            return Ok(None);
+        }
+        if self.tool_orchestrator.retrieve_mandate_limit_reached() {
+            tracing::warn!(
+                tool = %tc.name,
+                mandates = self.tool_orchestrator.retrieve_mandate_count,
+                "utility gate: Retrieve mandate limit reached this turn, proceeding directly"
+            );
+            let _ = self
+                .channel
+                .send_status(&format!(
+                    "Utility action: Retrieve loop detected, proceeding directly ({})",
+                    tc.name
+                ))
+                .await;
+            pending_system_hints.push(format!(
+                "[utility:retrieve] Repeated context-retrieval cycle detected this turn. \
+                 Proceed with the '{}' tool call directly without further retrieval to \
+                 avoid a stalled loop.",
                 tc.name
             ));
             return Ok(None);
@@ -1558,6 +1584,7 @@ impl<C: Channel> Agent<C> {
         self.tool_orchestrator
             .utility_scorer
             .mark_mandated_retry(call);
+        self.tool_orchestrator.record_retrieve_mandate();
         Ok(Some(ready_fut(
             idx,
             skipped_output(
@@ -1642,7 +1669,21 @@ impl<C: Channel> Agent<C> {
                     ),
                 )))
             }
-            _ => Ok(None),
+            _ => {
+                // Reached only when this call is not being intercepted by Respond/Retrieve/
+                // Verify/Stop — i.e. it proceeds to real dispatch. Critic-flagged S3
+                // regression: `memory_search` itself always reaches this arm (gain 0.8 takes
+                // the direct ToolCall branch), so resetting unconditionally here made the
+                // breaker reset every single cycle of the very "retrieve, dispatch, decline"
+                // loop it exists to catch — the repeated-decline case never trips it. Only a
+                // *different* tool reaching real dispatch is genuine forward progress on the
+                // user's actual request; the retrieval detour's own dispatch is part of the
+                // stall pattern, not progress past it (#5774 S3).
+                if tc.name.as_str() != "memory_search" {
+                    self.tool_orchestrator.reset_retrieve_mandate_count();
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -3648,6 +3689,101 @@ mod tests {
         );
     }
 
+    // Regression guard for #5774: memory_search failing with ConfirmationRequired (e.g. the
+    // query content itself trips a sanitizer/exfiltration-guard check) must be treated the
+    // same as a retryable/network failure — otherwise the Retrieve gate keeps mandating a
+    // fresh memory_search detour every iteration, which fails identically every time, forming
+    // an unbreakable loop.
+    #[tokio::test]
+    async fn handle_retrieve_action_skips_mandatory_retry_after_confirmation_required() {
+        use crate::testing::{MockChannel, MockToolExecutor, mock_provider};
+        use zeph_skills::registry::SkillRegistry;
+        use zeph_tools::error_taxonomy::ToolErrorCategory;
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![] as Vec<String>),
+            SkillRegistry::empty(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.tool_orchestrator.last_tool_error.insert(
+            "memory_search".to_owned(),
+            ToolErrorCategory::ConfirmationRequired,
+        );
+
+        let tc = make_tool_req("bash");
+        let mut hints = Vec::new();
+        let result = agent
+            .handle_retrieve_action(0, &tc, &make_tool_call("bash"), &mut hints)
+            .await
+            .unwrap();
+
+        assert!(
+            result.is_none(),
+            "must return None so the originally-requested tool proceeds to dispatch"
+        );
+        assert_eq!(hints.len(), 1);
+        assert!(
+            !hints[0].contains("you MUST call"),
+            "must not mandate another memory_search detour, got: {}",
+            hints[0]
+        );
+    }
+
+    // Regression guard for #5774: even when memory_search itself never records a failure (or
+    // the failing tool varies from iteration to iteration, e.g. the LLM retries a different
+    // but similar native tool each time), the Retrieve gate must stop mandating fresh detours
+    // after MAX_RETRIEVE_MANDATES_PER_TURN cycles in the same turn — the defense-in-depth
+    // circuit breaker for any undiscovered variant of the stall.
+    #[tokio::test]
+    async fn handle_retrieve_action_circuit_breaker_after_mandate_limit() {
+        use crate::testing::{MockChannel, MockToolExecutor, mock_provider};
+        use zeph_skills::registry::SkillRegistry;
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![] as Vec<String>),
+            SkillRegistry::empty(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+
+        // Drive MAX_RETRIEVE_MANDATES_PER_TURN mandates, each for a distinct tool call (as
+        // happens when the model retries a different, similarly-gated tool each time).
+        for i in 0..crate::agent::MAX_RETRIEVE_MANDATES_PER_TURN {
+            let name = format!("tool_{i}");
+            let tc = make_tool_req(&name);
+            let mut hints = Vec::new();
+            let result = agent
+                .handle_retrieve_action(0, &tc, &make_tool_call(&name), &mut hints)
+                .await
+                .unwrap();
+            assert!(result.is_some(), "mandate #{i} should still be issued");
+        }
+
+        // The next Retrieve-gated call, for yet another distinct tool, must bypass the gate.
+        let tc = make_tool_req("tool_over_limit");
+        let mut hints = Vec::new();
+        let result = agent
+            .handle_retrieve_action(0, &tc, &make_tool_call("tool_over_limit"), &mut hints)
+            .await
+            .unwrap();
+
+        assert!(
+            result.is_none(),
+            "must proceed directly once the mandate limit is reached"
+        );
+        assert_eq!(hints.len(), 1);
+        assert!(
+            !hints[0].contains("you MUST call"),
+            "must not mandate yet another detour, got: {}",
+            hints[0]
+        );
+    }
+
     mod reformat_phase_tests {
         use zeph_tools::registry::{InvocationHint, ToolDef};
 
@@ -4620,6 +4756,225 @@ mod tests {
             assert!(
                 cached.is_none(),
                 "utility-gate skip output must never be cached, got: {cached:?}"
+            );
+        }
+
+        /// #5774 end-to-end regression, driving the REAL `handle_confirmation_phase` ->
+        /// classification -> `record_gate_feedback` pipeline (not a hand-inserted
+        /// `last_tool_error` entry — see critic finding S1). Reproduces the pathological
+        /// sub-case the code's own `execute_tool_call_confirmed_erased` comment documents:
+        /// `memory_search` fails with `ConfirmationRequired`, the user confirms, and the
+        /// confirmed re-execution *itself* fails with `ConfirmationRequired` again (e.g. a
+        /// misconfigured executor stack re-runs the same sanitizer/exfiltration-guard check).
+        /// Proves `has_blocked_retrieval_this_turn` actually engages from that real dispatch
+        /// outcome, and that the bypass applies to a *different* tool than the one that
+        /// originally triggered the `Retrieve` mandate — matching the issue's own observation
+        /// that the LLM sometimes retries a different, similarly-gated tool each cycle.
+        #[tokio::test]
+        async fn memory_search_confirmation_required_breaks_retrieve_loop_via_real_pipeline() {
+            let provider = mock_provider(vec![]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::new(vec![
+                // memory_search's initial dispatch attempt.
+                Err(ToolError::ConfirmationRequired {
+                    command: "search query embedding /tmp/somefile.txt".to_owned(),
+                }),
+                // memory_search's confirmed re-execution (MockChannel auto-confirms) — still
+                // fails, simulating the misconfigured-executor-stack sub-case.
+                Err(ToolError::ConfirmationRequired {
+                    command: "search query embedding /tmp/somefile.txt".to_owned(),
+                }),
+                // grep's dispatch, reached only if the Retrieve gate correctly bypasses.
+                Ok(Some(ToolOutput {
+                    tool_name: "grep".to_owned().into(),
+                    summary: "match: foo.rs:10".to_owned(),
+                    blocks_executed: 1,
+                    filter_stats: None,
+                    diff: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                    claim_source: None,
+                })),
+            ]);
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent
+                .tool_orchestrator
+                .set_utility_config(zeph_tools::UtilityScoringConfig {
+                    enabled: true,
+                    ..zeph_tools::UtilityScoringConfig::default()
+                });
+
+            // Round 1: LLM calls `list_directory` (gain 0.65, uncertainty ~1.0) -> Retrieve.
+            let round1 = vec![zeph_llm::provider::ToolUseRequest {
+                id: "call-1".to_owned(),
+                name: "list_directory".to_owned().into(),
+                input: serde_json::json!({"path": "."}),
+            }];
+            agent.handle_native_tool_calls(None, &round1).await.unwrap();
+            let (content1, _) =
+                tool_result_content(&agent, "call-1").expect("call-1 must have a ToolResult");
+            assert!(
+                content1.contains("[skipped]"),
+                "first call must be skipped by the Retrieve rule, got: {content1}"
+            );
+
+            // Round 2: LLM complies with the hint and calls memory_search (gain 0.8 -> dispatches
+            // for real), fails with ConfirmationRequired, MockChannel auto-confirms, and the
+            // confirmed re-execution also fails with ConfirmationRequired.
+            let round2 = vec![zeph_llm::provider::ToolUseRequest {
+                id: "call-2".to_owned(),
+                name: "memory_search".to_owned().into(),
+                input: serde_json::json!({"query": "somefile.txt"}),
+            }];
+            agent.handle_native_tool_calls(None, &round2).await.unwrap();
+            let (content2, is_error2) =
+                tool_result_content(&agent, "call-2").expect("call-2 must have a ToolResult");
+            assert!(
+                is_error2 && content2.contains("confirmation_required"),
+                "memory_search must surface the real ConfirmationRequired failure, got: {content2}"
+            );
+            assert_eq!(
+                agent.tool_orchestrator.last_tool_error.get("memory_search"),
+                Some(&zeph_tools::error_taxonomy::ToolErrorCategory::ConfirmationRequired),
+                "record_gate_feedback must record the real dispatch outcome via the actual \
+                 confirmation-phase pipeline, not a hand-inserted entry"
+            );
+
+            // Round 3: LLM tries a DIFFERENT tool than round 1 (as the issue observed happening
+            // in practice) that would normally also trigger Retrieve. It must dispatch directly
+            // instead of mandating yet another memory_search detour.
+            let round3 = vec![zeph_llm::provider::ToolUseRequest {
+                id: "call-3".to_owned(),
+                name: "grep".to_owned().into(),
+                input: serde_json::json!({"pattern": "foo"}),
+            }];
+            agent.handle_native_tool_calls(None, &round3).await.unwrap();
+            let (content3, is_error3) =
+                tool_result_content(&agent, "call-3").expect("call-3 must have a ToolResult");
+            assert!(
+                content3.contains("match: foo.rs:10") && !is_error3,
+                "grep must dispatch directly once memory_search is known blocked this turn, \
+                 not be redirected into another Retrieve mandate, got: {content3}"
+            );
+        }
+
+        /// #5774 S3 regression (critic-flagged, post-S2): reproduces the issue's own
+        /// "answering the dialog does not break the cycle" observation — the user repeatedly
+        /// **declines** the `memory_search` confirmation prompt. A decline is a *successful*
+        /// `[cancelled by user]` result, so `has_blocked_retrieval_this_turn` self-heals
+        /// `last_tool_error` back to `None` after every cycle and never bypasses the `Retrieve`
+        /// gate. Before this fix, `reset_retrieve_mandate_count` fired unconditionally whenever
+        /// ANY call reached real dispatch — including `memory_search`'s own dispatch (gain 0.8
+        /// always takes the direct `ToolCall` branch) — so the consecutive-mandate counter was
+        /// reset to 0 on every single one of these cycles and the circuit breaker never tripped
+        /// either. Neither of the two loop-prevention bounds fired: the exact scenario the issue
+        /// reported as unbreakable. Proves the fix: the counter now only resets on a
+        /// *non-`memory_search`* tool reaching real dispatch, so 3 consecutive
+        /// Retrieve-mandate-then-decline cycles still trip the breaker on the 4th distinct tool.
+        #[tokio::test]
+        async fn repeated_decline_still_trips_circuit_breaker() {
+            let provider = mock_provider(vec![]);
+            let channel = MockChannel::new(vec![]).with_confirmations(vec![false, false, false]);
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::new(vec![
+                // memory_search dispatch attempts across 3 decline cycles.
+                Err(ToolError::ConfirmationRequired {
+                    command: "search query A".to_owned(),
+                }),
+                Err(ToolError::ConfirmationRequired {
+                    command: "search query B".to_owned(),
+                }),
+                Err(ToolError::ConfirmationRequired {
+                    command: "search query C".to_owned(),
+                }),
+                // find_path's dispatch, reached only once the circuit breaker trips.
+                Ok(Some(ToolOutput {
+                    tool_name: "find_path".to_owned().into(),
+                    summary: "src/main.rs".to_owned(),
+                    blocks_executed: 1,
+                    filter_stats: None,
+                    diff: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                    claim_source: None,
+                })),
+            ]);
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent
+                .tool_orchestrator
+                .set_utility_config(zeph_tools::UtilityScoringConfig {
+                    enabled: true,
+                    ..zeph_tools::UtilityScoringConfig::default()
+                });
+
+            // Each Retrieve-mandate round uses a distinct tool: reusing the same tool+args would
+            // let the #5719 mandated-retry bypass dispatch it directly on the next round instead
+            // of re-triggering Retrieve, which is not what this scenario is testing (and matches
+            // the issue's own observation that the LLM tries a different tool each cycle).
+            let mandate_tools = ["list_directory", "grep", "glob"];
+            let mandate_queries = ["query A", "query B", "query C"];
+            for (i, tool) in mandate_tools.iter().enumerate() {
+                let call_id = format!("call-mandate-{i}");
+                let round = vec![zeph_llm::provider::ToolUseRequest {
+                    id: call_id.clone(),
+                    name: (*tool).to_owned().into(),
+                    input: serde_json::json!({"path": "."}),
+                }];
+                agent.handle_native_tool_calls(None, &round).await.unwrap();
+                let (content, _) = tool_result_content(&agent, &call_id)
+                    .unwrap_or_else(|| panic!("{call_id} must have a ToolResult"));
+                assert!(
+                    content.contains("[skipped]"),
+                    "mandate round {i} ({tool}) must be skipped by the Retrieve rule, got: {content}"
+                );
+
+                let search_id = format!("call-search-{i}");
+                let search_round = vec![zeph_llm::provider::ToolUseRequest {
+                    id: search_id.clone(),
+                    name: "memory_search".to_owned().into(),
+                    input: serde_json::json!({"query": mandate_queries[i]}),
+                }];
+                agent
+                    .handle_native_tool_calls(None, &search_round)
+                    .await
+                    .unwrap();
+                let (search_content, search_is_error) = tool_result_content(&agent, &search_id)
+                    .unwrap_or_else(|| panic!("{search_id} must have a ToolResult"));
+                assert!(
+                    !search_is_error && search_content.contains("[cancelled by user]"),
+                    "declined memory_search must be a successful cancellation, got: \
+                     {search_content}"
+                );
+                assert_eq!(
+                    agent.tool_orchestrator.last_tool_error.get("memory_search"),
+                    None,
+                    "a declined confirmation must self-heal last_tool_error back to None \
+                     (round {i})"
+                );
+            }
+
+            // A 4th distinct tool: the circuit breaker (not the confirmation-outcome bypass,
+            // which self-healed away 3 rounds ago) must now let it dispatch directly.
+            let round_final = vec![zeph_llm::provider::ToolUseRequest {
+                id: "call-final".to_owned(),
+                name: "find_path".to_owned().into(),
+                input: serde_json::json!({"pattern": "*.rs"}),
+            }];
+            agent
+                .handle_native_tool_calls(None, &round_final)
+                .await
+                .unwrap();
+            let (content_final, is_error_final) = tool_result_content(&agent, "call-final")
+                .expect("call-final must have a ToolResult");
+            assert!(
+                content_final.contains("src/main.rs") && !is_error_final,
+                "after 3 consecutive mandate+decline cycles, the 4th distinct tool must dispatch \
+                 directly via the circuit breaker, got: {content_final}"
             );
         }
     }
