@@ -136,6 +136,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `EmbeddingRegistry::get_vectors_by_keys` (happy path and partial-miss) in
     `crates/zeph-memory/tests/qdrant_integration.rs`.
 
+- `fix(skills)`: RL routing head (`RoutingHeadInner::score()` in
+  `crates/zeph-skills/src/rl_head.rs`) is a genuine learned linear layer over the raw,
+  concatenated `query_embed ++ skill_embed` components — not a cosine-only computation — so its
+  score is sensitive to vector magnitude. Qdrant `Distance::Cosine` collections return
+  unit-normalized vectors, but the in-memory `vector_backend` stored embedding-provider output
+  verbatim in `SkillEmbedding::from_raw` (`crates/zeph-skills/src/embedding.rs`), so switching
+  `vector_backend` changed the RL head's effective input scale and could shift its rerank
+  distribution (#5805, surfaced during #5786/#5804). `SkillEmbedding::from_raw` now L2-normalizes
+  its input via the existing `zeph_common::math::EmbeddingVector<Unnormalized>::normalize()`
+  helper, matching Qdrant's output scale. Cosine similarity is scale-invariant, so this does not
+  change any existing similarity/ranking result computed via `cosine_similarity` — only the RL
+  head's raw-vector input scale changes. `query_embed` is intentionally left unnormalized (see
+  `rl_head.rs` module docs); this pre-existing query/skill asymmetry is orthogonal to this fix.
+  Existing `routing_head_weights` trained on the old, un-normalized in-memory scale may need
+  retraining/reset for optimal RL rerank quality after this change ships — no automatic
+  migration is performed.
+
 - `fix(llm)`: OpenAI Chat Completions rejects the combination of `reasoning_effort` and
   tool-calling (`tools`) for some reasoning models (e.g. `gpt-5.4-mini`), responding with an
   opaque HTTP 400 body directing callers to `/v1/responses` — an endpoint Zeph does not

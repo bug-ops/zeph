@@ -9,6 +9,14 @@
 //!
 //! Forward pass: `score = sigmoid(w2 @ relu(w1 @ input + b1) + b2)`
 //!
+//! `query_embed` and `skill_embed` enter this MLP as raw vector components, not
+//! just through the `cosine_score` scalar feature, so the score is sensitive to
+//! their magnitude. `skill_embed` (`SkillEmbedding::from_raw`) is L2-normalized to
+//! unit length at construction to match Qdrant's `Distance::Cosine` collection
+//! output, keeping the scale consistent across `vector_backend` values.
+//! `query_embed` is left at the embedding provider's raw magnitude; this
+//! asymmetry is intentional and predates the skill-side backend-consistency fix.
+//!
 //! Training: REINFORCE with running baseline. Weights are shared via
 //! `Arc<std::sync::Mutex<RoutingHeadInner>>` for safe concurrent access.
 //!
@@ -500,6 +508,7 @@ fn read_f32_slice(data: &[u8], cursor: &mut usize) -> Option<Vec<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embedding::SkillEmbedding;
 
     fn make_head() -> RoutingHead {
         RoutingHead::new(4)
@@ -640,6 +649,32 @@ mod tests {
         // One more rerank should now use blended scores (post-warmup).
         let ranked = head.rerank(&q, &candidates, &stats, 0.3, warmup);
         assert_eq!(ranked.len(), 2);
+    }
+
+    #[test]
+    fn score_is_scale_invariant_when_skill_embed_is_normalized_first() {
+        // Regression test for #5805: RoutingHeadInner::score() is a raw linear layer over
+        // query_embed ++ skill_embed, so it is scale-sensitive to whatever `skill_embed`
+        // slice it receives. The fix moves normalization to `SkillEmbedding::from_raw`
+        // (embedding.rs), *before* the vector ever reaches score(). This test proves that
+        // once two representations of the "same" skill embedding — one already unit-length
+        // (simulating Qdrant's `Distance::Cosine` output) and one scaled by an arbitrary
+        // factor (simulating raw in-memory provider magnitude) — are both routed through
+        // `SkillEmbedding::from_raw` as production code does, score() sees identical input
+        // and produces identical output, closing the cross-backend scale mismatch.
+        let mut head = RoutingHeadInner::new(4);
+        let q = dummy_embed(0.3, 4);
+
+        let unit_skill = SkillEmbedding::from_raw(vec![1.0_f32, 2.0, 3.0, 4.0]);
+        let scaled_skill = SkillEmbedding::from_raw(vec![5.0_f32, 10.0, 15.0, 20.0]); // same direction, 5x magnitude
+
+        let score_unit = head.score(&q, unit_skill.as_ref(), 0.7, 0.8, 3);
+        let score_scaled = head.score(&q, scaled_skill.as_ref(), 0.7, 0.8, 3);
+
+        assert!(
+            (score_unit - score_scaled).abs() < 1e-5,
+            "score must be identical regardless of pre-normalization magnitude: {score_unit} vs {score_scaled}"
+        );
     }
 
     #[test]

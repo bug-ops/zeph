@@ -95,6 +95,13 @@ impl SkillEmbedding {
     /// the same model, ensuring dimensional consistency throughout the
     /// collection.
     ///
+    /// The vector is L2-normalized to unit length before storage. This
+    /// matches the vectors Qdrant returns for `Distance::Cosine` collections,
+    /// so `RoutingHeadInner::score` (`rl_head.rs`) sees the same input scale
+    /// regardless of which `vector_backend` produced the embedding. Cosine
+    /// similarity is scale-invariant, so normalizing here doesn't change any
+    /// existing similarity/ranking result — see `zeph_common::math::normalize`.
+    ///
     /// # Examples
     ///
     /// ```
@@ -107,7 +114,11 @@ impl SkillEmbedding {
     /// ```
     #[must_use]
     pub fn from_raw(vec: Vec<f32>) -> Self {
-        Self(vec)
+        let normalized =
+            zeph_common::math::EmbeddingVector::<zeph_common::math::Unnormalized>::new(vec)
+                .normalize()
+                .into_inner();
+        Self(normalized)
     }
 
     /// The number of dimensions in this embedding.
@@ -132,9 +143,10 @@ impl SkillEmbedding {
     /// ```
     /// use zeph_skills::embedding::SkillEmbedding;
     ///
-    /// let v = vec![1.0_f32, 2.0, 3.0];
-    /// let emb = SkillEmbedding::from_raw(v.clone());
-    /// assert_eq!(emb.into_inner(), v);
+    /// // `from_raw` normalizes, so the returned vector is unit-length, not `v` itself.
+    /// let v = vec![3.0_f32, 4.0];
+    /// let emb = SkillEmbedding::from_raw(v);
+    /// assert_eq!(emb.into_inner(), vec![0.6_f32, 0.8]);
     /// ```
     #[must_use]
     pub fn into_inner(self) -> Vec<f32> {
@@ -233,17 +245,15 @@ mod tests {
     }
 
     #[test]
-    fn as_ref_returns_slice() {
-        let v = vec![1.0_f32, 2.0, 3.0];
-        let emb = SkillEmbedding::from_raw(v.clone());
-        assert_eq!(emb.as_ref(), v.as_slice());
+    fn as_ref_returns_normalized_slice() {
+        let emb = SkillEmbedding::from_raw(vec![3.0_f32, 4.0]);
+        assert_eq!(emb.as_ref(), &[0.6_f32, 0.8]);
     }
 
     #[test]
-    fn into_inner_returns_vec() {
-        let v = vec![0.5_f32, 1.0];
-        let emb = SkillEmbedding::from_raw(v.clone());
-        assert_eq!(emb.into_inner(), v);
+    fn into_inner_returns_normalized_vec() {
+        let emb = SkillEmbedding::from_raw(vec![3.0_f32, 4.0]);
+        assert_eq!(emb.into_inner(), vec![0.6_f32, 0.8]);
     }
 
     #[test]
@@ -253,8 +263,46 @@ mod tests {
     }
 
     #[test]
+    fn from_raw_normalizes_to_unit_length() {
+        let emb = SkillEmbedding::from_raw(vec![1.0_f32, 2.0, 3.0]);
+        let sum_sq: f32 = emb.as_ref().iter().map(|x| x * x).sum();
+        assert!(
+            (sum_sq - 1.0).abs() < 1e-6,
+            "L2 norm must be ~1.0, got sum_sq={sum_sq}"
+        );
+    }
+
+    #[test]
+    fn from_raw_zero_vector_stays_zero() {
+        let emb = SkillEmbedding::from_raw(vec![0.0_f32, 0.0, 0.0]);
+        assert_eq!(emb.as_ref(), &[0.0_f32, 0.0, 0.0]);
+        assert!(emb.as_ref().iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
     fn new_empty_dimension_zero() {
         let emb = SkillEmbedding::new(vec![], 0).unwrap();
         assert_eq!(emb.dim(), 0);
+    }
+
+    #[test]
+    fn from_raw_preserves_sign_of_negative_components() {
+        let emb = SkillEmbedding::from_raw(vec![-3.0_f32, 4.0]);
+        assert_eq!(emb.as_ref(), &[-0.6_f32, 0.8]);
+    }
+
+    #[test]
+    fn from_raw_normalizes_dominant_magnitude_component() {
+        // One huge-magnitude component alongside many small ones: normalization must not
+        // overflow/underflow and the unit-length invariant must still hold.
+        let mut raw = vec![1e6_f32];
+        raw.extend(vec![1e-3_f32; 10]);
+        let emb = SkillEmbedding::from_raw(raw);
+        let sum_sq: f32 = emb.as_ref().iter().map(|x| x * x).sum();
+        assert!(
+            (sum_sq - 1.0).abs() < 1e-5,
+            "L2 norm must be ~1.0 even with a dominant component, got sum_sq={sum_sq}"
+        );
+        assert!(emb.as_ref().iter().all(|x| x.is_finite()));
     }
 }
