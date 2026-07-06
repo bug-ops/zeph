@@ -109,6 +109,7 @@ schemars.workspace = true
 serial_test.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true, features = ["parking_lot", "registry"] }
 zeph-llm = { workspace = true, features = ["testing"] }
 zeph-memory = { workspace = true, features = ["testing"] }

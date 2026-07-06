@@ -98,22 +98,14 @@ fn extract_symbol_positions_regex(
         return vec![];
     }
 
+    let (clean_source, line_map) = strip_cat_n_prefix(content);
+
     let mut positions = Vec::new();
-    for (raw_idx, raw_line) in content.lines().enumerate() {
+    for (raw_idx, source_line) in clean_source.lines().enumerate() {
         if positions.len() >= max_symbols {
             break;
         }
-        let (lsp_line, source_line) = if let Some(tab) = raw_line.find('\t') {
-            let prefix = raw_line[..tab].trim();
-            if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) {
-                let one_based: u64 = prefix.parse().unwrap_or(0);
-                (one_based.saturating_sub(1), &raw_line[tab + 1..])
-            } else {
-                (raw_idx as u64, raw_line)
-            }
-        } else {
-            (raw_idx as u64, raw_line)
-        };
+        let lsp_line = line_map.get(raw_idx).copied().unwrap_or(raw_idx as u64);
         if let Some(m) = SYMBOL_LINE_RE.find(source_line) {
             positions.push((lsp_line, m.start() as u64));
         }

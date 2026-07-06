@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `test(core)`: added timeout-branch coverage for the graph-query timeout helper
+  (`crates/zeph-core/src/agent/agent_access_impl.rs`) via a `tokio::time::pause()` +
+  `advance(6s)` test against a synthetic never-resolving future, forcing the real
+  `tokio::time::timeout(5s, ...)` arm shared by `resolve_entity_by_name`, `graph_facts`, and
+  `graph_history` instead of only exercising the "no store configured" short-circuit (#5770).
+  A real `GraphStore`-backed integration test was not attempted — `GraphStore` is a concrete
+  type with no trait seam, and combining `tokio::time::pause()` with the SQLite-backed store
+  is a known source of flakiness elsewhere in the workspace — so this proves the shared
+  timeout mechanism deterministically but does not itself invoke `graph_facts`/`graph_history`.
 - `feat(serve,acp)`: `zeph serve-sessions --acp` now runs the ACP protocol transport in-process
   instead of hard-erroring (#5420). Combined mode runs ACP-over-HTTP (`zeph_acp::acp_router`)
   on a **second** `axum::serve` listener bound to `[acp] http_bind`, sharing one
@@ -45,6 +54,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(core)`: deduplicated two independently-duplicated code paths. `trust.rs`'s
+  `cross_session_rollout_ok_for_promote`/`_for_demote`
+  (`crates/zeph-core/src/agent/learning/trust.rs`) — identical except for which config
+  field they read (`min_sessions_before_promote` vs `_demote`) and their log message — are
+  now a single `cross_session_rollout_ok(memory, skill_name, cross_session_rollout,
+  min_sessions, action)` helper (#5662). `extract_symbol_positions_regex`
+  (`crates/zeph-core/src/lsp_hooks/hover.rs`) now calls `strip_cat_n_prefix` once instead of
+  re-deriving the same tab-prefix/digit-check/line-number logic inline (#5673). Pure
+  refactor, no behavior change.
 - `refactor(core,common,context,agent-context,mcp,memory,index)`: deduplicated three more
   independently-duplicated code paths (epic #5714 cluster 1 remainder). Seven call sites across
   six crates (`zeph-context`, `zeph-agent-context`, `zeph-core`, `zeph-mcp`, `zeph-memory`,

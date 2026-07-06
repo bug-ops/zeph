@@ -46,14 +46,30 @@ impl<C: Channel> Agent<C> {
             let posterior = zeph_skills::trust_score::posterior_mean(successes, failures);
 
             if total >= config.auto_promote_min_uses && posterior > config.auto_promote_threshold {
-                if !cross_session_rollout_ok_for_promote(memory, config, skill_name).await {
+                if !cross_session_rollout_ok(
+                    memory,
+                    skill_name,
+                    config.cross_session_rollout,
+                    config.min_sessions_before_promote,
+                    "promotion",
+                )
+                .await
+                {
                     return;
                 }
                 try_auto_promote(memory, skill_name, posterior, total).await;
             }
 
             if total >= config.auto_demote_min_uses && posterior < config.auto_demote_threshold {
-                if !cross_session_rollout_ok_for_demote(memory, config, skill_name).await {
+                if !cross_session_rollout_ok(
+                    memory,
+                    skill_name,
+                    config.cross_session_rollout,
+                    config.min_sessions_before_demote,
+                    "demotion",
+                )
+                .await
+                {
                     return;
                 }
                 try_auto_demote(memory, skill_name, posterior, total).await;
@@ -64,49 +80,25 @@ impl<C: Channel> Agent<C> {
     }
 }
 
-/// Returns `true` when cross-session rollout is disabled or enough sessions exist for promotion.
-async fn cross_session_rollout_ok_for_promote(
+/// Returns `true` when cross-session rollout is disabled or enough sessions exist for the
+/// given `action` ("promotion" or "demotion").
+async fn cross_session_rollout_ok(
     memory: &zeph_memory::semantic::SemanticMemory,
-    config: &crate::config::LearningConfig,
     skill_name: &str,
+    cross_session_rollout: bool,
+    min_sessions: u32,
+    action: &str,
 ) -> bool {
-    if !config.cross_session_rollout {
+    if !cross_session_rollout {
         return true;
     }
     match memory.sqlite().distinct_session_count(skill_name).await {
-        Ok(sessions) if sessions < i64::from(config.min_sessions_before_promote) => {
+        Ok(sessions) if sessions < i64::from(min_sessions) => {
             tracing::debug!(
                 skill = skill_name,
                 sessions,
-                required = config.min_sessions_before_promote,
-                "cross-session rollout: insufficient sessions for promotion"
-            );
-            false
-        }
-        Ok(_) => true,
-        Err(e) => {
-            tracing::warn!("cross-session count query failed for {skill_name}: {e:#}");
-            true
-        }
-    }
-}
-
-/// Returns `true` when cross-session rollout is disabled or enough sessions exist for demotion.
-async fn cross_session_rollout_ok_for_demote(
-    memory: &zeph_memory::semantic::SemanticMemory,
-    config: &crate::config::LearningConfig,
-    skill_name: &str,
-) -> bool {
-    if !config.cross_session_rollout {
-        return true;
-    }
-    match memory.sqlite().distinct_session_count(skill_name).await {
-        Ok(sessions) if sessions < i64::from(config.min_sessions_before_demote) => {
-            tracing::debug!(
-                skill = skill_name,
-                sessions,
-                required = config.min_sessions_before_demote,
-                "cross-session rollout: insufficient sessions for demotion"
+                required = min_sessions,
+                "cross-session rollout: insufficient sessions for {action}"
             );
             false
         }

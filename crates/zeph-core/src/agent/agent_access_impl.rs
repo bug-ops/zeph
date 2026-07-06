@@ -51,23 +51,44 @@ enum EntityLookup {
     Message(String),
 }
 
+/// Outcome of a graph-store call bounded by [`with_graph_store_timeout`]'s 5s deadline:
+/// either it completed, or it timed out (Qdrant unreachable).
+enum StoreCallOutcome<T> {
+    Completed(T),
+    TimedOut,
+}
+
+/// Runs `fut` under a 5s timeout — the deadline shared by `resolve_entity_by_name` and the
+/// edge lookups in `graph_facts`/`graph_history`. Maps a store error to [`CommandError`];
+/// logs and reports a timeout via [`StoreCallOutcome::TimedOut`] so callers only need to
+/// turn that into their own user-facing message.
+async fn with_graph_store_timeout<T>(
+    fut: impl Future<Output = Result<T, zeph_memory::MemoryError>>,
+) -> Result<StoreCallOutcome<T>, CommandError> {
+    match tokio::time::timeout(Duration::from_secs(5), fut).await {
+        Ok(Ok(v)) => Ok(StoreCallOutcome::Completed(v)),
+        Ok(Err(e)) => Err(CommandError::new(e.to_string())),
+        Err(_) => {
+            tracing::warn!("graph store call timed out after 5s (Qdrant unreachable)");
+            Ok(StoreCallOutcome::TimedOut)
+        }
+    }
+}
+
 /// Resolves `name` to an [`Entity`] via [`GraphStore::find_entity_by_name`], bounded by a
 /// 5s timeout — the lookup block shared by `graph_facts` and `graph_history`.
 async fn resolve_entity_by_name(
     store: &GraphStore,
     name: &str,
 ) -> Result<EntityLookup, CommandError> {
-    let matches =
-        match tokio::time::timeout(Duration::from_secs(5), store.find_entity_by_name(name)).await {
-            Ok(Ok(v)) => v,
-            Ok(Err(e)) => return Err(CommandError::new(e.to_string())),
-            Err(_) => {
-                tracing::warn!("graph store call timed out after 5s (Qdrant unreachable)");
-                return Ok(EntityLookup::Message(
-                    "Graph store unavailable (Qdrant unreachable).".to_owned(),
-                ));
-            }
-        };
+    let matches = match with_graph_store_timeout(store.find_entity_by_name(name)).await? {
+        StoreCallOutcome::Completed(v) => v,
+        StoreCallOutcome::TimedOut => {
+            return Ok(EntityLookup::Message(
+                "Graph store unavailable (Qdrant unreachable).".to_owned(),
+            ));
+        }
+    };
     let Some(entity) = matches.into_iter().next() else {
         return Ok(EntityLookup::Message(format!(
             "No entity found matching '{name}'."
@@ -373,19 +394,13 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                     EntityLookup::Message(msg) => return Ok(msg),
                 };
 
-                let edges = match tokio::time::timeout(
-                    Duration::from_secs(5),
-                    store.edges_for_entity(entity.id.0),
-                )
-                .await
-                {
-                    Ok(Ok(v)) => v,
-                    Ok(Err(e)) => return Err(CommandError::new(e.to_string())),
-                    Err(_) => {
-                        tracing::warn!("graph store call timed out after 5s (Qdrant unreachable)");
-                        return Ok("Graph store unavailable (Qdrant unreachable).".to_owned());
-                    }
-                };
+                let edges =
+                    match with_graph_store_timeout(store.edges_for_entity(entity.id.0)).await? {
+                        StoreCallOutcome::Completed(v) => v,
+                        StoreCallOutcome::TimedOut => {
+                            return Ok("Graph store unavailable (Qdrant unreachable).".to_owned());
+                        }
+                    };
                 if edges.is_empty() {
                     return Ok(format!("Entity '{}' has no known facts.", entity.name));
                 }
@@ -435,19 +450,15 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                     EntityLookup::Message(msg) => return Ok(msg),
                 };
 
-                let edges = match tokio::time::timeout(
-                    Duration::from_secs(5),
-                    store.edge_history_for_entity(entity.id.0, 50),
-                )
-                .await
-                {
-                    Ok(Ok(v)) => v,
-                    Ok(Err(e)) => return Err(CommandError::new(e.to_string())),
-                    Err(_) => {
-                        tracing::warn!("graph store call timed out after 5s (Qdrant unreachable)");
-                        return Ok("Graph store unavailable (Qdrant unreachable).".to_owned());
-                    }
-                };
+                let edges =
+                    match with_graph_store_timeout(store.edge_history_for_entity(entity.id.0, 50))
+                        .await?
+                    {
+                        StoreCallOutcome::Completed(v) => v,
+                        StoreCallOutcome::TimedOut => {
+                            return Ok("Graph store unavailable (Qdrant unreachable).".to_owned());
+                        }
+                    };
                 if edges.is_empty() {
                     return Ok(format!("Entity '{}' has no edge history.", entity.name));
                 }
@@ -2377,6 +2388,44 @@ mod tests {
         assert!(
             result.is_err(),
             "timeout must fire on a never-resolving future"
+        );
+    }
+
+    // ── #5770: with_graph_store_timeout had zero coverage of its own timeout branch —
+    // existing tests only reached the "no store configured" short-circuit in
+    // resolve_graph_store(), never the 5s deadline shared by resolve_entity_by_name,
+    // graph_facts, and graph_history. Exercise the extracted helper directly with a
+    // paused clock so the deadline fires deterministically without a real wall-clock wait.
+
+    #[tokio::test]
+    async fn with_graph_store_timeout_completes_on_success() {
+        let result = with_graph_store_timeout(async { Ok::<_, zeph_memory::MemoryError>(42) })
+            .await
+            .unwrap();
+        assert!(matches!(result, StoreCallOutcome::Completed(42)));
+    }
+
+    #[tokio::test]
+    async fn with_graph_store_timeout_maps_store_error_to_command_error() {
+        let result = with_graph_store_timeout(async {
+            Err::<i32, _>(zeph_memory::MemoryError::GraphStore("boom".to_owned()))
+        })
+        .await;
+        assert!(result.is_err(), "store error must surface as CommandError");
+    }
+
+    #[tokio::test]
+    async fn with_graph_store_timeout_times_out_on_pending_future() {
+        tokio::time::pause();
+        let fut = with_graph_store_timeout(std::future::pending::<
+            Result<i32, zeph_memory::MemoryError>,
+        >());
+        let handle = tokio::spawn(fut); // EXEMPT: test-only tokio::time::pause harness
+        tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        let result = handle.await.expect("task panicked");
+        assert!(
+            matches!(result, Ok(StoreCallOutcome::TimedOut)),
+            "call must resolve to TimedOut once the 5s deadline elapses"
         );
     }
 
