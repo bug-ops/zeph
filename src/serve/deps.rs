@@ -48,6 +48,11 @@ pub(crate) struct ServeAgentDeps {
     /// `Agent::with_skill_provider_names` per session (#5818).
     pub(crate) skill_generation_provider: String,
     pub(crate) skill_disambiguate_provider: String,
+    /// `config.skills.semantic_scan`/`semantic_scan_provider`, wired into
+    /// `Agent::with_semantic_scan` per session — mirrors `src/runner.rs` and `src/daemon.rs`
+    /// (#5827: previously left on hardcoded builder defaults for `/sessions`).
+    pub(crate) semantic_scan: bool,
+    pub(crate) semantic_scan_provider: String,
     pub(crate) tool_executor: Arc<dyn ErasedToolExecutor>,
     pub(crate) memory: Arc<SemanticMemory>,
     pub(crate) history_limit: u32,
@@ -183,6 +188,8 @@ pub(crate) async fn assemble_serve_deps(
         skill_confusability_threshold: config.skills.confusability_threshold,
         skill_generation_provider: config.skills.generation_provider.as_str().to_owned(),
         skill_disambiguate_provider: config.skills.disambiguate_provider.as_str().to_owned(),
+        semantic_scan: config.skills.semantic_scan,
+        semantic_scan_provider: config.skills.semantic_scan_provider.as_str().to_owned(),
         tool_executor,
         memory: Arc::clone(&core.memory),
         history_limit,

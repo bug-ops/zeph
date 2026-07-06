@@ -108,6 +108,7 @@ pub(crate) async fn build_agent_factory(
             deps.skill_generation_provider,
             deps.skill_disambiguate_provider,
         )
+        .with_semantic_scan(deps.semantic_scan, deps.semantic_scan_provider)
         .with_memory(
             Arc::clone(&deps.memory),
             conversation_id,
@@ -498,6 +499,8 @@ mod tests {
             skill_confusability_threshold: 0.0,
             skill_generation_provider: String::new(),
             skill_disambiguate_provider: String::new(),
+            semantic_scan: false,
+            semantic_scan_provider: String::new(),
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             memory: Arc::clone(&memory),
             history_limit: 10,
@@ -563,6 +566,8 @@ mod tests {
             skill_confusability_threshold: 0.0,
             skill_generation_provider: String::new(),
             skill_disambiguate_provider: String::new(),
+            semantic_scan: false,
+            semantic_scan_provider: String::new(),
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             memory: Arc::clone(&memory),
             history_limit: 10,
@@ -655,6 +660,8 @@ mod tests {
             skill_confusability_threshold: 0.42,
             skill_generation_provider: "gen".to_owned(),
             skill_disambiguate_provider: "dis".to_owned(),
+            semantic_scan: false,
+            semantic_scan_provider: String::new(),
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             memory: Arc::clone(&memory),
             history_limit: 10,
@@ -681,6 +688,82 @@ mod tests {
             "ServeAgentDeps::skill_confusability_threshold = 0.42 must reach the built Agent's \
              ConfusabilityReport exactly (not e.g. 0.77, disambiguation_threshold's value, from a \
              swapped with_skill_matching_config argument); got: {output}"
+        );
+    }
+
+    /// #5827 regression: `build_agent_factory` must call `Agent::with_semantic_scan` so
+    /// `config.skills.semantic_scan`/`semantic_scan_provider` reach the built `Agent` —
+    /// previously `ServeAgentDeps` had no such fields and the builder chain never called
+    /// `with_semantic_scan`, so every `/sessions`-created agent silently ran Stage-2 skill
+    /// semantic-scanning on hardcoded builder defaults (`semantic_scan: false`) regardless of
+    /// config.
+    ///
+    /// `Agent` exposes no `pub` accessor for `semantic_scan`/`semantic_scan_provider` directly,
+    /// so this drives the same observable surface the real `/plugins add` command uses
+    /// ([`zeph_commands::AgentAccess::handle_plugins`]): with an empty `provider_pool`,
+    /// `handle_plugins("add <path>")` fails closed on the *unknown provider* branch
+    /// (`crates/zeph-core/src/agent/agent_access_impl.rs`) whenever `semantic_scan` is enabled,
+    /// and the error message echoes the exact configured provider name — so a dropped or
+    /// swapped `with_semantic_scan` argument would also be caught.
+    #[tokio::test]
+    async fn build_agent_factory_wires_semantic_scan_config() {
+        use zeph_commands::traits::agent::AgentAccess as _;
+
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("semantic-scan-config-test-session");
+
+        let config = zeph_core::config::Config::default();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+
+        let deps = ServeAgentDeps {
+            provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            embedding_provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            registry: Arc::new(parking_lot::RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: None,
+            max_active_skills: 5,
+            skill_disambiguation_threshold: 0.2,
+            skill_two_stage_matching: false,
+            skill_confusability_threshold: 0.0,
+            skill_generation_provider: String::new(),
+            skill_disambiguate_provider: String::new(),
+            // Non-default values (pre-fix builder default is `false`/`""`, see
+            // `crates/zeph-core/src/agent/state/mod.rs`): proves both fields are wired, not just
+            // left on their hardcoded defaults.
+            semantic_scan: true,
+            semantic_scan_provider: "scan-test-provider".to_owned(),
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            memory: Arc::clone(&memory),
+            history_limit: 10,
+            recall_limit: 5,
+            summarization_threshold: 1000,
+            session_config,
+            session_persistence_config: zeph_config::SessionConfig::default(),
+            resume_condenser: Arc::new(condenser),
+            resume_token_counter: Arc::new(token_counter),
+            provider_pool: Vec::new(),
+            provider_config_snapshot: zeph_core::ProviderConfigSnapshot::default(),
+        };
+
+        let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let mut agent = build_agent(channel);
+
+        let err = agent
+            .handle_plugins("add /nonexistent/plugin/path")
+            .await
+            .expect_err(
+                "handle_plugins(\"add\") must fail closed when semantic_scan is enabled and \
+                 semantic_scan_provider is not in the (empty) provider pool",
+            );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("semantic_scan_provider") && msg.contains("scan-test-provider"),
+            "ServeAgentDeps::semantic_scan/semantic_scan_provider = true/\"scan-test-provider\" \
+             must reach the built Agent's fail-closed plugin-add check exactly; got: {msg}"
         );
     }
 }

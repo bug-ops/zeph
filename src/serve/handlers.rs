@@ -496,6 +496,8 @@ mod tests {
             skill_confusability_threshold: 0.0,
             skill_generation_provider: String::new(),
             skill_disambiguate_provider: String::new(),
+            semantic_scan: false,
+            semantic_scan_provider: String::new(),
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             memory,
             history_limit: 50,

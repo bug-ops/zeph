@@ -151,6 +151,7 @@ pub(crate) async fn build_shared_core(
 /// - **ACP-specific** (`acp_*`) — transport-level config; not agent-level.
 /// - **Scheduler runtime** (`scheduler_*`) — runtime broadcast senders; not config-derived.
 #[cfg(feature = "acp")]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct SharedAgentDeps {
     // Shared runtime objects
     provider: zeph_llm::any::AnyProvider,
@@ -171,6 +172,11 @@ pub(crate) struct SharedAgentDeps {
     /// `Agent::with_skill_provider_names` per session (#5818).
     skill_generation_provider: String,
     skill_disambiguate_provider: String,
+    /// `config.skills.semantic_scan`/`semantic_scan_provider`, wired into
+    /// `Agent::with_semantic_scan` per session — mirrors `src/runner.rs` and `src/daemon.rs`
+    /// (#5827: previously left on hardcoded builder defaults for ACP sessions).
+    semantic_scan: bool,
+    semantic_scan_provider: String,
     /// Base tool composite (file/shell/scrape/diagnostics + MCP + `search_code`), *not*
     /// wrapped in any gate. `spawn_acp_agent` composites this further with `skill_loader`/
     /// `memory`/`overflow`/ACP-native fs/shell per session, then wraps the FULL per-session
@@ -851,6 +857,8 @@ async fn build_acp_deps(
         skill_confusability_threshold: config.skills.confusability_threshold,
         skill_generation_provider: config.skills.generation_provider.as_str().to_owned(),
         skill_disambiguate_provider: config.skills.disambiguate_provider.as_str().to_owned(),
+        semantic_scan: config.skills.semantic_scan,
+        semantic_scan_provider: config.skills.semantic_scan_provider.as_str().to_owned(),
         tool_executor,
         permission_policy,
         policy_enforcer,
@@ -1087,6 +1095,8 @@ async fn spawn_acp_agent(
     let skill_confusability_threshold = d.skill_confusability_threshold;
     let skill_generation_provider = d.skill_generation_provider.clone();
     let skill_disambiguate_provider = d.skill_disambiguate_provider.clone();
+    let semantic_scan = d.semantic_scan;
+    let semantic_scan_provider = d.semantic_scan_provider.clone();
     let tool_executor = Arc::clone(&d.tool_executor);
     let permission_policy = d.permission_policy.clone();
     let skill_paths = d.skill_paths.clone();
@@ -1403,6 +1413,7 @@ async fn spawn_acp_agent(
             skill_confusability_threshold,
         )
         .with_skill_provider_names(skill_generation_provider, skill_disambiguate_provider)
+        .with_semantic_scan(semantic_scan, semantic_scan_provider)
         .with_working_dir(session_ctx.working_dir.clone())
         .with_skill_reload(skill_paths, reload_rx)
         .with_plugin_dirs_supplier(move || plugin_dirs_supplier())
@@ -3160,14 +3171,15 @@ mod tests {
         assert!(orch_cfg.enabled);
     }
 
-    /// #5818 regression: `build_acp_deps`/`assemble_serve_deps` must populate
+    /// #5818/#5827 regression: `build_acp_deps`/`assemble_serve_deps` must populate
     /// `SharedAgentDeps`'s/`ServeAgentDeps`'s `skill_disambiguation_threshold`/
     /// `skill_two_stage_matching`/`skill_confusability_threshold`/`skill_generation_provider`/
-    /// `skill_disambiguate_provider` from `config.skills.*` — previously these fields did not
-    /// exist on either deps struct at all, so neither `spawn_acp_agent` nor `build_agent_factory`
-    /// could call `Agent::with_skill_matching_config`/`with_skill_provider_names`, and every
-    /// ACP/`/sessions` agent silently ran skill matching on hardcoded builder defaults regardless
-    /// of config.
+    /// `skill_disambiguate_provider`/`semantic_scan`/`semantic_scan_provider` from
+    /// `config.skills.*` — previously these fields did not exist on either deps struct at all, so
+    /// neither `spawn_acp_agent` nor `build_agent_factory` could call
+    /// `Agent::with_skill_matching_config`/`with_skill_provider_names`/`with_semantic_scan`, and
+    /// every ACP/`/sessions` agent silently ran skill matching and semantic scanning on hardcoded
+    /// builder defaults regardless of config.
     ///
     /// Drives the real production `build_combined_deps` (mirroring
     /// `crate::serve::test_support::build_shared_pair`'s use of a mock-provider
@@ -3192,6 +3204,8 @@ mod tests {
         config.skills.confusability_threshold = 0.65;
         config.skills.generation_provider = zeph_common::ProviderName::new("gen-test");
         config.skills.disambiguate_provider = zeph_common::ProviderName::new("disamb-test");
+        config.skills.semantic_scan = true;
+        config.skills.semantic_scan_provider = zeph_common::ProviderName::new("scan-test");
 
         let app = crate::bootstrap::AppBuilder::for_test(config);
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -3215,6 +3229,11 @@ mod tests {
         );
         assert_eq!(serve_deps.skill_generation_provider, "gen-test");
         assert_eq!(serve_deps.skill_disambiguate_provider, "disamb-test");
+        assert!(
+            serve_deps.semantic_scan,
+            "config.skills.semantic_scan must flow into ServeAgentDeps"
+        );
+        assert_eq!(serve_deps.semantic_scan_provider, "scan-test");
 
         assert!(
             (acp_deps.skill_disambiguation_threshold - 0.55).abs() < f32::EPSILON,
@@ -3230,6 +3249,11 @@ mod tests {
         );
         assert_eq!(acp_deps.skill_generation_provider, "gen-test");
         assert_eq!(acp_deps.skill_disambiguate_provider, "disamb-test");
+        assert!(
+            acp_deps.semantic_scan,
+            "config.skills.semantic_scan must flow into SharedAgentDeps"
+        );
+        assert_eq!(acp_deps.semantic_scan_provider, "scan-test");
     }
 
     #[tokio::test]
