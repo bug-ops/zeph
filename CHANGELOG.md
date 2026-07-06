@@ -18,6 +18,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Postgres-integration test written for #5591 exercised it against a real Postgres container.
   Fixed by qualifying the reference (`invocation_count = skill_usage.invocation_count + 1`) —
   verified byte-identical behavior on `SQLite` before applying.
+- `ci`: closed three change-detection gaps in `.github/workflows/ci.yml` that produced
+  false-green runs. (1) The `shell` paths-filter (`install/**`) was declared but never read by
+  the `run-full-ci` classification — despite its comment claiming "any code, workflow, or shell
+  change triggers full CI" — so a PR touching only install scripts skipped `lint-shellcheck`
+  (and every other job) and passed `ci-status` with all-skipped results; `shell` now feeds
+  `run-full-ci`, `docs-only`, and `specs-only`. (2) `.github/nextest.toml` and
+  `.github/testcontainers-images.txt` matched no filter, so editing test-runner or container-image
+  configuration did not re-run the test/integration jobs they configure. (3) `docker/**` matched
+  no filter, so Dockerfile changes did not re-run `docker-build-and-scan`.
+- `ci`: the 5 `#[ignore]`d Qdrant-backed tests in `zeph-memory/tests/document_integration.rs`
+  were not run by any CI job — the integration job's ignored-only steps filtered on
+  `binary(qdrant_integration)` and `binary(postgres_integration)` only. The Qdrant step now
+  also selects `binary(document_integration)` (same `qdrant/qdrant:v1.16.0` image, already in
+  the testcontainer image cache; embeddings are faked in-test, so no extra services needed).
+  Both Qdrant-backed binaries are additionally capped by a new `qdrant-containers` nextest
+  test-group (`max-threads = 2`, mirroring `postgres-containers`) — with 12 per-test containers
+  at `test-threads = 8`, uncapped concurrent starts reproduce the testcontainers-rs 0.27.3
+  race observed locally as `PortNotExposed` (same class as #5546/#5547).
 
 - `fix(db)`: `cargo doc --all-features` (and any `--all-features` build) failed to compile
   `zeph-db` with 17 errors — `E0428` duplicate definitions (`begin_write`, `run_migrations`,

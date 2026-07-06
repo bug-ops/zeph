@@ -45,6 +45,18 @@ max-threads = 2
 filter = "binary(postgres_integration)"
 test-group = "postgres-containers"
 
+[test-groups.qdrant-containers]
+# Same failure class as postgres-containers: qdrant_integration and
+# document_integration each start their own Qdrant testcontainer per test.
+# Uncapped concurrency (test-threads = 8) can overload Docker and surface
+# testcontainers-rs 0.27.3 races — observed locally as PortNotExposed when 5
+# containers start at once (see also #5546/#5547 for the startup-timeout leak).
+max-threads = 2
+
+[[profile.ci.overrides]]
+filter = "binary(qdrant_integration) or binary(document_integration)"
+test-group = "qdrant-containers"
+
 [profile.ci.junit]
 # Store JUnit XML report for CI
 path = "target/nextest/ci/junit.xml"
