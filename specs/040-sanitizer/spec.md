@@ -36,16 +36,21 @@ All content entering the agent context from external sources must pass through t
 before being added to the message history or memory. The pipeline is a defense-in-depth system with
 eight layers, each addressing different threat vectors:
 
-| Layer | Component | Purpose |
-|-------|-----------|---------|
-| 1 | `ContentSanitizer` | Regex-based injection detection + spotlighting |
-| 2 | `PiiFilter` | Regex PII scrubber (email, phone, SSN, credit card) |
-| 3 | `GuardrailFilter` | LLM-based pre-screener at input boundary |
-| 4 | `QuarantinedSummarizer` | Isolated LLM fact extractor for risky content |
-| 5 | `ResponseVerifier` | Post-LLM response scanner |
-| 6 | `ExfiltrationGuard` | Outbound channel guards (markdown images, tool URLs) |
-| 7 | `MemoryWriteValidator` | Structural write guards for memory store |
-| 8 | `TurnCausalAnalyzer` | Behavioral deviation detection at tool-return boundaries |
+| Layer | Component | Status | Purpose |
+|-------|-----------|--------|---------|
+| 1 | `ContentSanitizer` | Wired | Regex-based injection detection + spotlighting |
+| 2 | `PiiFilter` | Wired | Regex PII scrubber (email, phone, SSN, credit card) |
+| 3 | `GuardrailFilter` | Wired | LLM-based pre-screener at input boundary |
+| 4 | `QuarantinedSummarizer` | Wired | Isolated LLM fact extractor for risky content |
+| 5 | `ResponseVerifier` | Wired | Post-LLM response scanner |
+| 6 | `ExfiltrationGuard` | Wired | Outbound channel guards (markdown images, tool URLs) |
+| 7 | `MemoryWriteValidator` | Wired | Structural write guards for memory store |
+| 8 | `TurnCausalAnalyzer` | Wired | Behavioral deviation detection at tool-return boundaries |
+| 9 | `IpiFilter` | Unwired | Weighted-pattern Indirect Prompt Injection scorer for web-scraped content |
+| 10 | `NliSanitizer` | Wired | SONAR NLI entailment-based injection layer; can be attached via builder |
+| 11 | `SecretMaskRegistry` | Wired | Vault-secret placeholder masking at the LLM boundary |
+| 12 | `ShadowMemory` | Wired | Cross-turn goal-drift detector; complements Layer 8's single-batch analysis |
+| 13 | `Pipeline`/`Stage` | Internal | Generic composable synchronous stage framework for custom sanitization chains |
 
 ---
 

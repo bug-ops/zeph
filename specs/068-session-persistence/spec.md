@@ -303,6 +303,16 @@ struct ReconstructedState {
 5. Stop at `up_to` (exclusive) for fork; stop at EOF for resume.
 6. Return `ReconstructedState`.
 
+**Implementation note (#5445):** step 3's bounded buffer is now implemented as described —
+`ReplayEngine::replay` reads via `SessionEventLog::read_chunked` (`crates/zeph-session/src/log.rs`),
+which yields parsed envelopes in chunks of ≤ 100 at a time instead of materializing the whole
+file into one `Vec` first. Step 4's fold logic is factored into a shared `fold_step` helper
+(`crates/zeph-session/src/replay.rs`) applied incrementally per chunk. Callers that genuinely
+need the whole-file `Vec` (`ForkEngine::fork`, which copies raw lines to the child log, and
+`ReplayEngine::fold` itself for callers that already hold the events, e.g. `llm_condenser.rs`)
+are unaffected — they still use `SessionEventLog::read_all` and the `Vec`-based `fold` entry
+point, which remain unchanged.
+
 **Determinism guarantee:** Replay never calls the LLM or tool executors. `Condensation` and `Compaction` events record their outputs; replay folds those recorded outputs identically. The reconstructed context is byte-identical to what the live agent had at that `seq`. This is the primary correctness guarantee for #3102.
 
 **Resume** = `replay(id, None)` → hydrate `Agent`'s `MessageState` from `ReconstructedState`, register in `LiveSessionRegistry`, continue appending at `last_seq + 1`.

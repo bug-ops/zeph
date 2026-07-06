@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Docs
+
+- `docs(sanitizer)`: updated `crates/zeph-sanitizer/src/shadow_memory.rs` doc comment to reflect
+  that `ShadowMemory` is actively wired into the agent tool executor via `tier_loop.rs`, rather
+  than the stale claim that it was "intended for future integration". Added cross-reference to
+  the actual call site and security event emission (#5440).
+- `docs(spec-040)`: expanded `specs/040-sanitizer/spec.md` layer table to document 5 previously
+  undocumented defense layers: `IpiFilter` (implemented, unwired), `NliSanitizer` (wired via builder),
+  `SecretMaskRegistry` (wired at LLM boundary), `ShadowMemory` (wired in tool executor),
+  and `Pipeline`/`Stage` (internal utility framework). Updated layer numbering and added wiring
+  status for each (#5440).
+
+### Performance
+
+- `perf(session)`: `ReplayEngine::replay` (`crates/zeph-session/src/replay.rs`) no longer
+  materializes a session's entire `events.jsonl` into one `Vec` before folding it — it now reads
+  via a new `SessionEventLog::read_chunked` API (`crates/zeph-session/src/log.rs`) that yields
+  parsed envelopes in bounded chunks of ≤ 100 at a time (spec-068 §6.2 step 3), folding each
+  chunk incrementally through a shared `fold_step` helper. For a session near NFR-P3's
+  100,000-event bound, this bounds peak raw-envelope memory instead of holding the full parsed
+  history resident before folding starts. `SessionEventLog::read_all` and the `Vec`-based
+  `ReplayEngine::fold` entry point are unchanged and still used by `ForkEngine::fork` and
+  `llm_condenser.rs`, which genuinely need the whole-file `Vec` (#5445).
+- `docs(session)`: revised NFR-P1 (event log append p99) and NFR-P7 (idle-actor memory) targets
+  in `specs/068-session-persistence/nfr.md` to reflect measured reality: NFR-P1's p99 target
+  moved from `< 5 ms` to `< 15 ms` (disk write-barrier/fsync latency floor confirmed via a
+  standalone harness reproducing `SessionEventLog::append`'s write+fsync pattern — batching was
+  considered and rejected as it would widen the crash-loss window NFR-R2 bounds); NFR-P7 now
+  documents a verified ~65-93 KiB per-actor housing floor plus an explicit caveat that `Agent`'s
+  own owned conversation-history state is a separate, session-length-dependent quantity not
+  covered by the "idle session" framing (follow-up bench tracked in #5840). No source change was
+  needed for either finding (#5445).
+
 ### Fixed
 
 - `build`: bumped `crossbeam-epoch` to 0.9.20 (from 0.9.18) to resolve RUSTSEC-2026-0204
@@ -13,6 +46,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   when the underlying pointer is null), a newly-published advisory that started failing the
   `cargo-deny` gate on every PR via the `ignore`/`rayon`/`zeph-index` dependency chain. Lockfile
   bump only, no source changes.
+- `fix(orchestration)`: two `zeph-orchestration` test sites referenced `llm-planning`-gated items
+  (`PlanCache`/`normalize_goal` in `plan_cache`, `crate::planner`) without being gated behind that
+  feature themselves, so `cargo check -p zeph-orchestration --tests --no-default-features
+  --features postgres,test-utils` failed to compile. `test-utils` now implies `llm-planning` in
+  `Cargo.toml` (the only `test-utils`-gated suite, `tests/postgres_integration.rs`, exercises
+  `PlanCache` end-to-end, so the two features are never meaningfully independent); the single
+  `scheduler::tick::tests` case exercising `crate::planner` got its own narrow
+  `#[cfg(feature = "llm-planning")]` gate instead, since the rest of that test file does not need
+  the feature (#5839).
+- `ci`: `zeph-orchestration` was never built with `--features postgres` in isolation anywhere in
+  `.github/workflows/ci.yml` — the only postgres coverage it got was via the workspace-wide
+  `build-postgres` check job, which would silently mask a per-crate `postgres` feature-forward
+  drifting out of sync with the root bundle (the exact bug class #5596/#5837 fixed). Added a
+  `zeph-orchestration` archive step to `build-tests-postgres` (mirroring the existing
+  `zeph-db`/`zeph-memory`/`zeph-index` per-crate postgres entries) and a matching
+  `zeph-orchestration-postgres` entry to the `integration` job's matrix, so
+  `tests/postgres_integration.rs`'s `#[ignore = "requires Docker"]` tests now run in CI.
+  Archived with `--features test-utils` — `test-utils` now implies `llm-planning`
+  (`PlanCache`/`normalize_goal`'s feature gate, #5839) — matching the same `--no-default-features
+  --features test-utils --tests` pattern used by the `zeph-db`/`zeph-index` entries (#5838).
 - `ci`: `release-build`'s `needs:` list now includes `lint-fmt` and `lint-clippy`, so a
   trivially-broken PR fails fast instead of burning the full ~40-minute release-profile build
   first. Added a companion `release-build-full` job that builds with `--features full`

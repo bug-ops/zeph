@@ -6,7 +6,7 @@
 //! These tests require Docker to be running. Run locally with:
 //! ```bash
 //! cargo nextest run -p zeph-orchestration --no-default-features \
-//!     --features test-utils,llm-planning --test postgres_integration --run-ignored ignored-only
+//!     --features test-utils --test postgres_integration --run-ignored ignored-only
 //! ```
 //!
 //! Regression coverage for issue #5803: `PlanCache::cache_plan`'s

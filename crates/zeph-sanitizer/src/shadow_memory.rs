@@ -101,8 +101,9 @@ pub struct GoalDriftResult {
 /// Create via [`ShadowMemory::new`] with a [`ShadowMemoryConfig`]. Returns `None` when
 /// the config has `enabled = false`, so callers can wrap it in `Option<ShadowMemory>`.
 ///
-/// Note: this component is not currently wired into the agent tool executor; it is a
-/// standalone goal-drift analysis component intended for future integration.
+/// Wired into the agent tool executor via `crates/zeph-core/src/agent/tool_execution/tier_loop.rs`:
+/// after every tool batch completes, `goal_drift_score()` is called and a
+/// [`zeph_common::SecurityEventCategory::GoalDrift`] security event is emitted when an alert occurs.
 ///
 /// # Examples
 ///
