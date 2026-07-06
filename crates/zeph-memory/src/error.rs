@@ -100,6 +100,22 @@ pub enum MemoryError {
     ValidationRejected(String),
 }
 
+impl MemoryError {
+    /// Returns `true` when this error is a database foreign-key constraint violation.
+    ///
+    /// Used to distinguish silent-drop-worthy edge/entity write failures (e.g. a stale
+    /// cross-database entity id) from ordinary transient DB errors, so callers can log the
+    /// former at `WARN` instead of `DEBUG` (#5801).
+    #[must_use]
+    pub fn is_foreign_key_violation(&self) -> bool {
+        use sqlx::error::DatabaseError;
+
+        matches!(self, Self::Sqlx(err) if err
+            .as_database_error()
+            .is_some_and(DatabaseError::is_foreign_key_violation))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::MemoryError;
@@ -121,6 +137,41 @@ mod tests {
         assert!(
             err.to_string().starts_with("db error:"),
             "unexpected display: {err}"
+        );
+    }
+
+    #[test]
+    fn is_foreign_key_violation_false_for_non_constraint_error() {
+        let err = MemoryError::Sqlx(zeph_db::SqlxError::RowNotFound);
+        assert!(!err.is_foreign_key_violation());
+    }
+
+    #[test]
+    fn is_foreign_key_violation_false_for_non_sqlx_variant() {
+        let err = MemoryError::GraphStore("unrelated failure".into());
+        assert!(!err.is_foreign_key_violation());
+    }
+
+    /// Regression test for #5801: `is_foreign_key_violation()` must recognize a genuine
+    /// FK constraint violation (not just a manufactured/mocked one), since it is the
+    /// linchpin of the WARN-vs-DEBUG observability fix.
+    #[tokio::test]
+    async fn is_foreign_key_violation_true_for_real_fk_violation() {
+        use crate::graph::GraphStore;
+        use crate::store::SqliteStore;
+
+        let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        let store = GraphStore::new(sqlite.pool().clone());
+
+        // Neither entity id exists in this fresh database — a genuine FK violation.
+        let err = store
+            .insert_edge(999_999, 888_888, "related_to", "fact", 0.9, None, None)
+            .await
+            .expect_err("inserting an edge between nonexistent entities must fail");
+
+        assert!(
+            err.is_foreign_key_violation(),
+            "expected a foreign-key violation, got: {err:#}"
         );
     }
 }

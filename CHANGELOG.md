@@ -229,6 +229,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `repeated_decline_still_trips_circuit_breaker`, that alternates 3 Retrieve-mandate rounds
   (each a distinct tool) with 3 real `memory_search` dispatch-and-decline rounds through the real
   `handle_native_tool_calls` pipeline and confirms the 4th distinct tool dispatches directly.
+- `fix(memory)`: entity resolution and A-MEM note-linking could silently lose or mis-link
+  graph facts whenever `SQLite` was reset, restored, or migrated independently of a shared
+  Qdrant collection (#5801). `EntityResolver::merge_entity`'s embedding-match path
+  (`crates/zeph-memory/src/graph/resolver/mod.rs`) returned the `entity_id` read straight off
+  the Qdrant point payload instead of the id `upsert_entity` (keyed on `canonical_name` +
+  `entity_type`) actually wrote to the *local* database; when the payload id referenced a row
+  absent from the current `SQLite` instance, that stale id was later used as an edge FK target
+  in `insert_edges`, failing with a `FOREIGN KEY constraint failed` and silently dropping the
+  edge at `DEBUG` level — a user-requested fact permanently lost with no error surfaced.
+  `merge_entity` now returns the locally-authoritative id from `upsert_entity`, and both
+  callers (`resolve_via_embedding`, `handle_ambiguous_candidate`) use it instead of the payload
+  id. The same defect class existed in A-MEM note-linking's `insert_similarity_edges`
+  (`crates/zeph-memory/src/semantic/graph.rs`), which read a similarity-search candidate's
+  `entity_id` directly from its Qdrant payload with no local-existence check; a new
+  `resolve_local_target_id` helper now validates the candidate's id AND canonical identity
+  (`canonical_name` + `entity_type`) against the local row before trusting it — existence
+  alone is insufficient, since after a reset local ids restart from 1 and a stale payload id
+  can coincidentally collide with a valid but unrelated local entity, which would otherwise
+  silently link a `similar_to` edge to the wrong entity with no error and no log signal. On
+  genuine drift or an absent local row, both paths re-resolve by `canonical_name` (falling
+  back to local entity creation when no local row exists under that name either) instead of
+  dropping the fact. Added `MemoryError::is_foreign_key_violation()` and upgraded the residual
+  FK-violation log paths in `insert_edges` (APEX-MEM and legacy branches) and
+  `insert_similarity_edges` from `DEBUG` to `WARN`, so any remaining failure of this class is
+  no longer silent.
 
 ### Added
 

@@ -355,7 +355,7 @@ async fn insert_similarity_edges(
             .take(cfg.top_k);
 
         for point in candidates {
-            let Some(target_id) = point
+            let Some(payload_entity_id) = point
                 .payload
                 .get("entity_id")
                 .and_then(serde_json::Value::as_i64)
@@ -364,6 +364,12 @@ async fn insert_similarity_edges(
                     "note_linking: missing entity_id in payload for point {}",
                     point.id
                 );
+                continue;
+            };
+
+            let Some(target_id) =
+                resolve_local_target_id(store, &point.payload, payload_entity_id).await
+            else {
                 continue;
             };
 
@@ -389,12 +395,124 @@ async fn insert_similarity_edges(
                 .await
             {
                 Ok(_) => stats.edges_created += 1,
+                Err(e) if e.is_foreign_key_violation() => {
+                    // `target_id` came straight from a Qdrant payload (no local-existence
+                    // check) — a stale cross-DB id silently drops this link edge (#5801).
+                    tracing::warn!(
+                        source = src,
+                        target = tgt,
+                        "note_linking: insert_edge rejected by FK constraint, dropping edge: {e:#}"
+                    );
+                }
                 Err(e) => {
                     tracing::debug!("note_linking: insert_edge failed: {e:#}");
                 }
             }
         }
     }
+}
+
+/// Re-resolve a Qdrant search-result candidate's entity id against the *local* `SQLite`
+/// database instead of trusting the payload's `entity_id` verbatim.
+///
+/// Mirrors the canonical-name-keyed correction `EntityResolver::merge_entity` applies to
+/// entity resolution (#5801): the payload's `entity_id` may reference a row in a different
+/// `SQLite` instance (e.g. after a `SQLite` reset/restore performed independently of a
+/// shared Qdrant collection), which would otherwise be used as an edge FK target and fail
+/// with a foreign-key violation — or, worse, silently collide with an unrelated local row
+/// reusing the same id. The fast path requires BOTH id-existence AND a matching
+/// `canonical_name`/`entity_type` (identity, not just existence) before trusting the payload
+/// id: under the reset trigger, local ids restart from 1, so a stale `payload_entity_id` can
+/// easily coincide with a valid but *different* local entity, and existence alone would
+/// silently link to the wrong entity. The correction path only triggers when the id is
+/// absent or its identity doesn't match, and falls back to creating the entity locally when
+/// no local row exists under its canonical name either.
+///
+/// Returns `None` when the candidate should be skipped (malformed payload, or a DB error
+/// while re-resolving/creating it) — logged at `debug!`, matching the existing skip
+/// behavior for a missing `entity_id` payload field.
+async fn resolve_local_target_id(
+    store: &crate::graph::GraphStore,
+    payload: &std::collections::HashMap<String, serde_json::Value>,
+    payload_entity_id: i64,
+) -> Option<i64> {
+    let Some(canonical_name) = payload.get("canonical_name").and_then(|v| v.as_str()) else {
+        tracing::debug!(
+            payload_entity_id,
+            "note_linking: missing canonical_name in payload, skipping candidate"
+        );
+        return None;
+    };
+    let entity_type = crate::graph::EntityResolver::parse_entity_type(
+        payload
+            .get("entity_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("concept"),
+    );
+
+    // Fast path: the payload id exists locally AND its canonical identity matches the
+    // candidate — the expected, synced case.
+    match store.find_entity_by_id(payload_entity_id).await {
+        Ok(Some(entity))
+            if entity.canonical_name == canonical_name && entity.entity_type == entity_type =>
+        {
+            return Some(payload_entity_id);
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::debug!(
+                payload_entity_id,
+                error = %e,
+                "note_linking: find_entity_by_id failed, skipping candidate"
+            );
+            return None;
+        }
+    }
+
+    // Slow path: the payload id is stale, absent, or identifies a different local entity.
+    // Re-resolve by canonical_name — the same key merge_entity uses — falling back to local
+    // entity creation only when no local row exists under that name either.
+    let resolved = match store.find_entity(canonical_name, entity_type).await {
+        Ok(Some(entity)) => entity.id.0,
+        Ok(None) => {
+            let name = payload
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(canonical_name);
+            let summary = payload.get("summary").and_then(|v| v.as_str());
+            match store
+                .upsert_entity(name, canonical_name, entity_type, summary, None)
+                .await
+            {
+                Ok(id) => id.0,
+                Err(e) => {
+                    tracing::debug!(
+                        canonical_name,
+                        error = %e,
+                        "note_linking: failed to create local entity for stale candidate, skipping"
+                    );
+                    return None;
+                }
+            }
+        }
+        Err(e) => {
+            tracing::debug!(
+                canonical_name,
+                error = %e,
+                "note_linking: find_entity failed while re-resolving candidate, skipping"
+            );
+            return None;
+        }
+    };
+
+    tracing::warn!(
+        payload_entity_id,
+        resolved_entity_id = resolved,
+        canonical_name,
+        "note_linking: Qdrant entity_id payload did not match local SQLite row \
+         (cross-DB or stale resolution) — corrected to the locally authoritative id"
+    );
+    Some(resolved)
 }
 
 /// Extract entities and edges from `content` and persist them to the graph store.
@@ -651,6 +769,15 @@ async fn insert_edges(
                 .await
             {
                 Ok(_) => edges_inserted += 1,
+                Err(e) if e.is_foreign_key_violation() => {
+                    // A resolved entity id was rejected as an FK target — this drops a
+                    // user-requested fact permanently and must not be silent (#5801).
+                    tracing::warn!(
+                        source = src_id,
+                        target = tgt_id,
+                        "graph: edge insert (apex) rejected by FK constraint, dropping edge: {e:#}"
+                    );
+                }
                 Err(e) => {
                     tracing::debug!("graph: skipping edge (apex): {e:#}");
                 }
@@ -679,6 +806,15 @@ async fn insert_edges(
             {
                 Ok(Some(_)) => edges_inserted += 1,
                 Ok(None) => {} // deduplicated
+                Err(e) if e.is_foreign_key_violation() => {
+                    // A resolved entity id was rejected as an FK target — this drops a
+                    // user-requested fact permanently and must not be silent (#5801).
+                    tracing::warn!(
+                        source = src_id,
+                        target = tgt_id,
+                        "graph: edge insert rejected by FK constraint, dropping edge: {e:#}"
+                    );
+                }
                 Err(e) => {
                     tracing::debug!("graph: skipping edge: {e:#}");
                 }

@@ -188,7 +188,12 @@ impl<'a> EntityResolver<'a> {
     }
 
     /// Parse an entity type string, falling back to `Concept` on unknown values.
-    fn parse_entity_type(entity_type: &str) -> EntityType {
+    ///
+    /// `pub(crate)` so callers outside this module facing the same "parse a `Qdrant`-payload
+    /// `entity_type` string, default to `Concept`" need (e.g. note-linking's
+    /// `resolve_local_target_id` in `semantic/graph.rs`, #5801) share this logic instead of
+    /// duplicating it.
+    pub(crate) fn parse_entity_type(entity_type: &str) -> EntityType {
         entity_type
             .trim()
             .to_lowercase()
@@ -357,7 +362,7 @@ impl<'a> EntityResolver<'a> {
         summary: Option<&str>,
         _provenance: Option<&GraphProvenance>,
     ) -> Result<Option<(i64, ResolutionOutcome)>, MemoryError> {
-        let entity_id = payload
+        let payload_entity_id = payload
             .get("entity_id")
             .and_then(serde_json::Value::as_i64)
             .ok_or_else(|| MemoryError::GraphStore("missing entity_id in payload".into()))?;
@@ -393,20 +398,24 @@ impl<'a> EntityResolver<'a> {
             .await
         {
             Some(true) => {
-                self.merge_entity(
-                    emb_store,
-                    provider,
-                    entity_id,
-                    surface_name,
-                    normalized,
-                    et,
-                    summary,
-                    existing_canonical,
-                    existing_summary_str,
-                    Some(point_id),
-                )
-                .await?;
-                Ok(Some((entity_id, ResolutionOutcome::LlmDisambiguated)))
+                let resolved_entity_id = self
+                    .merge_entity(
+                        emb_store,
+                        provider,
+                        payload_entity_id,
+                        surface_name,
+                        normalized,
+                        et,
+                        summary,
+                        existing_canonical,
+                        existing_summary_str,
+                        Some(point_id),
+                    )
+                    .await?;
+                Ok(Some((
+                    resolved_entity_id,
+                    ResolutionOutcome::LlmDisambiguated,
+                )))
             }
             Some(false) => Ok(None),
             None => {
@@ -475,7 +484,7 @@ impl<'a> EntityResolver<'a> {
         if let Some(best) = candidates.first() {
             let score = best.score;
             if score >= self.similarity_threshold {
-                let entity_id = best
+                let payload_entity_id = best
                     .payload
                     .get("entity_id")
                     .and_then(serde_json::Value::as_i64)
@@ -486,21 +495,22 @@ impl<'a> EntityResolver<'a> {
                     best.payload.get("canonical_name").and_then(|v| v.as_str());
                 let existing_summary = best.payload.get("summary").and_then(|v| v.as_str());
                 let existing_pid = Some(best.id.as_str());
-                self.merge_entity(
-                    emb_store,
-                    provider,
-                    entity_id,
-                    surface_name,
-                    normalized,
-                    et,
-                    summary,
-                    existing_canonical,
-                    existing_summary,
-                    existing_pid,
-                )
-                .await?;
+                let resolved_entity_id = self
+                    .merge_entity(
+                        emb_store,
+                        provider,
+                        payload_entity_id,
+                        surface_name,
+                        normalized,
+                        et,
+                        summary,
+                        existing_canonical,
+                        existing_summary,
+                        existing_pid,
+                    )
+                    .await?;
                 return Ok(Some((
-                    entity_id,
+                    resolved_entity_id,
                     ResolutionOutcome::EmbeddingMatch { score },
                 )));
             } else if score >= self.ambiguous_threshold
@@ -598,12 +608,22 @@ impl<'a> EntityResolver<'a> {
     /// the call site (hot path, no `SQLite` roundtrip). Pass `None` for either when the point
     /// predates the payload fields — a targeted `find_entity_by_id` read is then used as a
     /// one-time fallback (legacy transition path, removed after all points are rewritten).
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    ///
+    /// `payload_entity_id` is the `entity_id` read off the Qdrant point payload — it may
+    /// reference a row in a *different* `SQLite` instance than the one this resolver is bound
+    /// to (e.g. `SQLite` was reset/restored independently of a shared Qdrant collection).
+    /// The returned `i64` is always the id of the row actually written by this call's
+    /// `upsert_entity` (keyed on `canonical_name` + `entity_type`, not on `payload_entity_id`),
+    /// so it is guaranteed to exist in the local `SQLite` database — callers MUST use the
+    /// returned id (not `payload_entity_id`) as the FK target for edge inserts (#5801).
+    #[allow(clippy::too_many_arguments)]
+    // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[allow(clippy::too_many_lines)] // cross-DB id correction (#5801) added a diagnostic branch
     async fn merge_entity(
         &self,
         emb_store: &EmbeddingStore,
         provider: &AnyProvider,
-        entity_id: i64,
+        payload_entity_id: i64,
         new_surface_name: &str,
         new_canonical_name: &str,
         entity_type: EntityType,
@@ -611,7 +631,7 @@ impl<'a> EntityResolver<'a> {
         existing_canonical_name: Option<&str>,
         existing_summary_payload: Option<&str>,
         existing_point_id: Option<&str>,
-    ) -> Result<(), MemoryError> {
+    ) -> Result<i64, MemoryError> {
         // Hot path: use values from the Qdrant payload (no SQLite roundtrip).
         // Both canonical_name AND summary must be present; if either is absent the point
         // predates the payload field — fall back to a targeted SQLite read to avoid
@@ -630,7 +650,7 @@ impl<'a> EntityResolver<'a> {
                 // fields; one targeted read is acceptable until the embedding is rewritten
                 // on the next merge. Also used when canonical_name is present but summary
                 // is absent — prevents overwriting a SQLite summary with empty string.
-                let existing = self.store.find_entity_by_id(entity_id).await?;
+                let existing = self.store.find_entity_by_id(payload_entity_id).await?;
                 let canonical = existing_canonical_name.map_or_else(
                     || {
                         existing.as_ref().map_or_else(
@@ -676,7 +696,12 @@ impl<'a> EntityResolver<'a> {
 
         // Preserve the existing display name from the payload; fall back to the incoming surface
         // name only for brand-new entities (where the payload had no "name" field).
-        self.store
+        //
+        // This upsert is keyed on (canonical_name, entity_type) and RETURNING id gives back
+        // the row actually present in the *local* SQLite database — authoritative regardless
+        // of whether `payload_entity_id` is stale (#5801).
+        let entity_id = self
+            .store
             .upsert_entity(
                 new_surface_name,
                 &existing_canonical,
@@ -684,7 +709,23 @@ impl<'a> EntityResolver<'a> {
                 summary_opt,
                 None,
             )
-            .await?;
+            .await?
+            .0;
+
+        if entity_id != payload_entity_id {
+            // The Qdrant payload pointed at an id absent from (or divergent from) the local
+            // SQLite row for this canonical_name/entity_type — most commonly because SQLite
+            // was reset/restored/migrated independently of a shared Qdrant collection. Using
+            // `payload_entity_id` as an edge FK target here would fail with a foreign-key
+            // violation; the corrected local id is used and re-stamped into Qdrant below.
+            tracing::warn!(
+                payload_entity_id,
+                resolved_entity_id = entity_id,
+                canonical_name = %existing_canonical,
+                "graph: Qdrant entity_id payload did not match local SQLite row \
+                 (cross-DB or stale resolution) — corrected to the locally authoritative id"
+            );
+        }
 
         // Re-embed merged text and upsert to Qdrant
         let embed_text = format!("{new_surface_name}: {merged_summary}");
@@ -722,7 +763,7 @@ impl<'a> EntityResolver<'a> {
             }
         }
 
-        Ok(())
+        Ok(entity_id)
     }
 
     /// Store an entity embedding in Qdrant and update `qdrant_point_id` in `SQLite`.

@@ -509,6 +509,7 @@ async fn seed_entity_with_zero_embedding(
     let point_id = uuid::Uuid::new_v4().to_string();
     let payload = json!({
         "entity_id": id,
+        "canonical_name": name,
         "entity_type": "concept",
         "name": name,
         "summary": "",
@@ -560,6 +561,7 @@ async fn seed_entity_no_db_point_id(
     let point_id = uuid::Uuid::new_v4().to_string();
     let payload = json!({
         "entity_id": id,
+        "canonical_name": name,
         "entity_type": "concept",
         "name": name,
         "summary": "",
@@ -836,5 +838,214 @@ async fn link_memory_notes_threshold_rejection() {
     assert_eq!(
         stats.edges_created, 0,
         "no edges must be created when all scores are below threshold"
+    );
+}
+
+// ── #5801: note-linking must correct a stale cross-DB candidate id ───────────
+//
+// `insert_similarity_edges` reads a candidate's `entity_id` straight off a Qdrant
+// search-result payload. If that payload was written by a different (now-gone) SQLite
+// instance sharing the same Qdrant collection, the id may not exist locally — using it
+// as an edge FK target would fail with a foreign-key violation and silently drop the
+// link edge. `resolve_local_target_id` must re-resolve such a candidate via its
+// `canonical_name` (falling back to local entity creation) rather than trusting the
+// stale payload id.
+
+#[tokio::test]
+#[tracing_test::traced_test]
+async fn link_memory_notes_corrects_stale_cross_db_target_id() {
+    // Phantom candidate: exists only in Qdrant with an entity_id that has no local row —
+    // simulates a Qdrant point left over from a different, now-gone SQLite instance.
+    const STALE_CROSS_DB_ID: i64 = 777_777_777;
+
+    let (memory, embedding_store) = memory_with_in_memory_vector_store().await;
+    let store = GraphStore::new(memory.sqlite.pool().clone());
+
+    let id_a = seed_entity_with_zero_embedding(&store, &embedding_store, "phantom_source").await;
+
+    let payload = serde_json::json!({
+        "entity_id": STALE_CROSS_DB_ID,
+        "canonical_name": "phantom target",
+        "name": "phantom target",
+        "entity_type": "concept",
+        "summary": "",
+    });
+    embedding_store
+        .upsert_to_collection(
+            "zeph_graph_entities",
+            &uuid::Uuid::new_v4().to_string(),
+            payload,
+            vec![0.0_f32; 384],
+        )
+        .await
+        .unwrap();
+
+    let cfg = NoteLinkingConfig {
+        enabled: true,
+        similarity_threshold: 0.0,
+        top_k: 5,
+        timeout_secs: 10,
+    };
+
+    let stats = link_memory_notes(
+        &[id_a],
+        memory.sqlite.pool().clone(),
+        embedding_store,
+        embedding_provider(),
+        &cfg,
+    )
+    .await;
+
+    assert_eq!(
+        stats.edges_created, 1,
+        "the link edge must still be created via the corrected local id, not silently dropped"
+    );
+    assert!(
+        logs_contain("note_linking: Qdrant entity_id payload did not match local SQLite row"),
+        "drift-correction WARN must fire for the stale candidate id"
+    );
+
+    let pool = memory.sqlite.pool();
+    let stale_id_referenced: i64 = zeph_db::query_scalar(sql!(
+        "SELECT COUNT(*) FROM graph_edges WHERE source_entity_id = ?1 OR target_entity_id = ?1"
+    ))
+    .bind(STALE_CROSS_DB_ID)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        stale_id_referenced, 0,
+        "the created edge must never reference the stale cross-DB id (would violate the FK)"
+    );
+
+    // The phantom entity must have been created locally under its canonical_name so the
+    // edge has a valid FK target.
+    let phantom = store
+        .find_entity("phantom target", EntityType::Concept)
+        .await
+        .unwrap();
+    assert!(
+        phantom.is_some(),
+        "a local entity must be created for the stale candidate so the edge has a valid FK target"
+    );
+}
+
+// ── #5801: id-existence is not identity — a colliding local id must not be trusted ──
+//
+// After a SQLite reset, local ids restart from 1, so a stale `payload_entity_id` can
+// coincidentally match an existing but UNRELATED local row instead of being absent.
+// `resolve_local_target_id`'s fast path must verify canonical_name/entity_type identity,
+// not just id existence, or it would silently link a `similar_to` edge to the wrong entity.
+
+#[tokio::test]
+#[tracing_test::traced_test]
+async fn link_memory_notes_id_collision_falls_through_to_slow_path() {
+    let (memory, embedding_store) = memory_with_in_memory_vector_store().await;
+    let store = GraphStore::new(memory.sqlite.pool().clone());
+
+    let id_a = seed_entity_with_zero_embedding(&store, &embedding_store, "collision_source").await;
+
+    // A local row that will collide by id with the phantom candidate below, but is an
+    // entirely unrelated entity. No Qdrant point of its own, so it never competes as a
+    // search candidate — only its id is relevant here.
+    let collided_id = store
+        .upsert_entity(
+            "collision_wrong_entity",
+            "collision_wrong_entity",
+            EntityType::Concept,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .0;
+
+    // Phantom candidate: payload `entity_id` happens to equal `collided_id`, but its
+    // `canonical_name` identifies a DIFFERENT entity — simulating the reset scenario where
+    // a stale small int coincides with a valid but unrelated local row.
+    let payload = serde_json::json!({
+        "entity_id": collided_id,
+        "canonical_name": "collision_correct_target",
+        "name": "collision_correct_target",
+        "entity_type": "concept",
+        "summary": "",
+    });
+    embedding_store
+        .upsert_to_collection(
+            "zeph_graph_entities",
+            &uuid::Uuid::new_v4().to_string(),
+            payload,
+            vec![0.0_f32; 384],
+        )
+        .await
+        .unwrap();
+
+    let cfg = NoteLinkingConfig {
+        enabled: true,
+        similarity_threshold: 0.0,
+        top_k: 5,
+        timeout_secs: 10,
+    };
+
+    let stats = link_memory_notes(
+        &[id_a],
+        memory.sqlite.pool().clone(),
+        embedding_store,
+        embedding_provider(),
+        &cfg,
+    )
+    .await;
+
+    assert_eq!(
+        stats.edges_created, 1,
+        "the link edge must be created via the correctly re-resolved entity"
+    );
+
+    // The edge must reference the entity re-resolved (or created) under the candidate's own
+    // canonical_name, not the unrelated row that happened to collide by id.
+    let correct_target = store
+        .find_entity("collision_correct_target", EntityType::Concept)
+        .await
+        .unwrap()
+        .expect("a local entity must be created for the mismatched-identity candidate");
+    assert_ne!(
+        correct_target.id.0, collided_id,
+        "the re-resolved entity must not be the unrelated collided row"
+    );
+
+    let pool = memory.sqlite.pool();
+    let edge_to_correct_target: i64 = zeph_db::query_scalar(sql!(
+        "SELECT COUNT(*) FROM graph_edges
+         WHERE (source_entity_id = ?1 AND target_entity_id = ?2)
+            OR (source_entity_id = ?2 AND target_entity_id = ?1)"
+    ))
+    .bind(id_a)
+    .bind(correct_target.id.0)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        edge_to_correct_target, 1,
+        "edge must link to the correctly re-resolved entity"
+    );
+
+    let edge_to_collided_id: i64 = zeph_db::query_scalar(sql!(
+        "SELECT COUNT(*) FROM graph_edges
+         WHERE (source_entity_id = ?1 AND target_entity_id = ?2)
+            OR (source_entity_id = ?2 AND target_entity_id = ?1)"
+    ))
+    .bind(id_a)
+    .bind(collided_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        edge_to_collided_id, 0,
+        "edge must NOT silently link to the unrelated entity that happened to collide by id"
+    );
+
+    assert!(
+        logs_contain("note_linking: Qdrant entity_id payload did not match local SQLite row"),
+        "drift-correction WARN must fire when identity does not match despite the id existing"
     );
 }

@@ -822,6 +822,63 @@ async fn merge_preserves_older_entity_id() {
 }
 
 #[tokio::test]
+#[tracing_test::traced_test]
+async fn merge_corrects_stale_cross_db_entity_id() {
+    // Regression test for #5801: the Qdrant payload references an entity_id that does not
+    // exist in *this* SQLite database (e.g. SQLite was reset/restored independently of a
+    // shared Qdrant collection). `resolve()` must not return the stale payload id verbatim —
+    // doing so would later be used as an edge FK target and fail with a foreign-key violation.
+    //
+    // No local row exists for this id — simulates a Qdrant point left over from a different,
+    // now-gone SQLite instance.
+    const STALE_CROSS_DB_ID: i64 = 987_654_321;
+
+    let (gs, emb) = setup_with_embedding().await;
+
+    let mock_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
+    emb.ensure_named_collection(ENTITY_COLLECTION, 4)
+        .await
+        .unwrap();
+    let payload = serde_json::json!({
+        "entity_id": STALE_CROSS_DB_ID,
+        "canonical_name": "stale entity",
+        "name": "stale entity",
+        "entity_type": "concept",
+        "summary": "old info",
+    });
+    emb.store_to_collection(ENTITY_COLLECTION, payload, mock_vec.clone())
+        .await
+        .unwrap();
+
+    let provider = make_mock_provider_with_embedding(mock_vec);
+    let any_provider = zeph_llm::any::AnyProvider::Mock(provider);
+
+    let resolver = EntityResolver::new(&gs)
+        .with_embedding_store(&emb)
+        .with_provider(&any_provider)
+        .with_thresholds(0.85, 0.70);
+
+    let (returned_id, outcome) = resolver
+        .resolve("stale entity variant", "concept", Some("new info"), None)
+        .await
+        .unwrap();
+
+    assert_matches!(outcome, ResolutionOutcome::EmbeddingMatch { .. });
+    assert_ne!(
+        returned_id, STALE_CROSS_DB_ID,
+        "resolve() must not return the stale Qdrant-payload entity id verbatim"
+    );
+    assert!(
+        gs.find_entity_by_id(returned_id).await.unwrap().is_some(),
+        "returned entity id must reference a row that actually exists in the local SQLite database"
+    );
+    assert!(
+        logs_contain("corrected to the locally authoritative id"),
+        "drift-correction WARN must fire when the payload id does not match the local row"
+    );
+}
+
+#[tokio::test]
 async fn entity_type_filter_prevents_cross_type_merge() {
     let (gs, emb) = setup_with_embedding().await;
 
