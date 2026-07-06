@@ -199,6 +199,30 @@ impl StreamingSend for DiscordChannel {
     }
 }
 
+impl crate::confirm::ConfirmLoop for DiscordChannel {
+    type Incoming = IncomingMessage;
+
+    fn confirm_label(&self) -> &'static str {
+        "discord"
+    }
+
+    fn confirm_receiver(&mut self) -> &mut mpsc::Receiver<IncomingMessage> {
+        &mut self.rx
+    }
+
+    fn confirm_accepts(&self, incoming: &IncomingMessage) -> bool {
+        self.is_authorized(incoming)
+    }
+
+    fn confirm_reply_text<'a>(&self, incoming: &'a IncomingMessage) -> &'a str {
+        &incoming.content
+    }
+
+    async fn confirm_send_prompt(&mut self, text: &str) -> Result<(), ChannelError> {
+        self.send(text).await
+    }
+}
+
 impl Channel for DiscordChannel {
     fn supports_exit(&self) -> bool {
         false
@@ -336,45 +360,7 @@ impl Channel for DiscordChannel {
         tracing::instrument(name = "channels.discord.confirm", skip_all, fields(prompt_len = %prompt.len()))
     )]
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
-        self.send(&format!(
-            "{prompt}\nReply 'yes' to confirm (timeout: {}s).",
-            crate::CONFIRM_TIMEOUT.as_secs()
-        ))
-        .await?;
-        let deadline = tokio::time::Instant::now() + crate::CONFIRM_TIMEOUT;
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                tracing::warn!(
-                    "discord confirm timed out after {}s — denied",
-                    crate::CONFIRM_TIMEOUT.as_secs()
-                );
-                return Ok(false);
-            }
-            match tokio::time::timeout(remaining, self.rx.recv()).await {
-                Ok(Some(incoming)) => {
-                    if !self.is_authorized(&incoming) {
-                        tracing::debug!(
-                            author_id = %incoming.author_id,
-                            "discord confirm: ignoring message from unauthorized user"
-                        );
-                        continue;
-                    }
-                    return Ok(incoming.content.trim().eq_ignore_ascii_case("yes"));
-                }
-                Ok(None) => {
-                    tracing::warn!("discord confirm channel closed — denying");
-                    return Ok(false);
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "discord confirm timed out after {}s — denied",
-                        crate::CONFIRM_TIMEOUT.as_secs()
-                    );
-                    return Ok(false);
-                }
-            }
-        }
+        crate::confirm::ConfirmLoop::run_confirm(self, prompt).await
     }
 
     async fn elicit(

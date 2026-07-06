@@ -33,6 +33,7 @@
 
 mod any;
 pub mod cli;
+pub mod confirm;
 #[cfg(feature = "discord")]
 pub mod discord;
 pub mod json_cli;

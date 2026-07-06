@@ -150,7 +150,7 @@ impl std::fmt::Debug for TelegramChannel {
 }
 
 #[derive(Debug)]
-struct IncomingMessage {
+pub struct IncomingMessage {
     chat_id: ChatId,
     text: String,
     attachments: Vec<Attachment>,
@@ -1044,6 +1044,30 @@ async fn download_file(bot: &Bot, file_id: String, capacity: u32) -> Result<Vec<
     Ok(buf)
 }
 
+impl crate::confirm::ConfirmLoop for TelegramChannel {
+    type Incoming = IncomingMessage;
+
+    fn confirm_label(&self) -> &'static str {
+        "telegram"
+    }
+
+    fn confirm_receiver(&mut self) -> &mut mpsc::Receiver<IncomingMessage> {
+        &mut self.rx
+    }
+
+    fn confirm_accepts(&self, incoming: &IncomingMessage) -> bool {
+        self.chat_id.is_none_or(|id| id == incoming.chat_id)
+    }
+
+    fn confirm_reply_text<'a>(&self, incoming: &'a IncomingMessage) -> &'a str {
+        &incoming.text
+    }
+
+    async fn confirm_send_prompt(&mut self, text: &str) -> Result<(), ChannelError> {
+        self.send(text).await
+    }
+}
+
 impl Channel for TelegramChannel {
     /// Returns `false` — Telegram is a persistent remote channel with no
     /// meaningful concept of "session exit".
@@ -1331,46 +1355,7 @@ impl Channel for TelegramChannel {
     /// [`CONFIRM_TIMEOUT`]: crate::CONFIRM_TIMEOUT
     #[tracing::instrument(name = "channels.telegram.confirm", skip_all)]
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
-        self.send(&format!(
-            "{prompt}\nReply 'yes' to confirm (timeout: {}s).",
-            crate::CONFIRM_TIMEOUT.as_secs()
-        ))
-        .await?;
-        let initiator_chat_id = self.chat_id;
-        let deadline = tokio::time::Instant::now() + crate::CONFIRM_TIMEOUT;
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                tracing::warn!(
-                    "telegram confirm timed out after {}s — denied",
-                    crate::CONFIRM_TIMEOUT.as_secs()
-                );
-                return Ok(false);
-            }
-            match tokio::time::timeout(remaining, self.rx.recv()).await {
-                Ok(Some(incoming)) => {
-                    if initiator_chat_id.is_some_and(|id| id != incoming.chat_id) {
-                        tracing::debug!(
-                            chat_id = %incoming.chat_id,
-                            "telegram confirm: ignoring message from non-initiating chat"
-                        );
-                        continue;
-                    }
-                    return Ok(incoming.text.trim().eq_ignore_ascii_case("yes"));
-                }
-                Ok(None) => {
-                    tracing::warn!("telegram confirm channel closed — denying");
-                    return Ok(false);
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "telegram confirm timed out after {}s — denied",
-                        crate::CONFIRM_TIMEOUT.as_secs()
-                    );
-                    return Ok(false);
-                }
-            }
-        }
+        crate::confirm::ConfirmLoop::run_confirm(self, prompt).await
     }
 
     /// Collect structured input from the user on behalf of an MCP server.
