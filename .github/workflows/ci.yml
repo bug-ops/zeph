@@ -224,7 +224,7 @@ jobs:
           retention-days: 1
 
   build-tests-postgres:
-    # The three postgres archives build RUNNABLE test binaries (with
+    # The four postgres archives build RUNNABLE test binaries (with
     # test-utils = testcontainers) consumed by the integration matrix. They do
     # not duplicate the build-postgres job, which is check-only: it type-checks
     # the whole workspace under the postgres backend and produces no artifacts.
@@ -283,6 +283,18 @@ jobs:
         with:
           name: nextest-archive-zeph-index-postgres
           path: nextest-archive-zeph-index-postgres.tar.zst
+          retention-days: 1
+      - name: Build and archive zeph-orchestration postgres integration tests
+        # sqlite and postgres are mutually exclusive; default features (which
+        # include "sqlite") must be disabled so only postgres is active.
+        # test-utils implies llm-planning: tests/postgres_integration.rs exercises
+        # PlanCache, which lives behind that feature gate (#5839).
+        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci -p zeph-orchestration --no-default-features --features test-utils --tests --archive-file nextest-archive-zeph-orchestration-postgres.tar.zst
+      - name: Upload zeph-orchestration postgres test archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: nextest-archive-zeph-orchestration-postgres
+          path: nextest-archive-zeph-orchestration-postgres.tar.zst
           retention-days: 1
 
   test:
@@ -353,6 +365,10 @@ jobs:
           - suite: zeph-index-postgres
             archive: nextest-archive-zeph-index-postgres
             file: nextest-archive-zeph-index-postgres.tar.zst
+            run_args: "-E 'binary(postgres_integration)'"
+          - suite: zeph-orchestration-postgres
+            archive: nextest-archive-zeph-orchestration-postgres
+            file: nextest-archive-zeph-orchestration-postgres.tar.zst
             run_args: "-E 'binary(postgres_integration)'"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7

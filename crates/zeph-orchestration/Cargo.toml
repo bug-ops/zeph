@@ -48,7 +48,9 @@ sqlite = ["zeph-db/sqlite", "zeph-durable/sqlite", "zeph-memory/sqlite", "zeph-s
 postgres = ["zeph-db/postgres", "zeph-durable/postgres", "zeph-memory/postgres", "zeph-subagent/postgres"]
 llm-planning = ["dep:zeph-llm"]
 # Enables test utilities and testcontainers for PostgreSQL integration tests.
-test-utils = ["dep:testcontainers-modules", "postgres"]
+# Implies `llm-planning`: the only test-utils-gated suite (postgres_integration.rs)
+# exercises `PlanCache`, which lives behind that feature.
+test-utils = ["dep:testcontainers-modules", "postgres", "llm-planning"]
 default = ["sqlite"]
 
 [lints]

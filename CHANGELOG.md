@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(orchestration)`: two `zeph-orchestration` test sites referenced `llm-planning`-gated items
+  (`PlanCache`/`normalize_goal` in `plan_cache`, `crate::planner`) without being gated behind that
+  feature themselves, so `cargo check -p zeph-orchestration --tests --no-default-features
+  --features postgres,test-utils` failed to compile. `test-utils` now implies `llm-planning` in
+  `Cargo.toml` (the only `test-utils`-gated suite, `tests/postgres_integration.rs`, exercises
+  `PlanCache` end-to-end, so the two features are never meaningfully independent); the single
+  `scheduler::tick::tests` case exercising `crate::planner` got its own narrow
+  `#[cfg(feature = "llm-planning")]` gate instead, since the rest of that test file does not need
+  the feature (#5839).
+- `ci`: `zeph-orchestration` was never built with `--features postgres` in isolation anywhere in
+  `.github/workflows/ci.yml` — the only postgres coverage it got was via the workspace-wide
+  `build-postgres` check job, which would silently mask a per-crate `postgres` feature-forward
+  drifting out of sync with the root bundle (the exact bug class #5596/#5837 fixed). Added a
+  `zeph-orchestration` archive step to `build-tests-postgres` (mirroring the existing
+  `zeph-db`/`zeph-memory`/`zeph-index` per-crate postgres entries) and a matching
+  `zeph-orchestration-postgres` entry to the `integration` job's matrix, so
+  `tests/postgres_integration.rs`'s `#[ignore = "requires Docker"]` tests now run in CI.
+  Archived with `--features test-utils` — `test-utils` now implies `llm-planning`
+  (`PlanCache`/`normalize_goal`'s feature gate, #5839) — matching the same `--no-default-features
+  --features test-utils --tests` pattern used by the `zeph-db`/`zeph-index` entries (#5838).
 - `ci`: `release-build`'s `needs:` list now includes `lint-fmt` and `lint-clippy`, so a
   trivially-broken PR fails fast instead of burning the full ~40-minute release-profile build
   first. Added a companion `release-build-full` job that builds with `--features full`
