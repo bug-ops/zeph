@@ -628,6 +628,7 @@ impl SubAgentManager {
         let permissions_worktree = def.permissions.worktree;
         let prune_branch_on_remove = config.worktree.prune_branch_on_remove;
         let cleanup_on_completion = config.worktree.cleanup_on_completion;
+        let task_supervisor_for_cleanup = self.task_supervisor.clone();
 
         // INV-3: disallow `set_working_directory` for agents that get a dedicated worktree.
         // Must push BEFORE build_filtered_executor reads def.disallowed_tools.
@@ -704,6 +705,7 @@ impl SubAgentManager {
                             handle: handle.clone(),
                             prune: prune_branch_on_remove,
                             enabled: cleanup_on_completion,
+                            task_supervisor: task_supervisor_for_cleanup,
                         };
 
                         let result = run_agent_loop(agent_loop_args).await;

@@ -3,6 +3,9 @@
 
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+use zeph_common::TaskSupervisor;
+
 /// RAII guard that calls [`DefaultWorktreeManager::remove`] when dropped.
 ///
 /// Guarantees cleanup on normal return and on early `?` returns from the agent loop.
@@ -14,6 +17,12 @@ pub(crate) struct WorktreeCleanupGuard {
     pub(crate) handle: zeph_worktree::WorktreeHandle,
     pub(crate) prune: bool,
     pub(crate) enabled: bool,
+    /// Session [`TaskSupervisor`], sourced from [`SubAgentManager`][super::SubAgentManager],
+    /// so the cleanup task is registered and visible like any other supervised task.
+    ///
+    /// `None` (e.g. in unit tests that build the guard directly) falls back to a transient
+    /// local supervisor, mirroring [`SubAgentManager::spawn_agent_task`][super::SubAgentManager::spawn_agent_task].
+    pub(crate) task_supervisor: Option<TaskSupervisor>,
 }
 
 impl Drop for WorktreeCleanupGuard {
@@ -21,21 +30,27 @@ impl Drop for WorktreeCleanupGuard {
         if !self.enabled {
             return;
         }
+        if tokio::runtime::Handle::try_current().is_err() {
+            tracing::error!(
+                "no tokio runtime in WorktreeCleanupGuard::drop — worktree cleanup skipped"
+            );
+            return;
+        }
         let wm = Arc::clone(&self.wm);
         let h = self.handle.clone();
         let prune = self.prune;
-        match tokio::runtime::Handle::try_current() {
-            Ok(rt) => {
-                rt.spawn(async move {
-                    if let Err(e) = wm.remove(&h, prune).await {
-                        tracing::warn!(error = %e, "failed to remove sub-agent worktree");
-                    }
-                });
+        let name: Arc<str> = Arc::from(format!("worktree-cleanup-{}", h.subagent_id));
+        let factory = move || async move {
+            if let Err(e) = wm.remove(&h, prune).await {
+                tracing::warn!(error = %e, "failed to remove sub-agent worktree");
             }
-            Err(_) => {
-                tracing::error!(
-                    "no tokio runtime in WorktreeCleanupGuard::drop — worktree cleanup skipped"
-                );
+        };
+        match &self.task_supervisor {
+            Some(sup) => {
+                sup.spawn_oneshot(name, factory);
+            }
+            None => {
+                TaskSupervisor::new(CancellationToken::new()).spawn_oneshot(name, factory);
             }
         }
     }

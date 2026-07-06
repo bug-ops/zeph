@@ -3521,6 +3521,7 @@ mod worktree_cleanup_guard_tests {
             handle,
             prune: false,
             enabled: false,
+            task_supervisor: None,
         });
     }
 
@@ -3539,6 +3540,7 @@ mod worktree_cleanup_guard_tests {
             handle,
             prune: false,
             enabled: true,
+            task_supervisor: None,
         });
     }
 
@@ -3555,9 +3557,50 @@ mod worktree_cleanup_guard_tests {
             handle,
             prune: false,
             enabled: true,
+            task_supervisor: None,
         });
         // Yield to allow the spawned task to complete.
         tokio::task::yield_now().await;
+    }
+
+    /// `enabled = true` with an injected `Some(task_supervisor)`: Drop must route the
+    /// cleanup task through that supervisor (`TaskSupervisor::spawn_oneshot`) rather than
+    /// a bare untracked `tokio::spawn`, so the task is visible via `snapshot()`.
+    ///
+    /// `spawn_oneshot` registers the task entry synchronously (under lock) before
+    /// returning, and this test never awaits between `drop(guard)` and `snapshot()` —
+    /// on the single-threaded `#[tokio::test]` runtime, no other task (including the
+    /// reap driver or the cleanup task itself) can run until this test yields. So the
+    /// entry is guaranteed to still be present, deterministically, without relying on
+    /// timing/delays.
+    #[tokio::test]
+    async fn cleanup_registers_task_in_injected_supervisor() {
+        use tokio_util::sync::CancellationToken;
+        use zeph_common::TaskSupervisor;
+
+        let cancel = CancellationToken::new();
+        let supervisor = TaskSupervisor::new(cancel.clone());
+
+        let (_dir, wm) = make_dummy_wm().await;
+        let dir2 = TempDir::new().unwrap();
+        let handle = dummy_handle(&dir2);
+        let expected_name = format!("worktree-cleanup-{}", handle.subagent_id);
+
+        drop(WorktreeCleanupGuard {
+            wm,
+            handle,
+            prune: false,
+            enabled: true,
+            task_supervisor: Some(supervisor.clone()),
+        });
+
+        let snaps = supervisor.snapshot();
+        assert!(
+            snaps.iter().any(|s| s.name.as_ref() == expected_name),
+            "cleanup task must be registered in the injected TaskSupervisor; got: {snaps:?}"
+        );
+
+        cancel.cancel();
     }
 }
 

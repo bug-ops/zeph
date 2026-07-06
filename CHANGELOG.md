@@ -49,6 +49,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(subagent)`: `WorktreeCleanupGuard::drop` (`crates/zeph-subagent/src/manager/worktree.rs`)
+  spawned the worktree-removal cleanup task via `tokio::runtime::Handle::try_current().spawn(...)`
+  instead of routing through `TaskSupervisor` (#5412), violating the project's mandatory
+  async-supervision rule (`/specs/039-background-task-supervisor/spec.md`) — the cleanup task was
+  invisible to TUI status/metrics and unabortable on shutdown. `WorktreeCleanupGuard` now carries
+  an `Option<TaskSupervisor>` sourced from `SubAgentManager`'s existing `task_supervisor` field and
+  dispatches cleanup via `TaskSupervisor::spawn_oneshot`, falling back to a transient local
+  supervisor when none is configured (mirroring `SubAgentManager::spawn_agent_task`'s existing
+  pattern) rather than a raw `tokio::spawn`. No behavior change from the caller's perspective —
+  same `enabled`/no-runtime early-return paths, same `wm.remove(&h, prune)` call and
+  warn-on-error logging.
 - `fix(acp,server,skills)`: ACP sessions (`src/acp.rs::spawn_acp_agent`) and HTTP `/sessions`
   gateway sessions (`src/serve/agent_factory.rs::build_agent_factory`) never called
   `Agent::with_skill_matching_config`/`with_skill_provider_names`, so skill matching in those
