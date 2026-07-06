@@ -371,25 +371,20 @@ impl AppBuilder {
     /// window cannot be determined, to guarantee that compaction fires rather than being
     /// silently skipped.
     pub fn auto_budget_tokens(&self, provider: &AnyProvider) -> usize {
-        let tokens =
-            if self.config.memory.auto_budget && self.config.memory.context_budget_tokens == 0 {
-                if let Some(ctx_size) = provider.context_window() {
-                    tracing::info!(model_context = ctx_size, "auto-configured context budget");
-                    ctx_size
-                } else {
-                    0
-                }
-            } else {
-                self.config.memory.context_budget_tokens
-            };
-        if tokens == 0 {
-            tracing::warn!(
-                "context_budget_tokens resolved to 0 — using fallback of 128000 tokens to ensure compaction runs"
-            );
-            128_000
-        } else {
-            tokens
+        let (tokens, source) =
+            zeph_core::agent::resolve_context_budget_tokens(&self.config, provider);
+        match source {
+            zeph_core::agent::ContextBudgetSource::AutoDetected(ctx_size) => {
+                tracing::info!(model_context = ctx_size, "auto-configured context budget");
+            }
+            zeph_core::agent::ContextBudgetSource::Fallback => {
+                tracing::warn!(
+                    "context_budget_tokens resolved to 0 — using fallback of 128000 tokens to ensure compaction runs"
+                );
+            }
+            zeph_core::agent::ContextBudgetSource::Configured => {}
         }
+        tokens
     }
 
     /// # Errors

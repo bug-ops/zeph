@@ -748,6 +748,19 @@ fn auto_budget_tokens_explicit_zero_falls_back_to_128k() {
     assert_eq!(builder.auto_budget_tokens(&provider), 128_000);
 }
 
+#[test]
+fn auto_budget_tokens_provider_window_zero_falls_back_to_128k() {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.memory.auto_budget = true;
+    config.memory.context_budget_tokens = 0;
+    let builder = super::AppBuilder::for_test(config);
+    // Provider reports Some(0) — a misconfigured window, not "unknown" (None).
+    // Must still fall back to 128k rather than resolving to a real 0-token budget.
+    let provider =
+        AnyProvider::Mock(zeph_llm::mock::MockProvider::default().with_context_window(0));
+    assert_eq!(builder.auto_budget_tokens(&provider), 128_000);
+}
+
 // ── build_judge_provider ──────────────────────────────────────────────────────
 
 fn make_builder_with_judge_config(

@@ -169,21 +169,7 @@ impl McpManager {
         };
 
         if let Some(sup) = supervisor {
-            let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(task)));
-            // spawn() requires Fn; wrap the FnOnce payload in Arc<Mutex<Option>> so the
-            // factory can be called once for RunOnce without capturing by move.
-            sup.spawn(zeph_common::TaskDescriptor {
-                name: "mcp.refresh_task",
-                restart: zeph_common::RestartPolicy::RunOnce,
-                factory: move || {
-                    let fut = cell.lock().take();
-                    async move {
-                        if let Some(f) = fut {
-                            f.await;
-                        }
-                    }
-                },
-            });
+            drop(sup.spawn_oneshot(std::sync::Arc::from("mcp.refresh_task"), move || task));
         } else {
             tokio::spawn(task); // EXEMPT(test): no supervisor available in unit-test context
         }

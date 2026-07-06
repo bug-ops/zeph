@@ -42,6 +42,17 @@ fn auto_budget_false_budget_zero_falls_back_to_128k() {
     assert_eq!(resolve_context_budget(&config, &provider), 128_000);
 }
 
+#[test]
+fn auto_budget_true_budget_zero_provider_window_zero_falls_back_to_128k() {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.memory.auto_budget = true;
+    config.memory.context_budget_tokens = 0;
+    // Provider reports Some(0) — a misconfigured window, not "unknown" (None).
+    // Must still fall back to 128k rather than resolving to a real 0-token budget.
+    let provider = AnyProvider::Mock(MockProvider::default().with_context_window(0));
+    assert_eq!(resolve_context_budget(&config, &provider), 128_000);
+}
+
 #[tokio::test]
 async fn subagent_no_args_returns_usage() {
     let mut h = QuickTestAgent::minimal("");

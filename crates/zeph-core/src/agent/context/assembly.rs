@@ -250,19 +250,12 @@ impl<C: Channel> Agent<C> {
                 let _ = tx.send(String::new());
             }
         };
-        let cell = std::sync::Arc::new(std::sync::Mutex::new(Some(digest_future)));
-        task_supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
-            name: "agent.session.digest",
-            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
-            factory: move || {
-                let f = cell.lock().ok().and_then(|mut g| g.take());
-                async move {
-                    if let Some(f) = f {
-                        f.await;
-                    }
-                }
-            },
-        });
+        drop(
+            task_supervisor
+                .spawn_oneshot(std::sync::Arc::from("agent.session.digest"), move || {
+                    digest_future
+                }),
+        );
     }
 
     /// Reset the conversation window for `/new`.

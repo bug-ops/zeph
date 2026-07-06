@@ -36,6 +36,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(core,common,context,agent-context,mcp,memory,index)`: deduplicated three more
+  independently-duplicated code paths (epic #5714 cluster 1 remainder). Seven call sites across
+  six crates (`zeph-context`, `zeph-agent-context`, `zeph-core`, `zeph-mcp`, `zeph-memory`,
+  `zeph-index`) that reimplemented `TaskSupervisor::spawn`'s `Fn`-bound workaround for one-shot
+  futures via `Arc<Mutex<Option<Fut>>>` now call `TaskSupervisor::spawn_oneshot` directly (#5661).
+  `run_proposer`/`run_checker` (`crates/zeph-core/src/quality/`) now share a
+  `chat_json_error_outcome` helper (`quality/parser.rs`) instead of duplicating the
+  `ChatJsonError`-to-`StageOutcome` conversion (#5666). `AppBuilder::auto_budget_tokens`
+  (`src/bootstrap/mod.rs`) and `resolve_context_budget` (`crates/zeph-core/src/agent/mod.rs`)
+  now both delegate to a shared `resolve_context_budget_tokens` helper, closing a
+  `provider.context_window() == Some(0)` gap where the extraction had briefly let a
+  misconfigured zero-context-window provider through as a real budget instead of the documented
+  128k fallback (#5653). Pure refactor, no behavior change.
 - `refactor(commands,core,skills)`: deduplicated three independently-drifting code paths in the
   commands/skills subsystem (epic #5714 duplication-backlog cluster 5). The empty-string-to-
   `CommandOutput::Silent` branch, previously copy-pasted across 8 call sites in 7

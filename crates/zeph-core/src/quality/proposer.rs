@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use zeph_llm::any::AnyProvider;
 
-use super::parser::{ChatJsonError, chat_json};
+use super::parser::{chat_json, chat_json_error_outcome};
 use super::prompts::{PROPOSER_SYSTEM, proposer_user};
 use super::types::{Assertion, StageOutcome};
 
@@ -34,13 +34,6 @@ pub async fn run_proposer(
             let retries = attempt.saturating_sub(1);
             (out.assertions, tokens, StageOutcome::Ok, retries)
         }
-        Err(ChatJsonError::Llm(e)) => (vec![], 0, StageOutcome::LlmError { msg: e.to_string() }, 0),
-        Err(ChatJsonError::Timeout(ms)) => (vec![], 0, StageOutcome::Timeout { ms }, 0),
-        Err(ChatJsonError::Parse(raw)) => (
-            vec![],
-            0,
-            StageOutcome::ParseError { raw_truncated: raw },
-            1,
-        ),
+        Err(e) => chat_json_error_outcome(e),
     }
 }

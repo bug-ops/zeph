@@ -686,23 +686,12 @@ impl ContextService {
         // before `apply_prepared_context` consumes `prepared` to avoid silent drops.
         for handle in prepared.background_tasks.drain(..) {
             let task_supervisor = std::sync::Arc::clone(&view.task_supervisor);
-            task_supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
-                name: "context.assembly.background",
-                restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
-                factory: {
-                    let cell = std::sync::Arc::new(std::sync::Mutex::new(Some(async move {
-                        let _ = handle.await;
-                    })));
-                    move || {
-                        let f = cell.lock().ok().and_then(|mut g| g.take());
-                        async move {
-                            if let Some(f) = f {
-                                f.await;
-                            }
-                        }
-                    }
+            drop(task_supervisor.spawn_oneshot(
+                std::sync::Arc::from("context.assembly.background"),
+                move || async move {
+                    let _ = handle.await;
                 },
-            });
+            ));
         }
 
         let (delta, inserted_count) = self.apply_prepared_context(window, view, prepared).await;

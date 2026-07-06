@@ -2007,11 +2007,6 @@ pub(crate) async fn recv_optional<T>(rx: &mut Option<mpsc::Receiver<T>>) -> Opti
     }
 }
 
-/// Resolve the effective context budget from config, applying the `auto_budget` fallback.
-///
-/// Mirrors `AppBuilder::auto_budget_tokens` so hot-reload and initial startup use the same
-/// logic: if `auto_budget = true` and `context_budget_tokens == 0`, query the provider's
-/// context window; if still 0, fall back to 128 000 tokens.
 /// Truncate a background run command to at most 80 characters for TUI display.
 fn truncate_shell_command(cmd: &str) -> String {
     if cmd.len() <= 80 {
@@ -2026,28 +2021,59 @@ fn truncate_shell_run_id(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
-pub(crate) fn resolve_context_budget(config: &Config, provider: &AnyProvider) -> usize {
-    let tokens = if config.memory.auto_budget && config.memory.context_budget_tokens == 0 {
-        if let Some(ctx_size) = provider.context_window() {
-            tracing::info!(
-                model_context = ctx_size,
-                "auto-configured context budget on reload"
-            );
-            ctx_size
-        } else {
-            0
-        }
-    } else {
-        config.memory.context_budget_tokens
-    };
-    if tokens == 0 {
-        tracing::warn!(
-            "context_budget_tokens resolved to 0 on reload — using fallback of 128000 tokens"
-        );
-        128_000
-    } else {
-        tokens
+/// How the effective context-token budget was determined by [`resolve_context_budget_tokens`].
+///
+/// Callers use this to choose a diagnostic log message appropriate to their call site
+/// (initial startup vs. config hot-reload) while sharing the same resolution algorithm.
+pub enum ContextBudgetSource {
+    /// Auto-detected from the provider's advertised context window.
+    AutoDetected(usize),
+    /// Explicit `memory.context_budget_tokens` config value, or `auto_budget` disabled.
+    Configured,
+    /// Neither the config nor the provider yielded a usable value; the hardcoded fallback was used.
+    Fallback,
+}
+
+/// Resolve the effective context-token budget, shared by initial startup
+/// (`AppBuilder::auto_budget_tokens`) and config hot-reload (`resolve_context_budget`).
+///
+/// If `auto_budget` is enabled and no explicit budget is configured, uses the provider's
+/// reported context window. Falls back to a hardcoded 128 000 tokens if the resolved value
+/// would otherwise be 0, to guarantee that compaction fires rather than being silently skipped.
+pub fn resolve_context_budget_tokens(
+    config: &Config,
+    provider: &AnyProvider,
+) -> (usize, ContextBudgetSource) {
+    if config.memory.auto_budget && config.memory.context_budget_tokens == 0 {
+        return match provider.context_window() {
+            Some(ctx_size) if ctx_size > 0 => {
+                (ctx_size, ContextBudgetSource::AutoDetected(ctx_size))
+            }
+            _ => (128_000, ContextBudgetSource::Fallback),
+        };
     }
+    if config.memory.context_budget_tokens == 0 {
+        return (128_000, ContextBudgetSource::Fallback);
+    }
+    (
+        config.memory.context_budget_tokens,
+        ContextBudgetSource::Configured,
+    )
+}
+
+pub(crate) fn resolve_context_budget(config: &Config, provider: &AnyProvider) -> usize {
+    let (tokens, source) = resolve_context_budget_tokens(config, provider);
+    match source {
+        ContextBudgetSource::AutoDetected(ctx_size) => tracing::info!(
+            model_context = ctx_size,
+            "auto-configured context budget on reload"
+        ),
+        ContextBudgetSource::Fallback => tracing::warn!(
+            "context_budget_tokens resolved to 0 on reload — using fallback of 128000 tokens"
+        ),
+        ContextBudgetSource::Configured => {}
+    }
+    tokens
 }
 
 #[cfg(test)]

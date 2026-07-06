@@ -165,6 +165,29 @@ pub async fn chat_json<T: DeserializeOwned>(
     }
 }
 
+/// Convert a [`ChatJsonError`] into the `(items, tokens, outcome, retries)` shape shared by
+/// every stage's `Err` arm (Proposer, Checker, ...).
+#[must_use]
+pub fn chat_json_error_outcome<T>(
+    e: ChatJsonError,
+) -> (Vec<T>, u64, super::types::StageOutcome, u32) {
+    match e {
+        ChatJsonError::Llm(e) => (
+            vec![],
+            0,
+            super::types::StageOutcome::LlmError { msg: e.to_string() },
+            0,
+        ),
+        ChatJsonError::Timeout(ms) => (vec![], 0, super::types::StageOutcome::Timeout { ms }, 0),
+        ChatJsonError::Parse(raw) => (
+            vec![],
+            0,
+            super::types::StageOutcome::ParseError { raw_truncated: raw },
+            1,
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

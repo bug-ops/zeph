@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
+use zeph_common::task_supervisor::TaskSupervisor;
 use zeph_common::text::truncate_to_bytes_ref;
 
 // ── PageType ──────────────────────────────────────────────────────────────────
@@ -979,19 +979,7 @@ impl CompactionAuditSink {
         };
 
         if let Some(sup) = supervisor {
-            let fut_cell = Arc::new(parking_lot::Mutex::new(Some(fut)));
-            sup.spawn(TaskDescriptor {
-                name: "context.audit_sink",
-                restart: RestartPolicy::RunOnce,
-                factory: move || {
-                    let f = fut_cell.lock().take();
-                    async move {
-                        if let Some(f) = f {
-                            f.await;
-                        }
-                    }
-                },
-            });
+            drop(sup.spawn_oneshot(Arc::from("context.audit_sink"), move || fut));
         } else {
             tokio::spawn(fut); // EXEMPT: supervisor=None fallback (test environments only)
         }

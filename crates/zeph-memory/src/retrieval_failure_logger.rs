@@ -7,12 +7,12 @@
 //! [`RetrievalFailureLogger::log`] on the hot path without blocking. A
 //! background task coalesces records into batches and flushes them to `SQLite`.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{Notify, mpsc};
 use tracing::Instrument as _;
-use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
+use zeph_common::task_supervisor::TaskSupervisor;
 
 use crate::store::SqliteStore;
 use crate::store::retrieval_failures::RetrievalFailureRecord;
@@ -61,19 +61,7 @@ impl RetrievalFailureLogger {
             retention_days,
             Arc::clone(&done),
         );
-        let cell = Arc::new(Mutex::new(Some(fut)));
-        supervisor.spawn(TaskDescriptor {
-            name: "memory.retrieval-failure-logger",
-            restart: RestartPolicy::RunOnce,
-            factory: move || {
-                let f = cell.lock().ok().and_then(|mut g| g.take());
-                async move {
-                    if let Some(f) = f {
-                        f.await;
-                    }
-                }
-            },
-        });
+        drop(supervisor.spawn_oneshot(Arc::from("memory.retrieval-failure-logger"), move || fut));
         Self { tx: Some(tx), done }
     }
 

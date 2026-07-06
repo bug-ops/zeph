@@ -139,19 +139,10 @@ impl<C: crate::channel::Channel> Agent<C> {
                         );
                     }
                 };
-                let cell = std::sync::Arc::new(std::sync::Mutex::new(Some(send_event)));
-                sup.spawn(zeph_common::task_supervisor::TaskDescriptor {
-                    name: "agent.scheduler.task_event_send",
-                    restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
-                    factory: move || {
-                        let f = cell.lock().ok().and_then(|mut g| g.take());
-                        async move {
-                            if let Some(f) = f {
-                                f.await;
-                            }
-                        }
-                    },
-                });
+                drop(sup.spawn_oneshot(
+                    std::sync::Arc::from("agent.scheduler.task_event_send"),
+                    move || send_event,
+                ));
             }
         };
 

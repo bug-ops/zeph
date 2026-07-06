@@ -34,7 +34,7 @@ use std::time::Duration;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::sync::mpsc;
-use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
+use zeph_common::task_supervisor::TaskSupervisor;
 
 use crate::error::Result;
 use crate::indexer::CodeIndexer;
@@ -64,7 +64,7 @@ fn is_gitignored(gitignore: &Gitignore, root: &Path, path: &Path) -> bool {
 /// Opaque handle keeping the background watcher task alive.
 #[allow(dead_code)]
 enum WatcherHandle {
-    Supervised(zeph_common::task_supervisor::TaskHandle),
+    Supervised(zeph_common::task_supervisor::BlockingHandle<()>),
     Unsupervised(tokio::task::JoinHandle<()>),
 }
 
@@ -203,21 +203,7 @@ impl IndexWatcher {
         };
 
         let handle = if let Some(sup) = supervisor {
-            // Wrap the one-shot future so the `Fn` factory can hand it off exactly once.
-            // `parking_lot::Mutex` is available transitively via `zeph_common`.
-            let fut_cell = std::sync::Arc::new(std::sync::Mutex::new(Some(fut)));
-            let task_handle = sup.spawn(TaskDescriptor {
-                name: "index.watcher",
-                restart: RestartPolicy::RunOnce,
-                factory: move || {
-                    let f = fut_cell.lock().ok().and_then(|mut g| g.take());
-                    async move {
-                        if let Some(f) = f {
-                            f.await;
-                        }
-                    }
-                },
-            });
+            let task_handle = sup.spawn_oneshot(std::sync::Arc::from("index.watcher"), move || fut);
             WatcherHandle::Supervised(task_handle)
         } else {
             WatcherHandle::Unsupervised(tokio::spawn(fut)) // EXEMPT: supervisor=None fallback (test environments only)
