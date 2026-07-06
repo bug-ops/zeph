@@ -19,6 +19,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `reasoning_effort` for the provider, or use a different model for tool-calling turns),
   instead of surfacing the raw OpenAI error text.
 
+- `fix(zeph-skills)`: `SkillRegistry::load` (`crates/zeph-skills/src/registry.rs`) now discovers
+  symlinked `SKILL.md` files during its `WalkDir` scan instead of silently dropping every symlink
+  before `validate_path_within` could run. With `follow_links(false)`, `WalkDir` reports a
+  symlinked entry's type via `symlink_metadata`, so `entry.file_type().is_file()` was `false` for
+  any symlinked `SKILL.md` — the entry was discarded by that guard before the path-traversal check
+  was ever reached, making the `"skipping skill path traversal"` warning unreachable dead code from
+  the real scan loop (only exercised by a direct unit test call). Net effect was safety-benign (the
+  symlinked file was never read, so no information disclosure) but a symlink escaping the base
+  directory produced no log signal, and — more surprising — a legitimate symlinked `SKILL.md`
+  resolving *within* the base directory was silently skipped too, never loaded at all. The loop now
+  accepts both regular files and symlinks named `SKILL.md` and resolves the target via the existing
+  `validate_path_within` helper: a target that actually escapes the base directory is rejected with
+  the `WARN`-level `"skipping skill path traversal"` log (the real security signal); a symlink that
+  cannot be resolved at all (e.g. dangling) is logged at `DEBUG` instead, since a broken link is not
+  itself a traversal attempt; and a symlink resolving to something other than a regular file (e.g. a
+  directory) within the base is skipped quietly, no log (#5783).
+
 - `fix(core)`: the utility gate's `Retrieve` action (`crates/zeph-core/src/agent/tool_execution/tier_loop.rs`,
   `handle_retrieve_action`) could enter an unbreakable loop when the mandated `memory_search`
   detour itself failed with `confirmation_required` (e.g. the query content trips a

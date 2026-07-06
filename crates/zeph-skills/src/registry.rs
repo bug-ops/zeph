@@ -18,7 +18,10 @@
 //!
 //! Symlinked *directories* are not followed (walkdir default). Symlinked `SKILL.md`
 //! *files* are resolved by [`validate_path_within`] and must canonicalize to a path
-//! inside the base directory, otherwise they are rejected with a warning.
+//! inside the base directory, otherwise they are rejected. A path that actually escapes
+//! the base directory is logged at `WARN` (a real traversal attempt); a symlink that
+//! cannot be resolved at all (e.g. dangling) is logged at `DEBUG`, since a broken link
+//! is not itself a security signal.
 //!
 //! Traversal is limited to [`MAX_SKILL_DEPTH`] levels to prevent runaway recursion on
 //! adversarial directory trees. A directory at exactly that depth is still descended into;
@@ -192,15 +195,36 @@ impl SkillRegistry {
                         continue;
                     }
                 };
-                if !entry.file_type().is_file() {
+                // `follow_links(false)` means `file_type()` reflects the entry itself
+                // (via symlink_metadata), so a symlinked SKILL.md reports as a symlink,
+                // not a file. Accept both here and let `validate_path_within` resolve
+                // and validate the symlink target below.
+                let file_type = entry.file_type();
+                if !file_type.is_file() && !file_type.is_symlink() {
                     continue;
                 }
                 if entry.file_name() != "SKILL.md" {
                     continue;
                 }
                 let skill_path = entry.path();
-                if let Err(e) = validate_path_within(skill_path, base) {
-                    tracing::warn!("skipping skill path traversal: {e:#}");
+                let canonical = match validate_path_within(skill_path, base) {
+                    Ok(p) => p,
+                    Err(e @ SkillError::Invalid(_)) => {
+                        tracing::warn!("skipping skill path traversal: {e:#}");
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            "skipping unresolvable skill path {}: {e:#}",
+                            skill_path.display()
+                        );
+                        continue;
+                    }
+                };
+                // A symlink may legitimately resolve within `base` but point at a
+                // directory (or something else) rather than a file; skip it quietly
+                // since it is not a loadable SKILL.md.
+                if file_type.is_symlink() && !canonical.is_file() {
                     continue;
                 }
                 match load_skill_meta(skill_path) {
@@ -567,6 +591,86 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
         assert!(registry.all_meta().is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn load_follows_symlinked_skill_md_within_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let target_dir = dir.path().join("target-skill");
+        std::fs::create_dir(&target_dir).unwrap();
+        std::fs::write(
+            target_dir.join("REAL.md"),
+            "---\nname: linked-skill\ndescription: desc\n---\nbody",
+        )
+        .unwrap();
+
+        let skill_dir = dir.path().join("linked-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::os::unix::fs::symlink(target_dir.join("REAL.md"), skill_dir.join("SKILL.md")).unwrap();
+
+        let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+        assert_eq!(
+            registry.all_meta().len(),
+            1,
+            "a symlinked SKILL.md resolving within base must be loaded, not silently dropped"
+        );
+        assert_eq!(registry.all_meta()[0].name, "linked-skill");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[tracing_test::traced_test]
+    fn load_skips_symlinked_skill_escaping_base() {
+        let base = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+
+        std::fs::write(
+            outside.path().join("SKILL.md"),
+            "---\nname: escaped\ndescription: desc\n---\nbody",
+        )
+        .unwrap();
+
+        let skill_dir = base.path().join("escaped");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("SKILL.md"), skill_dir.join("SKILL.md"))
+            .unwrap();
+
+        let registry = SkillRegistry::load(&[base.path().to_path_buf()]);
+        assert!(
+            registry.all_meta().is_empty(),
+            "a symlinked SKILL.md escaping base must not be loaded"
+        );
+        // Pins the regression: without the fix, the symlink is dropped by the
+        // `is_file()`-only type guard before `validate_path_within` ever runs, so
+        // `all_meta().is_empty()` alone would pass for the wrong reason.
+        assert!(
+            logs_contain("skipping skill path traversal"),
+            "escaping symlink must be rejected by validate_path_within, not silently dropped earlier"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[tracing_test::traced_test]
+    fn load_skips_symlink_to_directory_within_base_quietly() {
+        let dir = tempfile::tempdir().unwrap();
+        let target_dir = dir.path().join("target-dir");
+        std::fs::create_dir(&target_dir).unwrap();
+
+        let skill_dir = dir.path().join("linked-dir-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::os::unix::fs::symlink(&target_dir, skill_dir.join("SKILL.md")).unwrap();
+
+        let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+        assert!(
+            registry.all_meta().is_empty(),
+            "a symlink resolving to a directory is not a loadable SKILL.md"
+        );
+        assert!(
+            !logs_contain("skipping skill path traversal"),
+            "a symlink resolving within base must not be logged as a traversal attempt"
+        );
     }
 
     #[test]
