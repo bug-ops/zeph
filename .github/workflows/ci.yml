@@ -523,7 +523,7 @@ jobs:
 
   release-build:
     name: Release Build Check
-    needs: detect-changes
+    needs: [detect-changes, lint-fmt, lint-clippy]
     if: needs.detect-changes.outputs.run-full-ci == 'true' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -547,6 +547,33 @@ jobs:
         # real `cargo build --release` with this workspace's `[profile.release]` (lto = true,
         # codegen-units = 1) exercises the same query depth CI is meant to gate on.
         run: cargo build --release --workspace --all-targets --features "desktop,ide,server,chat,pdf,scheduler,testing,deep-link"
+
+  release-build-full:
+    name: Release Build Check (full)
+    needs: [detect-changes, lint-fmt, lint-clippy]
+    if: needs.detect-changes.outputs.run-full-ci == 'true' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cache-targets: "false"
+          shared-key: "release-build-full"
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      - name: cargo build (release, --all-targets, full)
+        # Best-effort candle/ml coverage under the release profile, mirroring the
+        # bundle-check `ml` matrix leg (#5418): step-level continue-on-error keeps
+        # this job's overall result `success` so it never blocks ci-status, while
+        # still surfacing genuine full-feature release-build breakage in the logs.
+        continue-on-error: true
+        run: cargo build --release --workspace --all-targets --features full
 
   build-postgres:
     name: Build (postgres)
@@ -634,7 +661,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [cla, lint-shellcheck, lint-fmt, lint-clippy, msrv, build-tests, build-tests-postgres, test, integration, coverage, docker-build-and-scan, bundle-check, validate-specs, build-postgres, rustdoc, release-build]
+    needs: [cla, lint-shellcheck, lint-fmt, lint-clippy, msrv, build-tests, build-tests-postgres, test, integration, coverage, docker-build-and-scan, bundle-check, validate-specs, build-postgres, rustdoc, release-build, release-build-full]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -657,6 +684,7 @@ jobs:
             "${{ needs.build-postgres.result }}"
             "${{ needs.rustdoc.result }}"
             "${{ needs.release-build.result }}"
+            "${{ needs.release-build-full.result }}"
           )
           for r in "${results[@]}"; do
             if [[ "$r" != "success" && "$r" != "skipped" ]]; then

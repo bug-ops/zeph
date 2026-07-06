@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `ci`: `release-build`'s `needs:` list now includes `lint-fmt` and `lint-clippy`, so a
+  trivially-broken PR fails fast instead of burning the full ~40-minute release-profile build
+  first. Added a companion `release-build-full` job that builds with `--features full`
+  (covering `candle`/`ml`, which the original job deliberately excludes) using step-level
+  `continue-on-error: true` on its build step — mirroring `bundle-check`'s existing `ml`
+  matrix-leg pattern — so release-profile regressions in that feature slice are visible in CI
+  logs without making the gate hard-blocking (#5418).
+- `ci`: added a blanket `leak-timeout = "500ms"` under `.github/nextest.toml`'s `[profile.default]`
+  and `[profile.ci-partition]`, raising the workspace-wide leak-timeout from nextest's 100ms
+  default to tolerate process-teardown latency under concurrent test load. The existing narrow
+  `zeph-index` per-test `1s` overrides for the diagnosed `spawn_blocking` teardown case (#5425)
+  are unchanged (#5617).
+
+### Fixed
+
 - `fix(core)`: the `SAFETY` comment on `handle_url_open()`'s `ZEPH_URL_OPEN_DEPTH` `set_var`
   call (`src/runner.rs`) still said `set_var` runs "on the main thread", which stopped being
   accurate once #5406 moved `main()` off the OS main thread onto a dedicated `zeph-main` thread.
