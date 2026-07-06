@@ -15,6 +15,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a no-op for `InMemory`), so the fix scopes `#[allow(unused_variables, clippy::unused_async)]`
   to the `not(feature = "qdrant")` build via `cfg_attr` rather than prefixing the parameters
   with `_`, which would have silenced the lint in the `qdrant`-enabled build too.
+- `fix(core)`: Stage-2 semantic-scan configuration (`[skills] semantic_scan` /
+  `semantic_scan_provider`) was only ever applied to a running agent via a config-file
+  hot-reload event (`crates/zeph-core/src/agent/config_reload.rs`) or a test-only builder setter
+  (`AgentBuilder::with_semantic_scan`, previously called only from unit tests) — the real startup
+  construction paths in `src/runner.rs` and `src/daemon.rs` never called it, so
+  `services.skill.semantic_scan` stayed at its hardcoded default `false` for the entire process
+  lifetime unless a hot-reload happened to fire first (#5813). This meant `plugin add` silently
+  skipped the Stage-2 LLM compliance scan on a fresh process even with `semantic_scan = true`
+  configured. Both real startup `AgentBuilder` chains now call
+  `.with_semantic_scan(config.skills.semantic_scan, config.skills.semantic_scan_provider.as_str())`
+  alongside the existing `.with_skill_matching_config(...)`/`.with_skill_provider_names(...)`
+  calls. User-visible behavior change: a user with `semantic_scan = true` and an empty or unknown
+  `semantic_scan_provider` will now correctly have `plugin add` refused at startup (fail-closed,
+  per `with_semantic_scan`'s documented contract) instead of silently succeeding with no scan.
+
 - `fix(orchestration,mcp)`: follow-up to the `record_skill_usage` fix above (#5802) — the same
   Postgres `ON CONFLICT DO UPDATE` self-reference ambiguity existed at two more call sites
   (#5803), found via adversarial review of #5802's fix. `PlanCache::cache_plan`
