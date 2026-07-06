@@ -522,10 +522,7 @@ impl OpenAiProvider {
 
     #[tracing::instrument(name = "llm.openai.send_request", skip_all)]
     async fn send_request(&self, messages: &[Message]) -> Result<String, LlmError> {
-        let reasoning = self
-            .reasoning_effort
-            .as_deref()
-            .map(|effort| Reasoning { effort });
+        let reasoning_effort = self.reasoning_effort.as_deref();
 
         let (temperature, top_p, frequency_penalty, presence_penalty) = self.generation_params();
 
@@ -536,7 +533,7 @@ impl OpenAiProvider {
                 messages: vision_messages,
                 completion_tokens: self.completion_tokens(),
                 stream: false,
-                reasoning,
+                reasoning_effort,
                 temperature,
                 top_p,
                 frequency_penalty,
@@ -555,7 +552,7 @@ impl OpenAiProvider {
                 messages: &api_messages,
                 completion_tokens: self.completion_tokens(),
                 stream: false,
-                reasoning,
+                reasoning_effort,
                 temperature,
                 top_p,
                 frequency_penalty,
@@ -591,10 +588,7 @@ impl OpenAiProvider {
         messages: &[Message],
     ) -> Result<reqwest::Response, LlmError> {
         let api_messages = convert_messages(messages);
-        let reasoning = self
-            .reasoning_effort
-            .as_deref()
-            .map(|effort| Reasoning { effort });
+        let reasoning_effort = self.reasoning_effort.as_deref();
 
         let (temperature, top_p, frequency_penalty, presence_penalty) = self.generation_params();
 
@@ -603,7 +597,7 @@ impl OpenAiProvider {
             messages: &api_messages,
             completion_tokens: self.completion_tokens(),
             stream: true,
-            reasoning,
+            reasoning_effort,
             temperature,
             top_p,
             frequency_penalty,
@@ -845,10 +839,7 @@ impl LlmProvider for OpenAiProvider {
         tools: &[ToolDefinition],
         stream: bool,
     ) -> serde_json::Value {
-        let reasoning = self
-            .reasoning_effort
-            .as_deref()
-            .map(|effort| Reasoning { effort });
+        let reasoning_effort = self.reasoning_effort.as_deref();
         let (temperature, top_p, frequency_penalty, presence_penalty) = self.generation_params();
 
         if !tools.is_empty() {
@@ -883,7 +874,7 @@ impl LlmProvider for OpenAiProvider {
                 messages: &api_messages,
                 completion_tokens: self.completion_tokens(),
                 tools: &api_tools,
-                reasoning,
+                reasoning_effort,
                 temperature,
                 top_p,
                 frequency_penalty,
@@ -900,7 +891,7 @@ impl LlmProvider for OpenAiProvider {
                 messages: vision_messages,
                 completion_tokens: self.completion_tokens(),
                 stream,
-                reasoning,
+                reasoning_effort,
                 temperature,
                 top_p,
                 frequency_penalty,
@@ -916,7 +907,7 @@ impl LlmProvider for OpenAiProvider {
             messages: &api_messages,
             completion_tokens: self.completion_tokens(),
             stream,
-            reasoning,
+            reasoning_effort,
             temperature,
             top_p,
             frequency_penalty,
@@ -1000,10 +991,7 @@ impl LlmProvider for OpenAiProvider {
         tools: &[ToolDefinition],
     ) -> Result<ChatResponse, LlmError> {
         let api_messages = convert_messages_structured(messages);
-        let reasoning = self
-            .reasoning_effort
-            .as_deref()
-            .map(|effort| Reasoning { effort });
+        let reasoning_effort = self.reasoning_effort.as_deref();
 
         let descriptions: Vec<String> = tools
             .iter()
@@ -1037,7 +1025,7 @@ impl LlmProvider for OpenAiProvider {
             messages: &api_messages,
             completion_tokens: self.completion_tokens(),
             tools: &api_tools,
-            reasoning,
+            reasoning_effort,
             temperature,
             top_p,
             frequency_penalty,
@@ -1213,7 +1201,7 @@ struct VisionChatRequest<'a> {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning: Option<Reasoning<'a>>,
+    reasoning_effort: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1308,7 +1296,7 @@ struct ChatRequest<'a> {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning: Option<Reasoning<'a>>,
+    reasoning_effort: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1317,11 +1305,6 @@ struct ChatRequest<'a> {
     frequency_penalty: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     presence_penalty: Option<f64>,
-}
-
-#[derive(Serialize)]
-struct Reasoning<'a> {
-    effort: &'a str,
 }
 
 #[derive(Serialize)]
@@ -1394,7 +1377,7 @@ struct ToolChatRequest<'a> {
     completion_tokens: CompletionTokens,
     tools: &'a [OpenAiTool<'a>],
     #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning: Option<Reasoning<'a>>,
+    reasoning_effort: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]

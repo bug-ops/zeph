@@ -271,6 +271,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(llm)`: OpenAI/compatible provider's `reasoning_effort` was serialized as the OpenAI
+  Responses-API nested shape (`"reasoning":{"effort":"..."}`) instead of the Chat-Completions
+  flat field (`"reasoning_effort":"..."`), causing every real reasoning-capable model (o-series,
+  gpt-5.x) to reject requests with a 400 `unknown_parameter` error (#5775). Removed the
+  `Reasoning<'a>` wrapper struct entirely; `reasoning_effort` is now a flat `Option<&str>` field
+  on `ChatRequest`/`VisionChatRequest`/`ToolChatRequest` (`crates/zeph-llm/src/openai/mod.rs`),
+  with all 4 request-building call sites (`send_request`, `send_stream_request`,
+  `debug_request_json`, `chat_with_tools`) updated consistently. Verified against the live
+  OpenAI API (`gpt-5-mini`): the flat shape returns 200 with `reasoning_tokens`, while the old
+  nested shape reproduces the original 400 error.
 - `fix(llm)`: `RouterProvider::embed`/`embed_batch` (`crates/zeph-llm/src/router/provider_impl.rs`)
   did not call `record_availability(provider_name, false, ...)` on the per-call timeout branch,
   unlike the retry-exhaustion and generic-error branches (#5699). A provider that timed out on

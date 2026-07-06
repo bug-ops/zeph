@@ -193,7 +193,7 @@ fn chat_request_serialization() {
         messages: &msgs,
         completion_tokens: CompletionTokens::for_model("gpt-5.2", 1024),
         stream: false,
-        reasoning: None,
+        reasoning_effort: None,
         temperature: None,
         top_p: None,
         frequency_penalty: None,
@@ -219,7 +219,7 @@ fn chat_request_serialization_non_gpt5_uses_max_tokens() {
         messages: &msgs,
         completion_tokens: CompletionTokens::for_model("gpt-4o", 256),
         stream: false,
-        reasoning: None,
+        reasoning_effort: None,
         temperature: None,
         top_p: None,
         frequency_penalty: None,
@@ -238,7 +238,7 @@ fn chat_request_with_stream_flag() {
         messages: &msgs,
         completion_tokens: CompletionTokens::for_model("gpt-5.2", 100),
         stream: true,
-        reasoning: None,
+        reasoning_effort: None,
         temperature: None,
         top_p: None,
         frequency_penalty: None,
@@ -256,14 +256,90 @@ fn chat_request_with_reasoning_effort() {
         messages: &msgs,
         completion_tokens: CompletionTokens::for_model("gpt-5.2", 100),
         stream: false,
-        reasoning: Some(Reasoning { effort: "medium" }),
+        reasoning_effort: Some("medium"),
         temperature: None,
         top_p: None,
         frequency_penalty: None,
         presence_penalty: None,
     };
     let json = serde_json::to_string(&body).unwrap();
-    assert!(json.contains("\"reasoning\":{\"effort\":\"medium\"}"));
+    assert!(json.contains("\"reasoning_effort\":\"medium\""));
+    assert!(!json.contains("\"reasoning\":{"));
+}
+
+#[test]
+fn debug_request_json_plain_includes_flat_reasoning_effort() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-5.2".into(),
+        max_tokens: 4096,
+        embedding_model: None,
+        reasoning_effort: Some("medium".into()),
+        context_window: None,
+        completion_tokens_param: None,
+    });
+    let messages = vec![Message::from_legacy(Role::User, "hi")];
+    let json = p.debug_request_json(&messages, &[], false).to_string();
+    assert!(json.contains("\"reasoning_effort\":\"medium\""));
+    assert!(!json.contains("\"reasoning\":{"));
+}
+
+#[test]
+fn debug_request_json_tools_includes_flat_reasoning_effort() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-5.2".into(),
+        max_tokens: 4096,
+        embedding_model: None,
+        reasoning_effort: Some("high".into()),
+        context_window: None,
+        completion_tokens_param: None,
+    });
+    let messages = vec![Message::from_legacy(Role::User, "hi")];
+    let tools = vec![ToolDefinition {
+        name: "bash".into(),
+        description: "Execute a shell command".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"]
+        }),
+        output_schema: None,
+    }];
+    let json = p.debug_request_json(&messages, &tools, false).to_string();
+    assert!(json.contains("\"reasoning_effort\":\"high\""));
+    assert!(!json.contains("\"reasoning\":{"));
+}
+
+#[test]
+fn debug_request_json_vision_includes_flat_reasoning_effort() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-5.2".into(),
+        max_tokens: 4096,
+        embedding_model: None,
+        reasoning_effort: Some("low".into()),
+        context_window: None,
+        completion_tokens_param: None,
+    });
+    let messages = vec![Message::from_parts(
+        Role::User,
+        vec![
+            MessagePart::Text {
+                text: "describe".into(),
+            },
+            MessagePart::Image(Box::new(ImageData {
+                data: vec![1, 2, 3],
+                mime_type: "image/png".into(),
+            })),
+        ],
+    )];
+    let json = p.debug_request_json(&messages, &[], false).to_string();
+    assert!(json.contains("\"reasoning_effort\":\"low\""));
+    assert!(!json.contains("\"reasoning\":{"));
 }
 
 #[test]
@@ -285,7 +361,7 @@ fn vision_chat_request_serialization_uses_gpt5_completion_tokens() {
         }],
         completion_tokens: CompletionTokens::for_model("gpt-5-mini", 55),
         stream: false,
-        reasoning: None,
+        reasoning_effort: None,
         temperature: None,
         top_p: None,
         frequency_penalty: None,
@@ -347,7 +423,7 @@ fn tool_chat_request_serialization_uses_gpt5_completion_tokens() {
         messages: &msgs,
         completion_tokens: CompletionTokens::for_model("gpt-5-mini", 77),
         tools: &tools,
-        reasoning: None,
+        reasoning_effort: None,
         temperature: None,
         top_p: None,
         frequency_penalty: None,
