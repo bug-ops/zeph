@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(llm)`: OpenAI Chat Completions rejects the combination of `reasoning_effort` and
+  tool-calling (`tools`) for some reasoning models (e.g. `gpt-5.4-mini`), responding with an
+  opaque HTTP 400 body directing callers to `/v1/responses` — an endpoint Zeph does not
+  implement (#5789). `OpenAiProvider::chat_with_tools`
+  (`crates/zeph-llm/src/openai/mod.rs`) now recognizes this specific 400 body
+  (`body_is_reasoning_effort_tools_incompatible` in `crates/zeph-llm/src/error.rs`, mirroring
+  the existing `body_is_context_length_error` pattern) and returns an actionable
+  `LlmError::InvalidInput` explaining the incompatibility and how to work around it (unset
+  `reasoning_effort` for the provider, or use a different model for tool-calling turns),
+  instead of surfacing the raw OpenAI error text.
+
 - `fix(core)`: the utility gate's `Retrieve` action (`crates/zeph-core/src/agent/tool_execution/tier_loop.rs`,
   `handle_retrieve_action`) could enter an unbreakable loop when the mandated `memory_search`
   detour itself failed with `confirmation_required` (e.g. the query content trips a

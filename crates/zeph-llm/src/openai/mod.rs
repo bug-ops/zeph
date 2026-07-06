@@ -1046,6 +1046,21 @@ impl LlmProvider for OpenAiProvider {
             if crate::error::body_is_context_length_error(&text) {
                 return Err(LlmError::ContextLengthExceeded);
             }
+            if self.reasoning_effort.is_some()
+                && crate::error::body_is_reasoning_effort_tools_incompatible(&text)
+            {
+                return Err(LlmError::InvalidInput {
+                    provider: self.name().to_owned(),
+                    message: format!(
+                        "model '{}' does not support `reasoning_effort` together with tool \
+                         calls on the Chat Completions API (OpenAI requires the /v1/responses \
+                         endpoint for this combination, which Zeph does not yet support). Unset \
+                         `reasoning_effort` for this provider in config.toml, or use a different \
+                         model for tool-calling turns. Original error: {text}",
+                        self.model
+                    ),
+                });
+            }
             return Err(LlmError::InvalidInput {
                 provider: self.name().to_owned(),
                 message: text,

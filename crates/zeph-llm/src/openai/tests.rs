@@ -1446,6 +1446,131 @@ async fn chat_with_tools_handles_null_assistant_content() {
 }
 
 #[tokio::test]
+async fn chat_with_tools_reasoning_effort_400_enriches_message() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    let error_body = serde_json::json!({
+        "error": {
+            "message": "Function tools with reasoning_effort are not supported for \
+                        gpt-5.4-mini in /v1/chat/completions. Please use /v1/responses instead.",
+            "type": "invalid_request_error"
+        }
+    });
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(error_body))
+        .mount(&server)
+        .await;
+
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "sk-test".into(),
+        base_url: server.uri(),
+        model: "gpt-5.4-mini".into(),
+        max_tokens: 256,
+        embedding_model: None,
+        reasoning_effort: Some("high".into()),
+        context_window: None,
+        completion_tokens_param: None,
+    });
+    let messages = vec![Message {
+        role: Role::User,
+        content: "hi".into(),
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    }];
+    let tools = vec![ToolDefinition {
+        name: "bash".into(),
+        description: "Execute a shell command".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"]
+        }),
+        output_schema: None,
+    }];
+
+    let err = p.chat_with_tools(&messages, &tools).await.unwrap_err();
+    match err {
+        LlmError::InvalidInput { message, .. } => {
+            assert!(
+                message.contains("reasoning_effort"),
+                "expected enriched message to mention reasoning_effort, got: {message}"
+            );
+            assert!(
+                message.contains("Unset"),
+                "expected enriched message to suggest unsetting reasoning_effort, got: {message}"
+            );
+        }
+        other => panic!("expected InvalidInput, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn chat_with_tools_reasoning_effort_none_400_passes_through_raw_message() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    let raw_message = "Function tools with reasoning_effort are not supported for \
+                        gpt-5.4-mini in /v1/chat/completions. Please use /v1/responses instead.";
+    let error_body = serde_json::json!({
+        "error": {
+            "message": raw_message,
+            "type": "invalid_request_error"
+        }
+    });
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(error_body))
+        .mount(&server)
+        .await;
+
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "sk-test".into(),
+        base_url: server.uri(),
+        model: "gpt-5.4-mini".into(),
+        max_tokens: 256,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+    });
+    let messages = vec![Message {
+        role: Role::User,
+        content: "hi".into(),
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    }];
+    let tools = vec![ToolDefinition {
+        name: "bash".into(),
+        description: "Execute a shell command".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"]
+        }),
+        output_schema: None,
+    }];
+
+    let err = p.chat_with_tools(&messages, &tools).await.unwrap_err();
+    match err {
+        LlmError::InvalidInput { message, .. } => {
+            assert!(
+                message.contains(raw_message),
+                "expected raw passthrough message, got: {message}"
+            );
+            assert!(
+                !message.contains("Unset"),
+                "guard must not misfire when reasoning_effort is unset, got: {message}"
+            );
+        }
+        other => panic!("expected InvalidInput, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn chat_429_rate_limit_propagates() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer};

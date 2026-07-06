@@ -159,6 +159,16 @@ pub(crate) fn body_is_context_length_error(body: &str) -> bool {
         || lower.contains("input too long")
 }
 
+/// Check whether a raw 400 body indicates `OpenAI`'s `reasoning_effort` + `tools`
+/// incompatibility on the Chat Completions endpoint (requires `/v1/responses`, which
+/// Zeph does not implement).
+pub(crate) fn body_is_reasoning_effort_tools_incompatible(body: &str) -> bool {
+    let lower = body.to_lowercase();
+    lower.contains("reasoning_effort")
+        && lower.contains("not supported")
+        && (lower.contains("/v1/responses") || lower.contains("responses instead"))
+}
+
 pub type Result<T> = std::result::Result<T, LlmError>;
 
 #[cfg(test)]
@@ -280,5 +290,51 @@ mod tests {
         assert!(!body_is_context_length_error("some unrelated error"));
         assert!(!body_is_context_length_error("rate limit exceeded"));
         assert!(!body_is_context_length_error("authentication failed"));
+    }
+
+    #[test]
+    fn body_is_reasoning_effort_tools_incompatible_detects_known_message() {
+        assert!(body_is_reasoning_effort_tools_incompatible(
+            "Function tools with reasoning_effort are not supported for gpt-5.4-mini in \
+             /v1/chat/completions. Please use /v1/responses instead."
+        ));
+    }
+
+    #[test]
+    fn body_is_reasoning_effort_tools_incompatible_ignores_unrelated_messages() {
+        assert!(!body_is_reasoning_effort_tools_incompatible(
+            "rate limit exceeded, please retry later"
+        ));
+        assert!(!body_is_reasoning_effort_tools_incompatible(
+            "invalid request: missing required parameter 'model'"
+        ));
+        assert!(!body_is_reasoning_effort_tools_incompatible(
+            "This model's maximum context length is 4096 tokens. context_length_exceeded"
+        ));
+    }
+
+    #[test]
+    fn body_is_reasoning_effort_tools_incompatible_is_case_insensitive() {
+        assert!(body_is_reasoning_effort_tools_incompatible(
+            "Function tools with REASONING_EFFORT are NOT SUPPORTED for gpt-5.4-mini in \
+             /V1/CHAT/COMPLETIONS. Please use /V1/RESPONSES instead."
+        ));
+    }
+
+    #[test]
+    fn body_is_reasoning_effort_tools_incompatible_requires_all_markers() {
+        // Mentions reasoning_effort and the responses endpoint, but not "not supported" —
+        // should not match, since this isn't necessarily the incompatibility error.
+        assert!(!body_is_reasoning_effort_tools_incompatible(
+            "reasoning_effort was applied; see /v1/responses for details"
+        ));
+        // Mentions "not supported" and the responses endpoint, but never reasoning_effort.
+        assert!(!body_is_reasoning_effort_tools_incompatible(
+            "tool_choice is not supported on /v1/responses for this model"
+        ));
+        // Mentions reasoning_effort and "not supported", but no responses-endpoint pointer.
+        assert!(!body_is_reasoning_effort_tools_incompatible(
+            "reasoning_effort is not supported for this model"
+        ));
     }
 }
