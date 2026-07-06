@@ -209,6 +209,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `ci`: shortened the CI critical path (~8m45s → ~7m15s expected) by parallelizing its two
+  serial tails. The three postgres `nextest archive` builds moved out of `build-tests` into a
+  new `build-tests-postgres` job that compiles in parallel with the main workspace archive
+  (previously they added ~70s strictly after it), and the integration job became a four-way
+  matrix (`qdrant`, `zeph-db-postgres`, `zeph-memory-postgres`, `zeph-index-postgres`) so the
+  container-backed suites run concurrently instead of serially (previously ~2m10s end-to-end,
+  now bounded by the slowest suite). Integration now depends on both build jobs; per-suite
+  container concurrency caps (`postgres-containers`, `qdrant-containers` test-groups) are
+  unchanged and apply within each matrix job.
 - `refactor(channels)`: deduplicated the `Channel::confirm` timeout/deadline-loop logic that was
   implemented near-identically in the Telegram, Discord, and Slack adapters (send prompt with
   timeout suffix, compute deadline, loop on `tokio::time::timeout`, skip out-of-scope messages,
