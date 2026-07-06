@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Docs
+
+- `docs(sanitizer)`: updated `crates/zeph-sanitizer/src/shadow_memory.rs` doc comment to reflect
+  that `ShadowMemory` is actively wired into the agent tool executor via `tier_loop.rs`, rather
+  than the stale claim that it was "intended for future integration". Added cross-reference to
+  the actual call site and security event emission (#5440).
+- `docs(spec-040)`: expanded `specs/040-sanitizer/spec.md` layer table to document 5 previously
+  undocumented defense layers: `IpiFilter` (implemented, unwired), `NliSanitizer` (wired via builder),
+  `SecretMaskRegistry` (wired at LLM boundary), `ShadowMemory` (wired in tool executor),
+  and `Pipeline`/`Stage` (internal utility framework). Updated layer numbering and added wiring
+  status for each (#5440).
+
 ### Fixed
 
 - `fix(orchestration)`: two `zeph-orchestration` test sites referenced `llm-planning`-gated items
