@@ -899,10 +899,24 @@ fn build_extra_commands() -> Vec<CommandEntry> {
     cmds
 }
 
+/// Returns `true` if `a` and `b` should be treated as the same character for
+/// fuzzy matching purposes.
+///
+/// Command ids use `:` or `-` as word separators (e.g. `session:new`,
+/// `app:theme-list`) while users naturally type a space in their place (e.g.
+/// "session new", "theme list"), so all three are treated as interchangeable
+/// separators — otherwise the literal space in the query never matches
+/// anything in the id and the whole match fails.
+fn fuzzy_chars_equivalent(a: char, b: char) -> bool {
+    a == b || (matches!(a, ' ' | ':' | '-') && matches!(b, ' ' | ':' | '-'))
+}
+
 /// Compute a fuzzy match score between `query` and `target`.
 ///
 /// Matches characters of `query` in order within `target`, penalising gaps
 /// between consecutive matches. Higher scores indicate better matches.
+/// Space, `:`, and `-` are treated as equivalent separators (see
+/// [`fuzzy_chars_equivalent`]).
 ///
 /// Returns `None` if `target` does not contain all characters of `query`.
 fn fuzzy_score(query: &str, target: &str) -> Option<isize> {
@@ -917,7 +931,7 @@ fn fuzzy_score(query: &str, target: &str) -> Option<isize> {
     let mut gaps = 0isize;
 
     for (ti, &tc) in target_lower.iter().enumerate() {
-        if qi < query_chars.len() && tc == query_chars[qi] {
+        if qi < query_chars.len() && fuzzy_chars_equivalent(tc, query_chars[qi]) {
             if qi > 0 {
                 gaps += ti.cast_signed() - last_match.cast_signed() - 1;
             }
@@ -967,6 +981,12 @@ pub fn filter_commands(query: &str) -> Vec<&'static CommandEntry> {
     if query.is_empty() {
         return all;
     }
+
+    // Trim and collapse runs of whitespace so a stray leading/trailing/doubled
+    // space (e.g. "session  new", "session new ") doesn't desync the query's
+    // separator count from the target's and cause the match to fail outright.
+    let normalized_query = query.split_whitespace().collect::<Vec<_>>().join(" ");
+    let query = normalized_query.as_str();
 
     let mut scored: Vec<(&'static CommandEntry, isize)> = all
         .into_iter()
@@ -1104,6 +1124,89 @@ mod tests {
         assert!(all.iter().any(|e| e.id == "session:next"));
         assert!(all.iter().any(|e| e.id == "session:prev"));
         assert!(all.iter().any(|e| e.id == "session:close"));
+    }
+
+    #[test]
+    fn filter_space_query_matches_colon_separated_id() {
+        // Typing the natural "session new" (space instead of colon) must
+        // still match the "session:new" command id (#5790).
+        let results = filter_commands("session new");
+        assert!(
+            results.iter().any(|e| e.id == "session:new"),
+            "session:new must match query with a literal space"
+        );
+
+        let results = filter_commands("skill list");
+        assert!(
+            results.iter().any(|e| e.id == "skill:list"),
+            "skill:list must match query with a literal space"
+        );
+    }
+
+    #[test]
+    fn filter_colon_query_still_matches_colon_id() {
+        // A literal ':' in the query (typed verbatim, e.g. "session:new") must
+        // keep matching its own id exactly as before the space/colon
+        // equivalence fix (#5790).
+        let results = filter_commands("session:new");
+        assert_eq!(
+            results.first().map(|e| e.id),
+            Some("session:new"),
+            "literal colon query must still rank its own id first"
+        );
+    }
+
+    #[test]
+    fn filter_multiword_label_query_matches_session_next_not_regressed() {
+        // "session:next" has no literal colon-for-space substitution needed:
+        // its label "Switch to next session (/session next)" already
+        // contains "session next" as a literal substring. Confirm the
+        // space/colon equivalence fix does not regress this pre-existing
+        // label-based match.
+        let results = filter_commands("session next");
+        assert!(
+            results.iter().any(|e| e.id == "session:next"),
+            "session:next must still match its label substring 'session next'"
+        );
+    }
+
+    #[test]
+    fn filter_repeated_or_boundary_whitespace_normalized() {
+        // `filter_commands` trims and collapses whitespace before scoring, so
+        // a stray double space or leading/trailing space (trivially plausible
+        // typos) no longer desyncs the query's separator count from the
+        // target's and reproduces the #5790 symptom (autocomplete popup finds
+        // nothing, raw text falls through as a chat message).
+        assert!(
+            filter_commands("session  new")
+                .iter()
+                .any(|e| e.id == "session:new"),
+            "double space must still match session:new"
+        );
+        assert!(
+            filter_commands("session new ")
+                .iter()
+                .any(|e| e.id == "session:new"),
+            "trailing space must still match session:new"
+        );
+        assert!(
+            filter_commands(" session new")
+                .iter()
+                .any(|e| e.id == "session:new"),
+            "leading space must still match session:new"
+        );
+    }
+
+    #[test]
+    fn filter_hyphenated_id_matches_space_query() {
+        // Hyphen-separated ids (e.g. app:theme-list) exhibit the same #5790
+        // symptom as colon-separated ones: a query typed with a space in
+        // place of the hyphen must still match.
+        let results = filter_commands("theme list");
+        assert!(
+            results.iter().any(|e| e.id == "app:theme-list"),
+            "app:theme-list must match query with a literal space in place of the hyphen"
+        );
     }
 
     #[test]

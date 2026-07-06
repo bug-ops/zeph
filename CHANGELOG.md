@@ -18,7 +18,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `LlmError::InvalidInput` explaining the incompatibility and how to work around it (unset
   `reasoning_effort` for the provider, or use a different model for tool-calling turns),
   instead of surfacing the raw OpenAI error text.
-
 - `fix(zeph-skills)`: `SkillRegistry::load` (`crates/zeph-skills/src/registry.rs`) now discovers
   symlinked `SKILL.md` files during its `WalkDir` scan instead of silently dropping every symlink
   before `validate_path_within` could run. With `follow_links(false)`, `WalkDir` reports a
@@ -35,7 +34,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cannot be resolved at all (e.g. dangling) is logged at `DEBUG` instead, since a broken link is not
   itself a traversal attempt; and a symlink resolving to something other than a regular file (e.g. a
   directory) within the base is skipped quietly, no log (#5783).
-
+- `fix(tui)`: typing a colon- or hyphen-separated command's id in its natural, full-text
+  form with a space in place of the separator (e.g. `/session new` for id `session:new`,
+  `/theme list` for id `app:theme-list`) no longer closes the autocomplete popup with no
+  match — `fuzzy_score` (`crates/zeph-tui/src/command.rs`) required every character of the
+  query, including literal spaces, to appear verbatim in the target id/label, so the query's
+  space had no counterpart once the id used `:`/`-` instead, and the match failed outright.
+  The raw text then fell through and was submitted as a real, cost-incurring chat message —
+  the same problem class as #5779/#5782, but in the fuzzy matcher itself, not touched by
+  PR #5788's `Action::Dispatch` routing fix. Fixed by treating space, `:`, and `-` as
+  mutually interchangeable separator characters in the match predicate, and by normalizing
+  leading/trailing/doubled whitespace in the query in `filter_commands` before scoring so a
+  stray extra space doesn't desync the separator count between query and target (#5790).
 - `fix(core)`: the utility gate's `Retrieve` action (`crates/zeph-core/src/agent/tool_execution/tier_loop.rs`,
   `handle_retrieve_action`) could enter an unbreakable loop when the mandated `memory_search`
   detour itself failed with `confirmation_required` (e.g. the query content trips a
