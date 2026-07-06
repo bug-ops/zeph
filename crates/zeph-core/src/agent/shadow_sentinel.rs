@@ -1994,4 +1994,139 @@ mod tests {
              cross-session merge (LLM isolation invariant), got: {trajectory:?}"
         );
     }
+
+    // ── #5766: record_tool_event had zero test coverage ─────────────────────────
+
+    #[tokio::test]
+    async fn record_tool_event_persists_event_normal_path() {
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let sentinel = make_test_sentinel(config).await;
+
+        sentinel
+            .record_tool_event("builtin:shell", 3, "elevated", "ran `ls -la`")
+            .await;
+        sentinel.drain_pending().await;
+
+        let events = sentinel
+            .store
+            .get_trajectory("test-session", 10)
+            .await
+            .expect("get_trajectory");
+        assert_eq!(events.len(), 1, "expected exactly one persisted event");
+        assert_eq!(events[0].event_type, "tool_call");
+        assert_eq!(events[0].tool_id.as_deref(), Some("builtin:shell"));
+        assert_eq!(events[0].turn_number, 3);
+        assert_eq!(events[0].risk_level, "elevated");
+        assert_eq!(events[0].context_summary.as_deref(), Some("ran `ls -la`"));
+    }
+
+    #[tokio::test]
+    async fn record_tool_event_disabled_does_not_persist() {
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: false,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let sentinel = make_test_sentinel(config).await;
+
+        sentinel
+            .record_tool_event("builtin:shell", 1, "elevated", "should be skipped")
+            .await;
+        sentinel.drain_pending().await;
+
+        let events = sentinel
+            .store
+            .get_trajectory("test-session", 10)
+            .await
+            .expect("get_trajectory");
+        assert!(
+            events.is_empty(),
+            "record_tool_event must be a no-op when the sentinel is disabled"
+        );
+    }
+
+    /// Minimal `tracing_subscriber::Layer` that captures event messages into a shared buffer,
+    /// used to verify `record_tool_event`'s fire-and-forget persist failure logs the correct
+    /// warn context ("failed to persist tool event", as opposed to `check_tool_call`'s "failed
+    /// to persist probe result").
+    struct MessageCaptureLayer {
+        messages: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    struct MessageVisitor(String);
+
+    impl tracing::field::Visit for MessageVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for MessageCaptureLayer {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut visitor = MessageVisitor(String::new());
+            event.record(&mut visitor);
+            self.messages.lock().unwrap().push(visitor.0);
+        }
+    }
+
+    // `record()` fails when the backing table is gone. Self-loop-style DB-trigger tampering
+    // isn't needed here — a real store error is the whole point of this test.
+    #[tokio::test]
+    async fn record_tool_event_persist_failure_logs_warn_with_tool_event_context() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        struct NoopProbe;
+        impl SafetyProbe for NoopProbe {
+            fn evaluate<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a JsonValue,
+                _: &'a [SentinelEvent],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeVerdict> + Send + 'a>>
+            {
+                Box::pin(async { ProbeVerdict::Allow })
+            }
+        }
+
+        let pool = test_pool().await;
+        zeph_db::query(zeph_db::sql!("DROP TABLE safety_shadow_events"))
+            .execute(&pool)
+            .await
+            .expect("drop safety_shadow_events table");
+        let store = ShadowEventStore::new(pool);
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let sentinel = ShadowSentinel::new(store, Box::new(NoopProbe), config, "test-session");
+
+        let messages: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let layer = MessageCaptureLayer {
+            messages: messages.clone(),
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        sentinel
+            .record_tool_event("builtin:shell", 1, "elevated", "ran a command")
+            .await;
+        sentinel.drain_pending().await;
+
+        let captured = messages.lock().unwrap();
+        assert!(
+            captured
+                .iter()
+                .any(|m| m.contains("failed to persist tool event")),
+            "expected a warn log with 'failed to persist tool event' context, got: {captured:?}"
+        );
+    }
 }

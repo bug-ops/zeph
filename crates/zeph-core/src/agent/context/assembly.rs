@@ -2768,4 +2768,125 @@ mod tests {
             true
         ));
     }
+
+    // ── #5765: reset_conversation (/new) execution had zero test coverage ───────
+    // Only its arg-parser (`parse_new_flags` in zeph-commands) was previously tested.
+
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+
+    #[tokio::test]
+    async fn reset_conversation_keep_plan_preserves_pending_state() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.services.orchestration.pending_graph =
+            Some(zeph_orchestration::TaskGraph::new("test goal"));
+        agent.services.orchestration.pending_goal_embedding = Some(vec![0.1, 0.2, 0.3]);
+
+        agent.reset_conversation(true, true).await.unwrap();
+
+        assert!(
+            agent.services.orchestration.pending_graph.is_some(),
+            "--keep-plan must preserve pending_graph"
+        );
+        assert!(
+            agent
+                .services
+                .orchestration
+                .pending_goal_embedding
+                .is_some(),
+            "--keep-plan must preserve pending_goal_embedding"
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_conversation_without_keep_plan_clears_pending_state() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.services.orchestration.pending_graph =
+            Some(zeph_orchestration::TaskGraph::new("test goal"));
+        agent.services.orchestration.pending_goal_embedding = Some(vec![0.1, 0.2, 0.3]);
+
+        agent.reset_conversation(false, true).await.unwrap();
+
+        assert!(
+            agent.services.orchestration.pending_graph.is_none(),
+            "without --keep-plan, pending_graph must be cleared"
+        );
+        assert!(
+            agent
+                .services
+                .orchestration
+                .pending_goal_embedding
+                .is_none(),
+            "without --keep-plan, pending_goal_embedding must be cleared"
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_conversation_aborts_background_handles_and_clears_history() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        // Seed history beyond the initial system prompt.
+        agent.msg.messages.push(user("hello"));
+        agent.msg.messages.push(assistant("hi"));
+        assert_eq!(agent.msg.messages.len(), 3);
+
+        // Seed a real background handle (spawn_blocking-backed) to verify it is taken/aborted,
+        // not just left dangling — a plain `Option::None` fixture would not exercise the
+        // `.take()` + `.abort()` call at all.
+        let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let handle = supervisor.spawn_blocking(
+            std::sync::Arc::from("test-pending-task-goal"),
+            || -> Option<String> {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                None
+            },
+        );
+        agent.services.compression.pending_task_goal = Some(handle);
+        agent.services.compression.current_task_goal = Some("goal".to_owned());
+        agent.services.compression.task_goal_user_msg_hash = Some(42);
+
+        agent.reset_conversation(false, true).await.unwrap();
+
+        assert!(
+            agent.services.compression.pending_task_goal.is_none(),
+            "background task-goal handle must be taken (and aborted) by reset_conversation"
+        );
+        assert!(
+            agent.services.compression.current_task_goal.is_none(),
+            "cached task goal must be cleared"
+        );
+        assert!(
+            agent.services.compression.task_goal_user_msg_hash.is_none(),
+            "task goal hash must be cleared"
+        );
+        assert_eq!(
+            agent.msg.messages.len(),
+            1,
+            "history must be cleared down to the system prompt"
+        );
+        assert_eq!(agent.msg.messages[0].role, Role::System);
+    }
 }

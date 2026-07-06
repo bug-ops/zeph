@@ -33,6 +33,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   event streaming, and bearer-auth enforcement (#5435). Its `build_combined_deps_shares_one_
   memory_pool` test asserts `Arc::ptr_eq` against the actual production `build_combined_deps`
   output, proving the #5420 pool-sharing invariant rather than a hand-reassembled test double.
+- `test(core)`: closed three zero-coverage gaps flagged during PR #5763's dedup refactor
+  (#5764, #5765, #5766). `graph_facts`/`graph_history` (`agent_access_impl.rs`) now have
+  happy-path, entity-not-found, unavailable-store, and self-loop-edge tests, plus a `/conv fork`
+  test. `reset_conversation` (`context/assembly.rs`) now has tests exercising the actual command
+  (not just its flag parser), covering `--keep-plan` state preservation, state clearing without
+  the flag, and background-handle abort with history reset. `ShadowSentinel::record_tool_event`
+  (`shadow_sentinel.rs`) now has normal-path and persist-failure tests, the latter asserting the
+  correct warn-log context string via a real dropped-table error and a `tracing_subscriber::Layer`
+  capture. Test-only change, no production code modified.
 
 ### Changed
 

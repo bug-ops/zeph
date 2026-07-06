@@ -2380,6 +2380,363 @@ mod tests {
         );
     }
 
+    // ── #5764: graph_facts / graph_history had zero dedicated test coverage ──────
+
+    /// Installs a real SQLite-backed `GraphStore` on `memory` (mirrors
+    /// `graph_backfill_with_extract_provider_resolves_without_panic`), returning an `Arc`
+    /// clone so callers can seed entities/edges before handing `memory` to `with_memory`.
+    fn install_graph_store(memory: &mut SemanticMemory) -> std::sync::Arc<zeph_memory::GraphStore> {
+        let pool = memory.sqlite().pool().clone();
+        let store = std::sync::Arc::new(zeph_memory::GraphStore::new(pool));
+        memory.graph_store = Some(store.clone());
+        store
+    }
+
+    #[tokio::test]
+    async fn graph_facts_happy_path_returns_formatted_facts() {
+        let mut memory = memory_without_qdrant().await;
+        let store = install_graph_store(&mut memory);
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let alice = store
+            .upsert_entity(
+                "Alice",
+                "alice",
+                zeph_memory::EntityType::Person,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let bob = store
+            .upsert_entity("Bob", "bob", zeph_memory::EntityType::Person, None, None)
+            .await
+            .unwrap();
+        store
+            .insert_edge(alice.0, bob.0, "knows", "Alice knows Bob", 0.9, None, None)
+            .await
+            .unwrap();
+
+        let cfg = crate::config::GraphConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_graph_config(cfg);
+
+        let result = agent.graph_facts("Alice").await.unwrap();
+        assert!(
+            result.contains("Facts for 'Alice'"),
+            "expected facts header, got: {result}"
+        );
+        assert!(
+            result.contains("Bob"),
+            "expected target entity name, got: {result}"
+        );
+        assert!(result.contains("knows"), "expected relation, got: {result}");
+        assert!(
+            result.contains("Alice knows Bob"),
+            "expected fact text, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_facts_entity_not_found_returns_message() {
+        let mut memory = memory_without_qdrant().await;
+        install_graph_store(&mut memory);
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let cfg = crate::config::GraphConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_graph_config(cfg);
+
+        let result = agent.graph_facts("Nobody").await.unwrap();
+        assert_eq!(result, "No entity found matching 'Nobody'.");
+    }
+
+    // Mirrors graph_entities_enabled_but_no_store_reports_unavailable (R-4139): when the graph
+    // store is None (Qdrant unreachable) but graph is enabled, report unavailable rather than
+    // hang or panic.
+    #[tokio::test]
+    async fn graph_facts_enabled_but_no_store_reports_unavailable() {
+        let cfg = crate::config::GraphConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let memory = memory_without_qdrant().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_graph_config(cfg);
+
+        let result = agent.graph_facts("Alice").await.unwrap();
+        assert!(
+            result.contains("unavailable"),
+            "expected 'unavailable' but got: {result}"
+        );
+    }
+
+    // Self-loop edges (source == target) are rejected both by `GraphStore::insert_edge_typed`
+    // and by a DB-level trigger (migration 044_graph_edges_no_self_loops) — so a real one can
+    // only arise from data written before that migration. Drop the trigger to simulate that
+    // legacy row and confirm graph_facts' defensive `entity_names` bookkeeping (which already
+    // knows the entity's own name before resolving edge endpoints) handles it without panicking
+    // or falling back to a raw `#id` placeholder.
+    #[tokio::test]
+    async fn graph_facts_self_loop_edge_does_not_panic() {
+        let mut memory = memory_without_qdrant().await;
+        let store = install_graph_store(&mut memory);
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let self_entity = store
+            .upsert_entity("Self", "self", zeph_memory::EntityType::Concept, None, None)
+            .await
+            .unwrap();
+        let pool = memory.sqlite().pool().clone();
+        zeph_db::query(zeph_db::sql!(
+            "DROP TRIGGER IF EXISTS graph_edges_no_self_loops"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        zeph_db::query(zeph_db::sql!(
+            "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence) \
+             VALUES (?, ?, ?, ?, ?)"
+        ))
+        .bind(self_entity.0)
+        .bind(self_entity.0)
+        .bind("refers_to")
+        .bind("Self refers to itself")
+        .bind(1.0_f64)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let cfg = crate::config::GraphConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_graph_config(cfg);
+
+        let result = agent.graph_facts("Self").await.unwrap();
+        assert!(
+            result.contains("Facts for 'Self'"),
+            "expected facts header, got: {result}"
+        );
+        assert!(
+            result.contains("refers_to"),
+            "expected self-loop relation, got: {result}"
+        );
+        assert!(
+            !result.contains('#'),
+            "self-loop endpoint must resolve to the entity's own name, not a raw #id \
+             placeholder: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_history_happy_path_returns_formatted_history() {
+        let mut memory = memory_without_qdrant().await;
+        let store = install_graph_store(&mut memory);
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let alice = store
+            .upsert_entity(
+                "Alice",
+                "alice",
+                zeph_memory::EntityType::Person,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let bob = store
+            .upsert_entity("Bob", "bob", zeph_memory::EntityType::Person, None, None)
+            .await
+            .unwrap();
+        store
+            .insert_edge(alice.0, bob.0, "knows", "Alice knows Bob", 0.9, None, None)
+            .await
+            .unwrap();
+
+        let cfg = crate::config::GraphConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_graph_config(cfg);
+
+        let result = agent.graph_history("Alice").await.unwrap();
+        assert!(
+            result.contains("Edge history for 'Alice'"),
+            "expected history header, got: {result}"
+        );
+        assert!(
+            result.contains("[active]"),
+            "expected active tag, got: {result}"
+        );
+        assert!(
+            result.contains("Bob"),
+            "expected target entity name, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_history_entity_not_found_returns_message() {
+        let mut memory = memory_without_qdrant().await;
+        install_graph_store(&mut memory);
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let cfg = crate::config::GraphConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_graph_config(cfg);
+
+        let result = agent.graph_history("Nobody").await.unwrap();
+        assert_eq!(result, "No entity found matching 'Nobody'.");
+    }
+
+    #[tokio::test]
+    async fn graph_history_enabled_but_no_store_reports_unavailable() {
+        let cfg = crate::config::GraphConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let memory = memory_without_qdrant().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_graph_config(cfg);
+
+        let result = agent.graph_history("Alice").await.unwrap();
+        assert!(
+            result.contains("unavailable"),
+            "expected 'unavailable' but got: {result}"
+        );
+    }
+
+    // See graph_facts_self_loop_edge_does_not_panic for why the DB trigger must be dropped.
+    #[tokio::test]
+    async fn graph_history_self_loop_edge_does_not_panic() {
+        let mut memory = memory_without_qdrant().await;
+        let store = install_graph_store(&mut memory);
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let self_entity = store
+            .upsert_entity("Self", "self", zeph_memory::EntityType::Concept, None, None)
+            .await
+            .unwrap();
+        let pool = memory.sqlite().pool().clone();
+        zeph_db::query(zeph_db::sql!(
+            "DROP TRIGGER IF EXISTS graph_edges_no_self_loops"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        zeph_db::query(zeph_db::sql!(
+            "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence) \
+             VALUES (?, ?, ?, ?, ?)"
+        ))
+        .bind(self_entity.0)
+        .bind(self_entity.0)
+        .bind("refers_to")
+        .bind("Self refers to itself")
+        .bind(1.0_f64)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let cfg = crate::config::GraphConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_graph_config(cfg);
+
+        let result = agent.graph_history("Self").await.unwrap();
+        assert!(
+            result.contains("Edge history for 'Self'"),
+            "expected history header, got: {result}"
+        );
+        assert!(
+            result.contains("refers_to"),
+            "expected self-loop relation, got: {result}"
+        );
+        assert!(
+            !result.contains('#'),
+            "self-loop endpoint must resolve to the entity's own name, not a raw #id \
+             placeholder: {result}"
+        );
+    }
+
     // R-4706/R-4709: when semantic_scan is enabled but semantic_scan_provider is empty,
     // `plugin add` must return a CommandError immediately (fail-closed). Before this fix
     // the code fell through to resolve_background_provider which silently used the primary
@@ -2693,6 +3050,66 @@ path = "skill-second"
         assert!(
             result.starts_with("Resumed session s2"),
             "resuming into a different, unlocked session must still hydrate normally, got: {result}"
+        );
+    }
+
+    // #5764: `/conv fork` had zero test coverage — only `/conv resume` was tested above.
+    // Forks session "s1" into a fresh child and confirms the agent live-swaps onto it.
+    #[tokio::test]
+    async fn handle_conv_fork_creates_child_session_and_switches_to_it() {
+        let memory = memory_without_qdrant().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        store.create("s1").await.unwrap();
+        let src_dir = zeph_session::session_dir(&data_dir, "s1");
+        let log = zeph_session::SessionEventLog::open(&src_dir).await.unwrap();
+        log.append(
+            None,
+            None,
+            zeph_session::SessionEvent::SessionStarted {
+                session_id: "s1".to_owned(),
+                cwd: "/repo".to_owned(),
+                provider_name: "claude".to_owned(),
+                model: "opus".to_owned(),
+                forked_from: None,
+            },
+        )
+        .await
+        .unwrap();
+        store
+            .update_seq("s1", log.last_seq().unwrap(), 1)
+            .await
+            .unwrap();
+        drop(log);
+
+        let session_config = zeph_config::SessionConfig {
+            enabled: true,
+            data_dir: data_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_session_persistence_config(Some(session_config));
+
+        let result = agent.handle_conv("fork s1").await.unwrap();
+        assert!(
+            result.starts_with("Forked session s1 ->"),
+            "expected fork confirmation message, got: {result}"
+        );
+        assert!(
+            result.contains("event(s) copied"),
+            "expected copied-event count in confirmation, got: {result}"
         );
     }
 
