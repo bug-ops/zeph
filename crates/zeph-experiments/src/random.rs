@@ -18,13 +18,10 @@ use rand::RngExt as _;
 use rand::SeedableRng as _;
 use rand::rngs::SmallRng;
 
-use super::generator::VariationGenerator;
+use super::generator::{MAX_RETRIES, VariationGenerator};
 use super::search_space::SearchSpace;
 use super::snapshot::ConfigSnapshot;
 use super::types::{Variation, VariationValue};
-
-/// Maximum number of retry attempts before giving up (space is considered exhausted).
-const MAX_RETRIES: usize = 1000;
 
 /// Uniform random sampling within parameter bounds.
 ///

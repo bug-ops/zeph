@@ -233,6 +233,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   site already used. Pure structural dedup, no behavior change — same prompt text, same
   30s timeout semantics, same storage call per call site; added direct unit test coverage
   for the shared helper's success and LLM-failure paths. (#5678)
+- `refactor(zeph-experiments)`: deduplicated `MAX_RETRIES` retry-cap constant (previously
+  defined identically in `random.rs` and `neighborhood.rs`) into a single `pub(crate)`
+  constant in `generator.rs`, and extracted the "no configured step -> (max-min)/20"
+  fallback into `ParameterRange::effective_step()` in `search_space.rs`, replacing three
+  drifted spellings across `grid.rs`/`neighborhood.rs` (#5723). Deleted orphaned,
+  never-compiled `src/mod.rs` left over from the crate-extraction refactor (#5402).
+
+### Removed
+
+- `zeph-experiments`: removed unused `EvalError::OutOfRange` and
+  `EvalError::SearchSpaceExhausted` variants — never constructed anywhere in the
+  workspace (#5722). Breaking change for any external consumer matching on these
+  variants (unlikely pre-1.0; `EvalError` is `#[non_exhaustive]`).
 
 ### Fixed
 

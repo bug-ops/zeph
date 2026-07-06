@@ -20,6 +20,14 @@ use std::collections::HashSet;
 use super::snapshot::ConfigSnapshot;
 use super::types::Variation;
 
+/// Maximum number of retry attempts before a generator gives up on a rejection-sampling
+/// loop (the space is considered effectively exhausted). Shared by [`Random`] and
+/// [`Neighborhood`], both of which resample until an unvisited variation is found.
+///
+/// [`Random`]: crate::Random
+/// [`Neighborhood`]: crate::Neighborhood
+pub(crate) const MAX_RETRIES: usize = 1000;
+
 /// A strategy for generating parameter variations one at a time.
 ///
 /// Each call to [`VariationGenerator::next`] must produce a variation that changes

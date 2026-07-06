@@ -96,26 +96,6 @@ pub enum EvalError {
     #[error("benchmark file path escapes allowed directory: {0}")]
     PathTraversal(String),
 
-    /// A parameter value was outside its declared `[min, max]` range.
-    #[error("parameter out of range: {kind} value {value} not in [{min}, {max}]")]
-    OutOfRange {
-        /// Parameter name (e.g., `"temperature"`).
-        kind: String,
-        /// The value that was rejected.
-        value: f64,
-        /// Minimum allowed value (inclusive).
-        min: f64,
-        /// Maximum allowed value (inclusive).
-        max: f64,
-    },
-
-    /// All variations in the generator's search space have been visited.
-    #[error("search space exhausted: all variations in {strategy} have been visited")]
-    SearchSpaceExhausted {
-        /// Name of the strategy that exhausted (e.g., `"grid"`).
-        strategy: &'static str,
-    },
-
     /// The [`Neighborhood`] radius was not finite and positive.
     ///
     /// [`Neighborhood`]: crate::Neighborhood

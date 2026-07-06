@@ -18,19 +18,10 @@ use rand::SeedableRng as _;
 use rand::rngs::SmallRng;
 
 use super::error::EvalError;
-use super::generator::VariationGenerator;
+use super::generator::{MAX_RETRIES, VariationGenerator};
 use super::search_space::SearchSpace;
 use super::snapshot::ConfigSnapshot;
 use super::types::{Variation, VariationValue};
-
-/// Maximum number of retry attempts before giving up (space is considered exhausted).
-const MAX_RETRIES: usize = 1000;
-
-/// Fallback number of steps used when a parameter has no discrete step configured.
-///
-/// This gives a reasonable granularity for continuous parameters without requiring
-/// an explicit step in the search space definition.
-const DEFAULT_STEPS: f64 = 20.0;
 
 /// Perturbation strategy that explores the neighborhood of the current baseline.
 ///
@@ -97,10 +88,7 @@ impl VariationGenerator for Neighborhood {
             let idx = self.rng.random_range(0..self.search_space.parameters.len());
             let range = &self.search_space.parameters[idx];
             let current = baseline.get(range.kind());
-            // DEFAULT_STEPS is used when step is None (continuous parameter).
-            let step = range
-                .step()
-                .unwrap_or_else(|| (range.max() - range.min()) / DEFAULT_STEPS);
+            let step = range.effective_step();
             let delta = self.rng.random_range(-self.radius..=self.radius) * step;
             // Skip zero perturbations — they produce the baseline value, wasting an attempt.
             if delta.abs() < f64::EPSILON {
@@ -240,7 +228,7 @@ mod tests {
         let mut generator = Neighborhood::new(space, 1.0, 77).unwrap();
         let baseline = ConfigSnapshot::default();
         let visited = HashSet::new();
-        // With DEFAULT_STEPS=20, perturbation step = 2.0/20.0 = 0.1; must get at least one result.
+        // effective_step() falls back to 20 divisions: 2.0/20.0 = 0.1; must get at least one result.
         let mut got_any = false;
         for _ in 0..50 {
             if generator.next(&baseline, &visited).is_some() {

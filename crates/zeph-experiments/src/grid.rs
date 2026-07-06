@@ -90,9 +90,7 @@ impl VariationGenerator for GridStep {
     ) -> Option<Variation> {
         while self.current_param < self.search_space.parameters.len() {
             let range = &self.search_space.parameters[self.current_param];
-            let step = range
-                .step()
-                .unwrap_or_else(|| (range.max() - range.min()) / 20.0);
+            let step = range.effective_step();
             if step <= 0.0 {
                 self.current_param += 1;
                 self.current_step = 0;
@@ -276,7 +274,7 @@ mod tests {
         // With step = 1.0/20.0, there should be 21 steps (0.0, 0.05, ..., 1.0)
         assert_eq!(
             count, 21,
-            "expected 21 steps for step=None with DEFAULT_STEPS=20"
+            "expected 21 steps for step=None with effective_step() falling back to 20 divisions"
         );
     }
 

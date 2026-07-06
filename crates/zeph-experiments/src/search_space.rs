@@ -41,6 +41,13 @@ pub struct ParameterRange {
 }
 
 impl ParameterRange {
+    /// Fallback number of grid divisions used by [`effective_step`] when a parameter has
+    /// no discrete `step` configured. Gives a reasonable granularity for continuous
+    /// parameters without requiring an explicit step in the search space definition.
+    ///
+    /// [`effective_step`]: Self::effective_step
+    const DEFAULT_STEP_DIVISIONS: f64 = 20.0;
+
     /// Construct a validated `ParameterRange`.
     ///
     /// # Errors
@@ -117,6 +124,31 @@ impl ParameterRange {
     #[must_use]
     pub fn step(&self) -> Option<f64> {
         self.step
+    }
+
+    /// Return the configured step, or a fallback of `(max - min) / 20` for continuous ranges.
+    ///
+    /// Generator strategies ([`GridStep`], [`Neighborhood`]) call this as the single source
+    /// of truth for the default granularity applied when a parameter has no explicit `step`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_experiments::{ParameterRange, ParameterKind};
+    ///
+    /// let r = ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, Some(0.1), 0.7).unwrap();
+    /// assert!((r.effective_step() - 0.1).abs() < f64::EPSILON);
+    ///
+    /// let r_continuous = ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, None, 0.5).unwrap();
+    /// assert!((r_continuous.effective_step() - 0.05).abs() < f64::EPSILON);
+    /// ```
+    ///
+    /// [`GridStep`]: crate::GridStep
+    /// [`Neighborhood`]: crate::Neighborhood
+    #[must_use]
+    pub fn effective_step(&self) -> f64 {
+        self.step
+            .unwrap_or_else(|| (self.max - self.min) / Self::DEFAULT_STEP_DIVISIONS)
     }
 
     /// Return the default (baseline) value.
