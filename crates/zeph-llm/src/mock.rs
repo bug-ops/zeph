@@ -71,6 +71,9 @@ pub struct MockProvider {
     embed_tracking_enabled: bool,
     /// Per-call delay sequence. Each `chat()` call pops from the front; when empty, falls back to `delay_ms`.
     per_call_delays: Arc<Mutex<VecDeque<u64>>>,
+    /// Per-call delay sequence for `embed()`. Each call pops from the front; when empty, falls
+    /// back to `embed_delay_ms`. See [`MockProvider::with_per_call_embed_delays`].
+    per_call_embed_delays: Arc<Mutex<VecDeque<u64>>>,
     /// Captures the most recent [`GenerationOverrides`] applied via
     /// [`MockProvider::with_generation_overrides`]. Shared with the test via
     /// [`MockProvider::with_overrides_capture`] — the mock otherwise ignores overrides entirely.
@@ -106,6 +109,7 @@ impl Default for MockProvider {
             peak_concurrent_embed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             embed_tracking_enabled: false,
             per_call_delays: Arc::new(Mutex::new(VecDeque::new())),
+            per_call_embed_delays: Arc::new(Mutex::new(VecDeque::new())),
             captured_overrides: Arc::new(Mutex::new(None)),
         }
     }
@@ -187,6 +191,20 @@ impl MockProvider {
     #[must_use]
     pub fn with_embed_delay(mut self, ms: u64) -> Self {
         self.embed_delay_ms = ms;
+        self.supports_embeddings = true;
+        self
+    }
+
+    /// Assign a distinct delay (ms) to each successive `embed()` call: the Nth call sleeps
+    /// `delays[N]` ms before returning; once `delays` is exhausted, falls back to
+    /// `embed_delay_ms`. Mirrors [`Self::with_per_call_delays`] for `chat()`.
+    ///
+    /// Useful when a single turn issues multiple `embed()` calls through the same provider
+    /// (e.g. skill matching's query embed followed by a separate RL re-rank query embed) and a
+    /// test needs an early call to succeed quickly while a later one times out.
+    #[must_use]
+    pub fn with_per_call_embed_delays(mut self, delays: Vec<u64>) -> Self {
+        self.per_call_embed_delays = Arc::new(Mutex::new(VecDeque::from(delays)));
         self.supports_embeddings = true;
         self
     }
@@ -446,7 +464,13 @@ impl LlmProvider for MockProvider {
 
         self.embed_call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if self.embed_delay_ms > 0 {
+        let call_delay = self
+            .per_call_embed_delays
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(self.embed_delay_ms);
+        if call_delay > 0 {
             if self.embed_tracking_enabled {
                 // Yield before sleeping so concurrent tasks can register in-flight before
                 // any of them finish, enabling accurate peak measurement. Gated on the
@@ -454,7 +478,7 @@ impl LlmProvider for MockProvider {
                 // scheduling.
                 tokio::task::yield_now().await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(self.embed_delay_ms)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(call_delay)).await;
         }
         let result = if let Ok(mut errors) = self.errors.lock()
             && !errors.is_empty()

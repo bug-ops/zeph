@@ -23,6 +23,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   break, which stays within the ≤ 100-in-memory bound but is worth flagging for future refactors
   (#5841).
 
+### Fixed
+
+- `fix(skills)`: `RoutingHead::rerank()` (`crates/zeph-skills/src/rl_head.rs`) now returns a
+  `RerankOutcome` carrying `blended`/`update_count` captured under the same lock acquisition
+  used to rank candidates. The `assembly.rs` call site (`match_and_rank_skills`) previously
+  logged `blended`/`update_count` from a second, independently-locked `update_count()` call
+  made after `rerank()` had already released its lock — a concurrent background
+  `rl_head.update()` landing in that gap could make the logged values inconsistent with the
+  warmup decision `rerank()` itself branched on (TOCTOU, #5846).
+
+### Testing
+
+- `test(skills)`: added `rl_head.rs` coverage for a case where cosine order and RL-blended
+  order disagree (previously only `len()`/`update_count` were asserted for the post-warmup
+  path, never actual sort order) and a regression test asserting `RerankOutcome`'s
+  `blended`/`update_count` match the head's own counter with no drift from a second lock
+  acquisition (#5845, #5846).
+- `test(core)`: added `zeph-core` coverage for `match_and_rank_skills`'s previously-untested
+  `rl_head`-enabled branch — the RL-rerank success path plus its three skip/error paths (query
+  embed timeout, query/head embed-dim mismatch, and per-candidate skill-embedding dim
+  mismatch) — via a new `with_rl_head()`-wired `Agent` test harness (#5845).
+
 ### Docs
 
 - `docs(sanitizer)`: updated `crates/zeph-sanitizer/src/shadow_memory.rs` doc comment to reflect

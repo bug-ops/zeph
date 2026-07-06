@@ -251,6 +251,24 @@ pub struct RoutingHead {
     inner: Arc<Mutex<RoutingHeadInner>>,
 }
 
+/// Result of a [`RoutingHead::rerank`] call.
+///
+/// `blended` and `update_count` are captured under the **same** lock acquisition used to
+/// rank `ranked`, so a caller that needs to log or branch on the warmup decision can rely on
+/// them being consistent with the returned order — no second `update_count()` call (and its
+/// own separate lock acquisition) is needed, which would otherwise race with a concurrent
+/// [`RoutingHead::update`] landing between the two calls.
+#[derive(Debug, Clone)]
+pub struct RerankOutcome {
+    /// Candidate indices paired with their score, sorted descending.
+    pub ranked: Vec<(usize, f32)>,
+    /// Whether RL blending was applied (`true`) or the cosine order was kept as-is because
+    /// the head is still warming up (`false`).
+    pub blended: bool,
+    /// `update_count` observed under the same lock acquisition that produced `blended`.
+    pub update_count: u32,
+}
+
 impl RoutingHead {
     /// Initialize with Xavier-initialized weights.
     #[must_use]
@@ -286,11 +304,17 @@ impl RoutingHead {
             )
     }
 
-    /// Re-rank candidates using RL scores. Returns indices sorted by blended score descending.
+    /// Re-rank candidates using RL scores. Returns the ranked indices plus the warmup state
+    /// used to produce them.
     ///
     /// `rl_weight`: final_score = (1-rl_weight)*cosine + rl_weight*rl_score
     ///
     /// Skips RL blending and returns original cosine order when `update_count < warmup_updates`.
+    /// The `blended`/`update_count` fields of the returned [`RerankOutcome`] reflect the exact
+    /// `update_count` snapshot taken under this call's own lock acquisition — callers that need
+    /// to report the warmup decision must use those fields rather than calling
+    /// [`RoutingHead::update_count`] separately afterward, which would race with a concurrent
+    /// [`RoutingHead::update`] (see #5846).
     ///
     /// # Panics
     ///
@@ -303,10 +327,11 @@ impl RoutingHead {
         stats: &[(f32, u32)],
         rl_weight: f32,
         warmup_updates: u32,
-    ) -> Vec<(usize, f32)> {
+    ) -> RerankOutcome {
         let mut inner = self.inner.lock().expect("RoutingHead mutex poisoned");
+        let update_count = inner.update_count;
 
-        if inner.update_count < warmup_updates {
+        if update_count < warmup_updates {
             // Cold start: use pure cosine order.
             // Still run a forward pass on the top cosine candidate so last_forward is populated
             // and update() can increment update_count — otherwise warmup never ends.
@@ -322,7 +347,11 @@ impl RoutingHead {
                 let (success_rate, use_count) = stats[pos];
                 inner.score(query_embed, skill_embed, cosine, success_rate, use_count);
             }
-            return ranked;
+            return RerankOutcome {
+                ranked,
+                blended: false,
+                update_count,
+            };
         }
 
         // Score all candidates under a single lock acquisition, capturing each forward cache.
@@ -348,10 +377,14 @@ impl RoutingHead {
         }
         drop(inner);
 
-        ranked
-            .into_iter()
-            .map(|(idx, score, _)| (idx, score))
-            .collect()
+        RerankOutcome {
+            ranked: ranked
+                .into_iter()
+                .map(|(idx, score, _)| (idx, score))
+                .collect(),
+            blended: true,
+            update_count,
+        }
     }
 
     /// REINFORCE update for the skill that was actually selected.
@@ -592,7 +625,7 @@ mod tests {
             vec![(0, &s1, 0.9), (1, &s2, 0.5), (2, &s3, 0.7)];
         let stats = vec![(0.8, 5u32), (0.6, 3), (0.7, 4)];
 
-        let ranked = head.rerank(&q, &candidates, &stats, 0.3, 50);
+        let ranked = head.rerank(&q, &candidates, &stats, 0.3, 50).ranked;
         assert_eq!(
             ranked[0].0, 0,
             "highest cosine should be first during warmup"
@@ -647,7 +680,7 @@ mod tests {
             "update_count must reach warmup threshold"
         );
         // One more rerank should now use blended scores (post-warmup).
-        let ranked = head.rerank(&q, &candidates, &stats, 0.3, warmup);
+        let ranked = head.rerank(&q, &candidates, &stats, 0.3, warmup).ranked;
         assert_eq!(ranked.len(), 2);
     }
 
@@ -704,7 +737,7 @@ mod tests {
         let q = dummy_embed(0.1, 4);
         let candidates: Vec<(usize, &[f32], f32)> = vec![];
         let stats: Vec<(f32, u32)> = vec![];
-        let ranked = head.rerank(&q, &candidates, &stats, 0.3, 10);
+        let ranked = head.rerank(&q, &candidates, &stats, 0.3, 10).ranked;
         assert!(
             ranked.is_empty(),
             "empty candidates must produce empty ranked list"
@@ -726,7 +759,7 @@ mod tests {
         let candidates: Vec<(usize, &[f32], f32)> = vec![(42, &s, 0.95)];
         let stats = vec![(1.0, 10u32)];
 
-        let ranked = head.rerank(&q, &candidates, &stats, 0.3, 5);
+        let ranked = head.rerank(&q, &candidates, &stats, 0.3, 5).ranked;
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].0, 42);
         assert!(
@@ -754,7 +787,7 @@ mod tests {
             vec![(0, &sa, 0.3), (1, &sb, 0.9), (2, &sc, 0.6)];
         let stats = vec![(0.5, 1u32), (0.7, 2), (0.6, 3)];
 
-        let ranked = head.rerank(&q, &candidates, &stats, 0.3, 20);
+        let ranked = head.rerank(&q, &candidates, &stats, 0.3, 20).ranked;
         assert_eq!(
             ranked[0].0, 1,
             "idx 1 has highest cosine 0.9, must be first"
@@ -782,12 +815,100 @@ mod tests {
         assert_eq!(head.update_count(), warmup);
 
         // Now in post-warmup mode: rerank then update.
-        let ranked = head.rerank(&q, &candidates, &stats, 0.3, warmup);
+        let ranked = head.rerank(&q, &candidates, &stats, 0.3, warmup).ranked;
         assert_eq!(ranked.len(), 2);
         assert!(
             head.update(1.0, 0.01),
             "update() must succeed after post-warmup rerank"
         );
         assert_eq!(head.update_count(), warmup + 1);
+    }
+
+    #[test]
+    fn rerank_post_warmup_blended_order_can_disagree_with_cosine_order() {
+        // Regression test for #5845: prior tests only asserted `len()`/`update_count` for the
+        // post-warmup path, never that blending actually changes the order relative to raw
+        // cosine. Construct a `RoutingHead` whose weights make the RL score *inversely*
+        // correlated with cosine similarity (by directly setting weights on the private
+        // `RoutingHeadInner`, bypassing Xavier init), so a candidate with low cosine but a
+        // favorable RL score can outrank one with high cosine but an unfavorable RL score.
+        let embed_dim = 1;
+        let hidden_dim = 1;
+        let input_dim = 2 * embed_dim + N_FEATURES; // [query, skill, cosine, success_rate, log_use]
+
+        // pre_relu = b1 + w1 . input. Only the cosine feature (index 2) has a nonzero weight,
+        // and it is negative, so higher cosine yields a *lower* hidden activation and thus a
+        // lower final RL score — the opposite of cosine similarity.
+        let mut w1 = vec![0.0f32; input_dim * hidden_dim];
+        w1[2] = -5.0;
+        let b1 = vec![5.0f32]; // keeps pre_relu >= 0 for cosine in [0, 1], so ReLU is a no-op
+        let w2 = vec![1.0f32];
+        let b2 = 0.0f32;
+
+        let inner = RoutingHeadInner {
+            w1,
+            b1,
+            w2,
+            b2,
+            embed_dim,
+            hidden_dim,
+            baseline: 0.0,
+            update_count: 50, // past any warmup threshold used below
+            last_forward: None,
+        };
+        let head = RoutingHead {
+            inner: Arc::new(Mutex::new(inner)),
+        };
+
+        let q = dummy_embed(0.0, embed_dim);
+        let s_high_cosine = dummy_embed(0.0, embed_dim);
+        let s_low_cosine = dummy_embed(0.0, embed_dim);
+        // idx 0: high cosine (0.9) but low RL score; idx 1: low cosine (0.1) but high RL score.
+        let candidates: Vec<(usize, &[f32], f32)> =
+            vec![(0, &s_high_cosine, 0.9), (1, &s_low_cosine, 0.1)];
+        let stats = vec![(0.5, 0u32), (0.5, 0u32)];
+
+        // rl_weight close to 1.0 so the RL signal dominates the blend, flipping cosine order.
+        let outcome = head.rerank(&q, &candidates, &stats, 0.9, 10);
+        assert!(outcome.blended, "update_count (50) is past warmup (10)");
+        assert_eq!(
+            outcome.ranked[0].0, 1,
+            "candidate with low cosine but favorable RL score must rank first: {:?}",
+            outcome.ranked
+        );
+        assert_eq!(outcome.ranked[1].0, 0);
+    }
+
+    #[test]
+    fn rerank_outcome_reports_atomic_blended_and_update_count() {
+        // Regression test for #5846: `blended`/`update_count` on `RerankOutcome` must reflect
+        // the exact values `rerank()` branched on internally under its own lock acquisition,
+        // not a value from a second, separately-locked `update_count()` call that could observe
+        // a different value if a concurrent `update()` landed in between (TOCTOU).
+        let head = make_head();
+        let q = dummy_embed(0.1, 4);
+        let s = dummy_embed(0.2, 4);
+        let candidates: Vec<(usize, &[f32], f32)> = vec![(0, &s, 0.8)];
+        let stats = vec![(0.5, 0u32)];
+
+        // Before warmup: blended must be false, update_count must be 0 (fresh head).
+        let outcome = head.rerank(&q, &candidates, &stats, 0.3, 5);
+        assert!(!outcome.blended, "fresh head must not blend before warmup");
+        assert_eq!(outcome.update_count, 0);
+        assert_eq!(outcome.update_count, head.update_count());
+
+        // Advance past warmup.
+        for _ in 0..5 {
+            let _ = head.rerank(&q, &candidates, &stats, 0.3, 5);
+            let _ = head.update(1.0, 0.01);
+        }
+        assert_eq!(head.update_count(), 5);
+
+        // Past warmup: blended must be true, and the reported update_count must match the
+        // head's own counter — no drift from a second, independent lock acquisition.
+        let outcome = head.rerank(&q, &candidates, &stats, 0.3, 5);
+        assert!(outcome.blended, "head is past warmup, blending must apply");
+        assert_eq!(outcome.update_count, 5);
+        assert_eq!(outcome.update_count, head.update_count());
     }
 }

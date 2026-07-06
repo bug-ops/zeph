@@ -1229,13 +1229,14 @@ impl<C: Channel> Agent<C> {
                             .iter()
                             .map(|(idx, emb, score)| (*idx, emb.as_slice(), *score))
                             .collect();
-                        let reranked = rl_head.rerank(
+                        let outcome = rl_head.rerank(
                             &query_embed,
                             &candidate_refs,
                             &stats,
                             rl_weight,
                             warmup,
                         );
+                        let reranked = &outcome.ranked;
                         // Apply new order to scored.
                         scored.sort_by(|a, b| {
                             let pos_a = reranked.iter().position(|(i, _)| *i == a.index);
@@ -1244,11 +1245,17 @@ impl<C: Channel> Agent<C> {
                         });
                         // Positive-confirmation log: without this, RL re-rank success is
                         // indistinguishable from the feature being silently inactive (#5834).
-                        // `rerank()` returns pure cosine order (no blending) while
-                        // `update_count < warmup_updates`; checked here right after the call so
-                        // `blended` reflects the same condition `rerank()` itself branched on.
-                        let update_count = rl_head.update_count();
-                        let blended = update_count >= warmup;
+                        // `blended`/`update_count` come straight from `outcome`, captured by
+                        // `rerank()` under its own lock acquisition — this avoids a second,
+                        // independent `update_count()` call that could race with a concurrent
+                        // `update()` and report a value inconsistent with what `rerank()` itself
+                        // branched on (#5846).
+                        //
+                        // Do not "simplify" this back to a separate `rl_head.update_count()`
+                        // call — the atomicity guarantee only holds as long as both fields are
+                        // read from this single `outcome`.
+                        let update_count = outcome.update_count;
+                        let blended = outcome.blended;
                         let rerank_summary: Vec<(String, f32, f32)> = reranked
                             .iter()
                             .map(|(idx, post_score)| {
@@ -2952,5 +2959,220 @@ mod tests {
             "history must be cleared down to the system prompt"
         );
         assert_eq!(agent.msg.messages[0].role, Role::System);
+    }
+
+    // ── #5845: match_and_rank_skills's rl_head-enabled branch had zero test coverage —
+    // neither the RL-rerank success path nor its three skip/error paths were ever exercised.
+
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
+    use zeph_skills::registry::SkillRegistry;
+    use zeph_skills::rl_head::RoutingHead;
+
+    /// Builds a registry with two skills ("skill-a", "skill-b") whose descriptions get
+    /// distinct, test-controlled embeddings via a custom `embed_fn` (independent of the
+    /// agent's own embedding provider). Keeps the backing `TempDir` alive, mirroring
+    /// `create_registry_with_live_dir` in `skill_fallback_tests.rs`.
+    fn create_two_skill_registry() -> (SkillRegistry, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        for (name, desc) in [
+            ("skill-a", "First test skill"),
+            ("skill-b", "Second test skill"),
+        ] {
+            let dir = temp_dir.path().join(name);
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!(
+                    "---\nname: {name}\ndescription: {desc}\n---\n<instructions>\nbody\n</instructions>"
+                ),
+            )
+            .unwrap();
+        }
+        let registry = SkillRegistry::load(&[temp_dir.path().to_path_buf()]);
+        (registry, temp_dir)
+    }
+
+    /// Constructs an `Agent<MockChannel>` wired with an in-memory two-skill matcher, ready to
+    /// exercise `match_and_rank_skills`'s rl_head-enabled branch. `embed_dims` sets the
+    /// (skill-a, skill-b) embedding dimensions — mismatched dims let a test trigger the
+    /// "`candidates.len()` != `scored.len()`" skip path. Disambiguation and the injection-score
+    /// floor are disabled so they never interfere with these RL-focused assertions.
+    async fn build_rl_test_agent(
+        provider: AnyProvider,
+        embed_dims: (usize, usize),
+    ) -> (Agent<MockChannel>, Vec<SkillMeta>, tempfile::TempDir) {
+        let (registry, dir) = create_two_skill_registry();
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            registry,
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        let all_meta_owned: Vec<SkillMeta> = {
+            let guard = agent.services.skill.registry.read();
+            guard.all_meta().into_iter().cloned().collect()
+        };
+        let embed_fn = move |text: &str| -> zeph_skills::matcher::EmbedFuture {
+            let dim = if text.starts_with("First") {
+                embed_dims.0
+            } else {
+                embed_dims.1
+            };
+            Box::pin(async move { Ok(vec![1.0_f32; dim]) })
+        };
+        let matcher = SkillMatcher::new(&all_meta_owned.iter().collect::<Vec<_>>(), embed_fn)
+            .await
+            .map(SkillMatcherBackend::InMemory);
+        agent.services.skill.matcher = matcher;
+        // Never disambiguate and never drop a candidate for scoring below the floor — these
+        // tests assert on the RL-rerank branch specifically, not on unrelated skill-selection
+        // features.
+        agent.services.skill.disambiguation_threshold = -1.0;
+        agent.services.skill.min_injection_score = -1.0;
+        (agent, all_meta_owned, dir)
+    }
+
+    #[tokio::test]
+    async fn match_and_rank_skills_applies_rl_rerank_when_healthy() {
+        let embed_dim = 4;
+        let provider = AnyProvider::Mock(
+            MockProvider::with_responses(vec!["ok".to_string()])
+                .with_embedding(vec![1.0_f32; embed_dim]),
+        );
+        let (mut agent, all_meta_owned, _dir) =
+            Box::pin(build_rl_test_agent(provider, (embed_dim, embed_dim))).await;
+
+        let rl_head = RoutingHead::new(embed_dim);
+        agent = agent.with_rl_head(rl_head.clone());
+        agent.services.skill.rl_warmup_updates = 0; // already past warmup
+
+        let all_meta_refs: Vec<&SkillMeta> = all_meta_owned.iter().collect();
+        let (indices, fallback, skills_to_record) = agent
+            .match_and_rank_skills("query", "effective query", &all_meta_refs)
+            .await;
+
+        assert!(
+            !fallback,
+            "healthy matcher + provider must not trigger fallback mode"
+        );
+        assert_eq!(indices.len(), 2, "both skills must be returned");
+        assert_eq!(skills_to_record.len(), 2);
+        // rerank() populates last_forward for the winning candidate only when it actually runs
+        // (both the cold-start and post-warmup branches do this) — the skip/error paths below
+        // never call rerank() at all, so update() stays a no-op (false). This is the most
+        // direct, log-independent signal that the RL-rerank success path executed.
+        assert!(
+            rl_head.update(1.0, 0.01),
+            "rerank() must have populated last_forward when the RL-rerank success path runs"
+        );
+    }
+
+    #[tokio::test]
+    async fn match_and_rank_skills_skips_rl_rerank_on_query_embed_timeout() {
+        let embed_dim = 4;
+        // First embed() call (skill-matching's own query embed) succeeds instantly; the
+        // second (RL's separate query embed) sleeps long enough to exceed the configured
+        // timeout — see assembly.rs's `rl_query_embed` construction.
+        let provider = AnyProvider::Mock(
+            MockProvider::with_responses(vec!["ok".to_string()])
+                .with_per_call_embed_delays(vec![0, 5_000]),
+        );
+        let (mut agent, all_meta_owned, _dir) =
+            Box::pin(build_rl_test_agent(provider, (embed_dim, embed_dim))).await;
+        agent.runtime.config.timeouts.embedding_seconds = 1;
+
+        let rl_head = RoutingHead::new(embed_dim);
+        agent = agent.with_rl_head(rl_head.clone());
+
+        tokio::time::pause();
+        let handle = tokio::spawn(async move {
+            let all_meta_refs: Vec<&SkillMeta> = all_meta_owned.iter().collect();
+            agent
+                .match_and_rank_skills("query", "effective query", &all_meta_refs)
+                .await
+        });
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        let (indices, fallback, _) = handle.await.expect("task panicked");
+
+        assert!(!fallback);
+        assert_eq!(
+            indices.len(),
+            2,
+            "cosine order must still be used when the RL query embed times out"
+        );
+        assert!(
+            !rl_head.update(1.0, 0.01),
+            "rerank() must never run when the RL query embed times out"
+        );
+    }
+
+    #[tokio::test]
+    async fn match_and_rank_skills_skips_rl_rerank_on_query_head_dim_mismatch() {
+        let matcher_embed_dim = 4;
+        let provider = AnyProvider::Mock(
+            MockProvider::with_responses(vec!["ok".to_string()])
+                .with_embedding(vec![1.0_f32; matcher_embed_dim]),
+        );
+        let (mut agent, all_meta_owned, _dir) = Box::pin(build_rl_test_agent(
+            provider,
+            (matcher_embed_dim, matcher_embed_dim),
+        ))
+        .await;
+
+        // rl_head expects a different embedding dimension than what the (mock) embedding
+        // provider actually returns for the query — e.g. the embedding model changed since
+        // the head was trained/saved.
+        let rl_head = RoutingHead::new(matcher_embed_dim + 1);
+        agent = agent.with_rl_head(rl_head.clone());
+
+        let all_meta_refs: Vec<&SkillMeta> = all_meta_owned.iter().collect();
+        let (indices, fallback, _) = agent
+            .match_and_rank_skills("query", "effective query", &all_meta_refs)
+            .await;
+
+        assert!(!fallback);
+        assert_eq!(indices.len(), 2);
+        assert!(
+            !rl_head.update(1.0, 0.01),
+            "rerank() must never run when query/head embed dims mismatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn match_and_rank_skills_skips_rl_rerank_when_some_skill_embeddings_mismatch_dim() {
+        let embed_dim = 4;
+        let provider = AnyProvider::Mock(
+            MockProvider::with_responses(vec!["ok".to_string()])
+                .with_embedding(vec![1.0_f32; embed_dim]),
+        );
+        // skill-a gets an embed_dim-length embedding (matches rl_head); skill-b gets a
+        // mismatched length — simulates a partial embedding-model migration where only some
+        // skills were re-embedded, so `matcher.skill_embedding()` returns a vector `rerank()`
+        // cannot safely consume for that candidate.
+        let (mut agent, all_meta_owned, _dir) =
+            Box::pin(build_rl_test_agent(provider, (embed_dim, embed_dim + 4))).await;
+
+        let rl_head = RoutingHead::new(embed_dim);
+        agent = agent.with_rl_head(rl_head.clone());
+
+        let all_meta_refs: Vec<&SkillMeta> = all_meta_owned.iter().collect();
+        let (indices, fallback, _) = agent
+            .match_and_rank_skills("query", "effective query", &all_meta_refs)
+            .await;
+
+        assert!(!fallback);
+        assert_eq!(
+            indices.len(),
+            2,
+            "both skills still returned via cosine order"
+        );
+        assert!(
+            !rl_head.update(1.0, 0.01),
+            "rerank() must never run when some skill embeddings don't match rl_head's dim"
+        );
     }
 }
