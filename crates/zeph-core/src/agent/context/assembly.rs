@@ -1242,6 +1242,27 @@ impl<C: Channel> Agent<C> {
                             let pos_b = reranked.iter().position(|(i, _)| *i == b.index);
                             pos_a.cmp(&pos_b)
                         });
+                        // Positive-confirmation log: without this, RL re-rank success is
+                        // indistinguishable from the feature being silently inactive (#5834).
+                        let rerank_summary: Vec<(String, f32, f32)> = reranked
+                            .iter()
+                            .map(|(idx, post_score)| {
+                                let name = all_meta
+                                    .get(*idx)
+                                    .map_or_else(|| "<unknown>".to_string(), |m| m.name.clone());
+                                let pre_score = candidates
+                                    .iter()
+                                    .find(|(cidx, _, _)| cidx == idx)
+                                    .map_or(0.0, |(_, _, score)| *score);
+                                (name, pre_score, *post_score)
+                            })
+                            .collect();
+                        tracing::debug!(
+                            vector_backend = if matcher.is_qdrant() { "qdrant" } else { "sqlite" },
+                            candidate_count = rerank_summary.len(),
+                            rerank = ?rerank_summary,
+                            "RL re-rank applied: candidates reordered by blended RL score (name, pre_score, post_score)"
+                        );
                     } else {
                         tracing::debug!(
                             total = scored.len(),

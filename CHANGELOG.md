@@ -46,6 +46,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `feat(core)`: `Agent::match_and_rank_skills`'s RL re-rank success path now emits a
+  `tracing::debug!` on every turn it fires, logging the candidate count, the active
+  `vector_backend` (`"qdrant"`/`"sqlite"`), and a per-skill `(name, pre_score, post_score)`
+  breakdown after `RoutingHead::rerank()` reorders `scored`. Previously the three existing
+  log sites on this path (embed timeout, embed dim mismatch, and the embeddings-unavailable
+  skip branch) only covered failure/skip cases, so a successful RL re-rank was
+  indistinguishable from the feature being silently inactive — blocking live cross-backend
+  parity verification for #5812/#5805 (#5834).
 - `test(core)`: extracted a `build_daemon_agent`/`BuildDaemonAgentDeps`-taking function from
   `run_daemon()`'s `AgentBuilder` construction chain (`src/daemon.rs`), completing #5819's
   remaining half left out of PR #5831 (`build_agent`/`BuildAgentDeps` for the CLI path,
