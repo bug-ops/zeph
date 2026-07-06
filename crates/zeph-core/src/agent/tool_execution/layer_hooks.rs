@@ -8,6 +8,21 @@ use crate::agent::Agent;
 use crate::channel::Channel;
 
 impl<C: Channel> Agent<C> {
+    /// Build the owned parts of a `LayerContext`: the stringified conversation id (if any)
+    /// and the current turn number. Callers construct `LayerContext` locally from these
+    /// owned values, since `LayerContext` borrows `conversation_id` and cannot be returned
+    /// directly without a self-referential struct.
+    fn layer_context_parts(&self) -> (Option<String>, u32) {
+        let conv_id_str = self
+            .services
+            .memory
+            .persistence
+            .conversation_id
+            .map(|id| id.0.to_string());
+        let turn_number = u32::try_from(self.services.sidequest.turn_counter).unwrap_or(u32::MAX);
+        (conv_id_str, turn_number)
+    }
+
     /// Run `RuntimeLayer::before_chat` hooks. Returns `Ok(Some(sc))` when a layer short-circuits
     /// the LLM call, `Ok(None)` when all hooks pass through.
     #[tracing::instrument(name = "core.tool.before_chat_layers", skip_all, level = "debug", err)]
@@ -18,15 +33,10 @@ impl<C: Channel> Agent<C> {
         if self.runtime.config.layers.is_empty() {
             return Ok(None);
         }
-        let conv_id_str = self
-            .services
-            .memory
-            .persistence
-            .conversation_id
-            .map(|id| id.0.to_string());
+        let (conv_id_str, turn_number) = self.layer_context_parts();
         let ctx = crate::runtime_layer::LayerContext {
             conversation_id: conv_id_str.as_deref(),
-            turn_number: u32::try_from(self.services.sidequest.turn_counter).unwrap_or(u32::MAX),
+            turn_number,
         };
         for layer in &self.runtime.config.layers {
             let hook_result = std::panic::AssertUnwindSafe(layer.before_chat(
@@ -54,15 +64,10 @@ impl<C: Channel> Agent<C> {
         if self.runtime.config.layers.is_empty() {
             return;
         }
-        let conv_id_str = self
-            .services
-            .memory
-            .persistence
-            .conversation_id
-            .map(|id| id.0.to_string());
+        let (conv_id_str, turn_number) = self.layer_context_parts();
         let ctx = crate::runtime_layer::LayerContext {
             conversation_id: conv_id_str.as_deref(),
-            turn_number: u32::try_from(self.services.sidequest.turn_counter).unwrap_or(u32::MAX),
+            turn_number,
         };
         for layer in &self.runtime.config.layers {
             let hook_result = std::panic::AssertUnwindSafe(layer.after_chat(&ctx, result))

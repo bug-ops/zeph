@@ -36,6 +36,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(core)`: deduplicated three independently-duplicated code paths in the agent
+  tool-dispatch pipeline. Merged `call_non_streaming`/`call_non_streaming_with_span`
+  (`crates/zeph-core/src/agent/tool_execution/llm_dispatch.rs`) into a single function
+  taking an explicit `tracing::Span` parameter; the SSE-fallback call site now passes
+  `tracing::Span::none()` (a documented no-op for `.instrument()`), which also removes a
+  now-redundant `core.tool.call_non_streaming` span on that one path — error visibility is
+  unchanged since it still surfaces once via the outer `core.tool.dispatch_chat` span (#5667).
+  Extracted `layer_context_parts()` (`layer_hooks.rs`), shared by `run_before_chat_layers`
+  and `run_after_chat_layers` instead of deriving the conversation-id/turn-number pair
+  twice (#5668). `SpeculationEngine::try_dispatch` (`speculative/mod.rs`) now resolves a
+  supervisor (real or throwaway) once before a single `spawn_oneshot` call, instead of
+  duplicating the identical spawn closure across both branches of an if/else (#5669). Pure
+  refactor, no behavior change.
 - `refactor(memory,core)`: deduplicated three independently-drifting code paths in the graph
   subsystem. `build_entity_graph_and_maps` (`crates/zeph-memory/src/graph/community.rs`) now
   folds each edge into the graph/fact/id maps through a single `fold_edge` helper shared by its

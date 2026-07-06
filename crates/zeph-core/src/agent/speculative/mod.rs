@@ -211,30 +211,22 @@ impl SpeculationEngine {
             "agent.speculative.dispatch.{}",
             uuid::Uuid::new_v4()
         ));
-        let join = if let Some(sup) = &self.task_supervisor {
-            sup.spawn_oneshot(Arc::clone(&task_name), move || async move {
-                tokio::select! {
-                    result = exec.execute_tool_call_erased(&call_clone) => result,
-                    () = cancel_child.cancelled() => {
-                        Err(ToolError::Execution(std::io::Error::other("speculative cancelled")))
-                    }
+        // No supervisor available (test harness or early construction path): fall back to a
+        // throwaway supervisor so SpeculativeHandle retains a BlockingHandle<R> regardless of
+        // code path.
+        let sup = self.task_supervisor.clone().unwrap_or_else(|| {
+            Arc::new(zeph_common::TaskSupervisor::new(
+                tokio_util::sync::CancellationToken::new(),
+            ))
+        });
+        let join = sup.spawn_oneshot(task_name, move || async move {
+            tokio::select! {
+                result = exec.execute_tool_call_erased(&call_clone) => result,
+                () = cancel_child.cancelled() => {
+                    Err(ToolError::Execution(std::io::Error::other("speculative cancelled")))
                 }
-            })
-        } else {
-            // No supervisor available (test harness or early construction path):
-            // fall back to a throwaway supervisor so SpeculativeHandle retains a
-            // BlockingHandle<R> regardless of code path.
-            let tmp_cancel = tokio_util::sync::CancellationToken::new();
-            let tmp_sup = Arc::new(zeph_common::TaskSupervisor::new(tmp_cancel));
-            tmp_sup.spawn_oneshot(task_name, move || async move {
-                tokio::select! {
-                    result = exec.execute_tool_call_erased(&call_clone) => result,
-                    () = cancel_child.cancelled() => {
-                        Err(ToolError::Execution(std::io::Error::other("speculative cancelled")))
-                    }
-                }
-            })
-        };
+            }
+        });
 
         let handle = SpeculativeHandle {
             key: HandleKey {

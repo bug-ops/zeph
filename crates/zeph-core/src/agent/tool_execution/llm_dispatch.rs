@@ -213,7 +213,8 @@ impl<C: Channel> Agent<C> {
                 Ok(Ok(resp)) => Ok(Some(resp)),
                 Ok(Err(e)) => {
                     tracing::warn!(error = %e, "speculative SSE stream failed, falling back");
-                    self.call_non_streaming(tool_defs, llm_timeout).await
+                    self.call_non_streaming(tool_defs, llm_timeout, tracing::Span::none())
+                        .await
                 }
                 Err(_) => {
                     self.channel
@@ -224,42 +225,15 @@ impl<C: Channel> Agent<C> {
             };
         }
         // Provider does not support tool streaming or speculative mode is off — normal path.
-        self.call_non_streaming_with_span(tool_defs, llm_timeout, llm_span)
+        self.call_non_streaming(tool_defs, llm_timeout, llm_span)
             .await
     }
 
-    #[tracing::instrument(name = "core.tool.call_non_streaming", skip_all, level = "debug", err)]
+    /// Dispatch a single non-streaming `chat_with_tools` call under a timeout, racing
+    /// cancellation. `llm_span` instruments the chat future; pass `tracing::Span::none()`
+    /// (a documented no-op for `.instrument()`) when no outer span should wrap the call,
+    /// e.g. the speculative-stream fallback path which is not part of the main LLM span.
     async fn call_non_streaming(
-        &mut self,
-        tool_defs: &[ToolDefinition],
-        llm_timeout: std::time::Duration,
-    ) -> Result<Option<ChatResponse>, crate::agent::error::AgentError> {
-        let chat_fut = tokio::time::timeout(
-            llm_timeout,
-            self.provider.chat_with_tools(&self.msg.messages, tool_defs),
-        );
-        let timeout_result = tokio::select! {
-            r = chat_fut => r,
-            () = self.runtime.lifecycle.cancel_token.cancelled() => {
-                tracing::info!("chat_with_tools cancelled by user");
-                self.update_metrics(|m| m.cancellations += 1);
-                self.channel.send("[Cancelled]").await?;
-                return Ok(None);
-            }
-        };
-        match timeout_result {
-            Ok(Ok(r)) => Ok(Some(r)),
-            Ok(Err(e)) => Err(e.into()),
-            Err(_) => {
-                self.channel
-                    .send("LLM request timed out. Please try again.")
-                    .await?;
-                Ok(None)
-            }
-        }
-    }
-
-    async fn call_non_streaming_with_span(
         &mut self,
         tool_defs: &[ToolDefinition],
         llm_timeout: std::time::Duration,
