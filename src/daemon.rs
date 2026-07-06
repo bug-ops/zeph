@@ -258,6 +258,129 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
     }
 }
 
+/// Dependencies for [`build_daemon_agent`] (#5819): packages the exact inputs `run_daemon()`'s
+/// `AgentBuilder` construction chain closes over, mirroring `crate::runner::build_agent`'s
+/// `Deps`-taking pattern so the daemon wiring is unit-testable without running the whole
+/// daemon bootstrap.
+///
+/// Deliberately its own struct, not merged with `crate::runner::BuildAgentDeps`: the daemon
+/// path wires `with_mcp`/`with_mcp_shared_tools`/`with_provider_pool` inline (the CLI path
+/// defers those to feature-gated chaining after `build_agent` returns, inside `run()`), and
+/// never wires session-sink, compression, typed-pages, autosave, shutdown-summary,
+/// compaction-provider, tiered-retrieval, or bare-mode config at all. Forcing both paths into
+/// one struct would need `None`/default placeholders for whichever fields the other path
+/// doesn't use, reintroducing the exact default-vs-omitted wiring-regression defect class this
+/// issue exists to catch.
+struct BuildDaemonAgentDeps<'a, F>
+where
+    F: Fn() -> Vec<PathBuf> + Send + Sync + 'static,
+{
+    config: &'a Config,
+    provider: zeph_llm::any::AnyProvider,
+    embedding_provider: zeph_llm::any::AnyProvider,
+    registry: std::sync::Arc<RwLock<zeph_skills::registry::SkillRegistry>>,
+    matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
+    tool_executor: zeph_tools::DynExecutor,
+    session_config: zeph_core::AgentSessionConfig,
+    skill_paths: Vec<PathBuf>,
+    reload_rx: tokio::sync::mpsc::Receiver<zeph_skills::watcher::SkillEvent>,
+    plugin_dirs_supplier: F,
+    memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
+    conversation_id: zeph_memory::ConversationId,
+    shutdown_rx: watch::Receiver<bool>,
+    config_path: PathBuf,
+    config_reload_rx: tokio::sync::mpsc::Receiver<zeph_core::config_watcher::ConfigEvent>,
+    shell_policy_handle: zeph_tools::ShellPolicyHandle,
+    mcp_tools: Vec<zeph_mcp::McpTool>,
+    mcp_registry: Option<zeph_mcp::McpToolRegistry>,
+    mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
+    mcp_shared_tools: std::sync::Arc<RwLock<Vec<zeph_mcp::McpTool>>>,
+    provider_config_snapshot: zeph_core::ProviderConfigSnapshot,
+}
+
+/// Build the `Agent` from the `AgentBuilder` construction chain used by the daemon (A2A)
+/// bootstrap path (`run_daemon()`), extracted verbatim so it is unit-testable without running
+/// the whole daemon bootstrap (#5819). Mirrors `crate::runner::build_agent`'s `Deps`-taking
+/// shape — see [`BuildDaemonAgentDeps`] for why the field set is not shared.
+///
+/// Only the core `Agent::new_with_registry_arc(...)...await` wiring lives here — feature-gated
+/// post-processing (audit logger, RL head, tool dependency graph, provider setters, debug
+/// dumper, etc.) stays in `run_daemon`, matching where `build_agent`'s scope ends in `run()`.
+async fn build_daemon_agent<C, F>(deps: BuildDaemonAgentDeps<'_, F>, channel: C) -> Agent<C>
+where
+    C: zeph_core::channel::Channel,
+    F: Fn() -> Vec<PathBuf> + Send + Sync + 'static,
+{
+    let config = deps.config;
+    Agent::new_with_registry_arc(
+        deps.provider.clone(),
+        deps.embedding_provider.clone(),
+        channel,
+        deps.registry,
+        deps.matcher,
+        config.skills.max_active_skills.get(),
+        deps.tool_executor,
+    )
+    .apply_session_config(deps.session_config)
+    .with_skill_matching_config(
+        config.skills.disambiguation_threshold,
+        config.skills.two_stage_matching,
+        config.skills.confusability_threshold,
+    )
+    .with_skill_provider_names(
+        config.skills.generation_provider.as_str().to_owned(),
+        config.skills.disambiguate_provider.as_str().to_owned(),
+    )
+    .with_semantic_scan(
+        config.skills.semantic_scan,
+        config.skills.semantic_scan_provider.as_str(),
+    )
+    .with_skill_reload(deps.skill_paths, deps.reload_rx)
+    .with_plugin_dirs_supplier(deps.plugin_dirs_supplier)
+    .with_managed_skills_dir(crate::bootstrap::managed_skills_dir())
+    .with_memory(
+        deps.memory,
+        deps.conversation_id,
+        config.memory.history_limit,
+        config.memory.semantic.recall_limit,
+        config.memory.summarization_threshold,
+    )
+    .with_shutdown(deps.shutdown_rx)
+    .with_config_reload(deps.config_path, deps.config_reload_rx)
+    .with_plugins_dir(crate::bootstrap::plugins_dir(), {
+        let mut blocked = config.tools.shell.blocked_commands.clone();
+        blocked.sort();
+        let mut allowed = config.tools.shell.allowed_commands.clone();
+        allowed.sort();
+        zeph_core::ShellOverlaySnapshot { blocked, allowed }
+    })
+    .with_shell_policy_handle(deps.shell_policy_handle)
+    .with_mcp(
+        deps.mcp_tools,
+        deps.mcp_registry,
+        Some(deps.mcp_manager),
+        &config.mcp,
+    )
+    .with_mcp_shared_tools(deps.mcp_shared_tools)
+    .with_hybrid_search(config.skills.hybrid_search)
+    .with_rl_routing(
+        config.skills.rl_routing_enabled,
+        config.skills.rl_learning_rate,
+        config.skills.rl_weight,
+        config.skills.rl_persist_interval,
+        config.skills.rl_warmup_updates,
+    )
+    .with_focus_and_sidequest_config(config.agent.focus.clone(), config.memory.sidequest.clone())
+    .with_trajectory_and_category_config(
+        config.memory.trajectory.clone(),
+        config.memory.category.clone(),
+    )
+    .with_embedding_provider(deps.embedding_provider.clone())
+    .with_provider_pool(config.llm.providers.clone(), deps.provider_config_snapshot)
+    .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), deps.embedding_provider)
+    .await
+}
+
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn run_daemon(
     config_path: Option<&std::path::Path>,
@@ -723,73 +846,30 @@ pub(crate) async fn run_daemon(
         None
     };
 
-    let agent = Box::pin(
-        Agent::new_with_registry_arc(
-            provider.clone(),
-            embedding_provider.clone(),
-            loopback_channel,
-            registry,
-            matcher,
-            config.skills.max_active_skills.get(),
-            tool_executor,
-        )
-        .apply_session_config(session_config)
-        .with_skill_matching_config(
-            config.skills.disambiguation_threshold,
-            config.skills.two_stage_matching,
-            config.skills.confusability_threshold,
-        )
-        .with_skill_provider_names(
-            config.skills.generation_provider.as_str().to_owned(),
-            config.skills.disambiguate_provider.as_str().to_owned(),
-        )
-        .with_semantic_scan(
-            config.skills.semantic_scan,
-            config.skills.semantic_scan_provider.as_str(),
-        )
-        .with_skill_reload(skill_paths, reload_rx)
-        .with_plugin_dirs_supplier(plugin_dirs_supplier)
-        .with_managed_skills_dir(crate::bootstrap::managed_skills_dir())
-        .with_memory(
-            std::sync::Arc::clone(&memory),
-            conversation_id,
-            config.memory.history_limit,
-            config.memory.semantic.recall_limit,
-            config.memory.summarization_threshold,
-        )
-        .with_shutdown(shutdown_rx.clone())
-        .with_config_reload(config_path_owned, config_reload_rx)
-        .with_plugins_dir(crate::bootstrap::plugins_dir(), {
-            let mut blocked = config.tools.shell.blocked_commands.clone();
-            blocked.sort();
-            let mut allowed = config.tools.shell.allowed_commands.clone();
-            allowed.sort();
-            zeph_core::ShellOverlaySnapshot { blocked, allowed }
-        })
-        .with_shell_policy_handle(shell_policy_handle)
-        .with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp)
-        .with_mcp_shared_tools(mcp_shared_tools)
-        .with_hybrid_search(config.skills.hybrid_search)
-        .with_rl_routing(
-            config.skills.rl_routing_enabled,
-            config.skills.rl_learning_rate,
-            config.skills.rl_weight,
-            config.skills.rl_persist_interval,
-            config.skills.rl_warmup_updates,
-        )
-        .with_focus_and_sidequest_config(
-            config.agent.focus.clone(),
-            config.memory.sidequest.clone(),
-        )
-        .with_trajectory_and_category_config(
-            config.memory.trajectory.clone(),
-            config.memory.category.clone(),
-        )
-        .with_embedding_provider(embedding_provider.clone())
-        .with_provider_pool(config.llm.providers.clone(), provider_config_snapshot)
-        .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), embedding_provider),
-    )
-    .await;
+    let deps = BuildDaemonAgentDeps {
+        config,
+        provider: provider.clone(),
+        embedding_provider,
+        registry,
+        matcher,
+        tool_executor,
+        session_config,
+        skill_paths,
+        reload_rx,
+        plugin_dirs_supplier,
+        memory: std::sync::Arc::clone(&memory),
+        conversation_id,
+        shutdown_rx: shutdown_rx.clone(),
+        config_path: config_path_owned,
+        config_reload_rx,
+        shell_policy_handle,
+        mcp_tools,
+        mcp_registry,
+        mcp_manager,
+        mcp_shared_tools,
+        provider_config_snapshot,
+    };
+    let agent = Box::pin(build_daemon_agent(deps, loopback_channel)).await;
 
     let agent = if let Some(logger) = daemon_audit_logger {
         agent.with_audit_logger(logger)
@@ -1071,6 +1151,113 @@ mod tests {
             language: "en".into(),
         });
         cfg
+    }
+
+    // --- build_daemon_agent (#5819) ---
+
+    async fn make_daemon_test_memory() -> std::sync::Arc<zeph_memory::semantic::SemanticMemory> {
+        std::sync::Arc::new(
+            zeph_memory::semantic::SemanticMemory::new(
+                ":memory:",
+                "http://127.0.0.1:1",
+                None,
+                mock_provider(),
+                "test-model",
+            )
+            .await
+            .unwrap(),
+        )
+    }
+
+    fn build_daemon_agent_test_embed_fn(text: &str) -> zeph_skills::matcher::EmbedFuture {
+        let _ = text;
+        Box::pin(async { Ok(vec![1.0_f32, 0.0]) })
+    }
+
+    /// #5819 regression: `build_daemon_agent` must call `Agent::with_skill_matching_config` so
+    /// `config.skills.confusability_threshold` reaches the real, constructed `Agent` via the
+    /// same `AgentBuilder` chain `run_daemon()` actually uses at startup — the daemon-path
+    /// counterpart to `build_agent_wires_skill_matching_config` (`src/runner.rs`, #5831), for
+    /// the `BuildDaemonAgentDeps`/`build_daemon_agent` seam extracted from `run_daemon` (#5813,
+    /// #5610, #5818). Asserts the *exact* threshold value echoed by `ConfusabilityReport`'s
+    /// `Display` output, not just "non-default", so a swapped argument in
+    /// `with_skill_matching_config` would also be caught.
+    #[tokio::test]
+    async fn build_daemon_agent_wires_skill_matching_config() {
+        use zeph_commands::traits::agent::AgentAccess as _;
+
+        let memory = make_daemon_test_memory().await;
+        let conversation_id = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut config = Config::default();
+        config.skills.disambiguation_threshold = 0.77;
+        config.skills.two_stage_matching = true;
+        config.skills.confusability_threshold = 0.42;
+
+        let skill_meta = zeph_skills::loader::SkillMeta {
+            name: "solo-skill".to_owned(),
+            description: "a lone skill with no confusable sibling".to_owned(),
+            ..Default::default()
+        };
+        let inner_matcher = zeph_skills::matcher::SkillMatcher::new(
+            &[&skill_meta],
+            build_daemon_agent_test_embed_fn,
+        )
+        .await
+        .expect("single-skill matcher construction must succeed with a constant embed_fn");
+
+        let (_reload_tx, reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_config_reload_tx, config_reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let shell_policy_handle =
+            zeph_tools::ShellExecutor::new(&zeph_tools::ShellConfig::default()).policy_handle();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let provider_config_snapshot = crate::agent_setup::build_provider_config_snapshot(&config);
+        let mcp_manager = std::sync::Arc::new(crate::bootstrap::create_mcp_manager_with_vault(
+            &config, false, None,
+        ));
+
+        let deps = BuildDaemonAgentDeps {
+            config: &config,
+            provider: mock_provider(),
+            embedding_provider: mock_provider(),
+            registry: std::sync::Arc::new(RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: Some(zeph_skills::matcher::SkillMatcherBackend::InMemory(
+                inner_matcher,
+            )),
+            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::SetCwdExecutor)),
+            session_config,
+            skill_paths: Vec::new(),
+            reload_rx,
+            plugin_dirs_supplier: || Vec::<PathBuf>::new(),
+            memory: std::sync::Arc::clone(&memory),
+            conversation_id,
+            shutdown_rx,
+            config_path: PathBuf::new(),
+            config_reload_rx,
+            shell_policy_handle,
+            mcp_tools: Vec::new(),
+            mcp_registry: None,
+            mcp_manager,
+            mcp_shared_tools: std::sync::Arc::new(RwLock::new(Vec::new())),
+            provider_config_snapshot,
+        };
+
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let mut agent = Box::pin(build_daemon_agent(deps, channel)).await;
+
+        let output = agent
+            .handle_skills("confusability")
+            .await
+            .expect("handle_skills(\"confusability\") must not error");
+        assert!(
+            output.contains("above 0.42"),
+            "config.skills.confusability_threshold = 0.42 must reach the built Agent's \
+             ConfusabilityReport exactly (not e.g. 0.77, disambiguation_threshold's value, from a \
+             swapped with_skill_matching_config argument); got: {output}"
+        );
     }
 
     /// Regression test for #5578 (dispatch-level companion to #5433's reachability

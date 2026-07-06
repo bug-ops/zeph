@@ -32,6 +32,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `test(core)`: extracted a `build_daemon_agent`/`BuildDaemonAgentDeps`-taking function from
+  `run_daemon()`'s `AgentBuilder` construction chain (`src/daemon.rs`), completing #5819's
+  remaining half left out of PR #5831 (`build_agent`/`BuildAgentDeps` for the CLI path,
+  `src/runner.rs`, see entry below). Kept as its own struct rather than merged into
+  `BuildAgentDeps`: the daemon path wires `with_mcp`/`with_mcp_shared_tools`/`with_provider_pool`
+  inline (the CLI path defers those to feature-gated chaining after `build_agent` returns, inside
+  `run()`) and never wires session-sink, compression, typed-pages, autosave, shutdown-summary,
+  compaction-provider, tiered-retrieval, or bare-mode config at all — unifying the two structs
+  would require default/`None` placeholders for whichever fields the other path doesn't use,
+  reintroducing the exact default-vs-omitted wiring defect class this seam exists to catch.
+  Added `build_daemon_agent_wires_skill_matching_config`, the daemon counterpart to
+  `build_agent_wires_skill_matching_config`, asserting `config.skills.confusability_threshold`
+  reaches the constructed `Agent` via the real `run_daemon()` startup path.
+
+### Added
+
 - `test(core)`: extracted a `build_agent`/`BuildAgentDeps`-taking function from `run()`'s
   `AgentBuilder` construction chain (`src/runner.rs`), mirroring
   `src/serve/agent_factory.rs::build_agent_factory`'s existing `Deps`-taking pattern, so the
