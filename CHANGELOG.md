@@ -23,6 +23,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(orchestration)`: `zeph-orchestration`'s `sqlite`/`postgres` features
+  (`crates/zeph-orchestration/Cargo.toml`) relied on a multi-hop transitive chain
+  (`zeph-subagent` -> `zeph-sanitizer` -> `zeph-memory`) to activate `zeph-memory`'s
+  backend-specific code paths, rather than naming `zeph-memory/sqlite` and
+  `zeph-memory/postgres` directly — unlike the root crate's bundles, which forward to
+  `zeph-memory` explicitly. No build was actually missing backend activation (Cargo feature
+  unification already turned `zeph-memory`'s features on via the transitive path), but the
+  implicit dependency on that chain meant a future refactor of `zeph-subagent` or
+  `zeph-sanitizer` could silently drop `zeph-memory`'s backend feature without
+  `zeph-orchestration`'s own `Cargo.toml` reflecting the loss. Added direct forwards to make
+  the feature declaration self-documenting and resilient to that refactor (#5596).
+
+### Fixed
+
 - `fix(core)`: the `SAFETY` comment on `handle_url_open()`'s `ZEPH_URL_OPEN_DEPTH` `set_var`
   call (`src/runner.rs`) still said `set_var` runs "on the main thread", which stopped being
   accurate once #5406 moved `main()` off the OS main thread onto a dedicated `zeph-main` thread.

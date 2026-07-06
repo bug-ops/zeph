@@ -44,8 +44,8 @@ zeph-llm = { workspace = true, features = ["testing"] }
 zeph-memory.workspace = true
 
 [features]
-sqlite = ["zeph-db/sqlite", "zeph-durable/sqlite", "zeph-subagent/sqlite"]
-postgres = ["zeph-db/postgres", "zeph-durable/postgres", "zeph-subagent/postgres"]
+sqlite = ["zeph-db/sqlite", "zeph-durable/sqlite", "zeph-memory/sqlite", "zeph-subagent/sqlite"]
+postgres = ["zeph-db/postgres", "zeph-durable/postgres", "zeph-memory/postgres", "zeph-subagent/postgres"]
 llm-planning = ["dep:zeph-llm"]
 # Enables test utilities and testcontainers for PostgreSQL integration tests.
 test-utils = ["dep:testcontainers-modules", "postgres"]
