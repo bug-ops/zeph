@@ -66,6 +66,33 @@ of quantity than this NFR's "idle session" framing assumes. Closing that gap req
 real-`Agent`-based bench (tracked as a follow-up, not blocking this NFR revision since the
 measured housing floor is the actual object described by "idle session actor").
 
+**NFR-P7 follow-up (#5840):** a new in-tree test
+(`crates/zeph-core/src/serve.rs::tests::nfr_p7_real_agent_idle_session_memory_floor`) closes the
+gap above by spawning real `SessionActor`s wrapping real `Agent<LoopbackChannel>` instances (mock
+provider/tool-executor, one shared `SkillRegistry` across all sessions — mirroring production's
+`Agent::new_with_registry_arc` sharing, not a private registry per actor) and measuring the same
+marginal-batched RSS delta as the #5445 harness above. Measured composite (housing + `Agent`'s
+owned state) floor: **~875–905 KiB/session**, stable across repeated runs — this is a
+**zero-conversation-turn** measurement (no prompts sent), so the figure is *not* dominated by
+message-history growth; the dominant contributor is not yet decomposed (tracked as a follow-up in
+the test's own `TODO`) but is more likely resident thread-stack pages and/or `SkillRegistry`/agent
+subsystem defaults touched by the deeper construction/drive call chain #5445's Agent-less harness
+never exercised.
+
+This number is explicitly **not** a claim that NFR-P7 (as defined above, housing-only) is
+satisfied for the composite quantity — the composite is a different, larger quantity than this
+NFR's own budget covers, exactly as the paragraph above anticipated. It is also a **lower bound
+only**: the mock provider has no connection pool, the shared registry loads a single trivial
+skill with no embeddings, and no `SemanticMemory` state is present — a production session with a
+realistic skill count and a real provider will measure higher, and with only ~119–149 KiB of
+headroom under the 1 MiB figure, a production idle floor plausibly exceeds it. The in-tree test's
+`assert!` reuses NFR-P7's 1 MiB number only as a convenience tripwire threshold for this
+informational composite measurement (and, since the test is `#[ignore]`d and matched by no CI
+workflow filter, only ever fires when a human runs it by hand) — it is not a redefinition of
+NFR-P7's own scope. Formally extending NFR-P7 (or adding a distinct NFR-P7b) to cover the
+composite idle floor, and decomposing/re-measuring against production-realistic (non-mock) state,
+remain open follow-up work.
+
 ---
 
 ## 2. Reliability

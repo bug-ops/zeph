@@ -104,6 +104,7 @@ rmcp.workspace = true
 schemars.workspace = true
 serial_test.workspace = true
 sqlx.workspace = true
+sysinfo = { workspace = true, features = ["system"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true, features = ["parking_lot", "registry"] }

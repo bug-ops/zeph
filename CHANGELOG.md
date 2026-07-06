@@ -55,6 +55,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   own owned conversation-history state is a separate, session-length-dependent quantity not
   covered by the "idle session" framing (follow-up bench tracked in #5840). No source change was
   needed for either finding (#5445).
+- `test(session)`: added a real-`Agent`-based NFR-P7 memory bench
+  (`crates/zeph-core/src/serve.rs::tests::nfr_p7_real_agent_idle_session_memory_floor`, `#[ignore]`d,
+  run via `cargo nextest run -p zeph-core -E 'test(nfr_p7)' --run-ignored ignored-only`) closing
+  the measurement gap the #5445 standalone harness left open — that harness could not construct a
+  real `Agent<LoopbackChannel>` (private to `zeph-core`), so it measured `SessionActor::spawn`'s
+  housing cost only. The new test spawns real `SessionActor`s wrapping real `Agent<LoopbackChannel>`
+  instances (idle, mock-provider-backed, one shared `Arc<RwLock<SkillRegistry>>` across all actors
+  via `Agent::new_with_registry_arc`, mirroring `src/serve/agent_factory.rs`'s production sharing
+  pattern rather than a private registry per actor) via the production `SessionActor::spawn` path
+  and samples RSS via `sysinfo`, matching `system_metrics::spawn_system_metrics_task`'s existing
+  production RSS-sampling technique. Measured combined floor (housing + `Agent`'s owned state):
+  ~875-905 KiB — under the 1 MiB budget, but with far less headroom than the ~65-93 KiB
+  housing-only figure implied. This composite is a distinct, larger quantity than NFR-P7's own
+  housing-only budget; `specs/068-session-persistence/nfr.md` gained a new rationale paragraph
+  making that scope distinction explicit rather than silently redefining NFR-P7 (#5840).
 
 ### Fixed
 

@@ -862,4 +862,136 @@ mod tests {
             .expect("session actor must finish within the timeout after its own token cancels")
             .expect("session actor task must not panic or be aborted");
     }
+
+    /// Samples this process's own RSS via `sysinfo` — the same technique
+    /// `system_metrics::spawn_system_metrics_task` uses in production — so results are directly
+    /// comparable to other in-process RSS measurements.
+    fn sample_rss(sys: &mut sysinfo::System, pid: sysinfo::Pid) -> u64 {
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+        sys.process(pid).map_or(0, sysinfo::Process::memory)
+    }
+
+    // TODO(critic): decompose idle floor (stack-resident vs Agent heap vs skill registry) and
+    // add a production-realistic (non-mock) upper-bound variant.
+    //
+    /// NFR-P7 follow-up (#5840): the #5445 standalone harness measured `SessionActor::spawn`'s
+    /// structural housing cost in isolation (thread stack, runtime, channels — ~65-93 KiB/actor,
+    /// see `specs/068-session-persistence/nfr.md`) but could not construct a real
+    /// `Agent<LoopbackChannel>`, which is private to this crate. This test closes that gap: it
+    /// spawns real `SessionActor`s wrapping real (mock-provider-backed, since no live LLM/Qdrant
+    /// is needed to measure idle housing) `Agent<LoopbackChannel>` instances in-process, so the
+    /// measured RSS also includes `Agent`'s own owned state — not just the actor's housing.
+    ///
+    /// **This is a zero-conversation-turn floor** (no prompts are ever sent), so the ~875-905 KiB
+    /// measured here is *not* `Agent`'s message-history buffer, which is empty throughout. The
+    /// dominant contributor is not yet decomposed (see the `TODO` above) but is more likely extra
+    /// resident pages of the actor's 8 MiB thread stack ([`SESSION_ACTOR_STACK_SIZE`]) touched by
+    /// the deeper `Agent::new`/`drive` call chain, and/or the shared `SkillRegistry` load —
+    /// neither of which #5445's Agent-less harness ever touched.
+    ///
+    /// **Lower bound, not an upper bound**: `mock_provider` has no HTTP client/connection pool,
+    /// [`MockToolExecutor::no_tools`] carries no tool definitions, and the shared registry below
+    /// loads exactly one trivial skill with no embedding vectors. A production session's real
+    /// `SkillRegistry` (many skills + embeddings), real provider (reqwest client + pool), and any
+    /// `SemanticMemory` state will all measure higher than what this test reports — a pass here is
+    /// not proof that a production idle session stays under NFR-P7's budget.
+    ///
+    /// **Composite vs. NFR-P7's own scope**: `specs/068-session-persistence/nfr.md`'s NFR-P7 is
+    /// defined as housing-only (thread stack + runtime + channels); the composite this test
+    /// measures (housing + `Agent`'s owned state) is a distinct, larger quantity the spec's #5445
+    /// rationale explicitly separates out. The `assert!` below reuses NFR-P7's 1 MiB number as a
+    /// convenience threshold for this composite measurement, not as a formal claim that NFR-P7
+    /// (as specified) is satisfied — see the "NFR-P7 follow-up (#5840)" rationale note in
+    /// `nfr.md` for the recorded distinction. This test is also `#[ignore]`d and matched by no CI
+    /// workflow filter, so it never runs automatically — it is a manual tripwire for whoever
+    /// invokes it by hand, not an automated regression gate.
+    ///
+    /// Mirrors the #5445 harness's approach of measuring marginal RSS across growing cumulative
+    /// batches (10, 25, 50, 100 actors) so one-time fixed costs (allocator warmup, first-touch
+    /// page faults) amortize out. The reported floor is the delta between the *last two*
+    /// checkpoints (50→100), not an earlier window — the 50→100 and 25→50 deltas agree to within
+    /// noise (confirming convergence), whereas the 10→25 window still carries first-batch fixed
+    /// costs and reads noticeably higher; using the converged tail avoids attributing one-time
+    /// warmup cost to the per-session marginal figure.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "spawns up to 100 real OS threads; run explicitly to verify NFR-P7, e.g. \
+                `cargo nextest run -p zeph-core -E 'test(nfr_p7)' --run-ignored ignored-only \
+                --no-capture`"]
+    async fn nfr_p7_real_agent_idle_session_memory_floor() {
+        use crate::agent::Agent;
+        use crate::agent::agent_tests::{MockToolExecutor, create_test_registry, mock_provider};
+
+        let supervisor = TaskSupervisor::new(CancellationToken::new());
+        let registry = Arc::new(LiveSessionRegistry::new());
+        let pid = sysinfo::get_current_pid().expect("current pid must be resolvable");
+        let mut sys = sysinfo::System::new();
+
+        // Shared across every spawned Agent, mirroring production (`src/serve/agent_factory.rs`'s
+        // `build_agent_factory`, which passes one `Clone`-shared `deps.registry` to
+        // `Agent::new_with_registry_arc` for every session) rather than each actor building its
+        // own private registry via the simpler `Agent::new`. A 101st real session costs one `Arc`
+        // clone, not a whole new registry — this keeps the measured marginal cost representative
+        // of production instead of overstating it with a per-actor registry that doesn't scale.
+        let skill_registry = Arc::new(parking_lot::RwLock::new(create_test_registry()));
+
+        let mut actors = Vec::new();
+        let mut checkpoints: Vec<(usize, u64)> = Vec::new();
+
+        for target in [10usize, 25, 50, 100] {
+            while actors.len() < target {
+                let session_id = SessionId::new(format!("nfr-p7-{}", actors.len()));
+                let shared_registry = Arc::clone(&skill_registry);
+                let (handle, blocking) = SessionActor::spawn(
+                    &supervisor,
+                    &registry,
+                    &session_id,
+                    move |channel| {
+                        let provider = mock_provider(vec!["ok".to_owned()]);
+                        let embedding_provider = provider.clone();
+                        let executor = MockToolExecutor::no_tools();
+                        Agent::new_with_registry_arc(
+                            provider,
+                            embedding_provider,
+                            channel,
+                            shared_registry,
+                            None,
+                            5,
+                            executor,
+                        )
+                    },
+                    4,
+                );
+                actors.push((handle, blocking));
+            }
+            // Let newly spawned dedicated threads finish constructing their Agent and settle into
+            // `drive`'s idle `select!` loop before sampling.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            checkpoints.push((target, sample_rss(&mut sys, pid)));
+        }
+
+        for (handle, _) in &actors {
+            let _ = handle.tx.send(SessionCommand::Shutdown).await;
+        }
+        for (_, blocking) in actors {
+            let _ = tokio::time::timeout(Duration::from_secs(10), blocking.join()).await;
+        }
+
+        let (n_prev, rss_prev) = checkpoints[checkpoints.len() - 2];
+        let (n_last, rss_last) = checkpoints[checkpoints.len() - 1];
+        let marginal_per_session = rss_last.saturating_sub(rss_prev) / (n_last - n_prev) as u64;
+
+        eprintln!("NFR-P7 real-Agent memory floor checkpoints: {checkpoints:?}");
+        eprintln!(
+            "NFR-P7 real-Agent per-session marginal floor (housing + Agent owned state, \
+             synthetic mock-backed lower bound): {marginal_per_session} bytes ({} KiB)",
+            marginal_per_session / 1024
+        );
+
+        assert!(
+            marginal_per_session < 1_048_576,
+            "NFR-P7 composite budget (informational threshold, see nfr.md's #5840 rationale) \
+             exceeded: measured {marginal_per_session} bytes/session >= 1 MiB \
+             (checkpoints: {checkpoints:?})"
+        );
+    }
 }
