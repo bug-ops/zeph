@@ -423,7 +423,7 @@ pub fn migrate_memory_hebbian_spread_config(
         # spreading_activation = false   # opt-in BFS from top-1 ANN anchor; requires enabled=true\n\
         # spread_depth = 2               # BFS hops, clamped [1,6]\n\
         # spread_edge_types = []         # MAGMA edge types to traverse; empty = all\n\
-        # step_budget_ms = 8             # per-step circuit-breaker timeout (anchor ANN / edges / vectors)\n\
+        # step_budget_ms = 80            # per-step circuit-breaker timeout (anchor ANN / edges / vectors)\n\
         # embed_timeout_secs = 5         # timeout for the initial query embedding call (0 = disabled)\n";
 
     let output = format!("{toml_src}{extra}");

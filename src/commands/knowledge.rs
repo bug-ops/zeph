@@ -1111,6 +1111,7 @@ async fn run_graph_ingest(
             &config.memory.graph,
             None,
             memory.embed_timeout().as_secs(),
+            None,
         ),
         dry_run,
         dry_run_hub_top_n: Some(10),
@@ -1560,6 +1561,7 @@ async fn handle_external_agent_ingest(
             &app_config.memory.graph,
             None,
             mem.embed_timeout().as_secs(),
+            None,
         ),
         ..IngestBatchConfig::default()
     };

@@ -2866,6 +2866,7 @@ async fn insert_edge_typed_stores_edge_type() {
             None,
             EdgeType::Causal,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -2933,6 +2934,7 @@ async fn insert_edge_typed_dedup_key_includes_edge_type() {
             None,
             EdgeType::Semantic,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -2945,6 +2947,7 @@ async fn insert_edge_typed_dedup_key_includes_edge_type() {
             0.9,
             None,
             EdgeType::Causal,
+            None,
             None,
         )
         .await
@@ -2990,6 +2993,7 @@ async fn insert_edge_typed_deduplicates_same_type() {
             None,
             EdgeType::Causal,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -3002,6 +3006,7 @@ async fn insert_edge_typed_deduplicates_same_type() {
             0.95,
             None,
             EdgeType::Causal,
+            None,
             None,
         )
         .await
@@ -3035,6 +3040,7 @@ async fn edges_for_entity_includes_edge_type() {
         None,
         EdgeType::Temporal,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -3065,6 +3071,7 @@ async fn bfs_typed_empty_types_behaves_like_bfs_with_depth() {
         0.9,
         None,
         EdgeType::Semantic,
+        None,
         None,
     )
     .await
@@ -3108,6 +3115,7 @@ async fn bfs_typed_filters_by_edge_type() {
         None,
         EdgeType::Semantic,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -3120,6 +3128,7 @@ async fn bfs_typed_filters_by_edge_type() {
         0.9,
         None,
         EdgeType::Causal,
+        None,
         None,
     )
     .await
@@ -3179,6 +3188,7 @@ async fn bfs_typed_entity_type_filter() {
         1.0,
         None,
         EdgeType::Entity,
+        None,
         None,
     )
     .await
@@ -3710,6 +3720,7 @@ async fn insert_edge_typed_rejects_self_loop() {
             0.9,
             None,
             EdgeType::Semantic,
+            None,
             None,
         )
         .await
@@ -4797,6 +4808,7 @@ async fn benna_fusi_update_diverges_fast_and_slow() {
         None,
         EdgeType::Semantic,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -4810,6 +4822,7 @@ async fn benna_fusi_update_diverges_fast_and_slow() {
         0.9,
         None,
         EdgeType::Semantic,
+        None,
         None,
     )
     .await

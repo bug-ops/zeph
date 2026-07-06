@@ -20,6 +20,7 @@ use zeph_memory::embedding_store::EmbeddingStore;
 use zeph_memory::graph::GraphStore;
 use zeph_memory::graph::activation::{HelaSpreadParams, hela_spreading_recall};
 use zeph_memory::graph::types::EntityType;
+use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::store::SqliteStore;
 
 const QDRANT_GRPC_PORT: ContainerPort = ContainerPort::Tcp(6334);
@@ -218,6 +219,128 @@ async fn hela_depth_one_excludes_two_hop() {
             "C must not appear in depth-1 results"
         );
     }
+}
+
+/// #5785 regression: the default `step_budget` (previously `8 ms`) must leave enough
+/// headroom for a real Qdrant round-trip that a populated, non-trivial graph requires —
+/// otherwise the per-step circuit breaker aborts the call before it ever returns facts.
+#[ignore = "requires Qdrant container"]
+#[tokio::test]
+async fn hela_default_budget_returns_facts_against_real_qdrant() {
+    let (graph, embeddings, _sqlite, _ctr) = setup().await;
+    let embed_vec = vec![1.0_f32, 0.0, 0.0];
+    let provider = mock_provider(embed_vec.clone());
+
+    embeddings
+        .ensure_named_collection(ENTITY_COLLECTION, 3)
+        .await
+        .unwrap();
+
+    let (anchor_id, _) = seed_entity(&graph, &embeddings, "Anchor", embed_vec.clone()).await;
+    let (neighbor_id, _) = seed_entity(&graph, &embeddings, "Neighbor", embed_vec.clone()).await;
+    graph
+        .insert_edge(
+            anchor_id,
+            neighbor_id,
+            "relates_to",
+            "test edge",
+            0.9,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Deliberately use the unmodified default params (real step_budget/embed_timeout),
+    // not an override, so this test fails again if the default is ever tightened back down.
+    let params = HelaSpreadParams::default();
+    let results = hela_spreading_recall(
+        &graph,
+        &embeddings,
+        &provider,
+        "anchor",
+        10,
+        &params,
+        false,
+        0.1,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        !results.is_empty(),
+        "default step_budget must leave enough headroom for a real Qdrant round-trip"
+    );
+}
+
+/// #5785 regression, other half: `SemanticMemory::recall_graph_hela` derives its *outer*
+/// `tokio::time::timeout` from `params` (`embed_timeout` + `(spread_depth.clamp(1, 6) + 2)` ×
+/// `step_budget` + margin) instead of the old hardcoded `200 ms`. None of the sibling tests in
+/// this file exercise this — they all call the lower-level `hela_spreading_recall` free function
+/// directly, bypassing the outer-timeout wrapper entirely. This test goes through
+/// `SemanticMemory::recall_graph_hela` itself against a real Qdrant round-trip so the
+/// outer-timeout-derivation fix has at least one live exerciser.
+#[ignore = "requires Qdrant container"]
+#[tokio::test]
+async fn recall_graph_hela_outer_timeout_headroom_returns_facts_against_real_qdrant() {
+    let container = qdrant_image().start().await.unwrap();
+    let grpc_port = container.get_host_port_ipv4(6334).await.unwrap();
+    let url = format!("http://127.0.0.1:{grpc_port}");
+
+    // File-backed SQLite (not `:memory:`) so the seeding pool and the pool
+    // `SemanticMemory::new` opens internally both see the same database.
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let db_path = tmp_dir.path().join("hela_outer_timeout.db");
+    let db_path_str = db_path.to_str().unwrap();
+
+    let seed_sqlite = SqliteStore::new(db_path_str).await.unwrap();
+    let seed_pool = seed_sqlite.pool().clone();
+    let graph = GraphStore::new(seed_pool.clone());
+    let embeddings = EmbeddingStore::new(&url, None, seed_pool).unwrap();
+
+    let embed_vec = vec![1.0_f32, 0.0, 0.0];
+    let provider = mock_provider(embed_vec.clone());
+
+    embeddings
+        .ensure_named_collection(ENTITY_COLLECTION, 3)
+        .await
+        .unwrap();
+
+    let (anchor_id, _) = seed_entity(&graph, &embeddings, "Anchor", embed_vec.clone()).await;
+    let (neighbor_id, _) = seed_entity(&graph, &embeddings, "Neighbor", embed_vec.clone()).await;
+    graph
+        .insert_edge(
+            anchor_id,
+            neighbor_id,
+            "relates_to",
+            "test edge",
+            0.9,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Second pool against the same on-disk file, for the `GraphStore` attached below —
+    // `SemanticMemory::new` opens its own internal pool against `db_path_str` too.
+    let memory_side_pool = SqliteStore::new(db_path_str).await.unwrap().pool().clone();
+    let memory = SemanticMemory::new(db_path_str, &url, None, provider, "test-model")
+        .await
+        .unwrap()
+        .with_graph_store(std::sync::Arc::new(GraphStore::new(memory_side_pool)));
+
+    let results = memory
+        .recall_graph_hela("anchor", 10, HelaSpreadParams::default())
+        .await
+        .unwrap();
+
+    assert!(
+        !results.is_empty(),
+        "recall_graph_hela's param-derived outer timeout must leave enough headroom for a \
+         real Qdrant round-trip (regression for #5785 outer-timeout-derivation fix)"
+    );
+
+    drop(container);
 }
 
 /// `max_visited` cap is respected — results never exceed the cap.

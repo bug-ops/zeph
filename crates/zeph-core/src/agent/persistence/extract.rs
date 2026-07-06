@@ -54,6 +54,7 @@ impl<C: Channel> Agent<C> {
             .memory
             .as_ref()
             .map_or(5, |m| m.embed_timeout().as_secs());
+        let turn_index = u32::try_from(self.services.sidequest.turn_counter).unwrap_or(u32::MAX);
         let extraction_cfg = build_graph_extraction_config(
             cfg,
             self.services
@@ -62,6 +63,7 @@ impl<C: Channel> Agent<C> {
                 .conversation_id
                 .map(|c| c.0),
             embed_timeout_secs,
+            Some(turn_index),
         );
         // Resolve a clean provider that bypasses quality_gate for JSON extraction tasks.
         // When extract_provider is empty, falls back to the primary provider (existing behavior).

@@ -423,6 +423,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Now computes and respects `prune_protection_boundary()` before evicting, matching every other
   pruning path. Added two regression tests confirming both strategies leave the protected tail
   untouched (#5664).
+- `fix(memory)`: HELA spreading-activation timeout budgets were unrealistically tight, causing
+  the DeepReasoning query-conditioned recall path to silently fall back to normal recall on
+  every call even when Qdrant was healthy (#5785). `HelaSpreadParams::step_budget`
+  (`crates/zeph-memory/src/graph/activation.rs`) and the mirrored
+  `HebbianConfig::step_budget_ms` (`crates/zeph-config/src/memory/hebbian.rs`) default raised
+  from `8 ms` to `80 ms` — headroom over realistic local-Qdrant round-trip latency for each
+  step the budget independently gates. Also fixed the outer/inner timeout inversion in
+  `recall_graph_hela` (`crates/zeph-memory/src/semantic/recall.rs`): the outer hard timeout
+  was hardcoded to `200 ms` while wrapping an embed step whose own default timeout is `5 s` —
+  25x tighter than the inner bound it was supposed to enclose. Extracted a `hela_outer_timeout`
+  helper that derives the outer bound from the same `HelaSpreadParams` passed to the inner call
+  (embed timeout + `(spread_depth.clamp(1, 6) + 2)` × step budget + a fixed margin), so it
+  always stays strictly larger than everything it wraps. The multiplier accounts for every
+  stage `hela_spreading_recall` actually gates — the anchor ANN, one edge-fetch check per BFS
+  hop (not a single fixed check), and the final vectors-batch — rather than a fixed count that
+  under-provisioned the bound for any `spread_depth > 1`. Added a live-Qdrant regression test
+  (`hela_default_budget_returns_facts_against_real_qdrant` in
+  `crates/zeph-memory/tests/hela_spreading_activation.rs`) asserting the unmodified default
+  params return non-empty results against a populated real collection, plus unit tests proving
+  `hela_outer_timeout` scales with `spread_depth`, clamps above `6`, and falls back to safe
+  finite defaults when the inner timeouts are disabled.
+- `fix(core,memory)`: `graph_edges.turn_index` was always `NULL` on the live per-turn
+  extraction path, on both the APEX-MEM and default (non-APEX) storage paths (#5784).
+  `build_graph_extraction_config` (`crates/zeph-agent-persistence/src/graph.rs`) hardcoded
+  `turn_index: None` unconditionally; fixed by adding a `turn_index: Option<u32>` parameter,
+  with `Agent::enqueue_graph_extraction_task`
+  (`crates/zeph-core/src/agent/persistence/extract.rs`) passing
+  `self.services.sidequest.turn_counter` through. Separately, `insert_edges`'s default
+  (`apex_mem.enabled = false`, the out-of-the-box default) branch routed through
+  `resolve_edge_typed`/`GraphStore::insert_edge_typed`
+  (`crates/zeph-memory/src/graph/resolver/mod.rs`, `crates/zeph-memory/src/graph/store/mod.rs`),
+  neither of which had a `turn_index` parameter at all — `config.turn_index` was silently
+  dropped even after the config-threading fix above, so the bug persisted for any deployment
+  that had not explicitly opted into `[memory.graph.apex_mem] enabled = true`. Both functions
+  now accept and forward `turn_index`, writing it on the initial insert (reassertions/updates
+  still leave it untouched, matching the APEX-MEM path's semantics). The backfill/reprocess
+  call site (`crates/zeph-core/src/agent/agent_access_impl.rs`) and the standalone
+  knowledge-ingest CLI (`src/commands/knowledge.rs`) intentionally keep passing `None` — both
+  iterate historical messages out of live turn order, where a real turn index would be
+  misleading.
 
 ### Removed
 

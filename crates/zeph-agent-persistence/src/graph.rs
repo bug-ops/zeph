@@ -19,14 +19,16 @@ use zeph_llm::provider::{Message, MessagePart, Role};
 /// use zeph_config::memory::GraphConfig;
 ///
 /// let cfg = GraphConfig::default();
-/// let extraction_cfg = build_graph_extraction_config(&cfg, Some(42), 5);
+/// let extraction_cfg = build_graph_extraction_config(&cfg, Some(42), 5, Some(3));
 /// assert_eq!(extraction_cfg.conversation_id, Some(42));
+/// assert_eq!(extraction_cfg.turn_index, Some(3));
 /// ```
 #[must_use]
 pub fn build_graph_extraction_config(
     cfg: &zeph_config::memory::GraphConfig,
     conversation_id: Option<i64>,
     embed_timeout_secs: u64,
+    turn_index: Option<u32>,
 ) -> zeph_memory::semantic::GraphExtractionConfig {
     zeph_memory::semantic::GraphExtractionConfig {
         max_entities: cfg.max_entities_per_message,
@@ -52,7 +54,7 @@ pub fn build_graph_extraction_config(
         apex_mem_enabled: cfg.apex_mem.enabled,
         llm_timeout_secs: cfg.llm_timeout_secs,
         embed_timeout_secs,
-        turn_index: None,
+        turn_index,
         write_gate_min_relevance: cfg
             .write_gate
             .enabled
@@ -135,7 +137,7 @@ mod tests {
     #[test]
     fn build_graph_extraction_config_maps_non_zero_entity_and_edge_limits() {
         let cfg = zeph_config::memory::GraphConfig::default();
-        let extraction_cfg = build_graph_extraction_config(&cfg, None, 5);
+        let extraction_cfg = build_graph_extraction_config(&cfg, None, 5, None);
 
         assert_eq!(extraction_cfg.max_entities, cfg.max_entities_per_message);
         assert_eq!(extraction_cfg.max_edges, cfg.max_edges_per_message);
@@ -152,10 +154,20 @@ mod tests {
     #[test]
     fn build_graph_extraction_config_threads_conversation_id_and_embed_timeout() {
         let cfg = zeph_config::memory::GraphConfig::default();
-        let extraction_cfg = build_graph_extraction_config(&cfg, Some(7), 42);
+        let extraction_cfg = build_graph_extraction_config(&cfg, Some(7), 42, None);
 
         assert_eq!(extraction_cfg.conversation_id, Some(7));
         assert_eq!(extraction_cfg.embed_timeout_secs, 42);
+    }
+
+    /// #5784 regression: the live per-turn extraction path must be able to pass a real
+    /// turn index through so `graph_edges.turn_index` is not always `NULL`.
+    #[test]
+    fn build_graph_extraction_config_threads_turn_index() {
+        let cfg = zeph_config::memory::GraphConfig::default();
+        let extraction_cfg = build_graph_extraction_config(&cfg, Some(7), 5, Some(12));
+
+        assert_eq!(extraction_cfg.turn_index, Some(12));
     }
 
     #[test]

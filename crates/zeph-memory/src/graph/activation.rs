@@ -96,7 +96,9 @@ pub struct HelaSpreadParams {
     pub max_visited: usize,
     /// Per-step circuit breaker. Any internal step (anchor ANN, edges batch,
     /// vectors batch) that exceeds this duration triggers an `Ok(Vec::new())`
-    /// fallback with a `WARN`. Default: `Some(8 ms)`.
+    /// fallback with a `WARN`. Default: `Some(80 ms)` — headroom over realistic
+    /// local-Qdrant round-trip latency (the previous `8 ms` default aborted
+    /// almost every call even when Qdrant was healthy, #5785).
     pub step_budget: Option<std::time::Duration>,
     /// Timeout for the initial query embedding call. `None` = no timeout.
     /// Default: `Some(5 s)`.
@@ -109,7 +111,7 @@ impl Default for HelaSpreadParams {
             spread_depth: 2,
             edge_types: Vec::new(),
             max_visited: 200,
-            step_budget: Some(std::time::Duration::from_millis(8)),
+            step_budget: Some(std::time::Duration::from_millis(80)),
             embed_timeout: Some(std::time::Duration::from_secs(5)),
         }
     }
@@ -1481,6 +1483,7 @@ mod tests {
             None,
             crate::graph::types::EdgeType::Semantic,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1493,6 +1496,7 @@ mod tests {
             0.9,
             None,
             crate::graph::types::EdgeType::Semantic,
+            None,
             None,
         )
         .await

@@ -504,6 +504,7 @@ impl GraphStore {
             confidence,
             episode_id,
             EdgeType::Semantic,
+            None,
             provenance,
         )
         .await
@@ -513,6 +514,10 @@ impl GraphStore {
     ///
     /// Identical semantics to [`Self::insert_edge`] but with an explicit `edge_type` parameter.
     /// The dedup key is `(source_entity_id, target_entity_id, relation, edge_type, valid_to IS NULL)`.
+    ///
+    /// `turn_index` (#5784) is stored only on the newly inserted row; the dedup UPDATE branch
+    /// (re-encountering an identical active edge) does not overwrite it, matching
+    /// [`Self::insert_or_supersede_with_turn_index_and_metrics`]'s reassertion semantics.
     ///
     /// The `provenance` parameter stamps `origin`, `import_batch_id`, and `source_uri` on the new
     /// row. Pass `None` for conversation-origin edges (the default). The dedup UPDATE branch does
@@ -533,6 +538,7 @@ impl GraphStore {
         confidence: f32,
         episode_id: Option<MessageId>,
         edge_type: EdgeType,
+        turn_index: Option<u32>,
         provenance: Option<&GraphProvenance>,
     ) -> Result<i64, MemoryError> {
         if source_entity_id == target_entity_id {
@@ -593,11 +599,13 @@ impl GraphStore {
         }
 
         let episode_raw: Option<i64> = episode_id.map(|m| m.0);
+        let turn_index_raw: Option<i64> = turn_index.map(i64::from);
         let id: i64 = zeph_db::query_scalar(sql!(
             "INSERT INTO graph_edges
              (source_entity_id, target_entity_id, relation, fact, confidence,
-              confidence_fast, confidence_slow, episode_id, edge_type, origin, import_batch_id, source_uri)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              confidence_fast, confidence_slow, episode_id, edge_type, turn_index,
+              origin, import_batch_id, source_uri)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              RETURNING id"
         ))
         .bind(source_entity_id)
@@ -609,6 +617,7 @@ impl GraphStore {
         .bind(f64::from(confidence))
         .bind(episode_raw)
         .bind(edge_type_str)
+        .bind(turn_index_raw)
         .bind(origin)
         .bind(batch_id)
         .bind(source_uri)

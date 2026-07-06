@@ -672,6 +672,7 @@ async fn insert_edges(
                     None,
                     edge_type,
                     belief_cfg.as_ref(),
+                    config.turn_index,
                     config.provenance.as_ref(),
                 )
                 .await
@@ -1944,6 +1945,7 @@ mod tests {
                 None,
                 EdgeType::Semantic,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1957,6 +1959,7 @@ mod tests {
                 0.8,
                 None,
                 EdgeType::Semantic,
+                None,
                 None,
             )
             .await
@@ -2126,6 +2129,156 @@ mod tests {
             (edge.confidence_fast - 0.3_f32).abs() < 0.01,
             "confidence_fast must be ~0.3 (from ExtractedEdge.confidence), got {} (regression for #4723 APEX path)",
             edge.confidence_fast
+        );
+    }
+
+    /// Regression for #5784 (APEX-MEM path): `GraphExtractionConfig::turn_index` must be
+    /// forwarded all the way through `extract_and_store` to the persisted
+    /// `graph_edges.turn_index` column, not just threaded through the config-builder signature.
+    ///
+    /// The sibling test `extract_and_store_non_apex_path_persists_turn_index` below covers the
+    /// same invariant for the default (`apex_mem.enabled = false`) path, which originally had a
+    /// separate gap: `resolve_edge_typed`/`GraphStore::insert_edge_typed` had no `turn_index`
+    /// parameter at all and silently dropped it even when this APEX-MEM test passed.
+    #[tokio::test]
+    async fn extract_and_store_persists_turn_index_to_graph_edges() {
+        use crate::graph::{EntityType, GraphStore};
+
+        let sqlite = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite.pool().clone();
+
+        let extraction_json = r#"{
+            "entities":[
+                {"name":"Alice","type":"person","summary":"person"},
+                {"name":"Bob","type":"person","summary":"person"}
+            ],
+            "edges":[{"source":"Alice","target":"Bob","relation":"knows","fact":"Alice knows Bob","edge_type":"semantic","confidence":0.9}]
+        }"#;
+        let mock = zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
+        let provider = AnyProvider::Mock(mock);
+        let config = GraphExtractionConfig {
+            max_entities: 10,
+            max_edges: 10,
+            extraction_timeout_secs: 10,
+            turn_index: Some(7),
+            apex_mem_enabled: true,
+            ..Default::default()
+        };
+
+        let result = extract_and_store(
+            "Alice knows Bob.".to_owned(),
+            vec![],
+            provider,
+            pool.clone(),
+            config,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.stats.edges_inserted, 1, "one edge must be inserted");
+
+        let gs = GraphStore::new(pool);
+        let alice_id: i64 = gs
+            .find_entity("alice", EntityType::Person)
+            .await
+            .unwrap()
+            .expect("alice must exist")
+            .id
+            .0;
+        let bob_id: i64 = gs
+            .find_entity("bob", EntityType::Person)
+            .await
+            .unwrap()
+            .expect("bob must exist")
+            .id
+            .0;
+
+        let mut edges = gs.edges_exact(alice_id, bob_id).await.unwrap();
+        assert_eq!(edges.len(), 1, "exactly one active edge expected");
+        let edge = edges.remove(0);
+
+        assert_eq!(
+            edge.turn_index,
+            Some(7),
+            "turn_index from GraphExtractionConfig must reach the persisted graph_edges row \
+             (regression for #5784 — was always NULL on the live per-turn extraction path)"
+        );
+    }
+
+    /// #5784 follow-up: with `apex_mem_enabled: false` (the out-of-the-box default — see
+    /// `ApexMemConfig::default()` and the live call site's `build_graph_extraction_config`),
+    /// `insert_edges` routes through `resolve_edge_typed`. This used to have no `turn_index`
+    /// parameter at all, so `config.turn_index` was silently dropped and `graph_edges.turn_index`
+    /// stayed `NULL` even after the initial #5784 fix, for any deployment that has not explicitly
+    /// opted into `[memory.graph.apex_mem] enabled = true`. `resolve_edge_typed` and
+    /// `GraphStore::insert_edge_typed` now both accept and forward `turn_index`, closing the gap
+    /// for the default configuration too.
+    #[tokio::test]
+    async fn extract_and_store_non_apex_path_persists_turn_index() {
+        use crate::graph::{EntityType, GraphStore};
+
+        let sqlite = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite.pool().clone();
+
+        let extraction_json = r#"{
+            "entities":[
+                {"name":"Carol","type":"person","summary":"person"},
+                {"name":"Dave","type":"person","summary":"person"}
+            ],
+            "edges":[{"source":"Carol","target":"Dave","relation":"knows","fact":"Carol knows Dave","edge_type":"semantic","confidence":0.9}]
+        }"#;
+        let mock = zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
+        let provider = AnyProvider::Mock(mock);
+        let config = GraphExtractionConfig {
+            max_entities: 10,
+            max_edges: 10,
+            extraction_timeout_secs: 10,
+            turn_index: Some(9),
+            // apex_mem_enabled defaults to false — matches production default config.
+            ..Default::default()
+        };
+
+        let result = extract_and_store(
+            "Carol knows Dave.".to_owned(),
+            vec![],
+            provider,
+            pool.clone(),
+            config,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.stats.edges_inserted, 1, "one edge must be inserted");
+
+        let gs = GraphStore::new(pool);
+        let carol_id: i64 = gs
+            .find_entity("carol", EntityType::Person)
+            .await
+            .unwrap()
+            .expect("carol must exist")
+            .id
+            .0;
+        let dave_id: i64 = gs
+            .find_entity("dave", EntityType::Person)
+            .await
+            .unwrap()
+            .expect("dave must exist")
+            .id
+            .0;
+
+        let mut edges = gs.edges_exact(carol_id, dave_id).await.unwrap();
+        assert_eq!(edges.len(), 1, "exactly one active edge expected");
+        let edge = edges.remove(0);
+
+        assert_eq!(
+            edge.turn_index,
+            Some(9),
+            "turn_index from GraphExtractionConfig must reach the persisted graph_edges row \
+             on the default (apex_mem.enabled=false) path too, not just APEX-MEM (#5784)"
         );
     }
 

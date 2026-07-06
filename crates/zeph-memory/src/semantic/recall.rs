@@ -188,6 +188,23 @@ enum AdmissionOutcome {
     Proceed(Option<AdmissionDecision>),
 }
 
+/// Compute `recall_graph_hela`'s outer hard timeout from the same [`crate::graph::HelaSpreadParams`]
+/// that bound the inner call, so the outer bound can never again be tighter than what it wraps
+/// (#5785). `hela_spreading_recall` checks `step_budget` once for the anchor ANN, once per BFS hop
+/// (up to `spread_depth`, clamped to `[1, 6]`) for the edge-fetch, and once for the final
+/// vectors-batch — `spread_depth + 2` gated stages in the worst case, not a fixed count.
+fn hela_outer_timeout(params: &crate::graph::HelaSpreadParams) -> std::time::Duration {
+    let embed_component = params
+        .embed_timeout
+        .unwrap_or(std::time::Duration::from_secs(5));
+    let step_stages = params.spread_depth.clamp(1, 6) + 2;
+    let step_component = params
+        .step_budget
+        .unwrap_or(std::time::Duration::from_millis(80))
+        * step_stages;
+    embed_component + step_component + std::time::Duration::from_millis(250)
+}
+
 impl SemanticMemory {
     /// Save a message to `SQLite` and optionally embed and store in Qdrant.
     ///
@@ -1941,8 +1958,12 @@ impl SemanticMemory {
     /// Retrieve graph facts via HL-F5 spreading activation from the top-1 ANN anchor (#3346).
     ///
     /// Returns an empty vec when no graph store is configured, Qdrant is unavailable,
-    /// or `hebbian_spread.enabled = false`.  The outer 200 ms timeout ensures the
-    /// agent loop is never blocked by a slow Qdrant response.
+    /// or `hebbian_spread.enabled = false`. The outer timeout is derived from `params`
+    /// (embed timeout + `(spread_depth.clamp(1, 6) + 2)` × step budget + a fixed margin) so
+    /// it always stays strictly larger than the inner timeouts it wraps — a hardcoded outer
+    /// bound tighter than the inner `embed_timeout` default silently aborted every call
+    /// (#5785). This still ensures the agent loop is never blocked indefinitely by a stalled
+    /// Qdrant response.
     ///
     /// # Errors
     ///
@@ -1974,8 +1995,14 @@ impl SemanticMemory {
         let hebbian_enabled = self.hebbian_reinforcement.is_enabled();
         let hebbian_lr = self.hebbian_lr;
 
+        // Single source of truth for the outer bound: see `hela_outer_timeout` — it must
+        // exceed everything it wraps (the embed call plus every step-budget-gated stage,
+        // scaled by `spread_depth`), or the outer timeout fires before the inner ones ever
+        // get a chance to run (#5785).
+        let outer_timeout = hela_outer_timeout(&params);
+
         let results = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
+            outer_timeout,
             crate::graph::hela_spreading_recall(
                 &store,
                 &embeddings,
@@ -1989,7 +2016,10 @@ impl SemanticMemory {
         )
         .await
         .unwrap_or_else(|_| {
-            tracing::warn!("memory.recall_graph_hela: outer 200ms timeout exceeded");
+            tracing::warn!(
+                outer_timeout_ms = outer_timeout.as_millis(),
+                "memory.recall_graph_hela: outer timeout exceeded"
+            );
             Ok(Vec::new())
         })?;
 
@@ -2120,6 +2150,75 @@ impl SemanticMemory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #5785 edge case: the outer timeout multiplier must scale with `spread_depth`, not stay
+    /// fixed at 3 — `hela_spreading_recall` gates `spread_depth + 2` stages (anchor ANN + one
+    /// edge-fetch check per BFS hop + vectors-batch), so a fixed 3× multiplier under-provisions
+    /// the outer bound for any `spread_depth > 1` and can reintroduce the outer/inner inversion.
+    #[test]
+    fn hela_outer_timeout_scales_with_spread_depth() {
+        let step_budget = std::time::Duration::from_millis(80);
+        let embed_timeout = std::time::Duration::from_secs(5);
+        let margin = std::time::Duration::from_millis(250);
+
+        for depth in 1..=6u32 {
+            let params = crate::graph::HelaSpreadParams {
+                spread_depth: depth,
+                step_budget: Some(step_budget),
+                embed_timeout: Some(embed_timeout),
+                ..Default::default()
+            };
+            let expected = embed_timeout + step_budget * (depth + 2) + margin;
+            assert_eq!(
+                hela_outer_timeout(&params),
+                expected,
+                "outer timeout must scale with spread_depth={depth}"
+            );
+        }
+    }
+
+    /// `spread_depth` above the algorithm's own `[1, 6]` clamp must not blow up the outer
+    /// timeout unboundedly — the formula clamps identically to `hela_spreading_recall`'s own
+    /// `spread_depth.clamp(1, 6)`.
+    #[test]
+    fn hela_outer_timeout_clamps_spread_depth_above_six() {
+        let step_budget = std::time::Duration::from_millis(80);
+        let embed_timeout = std::time::Duration::from_secs(5);
+        let params_over = crate::graph::HelaSpreadParams {
+            spread_depth: 50,
+            step_budget: Some(step_budget),
+            embed_timeout: Some(embed_timeout),
+            ..Default::default()
+        };
+        let params_clamped = crate::graph::HelaSpreadParams {
+            spread_depth: 6,
+            step_budget: Some(step_budget),
+            embed_timeout: Some(embed_timeout),
+            ..Default::default()
+        };
+        assert_eq!(
+            hela_outer_timeout(&params_over),
+            hela_outer_timeout(&params_clamped),
+            "spread_depth above 6 must clamp identically to the algorithm's own [1, 6] bound"
+        );
+    }
+
+    /// When `step_budget`/`embed_timeout` are `None` (disabled), the outer timeout must fall
+    /// back to safe finite defaults rather than becoming unbounded — the outer bound is a hard
+    /// safety net independent of whether the caller opted out of the inner per-step guards.
+    #[test]
+    fn hela_outer_timeout_falls_back_when_params_disabled() {
+        let params = crate::graph::HelaSpreadParams {
+            spread_depth: 2,
+            step_budget: None,
+            embed_timeout: None,
+            ..Default::default()
+        };
+        let expected = std::time::Duration::from_secs(5)
+            + std::time::Duration::from_millis(80) * 4
+            + std::time::Duration::from_millis(250);
+        assert_eq!(hela_outer_timeout(&params), expected);
+    }
 
     #[test]
     fn embed_context_default_all_none() {

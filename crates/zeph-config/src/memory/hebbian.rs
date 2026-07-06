@@ -190,7 +190,9 @@ pub struct HebbianConfig {
     /// Per-step circuit-breaker timeout for HL-F5 in milliseconds.
     ///
     /// Any internal step (anchor ANN, edges batch, vectors batch) that exceeds this
-    /// duration triggers an `Ok(Vec::new())` fallback with a `WARN`. Default: `8`.
+    /// duration triggers an `Ok(Vec::new())` fallback with a `WARN`. Default: `80`
+    /// (headroom over realistic local-Qdrant round-trip latency; the previous `8`
+    /// default aborted almost every call even when Qdrant was healthy, #5785).
     pub step_budget_ms: u64,
     /// Timeout for the initial query embedding call in HL-F5, in seconds.
     ///
@@ -213,7 +215,7 @@ impl Default for HebbianConfig {
             spreading_activation: false,
             spread_depth: 2,
             spread_edge_types: Vec::new(),
-            step_budget_ms: 8,
+            step_budget_ms: 80,
             embed_timeout_secs: 5,
         }
     }

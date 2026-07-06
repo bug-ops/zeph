@@ -1018,6 +1018,10 @@ impl<'a> EntityResolver<'a> {
     /// This ensures that different MAGMA edge types for the same entity pair are stored
     /// independently (critic mitigation: dedup key includes `edge_type`).
     ///
+    /// `turn_index` (#5784) is forwarded to [`GraphStore::insert_edge_typed`] so the default
+    /// (non-APEX-MEM) extraction path also records turn-level provenance, matching the
+    /// APEX-MEM path's `insert_or_supersede_with_turn_index_and_metrics`.
+    ///
     /// # Errors
     ///
     /// Returns an error if any database operation fails.
@@ -1032,6 +1036,7 @@ impl<'a> EntityResolver<'a> {
         episode_id: Option<crate::types::MessageId>,
         edge_type: crate::graph::EdgeType,
         belief_revision: Option<&crate::graph::BeliefRevisionConfig>,
+        turn_index: Option<u32>,
         provenance: Option<&GraphProvenance>,
     ) -> Result<Option<i64>, MemoryError> {
         let normalized_relation = sanitize_relation(relation);
@@ -1101,6 +1106,7 @@ impl<'a> EntityResolver<'a> {
                 confidence,
                 episode_id,
                 edge_type,
+                turn_index,
                 provenance,
             )
             .await?;
