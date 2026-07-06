@@ -872,10 +872,13 @@ impl App {
         std::mem::take(&mut self.hyperlinks)
     }
 
-    /// Return the current activity status label, if any.
+    /// Return the current raw activity status label, if any.
     ///
-    /// Displayed in the activity bar with a spinner when non-`None`
-    /// (e.g. `"Searching memory…"`, `"Executing tool: bash"`).
+    /// This is the internal label as set by the agent loop (e.g.
+    /// `"Searching memory…"`, `"Executing tool: bash"`), not yet transformed
+    /// for display. The status bar passes it through
+    /// [`crate::widgets::status_verbs::humanize`] before rendering it next to
+    /// the spinner; other consumers (logs, debug output) use the raw form.
     #[must_use]
     pub fn status_label(&self) -> Option<&str> {
         self.sessions.current().status_label.as_deref()

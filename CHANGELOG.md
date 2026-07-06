@@ -289,6 +289,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tui)`: the status bar's busy segment (`push_busy_segment()` in
+  `crates/zeph-tui/src/widgets/status.rs`) was the one remaining spinner site still hardcoding
+  its own braille frame table instead of the shared `breeze_frame()` helper used by
+  `input.rs`/`chat.rs` (#5780), and the one remaining status-label renderer that skipped
+  `status_verbs::humanize()`, showing raw internal strings like `"Loading skills..."` instead
+  of human-voice verb phrases like `"loading · skills"` (#5781). Both fixed together since they
+  share the same function; `App::status_label()`'s doc comment updated to clarify it returns
+  the raw label, with humanization now happening in the render layer.
 - `fix(llm)`: OpenAI/compatible provider's `reasoning_effort` was serialized as the OpenAI
   Responses-API nested shape (`"reasoning":{"effort":"..."}`) instead of the Chat-Completions
   flat field (`"reasoning_effort":"..."`), causing every real reasoning-capable model (o-series,

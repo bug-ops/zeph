@@ -15,6 +15,8 @@ use crate::app::{App, InputMode};
 use crate::layout::truncate_to_width;
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
+use crate::widgets::spinner::breeze_frame;
+use crate::widgets::status_verbs::humanize;
 
 /// Priority level for a status bar segment.
 ///
@@ -318,7 +320,12 @@ fn push_mode_chip(list: &mut SegmentList, mode: InputMode, theme: &Theme) {
 }
 
 fn push_busy_segment(list: &mut SegmentList, app: &App, theme: &Theme) {
-    let verb = app.status_label().unwrap_or("thinking").to_owned();
+    let phrase = humanize(app.status_label().unwrap_or("thinking"));
+    let verb = if phrase.detail.is_empty() {
+        phrase.verb
+    } else {
+        format!("{} · {}", phrase.verb, phrase.detail)
+    };
     if app.motion == zeph_config::Motion::Off {
         list.push(
             Priority::High,
@@ -329,9 +336,8 @@ fn push_busy_segment(list: &mut SegmentList, app: &App, theme: &Theme) {
             ],
         );
     } else {
-        const BRAILLE: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-        let idx = app.throbber_state().index().cast_unsigned() as usize % 10;
-        let spinner_char = BRAILLE.chars().nth(idx).unwrap_or('⠋').to_string();
+        let idx = usize::try_from(app.throbber_state().index().rem_euclid(6)).unwrap_or(0);
+        let spinner_char = breeze_frame(idx as u64, app.is_ascii_only());
         list.push(
             Priority::High,
             vec![
@@ -1183,6 +1189,122 @@ mod tests {
         assert!(
             !output.contains("tok/s") && !output.contains("t/s"),
             "motion=Off must suppress tok/s segment; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn busy_segment_humanizes_label_with_detail() {
+        use tokio::sync::mpsc;
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let mut app = App::new(user_tx, agent_rx);
+        app.sessions.current_mut().status_label = Some("Loading skills...".to_owned());
+
+        let metrics = MetricsSnapshot::default();
+        let output = render_to_string(200, 1, |frame, area| {
+            super::render(&app, &metrics, frame, area);
+        });
+
+        assert!(
+            output.contains("loading · skills"),
+            "raw label must be humanized to 'loading · skills'; got: {output:?}"
+        );
+        assert!(
+            !output.contains("Loading skills"),
+            "raw internal label must not leak into the rendered status bar; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn busy_segment_unrecognized_label_passes_through() {
+        use tokio::sync::mpsc;
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let mut app = App::new(user_tx, agent_rx);
+        app.sessions.current_mut().status_label = Some("Some unknown operation...".to_owned());
+
+        let metrics = MetricsSnapshot::default();
+        let output = render_to_string(200, 1, |frame, area| {
+            super::render(&app, &metrics, frame, area);
+        });
+
+        assert!(
+            output.contains("Some unknown operation"),
+            "humanize() fallback must pass through unrecognized labels verbatim; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn busy_segment_uses_breeze_spinner_not_braille() {
+        use tokio::sync::mpsc;
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+        use crate::widgets::spinner::BREEZE_FRAMES;
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let mut app = App::new(user_tx, agent_rx);
+        app.sessions.current_mut().status_label = Some("thinking...".to_owned());
+
+        let metrics = MetricsSnapshot::default();
+        let output = render_to_string(200, 1, |frame, area| {
+            super::render(&app, &metrics, frame, area);
+        });
+
+        let contains_braille = output
+            .chars()
+            .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c));
+        assert!(
+            !contains_braille,
+            "the old hardcoded braille spinner must be gone; got: {output:?}"
+        );
+        assert!(
+            BREEZE_FRAMES.iter().any(|f| output.contains(f)),
+            "expected a breeze_frame() glyph in the busy segment; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn busy_segment_ascii_fallback_uses_ascii_breeze_frames() {
+        use tokio::sync::mpsc;
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+        use crate::widgets::spinner::{BREEZE_ASCII, BREEZE_FRAMES};
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let mut app = App::new(user_tx, agent_rx);
+        app.unicode_capable = false;
+        app.sessions.current_mut().status_label = Some("thinking...".to_owned());
+
+        assert!(app.is_ascii_only());
+
+        let metrics = MetricsSnapshot::default();
+        let output = render_to_string(200, 1, |frame, area| {
+            super::render(&app, &metrics, frame, area);
+        });
+
+        assert!(
+            BREEZE_ASCII.iter().any(|f| output.contains(f)),
+            "expected an ASCII breeze_frame() glyph when unicode is unavailable; got: {output:?}"
+        );
+        assert!(
+            !BREEZE_FRAMES.iter().any(|f| output.contains(f)),
+            "Unicode breeze glyphs must not appear in ASCII fallback mode; got: {output:?}"
         );
     }
 }
