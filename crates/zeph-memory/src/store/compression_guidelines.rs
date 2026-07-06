@@ -9,6 +9,7 @@ use std::sync::LazyLock;
 use zeph_db::sql;
 
 use regex::Regex;
+use zeph_common::text::truncate_to_bytes_ref;
 
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
@@ -74,11 +75,7 @@ pub struct CompressionFailurePair {
 const MAX_FIELD_CHARS: usize = 4096;
 
 fn truncate_field(s: &str) -> &str {
-    let mut idx = MAX_FIELD_CHARS;
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    &s[..idx.min(s.len())]
+    truncate_to_bytes_ref(s, MAX_FIELD_CHARS)
 }
 
 impl SqliteStore {

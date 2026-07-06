@@ -36,6 +36,7 @@ use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
 pub use zeph_config::memory::EmGraphConfig;
 
 use zeph_common::SessionId;
+use zeph_common::llm_response::extract_json_array_slice;
 use zeph_db::ActiveDialect;
 
 use crate::error::MemoryError;
@@ -157,10 +158,7 @@ pub async fn extract_events(
 }
 
 fn parse_events_response(raw: &str, session_id: &str, message_id: MessageId) -> Vec<EpisodicEvent> {
-    let json_str = raw
-        .find('[')
-        .and_then(|s| raw[s..].rfind(']').map(|e| &raw[s..=s + e]))
-        .unwrap_or("[]");
+    let json_str = extract_json_array_slice(raw).unwrap_or("[]");
 
     let values: Vec<serde_json::Value> = serde_json::from_str(json_str).unwrap_or_default();
 
@@ -281,10 +279,7 @@ pub async fn link_events(
 }
 
 fn parse_links_response(raw: &str) -> Vec<CausalLink> {
-    let json_str = raw
-        .find('[')
-        .and_then(|s| raw[s..].rfind(']').map(|e| &raw[s..=s + e]))
-        .unwrap_or("[]");
+    let json_str = extract_json_array_slice(raw).unwrap_or("[]");
 
     let values: Vec<serde_json::Value> = serde_json::from_str(json_str).unwrap_or_default();
 
@@ -589,6 +584,12 @@ mod tests {
     #[test]
     fn parse_links_response_empty() {
         let links = parse_links_response("[]");
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn parse_links_response_malformed_json() {
+        let links = parse_links_response("not json");
         assert!(links.is_empty());
     }
 

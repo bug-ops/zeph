@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
+use zeph_common::text::truncate_to_bytes_ref;
 
 // ── PageType ──────────────────────────────────────────────────────────────────
 
@@ -692,12 +693,8 @@ fn classify_with_role_inner(body: &str, is_system_role: bool) -> PageType {
         return PageType::SystemContext;
     }
 
-    let mut prefix_end = body.len().min(80);
-    while !body.is_char_boundary(prefix_end) {
-        prefix_end -= 1;
-    }
     tracing::warn!(
-        body_prefix = &body[..prefix_end],
+        body_prefix = truncate_to_bytes_ref(body, 80),
         "typed-page classification fallback to ConversationTurn"
     );
     PageType::ConversationTurn

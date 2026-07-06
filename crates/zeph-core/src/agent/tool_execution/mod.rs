@@ -11,6 +11,7 @@ mod tier_loop;
 mod tool_call_dag;
 mod tool_result;
 
+use zeph_common::text::truncate_to_bytes;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role, ToolDefinition};
 use zeph_tools::executor::ToolCall;
 
@@ -968,14 +969,7 @@ impl<C: Channel> Agent<C> {
 
 /// Truncate `s` to at most `max_bytes` bytes, preserving valid UTF-8 boundaries.
 fn truncate_utf8(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        return s.to_owned();
-    }
-    let mut end = max_bytes;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s[..end].to_owned()
+    truncate_to_bytes(s, max_bytes)
 }
 
 #[cfg(test)]

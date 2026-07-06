@@ -23,6 +23,7 @@ pub mod retrieval_beam;
 pub mod retrieval_watercircles;
 pub mod rpe;
 pub mod strategy_classifier;
+pub mod string_similarity;
 
 pub use store::GraphStore;
 pub use types::{

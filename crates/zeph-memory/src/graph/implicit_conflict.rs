@@ -21,6 +21,7 @@ use zeph_db::{DbTransaction, sql};
 
 use crate::error::MemoryError;
 use crate::graph::activation::ActivatedFact;
+use crate::graph::string_similarity::normalized_similarity;
 
 /// A candidate conflict pair detected at write time.
 #[derive(Debug, Clone)]
@@ -171,22 +172,7 @@ impl ImplicitConflictDetector {
     /// Returns `1.0` if both strings are empty, `0.0` if only one is empty.
     #[must_use]
     pub fn normalized_levenshtein(a: &str, b: &str) -> f64 {
-        if a == b {
-            return 1.0;
-        }
-        let len_a = a.chars().count();
-        let len_b = b.chars().count();
-        if len_a == 0 && len_b == 0 {
-            return 1.0;
-        }
-        if len_a == 0 || len_b == 0 {
-            return 0.0;
-        }
-        let dist = levenshtein_distance(a, b);
-        let max_len = len_a.max(len_b);
-        #[allow(clippy::cast_precision_loss)]
-        let result = 1.0 - (dist as f64 / max_len as f64);
-        result
+        normalized_similarity(a, b)
     }
 
     /// Returns `true` when detection is enabled.
@@ -264,28 +250,6 @@ pub async fn annotate_conflicts(
     Ok(())
 }
 
-/// Hand-rolled Levenshtein edit distance (char-level).
-fn levenshtein_distance(a: &str, b: &str) -> usize {
-    let a_chars: Vec<char> = a.chars().collect();
-    let b_chars: Vec<char> = b.chars().collect();
-    let m = a_chars.len();
-    let n = b_chars.len();
-
-    let mut prev: Vec<usize> = (0..=n).collect();
-    let mut curr = vec![0usize; n + 1];
-
-    for i in 1..=m {
-        curr[0] = i;
-        for j in 1..=n {
-            let cost = usize::from(a_chars[i - 1] != b_chars[j - 1]);
-            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-
-    prev[n]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,37 +263,14 @@ mod tests {
         })
     }
 
+    // Algorithm-level coverage (identical/empty/dissimilar strings) lives in
+    // `graph::string_similarity` tests; this wrapper only needs a delegation smoke test.
     #[test]
-    fn normalized_levenshtein_identical() {
+    fn normalized_levenshtein_delegates_to_shared_helper() {
         assert!(
             (ImplicitConflictDetector::normalized_levenshtein("uses", "uses") - 1.0).abs()
                 < f64::EPSILON
         );
-    }
-
-    #[test]
-    fn normalized_levenshtein_empty_both() {
-        assert!(
-            (ImplicitConflictDetector::normalized_levenshtein("", "") - 1.0).abs() < f64::EPSILON
-        );
-    }
-
-    #[test]
-    fn normalized_levenshtein_empty_one() {
-        assert!(
-            (ImplicitConflictDetector::normalized_levenshtein("", "abc") - 0.0).abs()
-                < f64::EPSILON
-        );
-        assert!(
-            (ImplicitConflictDetector::normalized_levenshtein("abc", "") - 0.0).abs()
-                < f64::EPSILON
-        );
-    }
-
-    #[test]
-    fn normalized_levenshtein_completely_different() {
-        let sim = ImplicitConflictDetector::normalized_levenshtein("uses", "xyz_unrelated_value");
-        assert!(sim < 0.5, "expected low similarity, got {sim}");
     }
 
     #[test]
