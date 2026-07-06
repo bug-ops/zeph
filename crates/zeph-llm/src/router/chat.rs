@@ -154,6 +154,7 @@ impl RouterProvider {
         let mut escalations_remaining = cfg.max_escalations;
         let mut best: Option<(String, f64)> = None; // (response, score)
         let mut tokens_used: u32 = 0;
+        let mut last_err: Option<LlmError> = None;
 
         for (idx, p) in providers.iter().enumerate() {
             tracing::debug!(
@@ -174,6 +175,7 @@ impl RouterProvider {
                         let _ = tx.send(format!("cascade: {} unavailable, trying next", p.name()));
                     }
                     tracing::warn!(provider = p.name(), error = %e, "cascade: provider error");
+                    last_err = Some(e);
                 }
                 Ok(response) => {
                     let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -265,7 +267,8 @@ impl RouterProvider {
         } else {
             tracing::warn!("cascade: all providers failed, no response available");
         }
-        best.map(|(r, _)| r).ok_or(LlmError::NoProviders)
+        best.map(|(r, _)| r)
+            .ok_or_else(|| last_err.unwrap_or(LlmError::NoProviders))
     }
 
     /// Cascade `chat_stream`: buffer cheap response, classify, escalate or replay.

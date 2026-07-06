@@ -106,6 +106,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `last_err: Option<LlmError>` is hoisted to function scope in both `chat` and `chat_stream` and
   returned via `Err(last_err.unwrap_or(LlmError::NoProviders))` on exhaustion. `chat_stream`'s
   early `NoProviders` for an empty provider list (no providers ever attempted) is unaffected.
+- `fix(llm)`: `RouterProvider::cascade_chat`'s (`crates/zeph-llm/src/router/chat.rs`) provider
+  fallback loop had the same defect as the `chat`/`chat_stream`/`embed`/`embed_batch` fixes above
+  (#5826) — when every cascade provider failed and no `best`-seen response was ever produced, it
+  returned a hardcoded `LlmError::NoProviders` instead of the last provider's real error. Same
+  fix applied: `last_err: Option<LlmError>` is hoisted to function scope, set from the per-provider
+  `Err(e)` arm, and returned via `.ok_or_else(|| last_err.unwrap_or(LlmError::NoProviders))` when
+  `best` is `None` after the loop. `cascade_chat_stream` was audited and does not share this
+  defect — its final fallthrough already propagates the true last provider's error (or the
+  best-seen buffered response) rather than a hardcoded `NoProviders`.
 - `fix(orchestration,mcp)`: follow-up to the `record_skill_usage` fix above (#5802) — the same
   Postgres `ON CONFLICT DO UPDATE` self-reference ambiguity existed at two more call sites
   (#5803), found via adversarial review of #5802's fix. `PlanCache::cache_plan`

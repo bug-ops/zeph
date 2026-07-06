@@ -388,17 +388,40 @@ async fn cascade_stream_escalations_exhausted_returns_best_seen_not_current() {
     );
 }
 
+/// When every provider in the cascade fallback loop fails and no `best`-seen
+/// response was ever produced, `cascade_chat` must surface the *last*
+/// provider's actual error — not a generic `NoProviders` that discards the
+/// actionable diagnostic. Regression for #5826 (mirrors the `chat`/
+/// `chat_stream` fix from #5821 and `embed`/`embed_batch` from #5811).
 #[tokio::test]
-async fn cascade_all_providers_fail_returns_no_providers() {
+async fn cascade_all_providers_fail_preserves_last_error() {
     use crate::mock::MockProvider;
 
-    let p1 = AnyProvider::Mock(MockProvider::failing());
-    let p2 = AnyProvider::Mock(MockProvider::failing());
+    let p1 = AnyProvider::Mock(
+        MockProvider::default()
+            .with_errors(vec![LlmError::ApiError {
+                provider: "p1".into(),
+                status: 500,
+            }])
+            .with_name("p1"),
+    );
+    let p2 = AnyProvider::Mock(
+        MockProvider::default()
+            .with_errors(vec![LlmError::ApiError {
+                provider: "p2".into(),
+                status: 503,
+            }])
+            .with_name("p2"),
+    );
 
     let r = RouterProvider::new(vec![p1, p2]).with_cascade(CascadeRouterConfig::default());
     let msgs = vec![Message::from_legacy(Role::User, "test")];
     let err = r.chat(&msgs).await.unwrap_err();
-    assert_matches!(err, LlmError::NoProviders);
+
+    assert!(
+        matches!(&err, LlmError::ApiError { provider, status } if provider == "p2" && *status == 503),
+        "expected the last provider's (p2) ApiError to survive exhaustion, got {err:?}"
+    );
 }
 
 #[tokio::test]
