@@ -101,11 +101,16 @@ impl SqliteStore {
     pub async fn record_skill_usage(&self, skill_names: &[&str]) -> Result<(), MemoryError> {
         let mut tx = begin_write(&self.pool).await?;
         for name in skill_names {
+            // `invocation_count` on the RHS must be qualified with the table name: `PostgreSQL`'s
+            // `ON CONFLICT DO UPDATE` always exposes an `excluded` pseudo-table alongside the
+            // target table, so an unqualified self-reference is rejected as ambiguous
+            // (`column reference "invocation_count" is ambiguous`) even though only one
+            // interpretation makes sense. `SQLite` accepts the qualified form identically.
             zeph_db::query(sql!(
                 "INSERT INTO skill_usage (skill_name, invocation_count, last_used_at) \
                  VALUES (?, 1, CURRENT_TIMESTAMP) \
                  ON CONFLICT(skill_name) DO UPDATE SET \
-                 invocation_count = invocation_count + 1, \
+                 invocation_count = skill_usage.invocation_count + 1, \
                  last_used_at = CURRENT_TIMESTAMP"
             ))
             .bind(name)

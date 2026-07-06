@@ -2258,4 +2258,30 @@ mod pg {
         assert_eq!(predecessor.success_count, 0);
         assert_eq!(predecessor.failure_count, 0);
     }
+
+    // ── skill_usage: invocation_count INT4 decode (#5591) ───────────────────────
+    //
+    // `load_skill_usage` already decodes `invocation_count` (`INTEGER`/`INT4` on Postgres) as
+    // `i32` and widens it to `i64` (see `store/skills.rs`), but had zero Postgres coverage
+    // pinning that decode. This test records a distinct, non-default invocation count and
+    // asserts it survives the round trip unchanged.
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn skills_load_skill_usage_decodes_invocation_count_postgres() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool).await.unwrap();
+
+        for _ in 0..7 {
+            store.record_skill_usage(&["git"]).await.unwrap();
+        }
+
+        let usage = store.load_skill_usage().await.unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].skill_name, "git");
+        assert_eq!(
+            usage[0].invocation_count, 7,
+            "invocation_count must decode as the full INTEGER value, not truncate/zero"
+        );
+    }
 }

@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(memory)`: `record_skill_usage` (`crates/zeph-memory/src/store/skills.rs`) failed against
+  `PostgreSQL` with `column reference "invocation_count" is ambiguous`. Its
+  `INSERT ... ON CONFLICT DO UPDATE SET invocation_count = invocation_count + 1` referenced the
+  incremented column without qualification — `PostgreSQL`'s `ON CONFLICT DO UPDATE` always
+  exposes an implicit `excluded` pseudo-table alongside the target table, so an unqualified
+  self-reference is rejected as ambiguous even though only one interpretation makes sense.
+  `SQLite` silently accepts the same unqualified SQL, so the defect went undetected until a new
+  Postgres-integration test written for #5591 exercised it against a real Postgres container.
+  Fixed by qualifying the reference (`invocation_count = skill_usage.invocation_count + 1`) —
+  verified byte-identical behavior on `SQLite` before applying.
+
 - `fix(db)`: `cargo doc --all-features` (and any `--all-features` build) failed to compile
   `zeph-db` with 17 errors — `E0428` duplicate definitions (`begin_write`, `run_migrations`,
   `ActiveDriver`, the `sql!` macro, `numbered_placeholder`, and 8 `fts.rs` helpers) plus
@@ -126,6 +137,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `test(memory)`: closed the last zero-coverage gap in `recall_by_route`'s dispatch —
+  `MemoryRoute::Graph` and the `recall_routed_async` entry point had no test anywhere in the
+  workspace (#5620). `recall_routed_async_hybrid_route_falls_back_to_fts5_on_no_qdrant`
+  exercises the async router path directly; `recall_routed_graph_route_behaves_like_hybrid`
+  confirms the `Graph` route's message-recall dispatch is byte-identical to `Hybrid` (dedicated
+  graph traversal happens separately via `recall_graph`). Also added Postgres-integration
+  coverage pinning `load_skill_usage`'s `invocation_count` decode (#5591), which surfaced the
+  `record_skill_usage` Postgres bug fixed above.
 - `test(core)`: added timeout-branch coverage for the graph-query timeout helper
   (`crates/zeph-core/src/agent/agent_access_impl.rs`) via a `tokio::time::pause()` +
   `advance(6s)` test against a synthetic never-resolving future, forcing the real
@@ -193,6 +212,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   signatures, and error types (`DaemonError`, `SchedulerError`). `zeph-scheduler` gained a
   `zeph-common` dependency (behind the existing `daemon` feature); `zeph-core` dropped its
   now-unused direct `rustix` dependency. Pure refactor, no behavior change.
+- `refactor(memory)`: `snapshot.rs`'s `chrono_now()` now delegates to
+  `zeph_common::timestamp::utc_now_rfc3339()` instead of hand-rolling the Howard Hinnant
+  O(1) civil-from-days algorithm a second time in the same workspace (#5535). Removed the
+  now-unused `unix_to_parts()` helper (18 lines). Output format is byte-identical
+  (`YYYY-MM-DDTHH:MM:SSZ`); behavior-preserving, no call-site changes needed.
 - `refactor(core)`: deduplicated two independently-duplicated code paths. `trust.rs`'s
   `cross_session_rollout_ok_for_promote`/`_for_demote`
   (`crates/zeph-core/src/agent/learning/trust.rs`) — identical except for which config

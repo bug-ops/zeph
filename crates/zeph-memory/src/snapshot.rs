@@ -256,36 +256,7 @@ pub async fn import_snapshot(
 }
 
 fn chrono_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    // Format as ISO-8601 approximation without chrono dependency
-    let (year, month, day, hour, min, sec) = unix_to_parts(secs);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
-}
-
-fn unix_to_parts(secs: u64) -> (u64, u64, u64, u64, u64, u64) {
-    let sec = secs % 60;
-    let total_mins = secs / 60;
-    let min = total_mins % 60;
-    let total_hours = total_mins / 60;
-    let hour = total_hours % 24;
-    let total_days = total_hours / 24;
-
-    // Gregorian calendar calculation (civil date from days since Unix epoch)
-    let adjusted = total_days + 719_468;
-    let era = adjusted / 146_097;
-    let doe = adjusted - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { year + 1 } else { year };
-    (year, month, day, hour, min, sec)
+    zeph_common::timestamp::utc_now_rfc3339()
 }
 
 #[cfg(test)]

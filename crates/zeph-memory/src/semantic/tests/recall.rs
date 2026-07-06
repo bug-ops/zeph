@@ -397,6 +397,62 @@ async fn recall_routed_episodic_all_temporal_stripped_falls_back_to_original() {
     );
 }
 
+#[tokio::test]
+async fn recall_routed_async_hybrid_route_falls_back_to_fts5_on_no_qdrant() {
+    use crate::{HeuristicRouter, MemoryRoute, MemoryRouter};
+
+    let memory = test_semantic_memory(false).await;
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+
+    memory
+        .remember(cid, "user", "context window token budget", None)
+        .await
+        .unwrap();
+
+    let router = HeuristicRouter;
+    assert_eq!(
+        router.route("context window token budget"),
+        MemoryRoute::Hybrid
+    );
+
+    let recalled = memory
+        .recall_routed_async("context window token budget", 5, None, &router, None)
+        .await
+        .unwrap();
+    assert!(!recalled.is_empty(), "FTS5 should find the stored message");
+}
+
+#[tokio::test]
+async fn recall_routed_graph_route_behaves_like_hybrid() {
+    use crate::{HeuristicRouter, MemoryRoute, MemoryRouter};
+
+    let memory = test_semantic_memory(false).await;
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+
+    memory
+        .remember(cid, "user", "connection between rust and tokio", None)
+        .await
+        .unwrap();
+
+    let router = HeuristicRouter;
+    assert_eq!(
+        router.route("connection between rust and tokio"),
+        MemoryRoute::Graph
+    );
+
+    // `recall_by_route`'s `Graph` arm is deliberately identical to `Hybrid` for message-based
+    // recall — dedicated graph traversal happens separately via `recall_graph`. Without Qdrant
+    // configured this must fall back to FTS5, exactly like the Hybrid route does.
+    let recalled = memory
+        .recall_routed("connection between rust and tokio", 5, None, &router, None)
+        .await
+        .unwrap();
+    assert!(
+        !recalled.is_empty(),
+        "Graph route must fall back to FTS5 like Hybrid when no Qdrant is configured"
+    );
+}
+
 // ── importance scoring tests (#2021) ──────────────────────────────────────
 
 #[tokio::test]
