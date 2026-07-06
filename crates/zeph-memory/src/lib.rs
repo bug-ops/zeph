@@ -198,11 +198,11 @@ pub use scenes::{
     MemScene, SceneConfig, consolidate_scenes, list_scenes, start_scene_consolidation_loop,
 };
 pub use semantic::{
-    BufferedWrite, EmbedContext, ExtractionResult, ExtractionStats, GraphExtractionConfig,
-    HebbianReinforcement, HelaSpreadRuntime, ImportanceScoring, IngestBatchConfig, LinkingStats,
-    MmrReranking, NoteLinkingConfig, PersonaExtractionConfig, QueryBiasCorrection, RecalledMessage,
+    EmbedContext, ExtractionResult, ExtractionStats, GraphExtractionConfig, HebbianReinforcement,
+    HelaSpreadRuntime, ImportanceScoring, IngestBatchConfig, LinkingStats, MmrReranking,
+    NoteLinkingConfig, PersonaExtractionConfig, QueryBiasCorrection, RecalledMessage,
     SharedPostExtractValidator, StructuredSummary, TemporalDecay, TrajectoryEntry,
-    TrajectoryExtractionConfig, TreeConsolidationConfig, TreeConsolidationResult, WriteBuffer,
+    TrajectoryExtractionConfig, TreeConsolidationConfig, TreeConsolidationResult,
     build_summarization_prompt, contains_self_referential_language, extract_and_store,
     extract_persona_facts, extract_trajectory_entries, link_memory_notes,
     run_tree_consolidation_sweep, start_tree_consolidation_loop,

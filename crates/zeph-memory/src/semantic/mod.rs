@@ -30,7 +30,6 @@ mod recall;
 mod summarization;
 pub mod trajectory;
 pub mod tree_consolidation;
-pub(crate) mod write_buffer;
 
 #[cfg(test)]
 mod tests;
@@ -82,7 +81,6 @@ pub use tree_consolidation::{
     TreeConsolidationConfig, TreeConsolidationResult, run_tree_consolidation_sweep,
     start_tree_consolidation_loop,
 };
-pub use write_buffer::{BufferedWrite, WriteBuffer};
 
 /// Cached profile centroid for query-bias correction (MM-F3, #3341).
 ///

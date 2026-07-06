@@ -42,6 +42,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   — `SqliteStore` remained the dominant name at ~485 call sites vs. 44 for `DbStore` across the
   workspace. This reverses that spec's Key Invariant #9 by explicit user decision (pre-1.0.0);
   `/specs/031-database-abstraction/spec.md` is amended in the same commit to reconcile.
+- `refactor(memory)`: removed `WriteBuffer`/`BufferedWrite` (`crates/zeph-memory/src/semantic/write_buffer.rs`)
+  (#5552) — the session-scoped write-batching type had full unit test coverage but zero call
+  sites outside its own module; nothing in the persona/message write path ever constructed or
+  drained it. Deleted the module and its `semantic::mod` / crate-root re-exports.
 
 ### Fixed
 
