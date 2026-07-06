@@ -131,6 +131,65 @@ pub async fn jsonrpc_handler(
     Json(response)
 }
 
+/// Spawns the processor future for `task_id`/`message` and returns its join handle,
+/// an abort handle for out-of-band cancellation (timeout or client disconnect), and
+/// the event receiver.
+fn spawn_processor(
+    state: &AppState,
+    task_id: String,
+    message: crate::types::Message,
+) -> (
+    tokio::task::JoinHandle<Result<(), crate::error::A2aError>>,
+    tokio::task::AbortHandle,
+    mpsc::Receiver<ProcessorEvent>,
+) {
+    let (event_tx, event_rx) = mpsc::channel::<ProcessorEvent>(32);
+    let proc_future = state.processor.process(task_id, message, event_tx);
+    let proc_handle = tokio::spawn(proc_future); // EXEMPT: awaited/aborted by the caller within the same request scope
+    let abort_handle = proc_handle.abort_handle();
+    (proc_handle, abort_handle, event_rx)
+}
+
+/// Resolves the processor's join result into a terminal [`TaskState`], logging failures
+/// and panics under `label` (e.g. `"task"` or `"stream task"`) for call-site context.
+async fn resolve_processor_outcome(
+    proc_handle: tokio::task::JoinHandle<Result<(), crate::error::A2aError>>,
+    task_id: &str,
+    label: &str,
+) -> TaskState {
+    match proc_handle.await {
+        Ok(Ok(())) => TaskState::Completed,
+        Ok(Err(e)) => {
+            tracing::error!(task_id = %task_id, "{label} processing failed: {e}");
+            TaskState::Failed
+        }
+        Err(e) => {
+            tracing::error!(task_id = %task_id, "{label} processor panicked: {e}");
+            TaskState::Failed
+        }
+    }
+}
+
+/// Attaches `accumulated` text as an artifact on `task_id` when processing completed
+/// successfully and produced non-empty output; otherwise a no-op.
+async fn finalize_artifact(
+    state: &AppState,
+    task_id: &str,
+    final_state: TaskState,
+    accumulated: String,
+) {
+    if final_state == TaskState::Completed && !accumulated.is_empty() {
+        use crate::types::{Artifact, Part};
+        let artifact = Artifact {
+            artifact_id: format!("{task_id}-artifact"),
+            name: None,
+            parts: vec![Part::text(accumulated)],
+            metadata: None,
+        };
+        state.task_manager.add_artifact(task_id, artifact).await;
+    }
+}
+
 #[tracing::instrument(name = "a2a.handle_send_message", skip_all)]
 async fn handle_send_message(
     state: AppState,
@@ -152,13 +211,8 @@ async fn handle_send_message(
         .update_status(&task.id, TaskState::Working, None)
         .await;
 
-    let (event_tx, mut event_rx) = mpsc::channel::<ProcessorEvent>(32);
-    let proc_future = state
-        .processor
-        .process(task.id.clone(), params.message, event_tx);
-
-    let proc_handle = tokio::spawn(proc_future); // EXEMPT: awaited inside timeout block below
-    let abort_handle = proc_handle.abort_handle();
+    let (proc_handle, abort_handle, mut event_rx) =
+        spawn_processor(&state, task.id.clone(), params.message);
 
     let (accumulated, final_state) = match tokio::time::timeout(state.request_timeout, async {
         let mut accumulated = String::new();
@@ -170,17 +224,7 @@ async fn handle_send_message(
                 ProcessorEvent::StatusUpdate { .. } => {}
             }
         }
-        let final_state = match proc_handle.await {
-            Ok(Ok(())) => TaskState::Completed,
-            Ok(Err(e)) => {
-                tracing::error!(task_id = %task.id, "task processing failed: {e}");
-                TaskState::Failed
-            }
-            Err(e) => {
-                tracing::error!(task_id = %task.id, "task processor panicked: {e}");
-                TaskState::Failed
-            }
-        };
+        let final_state = resolve_processor_outcome(proc_handle, &task.id, "task").await;
         (accumulated, final_state)
     })
     .await
@@ -197,16 +241,7 @@ async fn handle_send_message(
         }
     };
 
-    if final_state == TaskState::Completed && !accumulated.is_empty() {
-        use crate::types::{Artifact, Part};
-        let artifact = Artifact {
-            artifact_id: format!("{}-artifact", task.id),
-            name: None,
-            parts: vec![Part::text(accumulated)],
-            metadata: None,
-        };
-        state.task_manager.add_artifact(&task.id, artifact).await;
-    }
+    finalize_artifact(&state, &task.id, final_state, accumulated).await;
 
     state
         .task_manager
@@ -419,28 +454,8 @@ async fn drain_processor_events(
         }
     }
 
-    let final_state = match proc_handle.await {
-        Ok(Ok(())) => TaskState::Completed,
-        Ok(Err(e)) => {
-            tracing::error!(task_id = %task_id, "stream task processing failed: {e}");
-            TaskState::Failed
-        }
-        Err(e) => {
-            tracing::error!(task_id = %task_id, "stream task processor panicked: {e}");
-            TaskState::Failed
-        }
-    };
-
-    if final_state == TaskState::Completed && !accumulated.is_empty() {
-        use crate::types::{Artifact, Part};
-        let artifact = Artifact {
-            artifact_id: format!("{task_id}-artifact"),
-            name: None,
-            parts: vec![Part::text(accumulated)],
-            metadata: None,
-        };
-        state.task_manager.add_artifact(task_id, artifact).await;
-    }
+    let final_state = resolve_processor_outcome(proc_handle, task_id, "stream task").await;
+    finalize_artifact(state, task_id, final_state, accumulated).await;
 
     final_state
 }
@@ -463,11 +478,8 @@ async fn stream_task(state: AppState, message: crate::types::Message, tx: mpsc::
         ))
         .await;
 
-    let (event_tx, mut event_rx) = mpsc::channel::<ProcessorEvent>(32);
-    let proc_future = state.processor.process(task_id.clone(), message, event_tx);
-
-    let proc_handle = tokio::spawn(proc_future); // EXEMPT: awaited in drain_processor_events below
-    let abort_handle = proc_handle.abort_handle();
+    let (proc_handle, abort_handle, mut event_rx) =
+        spawn_processor(&state, task_id.clone(), message);
 
     let final_state = tokio::select! {
         result = tokio::time::timeout(
@@ -824,6 +836,65 @@ mod tests {
         assert_eq!(
             body["result"]["status"]["state"], "failed",
             "timed-out task must be in failed state"
+        );
+    }
+
+    // --- Direct unit tests for the extracted helpers (spawn_processor is covered
+    // indirectly through every handler test above; these close the branches that
+    // are otherwise unreachable via the public handlers: a panicking processor
+    // task, and finalize_artifact's no-op branches). ---
+
+    #[tokio::test]
+    async fn resolve_processor_outcome_panic_sets_failed() {
+        let handle: tokio::task::JoinHandle<Result<(), crate::error::A2aError>> =
+            tokio::spawn(async { panic!("boom") });
+        let state = super::resolve_processor_outcome(handle, "task-1", "task").await;
+        assert_eq!(state, crate::types::TaskState::Failed);
+    }
+
+    #[tokio::test]
+    async fn finalize_artifact_completed_empty_accumulated_is_noop() {
+        let state = super::super::testing::test_state();
+        let task = state
+            .task_manager
+            .create_task(crate::types::Message::user_text("hello"))
+            .await;
+
+        super::finalize_artifact(
+            &state,
+            &task.id,
+            crate::types::TaskState::Completed,
+            String::new(),
+        )
+        .await;
+
+        let fetched = state.task_manager.get_task(&task.id, None).await.unwrap();
+        assert!(
+            fetched.artifacts.is_empty(),
+            "finalize_artifact must not attach an artifact for empty accumulated text"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_artifact_failed_with_nonempty_accumulated_is_noop() {
+        let state = super::super::testing::test_state();
+        let task = state
+            .task_manager
+            .create_task(crate::types::Message::user_text("hello"))
+            .await;
+
+        super::finalize_artifact(
+            &state,
+            &task.id,
+            crate::types::TaskState::Failed,
+            "partial output before failure".to_owned(),
+        )
+        .await;
+
+        let fetched = state.task_manager.get_task(&task.id, None).await.unwrap();
+        assert!(
+            fetched.artifacts.is_empty(),
+            "finalize_artifact must not attach an artifact when the task did not complete"
         );
     }
 

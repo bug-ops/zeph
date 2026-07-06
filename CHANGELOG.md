@@ -58,6 +58,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   input-dependent embedding support in `zeph-llm`'s test mock, out of scope for this test-only
   change. Test-only change, no production code modified.
 
+### Changed
+
+- `refactor(a2a)`: `handle_send_message` (`message/send`) and `stream_task`/
+  `drain_processor_events` (`message/stream`) in `crates/zeph-a2a/src/server/handlers.rs` each
+  reimplemented the same processor spawn/abort-handle setup, `proc_handle.await` ->
+  `TaskState` resolution (with identical Completed/Failed/panic logging), and
+  completed-artifact attachment (#5716). Extracted three shared helpers —
+  `spawn_processor`, `resolve_processor_outcome`, `finalize_artifact` — now called from both
+  handlers; the streaming-specific SSE event forwarding and the differing timeout mechanics
+  (`tokio::time::timeout` vs. `tokio::select!` with a disconnect branch) were left untouched.
+  Behavior-preserving: identical logging, artifact id format (`{task_id}-artifact`), and
+  error/panic handling at both call sites; all existing tests pass unchanged.
+
 ### Removed
 
 - `refactor(memory)`: removed the `SqliteStore = DbStore` type alias in
