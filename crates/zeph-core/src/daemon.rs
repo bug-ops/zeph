@@ -233,13 +233,10 @@ pub fn remove_pid_file(path: &str) -> std::io::Result<()> {
 /// // ... run the daemon ...
 /// drop(guard); // releases the lock and removes the pid file
 /// ```
+// Wraps the shared guard purely for its `Drop` impl (unlinks the pid file on release).
 #[cfg(unix)]
 #[derive(Debug)]
-pub struct PidGuard {
-    #[allow(dead_code)] // held for its Drop impl (closes fd, releasing the flock)
-    fd: rustix::fd::OwnedFd,
-    path: std::path::PathBuf,
-}
+pub struct PidGuard(#[allow(dead_code)] zeph_common::pidfile::PidLockGuard);
 
 #[cfg(unix)]
 impl PidGuard {
@@ -251,45 +248,15 @@ impl PidGuard {
     /// Returns [`DaemonError::AlreadyRunning`] if another process already holds the lock, or
     /// [`DaemonError::PidFile`] for filesystem failures.
     pub fn acquire(path: &str) -> Result<Self, DaemonError> {
-        use rustix::fs::{FlockOperation, Mode, OFlags};
+        use zeph_common::pidfile::{PidLockError, PidLockGuard};
 
         let expanded = expand_tilde(path);
         let path = std::path::Path::new(&expanded);
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)?;
-        }
 
-        let fd = rustix::fs::open(
-            path,
-            OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC,
-            Mode::from_raw_mode(0o644),
-        )
-        .map_err(std::io::Error::from)?;
-
-        rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive).map_err(|e| {
-            if e == rustix::io::Errno::WOULDBLOCK {
-                let pid = read_pid_file(path.to_string_lossy().as_ref()).unwrap_or(0);
-                DaemonError::AlreadyRunning { pid }
-            } else {
-                DaemonError::PidFile(e.into())
-            }
-        })?;
-
-        rustix::fs::ftruncate(&fd, 0).map_err(std::io::Error::from)?;
-        rustix::io::write(&fd, std::process::id().to_string().as_bytes())
-            .map_err(std::io::Error::from)?;
-
-        Ok(Self {
-            fd,
-            path: path.to_owned(),
+        PidLockGuard::acquire(path).map(Self).map_err(|e| match e {
+            PidLockError::AlreadyRunning { pid } => DaemonError::AlreadyRunning { pid },
+            PidLockError::Io(err) => DaemonError::PidFile(err),
         })
-    }
-}
-
-#[cfg(unix)]
-impl Drop for PidGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
     }
 }
 
