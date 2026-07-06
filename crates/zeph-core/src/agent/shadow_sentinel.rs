@@ -830,13 +830,7 @@ impl ShadowSentinel {
             context_summary: Some(summary),
             created_at: unix_now(),
         };
-        let store = self.store.clone();
-        self.spawn_persist(async move {
-            if let Err(e) = store.record(&event).await {
-                tracing::warn!(error = %e, "ShadowSentinel: failed to persist probe result");
-            }
-        })
-        .await;
+        self.persist_event(event, "probe result").await;
 
         verdict
     }
@@ -866,13 +860,7 @@ impl ShadowSentinel {
             context_summary: Some(context_summary.chars().take(250).collect()),
             created_at: unix_now(),
         };
-        let store = self.store.clone();
-        self.spawn_persist(async move {
-            if let Err(e) = store.record(&event).await {
-                tracing::warn!(error = %e, "ShadowSentinel: failed to persist tool event");
-            }
-        })
-        .await;
+        self.persist_event(event, "tool event").await;
     }
 
     /// Await all queued fire-and-forget persist tasks.
@@ -885,6 +873,21 @@ impl ShadowSentinel {
             std::mem::take(&mut *guard)
         };
         while set.join_next().await.is_some() {}
+    }
+
+    /// Clones the store handle and spawns a fire-and-forget persist of `event` via
+    /// [`Self::spawn_persist`], logging `warn_context` on failure. Shared by
+    /// [`Self::check_tool_call`] (probe results) and [`Self::record_tool_event`]
+    /// (tool-call events) — the two call sites differ only in the event they persist
+    /// and the wording of the warn-log context.
+    async fn persist_event(&self, event: SentinelEvent, warn_context: &'static str) {
+        let store = self.store.clone();
+        self.spawn_persist(async move {
+            if let Err(e) = store.record(&event).await {
+                tracing::warn!(error = %e, "ShadowSentinel: failed to persist {warn_context}");
+            }
+        })
+        .await;
     }
 
     /// Spawn a background persist task into the bounded `JoinSet`.

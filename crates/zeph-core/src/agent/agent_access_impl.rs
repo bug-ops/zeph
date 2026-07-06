@@ -20,7 +20,7 @@ use zeph_commands::CommandError;
 use zeph_commands::traits::agent::AgentAccess;
 use zeph_db;
 use zeph_memory::semantic::SemanticMemory;
-use zeph_memory::{GraphExtractionConfig, GraphStore, MessageId, extract_and_store};
+use zeph_memory::{Edge, Entity, GraphExtractionConfig, GraphStore, MessageId, extract_and_store};
 
 use super::{Agent, error::AgentError};
 use crate::channel::Channel;
@@ -41,6 +41,68 @@ impl<C: Channel + Send + 'static> Agent<C> {
         };
         Ok((memory, store))
     }
+}
+
+/// Outcome of resolving an entity by display name against the graph store: either the
+/// entity was found, or a user-facing message that the caller should return as-is (no
+/// match, or the store timed out).
+enum EntityLookup {
+    Found(Entity),
+    Message(String),
+}
+
+/// Resolves `name` to an [`Entity`] via [`GraphStore::find_entity_by_name`], bounded by a
+/// 5s timeout — the lookup block shared by `graph_facts` and `graph_history`.
+async fn resolve_entity_by_name(
+    store: &GraphStore,
+    name: &str,
+) -> Result<EntityLookup, CommandError> {
+    let matches =
+        match tokio::time::timeout(Duration::from_secs(5), store.find_entity_by_name(name)).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(CommandError::new(e.to_string())),
+            Err(_) => {
+                tracing::warn!("graph store call timed out after 5s (Qdrant unreachable)");
+                return Ok(EntityLookup::Message(
+                    "Graph store unavailable (Qdrant unreachable).".to_owned(),
+                ));
+            }
+        };
+    let Some(entity) = matches.into_iter().next() else {
+        return Ok(EntityLookup::Message(format!(
+            "No entity found matching '{name}'."
+        )));
+    };
+    Ok(EntityLookup::Found(entity))
+}
+
+/// Builds the `entity_id -> display_name` lookup map shared by `graph_facts` and
+/// `graph_history`: seeds `entity`'s own name, inserts a placeholder for every edge
+/// endpoint, then resolves each placeholder via [`GraphStore::find_entity_by_id`] (5s
+/// timeout), falling back to `#{id}` when the lookup fails or times out.
+async fn build_entity_name_map(
+    store: &GraphStore,
+    entity: &Entity,
+    edges: &[Edge],
+) -> std::collections::HashMap<i64, String> {
+    let mut entity_names: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    entity_names.insert(entity.id.0, entity.name.clone());
+    for edge in edges {
+        entity_names.entry(edge.source_entity_id).or_default();
+        entity_names.entry(edge.target_entity_id).or_default();
+    }
+    for (&id, name_val) in &mut entity_names {
+        if name_val.is_empty() {
+            let result =
+                tokio::time::timeout(Duration::from_secs(5), store.find_entity_by_id(id)).await;
+            if let Ok(Ok(Some(other))) = result {
+                *name_val = other.name;
+            } else {
+                *name_val = format!("#{id}");
+            }
+        }
+    }
+    entity_names
 }
 
 /// Run Stage-2 LLM semantic scan for all skills in the plugin at `source`.
@@ -306,24 +368,11 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                     Err(msg) => return Ok(msg),
                 };
 
-                let matches = match tokio::time::timeout(
-                    Duration::from_secs(5),
-                    store.find_entity_by_name(name),
-                )
-                .await
-                {
-                    Ok(Ok(v)) => v,
-                    Ok(Err(e)) => return Err(CommandError::new(e.to_string())),
-                    Err(_) => {
-                        tracing::warn!("graph store call timed out after 5s (Qdrant unreachable)");
-                        return Ok("Graph store unavailable (Qdrant unreachable).".to_owned());
-                    }
+                let entity = match resolve_entity_by_name(&store, name).await? {
+                    EntityLookup::Found(e) => e,
+                    EntityLookup::Message(msg) => return Ok(msg),
                 };
-                if matches.is_empty() {
-                    return Ok(format!("No entity found matching '{name}'."));
-                }
 
-                let entity = &matches[0];
                 let edges = match tokio::time::timeout(
                     Duration::from_secs(5),
                     store.edges_for_entity(entity.id.0),
@@ -341,31 +390,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                     return Ok(format!("Entity '{}' has no known facts.", entity.name));
                 }
 
-                let mut entity_names: std::collections::HashMap<i64, String> =
-                    std::collections::HashMap::new();
-                entity_names.insert(entity.id.0, entity.name.clone());
-                for edge in &edges {
-                    let other_id = if edge.source_entity_id == entity.id.0 {
-                        edge.target_entity_id
-                    } else {
-                        edge.source_entity_id
-                    };
-                    entity_names.entry(other_id).or_default();
-                }
-                for (&id, name_val) in &mut entity_names {
-                    if name_val.is_empty() {
-                        let result = tokio::time::timeout(
-                            Duration::from_secs(5),
-                            store.find_entity_by_id(id),
-                        )
-                        .await;
-                        if let Ok(Ok(Some(other))) = result {
-                            *name_val = other.name;
-                        } else {
-                            *name_val = format!("#{id}");
-                        }
-                    }
-                }
+                let entity_names = build_entity_name_map(&store, &entity, &edges).await;
 
                 let lines: Vec<String> = edges
                     .iter()
@@ -405,24 +430,11 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                     Err(msg) => return Ok(msg),
                 };
 
-                let matches = match tokio::time::timeout(
-                    Duration::from_secs(5),
-                    store.find_entity_by_name(name),
-                )
-                .await
-                {
-                    Ok(Ok(v)) => v,
-                    Ok(Err(e)) => return Err(CommandError::new(e.to_string())),
-                    Err(_) => {
-                        tracing::warn!("graph store call timed out after 5s (Qdrant unreachable)");
-                        return Ok("Graph store unavailable (Qdrant unreachable).".to_owned());
-                    }
+                let entity = match resolve_entity_by_name(&store, name).await? {
+                    EntityLookup::Found(e) => e,
+                    EntityLookup::Message(msg) => return Ok(msg),
                 };
-                if matches.is_empty() {
-                    return Ok(format!("No entity found matching '{name}'."));
-                }
 
-                let entity = &matches[0];
                 let edges = match tokio::time::timeout(
                     Duration::from_secs(5),
                     store.edge_history_for_entity(entity.id.0, 50),
@@ -440,28 +452,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                     return Ok(format!("Entity '{}' has no edge history.", entity.name));
                 }
 
-                let mut entity_names: std::collections::HashMap<i64, String> =
-                    std::collections::HashMap::new();
-                entity_names.insert(entity.id.0, entity.name.clone());
-                for edge in &edges {
-                    for &id in &[edge.source_entity_id, edge.target_entity_id] {
-                        entity_names.entry(id).or_default();
-                    }
-                }
-                for (&id, name_val) in &mut entity_names {
-                    if name_val.is_empty() {
-                        let result = tokio::time::timeout(
-                            Duration::from_secs(5),
-                            store.find_entity_by_id(id),
-                        )
-                        .await;
-                        if let Ok(Ok(Some(other))) = result {
-                            *name_val = other.name;
-                        } else {
-                            *name_val = format!("#{id}");
-                        }
-                    }
-                }
+                let entity_names = build_entity_name_map(&store, &entity, &edges).await;
 
                 let n = edges.len();
                 let lines: Vec<String> = edges

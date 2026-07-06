@@ -51,6 +51,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   JSON example contains literal braces) is preserved unchanged (#5427). Pure refactor, no
   behavior change; covered by 5 new unit tests targeting the extracted helpers directly.
 - `refactor(core)`: deduplicated three independently-duplicated code paths in the agent
+  conversation/graph/sentinel layer. `Agent::reset_conversation` (`/new`) and the former
+  `reset_swap_state` (`/conv resume`, `/conv fork`) shared the same ~45-line session-reset
+  block; both now call a single `reset_session_scoped_state(keep_plan)`
+  (`crates/zeph-core/src/agent/context/assembly.rs`), which the removed
+  `reset_swap_state` invoked with `keep_plan: false` (#5655).
+  `graph_facts`/`graph_history` (`crates/zeph-core/src/agent/agent_access_impl.rs`) shared an
+  entity-resolution-by-name block (5s timeout + "Qdrant unreachable" fallback) and an
+  entity-name-lookup-map-with-fallback block; both are now `resolve_entity_by_name` and
+  `build_entity_name_map`, reproducing the original per-call-site early-return semantics
+  exactly (#5656). `ShadowSentinel::check_tool_call`/`record_tool_event`
+  (`crates/zeph-core/src/agent/shadow_sentinel.rs`) shared an identical
+  clone-store-and-spawn-persist-with-warn-log block, now `persist_event(event,
+  warn_context)` (#5660). Pure refactor, no behavior change.
+- `refactor(core)`: deduplicated three independently-duplicated code paths in the agent
   tool-dispatch pipeline. Merged `call_non_streaming`/`call_non_streaming_with_span`
   (`crates/zeph-core/src/agent/tool_execution/llm_dispatch.rs`) into a single function
   taking an explicit `tracing::Span` parameter; the SSE-fallback call site now passes

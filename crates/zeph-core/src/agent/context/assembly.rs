@@ -322,67 +322,14 @@ impl<C: Channel> Agent<C> {
             let _ = tx.send("Resetting conversation...".to_string());
         }
 
-        // --- Step 4: abort background compression tasks (context-compression) ---
-        {
-            if let Some(h) = self.services.compression.pending_task_goal.take() {
-                h.abort();
-            }
-            if let Some(h) = self.services.compression.pending_sidequest_result.take() {
-                h.abort();
-            }
-            if let Some(h) = self.services.compression.pending_subgoal.take() {
-                h.abort();
-            }
-            self.services.compression.current_task_goal = None;
-            self.services.compression.task_goal_user_msg_hash = None;
-            self.services.compression.subgoal_registry =
-                zeph_agent_context::SubgoalRegistry::default();
-            self.services.compression.subgoal_user_msg_hash = None;
-        }
-
-        // --- Step 5: cancel running plan and clear orchestration ---
-        if !keep_plan {
-            if let Some(token) = self.services.orchestration.plan_cancel_token.take() {
-                token.cancel();
-            }
-            self.services.orchestration.pending_graph = None;
-            self.services.orchestration.pending_goal_embedding = None;
-        }
-        // Cancel running sub-agents regardless of keep_plan.
-        if let Some(ref mut mgr) = self.services.orchestration.subagent_manager {
-            mgr.shutdown_all();
-        }
-
-        // --- Step 6: reset message history and caches ---
-        self.clear_history();
-        self.tool_orchestrator.clear_cache();
-
-        // Drain message queue, logging discarded entries.
-        let discarded = self.clear_queue();
+        // --- Steps 4-9: reset session-scoped state shared with the conversation-swap path ---
+        let discarded = self.reset_session_scoped_state(keep_plan);
         if discarded > 0 {
             tracing::debug!(
                 discarded,
                 "/new: discarded queued messages that arrived during reset"
             );
         }
-        self.msg.pending_image_parts.clear();
-
-        // --- Step 7: reset security URL sets ---
-        self.services.security.user_provided_urls.write().clear();
-        self.services.security.flagged_urls.clear();
-
-        // --- Step 8: reset compaction and compression states ---
-        self.context_manager.reset_compaction();
-        self.services.focus.reset();
-        self.services.sidequest.reset();
-
-        // --- Step 9: reset misc session-scoped fields ---
-        self.runtime.debug.iteration_counter = 0;
-        self.msg.last_persisted_message_id = None;
-        self.msg.deferred_db_hide_ids.clear();
-        self.msg.deferred_db_summaries.clear();
-        self.services.tool_state.cached_filtered_tool_ids = None;
-        self.runtime.providers.cached_prompt_tokens = 0;
 
         // --- Step 9b: detach the P1 durable execution (#5452 critic finding S1) — it is keyed
         // on the OLD conversation_id and must not keep journaling turns for the new one. ---
@@ -497,7 +444,13 @@ impl<C: Channel> Agent<C> {
 
         let old_conversation_id = self.services.memory.persistence.conversation_id;
         self.spawn_outgoing_digest(old_conversation_id);
-        self.reset_swap_state();
+        let discarded = self.reset_session_scoped_state(false);
+        if discarded > 0 {
+            tracing::debug!(
+                discarded,
+                "conversation swap: discarded queued messages that arrived during reset"
+            );
+        }
         // Detach the P1 durable execution (#5452 critic finding S1) — same reasoning as
         // `reset_conversation`: it is keyed on the OLD conversation_id and must not keep
         // journaling turns for the resumed/forked one.
@@ -535,11 +488,21 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    /// Clears message history/queues/caches shared by [`Self::reset_conversation`] (`/new`) and
+    /// Resets the session-scoped state shared by [`Self::reset_conversation`] (`/new`) and
     /// [`Self::load_and_resume_conversation`] (`/conv resume`/`/conv fork`, D-9) — the parts of
     /// a conversation swap that don't depend on where the new `conversation_id`/message history
-    /// comes from (mirrors `reset_conversation`'s steps 4-9).
-    fn reset_swap_state(&mut self) {
+    /// comes from (mirrors `reset_conversation`'s steps 4-9): abort background compression
+    /// tasks, cancel/clear the pending plan (unless `keep_plan`), shut down running sub-agents,
+    /// clear message history/queues/caches, reset security URL sets, and reset
+    /// compaction/session-scoped counters.
+    ///
+    /// `keep_plan` — when `true`, `orchestration.pending_graph` is preserved (`/new
+    /// --keep-plan`); the conversation-swap path always passes `false`.
+    ///
+    /// Returns the number of queued messages discarded by [`Self::clear_queue`] — callers log
+    /// this with their own context-specific message, since `/new` and the swap path use
+    /// different wording.
+    fn reset_session_scoped_state(&mut self, keep_plan: bool) -> usize {
         if let Some(h) = self.services.compression.pending_task_goal.take() {
             h.abort();
         }
@@ -554,11 +517,14 @@ impl<C: Channel> Agent<C> {
         self.services.compression.subgoal_registry = zeph_agent_context::SubgoalRegistry::default();
         self.services.compression.subgoal_user_msg_hash = None;
 
-        if let Some(token) = self.services.orchestration.plan_cancel_token.take() {
-            token.cancel();
+        if !keep_plan {
+            if let Some(token) = self.services.orchestration.plan_cancel_token.take() {
+                token.cancel();
+            }
+            self.services.orchestration.pending_graph = None;
+            self.services.orchestration.pending_goal_embedding = None;
         }
-        self.services.orchestration.pending_graph = None;
-        self.services.orchestration.pending_goal_embedding = None;
+        // Cancel running sub-agents regardless of keep_plan.
         if let Some(ref mut mgr) = self.services.orchestration.subagent_manager {
             mgr.shutdown_all();
         }
@@ -566,12 +532,6 @@ impl<C: Channel> Agent<C> {
         self.clear_history();
         self.tool_orchestrator.clear_cache();
         let discarded = self.clear_queue();
-        if discarded > 0 {
-            tracing::debug!(
-                discarded,
-                "conversation swap: discarded queued messages that arrived during reset"
-            );
-        }
         self.msg.pending_image_parts.clear();
 
         self.services.security.user_provided_urls.write().clear();
@@ -587,6 +547,8 @@ impl<C: Channel> Agent<C> {
         self.msg.deferred_db_summaries.clear();
         self.services.tool_state.cached_filtered_tool_ids = None;
         self.runtime.providers.cached_prompt_tokens = 0;
+
+        discarded
     }
 
     /// Gather context from all memory sources and inject into the message window.
