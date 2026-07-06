@@ -22,6 +22,7 @@ rand_distr.workspace = true
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+testcontainers-modules = { workspace = true, features = ["postgres"], optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
@@ -37,6 +38,7 @@ zeph-subagent.workspace = true
 [dev-dependencies]
 futures.workspace = true
 tempfile.workspace = true
+testcontainers = { workspace = true, features = ["watchdog"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 zeph-llm = { workspace = true, features = ["testing"] }
 zeph-memory.workspace = true
@@ -45,6 +47,8 @@ zeph-memory.workspace = true
 sqlite = ["zeph-db/sqlite", "zeph-durable/sqlite", "zeph-subagent/sqlite"]
 postgres = ["zeph-db/postgres", "zeph-durable/postgres", "zeph-subagent/postgres"]
 llm-planning = ["dep:zeph-llm"]
+# Enables test utilities and testcontainers for PostgreSQL integration tests.
+test-utils = ["dep:testcontainers-modules", "postgres"]
 default = ["sqlite"]
 
 [lints]

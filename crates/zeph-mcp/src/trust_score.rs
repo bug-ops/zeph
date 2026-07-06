@@ -162,7 +162,10 @@ impl TrustScoreStore {
         &self,
         server_id: &str,
     ) -> Result<Option<ServerTrustScore>, zeph_db::SqlxError> {
-        let row: Option<(String, f64, i64, i64, i64)> = zeph_db::query_as(sql!(
+        // success_count/failure_count are INTEGER (INT4) in the Postgres schema
+        // (migration 052_mcp_trust_scores.sql); sqlx-postgres rejects decoding INT4
+        // directly into i64 (`ColumnDecode`), so they must be read as i32.
+        let row: Option<(String, f64, i32, i32, i64)> = zeph_db::query_as(sql!(
             "SELECT server_id, score, success_count, failure_count, updated_at_secs
              FROM mcp_trust_scores WHERE server_id = ?"
         ))
@@ -220,24 +223,31 @@ impl TrustScoreStore {
         failure_increment: u64,
     ) -> Result<(), zeph_db::SqlxError> {
         let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
-        zeph_db::query(sql!(
+        // `MIN`/`MAX` are scalar multi-argument functions on SQLite but aggregate-only on
+        // Postgres (no `max(numeric, double precision)` overload exists there); the
+        // dialect-specific `LEAST`/`GREATEST` scalar equivalents are required instead.
+        let least_fn = <zeph_db::ActiveDialect as zeph_db::Dialect>::LEAST_FN;
+        let greatest_fn = <zeph_db::ActiveDialect as zeph_db::Dialect>::GREATEST_FN;
+        let raw = format!(
             "INSERT INTO mcp_trust_scores
                 (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, ?, ?, ?, ?)
              ON CONFLICT(server_id) DO UPDATE SET
-                score          = MIN(1.0, MAX(0.0, score + excluded.score - 0.5)),
-                success_count  = success_count + excluded.success_count,
-                failure_count  = failure_count + excluded.failure_count,
+                score          = {least_fn}(1.0, {greatest_fn}(0.0, mcp_trust_scores.score + excluded.score - 0.5)),
+                success_count  = mcp_trust_scores.success_count + excluded.success_count,
+                failure_count  = mcp_trust_scores.failure_count + excluded.failure_count,
                 updated_at_secs = excluded.updated_at_secs"
-        ))
-        .bind(server_id)
-        // Initial insert: 0.5 + delta
-        .bind(ServerTrustScore::INITIAL_SCORE + score_delta)
-        .bind(i64::try_from(success_increment).unwrap_or(i64::MAX))
-        .bind(i64::try_from(failure_increment).unwrap_or(i64::MAX))
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        zeph_db::query(zeph_db::sqlx::AssertSqlSafe(query_sql))
+            .bind(server_id)
+            // Initial insert: 0.5 + delta
+            .bind(ServerTrustScore::INITIAL_SCORE + score_delta)
+            .bind(i64::try_from(success_increment).unwrap_or(i64::MAX))
+            .bind(i64::try_from(failure_increment).unwrap_or(i64::MAX))
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -275,8 +285,8 @@ impl TrustScoreStore {
              VALUES (?, ?, ?, ?, ?)
              ON CONFLICT(server_id) DO UPDATE SET
                 score           = excluded.score,
-                success_count   = success_count + excluded.success_count,
-                failure_count   = failure_count + excluded.failure_count,
+                success_count   = mcp_trust_scores.success_count + excluded.success_count,
+                failure_count   = mcp_trust_scores.failure_count + excluded.failure_count,
                 updated_at_secs = excluded.updated_at_secs"
         ))
         .bind(server_id)
@@ -304,7 +314,10 @@ impl TrustScoreStore {
         tracing::instrument(name = "mcp.trust_score.load_all", skip_all)
     )]
     pub async fn load_all(&self) -> Result<Vec<ServerTrustScore>, zeph_db::SqlxError> {
-        let rows: Vec<(String, f64, i64, i64, i64)> = zeph_db::query_as(sql!(
+        // success_count/failure_count are INTEGER (INT4) in the Postgres schema
+        // (migration 052_mcp_trust_scores.sql); sqlx-postgres rejects decoding INT4
+        // directly into i64 (`ColumnDecode`), so they must be read as i32 (see `load()`).
+        let rows: Vec<(String, f64, i32, i32, i64)> = zeph_db::query_as(sql!(
             "SELECT server_id, score, success_count, failure_count, updated_at_secs
              FROM mcp_trust_scores"
         ))

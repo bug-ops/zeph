@@ -384,7 +384,7 @@ impl PlanCache {
               embedding, embedding_model, created_at, last_accessed_at) \
              VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?) \
              ON CONFLICT(goal_hash) DO UPDATE SET \
-               success_count = success_count + 1, \
+               success_count = plan_cache.success_count + 1, \
                template = excluded.template, \
                task_count = excluded.task_count, \
                embedding = excluded.embedding, \

@@ -18,6 +18,8 @@ sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite", "zeph-tools/sqlite"]
 postgres = ["zeph-db/postgres", "zeph-memory/postgres", "zeph-tools/postgres"]
 default = ["sqlite"]
 mock = []
+# Enables test utilities and testcontainers for PostgreSQL integration tests.
+test-utils = ["dep:testcontainers-modules", "postgres"]
 
 [dependencies]
 async-trait.workspace = true
@@ -36,6 +38,7 @@ rmcp = { workspace = true, features = ["client", "transport-child-process", "tra
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+testcontainers-modules = { workspace = true, features = ["postgres"], optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "sync", "time", "rt", "net", "io-util"] }
 tokio-util.workspace = true
@@ -52,6 +55,7 @@ zeph-tools.workspace = true
 
 [dev-dependencies]
 rmcp = { workspace = true, features = ["server"] }
+testcontainers = { workspace = true, features = ["watchdog"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 zeph-llm = { workspace = true, features = ["testing"] }
 

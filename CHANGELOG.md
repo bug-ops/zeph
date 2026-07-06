@@ -8,6 +8,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(orchestration,mcp)`: follow-up to the `record_skill_usage` fix above (#5802) — the same
+  Postgres `ON CONFLICT DO UPDATE` self-reference ambiguity existed at two more call sites
+  (#5803), found via adversarial review of #5802's fix. `PlanCache::cache_plan`
+  (`crates/zeph-orchestration/src/plan_cache.rs`) referenced `success_count = success_count + 1`
+  unqualified; `TrustScoreStore::apply_delta` and `load_and_apply_delta`
+  (`crates/zeph-mcp/src/trust_score.rs`) referenced `score`, `success_count`, and
+  `failure_count` unqualified in their own `ON CONFLICT DO UPDATE SET` clauses. All three now
+  qualify the self-reference with the target table name (`plan_cache.success_count + 1`,
+  `mcp_trust_scores.success_count + excluded.success_count`, etc.), matching the pattern already
+  correct in `crates/zeph-memory/src/store/persona.rs`.
+  - Writing live-Postgres test coverage for `apply_delta` surfaced two further, previously
+    unreported Postgres-only defects in the same method, neither caught by the ambiguity fix
+    alone: its `score = MIN(1.0, MAX(0.0, ...))` clause used `MIN`/`MAX` as SQLite-style scalar
+    multi-argument functions, but Postgres's `MIN`/`MAX` are aggregate-only (no
+    `max(numeric, double precision)` overload exists), failing with
+    `PgDatabaseError 42883: function max(numeric, double precision) does not exist`. Fixed by
+    switching to `zeph-db`'s existing dialect abstraction (`Dialect::GREATEST_FN`/`LEAST_FN`,
+    `"MAX"`/`"MIN"` on `SQLite` vs `"GREATEST"`/`"LEAST"` on `PostgreSQL`) via the same
+    runtime-`format!` + `rewrite_placeholders` pattern already used in
+    `crates/zeph-memory/src/store/persona.rs` (`sql!` cannot interpolate a dialect-chosen
+    function name since it requires a `&'static str` literal).
+  - `TrustScoreStore::load` and `load_all` decoded `success_count`/`failure_count` as `i64`, but
+    both columns are `INTEGER` (INT4) in the `PostgreSQL` schema
+    (`crates/zeph-db/migrations/postgres/052_mcp_trust_scores.sql`) — `sqlx-postgres` rejects
+    decoding INT4 directly into `i64` (`ColumnDecode`). Both now decode the pair as `i32`.
+  - Added Postgres testcontainer integration test infrastructure to `zeph-orchestration` and
+    `zeph-mcp` (neither crate had any before), mirroring `zeph-memory`'s existing `test-utils`
+    feature/`testcontainers` setup: `crates/zeph-orchestration/tests/postgres_integration.rs`
+    and `crates/zeph-mcp/tests/postgres_integration.rs`, exercising the `ON CONFLICT` dedup path
+    for `cache_plan`, `apply_delta`, and `load_and_apply_delta`, plus `load_all`'s INT4 decode,
+    against a real Postgres 16 container.
+
 - `fix(memory)`: `record_skill_usage` (`crates/zeph-memory/src/store/skills.rs`) failed against
   `PostgreSQL` with `column reference "invocation_count" is ambiguous`. Its
   `INSERT ... ON CONFLICT DO UPDATE SET invocation_count = invocation_count + 1` referenced the
