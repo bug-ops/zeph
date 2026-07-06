@@ -31,11 +31,15 @@ impl<C: Channel> Agent<C> {
         // Capture pre-call state to detect what the service did.
         let turns_before = self.context_manager.turns_since_last_hard_compaction();
         let msg_count_before = self.msg.messages.len();
+        let tokens_before = self.runtime.providers.cached_prompt_tokens;
 
         let mut summ = self.summarization_view();
         svc.maybe_compact(&mut summ, &status)
             .await
             .map_err(|e| crate::agent::error::AgentError::ContextError(format!("{e:#}")))?;
+
+        // Update the persistent compaction badge whenever this tier actually freed tokens.
+        self.emit_compaction_status_signal(tokens_before).await;
 
         // Forward collected statuses to the channel AND the TUI status sender.
         let collected = status.take();
@@ -111,12 +115,16 @@ impl<C: Channel> Agent<C> {
         &mut self,
     ) -> Result<(), crate::agent::error::AgentError> {
         let guidelines = self.load_compression_guidelines_for_compact().await;
+        let tokens_before = self.runtime.providers.cached_prompt_tokens;
         let svc = zeph_agent_context::ContextService::new();
         let status = TxStatusSink(self.services.session.status_tx.clone());
         let mut summ = self
             .summarization_view()
             .with_compression_guidelines(guidelines);
         svc.maybe_proactive_compress(&mut summ, &status).await;
+
+        // Update the persistent compaction badge whenever proactive compression freed tokens.
+        self.emit_compaction_status_signal(tokens_before).await;
         Ok(())
     }
 

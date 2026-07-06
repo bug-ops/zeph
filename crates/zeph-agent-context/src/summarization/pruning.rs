@@ -23,19 +23,31 @@ use crate::state::ContextSummarizationView;
 /// Dispatches to scored pruning when `pruning_strategy` is not `Reactive`. Falls back to
 /// oldest-first when the strategy is `Reactive` or no task goal is available.
 ///
+/// Writes the freed amount back to `summ.cached_prompt_tokens` — pruning never routes through
+/// `finalize_compacted_messages`, so without this the running token count would drift from
+/// reality on every prune-only Soft tier pass and every Hard tier pass satisfied by pruning
+/// alone (see issue #5773: this caused `emit_compaction_status_signal` to see no token drop
+/// and skip the TUI compaction badge for the most common compaction path).
+///
 /// Returns the number of tokens freed.
 pub(crate) fn prune_tool_outputs(
     summ: &mut ContextSummarizationView<'_>,
     min_to_free: usize,
 ) -> usize {
     use zeph_config::PruningStrategy;
-    match &summ.context_manager.compression.pruning_strategy {
+    let freed = match &summ.context_manager.compression.pruning_strategy {
         PruningStrategy::TaskAware => prune_tool_outputs_scored(summ, min_to_free),
         PruningStrategy::Mig => prune_tool_outputs_mig(summ, min_to_free),
         PruningStrategy::Subgoal => prune_tool_outputs_subgoal(summ, min_to_free),
         PruningStrategy::SubgoalMig => prune_tool_outputs_subgoal_mig(summ, min_to_free),
         _ => prune_tool_outputs_oldest_first(summ, min_to_free),
+    };
+    if freed > 0 {
+        *summ.cached_prompt_tokens = summ
+            .cached_prompt_tokens
+            .saturating_sub(u64::try_from(freed).unwrap_or(u64::MAX));
     }
+    freed
 }
 
 /// Oldest-first (Reactive) tool output pruning.

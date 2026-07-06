@@ -1295,6 +1295,13 @@ impl ContextService {
         crate::summarization::deferred::apply_deferred_summaries(summ);
 
         // Step 2: attempt pruning-only.
+        //
+        // Captured here (post-deferred-summaries, pre-pruning) so the Step 4 `freed_tokens`
+        // calculation below measures the combined prune + LLM reduction, matching the
+        // semantics this guard had before pruning started writing back to
+        // `cached_prompt_tokens` (issue #5773 round 3): pruning's own savings must not be
+        // silently excluded from the "did we free anything" check that guards `Exhausted`.
+        let tokens_before = *summ.cached_prompt_tokens;
         let freed = crate::summarization::pruning::prune_tool_outputs(summ, min_to_free);
         if freed >= min_to_free {
             tracing::info!(freed, "hard compaction: pruning sufficient");
@@ -1328,7 +1335,6 @@ impl ContextService {
             min_to_free,
             "hard compaction: falling back to LLM summarization"
         );
-        let tokens_before = *summ.cached_prompt_tokens;
         let outcome = crate::summarization::compaction::compact_context(summ, None).await?;
 
         let freed_tokens = tokens_before.saturating_sub(*summ.cached_prompt_tokens);
@@ -2830,6 +2836,430 @@ mod tests {
                 recorder.lock().unwrap().len(),
                 1,
                 "second turn for an already-known domain must NOT trigger another LLM generation call"
+            );
+        }
+    }
+
+    /// Regression coverage for #5773: pruning never routes through
+    /// `finalize_compacted_messages`, so `prune_tool_outputs` must write the freed amount
+    /// back to `cached_prompt_tokens` itself. Exercises both the low-level dispatcher
+    /// (`pruning::prune_tool_outputs`) and the `do_soft_compaction`/`do_hard_compaction`
+    /// tiers via the public `maybe_compact` entry point, for prune-only passes where no
+    /// deferred summaries are queued and (for Hard) pruning alone satisfies `min_to_free`
+    /// so the LLM path is never reached.
+    mod prune_token_bookkeeping_tests {
+        use std::time::Duration;
+
+        use tokio_util::sync::CancellationToken;
+        use zeph_common::task_supervisor::{BlockingHandle, TaskSupervisor};
+        use zeph_context::budget::ContextBudget;
+        use zeph_context::manager::{CompactionTier, ContextManager};
+        use zeph_context::summarization::{MessageTokenCounter, SummarizationDeps};
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::MessageMetadata;
+
+        use super::*;
+        use crate::compaction::{SubgoalExtractionResult, SubgoalRegistry};
+        use crate::memory_backend::TokenCounterAdapter;
+
+        /// Owns every field `ContextSummarizationView` borrows, so tests build a real view
+        /// without threading two dozen positional arguments through each call site.
+        struct Fixture {
+            messages: Vec<Message>,
+            deferred_db_hide_ids: Vec<i64>,
+            deferred_db_summaries: Vec<String>,
+            cached_prompt_tokens: u64,
+            context_manager: ContextManager,
+            subgoal_registry: SubgoalRegistry,
+            pending_task_goal: Option<BlockingHandle<Option<String>>>,
+            pending_subgoal: Option<BlockingHandle<Option<SubgoalExtractionResult>>>,
+            current_task_goal: Option<String>,
+            task_goal_user_msg_hash: Option<u64>,
+            subgoal_user_msg_hash: Option<u64>,
+            token_counter: Arc<TokenCounter>,
+            task_supervisor: Arc<TaskSupervisor>,
+            /// Canned LLM responses for the Hard-tier summarization call. Empty by default
+            /// (matches `MockProvider::default()`) — tests that only exercise Soft tier or
+            /// the Hard-tier pruning-only early return never reach the LLM, so they never
+            /// need this populated.
+            provider_responses: Vec<String>,
+        }
+
+        impl Fixture {
+            fn new(messages: Vec<Message>, cached_prompt_tokens: u64, cm: ContextManager) -> Self {
+                Self {
+                    messages,
+                    deferred_db_hide_ids: Vec::new(),
+                    deferred_db_summaries: Vec::new(),
+                    cached_prompt_tokens,
+                    context_manager: cm,
+                    subgoal_registry: SubgoalRegistry::default(),
+                    pending_task_goal: None,
+                    pending_subgoal: None,
+                    current_task_goal: None,
+                    task_goal_user_msg_hash: None,
+                    subgoal_user_msg_hash: None,
+                    token_counter: make_counter(),
+                    task_supervisor: Arc::new(TaskSupervisor::new(CancellationToken::new())),
+                    provider_responses: Vec::new(),
+                }
+            }
+
+            fn view(&mut self) -> ContextSummarizationView<'_> {
+                let token_counter_adapter: Arc<dyn MessageTokenCounter> =
+                    Arc::new(TokenCounterAdapter::new(Arc::clone(&self.token_counter)));
+                ContextSummarizationView {
+                    messages: &mut self.messages,
+                    deferred_db_hide_ids: &mut self.deferred_db_hide_ids,
+                    deferred_db_summaries: &mut self.deferred_db_summaries,
+                    cached_prompt_tokens: &mut self.cached_prompt_tokens,
+                    context_manager: &mut self.context_manager,
+                    server_compaction_active: false,
+                    token_counter: Arc::clone(&self.token_counter),
+                    summarization_deps: SummarizationDeps {
+                        provider: AnyProvider::Mock(MockProvider::with_responses(
+                            self.provider_responses.clone(),
+                        )),
+                        llm_timeout: Duration::from_secs(30),
+                        token_counter: token_counter_adapter,
+                        structured_summaries: false,
+                        on_anchored_summary: None,
+                    },
+                    task_supervisor: Arc::clone(&self.task_supervisor),
+                    memory: None,
+                    conversation_id: None,
+                    tool_call_cutoff: 100,
+                    subgoal_registry: &mut self.subgoal_registry,
+                    pending_task_goal: &mut self.pending_task_goal,
+                    pending_subgoal: &mut self.pending_subgoal,
+                    current_task_goal: &mut self.current_task_goal,
+                    task_goal_user_msg_hash: &mut self.task_goal_user_msg_hash,
+                    subgoal_user_msg_hash: &mut self.subgoal_user_msg_hash,
+                    status_tx: None,
+                    scrub: |s| std::borrow::Cow::Borrowed(s),
+                    compression_guidelines: None,
+                    probe: None,
+                    archive: None,
+                    persistence: None,
+                    metrics: None,
+                    typed_pages: None,
+                    fidelity_config: None,
+                    fidelity_semantic_provider: None,
+                    fidelity_compress_provider: None,
+                    current_query: String::new(),
+                }
+            }
+        }
+
+        struct NoopStatus;
+        impl StatusSink for NoopStatus {
+            fn send_status(&self, _msg: &str) -> impl std::future::Future<Output = ()> + Send + '_ {
+                std::future::ready(())
+            }
+        }
+
+        fn plain_msg(role: Role, content: &str) -> Message {
+            Message {
+                role,
+                content: content.to_owned(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            }
+        }
+
+        fn tool_use_msg() -> Message {
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "t1".into(),
+                    name: "shell".into(),
+                    input: serde_json::json!({}),
+                }],
+            )
+        }
+
+        fn tool_output_msg(body: &str) -> Message {
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolOutput {
+                    tool_name: "shell".into(),
+                    body: body.to_owned(),
+                    compacted_at: None,
+                }],
+            )
+        }
+
+        /// A message list with one prunable `ToolOutput` block, framed by a system prompt
+        /// and a plain tail message so it is never mistaken for the whole conversation.
+        fn messages_with_one_tool_output(body: &str) -> Vec<Message> {
+            vec![
+                plain_msg(Role::System, "system"),
+                tool_use_msg(),
+                tool_output_msg(body),
+                plain_msg(Role::User, "hello"),
+            ]
+        }
+
+        #[test]
+        fn prune_tool_outputs_decrements_cached_tokens_by_exact_freed_amount() {
+            let body = "large tool output ".repeat(200);
+            let expected_freed = TokenCounter::default().count_tokens(&body);
+            let mut ctx_mgr = ContextManager::new();
+            ctx_mgr.prune_protect_tokens = 0;
+
+            let initial_tokens = 10_000u64;
+            let mut fixture = Fixture::new(
+                messages_with_one_tool_output(&body),
+                initial_tokens,
+                ctx_mgr,
+            );
+            let mut view = fixture.view();
+
+            let freed =
+                crate::summarization::pruning::prune_tool_outputs(&mut view, expected_freed);
+
+            assert_eq!(
+                freed, expected_freed,
+                "returned freed amount must match the tool output's token count"
+            );
+            assert_eq!(
+                *view.cached_prompt_tokens,
+                initial_tokens - u64::try_from(freed).unwrap(),
+                "cached_prompt_tokens must decrease by exactly the freed amount"
+            );
+        }
+
+        #[test]
+        fn prune_tool_outputs_noop_leaves_cached_tokens_unchanged() {
+            let mut ctx_mgr = ContextManager::new();
+            ctx_mgr.prune_protect_tokens = 0;
+
+            let messages = vec![
+                plain_msg(Role::System, "system"),
+                plain_msg(Role::User, "hello"),
+            ];
+            let initial_tokens = 500u64;
+            let mut fixture = Fixture::new(messages, initial_tokens, ctx_mgr);
+            let mut view = fixture.view();
+
+            let freed = crate::summarization::pruning::prune_tool_outputs(&mut view, 100);
+
+            assert_eq!(freed, 0, "no ToolOutput parts exist to prune");
+            assert_eq!(
+                *view.cached_prompt_tokens, initial_tokens,
+                "cached_prompt_tokens must be untouched when nothing is freed"
+            );
+        }
+
+        #[tokio::test]
+        async fn do_soft_compaction_via_maybe_compact_reflects_real_freed_tokens() {
+            let body = "large tool output ".repeat(200);
+            let expected_freed = TokenCounter::default().count_tokens(&body);
+
+            let mut ctx_mgr = ContextManager::new();
+            ctx_mgr.budget = Some(ContextBudget::new(1000, 0.2));
+            ctx_mgr.soft_compaction_threshold = 0.5; // 500
+            ctx_mgr.hard_compaction_threshold = 0.9; // 900
+            ctx_mgr.prune_protect_tokens = 0;
+
+            let initial_tokens = 700u64; // strictly between soft(500) and hard(900) -> Soft tier
+            assert_eq!(
+                ctx_mgr.compaction_tier(initial_tokens),
+                CompactionTier::Soft
+            );
+
+            let mut fixture = Fixture::new(
+                messages_with_one_tool_output(&body),
+                initial_tokens,
+                ctx_mgr,
+            );
+            let mut view = fixture.view();
+            let status = NoopStatus;
+
+            ContextService::new()
+                .maybe_compact(&mut view, &status)
+                .await
+                .unwrap();
+
+            assert!(
+                view.deferred_db_summaries.is_empty(),
+                "no deferred summaries were queued in this scenario"
+            );
+            assert_eq!(
+                *view.cached_prompt_tokens,
+                initial_tokens - u64::try_from(expected_freed).unwrap(),
+                "Soft-tier prune-only pass must decrement cached_prompt_tokens by exactly \
+                 the freed amount"
+            );
+        }
+
+        #[tokio::test]
+        async fn do_hard_compaction_satisfied_by_pruning_alone_reflects_real_freed_tokens() {
+            // Thresholds are chosen so pruning alone frees enough tokens to satisfy
+            // min_to_free, taking the early-return branch in do_hard_compaction — the LLM
+            // summarization path (compact_context) is never invoked.
+            let body = "large tool output ".repeat(400);
+            let expected_freed = TokenCounter::default().count_tokens(&body);
+
+            let mut ctx_mgr = ContextManager::new();
+            ctx_mgr.budget = Some(ContextBudget::new(1_000_000, 0.2));
+            ctx_mgr.soft_compaction_threshold = 0.5;
+            ctx_mgr.hard_compaction_threshold = 0.6; // hard threshold = 600_000
+            ctx_mgr.prune_protect_tokens = 0;
+
+            // min_to_free = initial - hard_threshold; keep it below expected_freed so a
+            // single pruned block satisfies it in one pass.
+            let initial_tokens = 600_000u64 + (expected_freed as u64 / 2);
+            assert_eq!(
+                ctx_mgr.compaction_tier(initial_tokens),
+                CompactionTier::Hard
+            );
+
+            let mut fixture = Fixture::new(
+                messages_with_one_tool_output(&body),
+                initial_tokens,
+                ctx_mgr,
+            );
+            let mut view = fixture.view();
+            let status = NoopStatus;
+
+            ContextService::new()
+                .maybe_compact(&mut view, &status)
+                .await
+                .unwrap();
+
+            assert!(
+                view.deferred_db_summaries.is_empty(),
+                "no deferred summaries were queued in this scenario"
+            );
+            assert_eq!(
+                *view.cached_prompt_tokens,
+                initial_tokens - u64::try_from(expected_freed).unwrap(),
+                "Hard-tier pass satisfied by pruning alone must decrement cached_prompt_tokens \
+                 by exactly the freed amount"
+            );
+            assert!(
+                view.context_manager
+                    .compaction_state()
+                    .is_compacted_this_turn(),
+                "pruning-satisfied Hard tier must still mark the turn as compacted"
+            );
+        }
+
+        /// Regression test for #5773 round 3: a Hard-tier pass where Step 2 pruning frees
+        /// real tokens but not enough to satisfy `min_to_free` (falls through to Step 4,
+        /// rather than taking the pruning-satisfied early return) must not be falsely marked
+        /// `Exhausted` once the LLM step's own reduction, combined with pruning's own savings,
+        /// brings the total below the hard threshold.
+        ///
+        /// Uses a two-phase construction: phase 1 runs the real pipeline once just to measure
+        /// the actual post-LLM token total (which depends on the token counter's exact
+        /// encoding of the wrapped summary text — not worth hand-predicting), then phase 2
+        /// picks a hard threshold strictly between that measured total and the non-body
+        /// overhead and re-runs for the real assertion.
+        ///
+        /// Note: this does not (and, given `do_hard_compaction`'s current structure, cannot)
+        /// isolate the exact round-2-vs-round-3 boundary. Escaping the *separate*
+        /// "still above hard threshold after compaction" recheck a few lines below (line
+        /// ~1350) always forces the LLM step to reduce tokens down to at or below the same
+        /// hard threshold used for `min_to_free` — which algebraically guarantees
+        /// `freed_tokens` is positive under *either* the pre-round-3 (post-prune) or
+        /// round-3 (pre-prune) baseline whenever this test's final assertion can hold at all.
+        /// The round-3 hoist is correct and matters for `freed_tokens`' accuracy (used in the
+        /// "compaction complete" log), but this specific guard's pass/fail boolean cannot
+        /// distinguish the two baselines while that redundant recheck exists. Flagged to the
+        /// team in the round-3 handoff — this test instead guards the general "prune + LLM
+        /// combined must not falsely exhaust when pruning alone was insufficient" behavior.
+        #[tokio::test]
+        async fn do_hard_compaction_combined_prune_and_llm_savings_avoid_false_exhaustion() {
+            let counter = TokenCounter::default();
+
+            // Large enough that pruning alone frees far more than the small non-body
+            // overhead (system + tool-use + tail messages combined), guaranteeing a real,
+            // sizable contribution from Step 2 regardless of the LLM step's own effect.
+            let large_body = "large tool output content ".repeat(400);
+            let summary_response = "ok".to_string();
+
+            let build_messages = || {
+                vec![
+                    plain_msg(Role::System, "system"),
+                    tool_use_msg(),
+                    tool_output_msg(&large_body),
+                    plain_msg(Role::User, "t0"),
+                    plain_msg(Role::User, "t1"),
+                    plain_msg(Role::User, "t2"),
+                ]
+            };
+
+            let initial_tokens: u64 = build_messages()
+                .iter()
+                .map(|m| counter.count_message_tokens(m) as u64)
+                .sum();
+            let non_body_overhead =
+                initial_tokens - u64::try_from(counter.count_tokens(&large_body)).unwrap();
+            let budget_tokens = usize::try_from(initial_tokens).unwrap();
+
+            let make_ctx_mgr = |hard_ratio: f32| {
+                let mut cm = ContextManager::new();
+                cm.prune_protect_tokens = 0;
+                cm.compaction_preserve_tail = 2;
+                cm.budget = Some(ContextBudget::new(budget_tokens, 0.0));
+                cm.hard_compaction_threshold = hard_ratio;
+                cm
+            };
+
+            // Phase 1 (measurement only): a near-zero threshold guarantees both the
+            // pruning-satisfied early return is skipped (min_to_free stays huge) and the
+            // post-compaction "still Hard" recheck fires (irrelevant here — we only read
+            // the resulting token count, not the compaction state).
+            let measured_final_tokens = {
+                let mut fixture =
+                    Fixture::new(build_messages(), initial_tokens, make_ctx_mgr(0.0001));
+                fixture.provider_responses = vec![summary_response.clone()];
+                let mut view = fixture.view();
+                ContextService::new()
+                    .do_hard_compaction(&mut view, &NoopStatus, false)
+                    .await
+                    .unwrap();
+                *view.cached_prompt_tokens
+            };
+            assert!(
+                measured_final_tokens < non_body_overhead,
+                "test setup invariant: the LLM step must reduce tokens below the non-body \
+                 overhead ({non_body_overhead}) so a valid hard-threshold window exists; \
+                 measured {measured_final_tokens}"
+            );
+
+            // Phase 2 (real assertion): hard threshold strictly between the measured
+            // post-LLM total and the non-body overhead, so pruning alone still can't satisfy
+            // min_to_free (falls through to Step 4) but the LLM step's real reduction lands
+            // at/under the threshold (escapes the "still Hard" recheck).
+            let hard_threshold_tokens = u64::midpoint(measured_final_tokens, non_body_overhead);
+            #[allow(clippy::cast_precision_loss)]
+            let hard_ratio = hard_threshold_tokens as f32 / budget_tokens as f32;
+
+            let mut fixture =
+                Fixture::new(build_messages(), initial_tokens, make_ctx_mgr(hard_ratio));
+            fixture.provider_responses = vec![summary_response];
+            let mut view = fixture.view();
+
+            ContextService::new()
+                .do_hard_compaction(&mut view, &NoopStatus, false)
+                .await
+                .unwrap();
+
+            assert!(
+                !view.context_manager.compaction_state().is_exhausted(),
+                "pruning's own savings must count toward the combined freed-tokens check, so \
+                 a Hard-tier pass where pruning alone was insufficient but prune+LLM combined \
+                 cross the hard threshold must not be marked Exhausted"
+            );
+            assert!(
+                view.context_manager
+                    .compaction_state()
+                    .is_compacted_this_turn(),
+                "the turn must be marked compacted given the combined prune + LLM reduction"
             );
         }
     }

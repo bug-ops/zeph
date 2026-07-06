@@ -386,6 +386,166 @@ async fn compaction_hard_count_increments_on_hard_tier() {
     assert_eq!(rx.borrow().compaction_hard_count, 1);
 }
 
+/// Regression test for #5773: the tiered `maybe_compact` path must set the persistent
+/// compaction badge (`compaction_last_before`/`compaction_last_after`/`compaction_last_at_ms`)
+/// whenever tokens are actually freed, not only the reactive context-length-error fallback.
+#[tokio::test]
+async fn maybe_compact_hard_tier_sets_compaction_badge_metrics() {
+    let provider = mock_provider(vec!["summary".to_string()]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+        .with_context_budget(1000, 0.20, 0.75, 4, 0)
+        .with_metrics(tx);
+
+    // Enough messages that a real compactable segment exists past preserve_tail (4).
+    for i in 0..10 {
+        agent.msg.messages.push(Message {
+            role: Role::User,
+            content: format!("message {i} padding to exceed budget threshold"),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+    }
+    // Drive cached_prompt_tokens above the hard threshold (75% of 1000 = 750).
+    // Use a large value so freed_tokens > 0 once compact_context() recomputes it from
+    // the (much smaller) real message content — mirrors
+    // `cooldown_guard_fires_after_expiry_and_resets_counter`.
+    agent.runtime.providers.cached_prompt_tokens = 10_000;
+
+    assert_eq!(
+        rx.borrow().compaction_last_at_ms,
+        0,
+        "badge must be unset before any compaction has occurred"
+    );
+
+    agent.maybe_compact().await.unwrap();
+
+    let snap = rx.borrow().clone();
+    assert_eq!(
+        snap.compaction_last_before, 10_000,
+        "compaction_last_before must record the pre-compaction token count"
+    );
+    assert!(
+        snap.compaction_last_after < 10_000,
+        "compaction_last_after must reflect a lower, post-compaction token count; got {}",
+        snap.compaction_last_after
+    );
+    assert!(
+        snap.compaction_last_at_ms > 0,
+        "compaction_last_at_ms must be set once the badge signal fires"
+    );
+}
+
+/// Regression test for #5773 round 2: a Soft-tier pass that only prunes tool outputs (no
+/// LLM call, no deferred summaries) must still set the compaction badge. Before the round-2
+/// fix to `prune_tool_outputs`, pruning froze tokens without updating `cached_prompt_tokens`,
+/// so `emit_compaction_status_signal` never saw a drop on this — the most common — path.
+#[tokio::test]
+async fn maybe_compact_soft_tier_prune_only_sets_compaction_badge_metrics() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+    // hard threshold = 75% of 1000 = 750; soft threshold defaults to 60% = 600.
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+        .with_context_budget(1000, 0.20, 0.75, 4, 0)
+        .with_metrics(tx);
+
+    make_tool_pair_with_output(&mut agent, "shell");
+    for i in 0..10 {
+        agent.msg.messages.push(Message {
+            role: Role::User,
+            content: format!("message {i} padding"),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+    }
+
+    // Strictly between soft (600) and hard (750) -> Soft tier, prune-only, no LLM call.
+    let initial_tokens = 650u64;
+    assert_matches!(
+        agent.context_manager.compaction_tier(initial_tokens),
+        zeph_context::manager::CompactionTier::Soft
+    );
+    agent.runtime.providers.cached_prompt_tokens = initial_tokens;
+
+    assert_eq!(
+        rx.borrow().compaction_last_at_ms,
+        0,
+        "badge must be unset before any compaction has occurred"
+    );
+
+    agent.maybe_compact().await.unwrap();
+
+    let snap = rx.borrow().clone();
+    assert_eq!(
+        snap.compaction_last_before, initial_tokens,
+        "compaction_last_before must record the pre-compaction token count"
+    );
+    assert!(
+        snap.compaction_last_after < initial_tokens,
+        "compaction_last_after must reflect the tokens freed by pruning alone; got {}",
+        snap.compaction_last_after
+    );
+    assert!(
+        snap.compaction_last_at_ms > 0,
+        "Soft-tier prune-only pass must set the badge now that pruning updates \
+         cached_prompt_tokens"
+    );
+    assert_eq!(
+        snap.context_compactions, 0,
+        "Soft tier never calls compact_context, so this LLM-summarization counter must stay 0"
+    );
+}
+
+/// Regression guard for #5773: when a compaction attempt does not free any tokens (guard
+/// short-circuits before the service runs), the badge fields must remain untouched.
+#[tokio::test]
+async fn maybe_compact_does_not_set_badge_when_exhaustion_guard_skips() {
+    let provider = mock_provider(vec!["summary".to_string()]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+        .with_context_budget(100, 0.20, 0.75, 2, 0)
+        .with_metrics(tx);
+
+    agent
+        .context_manager
+        .set_compaction_state(CompactionState::Exhausted { warned: false });
+
+    for i in 0..10 {
+        agent.msg.messages.push(Message {
+            role: Role::User,
+            content: format!("message {i} padding to exceed budget threshold"),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+    }
+    agent.runtime.providers.cached_prompt_tokens = 900;
+
+    agent.maybe_compact().await.unwrap();
+
+    assert_eq!(
+        rx.borrow().context_compactions,
+        0,
+        "compaction must not fire"
+    );
+    assert_eq!(
+        rx.borrow().compaction_last_at_ms,
+        0,
+        "badge must stay unset when no tokens were freed"
+    );
+}
+
 #[tokio::test]
 async fn compaction_turns_after_hard_tracks_segments() {
     let provider = mock_provider(vec!["summary".to_string()]);
@@ -905,5 +1065,92 @@ async fn maybe_proactive_compress_focus_strategy_routes_to_focus_pass() {
             .compaction_state()
             .is_compacted_this_turn(),
         "Focus must not set compacted_this_turn"
+    );
+}
+
+/// Regression test for #5773: `maybe_proactive_compress` must set the persistent compaction
+/// badge whenever it actually frees tokens, mirroring the tiered `maybe_compact` path.
+#[tokio::test]
+async fn maybe_proactive_compress_sets_compaction_badge_metrics() {
+    use zeph_config::CompressionStrategy;
+
+    let provider = mock_provider(vec!["summary text".to_string()]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+
+    // Configure Proactive strategy with a threshold below our seeded token count.
+    agent.context_manager.compression.strategy = CompressionStrategy::Proactive {
+        threshold_tokens: 500,
+        max_summary_tokens: 200,
+    };
+    agent.runtime.providers.cached_prompt_tokens = 600;
+
+    // preserve_tail defaults to 6, so len > 8 is needed for a compactable segment.
+    for i in 0..10 {
+        let role = if i % 2 == 0 {
+            Role::User
+        } else {
+            Role::Assistant
+        };
+        agent.msg.messages.push(Message {
+            role,
+            content: format!("message {i}"),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+    }
+
+    assert_eq!(
+        rx.borrow().compaction_last_at_ms,
+        0,
+        "badge must be unset before any compaction has occurred"
+    );
+
+    agent.maybe_proactive_compress().await.unwrap();
+
+    let snap = rx.borrow().clone();
+    assert_eq!(
+        snap.compaction_last_before, 600,
+        "compaction_last_before must record the pre-compaction token count"
+    );
+    assert!(
+        snap.compaction_last_after < 600,
+        "compaction_last_after must reflect a lower, post-compaction token count; got {}",
+        snap.compaction_last_after
+    );
+    assert!(
+        snap.compaction_last_at_ms > 0,
+        "compaction_last_at_ms must be set once proactive compression frees tokens"
+    );
+}
+
+/// Regression guard for #5773: when proactive compression takes the Focus early-return
+/// route (no tokens freed), the badge fields must remain untouched.
+#[tokio::test]
+async fn maybe_proactive_compress_does_not_set_badge_when_nothing_freed() {
+    use zeph_config::CompressionStrategy;
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+
+    agent.context_manager.compression.strategy = CompressionStrategy::Focus;
+    agent.context_manager.budget = Some(ContextBudget::new(100_000, 0.10));
+    agent.runtime.providers.cached_prompt_tokens = 70_000;
+
+    agent.maybe_proactive_compress().await.unwrap();
+
+    assert_eq!(
+        rx.borrow().compaction_last_at_ms,
+        0,
+        "badge must stay unset when the Focus pass frees no tokens"
     );
 }

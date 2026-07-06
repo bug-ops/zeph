@@ -299,6 +299,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `debug_request_json`, `chat_with_tools`) updated consistently. Verified against the live
   OpenAI API (`gpt-5-mini`): the flat shape returns 200 with `reasoning_tokens`, while the old
   nested shape reproduces the original 400 error.
+- `fix(core,agent-context)`: the TUI's persistent compaction badge never rendered in normal
+  operation because `compaction_last_at_ms` was only set by the reactive
+  context-length-error fallback path, never by the proactive/tiered compaction paths that
+  actually run every turn (#5773). `Agent::maybe_compact` and `maybe_proactive_compress`
+  (`crates/zeph-core/src/agent/context/summarization/scheduling.rs`) now call the existing
+  `emit_compaction_status_signal` after each service call. That alone still missed the most
+  common case — Soft-tier and Hard-tier-satisfied-by-pruning-alone compaction — because the
+  shared pruning dispatcher `prune_tool_outputs`
+  (`crates/zeph-agent-context/src/summarization/pruning.rs`) freed real tokens without
+  writing the freed amount back to `cached_prompt_tokens`; fixed with a single write-back at
+  the dispatcher, covering all pruning strategies and call sites. Also restored the
+  `Exhausted`-guard's prior combined prune+LLM `freed_tokens` semantics in
+  `do_hard_compaction` (`crates/zeph-agent-context/src/service.rs`), which had briefly
+  narrowed to LLM-only reduction as a side effect of the pruning write-back.
 - `fix(llm)`: `RouterProvider::embed`/`embed_batch` (`crates/zeph-llm/src/router/provider_impl.rs`)
   did not call `record_availability(provider_name, false, ...)` on the per-call timeout branch,
   unlike the retry-exhaustion and generic-error branches (#5699). A provider that timed out on
