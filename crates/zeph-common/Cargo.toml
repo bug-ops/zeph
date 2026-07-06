@@ -48,6 +48,11 @@ tree-sitter-typescript = { workspace = true, optional = true }
 url.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 zeroize = { workspace = true, features = ["alloc", "derive", "serde"] }
+# See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
+
+# Advisory `flock(2)` locking for the shared pid-file guard (`pidfile::PidLockGuard`); Unix only.
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs", "std"] }
 
 [dev-dependencies]
 metrics-util = { workspace = true, features = ["debugging"] }

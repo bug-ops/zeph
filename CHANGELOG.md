@@ -139,6 +139,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(common,core,scheduler)`: deduplicated the `flock(2)`-backed pid-file guard
+  implemented independently in `zeph-core::daemon::PidGuard` and
+  `zeph-scheduler::pidfile::PidFile` — both opened the pid file with the same
+  `O_CREAT|O_RDWR|O_CLOEXEC` flags, acquired a `LOCK_EX|LOCK_NB` `flock`, mapped
+  `WOULDBLOCK` to an already-running error, truncated and wrote the current PID, and
+  unlinked the file on `Drop` (#5696). The shared logic now lives in
+  `zeph_common::pidfile::PidLockGuard` (new `zeph-common` module, Unix-only); `PidGuard`
+  and `PidFile` are thin wrappers around it that keep their existing names, method
+  signatures, and error types (`DaemonError`, `SchedulerError`). `zeph-scheduler` gained a
+  `zeph-common` dependency (behind the existing `daemon` feature); `zeph-core` dropped its
+  now-unused direct `rustix` dependency. Pure refactor, no behavior change.
 - `refactor(core)`: deduplicated two independently-duplicated code paths. `trust.rs`'s
   `cross_session_rollout_ok_for_promote`/`_for_demote`
   (`crates/zeph-core/src/agent/learning/trust.rs`) — identical except for which config

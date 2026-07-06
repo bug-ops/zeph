@@ -25,6 +25,8 @@ pub mod memory;
 pub mod net;
 pub mod path_guard;
 pub mod patterns;
+#[cfg(unix)]
+pub mod pidfile;
 pub mod policy;
 pub mod quarantine;
 pub mod sanitize;

@@ -3,20 +3,17 @@
 
 //! Advisory PID file management for the scheduler daemon.
 //!
-//! Uses `rustix` for file I/O and `flock(2)` advisory locking so that exactly
-//! one `zeph serve` instance can run per config file. The lock is acquired with
-//! `LOCK_EX | LOCK_NB` so a second invocation fails immediately rather than
-//! blocking.
+//! Wraps [`zeph_common::pidfile::PidLockGuard`], the shared `flock(2)`-backed advisory
+//! lock, so that exactly one `zeph serve` instance can run per config file.
 //!
 //! **Invariant**: the pid file MUST reside on a local filesystem. NFS mounts do
 //! not guarantee reliable exclusive locking with `flock(2)`.
 
 #![cfg(unix)]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use rustix::fd::OwnedFd;
-use rustix::fs::{FlockOperation, Mode, OFlags};
+use zeph_common::pidfile::{PidLockError, PidLockGuard, read_pid_lenient};
 
 use crate::error::SchedulerError;
 
@@ -29,12 +26,9 @@ use crate::error::SchedulerError;
 /// processes spawned via `Command` do NOT inherit the lock. If you re-exec the
 /// binary (as `zeph serve --foreground` does), the new process must call
 /// `PidFile::acquire` independently.
+// Wraps the shared guard purely for its `Drop` impl (unlinks the pid file on release).
 #[derive(Debug)]
-pub struct PidFile {
-    #[allow(dead_code)] // held for its Drop (closes fd, releases flock)
-    fd: OwnedFd,
-    path: PathBuf,
-}
+pub struct PidFile(#[allow(dead_code)] PidLockGuard);
 
 impl PidFile {
     /// Open (or create) the pid file at `path` and acquire an exclusive advisory lock.
@@ -49,46 +43,11 @@ impl PidFile {
     /// - [`SchedulerError::AlreadyRunning`] if another process holds the lock.
     /// - [`SchedulerError::Io`] for filesystem errors.
     pub fn acquire(path: &Path) -> Result<Self, SchedulerError> {
-        // Create parent directory on-demand so first-run works out of the box.
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                SchedulerError::Io(format!(
-                    "failed to create pid file directory {}: {e}",
-                    parent.display()
-                ))
-            })?;
-        }
-
-        let fd = rustix::fs::open(
-            path,
-            OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC,
-            Mode::from_raw_mode(0o644),
-        )
-        .map_err(|e| {
-            SchedulerError::Io(format!("failed to open pid file {}: {e}", path.display()))
-        })?;
-
-        // Try to acquire an exclusive non-blocking lock.
-        rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive).map_err(|e| {
-            // EWOULDBLOCK means another process holds the lock.
-            let pid = Self::read_pid_from_path(path).unwrap_or(0);
-            if e == rustix::io::Errno::WOULDBLOCK {
-                SchedulerError::AlreadyRunning { pid }
-            } else {
-                SchedulerError::Io(format!("flock on pid file failed: {e}"))
+        PidLockGuard::acquire(path).map(Self).map_err(|e| match e {
+            PidLockError::AlreadyRunning { pid } => SchedulerError::AlreadyRunning { pid },
+            PidLockError::Io(err) => {
+                SchedulerError::Io(format!("pid file error for {}: {err}", path.display()))
             }
-        })?;
-
-        // We hold the lock — truncate and write our PID.
-        rustix::fs::ftruncate(&fd, 0)
-            .map_err(|e| SchedulerError::Io(format!("truncate pid file failed: {e}")))?;
-        let pid_str = format!("{}", std::process::id());
-        rustix::io::write(&fd, pid_str.as_bytes())
-            .map_err(|e| SchedulerError::Io(format!("write pid file failed: {e}")))?;
-
-        Ok(Self {
-            fd,
-            path: path.to_owned(),
         })
     }
 
@@ -110,25 +69,12 @@ impl PidFile {
     /// ```
     #[must_use]
     pub fn read_alive(path: &Path) -> Option<u32> {
-        let pid = Self::read_pid_from_path(path)?;
+        let pid = read_pid_lenient(path)?;
         if is_process_alive(pid) {
             Some(pid)
         } else {
             None
         }
-    }
-
-    fn read_pid_from_path(path: &Path) -> Option<u32> {
-        let content = std::fs::read_to_string(path).ok()?;
-        content.trim().parse::<u32>().ok()
-    }
-}
-
-impl Drop for PidFile {
-    fn drop(&mut self) {
-        // Unlink first so a subsequent `zeph serve` sees no stale file while we
-        // still hold the lock. Then `fd` drops, closing the fd and releasing the flock.
-        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -163,6 +109,7 @@ pub fn is_process_alive(pid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use tempfile::TempDir;
