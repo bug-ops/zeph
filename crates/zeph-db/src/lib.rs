@@ -53,7 +53,7 @@ pub use sqlx;
 // --- Active driver type alias ---
 
 /// The active database driver, selected at compile time.
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 pub type ActiveDriver = driver::SqliteDriver;
 #[cfg(feature = "postgres")]
 pub type ActiveDriver = driver::PostgresDriver;
@@ -105,7 +105,7 @@ pub type ActiveDialect = <ActiveDriver as DatabaseDriver>::Dialect;
 ///     .fetch_all(&pool)
 ///     .await?;
 /// ```
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 #[macro_export]
 macro_rules! sql {
     ($query:expr) => {
@@ -190,7 +190,7 @@ pub fn rewrite_placeholders(query: &str) -> String {
 ///
 /// `SQLite`: `?N`, `PostgreSQL`: `$N`
 #[must_use]
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 pub fn numbered_placeholder(n: usize) -> String {
     format!("?{n}")
 }
@@ -267,7 +267,7 @@ mod tests {
     fn numbered_placeholder_one_based() {
         let p1 = numbered_placeholder(1);
         let p3 = numbered_placeholder(3);
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
         {
             assert_eq!(p1, "?1");
             assert_eq!(p3, "?3");
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn placeholder_list_range() {
         let list = placeholder_list(2, 3);
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
         assert_eq!(list, "?2, ?3, ?4");
         #[cfg(feature = "postgres")]
         assert_eq!(list, "$2, $3, $4");

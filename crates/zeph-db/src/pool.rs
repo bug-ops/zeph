@@ -35,7 +35,7 @@ impl DbConfig {
     /// Returns [`DbError`] if connection or migration fails.
     #[tracing::instrument(name = "db.pool.connect", skip_all, err)]
     pub async fn connect(&self) -> Result<DbPool, DbError> {
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
         {
             Self::connect_sqlite(&self.url, self.max_connections, self.pool_size).await
         }
@@ -45,7 +45,7 @@ impl DbConfig {
         }
     }
 
-    #[cfg(feature = "sqlite")]
+    #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
     async fn connect_sqlite(
         path: &str,
         max_connections: u32,
@@ -210,7 +210,7 @@ mod tests {
         assert!(redact_url(url).is_none());
     }
 
-    #[cfg(all(unix, feature = "sqlite"))]
+    #[cfg(all(unix, feature = "sqlite", not(feature = "postgres")))]
     #[tokio::test]
     async fn sqlite_precreated_with_0600() {
         use std::os::unix::fs::PermissionsExt as _;

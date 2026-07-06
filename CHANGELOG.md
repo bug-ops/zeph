@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(db)`: `cargo doc --all-features` (and any `--all-features` build) failed to compile
+  `zeph-db` with 17 errors — `E0428` duplicate definitions (`begin_write`, `run_migrations`,
+  `ActiveDriver`, the `sql!` macro, `numbered_placeholder`, and 8 `fts.rs` helpers) plus
+  cascading `E0308` mismatches — even though the crate already has an intentional
+  `compile_error!` rejecting the `sqlite`+`postgres` combination (#5633, spec-031).
+  `compile_error!` does not halt further type-checking, so rustc still tried to compile both
+  backend-specific definitions of each item. `#5793`: restored the
+  `#[cfg(all(feature = "sqlite", not(feature = "postgres")))]` guards on the affected items in
+  `pool.rs`, `transaction.rs`, `migrate.rs`, `lib.rs`, and `fts.rs` (removed as a "dead code"
+  simplification in #5633) so a both-features build now fails with only the single intended
+  `compile_error!` message. Does not change the mutual-exclusivity semantics — `--all-features`
+  is still unsupported by design.
+
 - `fix(llm)`: OpenAI Chat Completions rejects the combination of `reasoning_effort` and
   tool-calling (`tools`) for some reasoning models (e.g. `gpt-5.4-mini`), responding with an
   opaque HTTP 400 body directing callers to `/v1/responses` — an endpoint Zeph does not

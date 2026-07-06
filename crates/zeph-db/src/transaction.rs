@@ -25,7 +25,7 @@ pub async fn begin(pool: &DbPool) -> Result<crate::DbTransaction<'_>, sqlx::Erro
 /// # Errors
 ///
 /// Returns a sqlx error if the transaction cannot be started.
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
 #[tracing::instrument(name = "db.tx.begin_write", skip_all, err)]
 pub async fn begin_write(pool: &DbPool) -> Result<crate::DbTransaction<'_>, sqlx::Error> {
     pool.begin_with("BEGIN IMMEDIATE").await
