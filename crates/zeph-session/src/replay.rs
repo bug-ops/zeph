@@ -778,4 +778,89 @@ mod tests {
             "streaming replay must be byte-identical to the old Vec-based fold"
         );
     }
+
+    /// Regression test for #5841 finding 1: a torn trailing line on a log spanning multiple
+    /// `REPLAY_CHUNK_SIZE` chunks must be dropped identically whether read via
+    /// `ReplayEngine::replay` (new chunked-streaming path) or the old `SessionEventLog::open` +
+    /// `read_all` + `ReplayEngine::fold` whole-file path — the torn-tail check in
+    /// `read_events_chunked` only fires once, at EOF, so it must still catch a torn line that
+    /// falls beyond the last full chunk boundary.
+    #[tokio::test]
+    async fn test_replay_torn_tail_across_chunk_boundary() {
+        const N_TURNS: u64 = 250; // produces well over one REPLAY_CHUNK_SIZE (100) of events
+
+        let dir = tempfile::tempdir().unwrap();
+        let log = seed_large_synthetic_log(dir.path(), N_TURNS).await;
+        let path = log.path().to_path_buf();
+        drop(log);
+
+        // Simulate a torn write: truncate the file mid-way through the last physical line.
+        let full = tokio::fs::read(&path).await.unwrap();
+        let cut = full.len() - 5;
+        tokio::fs::write(&path, &full[..cut]).await.unwrap();
+
+        // Old path: whole-file read (drops the torn line) + Vec-based fold.
+        let whole_file_log = SessionEventLog::open(dir.path()).await.unwrap();
+        let whole_file_events = whole_file_log.read_all().await.unwrap();
+        assert!(
+            whole_file_events.len() > 100,
+            "test must still exceed one REPLAY_CHUNK_SIZE after dropping the torn line"
+        );
+        let expected = ReplayEngine::fold(whole_file_events, None);
+        assert_eq!(
+            expected.last_seq,
+            Some(576),
+            "the torn line must be the trailing seq-577 ModelChanged event (verified against the \
+             real fixture) — a differential-only assertion below would pass vacuously if both \
+             paths regressed identically and stopped dropping the torn tail at all"
+        );
+
+        // New path: chunked-streaming replay on the same torn file.
+        let actual = ReplayEngine::replay(dir.path(), None).await.unwrap();
+
+        assert_eq!(
+            actual.last_seq, expected.last_seq,
+            "chunked replay must drop the torn tail at the same seq as the whole-file path"
+        );
+        assert_eq!(
+            serde_json::to_string(&actual.messages).unwrap(),
+            serde_json::to_string(&expected.messages).unwrap(),
+            "chunked replay must drop a torn tail beyond a chunk boundary identically to the \
+             whole-file read+fold path"
+        );
+    }
+
+    /// Regression test for #5841 finding 2: `ReplayEngine::replay`'s `up_to` bound must behave
+    /// identically to the old Vec-based `ReplayEngine::fold` at and around several
+    /// `REPLAY_CHUNK_SIZE` boundaries (99/100/101, 199/200/201) — `up_to` can land inside a
+    /// chunk still being accumulated, right at a chunk-flush point, or just past one, and the
+    /// chunked path must still stop the fold at the exact same seq the whole-file path does.
+    #[tokio::test]
+    async fn test_replay_up_to_matches_fold_at_chunk_boundaries() {
+        const N_TURNS: u64 = 250; // produces well over 200 events
+
+        let dir = tempfile::tempdir().unwrap();
+        let log = seed_large_synthetic_log(dir.path(), N_TURNS).await;
+        let all_events = log.read_all().await.unwrap();
+        assert!(
+            all_events.len() > 200,
+            "synthetic log must exceed 200 events to exercise several REPLAY_CHUNK_SIZE boundaries"
+        );
+
+        for up_to in [99u64, 100, 101, 199, 200, 201] {
+            let expected = ReplayEngine::fold(all_events.clone(), Some(up_to));
+            let actual = ReplayEngine::replay(dir.path(), Some(up_to)).await.unwrap();
+
+            assert_eq!(
+                actual.last_seq, expected.last_seq,
+                "up_to={up_to}: last_seq mismatch between streamed replay and Vec-based fold"
+            );
+            assert_eq!(
+                serde_json::to_string(&actual.messages).unwrap(),
+                serde_json::to_string(&expected.messages).unwrap(),
+                "up_to={up_to}: streamed replay must match Vec-based fold exactly at/near chunk \
+                 boundaries"
+            );
+        }
+    }
 }

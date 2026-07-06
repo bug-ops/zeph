@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `test(session)`: closed two test-coverage gaps left over from #5445's chunked-replay perf pass
+  (`crates/zeph-session/src/replay.rs`, `log.rs`). `test_replay_torn_tail_across_chunk_boundary`
+  drives a torn trailing line through `ReplayEngine::replay`'s new `SessionEventLog::read_chunked`
+  path on a log spanning several `REPLAY_CHUNK_SIZE` (100) chunks, asserting it drops the torn
+  line identically to the old whole-file `read_all` + `fold` path — previously only exercised at
+  3-4 events via the pre-#5445 `read_all` path, never through `read_chunked`/`replay` at
+  multi-chunk scale. `test_replay_up_to_matches_fold_at_chunk_boundaries` asserts
+  `ReplayEngine::replay(dir, Some(up_to))` matches the Vec-based `ReplayEngine::fold` at `up_to`
+  values landing at/near six chunk boundaries (99/100/101, 199/200/201) on a >200-event log —
+  previously the only `up_to` test exercising `replay` used a ~5-event fixture, far below
+  `REPLAY_CHUNK_SIZE`. Also documented `SessionEventLog::read_chunked`'s over-read behavior: a
+  chunk still being accumulated is fully read/parsed before `on_chunk` can evaluate an `up_to`
+  break, which stays within the ≤ 100-in-memory bound but is worth flagging for future refactors
+  (#5841).
+
 ### Docs
 
 - `docs(sanitizer)`: updated `crates/zeph-sanitizer/src/shadow_memory.rs` doc comment to reflect

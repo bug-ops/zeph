@@ -217,6 +217,12 @@ impl SessionEventLog {
     /// `up_to` bound is reached) — remaining lines, including any torn tail beyond the stop
     /// point, are then left uninspected.
     ///
+    /// Note the over-read this implies: when `up_to` falls inside a chunk still being
+    /// accumulated, that entire chunk (up to [`REPLAY_CHUNK_SIZE`] events) is read and parsed
+    /// from disk before `on_chunk` gets a chance to evaluate the break — this never exceeds the
+    /// ≤ [`REPLAY_CHUNK_SIZE`]-in-memory bound, but a future refactor must not assume the read
+    /// stops the instant the `up_to` seq is reached.
+    ///
     /// Same torn-tail detection/repair gating as [`Self::read_all`]: only physically repairs
     /// the file when this handle was opened via [`Self::open_exclusive`].
     ///
