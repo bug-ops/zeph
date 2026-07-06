@@ -774,6 +774,111 @@ mod tests {
             panic!("expected ToolOutput at messages[1]");
         }
     }
+
+    // Regression test for #5664: `evict_sorted_blocks` (the shared eviction loop used by the
+    // Subgoal/SubgoalMig strategies) used to skip the `prune_protect_tokens` check entirely,
+    // unlike the scored/MIG paths above (T-CRIT-05/06). This locks the subgoal strategy to the
+    // same protection-boundary contract.
+    #[test]
+    fn prune_tool_outputs_subgoal_respects_protect_tokens() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use crate::config::PruningStrategy;
+        use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.context_manager.compression.pruning_strategy = PruningStrategy::Subgoal;
+        // Protect the entire tail (999_999 tokens) — nothing should be evicted, even though
+        // the default (empty) subgoal registry scores this block as a top eviction candidate.
+        agent.context_manager.prune_protect_tokens = 999_999;
+
+        let body = "unrelated content database schema ".repeat(50);
+        let mut msg = Message {
+            role: Role::User,
+            content: body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: body.clone(),
+                compacted_at: None,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        msg.rebuild_content();
+        agent.msg.messages.push(msg);
+
+        let freed = agent.prune_tool_outputs_subgoal(1);
+        assert_eq!(
+            freed, 0,
+            "no tokens should be freed when everything is protected"
+        );
+
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
+            assert!(
+                compacted_at.is_none(),
+                "protected block must not be evicted"
+            );
+        } else {
+            panic!("expected ToolOutput at messages[1]");
+        }
+    }
+
+    // Regression test for #5664, SubgoalMig variant — same shared `evict_sorted_blocks` loop.
+    #[test]
+    fn prune_tool_outputs_subgoal_mig_respects_protect_tokens() {
+        use crate::agent::tests::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        use crate::config::PruningStrategy;
+        use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.context_manager.compression.pruning_strategy = PruningStrategy::SubgoalMig;
+        agent.context_manager.prune_protect_tokens = 999_999;
+
+        let body = "unrelated content database schema ".repeat(50);
+        let mut msg = Message {
+            role: Role::User,
+            content: body.clone(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "read".into(),
+                body: body.clone(),
+                compacted_at: None,
+            }],
+            metadata: MessageMetadata::default(),
+        };
+        msg.rebuild_content();
+        agent.msg.messages.push(msg);
+
+        let freed = agent.prune_tool_outputs_subgoal_mig(1);
+        assert_eq!(
+            freed, 0,
+            "no tokens should be freed when everything is protected"
+        );
+
+        if let MessagePart::ToolOutput { compacted_at, .. } = &agent.msg.messages[1].parts[0] {
+            assert!(
+                compacted_at.is_none(),
+                "protected block must not be evicted"
+            );
+        } else {
+            panic!("expected ToolOutput at messages[1]");
+        }
+    }
 }
 
 #[cfg(test)]

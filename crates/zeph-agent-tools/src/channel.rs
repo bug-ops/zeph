@@ -3,8 +3,10 @@
 
 //! [`AgentChannel`] trait — minimal async sink the tool dispatcher needs from a channel.
 //!
-//! This trait is sealed: only types declared in `zeph-core` can implement it. The single
-//! implementor is `AgentChannelView<'a, C>` in `crates/zeph-core/src/agent/channel_impl.rs`.
+//! This trait is sealed: only types declared in `zeph-core` can implement it. There is
+//! currently no implementor — the adapter that once bridged this trait to
+//! `zeph_core::channel::Channel` was removed as dead code (see #5651); a future dispatcher
+//! extraction would need to reintroduce one.
 //!
 //! # Design rationale
 //!
@@ -12,11 +14,11 @@
 //! defines its own minimal channel trait rather than reusing `zeph_core::channel::Channel`.
 //! This avoids a circular dependency while keeping the dispatcher generic over the channel type.
 //!
-//! `zeph-core` provides the impl via:
+//! A future `zeph-core` impl would look like:
 //! ```text
-//! impl<C: zeph_core::channel::Channel> AgentChannel for AgentChannelView<'_, C>
+//! impl<C: zeph_core::channel::Channel> AgentChannel for SomeLocalAdapter<'_, C>
 //! ```
-//! which is orphan-safe because `AgentChannelView` is a local type in `zeph-core`.
+//! which is orphan-safe as long as the adapter is a local type in `zeph-core`.
 
 use std::future::Future;
 
@@ -26,8 +28,7 @@ use crate::sealed::Sealed;
 
 /// Error returned by every [`AgentChannel`] method.
 ///
-/// Concrete because the trait is sealed and there is exactly one implementor
-/// (`AgentChannelView<'_, C>`).
+/// Concrete because the trait is sealed — see the module docs for implementor status.
 #[derive(Debug, thiserror::Error)]
 #[error("agent channel error: {0}")]
 pub struct ChannelSinkError(String);
@@ -42,8 +43,8 @@ impl ChannelSinkError {
 /// Borrowed payload for a tool-start event.
 ///
 /// Mirrors the relevant fields of `zeph_core::channel::ToolStartEvent` but uses borrowed
-/// strings to avoid per-call allocation in the dispatcher hot path. The `AgentChannelView`
-/// impl converts this to the canonical event before forwarding.
+/// strings to avoid per-call allocation in the dispatcher hot path. A `zeph-core` adapter
+/// impl would convert this to the canonical event before forwarding.
 #[derive(Debug, Clone, Copy)]
 pub struct ToolEventStart<'a> {
     /// Name of the tool being started.
@@ -77,10 +78,9 @@ pub struct ToolEventOutput<'a> {
 
 /// Minimal async sink the tool dispatcher needs from an agent channel implementation.
 ///
-/// **Implementor side:** `zeph-core` provides exactly one impl —
-/// `impl<C: Channel> AgentChannel for AgentChannelView<'_, C>` — which forwards through the
-/// wrapped `&mut C`. The trait is intentionally narrow so the impl is mechanical and the
-/// surface area for breakage is small.
+/// **Implementor side:** `zeph-core` currently provides no impl (see module docs). Should
+/// this be wired up again, the trait is intentionally narrow so the impl is mechanical and
+/// the surface area for breakage is small.
 ///
 /// **Caller side:** the dispatcher takes `Ch: AgentChannel` as a generic parameter (NOT
 /// `&mut dyn AgentChannel`). Generic dispatch keeps the per-token hot path free of
@@ -121,7 +121,7 @@ pub trait AgentChannel: Sealed + Send {
     /// Emit a tool-start event.
     ///
     /// The payload is [`ToolEventStart`] — a small borrowed struct local to this crate.
-    /// The `AgentChannelView` impl converts this to the canonical `zeph_core::channel::ToolStartEvent`
+    /// An implementor converts this to the canonical `zeph_core::channel::ToolStartEvent`
     /// before forwarding to `Channel::send_tool_start`.
     fn send_tool_start(
         &mut self,

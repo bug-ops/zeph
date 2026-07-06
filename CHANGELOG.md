@@ -292,6 +292,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   comments on `CocoonClient::post`/`post_multipart` (`crates/zeph-llm/src/cocoon/client.rs`),
   which still claimed exhausted retries only return `RateLimited` — inaccurate since #5695 and
   directly contradicting this verification.
+- `test(core)`: added Err-path coverage for `apply_debug_dumper`
+  (`src/agent_setup.rs`) — when `DebugDumper::new` fails, the function must fall back to the
+  original `agent`/`dir` unchanged rather than wiring a half-initialized dumper. Added
+  `Agent::has_debug_dumper()` (`crates/zeph-core/src/agent/builder.rs`), mirroring the existing
+  `has_code_retriever()` pattern, so the assertion doesn't need to reach into `pub(crate)` state
+  from the root binary crate (#5649).
+- `fix(core)`: the `#[cfg(test)]`-only `evict_sorted_blocks` shim backing
+  `prune_tool_outputs_subgoal`/`prune_tool_outputs_subgoal_mig`
+  (`crates/zeph-core/src/agent/context/summarization/pruning.rs`) never checked
+  `prune_protect_tokens`, unlike the scored/MIG pruning paths in the same file and the
+  production implementation in `zeph-agent-context`. A block in the protected tail could be
+  evicted by the Subgoal/SubgoalMig strategies even with the entire tail nominally protected.
+  Now computes and respects `prune_protection_boundary()` before evicting, matching every other
+  pruning path. Added two regression tests confirming both strategies leave the protected tail
+  untouched (#5664).
+
+### Removed
+
+- `chore(core)`: removed `AgentChannelView` (`crates/zeph-core/src/agent/channel_impl.rs`),
+  the sealed `AgentChannel`/`Sealed` adapter impl, and its test module — dead code left behind
+  after #3516 (the `zeph-agent-tools` dispatcher extraction it was scaffolded for) closed
+  without ever wiring it in. `zeph-agent-tools`'s `doom_loop_hash` remains in use; the
+  `AgentChannel`/`Sealed` trait definitions are retained as scaffolding with no current
+  implementor, and their doc comments were updated to stop pointing at the now-deleted
+  implementor (#5651).
+
+### Fixed
+
 - `fix(core)`: `ShadowSentinel::classify_tool` (`crates/zeph-core/src/agent/shadow_sentinel.rs`)
   gated probe engagement for MCP-origin tools entirely on a fixed keyword-substring list
   (`*write*`/`*edit*`/`*delete*`/`*exec*`); a tool named with a different verb (`remove`,

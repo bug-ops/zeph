@@ -3,9 +3,9 @@
 
 //! Sealed trait token for [`crate::channel::AgentChannel`].
 //!
-//! `Sealed` must be `pub` so `zeph-core` can implement it on `AgentChannelView`, but it is
-//! placed in this module and re-exported with `#[doc(hidden)]` to discourage external use.
-//! Downstream crates should not implement `AgentChannel` — the trait is intentionally sealed.
+//! `Sealed` must be `pub` so a `zeph-core` adapter can implement it, but it is placed in this
+//! module and re-exported with `#[doc(hidden)]` to discourage external use. Downstream crates
+//! should not implement `AgentChannel` — the trait is intentionally sealed.
 
 /// Sealing supertrait for [`crate::channel::AgentChannel`].
 ///

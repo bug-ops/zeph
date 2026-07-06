@@ -2773,6 +2773,32 @@ mod tests {
         );
     }
 
+    // --- apply_debug_dumper (#5649) ---
+
+    /// Regression test for #5649: when `DebugDumper::new` fails (e.g. the configured directory
+    /// path is actually a file), `apply_debug_dumper` must fall back to the agent unchanged and
+    /// return the original `dir` rather than propagating the error or wiring a half-initialized
+    /// dumper.
+    #[tokio::test]
+    async fn apply_debug_dumper_new_failure_returns_agent_and_dir_unchanged() {
+        let agent = make_agent();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        // `DebugDumper::new` joins a timestamp segment onto `dir` and calls
+        // `create_dir_all` on it; since `tmp.path()` is a file, not a directory,
+        // that create_dir_all call fails, forcing the Err branch.
+        let dir = tmp.path().to_owned();
+        let (result_agent, result_dir) =
+            apply_debug_dumper(agent, &dir, zeph_core::debug_dump::DumpFormat::Raw);
+        assert_eq!(
+            result_dir, dir,
+            "on DebugDumper::new failure, the original dir must be returned unchanged"
+        );
+        assert!(
+            !result_agent.has_debug_dumper(),
+            "on DebugDumper::new failure, no debug dumper must be wired onto the agent"
+        );
+    }
+
     // --- apply_common_tool_gating / register_mcp_tool_ids (#5611) ---
 
     /// Mock executor that only handles calls matching its own `tool_id`, mirroring

@@ -9,15 +9,14 @@
 //! # Architecture
 //!
 //! `zeph-agent-tools` does **not** depend on `zeph-core` or `zeph-channels`. It defines its
-//! own minimal [`AgentChannel`] trait (sealed) which `zeph-core` implements via a local adapter
-//! type `AgentChannelView<'a, C>`. This avoids the circular dependency that would arise from
-//! using `zeph-core::channel::Channel` directly.
+//! own minimal [`AgentChannel`] trait (sealed), letting a future adapter in `zeph-core` bridge
+//! to `zeph-core::channel::Channel` without a circular dependency.
 //!
 //! # Crate status
 //!
-//! Phase 2 scaffolding (issue #3516). The `AgentChannel` trait and borrowed event carriers
-//! are complete. Full `ToolDispatcher` extraction from `zeph-core` is tracked as a follow-up
-//! once the persistence extraction (#3515) lands and integration tests are stable.
+//! Phase 2 scaffolding (issue #3516, closed). The `AgentChannel` trait and borrowed event
+//! carriers are complete, but no `zeph-core` adapter currently implements them and no
+//! `ToolDispatcher` extraction has landed. Re-opening this work requires a new tracking issue.
 
 pub mod channel;
 pub mod doom_loop;

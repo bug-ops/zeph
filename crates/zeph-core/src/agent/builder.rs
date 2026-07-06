@@ -1511,6 +1511,16 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Returns `true` when a [`crate::debug_dump::DebugDumper`] has been wired via
+    /// [`Self::with_debug_dumper`].
+    ///
+    /// Primarily used by tests in external crates to assert wiring without accessing the
+    /// `pub(crate)` `DebugState` field directly.
+    #[must_use]
+    pub fn has_debug_dumper(&self) -> bool {
+        self.runtime.debug.debug_dumper.is_some()
+    }
+
     /// Enable `OTel` trace collection. The collector writes `trace.json` at session end.
     #[must_use]
     pub fn with_trace_collector(

@@ -491,6 +491,7 @@ impl<C: Channel> Agent<C> {
         min_to_free: usize,
         strategy: &str,
     ) -> usize {
+        let protection_boundary = self.prune_protection_boundary();
         let mut freed = 0usize;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -502,6 +503,10 @@ impl<C: Channel> Agent<C> {
         for block in sorted_scores {
             if freed >= min_to_free {
                 break;
+            }
+            // Respect prune_protect_tokens: skip messages in the protected tail.
+            if block.msg_index >= protection_boundary {
+                continue;
             }
             let msg = &mut self.msg.messages[block.msg_index];
             if msg.metadata.focus_pinned {

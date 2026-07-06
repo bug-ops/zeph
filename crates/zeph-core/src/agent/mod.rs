@@ -7,7 +7,6 @@ pub(crate) mod agent_supervisor;
 mod autodream;
 mod autonomous_turn;
 mod builder;
-pub(crate) mod channel_impl;
 #[cfg(feature = "cocoon")]
 mod cocoon_cmd;
 mod command_context_impls;
