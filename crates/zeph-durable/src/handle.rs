@@ -63,6 +63,7 @@ use crate::step::{
     DurableStep, PAYLOAD_VERSION, StepDescriptor, StepError, StepHandle, deserialize_result,
     serialize_result,
 };
+use crate::waiters::wait_on_notify_or_poll;
 use crate::writer::JournalWriterHandle;
 
 /// The `&self` durable execution context handed to a consumer's program.
@@ -289,32 +290,14 @@ impl DurableContext {
         let key = id.as_uuid();
         let cap = usize::try_from(self.max_parked_promises).unwrap_or(usize::MAX);
         let span = tracing::info_span!("durable.promise.await", promise_id = %key);
-        async move {
-            loop {
-                if let Some(value) = self.take_resolved_promise::<T>(id).await? {
-                    return Ok(value);
-                }
-                match self.backend.promise_waiters().register(key, Some(cap)) {
-                    Some(notify) => {
-                        let notified = notify.notified();
-                        tokio::pin!(notified);
-                        // Register interest, then re-check: this closes the window where a resolution
-                        // lands between the read above and the wait below.
-                        notified.as_mut().enable();
-                        if let Some(value) = self.take_resolved_promise::<T>(id).await? {
-                            self.backend.promise_waiters().cancel(key);
-                            return Ok(value);
-                        }
-                        tokio::select! {
-                            () = notified => {}
-                            () = tokio::time::sleep(self.poll_interval) => {}
-                        }
-                    }
-                    // Over the parked cap: pure poll, no registration.
-                    None => tokio::time::sleep(self.poll_interval).await,
-                }
-            }
-        }
+        wait_on_notify_or_poll(
+            self.backend.promise_waiters(),
+            key,
+            Some(cap),
+            || self.poll_interval,
+            || self.take_resolved_promise::<T>(id),
+            || self.take_resolved_promise::<T>(id),
+        )
         .instrument(span)
         .await
     }
@@ -378,33 +361,49 @@ impl DurableContext {
         }
 
         let key = timer_id.as_uuid();
-        loop {
-            let now = now_unix_millis();
-            if now >= due_ms {
-                // Due: fire it (idempotent — the service may race us; `WHERE fired = 0` dedups).
-                self.backend.mark_timer_fired(timer_id).await?;
-                return Ok(());
-            }
-            let notify = self.backend.timer_waiters().register(key, None);
-            let remaining = u64::try_from(due_ms.saturating_sub(now)).unwrap_or(u64::MAX);
-            let wait = self.poll_interval.min(Duration::from_millis(remaining));
-            match notify {
-                Some(notify) => {
-                    let notified = notify.notified();
-                    tokio::pin!(notified);
-                    notified.as_mut().enable();
-                    if matches!(self.backend.timer_state(timer_id).await?, Some((_, true))) {
-                        self.backend.timer_waiters().cancel(key);
-                        return Ok(());
-                    }
-                    tokio::select! {
-                        () = notified => {}
-                        () = tokio::time::sleep(wait) => {}
-                    }
+        wait_on_notify_or_poll(
+            self.backend.timer_waiters(),
+            key,
+            None,
+            || {
+                let remaining =
+                    u64::try_from(due_ms.saturating_sub(now_unix_millis())).unwrap_or(u64::MAX);
+                self.poll_interval.min(Duration::from_millis(remaining))
+            },
+            // Cheap, clock-only pre-register check: no database read (the common case while
+            // parked and not yet due).
+            || self.check_timer_due(timer_id, due_ms),
+            || async move {
+                // Race-closing recheck after registering: a database read catches a resolution
+                // (e.g. by DurableTimerService) that lands in the window between the clock check
+                // above and the wait below, even if our own clock has not yet reached `due_ms`.
+                if let Some(value) = self.check_timer_due(timer_id, due_ms).await? {
+                    return Ok(Some(value));
                 }
-                None => tokio::time::sleep(wait).await,
-            }
+                if matches!(self.backend.timer_state(timer_id).await?, Some((_, true))) {
+                    return Ok(Some(()));
+                }
+                Ok(None)
+            },
+        )
+        .await
+    }
+
+    /// If `due_ms` has passed, fire the timer (idempotent) and report it resolved; otherwise `None`.
+    ///
+    /// A purely clock-based check with no database read on the not-yet-due path — the cheap
+    /// pre-registration check in [`sleep_until`](Self::sleep_until)'s wait loop.
+    async fn check_timer_due(
+        &self,
+        timer_id: TimerId,
+        due_ms: i64,
+    ) -> Result<Option<()>, DurableError> {
+        if now_unix_millis() >= due_ms {
+            // Due: fire it (idempotent — the service may race us; `WHERE fired = 0` dedups).
+            self.backend.mark_timer_fired(timer_id).await?;
+            return Ok(Some(()));
         }
+        Ok(None)
     }
 
     /// Build an out-of-band [`DurableHandle`](crate::DurableHandle) over this context's backend.
@@ -1364,6 +1363,32 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), h.ctx.sleep_until(due))
             .await
             .expect("sleep_until completes before the test timeout")
+            .expect("sleep_until succeeds");
+        h.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn sleep_until_wakes_on_concurrent_fire_before_due() {
+        // An external actor (e.g. DurableTimerService, or a concurrent process) marking the timer
+        // fired while sleep_until is already parked wakes it at once via the in-process notify,
+        // rather than waiting out the poll interval or the timer's own due instant.
+        let exec = ExecutionId::new();
+        let h = Harness::open(exec, false).await;
+        // Far enough out that only the notify wakes it, not sleep_until's own due-clock check.
+        let due = SystemTime::now() + Duration::from_secs(30);
+        let timer_id = TimerId::derive(exec, StepId::new(0));
+
+        let (result, marked) = tokio::join!(
+            tokio::time::timeout(Duration::from_secs(2), h.ctx.sleep_until(due)),
+            async {
+                // Give sleep_until time to arm the timer and register on the notify first.
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                h.backend.mark_timer_fired(timer_id).await
+            }
+        );
+        assert!(marked.unwrap(), "the timer transitions to fired");
+        result
+            .expect("sleep_until wakes on the concurrent fire before the test timeout")
             .expect("sleep_until succeeds");
         h.shutdown().await;
     }

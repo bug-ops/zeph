@@ -18,9 +18,12 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::sync::Notify;
 use uuid::Uuid;
+
+use crate::error::DurableError;
 
 /// A keyed map of one-shot [`Notify`] handles shared between waiters and resolvers.
 ///
@@ -92,6 +95,62 @@ impl NotifyRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
+    }
+}
+
+/// Park until resolved, waking on `registry`'s notify for `key` or falling back to a
+/// `wait_duration`-interval sleep; above the parked cap it polls without registering.
+///
+/// Shared by [`DurableContext::await_promise`](crate::DurableContext::await_promise) and
+/// [`DurableContext::sleep_until`](crate::DurableContext::sleep_until): both register on a
+/// [`NotifyRegistry`], re-check the resolved state to close the registration race (a resolution that
+/// lands between the initial check and the registration must not be missed), then race the notify
+/// against a poll-interval sleep.
+///
+/// `check_before` is the cheap, pre-registration check run every iteration; `check_after` is the
+/// race-closing recheck run immediately after a successful registration, before parking — callers
+/// whose post-registration check is identical to their pre-registration one (e.g. a promise's
+/// resolved-state read) should pass the same closure for both; a caller with a cheaper pre-check
+/// (e.g. a timer's local due-clock check, versus a database read to close the race) can pass two
+/// distinct closures to avoid paying for the more expensive check on every iteration.
+pub(crate) async fn wait_on_notify_or_poll<T, FBefore, FutBefore, FAfter, FutAfter>(
+    registry: &NotifyRegistry,
+    key: Uuid,
+    cap: Option<usize>,
+    mut wait_duration: impl FnMut() -> Duration,
+    mut check_before: FBefore,
+    mut check_after: FAfter,
+) -> Result<T, DurableError>
+where
+    FBefore: FnMut() -> FutBefore,
+    FutBefore: Future<Output = Result<Option<T>, DurableError>>,
+    FAfter: FnMut() -> FutAfter,
+    FutAfter: Future<Output = Result<Option<T>, DurableError>>,
+{
+    loop {
+        if let Some(value) = check_before().await? {
+            return Ok(value);
+        }
+        let wait = wait_duration();
+        match registry.register(key, cap) {
+            Some(notify) => {
+                let notified = notify.notified();
+                tokio::pin!(notified);
+                // Register interest, then re-check: this closes the window where a resolution
+                // lands between the read above and the wait below.
+                notified.as_mut().enable();
+                if let Some(value) = check_after().await? {
+                    registry.cancel(key);
+                    return Ok(value);
+                }
+                tokio::select! {
+                    () = notified => {}
+                    () = tokio::time::sleep(wait) => {}
+                }
+            }
+            // Over the parked cap: pure poll, no registration.
+            None => tokio::time::sleep(wait).await,
+        }
     }
 }
 

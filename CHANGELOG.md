@@ -201,6 +201,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hooks (`confirm_receiver`, `confirm_accepts`, `confirm_reply_text`, `confirm_send_prompt`) and
   its `Channel::confirm` now delegates to `run_confirm` in one line (#5652). Pure refactor, no
   behavior change.
+- `refactor(durable)`: deduplicated the "register on a `NotifyRegistry`, re-check the resolved
+  state to close the registration race, then race the notify against a poll-interval sleep,
+  falling back to pure polling above the parked cap" loop implemented independently in
+  `DurableContext::await_promise` and `DurableContext::sleep_until` (#5724). The shared logic
+  now lives in `wait_on_notify_or_poll` (new function in `crates/zeph-durable/src/waiters.rs`),
+  parameterized by the wait-duration computation, the parked-cap value, and two resolved-state
+  checks — a cheap pre-registration check and a race-closing post-registration recheck — so
+  `sleep_until`'s original asymmetry (a clock-only check before registering, a database read only
+  after) is preserved rather than paying for the database read on every iteration; the
+  post-registration recheck now also re-runs the clock check immediately before its database read
+  (previously database-only), a harmless addition that adds no extra database reads and can only
+  close the registration race faster. Pure refactor, no behavior change. Added
+  `sleep_until_wakes_on_concurrent_fire_before_due`
+  covering the in-process concurrent-wake path (previously only tested for `await_promise`).
 - `refactor(common,core,scheduler)`: deduplicated the `flock(2)`-backed pid-file guard
   implemented independently in `zeph-core::daemon::PidGuard` and
   `zeph-scheduler::pidfile::PidFile` — both opened the pid file with the same
