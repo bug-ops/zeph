@@ -29,7 +29,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   calls. User-visible behavior change: a user with `semantic_scan = true` and an empty or unknown
   `semantic_scan_provider` will now correctly have `plugin add` refused at startup (fail-closed,
   per `with_semantic_scan`'s documented contract) instead of silently succeeding with no scan.
-
+- `fix(llm)`: the router's `embed`/`embed_batch` fallback loops
+  (`crates/zeph-llm/src/router/provider_impl.rs`) discarded the last provider's actual error on
+  total exhaustion (every provider failed), always returning a hardcoded `LlmError::NoProviders`
+  instead of the real diagnostic (e.g. `Timeout`, rate-limit info, provider-specific errors)
+  (#5811). Mirrors the `chat_with_tools` fix from #5810: `last_err: Option<LlmError>` is now
+  hoisted from the per-provider retry loop to function scope in both `embed` and `embed_batch`, so
+  it survives across providers and is returned via `Err(last_err.unwrap_or(LlmError::NoProviders))`
+  on exhaustion — falling back to `NoProviders` only when no provider was ever attempted (e.g.
+  none support embeddings).
 - `fix(orchestration,mcp)`: follow-up to the `record_skill_usage` fix above (#5802) — the same
   Postgres `ON CONFLICT DO UPDATE` self-reference ambiguity existed at two more call sites
   (#5803), found via adversarial review of #5802's fix. `PlanCache::cache_plan`

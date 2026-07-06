@@ -1173,9 +1173,10 @@ async fn embed_invalid_input_does_not_record_availability() {
 // ── embed timeout tests ───────────────────────────────────────────────────
 
 /// When the only provider's `embed()` exceeds `embed_timeout_ms`, the router
-/// exhausts the fallback list and returns `LlmError::NoProviders`.
+/// exhausts the fallback list and returns the real `LlmError::Timeout` instead
+/// of a generic `NoProviders` (#5811).
 #[tokio::test]
-async fn embed_timeout_single_provider_returns_no_providers() {
+async fn embed_timeout_single_provider_preserves_timeout_error() {
     use crate::mock::MockProvider;
 
     let p = AnyProvider::Mock(
@@ -1186,8 +1187,8 @@ async fn embed_timeout_single_provider_returns_no_providers() {
     let r = RouterProvider::new(vec![p]).with_embed_timeout(10);
     let err = r.embed("hello").await.unwrap_err();
     assert!(
-        matches!(err, LlmError::NoProviders),
-        "expected NoProviders after timeout, got {err:?}"
+        matches!(err, LlmError::Timeout),
+        "expected Timeout after fallback exhaustion, got {err:?}"
     );
 }
 
@@ -1214,9 +1215,10 @@ async fn embed_timeout_falls_back_to_next_provider() {
 }
 
 /// When the only provider's `embed_batch()` exceeds `embed_timeout_ms`, the router
-/// exhausts the fallback list and returns `LlmError::NoProviders`.
+/// exhausts the fallback list and returns the real `LlmError::Timeout` instead
+/// of a generic `NoProviders` (#5811).
 #[tokio::test]
-async fn embed_batch_timeout_single_provider_returns_no_providers() {
+async fn embed_batch_timeout_single_provider_preserves_timeout_error() {
     use crate::mock::MockProvider;
 
     let p = AnyProvider::Mock(
@@ -1227,8 +1229,8 @@ async fn embed_batch_timeout_single_provider_returns_no_providers() {
     let r = RouterProvider::new(vec![p]).with_embed_timeout(10);
     let err = r.embed_batch(&["hello"]).await.unwrap_err();
     assert!(
-        matches!(err, LlmError::NoProviders),
-        "expected NoProviders after timeout, got {err:?}"
+        matches!(err, LlmError::Timeout),
+        "expected Timeout after fallback exhaustion, got {err:?}"
     );
 }
 
@@ -1307,6 +1309,84 @@ async fn embed_batch_timeout_records_provider_unavailable() {
     assert!(
         *beta > *alpha,
         "timeout must be recorded as a failure (beta > alpha), got alpha={alpha}, beta={beta}"
+    );
+}
+
+// ── #5811 embed/embed_batch last-error exhaustion tests ───────────────────
+
+/// When every provider in the `embed()` fallback loop fails with a generic
+/// (non-rate-limited, non-invalid-input) error, the router must surface the
+/// *last* provider's actual error — not a generic `NoProviders` that discards
+/// the actionable diagnostic. Regression for #5811 (mirrors the
+/// `chat_with_tools` fix from #5810).
+#[tokio::test]
+async fn embed_all_providers_exhausted_preserves_last_error() {
+    use crate::mock::MockProvider;
+
+    let p1 = AnyProvider::Mock({
+        let mut m = MockProvider::default()
+            .with_errors(vec![LlmError::ApiError {
+                provider: "p1".into(),
+                status: 500,
+            }])
+            .with_name("p1");
+        m.supports_embeddings = true;
+        m
+    });
+    let p2 = AnyProvider::Mock({
+        let mut m = MockProvider::default()
+            .with_errors(vec![LlmError::ApiError {
+                provider: "p2".into(),
+                status: 503,
+            }])
+            .with_name("p2");
+        m.supports_embeddings = true;
+        m
+    });
+
+    let r = RouterProvider::new(vec![p1, p2]);
+    let err = r.embed("text").await.unwrap_err();
+
+    assert!(
+        matches!(&err, LlmError::ApiError { provider, status } if provider == "p2" && *status == 503),
+        "expected the last provider's (p2) ApiError to survive exhaustion, got {err:?}"
+    );
+}
+
+/// Same as above for `embed_batch()`: every provider fails with a generic error,
+/// and the router must return the last provider's actual error, not `NoProviders`.
+/// Regression for #5811.
+#[tokio::test]
+async fn embed_batch_all_providers_exhausted_preserves_last_error() {
+    use crate::mock::MockProvider;
+
+    let p1 = AnyProvider::Mock({
+        let mut m = MockProvider::default()
+            .with_errors(vec![LlmError::ApiError {
+                provider: "p1".into(),
+                status: 500,
+            }])
+            .with_name("p1");
+        m.supports_embeddings = true;
+        m
+    });
+    let p2 = AnyProvider::Mock({
+        let mut m = MockProvider::default()
+            .with_errors(vec![LlmError::ApiError {
+                provider: "p2".into(),
+                status: 503,
+            }])
+            .with_name("p2");
+        m.supports_embeddings = true;
+        m
+    });
+
+    let r = RouterProvider::new(vec![p1, p2]);
+    let err = r.embed_batch(&["text"]).await.unwrap_err();
+
+    assert!(
+        matches!(&err, LlmError::ApiError { provider, status } if provider == "p2" && *status == 503),
+        "expected the last provider's (p2) ApiError to survive exhaustion, got {err:?}"
     );
 }
 

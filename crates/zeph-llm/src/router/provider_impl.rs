@@ -311,11 +311,13 @@ impl LlmProvider for RouterProvider {
         let embed_timeout_ms = self.embed_timeout_ms;
         let model = self.model_identifier().to_owned();
         let fut = Box::pin(async move {
+            // Preserve the most recent error across the fallback loop so an exhausted
+            // loop surfaces the actionable diagnostic instead of a generic `NoProviders`.
+            let mut last_err: Option<LlmError> = None;
             for p in &providers {
                 if !p.supports_embeddings() {
                     continue;
                 }
-                let mut last_err: Option<LlmError> = None;
                 for attempt in 0..=EMBED_MAX_RETRIES {
                     if attempt > 0 {
                         let delay = EMBED_BASE_DELAY_MS * (1u64 << (attempt - 1));
@@ -406,7 +408,7 @@ impl LlmProvider for RouterProvider {
                     );
                 }
             }
-            Err(LlmError::NoProviders)
+            Err(last_err.unwrap_or(LlmError::NoProviders))
         });
         {
             use tracing::Instrument as _;
@@ -434,11 +436,13 @@ impl LlmProvider for RouterProvider {
                 None
             };
             let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+            // Preserve the most recent error across the fallback loop so an exhausted
+            // loop surfaces the actionable diagnostic instead of a generic `NoProviders`.
+            let mut last_err: Option<LlmError> = None;
             for p in &providers {
                 if !p.supports_embeddings() {
                     continue;
                 }
-                let mut last_err: Option<LlmError> = None;
                 for attempt in 0..=EMBED_MAX_RETRIES {
                     if attempt > 0 {
                         let delay = EMBED_BASE_DELAY_MS * (1u64 << (attempt - 1));
@@ -531,7 +535,7 @@ impl LlmProvider for RouterProvider {
                     );
                 }
             }
-            Err(LlmError::NoProviders)
+            Err(last_err.unwrap_or(LlmError::NoProviders))
         });
         {
             use tracing::Instrument as _;
