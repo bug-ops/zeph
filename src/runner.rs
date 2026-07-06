@@ -233,6 +233,151 @@ fn resolve_logging_config(
     logging
 }
 
+/// Dependencies for [`build_agent`] (#5819): packages the exact inputs `run()`'s `AgentBuilder`
+/// construction chain closes over, mirroring `crate::serve::agent_factory::build_agent_factory`'s
+/// `Deps`-taking pattern so the wiring itself is reachable by a unit test without running the
+/// whole CLI bootstrap.
+struct BuildAgentDeps<'a, F>
+where
+    F: Fn() -> Vec<std::path::PathBuf> + Send + Sync + 'static,
+{
+    config: &'a Config,
+    provider: LlmAnyProvider,
+    embedding_provider: LlmAnyProvider,
+    registry: std::sync::Arc<RwLock<zeph_skills::registry::SkillRegistry>>,
+    matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
+    tool_executor: zeph_tools::DynExecutor,
+    session_config: zeph_core::AgentSessionConfig,
+    active_provider_name: String,
+    skill_paths: Vec<std::path::PathBuf>,
+    reload_rx: tokio::sync::mpsc::Receiver<zeph_skills::watcher::SkillEvent>,
+    plugin_dirs_supplier: F,
+    trust_snapshot: std::sync::Arc<
+        RwLock<std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>>,
+    >,
+    memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
+    conversation_id: zeph_memory::ConversationId,
+    session_sink: Option<std::sync::Arc<zeph_agent_persistence::SessionSink>>,
+    typed_pages_state: Option<std::sync::Arc<zeph_context::typed_page::TypedPagesState>>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    config_path: std::path::PathBuf,
+    config_reload_rx: tokio::sync::mpsc::Receiver<zeph_core::config_watcher::ConfigEvent>,
+    startup_shell_overlay: zeph_core::ShellOverlaySnapshot,
+    shell_policy_handle: zeph_tools::ShellPolicyHandle,
+    shell_executor_handle: Option<std::sync::Arc<zeph_tools::ShellExecutor>>,
+    background_completion_rx: Option<tokio::sync::mpsc::Receiver<zeph_tools::BackgroundCompletion>>,
+    logging_config: zeph_core::config::LoggingConfig,
+    tiered_retrieval_classifier_provider: Option<std::sync::Arc<LlmAnyProvider>>,
+    tiered_retrieval_validator_provider: Option<std::sync::Arc<LlmAnyProvider>>,
+    bare_mode: bool,
+}
+
+/// Build the `Agent` from the `AgentBuilder` construction chain used by the CLI bootstrap path
+/// (`run()`), extracted verbatim so it is unit-testable without running the whole CLI bootstrap
+/// (#5819). Mirrors `crate::serve::agent_factory::build_agent_factory`'s `Deps`-taking shape.
+///
+/// Only the core `Agent::new_with_registry_arc(...)...await` wiring lives here — feature-gated
+/// post-processing (MCP wiring, provider pool, debug dumper, preloaded history, etc.) stays in
+/// `run()`, matching how `build_agent_factory`'s returned closure covers only the core wiring too.
+async fn build_agent<C, F>(deps: BuildAgentDeps<'_, F>, channel: C) -> Agent<C>
+where
+    C: zeph_core::channel::Channel,
+    F: Fn() -> Vec<std::path::PathBuf> + Send + Sync + 'static,
+{
+    let config = deps.config;
+    Agent::new_with_registry_arc(
+        deps.provider.clone(),
+        deps.embedding_provider.clone(),
+        channel,
+        deps.registry,
+        deps.matcher,
+        config.skills.max_active_skills.get(),
+        deps.tool_executor,
+    )
+    .apply_session_config(deps.session_config)
+    .with_active_provider_name(deps.active_provider_name)
+    .with_skill_matching_config(
+        config.skills.disambiguation_threshold,
+        config.skills.two_stage_matching,
+        config.skills.confusability_threshold,
+    )
+    .with_skill_provider_names(
+        config.skills.generation_provider.as_str().to_owned(),
+        config.skills.disambiguate_provider.as_str().to_owned(),
+    )
+    .with_semantic_scan(
+        config.skills.semantic_scan,
+        config.skills.semantic_scan_provider.as_str(),
+    )
+    .with_skill_reload(deps.skill_paths, deps.reload_rx)
+    .with_plugin_dirs_supplier(deps.plugin_dirs_supplier)
+    .with_managed_skills_dir(crate::bootstrap::managed_skills_dir())
+    .with_trust_config(config.skills.trust.clone())
+    .with_trust_snapshot(deps.trust_snapshot)
+    .with_memory(
+        deps.memory,
+        deps.conversation_id,
+        config.memory.history_limit,
+        config.memory.semantic.recall_limit,
+        config.memory.summarization_threshold,
+    )
+    .with_session_sink(deps.session_sink)
+    .with_session_persistence_config(Some(config.session.clone()))
+    .with_compression(config.memory.compression.clone())
+    .with_typed_pages_state(deps.typed_pages_state)
+    .with_routing(config.memory.store_routing.clone())
+    .with_shutdown(deps.shutdown_rx)
+    .with_config_reload(deps.config_path, deps.config_reload_rx)
+    .with_plugins_dir(crate::bootstrap::plugins_dir(), deps.startup_shell_overlay)
+    .with_shell_policy_handle(deps.shell_policy_handle)
+    .with_shell_executor_handle(deps.shell_executor_handle)
+    .with_background_completion_rx_opt(deps.background_completion_rx)
+    .with_logging_config(deps.logging_config)
+    .with_autosave_config(
+        config.memory.autosave_assistant,
+        config.memory.autosave_min_length,
+    )
+    .with_shutdown_summary_config(
+        config.memory.shutdown_summary,
+        config.memory.shutdown_summary_min_messages,
+        config.memory.shutdown_summary_max_messages,
+        config.memory.shutdown_summary_timeout_secs,
+    )
+    .with_shutdown_summary_provider(config.memory.shutdown_summary_provider.as_str().to_owned())
+    .with_compaction_provider(config.memory.compaction_provider.as_str().to_owned())
+    .with_structured_summaries(config.memory.structured_summaries)
+    .with_tool_call_cutoff(config.memory.tool_call_cutoff)
+    .with_hybrid_search(config.skills.hybrid_search)
+    .with_rl_routing(
+        config.skills.rl_routing_enabled,
+        config.skills.rl_learning_rate,
+        config.skills.rl_weight,
+        config.skills.rl_persist_interval,
+        config.skills.rl_warmup_updates,
+    )
+    .with_memory_formatting_config(
+        config.memory.compression_guidelines.clone(),
+        config.memory.digest.clone(),
+        config.memory.context_strategy,
+        config.memory.crossover_turn_threshold,
+    )
+    .with_retrieval_config(config.memory.retrieval.context_format)
+    .with_tiered_retrieval_providers(
+        config.memory.tiered_retrieval.clone(),
+        deps.tiered_retrieval_classifier_provider,
+        deps.tiered_retrieval_validator_provider,
+    )
+    .with_focus_and_sidequest_config(config.agent.focus.clone(), config.memory.sidequest.clone())
+    .with_trajectory_and_category_config(
+        config.memory.trajectory.clone(),
+        config.memory.category.clone(),
+    )
+    .with_embedding_provider(deps.embedding_provider.clone())
+    .with_bare_mode(deps.bare_mode)
+    .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), deps.embedding_provider)
+    .await
+}
+
 #[allow(dead_code)]
 fn cli_requested_any_acp_mode(cli: &Cli) -> bool {
     #[cfg(not(any(feature = "acp", feature = "acp-http")))]
@@ -2721,101 +2866,51 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // CompactionAuditSink::open is async.
     let typed_pages_state = build_typed_pages_state(config, Some(&*supervisor)).await;
 
-    let agent = Agent::new_with_registry_arc(
-        provider.clone(),
-        embedding_provider.clone(),
-        channel,
-        registry,
-        matcher,
-        config.skills.max_active_skills.get(),
-        tool_executor,
-    )
-    .apply_session_config(session_config)
-    .with_active_provider_name(config.llm.providers.iter().find(|e| !e.embed).map_or_else(
+    // Precompute before moving into `BuildAgentDeps` — mirrors the inline chain's prior
+    // expression-argument evaluation order exactly.
+    let active_provider_name = config.llm.providers.iter().find(|e| !e.embed).map_or_else(
         || provider.name().to_owned(),
         zeph_core::config::ProviderEntry::effective_name,
-    ))
-    .with_skill_matching_config(
-        config.skills.disambiguation_threshold,
-        config.skills.two_stage_matching,
-        config.skills.confusability_threshold,
+    );
+    let tiered_retrieval_classifier_provider = app
+        .build_tiered_retrieval_classifier_provider()
+        .map(std::sync::Arc::new);
+    let tiered_retrieval_validator_provider = app
+        .build_tiered_retrieval_validator_provider()
+        .map(std::sync::Arc::new);
+
+    let agent = build_agent(
+        BuildAgentDeps {
+            config,
+            provider: provider.clone(),
+            embedding_provider: embedding_provider.clone(),
+            registry,
+            matcher,
+            tool_executor,
+            session_config,
+            active_provider_name,
+            skill_paths,
+            reload_rx,
+            plugin_dirs_supplier,
+            trust_snapshot,
+            memory: std::sync::Arc::clone(&memory),
+            conversation_id,
+            session_sink: session_sink.clone(),
+            typed_pages_state,
+            shutdown_rx: shutdown_rx.clone(),
+            config_path,
+            config_reload_rx,
+            startup_shell_overlay,
+            shell_policy_handle,
+            shell_executor_handle,
+            background_completion_rx,
+            logging_config: logging_config.clone(),
+            tiered_retrieval_classifier_provider,
+            tiered_retrieval_validator_provider,
+            bare_mode: exec_mode.bare,
+        },
+        channel,
     )
-    .with_skill_provider_names(
-        config.skills.generation_provider.as_str().to_owned(),
-        config.skills.disambiguate_provider.as_str().to_owned(),
-    )
-    .with_semantic_scan(
-        config.skills.semantic_scan,
-        config.skills.semantic_scan_provider.as_str(),
-    )
-    .with_skill_reload(skill_paths, reload_rx)
-    .with_plugin_dirs_supplier(plugin_dirs_supplier)
-    .with_managed_skills_dir(crate::bootstrap::managed_skills_dir())
-    .with_trust_config(config.skills.trust.clone())
-    .with_trust_snapshot(trust_snapshot)
-    .with_memory(
-        std::sync::Arc::clone(&memory),
-        conversation_id,
-        config.memory.history_limit,
-        config.memory.semantic.recall_limit,
-        config.memory.summarization_threshold,
-    )
-    .with_session_sink(session_sink.clone())
-    .with_session_persistence_config(Some(config.session.clone()))
-    .with_compression(config.memory.compression.clone())
-    .with_typed_pages_state(typed_pages_state)
-    .with_routing(config.memory.store_routing.clone())
-    .with_shutdown(shutdown_rx.clone())
-    .with_config_reload(config_path, config_reload_rx)
-    .with_plugins_dir(crate::bootstrap::plugins_dir(), startup_shell_overlay)
-    .with_shell_policy_handle(shell_policy_handle)
-    .with_shell_executor_handle(shell_executor_handle)
-    .with_background_completion_rx_opt(background_completion_rx)
-    .with_logging_config(logging_config.clone())
-    .with_autosave_config(
-        config.memory.autosave_assistant,
-        config.memory.autosave_min_length,
-    )
-    .with_shutdown_summary_config(
-        config.memory.shutdown_summary,
-        config.memory.shutdown_summary_min_messages,
-        config.memory.shutdown_summary_max_messages,
-        config.memory.shutdown_summary_timeout_secs,
-    )
-    .with_shutdown_summary_provider(config.memory.shutdown_summary_provider.as_str().to_owned())
-    .with_compaction_provider(config.memory.compaction_provider.as_str().to_owned())
-    .with_structured_summaries(config.memory.structured_summaries)
-    .with_tool_call_cutoff(config.memory.tool_call_cutoff)
-    .with_hybrid_search(config.skills.hybrid_search)
-    .with_rl_routing(
-        config.skills.rl_routing_enabled,
-        config.skills.rl_learning_rate,
-        config.skills.rl_weight,
-        config.skills.rl_persist_interval,
-        config.skills.rl_warmup_updates,
-    )
-    .with_memory_formatting_config(
-        config.memory.compression_guidelines.clone(),
-        config.memory.digest.clone(),
-        config.memory.context_strategy,
-        config.memory.crossover_turn_threshold,
-    )
-    .with_retrieval_config(config.memory.retrieval.context_format)
-    .with_tiered_retrieval_providers(
-        config.memory.tiered_retrieval.clone(),
-        app.build_tiered_retrieval_classifier_provider()
-            .map(std::sync::Arc::new),
-        app.build_tiered_retrieval_validator_provider()
-            .map(std::sync::Arc::new),
-    )
-    .with_focus_and_sidequest_config(config.agent.focus.clone(), config.memory.sidequest.clone())
-    .with_trajectory_and_category_config(
-        config.memory.trajectory.clone(),
-        config.memory.category.clone(),
-    )
-    .with_embedding_provider(embedding_provider.clone())
-    .with_bare_mode(exec_mode.bare)
-    .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), embedding_provider)
     .await;
 
     // D-10 (spec-068 §12.3): seed replayed history from `sessions resume`'s hydration above —
@@ -4372,9 +4467,10 @@ fn parse_plugin_url_arg(raw: &str) -> (&str, Option<&str>) {
 ///
 /// Returns an error only for unexpected I/O failures (e.g. `set_current_dir` failing for a
 /// reason other than the path not existing — which is caught earlier by `validate_deep_link_cwd`).
-// SAFETY: set_var is called on the main thread before any concurrent code reads
-// ZEPH_URL_OPEN_DEPTH. The tokio runtime is active at this point, but no spawned
-// tasks read this env var on this call path — the guard is a one-time write.
+// SAFETY: set_var is called synchronously during single-threaded startup, before
+// any spawned task reads ZEPH_URL_OPEN_DEPTH. The tokio runtime is active at this
+// point, but no spawned tasks read this env var on this call path — the guard is
+// a one-time write.
 // On some target platforms the function body always succeeds; Result is kept to
 // propagate set_current_dir failures.
 #[allow(unsafe_code, clippy::unnecessary_wraps)]
@@ -4659,6 +4755,116 @@ mod tests {
         };
         let result = resolve_logging_config(base, Some(""));
         assert_eq!(result.file, "");
+    }
+
+    // --- build_agent (#5819) ---
+
+    async fn make_test_memory() -> std::sync::Arc<zeph_memory::semantic::SemanticMemory> {
+        std::sync::Arc::new(
+            zeph_memory::semantic::SemanticMemory::new(
+                ":memory:",
+                "http://127.0.0.1:1",
+                None,
+                LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+                "test-model",
+            )
+            .await
+            .unwrap(),
+        )
+    }
+
+    fn build_agent_test_embed_fn(text: &str) -> zeph_skills::matcher::EmbedFuture {
+        let _ = text;
+        Box::pin(async { Ok(vec![1.0_f32, 0.0]) })
+    }
+
+    /// #5819 regression: `build_agent` must call `Agent::with_skill_matching_config` so
+    /// `config.skills.confusability_threshold` reaches the real, constructed `Agent` via the
+    /// same `AgentBuilder` chain `run()` actually uses at startup — not just the test-only
+    /// `AgentBuilder::with_semantic_scan` setter path that previously was the only way to
+    /// exercise this class of wiring bug (#5813, #5610, #5818). Mirrors
+    /// `build_agent_factory_wires_skill_matching_config` (`src/serve/agent_factory.rs`): asserts
+    /// the *exact* threshold value echoed by `ConfusabilityReport`'s `Display` output, not just
+    /// "non-default", so a swapped argument in `with_skill_matching_config` would also be caught.
+    #[tokio::test]
+    async fn build_agent_wires_skill_matching_config() {
+        use zeph_commands::traits::agent::AgentAccess as _;
+
+        let memory = make_test_memory().await;
+        let conversation_id = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut config = Config::default();
+        config.skills.disambiguation_threshold = 0.77;
+        config.skills.two_stage_matching = true;
+        config.skills.confusability_threshold = 0.42;
+
+        let skill_meta = zeph_skills::loader::SkillMeta {
+            name: "solo-skill".to_owned(),
+            description: "a lone skill with no confusable sibling".to_owned(),
+            ..Default::default()
+        };
+        let inner_matcher =
+            zeph_skills::matcher::SkillMatcher::new(&[&skill_meta], build_agent_test_embed_fn)
+                .await
+                .expect("single-skill matcher construction must succeed with a constant embed_fn");
+
+        let (_reload_tx, reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_config_reload_tx, config_reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let shell_policy_handle =
+            zeph_tools::ShellExecutor::new(&zeph_tools::ShellConfig::default()).policy_handle();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+
+        let deps = BuildAgentDeps {
+            config: &config,
+            provider: LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            embedding_provider: LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            registry: std::sync::Arc::new(RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: Some(zeph_skills::matcher::SkillMatcherBackend::InMemory(
+                inner_matcher,
+            )),
+            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::SetCwdExecutor)),
+            session_config,
+            active_provider_name: "test".to_owned(),
+            skill_paths: Vec::new(),
+            reload_rx,
+            plugin_dirs_supplier: || Vec::<std::path::PathBuf>::new(),
+            trust_snapshot: std::sync::Arc::new(RwLock::new(std::collections::HashMap::new())),
+            memory: std::sync::Arc::clone(&memory),
+            conversation_id,
+            session_sink: None,
+            typed_pages_state: None,
+            shutdown_rx,
+            config_path: std::path::PathBuf::new(),
+            config_reload_rx,
+            startup_shell_overlay: zeph_core::ShellOverlaySnapshot {
+                blocked: Vec::new(),
+                allowed: Vec::new(),
+            },
+            shell_policy_handle,
+            shell_executor_handle: None,
+            background_completion_rx: None,
+            logging_config: zeph_core::config::LoggingConfig::default(),
+            tiered_retrieval_classifier_provider: None,
+            tiered_retrieval_validator_provider: None,
+            bare_mode: false,
+        };
+
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let mut agent = Box::pin(build_agent(deps, channel)).await;
+
+        let output = agent
+            .handle_skills("confusability")
+            .await
+            .expect("handle_skills(\"confusability\") must not error");
+        assert!(
+            output.contains("above 0.42"),
+            "config.skills.confusability_threshold = 0.42 must reach the built Agent's \
+             ConfusabilityReport exactly (not e.g. 0.77, disambiguation_threshold's value, from a \
+             swapped with_skill_matching_config argument); got: {output}"
+        );
     }
 
     #[test]

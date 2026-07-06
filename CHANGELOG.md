@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `fix(core)`: the `SAFETY` comment on `handle_url_open()`'s `ZEPH_URL_OPEN_DEPTH` `set_var`
+  call (`src/runner.rs`) still said `set_var` runs "on the main thread", which stopped being
+  accurate once #5406 moved `main()` off the OS main thread onto a dedicated `zeph-main` thread.
+  The safety invariant itself (single-threaded execution before any spawned task reads the env
+  var) was never affected by that change; only the wording was stale. Reworded to be
+  thread-topology-agnostic (#5422).
+
+### Added
+
+- `test(core)`: extracted a `build_agent`/`BuildAgentDeps`-taking function from `run()`'s
+  `AgentBuilder` construction chain (`src/runner.rs`), mirroring
+  `src/serve/agent_factory.rs::build_agent_factory`'s existing `Deps`-taking pattern, so the
+  real CLI startup wiring is unit-testable in isolation. Added a regression test asserting
+  `config.skills.confusability_threshold` reaches the constructed `Agent` via this path —
+  previously the only coverage of this wiring class was the test-only
+  `AgentBuilder::with_semantic_scan` setter, which bypassed the actual regression class behind
+  #5813/#5610/#5818 (a config field silently failing to reach the builder on the real startup
+  path). `run_daemon()` (`src/daemon.rs`) has an equivalent but structurally divergent
+  `AgentBuilder` chain (~15 CLI-only fields absent, different MCP-wiring interleaving) that is
+  deliberately left out of scope here — unifying it now would risk reintroducing the very
+  default-vs-omitted defect class this seam exists to catch. #5819 stays open to track that
+  remaining half.
+
 ### Added
 
 - `test(memory)`: closed three low-severity test-coverage gaps left over from #5815's fix for
