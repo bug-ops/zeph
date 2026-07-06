@@ -523,22 +523,32 @@ fn build_gonka_provider(
     Ok(AnyProvider::Gonka(provider))
 }
 
-/// Build a [`CocoonProvider`] from a `[[llm.providers]]` entry.
+/// Resolved connection parameters for a `CocoonClient`, shared by the provider-build and
+/// health-check call sites so both derive `access_hash`/`base_url`/`timeout` with identical
+/// gating logic.
+#[cfg(feature = "cocoon")]
+struct CocoonClientParams {
+    base_url: String,
+    access_hash: Option<String>,
+    timeout: std::time::Duration,
+}
+
+/// Resolve [`CocoonClientParams`] from a `[[llm.providers]]` entry.
 ///
 /// Resolves the access hash from the age vault when `cocoon_access_hash` is `Some(_)` in the
-/// entry. If the vault key is absent an explicit, actionable error is returned.
+/// entry. If the vault key is absent an explicit, actionable error is returned. Also validates
+/// `base_url` against a localhost allowlist and warns otherwise, and warns if the config file
+/// appears to contain a raw hash value instead of an opt-in marker.
 ///
 /// # Errors
 ///
 /// Returns [`BootstrapError::Provider`] when the vault key `ZEPH_COCOON_ACCESS_HASH` is
 /// expected (field is `Some`) but not present in the resolved secrets.
 #[cfg(feature = "cocoon")]
-fn build_cocoon_provider(
+fn resolve_cocoon_client_params(
     entry: &ProviderEntry,
     config: &Config,
-) -> Result<AnyProvider, BootstrapError> {
-    let _span = tracing::info_span!("core.provider_factory.build_cocoon").entered();
-
+) -> Result<CocoonClientParams, BootstrapError> {
     let base_url = entry
         .cocoon_client_url
         .as_deref()
@@ -591,7 +601,33 @@ fn build_cocoon_provider(
     };
 
     let timeout = std::time::Duration::from_secs(config.timeouts.llm_request_timeout_secs);
-    let client = std::sync::Arc::new(CocoonClient::new(base_url, access_hash, timeout));
+
+    Ok(CocoonClientParams {
+        base_url: base_url.to_owned(),
+        access_hash,
+        timeout,
+    })
+}
+
+/// Build a [`CocoonProvider`] from a `[[llm.providers]]` entry.
+///
+/// # Errors
+///
+/// Returns [`BootstrapError::Provider`] when the vault key `ZEPH_COCOON_ACCESS_HASH` is
+/// expected (field is `Some`) but not present in the resolved secrets.
+#[cfg(feature = "cocoon")]
+fn build_cocoon_provider(
+    entry: &ProviderEntry,
+    config: &Config,
+) -> Result<AnyProvider, BootstrapError> {
+    let _span = tracing::info_span!("core.provider_factory.build_cocoon").entered();
+
+    let params = resolve_cocoon_client_params(entry, config)?;
+    let client = std::sync::Arc::new(CocoonClient::new(
+        &params.base_url,
+        params.access_hash,
+        params.timeout,
+    ));
 
     let model = entry
         .model
@@ -607,7 +643,11 @@ fn build_cocoon_provider(
 ///
 /// Registers each check as a one-shot supervised task so it is observable via
 /// [`TaskSupervisor::snapshot`] and abortable on shutdown. Failures are logged at `warn` level
-/// and never propagated — the check is purely advisory.
+/// and never propagated — the check is purely advisory. Gating logic for `access_hash`/`base_url`
+/// is shared with [`build_cocoon_provider`] via [`resolve_cocoon_client_params`]; unlike the
+/// provider-build path, a resolution error here only skips that entry's health check (logged at
+/// `warn`) rather than failing bootstrap, since this path is advisory and runs after providers
+/// have already been built successfully.
 ///
 /// Call this once after [`build_provider_from_entry`] has succeeded for all providers, passing
 /// the session-level supervisor. The function is a no-op when `cocoon` feature is not enabled
@@ -622,18 +662,22 @@ pub fn spawn_cocoon_health_checks(
         if entry.provider_type != ProviderKind::Cocoon || !entry.cocoon_health_check {
             continue;
         }
-        let base_url = entry
-            .cocoon_client_url
-            .as_deref()
-            .unwrap_or("http://localhost:10000")
-            .to_owned();
-        let access_hash = config
-            .secrets
-            .cocoon_access_hash
-            .as_ref()
-            .map(|s| s.expose().to_owned());
-        let timeout = std::time::Duration::from_secs(config.timeouts.llm_request_timeout_secs);
-        let client = std::sync::Arc::new(CocoonClient::new(&base_url, access_hash, timeout));
+        let params = match resolve_cocoon_client_params(entry, config) {
+            Ok(params) => params,
+            Err(e) => {
+                tracing::warn!(
+                    name = entry.name.as_deref().unwrap_or("<unnamed>"),
+                    error = %e,
+                    "skipping cocoon health check: failed to resolve client params"
+                );
+                continue;
+            }
+        };
+        let client = std::sync::Arc::new(CocoonClient::new(
+            &params.base_url,
+            params.access_hash,
+            params.timeout,
+        ));
         supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
             name: "core.provider_factory.cocoon_health_check",
             restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
@@ -886,6 +930,8 @@ mod tests {
         assert!(params.embedding_sha256.is_none());
     }
 
+    #[cfg(feature = "cocoon")]
+    use super::spawn_cocoon_health_checks;
     use super::{build_provider_from_entry, resolve_named_provider};
     use crate::config::{Config, ProviderKind};
     use zeph_config::providers::ProviderEntry;
@@ -1096,6 +1142,26 @@ mod tests {
                 result.is_ok(),
                 "expected success when no access hash requested: {:?}",
                 result.err()
+            );
+        }
+
+        /// `spawn_cocoon_health_checks` must share the same vault-miss gating as
+        /// `build_cocoon_provider`: when the entry opts in but the vault key is absent, the
+        /// health check is skipped (logged) rather than spawned, and bootstrap is not disturbed.
+        #[test]
+        fn spawn_cocoon_health_checks_skips_on_vault_miss() {
+            let mut entry = cocoon_entry(Some(""));
+            entry.cocoon_health_check = true;
+            let config = Config::default(); // secrets.cocoon_access_hash = None
+            let supervisor = std::sync::Arc::new(zeph_common::TaskSupervisor::new(
+                tokio_util::sync::CancellationToken::new(),
+            ));
+
+            spawn_cocoon_health_checks(&[&entry], &config, &supervisor);
+
+            assert!(
+                supervisor.snapshot().is_empty(),
+                "expected no health-check task to be spawned when vault key is absent"
             );
         }
     }

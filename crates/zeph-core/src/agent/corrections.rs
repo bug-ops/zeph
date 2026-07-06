@@ -40,6 +40,35 @@ pub(super) fn feedback_verdict_into_signal(
     })
 }
 
+/// Log and persist a detected correction signal (shared by judge and llm-classifier paths).
+async fn record_correction_signal(
+    signal: feedback_detector::CorrectionSignal,
+    assistant: &str,
+    user_msg: &str,
+    memory_arc: Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
+    conv_id: Option<zeph_memory::ConversationId>,
+    skill_name: String,
+    source: &str,
+) {
+    let is_self_correction = signal.kind == feedback_detector::CorrectionKind::SelfCorrection;
+    tracing::info!(
+        kind = signal.kind.as_str(),
+        confidence = signal.confidence,
+        source,
+        is_self_correction,
+        "correction signal detected"
+    );
+    store_correction_in_memory(
+        memory_arc,
+        conv_id,
+        assistant,
+        user_msg,
+        skill_name,
+        signal.kind.as_str(),
+    )
+    .await;
+}
+
 /// Store a correction record in memory (shared by judge and llm-classifier paths).
 pub(super) async fn store_correction_in_memory(
     memory: Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
@@ -474,22 +503,14 @@ async fn evaluate_with_llm_classifier(
                 tx.send_modify(|ms| ms.classifier = snap);
             }
             if let Some(signal) = feedback_verdict_into_signal(&verdict, &user_msg) {
-                let is_self_correction =
-                    signal.kind == feedback_detector::CorrectionKind::SelfCorrection;
-                tracing::info!(
-                    kind = signal.kind.as_str(),
-                    confidence = signal.confidence,
-                    source = "llm-classifier",
-                    is_self_correction,
-                    "correction signal detected"
-                );
-                store_correction_in_memory(
-                    memory_arc,
-                    conv_id,
+                record_correction_signal(
+                    signal,
                     &assistant,
                     &user_msg,
+                    memory_arc,
+                    conv_id,
                     skill_name,
-                    signal.kind.as_str(),
+                    "llm-classifier",
                 )
                 .await;
             }
@@ -519,22 +540,8 @@ async fn evaluate_with_judge(
     {
         Ok(verdict) => {
             if let Some(signal) = verdict.into_signal(&user_msg) {
-                let is_self_correction =
-                    signal.kind == feedback_detector::CorrectionKind::SelfCorrection;
-                tracing::info!(
-                    kind = signal.kind.as_str(),
-                    confidence = signal.confidence,
-                    source = "judge",
-                    is_self_correction,
-                    "correction signal detected"
-                );
-                store_correction_in_memory(
-                    memory_arc,
-                    conv_id,
-                    &assistant,
-                    &user_msg,
-                    skill_name,
-                    signal.kind.as_str(),
+                record_correction_signal(
+                    signal, &assistant, &user_msg, memory_arc, conv_id, skill_name, "judge",
                 )
                 .await;
             }

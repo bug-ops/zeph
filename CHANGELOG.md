@@ -49,6 +49,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   supervisor (real or throwaway) once before a single `spawn_oneshot` call, instead of
   duplicating the identical spawn closure across both branches of an if/else (#5669). Pure
   refactor, no behavior change.
+- `fix(core)`: unified `CocoonClient` construction gating between `build_cocoon_provider` and
+  `spawn_cocoon_health_checks` (`crates/zeph-core/src/provider_factory.rs`) behind a single
+  `resolve_cocoon_client_params` helper. Previously the advisory health-check path ignored a
+  provider entry's own `cocoon_access_hash` opt-in gate — it unconditionally read the vault key
+  and never errored on a missing one — while the real provider-construction path gated on it and
+  hard-failed bootstrap when the entry opted in but the vault key was absent. The health check
+  now goes through the identical gating logic; on a resolution error it logs a warning and skips
+  just that health check instead of using a wrong or ungated client (#5671). Also deduplicated
+  the identical post-verdict logging + `store_correction_in_memory` block shared by
+  `evaluate_with_llm_classifier` and `evaluate_with_judge` (`crates/zeph-core/src/agent/
+  corrections.rs`) into a single `record_correction_signal` helper, differing only in the
+  `source` field (#5676).
 - `refactor(memory,core)`: deduplicated three independently-drifting code paths in the graph
   subsystem. `build_entity_graph_and_maps` (`crates/zeph-memory/src/graph/community.rs`) now
   folds each edge into the graph/fact/id maps through a single `fold_edge` helper shared by its
