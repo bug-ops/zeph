@@ -106,6 +106,9 @@ impl LlmProvider for RouterProvider {
 
             // Best response seen so far (for quality gate exhaustion fallback, M2).
             let mut best_response: Option<(f32, String)> = None;
+            // Preserve the most recent error across the fallback loop so an exhausted
+            // loop surfaces the actionable diagnostic instead of a generic `NoProviders`.
+            let mut last_err: Option<LlmError> = None;
 
             for p in &providers {
                 let start = std::time::Instant::now();
@@ -206,6 +209,7 @@ impl LlmProvider for RouterProvider {
                             status_tx.as_ref(),
                             "router fallback",
                         );
+                        last_err = Some(e);
                     }
                 }
             }
@@ -215,7 +219,7 @@ impl LlmProvider for RouterProvider {
                 return Ok(response);
             }
 
-            Err(LlmError::NoProviders)
+            Err(last_err.unwrap_or(LlmError::NoProviders))
         });
         {
             use tracing::Instrument as _;
@@ -255,6 +259,9 @@ impl LlmProvider for RouterProvider {
                 return p.chat_stream(&messages).await;
             }
             let providers = router.ordered_providers();
+            // Preserve the most recent error across the fallback loop so an exhausted
+            // loop surfaces the actionable diagnostic instead of a generic `NoProviders`.
+            let mut last_err: Option<LlmError> = None;
             for p in &providers {
                 let start = std::time::Instant::now();
                 match p.chat_stream(&messages).await {
@@ -281,10 +288,11 @@ impl LlmProvider for RouterProvider {
                             status_tx.as_ref(),
                             "router stream fallback",
                         );
+                        last_err = Some(e);
                     }
                 }
             }
-            Err(LlmError::NoProviders)
+            Err(last_err.unwrap_or(LlmError::NoProviders))
         });
         {
             use tracing::Instrument as _;

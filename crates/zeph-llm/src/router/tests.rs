@@ -81,7 +81,12 @@ async fn router_falls_back_on_unreachable() {
     let r = RouterProvider::new(vec![p1, p2]);
     let msgs = vec![Message::from_legacy(Role::User, "hello")];
     let err = r.chat(&msgs).await.unwrap_err();
-    assert_matches!(err, LlmError::NoProviders);
+    // Fallback exhaustion must surface the last provider's actual error (#5821),
+    // not a generic `NoProviders` that discards the connection-failure diagnostic.
+    assert!(
+        matches!(&err, LlmError::Other(msg) if msg.contains("Ollama chat request failed")),
+        "expected the last provider's actual error to survive exhaustion, got {err:?}"
+    );
 }
 
 #[test]
@@ -1768,4 +1773,80 @@ async fn spawn_asi_update_embed_timeout_does_not_update_asi() {
         (coherence - 1.0).abs() < f32::EPSILON,
         "ASI window must be empty after embed timeout; coherence={coherence}"
     );
+}
+
+// ── #5821 chat/chat_stream last-error exhaustion tests ─────────────────────
+
+/// When every provider in the `chat()` fallback loop fails with a generic error,
+/// the router must surface the *last* provider's actual error — not a generic
+/// `NoProviders` that discards the actionable diagnostic. Regression for #5821
+/// (mirrors the `embed`/`embed_batch` fix from #5811 and `chat_with_tools` from #5810).
+#[tokio::test]
+async fn chat_all_providers_exhausted_preserves_last_error() {
+    use crate::mock::MockProvider;
+
+    let p1 = AnyProvider::Mock(
+        MockProvider::default()
+            .with_errors(vec![LlmError::ApiError {
+                provider: "p1".into(),
+                status: 500,
+            }])
+            .with_name("p1"),
+    );
+    let p2 = AnyProvider::Mock(
+        MockProvider::default()
+            .with_errors(vec![LlmError::ApiError {
+                provider: "p2".into(),
+                status: 503,
+            }])
+            .with_name("p2"),
+    );
+
+    let r = RouterProvider::new(vec![p1, p2]);
+    let err = r.chat(&[]).await.unwrap_err();
+
+    assert!(
+        matches!(&err, LlmError::ApiError { provider, status } if provider == "p2" && *status == 503),
+        "expected the last provider's (p2) ApiError to survive exhaustion, got {err:?}"
+    );
+}
+
+/// Same as above for `chat_stream()`: every provider fails with a generic error,
+/// and the router must return the last provider's actual error, not `NoProviders`.
+/// Regression for #5821.
+#[tokio::test]
+async fn chat_stream_all_providers_exhausted_preserves_last_error() {
+    use crate::mock::MockProvider;
+
+    let p1 = AnyProvider::Mock(
+        MockProvider::default()
+            .with_errors(vec![LlmError::ApiError {
+                provider: "p1".into(),
+                status: 500,
+            }])
+            .with_name("p1"),
+    );
+    let p2 = AnyProvider::Mock(
+        MockProvider::default()
+            .with_errors(vec![LlmError::ApiError {
+                provider: "p2".into(),
+                status: 503,
+            }])
+            .with_name("p2"),
+    );
+
+    let r = RouterProvider::new(vec![p1, p2]);
+    match r.chat_stream(&[]).await {
+        Err(LlmError::ApiError { provider, status }) => {
+            assert_eq!(provider, "p2");
+            assert_eq!(status, 503);
+        }
+        other => panic!(
+            "expected the last provider's (p2) ApiError to survive exhaustion, got {}",
+            match &other {
+                Ok(_) => "Ok(_)".to_owned(),
+                Err(e) => format!("{e:?}"),
+            }
+        ),
+    }
 }
