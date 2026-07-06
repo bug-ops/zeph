@@ -99,6 +99,15 @@ pub(crate) async fn build_agent_factory(
             zeph_tools::DynExecutor(deps.tool_executor),
         )
         .apply_session_config(deps.session_config)
+        .with_skill_matching_config(
+            deps.skill_disambiguation_threshold,
+            deps.skill_two_stage_matching,
+            deps.skill_confusability_threshold,
+        )
+        .with_skill_provider_names(
+            deps.skill_generation_provider,
+            deps.skill_disambiguate_provider,
+        )
         .with_memory(
             Arc::clone(&deps.memory),
             conversation_id,
@@ -484,6 +493,11 @@ mod tests {
             )),
             matcher: None,
             max_active_skills: 5,
+            skill_disambiguation_threshold: 0.2,
+            skill_two_stage_matching: false,
+            skill_confusability_threshold: 0.0,
+            skill_generation_provider: String::new(),
+            skill_disambiguate_provider: String::new(),
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             memory: Arc::clone(&memory),
             history_limit: 10,
@@ -544,6 +558,11 @@ mod tests {
             )),
             matcher: None,
             max_active_skills: 5,
+            skill_disambiguation_threshold: 0.2,
+            skill_two_stage_matching: false,
+            skill_confusability_threshold: 0.0,
+            skill_generation_provider: String::new(),
+            skill_disambiguate_provider: String::new(),
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             memory: Arc::clone(&memory),
             history_limit: 10,
@@ -570,6 +589,98 @@ mod tests {
             output.contains("named-test"),
             "the pool entry configured on ServeAgentDeps must be visible through the built \
              Agent's provider_pool; got: {output}"
+        );
+    }
+
+    fn embed_fn_constant(text: &str) -> zeph_skills::matcher::EmbedFuture {
+        let _ = text;
+        Box::pin(async { Ok(vec![1.0_f32, 0.0]) })
+    }
+
+    /// #5818 regression: `build_agent_factory` must call `Agent::with_skill_matching_config`/
+    /// `with_skill_provider_names` so `config.skills.*` reaches the built `Agent` — previously
+    /// `ServeAgentDeps` had no such fields and the builder chain never called either method, so
+    /// every `/sessions`-created agent silently ran skill matching on hardcoded builder defaults
+    /// regardless of config.
+    ///
+    /// Critic finding (round 1, S1): the 4 pre-existing `ServeAgentDeps` test literals this fix
+    /// touched all use `0.2, false, 0.0, "", ""` for these fields — byte-identical to the
+    /// builder's pre-fix defaults (`crates/zeph-core/src/agent/state/mod.rs`) — so those tests
+    /// cannot distinguish wired-vs-unwired. This test uses distinct non-default values for all 5
+    /// fields and, since `Agent` exposes no `pub` accessor for them directly, drives the same
+    /// observable surface the real `/skills confusability` command uses
+    /// ([`zeph_commands::AgentAccess::handle_skills`]) — but asserts the *exact* threshold value
+    /// echoed in [`zeph_skills::matcher::ConfusabilityReport`]'s `Display` output (`"above
+    /// {threshold:.2}"`), not just "non-default", so a swap between `disambiguation_threshold`
+    /// and `confusability_threshold` in the `with_skill_matching_config` call — both `f32`,
+    /// unlike `two_stage_matching`'s `bool` — would also be caught. A real `SkillMatcherBackend`
+    /// with one skill is needed for `handle_skills("confusability")` to reach the
+    /// threshold-printing branch instead of its "matcher not available" short-circuit.
+    #[tokio::test]
+    async fn build_agent_factory_wires_skill_matching_config() {
+        use zeph_commands::traits::agent::AgentAccess as _;
+
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("skill-matching-config-test-session");
+
+        let config = zeph_core::config::Config::default();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+
+        let skill_meta = zeph_skills::loader::SkillMeta {
+            name: "solo-skill".to_owned(),
+            description: "a lone skill with no confusable sibling".to_owned(),
+            ..Default::default()
+        };
+        let inner_matcher =
+            zeph_skills::matcher::SkillMatcher::new(&[&skill_meta], embed_fn_constant)
+                .await
+                .expect("single-skill matcher construction must succeed with a constant embed_fn");
+
+        let deps = ServeAgentDeps {
+            provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            embedding_provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            registry: Arc::new(parking_lot::RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: Some(zeph_skills::matcher::SkillMatcherBackend::InMemory(
+                inner_matcher,
+            )),
+            max_active_skills: 5,
+            // Non-default values for all 5 fields (critic S1): the builder's pre-fix defaults
+            // are 0.2 / false / 0.0 / "" / "", so none of these match.
+            skill_disambiguation_threshold: 0.77,
+            skill_two_stage_matching: true,
+            skill_confusability_threshold: 0.42,
+            skill_generation_provider: "gen".to_owned(),
+            skill_disambiguate_provider: "dis".to_owned(),
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            memory: Arc::clone(&memory),
+            history_limit: 10,
+            recall_limit: 5,
+            summarization_threshold: 1000,
+            session_config,
+            session_persistence_config: zeph_config::SessionConfig::default(),
+            resume_condenser: Arc::new(condenser),
+            resume_token_counter: Arc::new(token_counter),
+            provider_pool: Vec::new(),
+            provider_config_snapshot: zeph_core::ProviderConfigSnapshot::default(),
+        };
+
+        let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let mut agent = build_agent(channel);
+
+        let output = agent
+            .handle_skills("confusability")
+            .await
+            .expect("handle_skills(\"confusability\") must not error");
+        assert!(
+            output.contains("above 0.42"),
+            "ServeAgentDeps::skill_confusability_threshold = 0.42 must reach the built Agent's \
+             ConfusabilityReport exactly (not e.g. 0.77, disambiguation_threshold's value, from a \
+             swapped with_skill_matching_config argument); got: {output}"
         );
     }
 }

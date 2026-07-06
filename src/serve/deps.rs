@@ -38,6 +38,16 @@ pub(crate) struct ServeAgentDeps {
     pub(crate) registry: Arc<RwLock<SkillRegistry>>,
     pub(crate) matcher: Option<SkillMatcherBackend>,
     pub(crate) max_active_skills: usize,
+    /// `config.skills.disambiguation_threshold`/`two_stage_matching`/`confusability_threshold`,
+    /// wired into `Agent::with_skill_matching_config` per session — mirrors `src/runner.rs` and
+    /// `src/daemon.rs` (#5818: previously left on hardcoded builder defaults for `/sessions`).
+    pub(crate) skill_disambiguation_threshold: f32,
+    pub(crate) skill_two_stage_matching: bool,
+    pub(crate) skill_confusability_threshold: f32,
+    /// `config.skills.generation_provider`/`disambiguate_provider`, wired into
+    /// `Agent::with_skill_provider_names` per session (#5818).
+    pub(crate) skill_generation_provider: String,
+    pub(crate) skill_disambiguate_provider: String,
     pub(crate) tool_executor: Arc<dyn ErasedToolExecutor>,
     pub(crate) memory: Arc<SemanticMemory>,
     pub(crate) history_limit: u32,
@@ -168,6 +178,11 @@ pub(crate) async fn assemble_serve_deps(
         registry: Arc::clone(&core.registry),
         matcher: core.matcher.clone(),
         max_active_skills,
+        skill_disambiguation_threshold: config.skills.disambiguation_threshold,
+        skill_two_stage_matching: config.skills.two_stage_matching,
+        skill_confusability_threshold: config.skills.confusability_threshold,
+        skill_generation_provider: config.skills.generation_provider.as_str().to_owned(),
+        skill_disambiguate_provider: config.skills.disambiguate_provider.as_str().to_owned(),
         tool_executor,
         memory: Arc::clone(&core.memory),
         history_limit,

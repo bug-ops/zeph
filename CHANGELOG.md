@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(acp,server,skills)`: ACP sessions (`src/acp.rs::spawn_acp_agent`) and HTTP `/sessions`
+  gateway sessions (`src/serve/agent_factory.rs::build_agent_factory`) never called
+  `Agent::with_skill_matching_config`/`with_skill_provider_names`, so skill matching in those
+  channels always ran on hardcoded builder defaults regardless of `[skills]`
+  `disambiguation_threshold`/`two_stage_matching`/`confusability_threshold`/
+  `generation_provider`/`disambiguate_provider` in `config.toml` (#5818) — a fail-open gap for
+  anyone relying on non-default skill-matching config outside the CLI/daemon paths. Both
+  construction sites now source the same `config.skills.*` values already wired into
+  `src/runner.rs`/`src/daemon.rs`.
 - `fix(skills)`: `SkillMatcherBackend::refresh_skill_embeddings` (introduced by #5804) failed
   `clippy -D warnings` when built without the `qdrant` feature (#5809) — with `Qdrant` cfg'd
   out, the `meta`/`scored` parameters and the `async` marker had no user in the remaining

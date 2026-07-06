@@ -161,6 +161,16 @@ pub(crate) struct SharedAgentDeps {
     /// involves copying in-memory embedding vectors only for the `InMemory` variant.
     matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
     max_active_skills: usize,
+    /// `config.skills.disambiguation_threshold`/`two_stage_matching`/`confusability_threshold`,
+    /// wired into `Agent::with_skill_matching_config` per session — mirrors `src/runner.rs` and
+    /// `src/daemon.rs` (#5818: previously left on hardcoded builder defaults for ACP sessions).
+    skill_disambiguation_threshold: f32,
+    skill_two_stage_matching: bool,
+    skill_confusability_threshold: f32,
+    /// `config.skills.generation_provider`/`disambiguate_provider`, wired into
+    /// `Agent::with_skill_provider_names` per session (#5818).
+    skill_generation_provider: String,
+    skill_disambiguate_provider: String,
     /// Base tool composite (file/shell/scrape/diagnostics + MCP + `search_code`), *not*
     /// wrapped in any gate. `spawn_acp_agent` composites this further with `skill_loader`/
     /// `memory`/`overflow`/ACP-native fs/shell per session, then wraps the FULL per-session
@@ -836,6 +846,11 @@ async fn build_acp_deps(
         registry,
         matcher,
         max_active_skills: config.skills.max_active_skills.get(),
+        skill_disambiguation_threshold: config.skills.disambiguation_threshold,
+        skill_two_stage_matching: config.skills.two_stage_matching,
+        skill_confusability_threshold: config.skills.confusability_threshold,
+        skill_generation_provider: config.skills.generation_provider.as_str().to_owned(),
+        skill_disambiguate_provider: config.skills.disambiguate_provider.as_str().to_owned(),
         tool_executor,
         permission_policy,
         policy_enforcer,
@@ -1067,6 +1082,11 @@ async fn spawn_acp_agent(
     let registry = Arc::clone(&d.registry);
     let matcher = d.matcher.clone();
     let max_active_skills = d.max_active_skills;
+    let skill_disambiguation_threshold = d.skill_disambiguation_threshold;
+    let skill_two_stage_matching = d.skill_two_stage_matching;
+    let skill_confusability_threshold = d.skill_confusability_threshold;
+    let skill_generation_provider = d.skill_generation_provider.clone();
+    let skill_disambiguate_provider = d.skill_disambiguate_provider.clone();
     let tool_executor = Arc::clone(&d.tool_executor);
     let permission_policy = d.permission_policy.clone();
     let skill_paths = d.skill_paths.clone();
@@ -1377,6 +1397,12 @@ async fn spawn_acp_agent(
             tool_executor,
         )
         .apply_session_config(session_config)
+        .with_skill_matching_config(
+            skill_disambiguation_threshold,
+            skill_two_stage_matching,
+            skill_confusability_threshold,
+        )
+        .with_skill_provider_names(skill_generation_provider, skill_disambiguate_provider)
         .with_working_dir(session_ctx.working_dir.clone())
         .with_skill_reload(skill_paths, reload_rx)
         .with_plugin_dirs_supplier(move || plugin_dirs_supplier())
@@ -3132,6 +3158,78 @@ mod tests {
         };
         assert!(anomaly_cfg.enabled);
         assert!(orch_cfg.enabled);
+    }
+
+    /// #5818 regression: `build_acp_deps`/`assemble_serve_deps` must populate
+    /// `SharedAgentDeps`'s/`ServeAgentDeps`'s `skill_disambiguation_threshold`/
+    /// `skill_two_stage_matching`/`skill_confusability_threshold`/`skill_generation_provider`/
+    /// `skill_disambiguate_provider` from `config.skills.*` — previously these fields did not
+    /// exist on either deps struct at all, so neither `spawn_acp_agent` nor `build_agent_factory`
+    /// could call `Agent::with_skill_matching_config`/`with_skill_provider_names`, and every
+    /// ACP/`/sessions` agent silently ran skill matching on hardcoded builder defaults regardless
+    /// of config.
+    ///
+    /// Drives the real production `build_combined_deps` (mirroring
+    /// `crate::serve::test_support::build_shared_pair`'s use of a mock-provider
+    /// `AppBuilder::for_test`) rather than hand-constructing deps literals, so a regression in
+    /// either config-to-deps mapping (e.g. a swapped field, or one silently dropped) is caught —
+    /// covers both call sites in one test since `build_combined_deps` assembles both structs from
+    /// one `SharedCore`.
+    #[cfg(all(feature = "acp-http", feature = "session"))]
+    #[tokio::test]
+    async fn build_combined_deps_wires_skill_matching_config_from_config() {
+        let mut config =
+            zeph_core::config::Config::load(std::path::Path::new("/nonexistent")).unwrap();
+        config.llm.providers = vec![zeph_core::config::ProviderEntry {
+            provider_type: zeph_core::config::ProviderKind::Ollama,
+            base_url: Some("http://127.0.0.1:1".to_owned()),
+            model: Some("test-model".to_owned()),
+            ..Default::default()
+        }];
+        config.memory.sqlite_path = ":memory:".to_owned();
+        config.skills.disambiguation_threshold = 0.55;
+        config.skills.two_stage_matching = true;
+        config.skills.confusability_threshold = 0.65;
+        config.skills.generation_provider = zeph_common::ProviderName::new("gen-test");
+        config.skills.disambiguate_provider = zeph_common::ProviderName::new("disamb-test");
+
+        let app = crate::bootstrap::AppBuilder::for_test(config);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let supervisor = std::sync::Arc::new(zeph_common::TaskSupervisor::new(cancel));
+
+        let (serve_deps, acp_deps, _keepalive) = build_combined_deps(&app, &supervisor)
+            .await
+            .expect("build_combined_deps must succeed against a mock-provider AppBuilder");
+
+        assert!(
+            (serve_deps.skill_disambiguation_threshold - 0.55).abs() < f32::EPSILON,
+            "config.skills.disambiguation_threshold must flow into ServeAgentDeps"
+        );
+        assert!(
+            serve_deps.skill_two_stage_matching,
+            "config.skills.two_stage_matching must flow into ServeAgentDeps"
+        );
+        assert!(
+            (serve_deps.skill_confusability_threshold - 0.65).abs() < f32::EPSILON,
+            "config.skills.confusability_threshold must flow into ServeAgentDeps"
+        );
+        assert_eq!(serve_deps.skill_generation_provider, "gen-test");
+        assert_eq!(serve_deps.skill_disambiguate_provider, "disamb-test");
+
+        assert!(
+            (acp_deps.skill_disambiguation_threshold - 0.55).abs() < f32::EPSILON,
+            "config.skills.disambiguation_threshold must flow into SharedAgentDeps"
+        );
+        assert!(
+            acp_deps.skill_two_stage_matching,
+            "config.skills.two_stage_matching must flow into SharedAgentDeps"
+        );
+        assert!(
+            (acp_deps.skill_confusability_threshold - 0.65).abs() < f32::EPSILON,
+            "config.skills.confusability_threshold must flow into SharedAgentDeps"
+        );
+        assert_eq!(acp_deps.skill_generation_provider, "gen-test");
+        assert_eq!(acp_deps.skill_disambiguate_provider, "disamb-test");
     }
 
     #[tokio::test]
