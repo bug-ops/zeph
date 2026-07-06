@@ -273,33 +273,7 @@ impl ProactiveExplorer {
 /// LLM-chosen `name:`. Inserted right after `name:`; falls back to returning `skill_md`
 /// unchanged if no frontmatter delimiters are found.
 fn stamp_proactive_domain(skill_md: &str, domain: &str) -> String {
-    let Some(after_open) = skill_md.strip_prefix("---") else {
-        return skill_md.to_string();
-    };
-    let Some(close_pos) = after_open.find("---") else {
-        return skill_md.to_string();
-    };
-    let yaml = &after_open[..close_pos];
-    let rest = &after_open[close_pos..];
-
-    let mut lines: Vec<String> = yaml
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("proactive_domain:"))
-        .map(str::to_string)
-        .collect();
-
-    let insert_after = lines
-        .iter()
-        .position(|l| l.trim_start().starts_with("name:"))
-        .map_or(lines.len(), |p| p + 1);
-
-    lines.insert(insert_after, format!("proactive_domain: {domain}"));
-
-    format!(
-        "---{}\n---{}",
-        lines.join("\n"),
-        rest.trim_start_matches("---")
-    )
+    zeph_common::text::patch_frontmatter_fields(skill_md, &[("proactive_domain", domain)])
 }
 
 #[cfg(test)]

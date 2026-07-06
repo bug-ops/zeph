@@ -113,6 +113,67 @@ pub fn truncate_to_chars(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Insert or overwrite fields in a `SKILL.md` frontmatter block.
+///
+/// `fields` is an ordered list of `(key, value)` pairs. For each key, any existing
+/// line `key: ...` in the frontmatter is removed, then all fields are inserted (in
+/// the given order) immediately after the `name:` line — or at the end of the
+/// frontmatter block if `name:` is absent. Returns `skill_md` unchanged if it does
+/// not start with `---` or has no closing `---` delimiter.
+///
+/// Callers must pass distinct keys — duplicate keys in `fields` are not
+/// deduplicated and produce duplicate `key: value` lines in the output.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::text::patch_frontmatter_fields;
+///
+/// let md = "---\nname: foo\ndescription: Foo.\n---\n\n# Body\n";
+/// let patched = patch_frontmatter_fields(md, &[("source", "generator"), ("parent_skill", "bar")]);
+/// assert_eq!(
+///     patched,
+///     "---\nname: foo\nsource: generator\nparent_skill: bar\ndescription: Foo.\n---\n\n# Body\n"
+/// );
+/// ```
+#[must_use]
+pub fn patch_frontmatter_fields(skill_md: &str, fields: &[(&str, &str)]) -> String {
+    let Some(after_open) = skill_md.strip_prefix("---") else {
+        return skill_md.to_string();
+    };
+    let Some(close_pos) = after_open.find("---") else {
+        return skill_md.to_string();
+    };
+    let yaml = &after_open[..close_pos];
+    let rest = &after_open[close_pos..];
+
+    let mut lines: Vec<String> = yaml
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !fields
+                .iter()
+                .any(|(key, _)| t.starts_with(&format!("{key}:")))
+        })
+        .map(str::to_string)
+        .collect();
+
+    let insert_after = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("name:"))
+        .map_or(lines.len(), |p| p + 1);
+
+    for (i, (key, value)) in fields.iter().enumerate() {
+        lines.insert(insert_after + i, format!("{key}: {value}"));
+    }
+
+    format!(
+        "---{}\n---{}",
+        lines.join("\n"),
+        rest.trim_start_matches("---")
+    )
+}
+
 /// Escape XML special characters in a string.
 ///
 /// Replaces `&`, `<`, `>`, `"`, and `'` with their XML entity equivalents.
@@ -246,5 +307,63 @@ mod tests {
     fn to_chars_unicode() {
         let s = "😀😁😂😃😄extra";
         assert_eq!(truncate_to_chars(s, 5), "😀😁😂😃😄\u{2026}");
+    }
+
+    // patch_frontmatter_fields tests
+    #[test]
+    fn frontmatter_inserts_after_name() {
+        let md = "---\nname: foo\ndescription: Foo.\n---\n\n# Body\n";
+        let patched = patch_frontmatter_fields(md, &[("source", "generator")]);
+        assert!(
+            patched.contains("name: foo\nsource: generator\n"),
+            "patched: {patched}"
+        );
+    }
+
+    #[test]
+    fn frontmatter_replaces_existing_values() {
+        let md = "---\nname: foo\nsource: old\nparent_skill: old-parent\ndescription: Foo.\n---\n\n# Body\n";
+        let patched =
+            patch_frontmatter_fields(md, &[("source", "new"), ("parent_skill", "new-parent")]);
+        assert_eq!(patched.matches("source:").count(), 1);
+        assert!(patched.contains("source: new"));
+        assert!(patched.contains("parent_skill: new-parent"));
+        assert!(!patched.contains("old-parent"));
+    }
+
+    #[test]
+    fn frontmatter_no_delimiters_unchanged() {
+        let md = "# No frontmatter\n\nbody";
+        assert_eq!(patch_frontmatter_fields(md, &[("source", "x")]), md);
+    }
+
+    #[test]
+    fn frontmatter_no_name_line_appends_at_end() {
+        let md = "---\ndescription: Foo.\n---\n\n# Body\n";
+        let patched = patch_frontmatter_fields(md, &[("source", "generator")]);
+        assert!(
+            patched.contains("description: Foo.\nsource: generator\n---"),
+            "patched: {patched}"
+        );
+    }
+
+    #[test]
+    fn frontmatter_missing_closing_delimiter_unchanged() {
+        let md = "---\nname: foo\ndescription: Foo.\n\nbody without closing delimiter";
+        assert_eq!(patch_frontmatter_fields(md, &[("source", "x")]), md);
+    }
+
+    #[test]
+    fn frontmatter_closing_delimiter_preceded_by_newline() {
+        // Regression test for #5725: the closing `---` must not be glued to the
+        // last frontmatter line.
+        let md = "---\nname: foo\ndescription: Foo.\n---\n\n# Body\n";
+        let patched =
+            patch_frontmatter_fields(md, &[("source", "generator"), ("parent_skill", "bar")]);
+        assert!(
+            patched.contains("Foo.\n---"),
+            "closing delimiter not preceded by newline: {patched}"
+        );
+        assert!(!patched.contains("Foo.---"), "patched: {patched}");
     }
 }

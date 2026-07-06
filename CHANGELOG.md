@@ -74,6 +74,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(skills,core)`: `zeph-skills::proactive::stamp_proactive_domain` and
+  `zeph-core::agent::heuristic_promotion::patch_frontmatter` reimplemented the same
+  "patch a stable marker field into `SKILL.md` frontmatter" logic (#5725), and
+  `patch_frontmatter`'s reassembly (`format!("---{}---{}", ...)`) was missing the newline
+  before the closing `---` delimiter that `stamp_proactive_domain`'s equivalent already had,
+  producing malformed frontmatter (the closing `---` glued to the last YAML line) whenever
+  `patch_frontmatter` ran. Both call sites now delegate to a new shared
+  `zeph_common::text::patch_frontmatter_fields` helper, which fixes the missing newline and
+  removes the duplicated split/filter/insert/reassemble logic. Adversarial review of this
+  change found the identical missing-newline defect in the same file's `patch_version`
+  (`crates/zeph-core/src/agent/heuristic_promotion.rs`) — a third, structurally distinct
+  copy that runs on every versioned skill body before persistence — so its reassembly was
+  fixed in place too (not folded into the shared helper, since `patch_version` preserves
+  the `version:` line's original position rather than always moving it after `name:`).
 - `fix(subagent)`: `WorktreeCleanupGuard::drop` (`crates/zeph-subagent/src/manager/worktree.rs`)
   spawned the worktree-removal cleanup task via `tokio::runtime::Handle::try_current().spawn(...)`
   instead of routing through `TaskSupervisor` (#5412), violating the project's mandatory

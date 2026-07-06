@@ -594,36 +594,9 @@ fn build_generated_skill(name: &str, content: &str) -> Option<GeneratedSkill> {
 /// These fields are required by spec 061 for traceability of promoted skills.
 /// Existing values are replaced; missing values are inserted after `name:`.
 fn patch_frontmatter(skill_md: &str, source: &str, parent_skill: &str) -> String {
-    let Some(after_open) = skill_md.strip_prefix("---") else {
-        return skill_md.to_string();
-    };
-    let Some(close_pos) = after_open.find("---") else {
-        return skill_md.to_string();
-    };
-    let yaml = &after_open[..close_pos];
-    let rest = &after_open[close_pos..];
-
-    let mut lines: Vec<String> = yaml
-        .lines()
-        .filter(|l| {
-            let t = l.trim_start();
-            !t.starts_with("source:") && !t.starts_with("parent_skill:")
-        })
-        .map(str::to_string)
-        .collect();
-
-    let insert_after = lines
-        .iter()
-        .position(|l| l.trim_start().starts_with("name:"))
-        .map_or(lines.len(), |p| p + 1);
-
-    lines.insert(insert_after, format!("parent_skill: {parent_skill}"));
-    lines.insert(insert_after, format!("source: {source}"));
-
-    format!(
-        "---{}---{}",
-        lines.join("\n"),
-        rest.trim_start_matches("---")
+    zeph_common::text::patch_frontmatter_fields(
+        skill_md,
+        &[("source", source), ("parent_skill", parent_skill)],
     )
 }
 
@@ -660,7 +633,7 @@ fn patch_version(skill_md: &str, new_version: u32) -> String {
             lines.join("\n")
         };
 
-        return format!("---{new_yaml}{rest}");
+        return format!("---{new_yaml}\n---{}", rest.trim_start_matches("---"));
     }
     skill_md.to_string()
 }
@@ -728,6 +701,11 @@ mod tests {
             !patched.contains("version: 1"),
             "old version still present: {patched}"
         );
+        // Regression: the closing `---` must not be glued to the last frontmatter line.
+        assert!(
+            patched.contains("Foo.\n---"),
+            "closing delimiter not preceded by newline: {patched}"
+        );
     }
 
     #[test]
@@ -735,6 +713,11 @@ mod tests {
         let md = "---\nname: foo\ndescription: Foo.\n---\n\n# Body\n";
         let patched = patch_version(md, 3);
         assert!(patched.contains("version: 3"), "patched: {patched}");
+        // Regression: the closing `---` must not be glued to the last frontmatter line.
+        assert!(
+            patched.contains("Foo.\n---"),
+            "closing delimiter not preceded by newline: {patched}"
+        );
     }
 
     #[test]
