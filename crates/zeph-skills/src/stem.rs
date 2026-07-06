@@ -129,9 +129,13 @@ pub fn build_pattern_to_skill_prompt(tool_sequence: &str, sample_contexts: &[Str
             .collect::<Vec<_>>()
             .join("\n")
     };
-    PATTERN_TO_SKILL_PROMPT_TEMPLATE
-        .replace("{tool_sequence}", tool_sequence)
-        .replace("{sample_contexts}", &contexts)
+    crate::prompt_template::render(
+        PATTERN_TO_SKILL_PROMPT_TEMPLATE,
+        &[
+            ("tool_sequence", tool_sequence),
+            ("sample_contexts", &contexts),
+        ],
+    )
 }
 
 #[cfg(test)]

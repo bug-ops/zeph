@@ -43,11 +43,7 @@ impl CommandHandler<CommandContext<'_>> for LspCommand {
         Box::pin(
             async move {
                 let result = ctx.agent.lsp_status().await?;
-                if result.is_empty() {
-                    Ok(CommandOutput::Silent)
-                } else {
-                    Ok(CommandOutput::Message(result))
-                }
+                Ok(CommandOutput::message_or_silent(result))
             }
             .instrument(span),
         )

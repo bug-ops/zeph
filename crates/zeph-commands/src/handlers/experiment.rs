@@ -56,11 +56,7 @@ impl CommandHandler<CommandContext<'_>> for ExperimentCommand {
                     format!("/experiment {args}")
                 };
                 let result = ctx.agent.handle_experiment(&input).await?;
-                if result.is_empty() {
-                    Ok(CommandOutput::Silent)
-                } else {
-                    Ok(CommandOutput::Message(result))
-                }
+                Ok(CommandOutput::message_or_silent(result))
             }
             .instrument(span),
         )

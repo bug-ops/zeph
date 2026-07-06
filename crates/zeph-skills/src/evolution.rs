@@ -16,6 +16,8 @@
 
 use zeph_common::ToolName;
 
+use crate::prompt_template::render;
+
 /// Structured failure classification for tool execution errors.
 ///
 /// Used to decide whether a failure is attributable to the skill (systematic) or to
@@ -236,11 +238,15 @@ pub fn build_reflection_prompt(
     error_context: &str,
     tool_output: &str,
 ) -> String {
-    REFLECTION_PROMPT_TEMPLATE
-        .replace("{name}", name)
-        .replace("{body}", body)
-        .replace("{error_context}", error_context)
-        .replace("{tool_output}", tool_output)
+    render(
+        REFLECTION_PROMPT_TEMPLATE,
+        &[
+            ("name", name),
+            ("body", body),
+            ("error_context", error_context),
+            ("tool_output", tool_output),
+        ],
+    )
 }
 
 pub const IMPROVEMENT_PROMPT_TEMPLATE: &str = "\
@@ -272,12 +278,16 @@ pub fn build_improvement_prompt(
     let feedback_section = user_feedback.map_or_else(String::new, |fb| {
         format!("\nUser feedback on the current skill:\n{fb}\n")
     });
-    IMPROVEMENT_PROMPT_TEMPLATE
-        .replace("{name}", name)
-        .replace("{original_body}", original_body)
-        .replace("{error_context}", error_context)
-        .replace("{successful_response}", successful_response)
-        .replace("{user_feedback_section}", &feedback_section)
+    render(
+        IMPROVEMENT_PROMPT_TEMPLATE,
+        &[
+            ("name", name),
+            ("original_body", original_body),
+            ("error_context", error_context),
+            ("successful_response", successful_response),
+            ("user_feedback_section", &feedback_section),
+        ],
+    )
 }
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
@@ -313,22 +323,27 @@ pub fn build_evaluation_prompt(
     metrics: &SkillMetrics,
 ) -> String {
     let rate = format!("{:.0}", metrics.success_rate() * 100.0);
-    EVALUATION_PROMPT_TEMPLATE
-        .replace("{name}", name)
-        .replace("{body}", body)
-        .replace("{error_context}", error_context)
-        .replace("{tool_output}", tool_output)
-        .replace("{success_rate}", &rate)
+    render(
+        EVALUATION_PROMPT_TEMPLATE,
+        &[
+            ("name", name),
+            ("body", body),
+            ("error_context", error_context),
+            ("tool_output", tool_output),
+            ("success_rate", &rate),
+        ],
+    )
 }
 
 /// Domain gate prompt template for evaluating whether an auto-generated skill body stays
 /// within the domain of the original skill.
 ///
 /// Placeholders: `{description}`, `{name}`, `{body}` — substituted via
-/// [`build_domain_gate_prompt`] using `str::replace` (not `format!()`).
+/// [`build_domain_gate_prompt`] using [`render`] (`str::replace` per key, not `format!()`).
 ///
-/// The JSON example in the template uses literal curly braces, which is safe here
-/// because the string is never passed through `format!()`.
+/// The JSON example in the template (`{"domain_relevant": bool, "reasoning": string}`) uses
+/// literal curly braces, which is safe here: `render` only replaces the exact substrings
+/// `{description}`, `{name}`, and `{body}`, none of which appear inside the JSON example.
 pub const DOMAIN_GATE_PROMPT_TEMPLATE: &str = "\
 Evaluate whether the following auto-generated skill version stays within \
 the domain of the original skill.
@@ -355,14 +370,14 @@ pub struct DomainGateResult {
 
 /// Build a domain gate prompt by substituting template placeholders.
 ///
-/// Uses [`str::replace`] rather than `format!()` to avoid interpreting the JSON
-/// example braces in the template as format arguments.
+/// Uses [`render`] (per-key `str::replace`) rather than `format!()` to avoid interpreting the
+/// JSON example braces in the template as format arguments.
 #[must_use]
 pub fn build_domain_gate_prompt(name: &str, description: &str, body: &str) -> String {
-    DOMAIN_GATE_PROMPT_TEMPLATE
-        .replace("{description}", description)
-        .replace("{name}", name)
-        .replace("{body}", body)
+    render(
+        DOMAIN_GATE_PROMPT_TEMPLATE,
+        &[("description", description), ("name", name), ("body", body)],
+    )
 }
 
 // --- ARISE: trace-based improvement ---
@@ -389,10 +404,14 @@ Only output the improved skill body (no frontmatter, no explanation).";
 /// Build an ARISE trace improvement prompt.
 #[must_use]
 pub fn build_trace_improvement_prompt(name: &str, original_body: &str, tool_trace: &str) -> String {
-    TRACE_IMPROVEMENT_PROMPT_TEMPLATE
-        .replace("{name}", name)
-        .replace("{original_body}", original_body)
-        .replace("{tool_trace}", tool_trace)
+    render(
+        TRACE_IMPROVEMENT_PROMPT_TEMPLATE,
+        &[
+            ("name", name),
+            ("original_body", original_body),
+            ("tool_trace", tool_trace),
+        ],
+    )
 }
 
 /// Prompt template for extracting step corrections from a failure+success trace pair.
@@ -429,11 +448,15 @@ pub fn build_correction_extraction_prompt(
     failure_tool: &str,
     successful_approach: &str,
 ) -> String {
-    CORRECTION_EXTRACTION_PROMPT_TEMPLATE
-        .replace("{name}", name)
-        .replace("{failure_error}", failure_error)
-        .replace("{failure_tool}", failure_tool)
-        .replace("{successful_approach}", successful_approach)
+    render(
+        CORRECTION_EXTRACTION_PROMPT_TEMPLATE,
+        &[
+            ("name", name),
+            ("failure_error", failure_error),
+            ("failure_tool", failure_tool),
+            ("successful_approach", successful_approach),
+        ],
+    )
 }
 
 /// Absolute maximum body size to prevent exponential growth across generations.

@@ -70,6 +70,7 @@ pub mod miner;
 pub mod proactive;
 pub mod promoter;
 pub mod prompt;
+pub(crate) mod prompt_template;
 #[cfg(feature = "qdrant")]
 pub mod qdrant_matcher;
 pub mod registry;

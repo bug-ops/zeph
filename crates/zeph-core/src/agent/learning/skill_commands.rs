@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::fmt::Write as _;
+use std::sync::Arc;
+
+use zeph_memory::semantic::SemanticMemory;
 
 use super::super::{Agent, Channel, LlmProvider};
 use super::background::write_skill_file;
@@ -411,18 +414,8 @@ impl<C: Channel> Agent<C> {
             return Ok(format!("Version {ver} not found for \"{name}\"."));
         };
 
-        memory
-            .sqlite()
-            .activate_skill_version(name, target_id)
+        self.activate_version_and_write(&memory, name, target_id, &target_desc, &target_body)
             .await?;
-
-        write_skill_file(
-            &self.services.skill.skill_paths,
-            name,
-            &target_desc,
-            &target_body,
-        )
-        .await?;
 
         Ok(format!("Activated v{ver} for \"{name}\"."))
     }
@@ -451,18 +444,8 @@ impl<C: Channel> Agent<C> {
             return Ok(format!("No pending auto version for \"{name}\"."));
         };
 
-        memory
-            .sqlite()
-            .activate_skill_version(name, target_id)
+        self.activate_version_and_write(&memory, name, target_id, &target_desc, &target_body)
             .await?;
-
-        write_skill_file(
-            &self.services.skill.skill_paths,
-            name,
-            &target_desc,
-            &target_body,
-        )
-        .await?;
 
         Ok(format!(
             "Approved and activated v{target_ver} for \"{name}\"."
@@ -492,11 +475,38 @@ impl<C: Channel> Agent<C> {
             return Ok(format!("Original version not found for \"{name}\"."));
         };
 
-        memory.sqlite().activate_skill_version(name, v1_id).await?;
-
-        write_skill_file(&self.services.skill.skill_paths, name, &v1_desc, &v1_body).await?;
+        self.activate_version_and_write(&memory, name, v1_id, &v1_desc, &v1_body)
+            .await?;
 
         Ok(format!("Reset \"{name}\" to original v1."))
+    }
+
+    /// Activate `target_id` as the active skill version and rewrite `SKILL.md` to match.
+    ///
+    /// Shared by activate/approve/reset handlers, which each select `target_id` via a
+    /// different predicate before delegating the write-through here.
+    async fn activate_version_and_write(
+        &mut self,
+        memory: &Arc<SemanticMemory>,
+        name: &str,
+        target_id: i64,
+        target_desc: &str,
+        target_body: &str,
+    ) -> Result<(), super::super::error::AgentError> {
+        memory
+            .sqlite()
+            .activate_skill_version(name, target_id)
+            .await?;
+
+        write_skill_file(
+            &self.services.skill.skill_paths,
+            name,
+            target_desc,
+            target_body,
+        )
+        .await?;
+
+        Ok(())
     }
 }
 

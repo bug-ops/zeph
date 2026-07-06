@@ -49,11 +49,7 @@ impl CommandHandler<CommandContext<'_>> for PolicyCommand {
         Box::pin(
             async move {
                 let result = ctx.agent.handle_policy(args).await?;
-                if result.is_empty() {
-                    Ok(CommandOutput::Silent)
-                } else {
-                    Ok(CommandOutput::Message(result))
-                }
+                Ok(CommandOutput::message_or_silent(result))
             }
             .instrument(span),
         )

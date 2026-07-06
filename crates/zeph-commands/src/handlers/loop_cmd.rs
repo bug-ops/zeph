@@ -50,10 +50,8 @@ impl CommandHandler<CommandContext<'_>> for LoopCommand {
         let span = tracing::info_span!("commands.loop.handle");
         Box::pin(
             async move {
-                match ctx.agent.handle_loop(args).await? {
-                    msg if msg.is_empty() => Ok(CommandOutput::Silent),
-                    msg => Ok(CommandOutput::Message(msg)),
-                }
+                let msg = ctx.agent.handle_loop(args).await?;
+                Ok(CommandOutput::message_or_silent(msg))
             }
             .instrument(span),
         )

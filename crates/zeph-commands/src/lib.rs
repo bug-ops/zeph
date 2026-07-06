@@ -107,6 +107,18 @@ pub enum CommandOutput {
     Continue,
 }
 
+impl CommandOutput {
+    /// `Silent` for an empty string, `Message(s)` otherwise.
+    #[must_use]
+    pub fn message_or_silent(s: String) -> Self {
+        if s.is_empty() {
+            Self::Silent
+        } else {
+            Self::Message(s)
+        }
+    }
+}
+
 /// Category for grouping commands in `/help` output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -526,6 +538,22 @@ mod tests {
         let result = reg.dispatch(&mut ctx, "/secret", false).await;
         let err = result.unwrap().unwrap_err();
         assert!(err.0.contains("trusted"));
+    }
+
+    #[test]
+    fn message_or_silent_empty_is_silent() {
+        assert!(matches!(
+            CommandOutput::message_or_silent(String::new()),
+            CommandOutput::Silent
+        ));
+    }
+
+    #[test]
+    fn message_or_silent_non_empty_is_message() {
+        let CommandOutput::Message(msg) = CommandOutput::message_or_silent("hi".to_string()) else {
+            panic!("expected Message");
+        };
+        assert_eq!(msg, "hi");
     }
 
     #[test]

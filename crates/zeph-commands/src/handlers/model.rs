@@ -47,11 +47,7 @@ impl CommandHandler<CommandContext<'_>> for ModelCommand {
         Box::pin(
             async move {
                 let result = ctx.agent.handle_model(args).await;
-                if result.is_empty() {
-                    Ok(CommandOutput::Silent)
-                } else {
-                    Ok(CommandOutput::Message(result))
-                }
+                Ok(CommandOutput::message_or_silent(result))
             }
             .instrument(span),
         )
@@ -95,11 +91,7 @@ impl CommandHandler<CommandContext<'_>> for ProviderCommand {
         Box::pin(
             async move {
                 let result = ctx.agent.handle_provider(args).await;
-                if result.is_empty() {
-                    Ok(CommandOutput::Silent)
-                } else {
-                    Ok(CommandOutput::Message(result))
-                }
+                Ok(CommandOutput::message_or_silent(result))
             }
             .instrument(span),
         )

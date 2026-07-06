@@ -38,10 +38,8 @@ impl CommandHandler<CommandContext<'_>> for PluginsCommand {
         let span = tracing::info_span!("commands.plugins.handle");
         Box::pin(
             async move {
-                match ctx.agent.handle_plugins(args).await? {
-                    msg if msg.is_empty() => Ok(CommandOutput::Silent),
-                    msg => Ok(CommandOutput::Message(msg)),
-                }
+                let msg = ctx.agent.handle_plugins(args).await?;
+                Ok(CommandOutput::message_or_silent(msg))
             }
             .instrument(span),
         )

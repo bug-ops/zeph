@@ -36,6 +36,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(commands,core,skills)`: deduplicated three independently-drifting code paths in the
+  commands/skills subsystem (epic #5714 duplication-backlog cluster 5). The empty-string-to-
+  `CommandOutput::Silent` branch, previously copy-pasted across 8 call sites in 7
+  `zeph-commands` handler modules, is now `CommandOutput::message_or_silent` (#5447). The
+  version-lookup-then-activate-and-write-file tail shared by `handle_skill_activate_as_string`,
+  `handle_skill_approve_as_string`, and `handle_skill_reset_as_string`
+  (`crates/zeph-core/src/agent/learning/skill_commands.rs`) is now a single
+  `activate_version_and_write` helper; each handler keeps its own version-selection predicate
+  and success message (#5663). The 8 `const TEMPLATE` + chained `.replace()` prompt builders in
+  `zeph-skills` (`evolution.rs`, `stem.rs`, `erl.rs`) now call a shared
+  `prompt_template::render` helper instead of repeating the substitution chain; the existing
+  curly-brace-safety property of `DOMAIN_GATE_PROMPT_TEMPLATE` (avoiding `format!()` because its
+  JSON example contains literal braces) is preserved unchanged (#5427). Pure refactor, no
+  behavior change; covered by 5 new unit tests targeting the extracted helpers directly.
 - `refactor(core)`: deduplicated three independently-duplicated code paths in the agent
   tool-dispatch pipeline. Merged `call_non_streaming`/`call_non_streaming_with_span`
   (`crates/zeph-core/src/agent/tool_execution/llm_dispatch.rs`) into a single function

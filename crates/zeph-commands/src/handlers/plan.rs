@@ -49,11 +49,7 @@ impl CommandHandler<CommandContext<'_>> for PlanCommand {
                     format!("/plan {args}")
                 };
                 let result = ctx.agent.handle_plan(&input).await?;
-                if result.is_empty() {
-                    Ok(CommandOutput::Silent)
-                } else {
-                    Ok(CommandOutput::Message(result))
-                }
+                Ok(CommandOutput::message_or_silent(result))
             }
             .instrument(span),
         )

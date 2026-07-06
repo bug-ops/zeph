@@ -72,10 +72,14 @@ pub fn build_reflection_extract_prompt(
     tool_calls: &str,
     outcome: &str,
 ) -> String {
-    REFLECTION_EXTRACT_PROMPT_TEMPLATE
-        .replace("{task_summary}", task_summary)
-        .replace("{tool_calls}", tool_calls)
-        .replace("{outcome}", outcome)
+    crate::prompt_template::render(
+        REFLECTION_EXTRACT_PROMPT_TEMPLATE,
+        &[
+            ("task_summary", task_summary),
+            ("tool_calls", tool_calls),
+            ("outcome", outcome),
+        ],
+    )
 }
 
 /// Simple text similarity check for deduplication (word-set Jaccard coefficient).
