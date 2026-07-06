@@ -339,6 +339,11 @@ impl LlmProvider for RouterProvider {
                                     timeout_ms = embed_timeout_ms,
                                     "embed: provider timed out, falling back"
                                 );
+                                router.record_availability(
+                                    p.name(),
+                                    false,
+                                    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                                );
                                 last_err = Some(LlmError::Timeout);
                                 break;
                             }
@@ -456,6 +461,11 @@ impl LlmProvider for RouterProvider {
                                     provider = p.name(),
                                     timeout_ms = embed_timeout_ms,
                                     "embed_batch: provider timed out, falling back"
+                                );
+                                router.record_availability(
+                                    p.name(),
+                                    false,
+                                    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                                 );
                                 last_err = Some(LlmError::Timeout);
                                 break;

@@ -177,8 +177,9 @@ impl CocoonClient {
     ///
     /// # Errors
     ///
-    /// Returns [`LlmError::Http`] on connection failure, or [`LlmError::RateLimited`]
-    /// once retries against repeated 429/503 responses are exhausted.
+    /// Returns [`LlmError::Http`] on connection failure, or once retries against repeated
+    /// 429/503 responses are exhausted: [`LlmError::RateLimited`] if the last response was
+    /// 429, or [`LlmError::Unavailable`] if it was 503.
     pub async fn post_multipart<F>(
         &self,
         path: &str,
@@ -221,8 +222,9 @@ impl CocoonClient {
     ///
     /// # Errors
     ///
-    /// Returns [`LlmError::Http`] on connection failure, or [`LlmError::RateLimited`]
-    /// once retries against repeated 429/503 responses are exhausted.
+    /// Returns [`LlmError::Http`] on connection failure, or once retries against repeated
+    /// 429/503 responses are exhausted: [`LlmError::RateLimited`] if the last response was
+    /// 429, or [`LlmError::Unavailable`] if it was 503.
     pub async fn post(
         &self,
         path: &str,

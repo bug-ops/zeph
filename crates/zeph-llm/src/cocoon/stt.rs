@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use crate::cocoon::client::CocoonClient;
 use crate::error::LlmError;
+use crate::provider::StatusTx;
 use crate::stt::{SpeechToText, Transcription};
 
 /// STT provider that routes audio through the Cocoon sidecar.
@@ -38,6 +39,7 @@ pub struct CocoonSttProvider {
     model: String,
     client: Arc<CocoonClient>,
     language: Option<String>,
+    status_tx: Option<StatusTx>,
 }
 
 impl std::fmt::Debug for CocoonSttProvider {
@@ -72,6 +74,7 @@ impl CocoonSttProvider {
             model: model.into(),
             client,
             language: None,
+            status_tx: None,
         }
     }
 
@@ -85,6 +88,11 @@ impl CocoonSttProvider {
             self.language = Some(lang);
         }
         self
+    }
+
+    /// Set the TUI status sender; retry/backoff messages are forwarded to the TUI when set.
+    pub fn set_status_tx(&mut self, tx: StatusTx) {
+        self.status_tx = Some(tx);
     }
 }
 
@@ -111,20 +119,24 @@ impl SpeechToText for CocoonSttProvider {
                 // cannot be cloned or reused.
                 let resp = self
                     .client
-                    .post_multipart("/v1/audio/transcriptions", None, move || {
-                        let part = reqwest::multipart::Part::bytes(audio.clone())
-                            .file_name(fname.clone())
-                            .mime_str("application/octet-stream")?;
+                    .post_multipart(
+                        "/v1/audio/transcriptions",
+                        self.status_tx.as_ref(),
+                        move || {
+                            let part = reqwest::multipart::Part::bytes(audio.clone())
+                                .file_name(fname.clone())
+                                .mime_str("application/octet-stream")?;
 
-                        let mut form = reqwest::multipart::Form::new()
-                            .text("model", model.clone())
-                            .text("response_format", "json")
-                            .part("file", part);
-                        if let Some(ref lang) = language {
-                            form = form.text("language", lang.clone());
-                        }
-                        Ok(form)
-                    })
+                            let mut form = reqwest::multipart::Form::new()
+                                .text("model", model.clone())
+                                .text("response_format", "json")
+                                .part("file", part);
+                            if let Some(ref lang) = language {
+                                form = form.text("language", lang.clone());
+                            }
+                            Ok(form)
+                        },
+                    )
                     .await?;
 
                 if !resp.status().is_success() {
@@ -164,6 +176,15 @@ mod tests {
         let stt = CocoonSttProvider::new("whisper-1", make_client());
         assert_eq!(stt.model, "whisper-1");
         assert!(stt.language.is_none());
+        assert!(stt.status_tx.is_none());
+    }
+
+    #[test]
+    fn set_status_tx_stores_sender() {
+        let mut stt = CocoonSttProvider::new("whisper-1", make_client());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        stt.set_status_tx(tx);
+        assert!(stt.status_tx.is_some());
     }
 
     #[test]

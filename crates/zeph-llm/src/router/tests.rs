@@ -1161,6 +1161,62 @@ async fn embed_batch_timeout_falls_back_to_next_provider() {
     assert_eq!(result, vec![vec![1.0, 2.0, 3.0]]);
 }
 
+/// Regression for #5699: a provider whose `embed()` times out must be recorded as
+/// unavailable via `record_availability`, just like the retry-exhaustion and generic
+/// error branches — otherwise it keeps being tried at full priority forever.
+#[tokio::test]
+async fn embed_timeout_records_provider_unavailable() {
+    use crate::mock::MockProvider;
+
+    let p = AnyProvider::Mock(
+        MockProvider::default()
+            .with_embed_delay(200)
+            .with_name("slow"),
+    );
+    let r = RouterProvider::new(vec![p])
+        .with_thompson(None)
+        .with_embed_timeout(10);
+    let _ = r.embed("hello").await;
+
+    let stats = r.thompson_stats();
+    let entry = stats.iter().find(|(name, ..)| name == "slow");
+    let (_, alpha, beta) = entry.unwrap_or_else(|| {
+        panic!("embed timeout must call record_availability so 'slow' appears in thompson_stats")
+    });
+    assert!(
+        *beta > *alpha,
+        "timeout must be recorded as a failure (beta > alpha), got alpha={alpha}, beta={beta}"
+    );
+}
+
+/// Regression for #5699: same as above for `embed_batch()`.
+#[tokio::test]
+async fn embed_batch_timeout_records_provider_unavailable() {
+    use crate::mock::MockProvider;
+
+    let p = AnyProvider::Mock(
+        MockProvider::default()
+            .with_embed_delay(200)
+            .with_name("slow"),
+    );
+    let r = RouterProvider::new(vec![p])
+        .with_thompson(None)
+        .with_embed_timeout(10);
+    let _ = r.embed_batch(&["hello"]).await;
+
+    let stats = r.thompson_stats();
+    let entry = stats.iter().find(|(name, ..)| name == "slow");
+    let (_, alpha, beta) = entry.unwrap_or_else(|| {
+        panic!(
+            "embed_batch timeout must call record_availability so 'slow' appears in thompson_stats"
+        )
+    });
+    assert!(
+        *beta > *alpha,
+        "timeout must be recorded as a failure (beta > alpha), got alpha={alpha}, beta={beta}"
+    );
+}
+
 // ── quality_gate tests ────────────────────────────────────────────────────
 
 /// `with_quality_gate()` happy path: when cosine similarity >= threshold the

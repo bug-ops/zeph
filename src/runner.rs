@@ -3546,6 +3546,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                     stt_entry,
                     language,
                     config.timeouts.llm_request_timeout_secs,
+                    Some(agent_status_tx.clone()),
                 ),
                 #[cfg(not(feature = "cocoon"))]
                 zeph_core::config::ProviderKind::Cocoon => {

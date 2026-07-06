@@ -1823,7 +1823,8 @@ pub(crate) fn apply_whisper_stt<C: Channel>(
 ///
 /// Constructs a [`CocoonClient`] from `entry`'s `cocoon_client_url` and `cocoon_access_hash`
 /// fields, then wires up a [`CocoonSttProvider`] using the LLM timeout so that large audio
-/// files are not cut off by a short health-check timeout.
+/// files are not cut off by a short health-check timeout. `status_tx`, when set, is forwarded
+/// to the provider so retried transcription requests surface a TUI status message.
 ///
 /// [`CocoonClient`]: zeph_llm::cocoon::CocoonClient
 /// [`CocoonSttProvider`]: zeph_llm::cocoon::CocoonSttProvider
@@ -1833,6 +1834,7 @@ pub(crate) fn apply_cocoon_stt<C: Channel>(
     entry: &zeph_core::config::ProviderEntry,
     language: &str,
     llm_timeout_secs: u64,
+    status_tx: Option<zeph_llm::provider::StatusTx>,
 ) -> zeph_core::agent::Agent<C> {
     let model = entry.stt_model.as_deref().unwrap_or("whisper-1");
     let base_url = entry
@@ -1844,7 +1846,10 @@ pub(crate) fn apply_cocoon_stt<C: Channel>(
         entry.cocoon_access_hash.clone(),
         std::time::Duration::from_secs(llm_timeout_secs),
     ));
-    let stt = zeph_llm::cocoon::CocoonSttProvider::new(model, client).with_language(language);
+    let mut stt = zeph_llm::cocoon::CocoonSttProvider::new(model, client).with_language(language);
+    if let Some(tx) = status_tx {
+        stt.set_status_tx(tx);
+    }
     tracing::info!(model, base_url, "STT enabled via Cocoon sidecar");
     agent.with_stt(Box::new(stt))
 }

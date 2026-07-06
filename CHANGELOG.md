@@ -262,6 +262,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(llm)`: `RouterProvider::embed`/`embed_batch` (`crates/zeph-llm/src/router/provider_impl.rs`)
+  did not call `record_availability(provider_name, false, ...)` on the per-call timeout branch,
+  unlike the retry-exhaustion and generic-error branches (#5699). A provider that timed out on
+  every embed call was never marked unavailable in Thompson/EMA router bookkeeping, so it kept
+  being tried at full priority instead of being deprioritized. Both timeout branches now record
+  the failure before falling back.
+- `fix(llm)`: `CocoonSttProvider::transcribe` (`crates/zeph-llm/src/cocoon/stt.rs`) passed `None`
+  for `CocoonClient::post_multipart`'s `status_tx` parameter, unlike the chat/embed calls in
+  `CocoonProvider` which thread `self.status_tx.as_ref()` (#5701). Retried STT requests showed no
+  "retrying" TUI status. Added a `status_tx` field and `set_status_tx()` setter to
+  `CocoonSttProvider`, mirroring `CocoonProvider`'s pattern, and threaded it through
+  `apply_cocoon_stt` (`src/agent_setup.rs`) from the agent's existing status channel.
+- `fix(llm)`: verified #5700 (Cocoon retry stacking — exhausted-retry error classified as
+  `RateLimited` instead of `Unavailable`, causing the router to retry an already-retried Cocoon
+  provider) is already resolved as a side effect of #5695's `send_with_retry` last-seen-status
+  classification; `crates/zeph-llm/src/cocoon/tests.rs`'s existing
+  `cocoon_retry_exhausted_returns_unavailable` test already covers the sustained-503 case through
+  a real `CocoonProvider::chat` call. No code change required. Corrected the stale `# Errors` doc
+  comments on `CocoonClient::post`/`post_multipart` (`crates/zeph-llm/src/cocoon/client.rs`),
+  which still claimed exhausted retries only return `RateLimited` — inaccurate since #5695 and
+  directly contradicting this verification.
 - `fix(core)`: `ShadowSentinel::classify_tool` (`crates/zeph-core/src/agent/shadow_sentinel.rs`)
   gated probe engagement for MCP-origin tools entirely on a fixed keyword-substring list
   (`*write*`/`*edit*`/`*delete*`/`*exec*`); a tool named with a different verb (`remove`,
