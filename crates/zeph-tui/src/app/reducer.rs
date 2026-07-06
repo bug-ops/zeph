@@ -15,7 +15,7 @@ use super::{App, ChatMessage, InputMode, MessageRole, Panel, format_security_rep
 use crate::command::TuiCommand;
 use crate::file_picker::FilePickerState;
 use crate::widgets::command_palette::CommandPaletteState;
-use crate::widgets::slash_autocomplete::{SlashAutocompleteState, command_id_to_slash_form};
+use crate::widgets::slash_autocomplete::SlashAutocompleteState;
 
 const MAX_INPUT_HISTORY: usize = 500;
 
@@ -28,8 +28,6 @@ const MAX_INPUT_HISTORY: usize = 500;
 pub(crate) enum Effect {
     /// Forward the user's typed text to the agent loop.
     SendUserInput(String),
-    /// Forward a [`TuiCommand`] to the agent command channel.
-    SendCommand(TuiCommand),
     /// Copy `text` to the system clipboard.
     CopyToClipboard(String),
     /// Trigger the file indexer for the file picker.
@@ -271,14 +269,17 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             if text.is_empty() {
                 return vec![];
             }
-            // Check for local session slash commands first.
+            // Check for local session slash commands first. Route through
+            // `Action::Dispatch` (the same path used by the command palette and
+            // slash autocomplete) so every `TuiCommand` variant gets its correct
+            // in-process handling instead of being force-fed to the agent bridge.
             if let Some(cmd) = App::parse_session_slash_pub(&text) {
                 app.sessions.current_mut().input.clear();
                 app.sessions.current_mut().cursor_position = 0;
                 app.sessions.current_mut().history_index = None;
                 app.sessions.current_mut().draft_input.clear();
                 app.sessions.current_mut().paste_state = None;
-                return vec![Effect::SendCommand(cmd)];
+                return reduce(app, Action::Dispatch(cmd));
             }
             app.sessions.current_mut().show_splash = false;
             app.sessions.current_mut().input_history.push(text.clone());
@@ -441,24 +442,28 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             vec![]
         }
         Action::SlashAutocompleteAccept => {
-            let entry_id = app
+            // Dispatch the selected entry's command directly rather than
+            // reconstituting slash text and re-parsing it: most registry ids
+            // (e.g. `skill:list`) have no textual form the parser recognizes,
+            // so a round-trip through text silently sent the raw text as a
+            // chat message instead of running the command (#5779).
+            let cmd = app
                 .slash_autocomplete
                 .as_ref()
                 .and_then(SlashAutocompleteState::selected_entry)
-                .map(|e| e.id);
+                .map(|e| e.command.clone());
             app.slash_autocomplete = None;
-            if let Some(id) = entry_id {
-                let slash_form = command_id_to_slash_form(id);
-                app.sessions.current_mut().input = slash_form;
-                app.sessions.current_mut().cursor_position = app.char_count();
+            app.sessions.current_mut().input.clear();
+            app.sessions.current_mut().cursor_position = 0;
+            if let Some(cmd) = cmd {
+                return reduce(app, Action::Dispatch(cmd));
             }
             vec![]
         }
         Action::SlashAutocompleteAcceptAndSubmit => {
-            // Accept selection into input, then chain a SubmitInput.
-            let mut effects = reduce(app, Action::SlashAutocompleteAccept);
-            effects.extend(reduce(app, Action::SubmitInput));
-            effects
+            // Dispatch already executes the command (or prompts for further
+            // input via `prefill_input`), so no separate submit step is needed.
+            reduce(app, Action::SlashAutocompleteAccept)
         }
         Action::SlashAutocompletePopChar => {
             let dismiss = app
@@ -887,11 +892,6 @@ pub(crate) fn run_effects(app: &mut App, effects: Vec<Effect>) {
         match effect {
             Effect::SendUserInput(text) => {
                 let _ = app.user_input_tx.try_send(text);
-            }
-            Effect::SendCommand(cmd) => {
-                if let Some(ref tx) = app.command_tx {
-                    let _ = tx.try_send(cmd);
-                }
             }
             Effect::CopyToClipboard(text) => match app.clipboard.copy(&text) {
                 Ok(()) => app.push_system_message_pub("Copied to clipboard.".to_owned()),
@@ -1520,5 +1520,147 @@ mod tests {
         assert_eq!(msg, "/plan status");
         // No second message (exactly-once)
         assert!(rx.try_recv().is_err());
+    }
+
+    // ── Slash autocomplete accept dispatches directly (#5779) ───────────────
+
+    fn select_entry(app: &mut App, query: &str, expected_id: &str) {
+        let mut state = SlashAutocompleteState::new();
+        for c in query.chars() {
+            state.push_char(c);
+        }
+        assert_eq!(
+            state.selected_entry().map(|e| e.id),
+            Some(expected_id),
+            "query {query:?} must resolve to {expected_id:?} as the top match"
+        );
+        app.slash_autocomplete = Some(state);
+    }
+
+    #[test]
+    fn slash_autocomplete_accept_dispatches_command_directly() {
+        let (mut app, _rx) = make_app();
+        select_entry(&mut app, "skill:list", "skill:list");
+
+        let effects = reduce(&mut app, Action::SlashAutocompleteAccept);
+
+        assert!(effects.is_empty());
+        assert!(app.slash_autocomplete.is_none());
+        assert!(app.sessions.current().input.is_empty());
+        // The command ran in-process (pushed a system message) instead of being
+        // sent to the LLM as the literal text "/skill list".
+        assert!(
+            app.sessions
+                .current()
+                .messages
+                .iter()
+                .all(|m| m.role != MessageRole::User)
+        );
+        assert!(
+            app.sessions
+                .current()
+                .messages
+                .iter()
+                .any(|m| m.role == MessageRole::System)
+        );
+    }
+
+    #[test]
+    fn slash_autocomplete_accept_and_submit_dispatches_command_directly() {
+        let (mut app, _rx) = make_app();
+        select_entry(&mut app, "tasks", "tasks");
+        assert!(!app.show_task_panel);
+
+        let effects = reduce(&mut app, Action::SlashAutocompleteAcceptAndSubmit);
+
+        assert!(effects.is_empty());
+        assert!(app.show_task_panel);
+        assert!(app.sessions.current().input.is_empty());
+        assert!(
+            app.sessions
+                .current()
+                .messages
+                .iter()
+                .all(|m| m.role != MessageRole::User)
+        );
+    }
+
+    #[test]
+    fn slash_autocomplete_accept_and_submit_on_arg_command_prefills_without_submitting() {
+        // Commands that need an argument (e.g. "agent:cancel") prefill the input
+        // for further typing instead of being submitted as an incomplete command.
+        let (mut app, _rx) = make_app();
+        select_entry(&mut app, "agent:cancel", "agent:cancel");
+
+        let effects = reduce(&mut app, Action::SlashAutocompleteAcceptAndSubmit);
+
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().input, "/agent cancel ");
+        assert!(
+            app.sessions
+                .current()
+                .messages
+                .iter()
+                .all(|m| m.role != MessageRole::User),
+            "incomplete prefilled command must not be sent as a chat message"
+        );
+    }
+
+    // ── SubmitInput routes parsed slash commands in-process (#5782) ─────────
+
+    #[test]
+    fn submit_input_motion_command_applies_directly_without_bridge() {
+        let (mut app, _rx) = make_app();
+        app.sessions.current_mut().input = "/motion minimal".to_owned();
+
+        let effects = reduce(&mut app, Action::SubmitInput);
+
+        assert!(effects.is_empty());
+        assert_eq!(app.motion, zeph_config::Motion::Minimal);
+    }
+
+    #[test]
+    fn submit_input_session_close_executes_in_process() {
+        let (mut app, _rx) = make_app();
+        app.sessions.current_mut().input = "/session close".to_owned();
+
+        let effects = reduce(&mut app, Action::SubmitInput);
+
+        assert!(effects.is_empty());
+        // Single-session default: close() refuses and reports in-process,
+        // proving the command ran locally rather than being dropped by the bridge.
+        assert!(app.sessions.current().messages.iter().any(|m| {
+            m.content
+                .contains("Cannot close the last remaining session")
+        }));
+    }
+
+    #[test]
+    fn submit_input_acp_dirs_forwards_via_agent_channel_in_process() {
+        // `AcpDirsList` is handled by `execute_command`'s `handle_acp_command`, which
+        // sends directly on `user_input_tx` rather than returning an `Effect`. This
+        // exercises a third distinct in-process code path (alongside direct state
+        // mutation and `Effect::SendUserInput`) that `forward_tui_commands`'s
+        // `_ => continue` wildcard used to silently swallow (#5782).
+        let (mut app, mut rx) = make_app();
+        app.sessions.current_mut().input = "/acp dirs".to_owned();
+
+        let effects = reduce(&mut app, Action::SubmitInput);
+
+        assert!(effects.is_empty());
+        let msg = rx.try_recv().expect("channel must have one message");
+        assert_eq!(msg, "/acp dirs");
+    }
+
+    #[test]
+    fn submit_input_subagent_spawn_forwards_command_via_agent_channel() {
+        let (mut app, mut rx) = make_app();
+        app.sessions.current_mut().input = "/subagent spawn review the diff".to_owned();
+
+        let effects = reduce(&mut app, Action::SubmitInput);
+
+        assert!(effects.is_empty());
+        let msg = rx.try_recv().expect("channel must have one message");
+        assert_eq!(msg, "/subagent spawn review the diff");
     }
 }

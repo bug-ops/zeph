@@ -109,12 +109,6 @@ impl Default for SlashAutocompleteState {
     }
 }
 
-/// Converts a command id to slash-form: `"skill:list"` → `"/skill list"`.
-#[must_use]
-pub fn command_id_to_slash_form(id: &str) -> String {
-    format!("/{}", id.replace(':', " "))
-}
-
 pub fn render(state: &SlashAutocompleteState, frame: &mut Frame, input_area: Rect, theme: &Theme) {
     if state.filtered.is_empty() {
         return;
@@ -205,13 +199,6 @@ mod tests {
         let expected = filter_commands("sk");
         assert_eq!(state.filtered.len(), expected.len());
         assert_eq!(state.selected, 0);
-    }
-
-    #[test]
-    fn command_id_to_slash_form_converts() {
-        assert_eq!(command_id_to_slash_form("skill:list"), "/skill list");
-        assert_eq!(command_id_to_slash_form("ingest"), "/ingest");
-        assert_eq!(command_id_to_slash_form("app:quit"), "/app quit");
     }
 
     #[test]

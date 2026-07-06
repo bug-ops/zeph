@@ -323,6 +323,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tui)`: selecting a slash-command entry from the autocomplete popup and pressing Enter
+  reconstituted the command as text (`command_id_to_slash_form`, e.g. `skill:list` →
+  `/skill list`) and re-parsed it, but most registry ids have no textual form the parser
+  recognizes, so the malformed text silently fell through and was sent to the LLM as an
+  ordinary chat message — wasting a real API call (#5779). `Action::SlashAutocompleteAccept`
+  (`crates/zeph-tui/src/widgets/slash_autocomplete.rs`, `crates/zeph-tui/src/app/reducer.rs`)
+  now clears the input and dispatches the selected entry's `TuiCommand` directly via
+  `Action::Dispatch`, the same path already used by the command palette. Commands needing an
+  argument (e.g. `agent:cancel`) still prefill the input for further typing instead of being
+  submitted incomplete. Removed the now-unused `command_id_to_slash_form` helper.
+- `fix(tui)`: typing a recognized slash command directly (e.g. `/motion minimal`, `/session
+  close`, `/acp status`, `/subagent spawn <cmd>`) and pressing Enter routed the parsed
+  `TuiCommand` through `Effect::SendCommand`, forwarding it over the mpsc channel to the binary
+  crate's `forward_tui_commands` task (`src/tui_bridge.rs`), which only implements 4 variants
+  (`ViewConfig`, `ViewAutonomy`, `TafcStatus`, `SandboxStatus`) — every other variant hit its
+  wildcard `_ => continue` arm and was silently dropped (#5782). `Action::SubmitInput`
+  (`crates/zeph-tui/src/app/reducer.rs`) now routes parsed commands through `Action::Dispatch`
+  instead, the same in-process path already used by the command palette and slash autocomplete,
+  which correctly handles every `TuiCommand` variant (state mutation, `execute_command`
+  prefill/prompt, or genuine bridge dispatch) without requiring a running agent-side bridge.
+  Removed the now-unconstructed `Effect::SendCommand` variant.
 - `fix(llm)`: OpenAI/compatible provider's `reasoning_effort` was serialized as the OpenAI
   Responses-API nested shape (`"reasoning":{"effort":"..."}`) instead of the Chat-Completions
   flat field (`"reasoning_effort":"..."`), causing every real reasoning-capable model (o-series,
