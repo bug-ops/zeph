@@ -17,7 +17,7 @@ use futures::StreamExt as _;
 use qdrant_client::qdrant::{PointStruct, value::Kind};
 
 use crate::QdrantOps;
-use crate::vector_store::VectorStoreError;
+use crate::vector_store::{VectorStore, VectorStoreError};
 
 /// Boxed future returned by an embedding function.
 pub type EmbedFuture = Pin<
@@ -396,6 +396,34 @@ impl EmbeddingRegistry {
 
     fn point_id(&self, key: &str) -> String {
         uuid::Uuid::new_v5(&self.namespace, key.as_bytes()).to_string()
+    }
+
+    /// Retrieve stored vectors for a bounded set of keys via a single Qdrant `get_points`
+    /// round-trip (e.g. the candidate IDs returned by a prior [`Self::search_raw`] call).
+    ///
+    /// Keys with no matching point, or whose point carries no dense vector, are silently
+    /// omitted from the result — callers should treat a missing key as "vector unavailable"
+    /// rather than an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingRegistryError::VectorStore`] if the underlying Qdrant call fails.
+    #[tracing::instrument(name = "memory.embed_registry.get_vectors_by_keys", skip_all, err)]
+    pub async fn get_vectors_by_keys(
+        &self,
+        keys: &[String],
+    ) -> Result<HashMap<String, Vec<f32>>, EmbeddingRegistryError> {
+        if keys.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let id_to_key: HashMap<String, String> =
+            keys.iter().map(|k| (self.point_id(k), k.clone())).collect();
+        let ids: Vec<String> = id_to_key.keys().cloned().collect();
+        let points = self.ops.get_points(&self.collection, ids).await?;
+        Ok(points
+            .into_iter()
+            .filter_map(|p| id_to_key.get(&p.id).map(|k| (k.clone(), p.vector)))
+            .collect())
     }
 
     #[tracing::instrument(
@@ -788,6 +816,29 @@ mod tests {
         assert!(
             !matches!(result, Err(EmbeddingRegistryError::DimensionProbe(_))),
             "guard must not fire when dimensions match"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_vectors_by_keys_empty_input_short_circuits() {
+        // Unreachable Qdrant instance: if this didn't short-circuit it would error/hang.
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
+        let ns = uuid::Uuid::from_bytes([0u8; 16]);
+        let reg = EmbeddingRegistry::new(ops, "test_empty_keys", ns);
+        let result = reg.get_vectors_by_keys(&[]).await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_vectors_by_keys_unreachable_qdrant_errors() {
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
+        let ns = uuid::Uuid::from_bytes([0u8; 16]);
+        let reg = EmbeddingRegistry::new(ops, "test_vec_fetch", ns);
+        let keys = vec!["skill-a".to_string(), "skill-b".to_string()];
+        let result = reg.get_vectors_by_keys(&keys).await;
+        assert!(
+            matches!(result, Err(EmbeddingRegistryError::VectorStore(_))),
+            "expected VectorStore error, got: {result:?}"
         );
     }
 

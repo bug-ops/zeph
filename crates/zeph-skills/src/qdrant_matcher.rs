@@ -3,6 +3,9 @@
 
 #![cfg(feature = "qdrant")]
 
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
 pub use zeph_memory::SyncStats;
 use zeph_memory::{Embeddable, EmbeddingRegistry, QdrantOps};
 
@@ -46,6 +49,14 @@ impl Embeddable for &SkillMeta {
 #[derive(Clone)]
 pub struct QdrantSkillMatcher {
     registry: EmbeddingRegistry,
+    /// Vectors for the candidates most recently passed to [`Self::refresh_vector_cache`],
+    /// keyed by skill index into the caller's `meta` slice. Populated by a bounded
+    /// `get_points` request scoped to exactly those candidates, so that
+    /// [`Self::skill_embedding`] can serve the RL rerank / `GoSkills` grouping paths
+    /// (see issue #5786). The fetch only happens when a caller explicitly requests it —
+    /// `match_skills` itself never populates this cache, to avoid paying for a Qdrant
+    /// round-trip that most turns (no RL rerank, no grouping) don't need.
+    last_vectors: Arc<RwLock<HashMap<usize, Vec<f32>>>>,
 }
 
 impl std::fmt::Debug for QdrantSkillMatcher {
@@ -62,6 +73,7 @@ impl QdrantSkillMatcher {
     pub fn with_ops(ops: QdrantOps) -> Self {
         Self {
             registry: EmbeddingRegistry::new(ops, COLLECTION_NAME, SKILL_NAMESPACE),
+            last_vectors: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -115,6 +127,12 @@ impl QdrantSkillMatcher {
 
     /// Search for relevant skills using Qdrant native vector search.
     /// Returns scored matches with indices into the provided meta slice.
+    ///
+    /// Does **not** populate the vector cache read by [`Self::skill_embedding`] — callers that
+    /// need per-skill vectors (RL rerank, `GoSkills` grouping) must call
+    /// [`Self::refresh_vector_cache`] explicitly with the final candidate set once it's known
+    /// (e.g. after BM25 hybrid-search fusion), so the extra `get_points` round-trip is only
+    /// paid when one of those features is actually enabled.
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "skill.qdrant_match", skip_all, fields(query_len = %query.len(), result_count = tracing::field::Empty))
@@ -147,7 +165,7 @@ impl QdrantSkillMatcher {
             }
         };
 
-        let scored = results
+        let scored: Vec<ScoredMatch> = results
             .into_iter()
             .filter_map(|point| {
                 let name = point.payload.get("key")?.as_str()?;
@@ -158,7 +176,66 @@ impl QdrantSkillMatcher {
                 })
             })
             .collect();
+
         MatchResult::Scored(scored)
+    }
+
+    /// Fetch vectors for the given scored candidates via a single bounded Qdrant `get_points`
+    /// round-trip and populate the cache read by [`Self::skill_embedding`].
+    ///
+    /// The request is scoped to exactly the candidate IDs in `scored` — callers must pass the
+    /// final candidate set (e.g. after BM25 hybrid-search fusion, since fusion can introduce
+    /// skill indices outside the original vector-search top-K) — never a full collection scan.
+    /// Failures are logged and degrade to an empty cache: RL rerank / grouping simply stay
+    /// inactive for that turn, same as today's "no embeddings available" fallback in
+    /// `assembly.rs`.
+    ///
+    /// Only call this when a consumer of [`Self::skill_embedding`] is actually enabled (RL
+    /// rerank and/or `GoSkills` grouping) — it is not called automatically by
+    /// [`Self::match_skills`] so that turns using neither feature don't pay for the extra
+    /// round-trip.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skill.qdrant_refresh_vectors", skip_all, fields(candidates = scored.len()))
+    )]
+    pub(crate) async fn refresh_vector_cache(&self, meta: &[&SkillMeta], scored: &[ScoredMatch]) {
+        let keys: Vec<String> = scored
+            .iter()
+            .filter_map(|m| meta.get(m.index).map(|s| s.name.clone()))
+            .collect();
+
+        let vectors_by_key = match self.registry.get_vectors_by_keys(&keys).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!("Qdrant get_points for RL rerank vectors failed: {e:#}");
+                HashMap::new()
+            }
+        };
+
+        let mut cache = HashMap::with_capacity(vectors_by_key.len());
+        for m in scored {
+            if let Some(name) = meta.get(m.index).map(|s| s.name.as_str())
+                && let Some(v) = vectors_by_key.get(name)
+            {
+                cache.insert(m.index, v.clone());
+            }
+        }
+
+        if let Ok(mut guard) = self.last_vectors.write() {
+            *guard = cache;
+        }
+    }
+
+    /// Return the cached vector for `skill_index` from the most recent [`Self::match_skills`]
+    /// call, if available.
+    ///
+    /// Populated by a bounded follow-up Qdrant `get_points` request scoped to the top-K
+    /// candidates returned by that call. Returns `None` if `skill_index` wasn't part of the
+    /// most recent result set, or if the follow-up vector fetch failed or returned a partial
+    /// result — callers must treat this the same as "no embedding available".
+    #[must_use]
+    pub fn skill_embedding(&self, skill_index: usize) -> Option<Vec<f32>> {
+        self.last_vectors.read().ok()?.get(&skill_index).cloned()
     }
 }
 
@@ -254,5 +331,46 @@ mod tests {
         };
         let results = matcher.match_skills(&refs, "query", 5, embed_fn).await;
         assert_matches!(results, crate::matcher::MatchResult::InfraError);
+    }
+
+    #[test]
+    fn skill_embedding_none_before_any_match_skills_call() {
+        let matcher = make_matcher();
+        assert!(matcher.skill_embedding(0).is_none());
+    }
+
+    fn make_unreachable_matcher() -> QdrantSkillMatcher {
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
+        QdrantSkillMatcher::with_ops(ops)
+    }
+
+    #[tokio::test]
+    async fn refresh_vector_cache_unreachable_qdrant_degrades_to_empty() {
+        // The RL rerank gate treats a missing vector the same as "backend unavailable" — a
+        // failed follow-up get_points call must not panic and must leave the cache empty
+        // rather than poisoning it with stale data.
+        let matcher = make_unreachable_matcher();
+        let metas = [make_meta("s", "desc")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+        let scored = vec![ScoredMatch {
+            index: 0,
+            score: 0.9,
+        }];
+
+        matcher.refresh_vector_cache(&refs, &scored).await;
+
+        assert!(matcher.skill_embedding(0).is_none());
+    }
+
+    #[tokio::test]
+    async fn refresh_vector_cache_empty_scored_is_noop() {
+        let matcher = make_unreachable_matcher();
+        let metas = [make_meta("s", "desc")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+
+        // Empty candidate set must short-circuit before any Qdrant round-trip.
+        matcher.refresh_vector_cache(&refs, &[]).await;
+
+        assert!(matcher.skill_embedding(0).is_none());
     }
 }

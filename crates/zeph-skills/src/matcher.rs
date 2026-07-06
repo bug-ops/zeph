@@ -573,13 +573,18 @@ pub enum SkillMatcherBackend {
 
 impl SkillMatcherBackend {
     /// Return the embedding vector for a skill at the given index, if available.
-    /// Only works for in-memory backends; returns `None` for Qdrant.
+    ///
+    /// For [`Self::InMemory`], this is the pre-computed description embedding. For
+    /// [`Self::Qdrant`], this is served from a per-turn cache populated by
+    /// [`Self::refresh_skill_embeddings`] — `None` if that hasn't been called yet,
+    /// `skill_index` wasn't among its candidates, or the fetch failed or returned a partial
+    /// result (see issue #5786).
     #[must_use]
-    pub fn skill_embedding(&self, skill_index: usize) -> Option<&[f32]> {
+    pub fn skill_embedding(&self, skill_index: usize) -> Option<Vec<f32>> {
         match self {
-            Self::InMemory(m) => m.skill_embedding(skill_index),
+            Self::InMemory(m) => m.skill_embedding(skill_index).map(<[f32]>::to_vec),
             #[cfg(feature = "qdrant")]
-            Self::Qdrant(_) => None,
+            Self::Qdrant(m) => m.skill_embedding(skill_index),
         }
     }
 
@@ -590,6 +595,26 @@ impl SkillMatcherBackend {
             Self::InMemory(_) => false,
             #[cfg(feature = "qdrant")]
             Self::Qdrant(_) => true,
+        }
+    }
+
+    /// Populate per-skill vectors for `scored` so a subsequent [`Self::skill_embedding`] call
+    /// can serve them.
+    ///
+    /// Callers must pass the **final** candidate set — after any BM25 hybrid-search fusion, if
+    /// enabled — since fusion can introduce skill indices outside the original vector-search
+    /// top-K that [`Self::match_skills`] alone would have cached.
+    ///
+    /// No-op for [`Self::InMemory`], whose embeddings are already resident in memory. For
+    /// [`Self::Qdrant`], this issues a bounded `get_points` round-trip scoped to `scored` — only
+    /// call it when a consumer of [`Self::skill_embedding`] is actually enabled (RL rerank
+    /// and/or `GoSkills` grouping), so turns using neither feature don't pay for the extra
+    /// Qdrant round-trip (see issue #5786).
+    pub async fn refresh_skill_embeddings(&self, meta: &[&SkillMeta], scored: &[ScoredMatch]) {
+        match self {
+            Self::InMemory(_) => {}
+            #[cfg(feature = "qdrant")]
+            Self::Qdrant(m) => m.refresh_vector_cache(meta, scored).await,
         }
     }
 
@@ -1016,6 +1041,50 @@ mod tests {
                 .await,
         );
         assert_eq!(matches.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn backend_in_memory_skill_embedding_returns_owned_vec() {
+        let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+
+        let inner = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+        let backend = SkillMatcherBackend::InMemory(inner);
+
+        let emb = backend
+            .skill_embedding(0)
+            .expect("skill 0 must be embedded");
+        assert_eq!(emb, vec![1.0, 0.0, 0.0]); // "alpha"
+    }
+
+    #[tokio::test]
+    async fn backend_in_memory_skill_embedding_out_of_range_is_none() {
+        let metas = [make_meta("a", "alpha")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+
+        let inner = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+        let backend = SkillMatcherBackend::InMemory(inner);
+
+        assert!(backend.skill_embedding(99).is_none());
+    }
+
+    #[tokio::test]
+    async fn backend_in_memory_refresh_skill_embeddings_is_noop() {
+        // In-memory embeddings are already resident; refresh_skill_embeddings must not alter
+        // skill_embedding()'s behavior (still served from the pre-computed index, not a cache).
+        let metas = [make_meta("a", "alpha")];
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+
+        let inner = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+        let backend = SkillMatcherBackend::InMemory(inner);
+
+        let scored = vec![ScoredMatch {
+            index: 0,
+            score: 0.9,
+        }];
+        backend.refresh_skill_embeddings(&refs, &scored).await;
+
+        assert_eq!(backend.skill_embedding(0), Some(vec![1.0, 0.0, 0.0]));
     }
 
     #[test]

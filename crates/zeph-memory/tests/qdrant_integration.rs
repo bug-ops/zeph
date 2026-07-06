@@ -7,6 +7,8 @@ use testcontainers::core::{ContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
+use zeph_memory::QdrantOps;
+use zeph_memory::embedding_registry::{EmbedFuture, Embeddable, EmbeddingRegistry};
 use zeph_memory::embedding_store::{EmbeddingStore, MessageKind};
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::store::SqliteStore;
@@ -320,4 +322,136 @@ async fn search_session_summaries_returns_empty_when_no_data() {
         results.is_empty(),
         "search on empty collection must return empty results"
     );
+}
+
+// --- EmbeddingRegistry::get_vectors_by_keys integration tests (issue #5786) ---
+//
+// These prove the `id_to_key` remapping logic against a real Qdrant instance: unit tests
+// against an unreachable Qdrant (in embedding_registry.rs) only exercise the error path,
+// never the happy path where points are actually found and remapped back to caller keys.
+
+struct TestSkill {
+    key: String,
+    text: String,
+}
+
+impl Embeddable for TestSkill {
+    fn key(&self) -> &str {
+        &self.key
+    }
+
+    fn content_hash(&self) -> String {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(self.text.as_bytes());
+        hasher.finalize().to_hex().to_string()
+    }
+
+    fn embed_text(&self) -> &str {
+        &self.text
+    }
+
+    fn to_payload(&self) -> serde_json::Value {
+        serde_json::json!({"key": self.key, "text": self.text})
+    }
+}
+
+fn make_skill(key: &str, text: &str) -> TestSkill {
+    TestSkill {
+        key: key.into(),
+        text: text.into(),
+    }
+}
+
+async fn setup_registry_with_qdrant(
+    collection: &str,
+) -> (EmbeddingRegistry, ContainerAsync<GenericImage>) {
+    let container = qdrant_image().start().await.unwrap();
+    let grpc_port = container.get_host_port_ipv4(6334).await.unwrap();
+    let url = format!("http://127.0.0.1:{grpc_port}");
+
+    let ops = QdrantOps::new(&url, None).unwrap();
+    let ns = uuid::Uuid::from_bytes([0u8; 16]);
+    let registry = EmbeddingRegistry::new(ops, collection, ns);
+
+    (registry, container)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn embed_fn_fixed(dim: usize) -> impl Fn(&str) -> EmbedFuture {
+    move |text: &str| -> EmbedFuture {
+        // Deterministic per-text vector so distinct skills get distinct (but stable) vectors.
+        let seed = text.bytes().map(u32::from).sum::<u32>() as f32;
+        let vec = (0..dim)
+            .map(|i| (seed + i as f32) / 1000.0)
+            .collect::<Vec<f32>>();
+        Box::pin(async move { Ok(vec) })
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires Docker for Qdrant"]
+async fn get_vectors_by_keys_happy_path_returns_stored_vectors() {
+    let (mut registry, _container) = setup_registry_with_qdrant("test_get_vectors_happy").await;
+
+    let skills = vec![
+        make_skill("skill-a", "alpha description"),
+        make_skill("skill-b", "beta description"),
+        make_skill("skill-c", "gamma description"),
+    ];
+    let embed_fn = embed_fn_fixed(4);
+    let stats = registry
+        .sync(&skills, "test-model", &embed_fn, None)
+        .await
+        .unwrap();
+    assert_eq!(stats.added, 3);
+
+    let keys = vec!["skill-a".to_string(), "skill-b".to_string()];
+    let result = registry.get_vectors_by_keys(&keys).await.unwrap();
+
+    assert_eq!(result.len(), 2, "must return exactly the requested keys");
+    assert!(result.contains_key("skill-a"));
+    assert!(result.contains_key("skill-b"));
+    assert!(!result.contains_key("skill-c"), "must not over-fetch");
+
+    // Qdrant collections created with `Distance::Cosine` normalize stored vectors to unit
+    // length, so the retrieved vector isn't byte-identical to what was embedded — only
+    // direction is preserved. Assert dimension and direction (cosine similarity ~= 1.0)
+    // rather than raw equality.
+    let expected_a = embed_fn("alpha description").await.unwrap();
+    let expected_b = embed_fn("beta description").await.unwrap();
+    assert_eq!(result["skill-a"].len(), expected_a.len());
+    assert_eq!(result["skill-b"].len(), expected_b.len());
+    assert!(
+        (zeph_common::math::cosine_similarity(&result["skill-a"], &expected_a) - 1.0).abs() < 1e-4,
+        "retrieved vector must point in the same direction as the embedded one"
+    );
+    assert!(
+        (zeph_common::math::cosine_similarity(&result["skill-b"], &expected_b) - 1.0).abs() < 1e-4,
+        "retrieved vector must point in the same direction as the embedded one"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker for Qdrant"]
+async fn get_vectors_by_keys_partial_miss_omits_unstored_keys() {
+    let (mut registry, _container) = setup_registry_with_qdrant("test_get_vectors_partial").await;
+
+    let skills = vec![make_skill("skill-real", "real skill description")];
+    let embed_fn = embed_fn_fixed(4);
+    registry
+        .sync(&skills, "test-model", &embed_fn, None)
+        .await
+        .unwrap();
+
+    // Request one key that was synced and one that was never stored.
+    let keys = vec!["skill-real".to_string(), "skill-never-stored".to_string()];
+    let result = registry.get_vectors_by_keys(&keys).await.unwrap();
+
+    assert_eq!(
+        result.len(),
+        1,
+        "must silently omit keys with no matching point, not error"
+    );
+    assert!(result.contains_key("skill-real"));
+    assert!(!result.contains_key("skill-never-stored"));
 }

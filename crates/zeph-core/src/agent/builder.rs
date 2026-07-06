@@ -2034,8 +2034,11 @@ impl<C: Channel> Agent<C> {
                 .is_some_and(zeph_skills::matcher::SkillMatcherBackend::is_qdrant)
         {
             tracing::info!(
-                "RL re-rank is configured but the Qdrant backend does not expose in-process skill \
-                 vectors; RL will be inactive until vector retrieval from Qdrant is implemented"
+                "RL re-rank is configured with the Qdrant skill-matcher backend: skill vectors \
+                 are retrieved via a bounded follow-up Qdrant lookup for the final candidate \
+                 set each turn (including any BM25-fused skills); RL re-rank is skipped for \
+                 turns where that lookup fails, returns a partial result, or returns vectors \
+                 whose dimension doesn't match the routing head's (issue #5786)"
             );
         }
         self.runtime.metrics.metrics_tx = Some(tx);

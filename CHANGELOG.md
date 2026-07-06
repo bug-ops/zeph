@@ -20,6 +20,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   simplification in #5633) so a both-features build now fails with only the single intended
   `compile_error!` message. Does not change the mutual-exclusivity semantics — `--all-features`
   is still unsupported by design.
+- `fix(skills)`: `SkillMatcherBackend::skill_embedding()` returned `None` unconditionally for
+  the Qdrant matcher backend (`crates/zeph-skills/src/matcher.rs`), which made the RL routing
+  head's rerank candidate-building guard in `crates/zeph-core/src/agent/context/assembly.rs`
+  never pass when `vector_backend = "qdrant"` — the recommended backend for large skill
+  libraries — silently disabling RL rerank in that configuration despite `rl_routing_enabled`
+  being on (#5786, the "Preferred fix" left unimplemented by #3032). `QdrantSkillMatcher` now
+  issues a bounded follow-up Qdrant `get_points` call (`EmbeddingRegistry::get_vectors_by_keys`
+  in `crates/zeph-memory/src/embedding_registry.rs`, reusing the existing `VectorStore::get_points`
+  impl) scoped to just the top-K candidate IDs returned by the preceding search, and caches the
+  retrieved vectors for `skill_embedding()` to serve for the remainder of that turn. Vector
+  fetch failures or partial results degrade gracefully to the prior "RL re-rank skipped"
+  behavior rather than erroring. `SkillMatcherBackend::skill_embedding()` and
+  `zeph_skills::group::group_skills()`'s embedding-lookup closure now return owned `Vec<f32>`
+  instead of a borrowed `&[f32]` to accommodate the per-turn Qdrant cache; the interim startup
+  log in `crates/zeph-core/src/agent/builder.rs` was reworded to reflect that Qdrant vectors are
+  now available rather than unimplemented.
+  - Follow-up hardening (#5786): the Qdrant candidate vectors built for RL rerank in
+    `crates/zeph-core/src/agent/context/assembly.rs` are now filtered to exactly
+    `rl_head.embed_dim()` before being handed to `rl_head.rerank()` — a shorter Qdrant vector
+    (e.g. after an embedding-model change since the collection was last synced) previously
+    indexed out of bounds inside `RoutingHeadInner::score()`, crashing the agent turn; a longer
+    one silently misaligned the trailing feature scalars. `QdrantSkillMatcher::match_skills`
+    (`crates/zeph-skills/src/qdrant_matcher.rs`) no longer refreshes its vector cache
+    unconditionally on every call — the fetch is now a separate
+    `SkillMatcherBackend::refresh_skill_embeddings` call, invoked from `assembly.rs` only when
+    RL rerank or `GoSkills` grouping is actually enabled, and only *after* BM25 hybrid-search
+    fusion so skills introduced by fusion (outside the original vector-search top-K) get
+    vectors too — previously they never did, silently skipping RL rerank on any turn where
+    hybrid search surfaced a BM25-only match. This also removes an unconditional extra Qdrant
+    round-trip that was paid by every turn on the Qdrant skill-matcher backend regardless of
+    whether RL rerank was configured. Added live-Qdrant integration tests for
+    `EmbeddingRegistry::get_vectors_by_keys` (happy path and partial-miss) in
+    `crates/zeph-memory/tests/qdrant_integration.rs`.
 
 - `fix(llm)`: OpenAI Chat Completions rejects the combination of `reasoning_effort` and
   tool-calling (`tools`) for some reasoning models (e.g. `gpt-5.4-mini`), responding with an

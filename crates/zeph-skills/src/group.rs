@@ -87,18 +87,18 @@ pub enum GroupResult {
 /// use zeph_skills::group::{GroupResult, group_skills};
 ///
 /// // With fewer than 2 skills the result is always flat.
-/// let result = group_skills(&[], &[], |_| None::<&[f32]>, 0.5);
+/// let result = group_skills(&[], &[], |_| None::<Vec<f32>>, 0.5);
 /// assert!(matches!(result, GroupResult::Flat(_)));
 /// ```
 #[must_use]
-pub fn group_skills<'e, F>(
+pub fn group_skills<F>(
     skills: &[Skill],
     skill_indices: &[usize],
     get_embedding: F,
     threshold: f32,
 ) -> GroupResult
 where
-    F: Fn(usize) -> Option<&'e [f32]>,
+    F: Fn(usize) -> Option<Vec<f32>>,
 {
     if skills.len() < 2 {
         return GroupResult::Flat(skills.to_vec());
@@ -120,7 +120,7 @@ where
         let Some(embed) = get_embedding(idx) else {
             continue;
         };
-        let sim = zeph_common::math::cosine_similarity(entry_embed, embed);
+        let sim = zeph_common::math::cosine_similarity(&entry_embed, &embed);
         if sim > threshold {
             role_labels.insert(skill.name().to_string(), SkillRole::Support);
             support.push(skill.clone());
@@ -165,13 +165,13 @@ mod tests {
     static EMBED_D: &[f32] = &[0.95, 0.05, 0.0]; // high similarity to A
     static EMBED_E: &[f32] = &[0.0, 1.0, 0.0]; // orthogonal to A
 
-    fn embedding_for_index(idx: usize) -> Option<&'static [f32]> {
+    fn embedding_for_index(idx: usize) -> Option<Vec<f32>> {
         match idx {
-            0 => Some(EMBED_A),
-            1 => Some(EMBED_B),
-            2 => Some(EMBED_C),
-            3 => Some(EMBED_D),
-            4 => Some(EMBED_E),
+            0 => Some(EMBED_A.to_vec()),
+            1 => Some(EMBED_B.to_vec()),
+            2 => Some(EMBED_C.to_vec()),
+            3 => Some(EMBED_D.to_vec()),
+            4 => Some(EMBED_E.to_vec()),
             _ => None,
         }
     }

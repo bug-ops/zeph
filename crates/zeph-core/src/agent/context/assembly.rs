@@ -1106,6 +1106,16 @@ impl<C: Channel> Agent<C> {
                     );
                 }
 
+                // Refresh the Qdrant per-skill vector cache (no-op for the in-memory backend)
+                // now that `scored` reflects the final candidate set for this turn, including
+                // any BM25-fused indices outside the original vector-search top-K. Only
+                // fetched when a consumer of `skill_embedding()` is actually enabled (RL
+                // rerank and/or GoSkills grouping) so plain skill matching never pays for the
+                // extra Qdrant round-trip.
+                if self.services.skill.rl_head.is_some() || self.services.skill.group_structured {
+                    matcher.refresh_skill_embeddings(all_meta, &scored).await;
+                }
+
                 let metrics_map: std::collections::HashMap<String, (u32, u32)> =
                     if let Some(memory) = &self.services.memory.persistence.memory {
                         memory
@@ -1176,22 +1186,30 @@ impl<C: Channel> Agent<C> {
                 {
                     let rl_weight = self.services.skill.rl_weight;
                     let warmup = self.services.skill.rl_warmup_updates;
+                    let embed_dim = rl_head.embed_dim();
                     // Build candidates: (skill_index, skill_embed, cosine_score).
-                    // Skills without a stored embedding are skipped (Qdrant backend).
-                    let candidates: Vec<(usize, &[f32], f32)> = scored
+                    // Skills without a stored embedding are skipped (e.g. a Qdrant vector
+                    // fetch failure or partial result for this turn), as are any whose
+                    // embedding dimension doesn't match rl_head's — e.g. the embedding model
+                    // changed since the Qdrant collection was synced. `rl_head.rerank()`
+                    // indexes its input buffer assuming every candidate embedding is exactly
+                    // `embed_dim` long, so an unchecked mismatched-length vector would panic
+                    // (too short) or silently misalign the trailing feature scalars (too long).
+                    let candidates: Vec<(usize, Vec<f32>, f32)> = scored
                         .iter()
                         .filter_map(|s| {
                             matcher
                                 .skill_embedding(s.index)
+                                .filter(|emb| emb.len() == embed_dim)
                                 .map(|emb| (s.index, emb, s.score))
                         })
                         .collect();
                     if candidates.len() == scored.len() {
                         let stats: Vec<(f32, u32)> = candidates
                             .iter()
-                            .map(|&(idx, _, _)| {
+                            .map(|(idx, _, _)| {
                                 let (succ, fail) = all_meta
-                                    .get(idx)
+                                    .get(*idx)
                                     .and_then(|m| metrics_map.get(&m.name))
                                     .copied()
                                     .unwrap_or((0, 0));
@@ -1207,8 +1225,17 @@ impl<C: Channel> Agent<C> {
                                 (rate, total)
                             })
                             .collect();
-                        let reranked =
-                            rl_head.rerank(&query_embed, &candidates, &stats, rl_weight, warmup);
+                        let candidate_refs: Vec<(usize, &[f32], f32)> = candidates
+                            .iter()
+                            .map(|(idx, emb, score)| (*idx, emb.as_slice(), *score))
+                            .collect();
+                        let reranked = rl_head.rerank(
+                            &query_embed,
+                            &candidate_refs,
+                            &stats,
+                            rl_weight,
+                            warmup,
+                        );
                         // Apply new order to scored.
                         scored.sort_by(|a, b| {
                             let pos_a = reranked.iter().position(|(i, _)| *i == a.index);
@@ -1219,7 +1246,8 @@ impl<C: Channel> Agent<C> {
                         tracing::debug!(
                             total = scored.len(),
                             with_embeddings = candidates.len(),
-                            "RL re-rank skipped: skill embeddings unavailable (Qdrant backend does not expose in-process vectors)"
+                            "RL re-rank skipped: skill embeddings unavailable for some \
+                             candidates this turn"
                         );
                     }
                 }
@@ -2421,8 +2449,8 @@ mod tests {
             &skills,
             &indices,
             |idx: usize| match idx {
-                0 => Some(EMBED_A),
-                1 => Some(EMBED_B),
+                0 => Some(EMBED_A.to_vec()),
+                1 => Some(EMBED_B.to_vec()),
                 _ => None,
             },
             threshold,
@@ -2489,8 +2517,8 @@ mod tests {
             &skills,
             &indices,
             |idx: usize| match idx {
-                0 => Some(EMBED_A),
-                1 => Some(EMBED_C),
+                0 => Some(EMBED_A.to_vec()),
+                1 => Some(EMBED_C.to_vec()),
                 _ => None,
             },
             threshold,
@@ -2603,8 +2631,8 @@ mod tests {
             &active_skills,
             &fixed_indices,
             |idx: usize| match idx {
-                1 => Some(EMBED_ENTRY),
-                2 => Some(EMBED_SUPPORT),
+                1 => Some(EMBED_ENTRY.to_vec()),
+                2 => Some(EMBED_SUPPORT.to_vec()),
                 _ => None,
             },
             0.50_f32,
@@ -2622,9 +2650,9 @@ mod tests {
             &active_skills,
             &stale_indices_again,
             |idx: usize| match idx {
-                0 => Some(EMBED_FILTERED),
-                1 => Some(EMBED_ENTRY),
-                2 => Some(EMBED_SUPPORT),
+                0 => Some(EMBED_FILTERED.to_vec()),
+                1 => Some(EMBED_ENTRY.to_vec()),
+                2 => Some(EMBED_SUPPORT.to_vec()),
                 _ => None,
             },
             0.50_f32,
