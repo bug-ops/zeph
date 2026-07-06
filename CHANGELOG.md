@@ -40,6 +40,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     for `cache_plan`, `apply_delta`, and `load_and_apply_delta`, plus `load_all`'s INT4 decode,
     against a real Postgres 16 container.
 
+- `fix(llm)`: the router's `chat_with_tools` fallback loop
+  (`crates/zeph-llm/src/router/provider_impl.rs`) short-circuited on ANY
+  `LlmError::InvalidInput`, but PR #5795's `reasoning_effort`+`tools`
+  incompatibility error is model/config-specific — the same request can succeed on a different
+  model or provider, unlike a genuinely malformed request — so the router was aborting instead of
+  falling back (#5796). Added `LlmError::ModelCapabilityMismatch { provider, message }`
+  (`crates/zeph-llm/src/error.rs`) for this class of retryable-elsewhere error, with an
+  `is_model_capability_mismatch()` predicate mirroring `is_invalid_input()`.
+  `OpenAiProvider::chat_with_tools` (`crates/zeph-llm/src/openai/mod.rs`) now returns this variant
+  instead of `InvalidInput` for the reasoning_effort+tools 400 (message text unchanged); the
+  router falls through to the next tool-capable provider instead of aborting. Also fixed a related
+  exhaustion bug in the same loop: when every provider failed, it returned a generic
+  `LlmError::NoProviders` instead of the last provider's actual error, discarding PR #5795's
+  actionable diagnostic exactly when no other provider was available to fall back to (the single-
+  provider and all-providers-misconfigured cases) — the loop now tracks `last_err` across
+  providers, mirroring the pattern already used in the `embed`/`embed_batch` fallback loops, and
+  returns it on exhaustion instead of `NoProviders`.
+- `fix(llm)`: `CandleProvider` now explicitly overrides `supports_vision()` to return `false`
+  (#5755), matching every other `LlmProvider` implementation which declares this explicitly rather
+  than relying on the trait default — same gap and same fix shape as the `supports_tool_use()`
+  override added for this provider in #5754.
 - `fix(memory)`: `record_skill_usage` (`crates/zeph-memory/src/store/skills.rs`) failed against
   `PostgreSQL` with `column reference "invocation_count" is ambiguous`. Its
   `INSERT ... ON CONFLICT DO UPDATE SET invocation_count = invocation_count + 1` referenced the

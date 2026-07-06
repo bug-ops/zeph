@@ -309,6 +309,12 @@ impl LlmProvider for CandleProvider {
         false
     }
 
+    // Explicit override, not reliance on the trait default: candle_provider/mod.rs has no
+    // image/vision handling, so this must stay false even if the default changes.
+    fn supports_vision(&self) -> bool {
+        false
+    }
+
     #[tracing::instrument(
         name = "llm.candle.embed",
         skip_all,

@@ -609,6 +609,10 @@ impl LlmProvider for RouterProvider {
             // different heuristics than text quality. Skipping cascade for tool calls
             // avoids inappropriate escalation based on text signals (HIGH-04).
             let providers = router.ordered_providers();
+            // Preserve the most recent error across the fallback loop so an exhausted
+            // loop surfaces the actionable diagnostic (e.g. `ModelCapabilityMismatch`'s
+            // enriched message from #5795) instead of a generic `NoProviders`.
+            let mut last_err: Option<LlmError> = None;
             for p in &providers {
                 if !p.supports_tool_use() {
                     continue;
@@ -639,6 +643,17 @@ impl LlmProvider for RouterProvider {
                             );
                             return Err(e);
                         }
+                        // A model capability mismatch (e.g. `reasoning_effort` + `tools` on
+                        // this specific model/provider) is retryable elsewhere — the same
+                        // request may succeed on a different model or provider, unlike
+                        // `InvalidInput` which is malformed regardless of destination.
+                        if e.is_model_capability_mismatch() {
+                            tracing::warn!(
+                                provider = p.name(),
+                                error = %e,
+                                "chat_with_tools: model capability mismatch, falling back to next provider"
+                            );
+                        }
                         if e.is_rate_limited() {
                             router.record_availability(p.name(), false, 0);
                         }
@@ -649,10 +664,11 @@ impl LlmProvider for RouterProvider {
                             ));
                         }
                         tracing::warn!(provider = p.name(), error = %e, "router tool fallback");
+                        last_err = Some(e);
                     }
                 }
             }
-            Err(LlmError::NoProviders)
+            Err(last_err.unwrap_or(LlmError::NoProviders))
         });
         {
             use tracing::Instrument as _;

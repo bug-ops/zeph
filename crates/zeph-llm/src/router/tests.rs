@@ -792,9 +792,10 @@ async fn cascade_chat_with_tools_unaffected_by_cost_tiers() {
         ..CascadeRouterConfig::default()
     });
     let msgs = vec![Message::from_legacy(Role::User, "hi")];
-    // Both providers fail → NoProviders, not a cascade-specific error.
+    // Both providers fail → the last provider's error is preserved (not a
+    // cascade-specific error, and not a generic NoProviders that would discard it).
     let err = r.chat_with_tools(&msgs, &[]).await.unwrap_err();
-    assert_matches!(err, LlmError::NoProviders);
+    assert_matches!(err, LlmError::Other(_));
 }
 
 // ── Embed retry / rate-limit tests ────────────────────────────────────────
@@ -977,6 +978,98 @@ async fn embed_invalid_input_does_not_fall_through_to_second_provider() {
     assert!(
         matches!(&err, LlmError::InvalidInput { provider, .. } if provider == "p1"),
         "expected InvalidInput from p1, got {err:?}"
+    );
+}
+
+/// Unlike `InvalidInput`, a `ModelCapabilityMismatch` from `chat_with_tools()` is
+/// model/config-specific (e.g. `reasoning_effort` + `tools` on one provider) — the router
+/// must fall through to the next provider instead of aborting.
+#[tokio::test]
+async fn chat_with_tools_model_capability_mismatch_falls_through_to_second_provider() {
+    use crate::mock::MockProvider;
+    use crate::provider::ToolDefinition;
+
+    let p1 = AnyProvider::Mock(
+        MockProvider::default()
+            .with_errors(vec![LlmError::ModelCapabilityMismatch {
+                provider: "p1".into(),
+                message: "reasoning_effort incompatible with tools".into(),
+            }])
+            .with_name("p1"),
+    );
+    let p2 = AnyProvider::Mock(MockProvider::default().with_name("p2"));
+
+    let r = RouterProvider::new(vec![p1, p2]);
+    let result = r.chat_with_tools(&[], &[] as &[ToolDefinition]).await;
+
+    assert!(
+        result.is_ok(),
+        "expected fallback to p2 to succeed, got {result:?}"
+    );
+}
+
+/// When the sole provider returns `ModelCapabilityMismatch` and the fallback loop exhausts,
+/// the router must surface that error's actionable diagnostic — not a generic `NoProviders`
+/// that discards it (regression for the #5795 enriched-message loss).
+#[tokio::test]
+async fn chat_with_tools_single_provider_mismatch_exhaustion_preserves_error() {
+    use crate::mock::MockProvider;
+    use crate::provider::ToolDefinition;
+
+    let p = AnyProvider::Mock(
+        MockProvider::default()
+            .with_errors(vec![LlmError::ModelCapabilityMismatch {
+                provider: "p1".into(),
+                message: "reasoning_effort incompatible with tools".into(),
+            }])
+            .with_name("p1"),
+    );
+    let r = RouterProvider::new(vec![p]).with_thompson(None);
+    let err = r
+        .chat_with_tools(&[], &[] as &[ToolDefinition])
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(&err, LlmError::ModelCapabilityMismatch { provider, message }
+            if provider == "p1" && message.contains("reasoning_effort")),
+        "expected ModelCapabilityMismatch from p1 to survive exhaustion, got {err:?}"
+    );
+}
+
+/// When every provider in the fallback loop returns `ModelCapabilityMismatch`, the router
+/// must exhaust the loop and return the last provider's error, not `NoProviders`.
+#[tokio::test]
+async fn chat_with_tools_all_providers_mismatch_exhaustion_preserves_last_error() {
+    use crate::mock::MockProvider;
+    use crate::provider::ToolDefinition;
+
+    let p1 = AnyProvider::Mock(
+        MockProvider::default()
+            .with_errors(vec![LlmError::ModelCapabilityMismatch {
+                provider: "p1".into(),
+                message: "p1 reasoning_effort incompatible with tools".into(),
+            }])
+            .with_name("p1"),
+    );
+    let p2 = AnyProvider::Mock(
+        MockProvider::default()
+            .with_errors(vec![LlmError::ModelCapabilityMismatch {
+                provider: "p2".into(),
+                message: "p2 reasoning_effort incompatible with tools".into(),
+            }])
+            .with_name("p2"),
+    );
+
+    let r = RouterProvider::new(vec![p1, p2]);
+    let err = r
+        .chat_with_tools(&[], &[] as &[ToolDefinition])
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(&err, LlmError::ModelCapabilityMismatch { provider, .. } if provider == "p2"),
+        "expected the last provider's (p2) ModelCapabilityMismatch to survive exhaustion, got {err:?}"
     );
 }
 

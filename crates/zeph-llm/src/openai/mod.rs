@@ -1049,7 +1049,7 @@ impl LlmProvider for OpenAiProvider {
             if self.reasoning_effort.is_some()
                 && crate::error::body_is_reasoning_effort_tools_incompatible(&text)
             {
-                return Err(LlmError::InvalidInput {
+                return Err(LlmError::ModelCapabilityMismatch {
                     provider: self.name().to_owned(),
                     message: format!(
                         "model '{}' does not support `reasoning_effort` together with tool \

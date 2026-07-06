@@ -1493,7 +1493,7 @@ async fn chat_with_tools_reasoning_effort_400_enriches_message() {
 
     let err = p.chat_with_tools(&messages, &tools).await.unwrap_err();
     match err {
-        LlmError::InvalidInput { message, .. } => {
+        LlmError::ModelCapabilityMismatch { message, .. } => {
             assert!(
                 message.contains("reasoning_effort"),
                 "expected enriched message to mention reasoning_effort, got: {message}"
@@ -1503,7 +1503,7 @@ async fn chat_with_tools_reasoning_effort_400_enriches_message() {
                 "expected enriched message to suggest unsetting reasoning_effort, got: {message}"
             );
         }
-        other => panic!("expected InvalidInput, got: {other:?}"),
+        other => panic!("expected ModelCapabilityMismatch, got: {other:?}"),
     }
 }
 

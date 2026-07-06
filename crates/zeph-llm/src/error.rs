@@ -8,6 +8,7 @@
 /// Use the predicate methods ([`is_rate_limited`](Self::is_rate_limited),
 /// [`is_context_length_error`](Self::is_context_length_error),
 /// [`is_invalid_input`](Self::is_invalid_input),
+/// [`is_model_capability_mismatch`](Self::is_model_capability_mismatch),
 /// [`is_beta_header_rejected`](Self::is_beta_header_rejected)) to classify errors
 /// before deciding whether to retry, fall back, or propagate.
 #[non_exhaustive]
@@ -96,6 +97,13 @@ pub enum LlmError {
     #[error("invalid input for {provider}: {message}")]
     InvalidInput { provider: String, message: String },
 
+    /// The request is well-formed but rejected due to a model- or config-specific
+    /// capability gap (e.g. `reasoning_effort` combined with tool calls on `OpenAI`'s Chat
+    /// Completions API). Unlike [`Self::InvalidInput`], the same request may succeed on a
+    /// different model or provider, so the router should fall back instead of aborting.
+    #[error("model capability mismatch for {provider}: {message}")]
+    ModelCapabilityMismatch { provider: String, message: String },
+
     /// A provider returned a non-success HTTP status that does not map to any more specific variant.
     ///
     /// This covers non-retriable API failures such as authentication errors (401/403),
@@ -137,6 +145,16 @@ impl LlmError {
     #[must_use]
     pub fn is_invalid_input(&self) -> bool {
         matches!(self, Self::InvalidInput { .. })
+    }
+
+    /// Returns true if this error indicates a model- or config-specific capability gap.
+    ///
+    /// Unlike [`Self::is_invalid_input`], callers (e.g. the router fallback loop) should
+    /// retry with another provider when this is true — the same request may succeed
+    /// elsewhere (different model, or without the offending config option).
+    #[must_use]
+    pub fn is_model_capability_mismatch(&self) -> bool {
+        matches!(self, Self::ModelCapabilityMismatch { .. })
     }
 
     #[must_use]
@@ -255,6 +273,40 @@ mod tests {
         let s = e.to_string();
         assert!(s.contains("openai"));
         assert!(s.contains("input too long"));
+    }
+
+    #[test]
+    fn model_capability_mismatch_is_detected() {
+        let e = LlmError::ModelCapabilityMismatch {
+            provider: "openai".into(),
+            message: "reasoning_effort incompatible with tools".into(),
+        };
+        assert!(e.is_model_capability_mismatch());
+        assert!(!e.is_invalid_input());
+    }
+
+    #[test]
+    fn other_errors_are_not_model_capability_mismatch() {
+        assert!(!LlmError::Unavailable.is_model_capability_mismatch());
+        assert!(!LlmError::RateLimited.is_model_capability_mismatch());
+        assert!(
+            !LlmError::InvalidInput {
+                provider: "openai".into(),
+                message: "bad request".into(),
+            }
+            .is_model_capability_mismatch()
+        );
+    }
+
+    #[test]
+    fn model_capability_mismatch_display_includes_provider_and_message() {
+        let e = LlmError::ModelCapabilityMismatch {
+            provider: "openai".into(),
+            message: "reasoning_effort incompatible with tools".into(),
+        };
+        let s = e.to_string();
+        assert!(s.contains("openai"));
+        assert!(s.contains("reasoning_effort incompatible with tools"));
     }
 
     #[test]
