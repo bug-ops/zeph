@@ -1244,6 +1244,11 @@ impl<C: Channel> Agent<C> {
                         });
                         // Positive-confirmation log: without this, RL re-rank success is
                         // indistinguishable from the feature being silently inactive (#5834).
+                        // `rerank()` returns pure cosine order (no blending) while
+                        // `update_count < warmup_updates`; checked here right after the call so
+                        // `blended` reflects the same condition `rerank()` itself branched on.
+                        let update_count = rl_head.update_count();
+                        let blended = update_count >= warmup;
                         let rerank_summary: Vec<(String, f32, f32)> = reranked
                             .iter()
                             .map(|(idx, post_score)| {
@@ -1260,8 +1265,18 @@ impl<C: Channel> Agent<C> {
                         tracing::debug!(
                             vector_backend = if matcher.is_qdrant() { "qdrant" } else { "sqlite" },
                             candidate_count = rerank_summary.len(),
+                            blended,
+                            update_count,
+                            warmup,
                             rerank = ?rerank_summary,
-                            "RL re-rank applied: candidates reordered by blended RL score (name, pre_score, post_score)"
+                            "{}",
+                            if blended {
+                                "RL re-rank applied: candidates reordered by blended RL score \
+                                 (name, pre_score, post_score)"
+                            } else {
+                                "RL re-rank: cosine order retained, RL head still warming up \
+                                 (name, pre_score, post_score are equal)"
+                            }
                         );
                     } else {
                         tracing::debug!(
