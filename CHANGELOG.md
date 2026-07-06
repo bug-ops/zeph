@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `build`: bumped `crossbeam-epoch` to 0.9.20 (from 0.9.18) to resolve RUSTSEC-2026-0204
+  (invalid pointer dereference in `fmt::Pointer`/`fmt::Display` impls for `Atomic`/`Shared`
+  when the underlying pointer is null), a newly-published advisory that started failing the
+  `cargo-deny` gate on every PR via the `ignore`/`rayon`/`zeph-index` dependency chain. Lockfile
+  bump only, no source changes.
 - `ci`: `release-build`'s `needs:` list now includes `lint-fmt` and `lint-clippy`, so a
   trivially-broken PR fails fast instead of burning the full ~40-minute release-profile build
   first. Added a companion `release-build-full` job that builds with `--features full`
