@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-07-07
 ### Added
 
 - `test(session)`: closed two test-coverage gaps left over from #5445's chunked-replay perf pass
@@ -23,6 +24,1653 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   break, which stays within the ≤ 100-in-memory bound but is worth flagging for future refactors
   (#5841).
 
+- `feat(core)`: `Agent::match_and_rank_skills`'s RL re-rank success path now emits a
+  `tracing::debug!` on every turn it fires, logging the candidate count, the active
+  `vector_backend` (`"qdrant"`/`"sqlite"`), a per-skill `(name, pre_score, post_score)`
+  breakdown after `RoutingHead::rerank()` reorders `scored`, and a `blended` flag (with
+  `update_count`/`warmup` values) distinguishing genuine cosine+RL blended output from the
+  pure cosine passthrough `rerank()` returns while `update_count < warmup_updates` — without
+  it, a short live-testing session run entirely inside the warmup window would log as if
+  blending had occurred when it hadn't, reintroducing the same "success indistinguishable
+  from inactive" ambiguity one level deeper. Previously the three existing log sites on this
+  path (embed timeout, embed dim mismatch, and the embeddings-unavailable skip branch) only
+  covered failure/skip cases, so a successful RL re-rank was indistinguishable from the
+  feature being silently inactive — blocking live cross-backend parity verification for
+  #5812/#5805 (#5834).
+- `test(core)`: extracted a `build_daemon_agent`/`BuildDaemonAgentDeps`-taking function from
+  `run_daemon()`'s `AgentBuilder` construction chain (`src/daemon.rs`), completing #5819's
+  remaining half left out of PR #5831 (`build_agent`/`BuildAgentDeps` for the CLI path,
+  `src/runner.rs`, see entry below). Kept as its own struct rather than merged into
+  `BuildAgentDeps`: the daemon path wires `with_mcp`/`with_mcp_shared_tools`/`with_provider_pool`
+  inline (the CLI path defers those to feature-gated chaining after `build_agent` returns, inside
+  `run()`) and never wires session-sink, compression, typed-pages, autosave, shutdown-summary,
+  compaction-provider, tiered-retrieval, or bare-mode config at all — unifying the two structs
+  would require default/`None` placeholders for whichever fields the other path doesn't use,
+  reintroducing the exact default-vs-omitted wiring defect class this seam exists to catch.
+  Added `build_daemon_agent_wires_skill_matching_config`, the daemon counterpart to
+  `build_agent_wires_skill_matching_config`, asserting `config.skills.confusability_threshold`
+  reaches the constructed `Agent` via the real `run_daemon()` startup path.
+
+- `test(core)`: extracted a `build_agent`/`BuildAgentDeps`-taking function from `run()`'s
+  `AgentBuilder` construction chain (`src/runner.rs`), mirroring
+  `src/serve/agent_factory.rs::build_agent_factory`'s existing `Deps`-taking pattern, so the
+  real CLI startup wiring is unit-testable in isolation. Added a regression test asserting
+  `config.skills.confusability_threshold` reaches the constructed `Agent` via this path —
+  previously the only coverage of this wiring class was the test-only
+  `AgentBuilder::with_semantic_scan` setter, which bypassed the actual regression class behind
+  #5813/#5610/#5818 (a config field silently failing to reach the builder on the real startup
+  path). `run_daemon()` (`src/daemon.rs`) has an equivalent but structurally divergent
+  `AgentBuilder` chain (~15 CLI-only fields absent, different MCP-wiring interleaving) that is
+  deliberately left out of scope here — unifying it now would risk reintroducing the very
+  default-vs-omitted defect class this seam exists to catch. #5819 stays open to track that
+  remaining half.
+
+- `test(memory)`: closed three low-severity test-coverage gaps left over from #5815's fix for
+  the stale cross-DB entity-id FK-violation bug (#5801, #5816). `resolve_local_target_id`
+  (`crates/zeph-memory/src/semantic/graph.rs`) had no test for its third outcome — a stale or
+  mismatched payload id whose `canonical_name` already resolves to an existing local row, so
+  the slow path reuses it instead of creating a duplicate
+  (`link_memory_notes_stale_id_resolves_existing_canonical_without_creating`).
+  `EntityResolver::handle_ambiguous_candidate`, the LLM-disambiguated call site touched by the
+  same fix, had no stale-id coverage either — every existing ambiguous-path test seeds a real
+  matching row (`resolve_ambiguous_llm_disambiguated_corrects_stale_cross_db_id`). The
+  FK-violation WARN branches added to `insert_edges` (both the APEX-MEM and legacy paths) had
+  no test manufacturing a genuine FK violation on those specific call sites
+  (`insert_edges_apex_mem_logs_warn_on_genuine_fk_violation`,
+  `insert_edges_legacy_logs_warn_on_genuine_fk_violation`), unlike `insert_similarity_edges`.
+  Also added a Postgres-backend regression test for the original #5801 scenario
+  (`note_linking_corrects_stale_cross_db_target_id_postgres`, gated behind the existing
+  `test-utils`/Docker `#[ignore]` convention) — lower-risk since `EntityResolver`/
+  `resolve_local_target_id` share a single backend-agnostic `upsert_entity` implementation
+  already exercised by ~20 other Postgres tests, but this proves the full note-linking path
+  round-trips against a real instance. A full `extract_and_store` -> `insert_edges` end-to-end
+  pipeline test (nice-to-have) was not added: `MockProvider::embed()` returns one fixed vector
+  regardless of input text, so a two-entity extraction batch cannot have only one entity match
+  a seeded stale-id phantom without both colliding at cosine 1.0 — closing this gap needs
+  input-dependent embedding support in `zeph-llm`'s test mock, out of scope for this test-only
+  change. Test-only change, no production code modified.
+
+- `test(memory)`: closed the last zero-coverage gap in `recall_by_route`'s dispatch —
+  `MemoryRoute::Graph` and the `recall_routed_async` entry point had no test anywhere in the
+  workspace (#5620). `recall_routed_async_hybrid_route_falls_back_to_fts5_on_no_qdrant`
+  exercises the async router path directly; `recall_routed_graph_route_behaves_like_hybrid`
+  confirms the `Graph` route's message-recall dispatch is byte-identical to `Hybrid` (dedicated
+  graph traversal happens separately via `recall_graph`). Also added Postgres-integration
+  coverage pinning `load_skill_usage`'s `invocation_count` decode (#5591), which surfaced the
+  `record_skill_usage` Postgres bug fixed above.
+- `test(core)`: added timeout-branch coverage for the graph-query timeout helper
+  (`crates/zeph-core/src/agent/agent_access_impl.rs`) via a `tokio::time::pause()` +
+  `advance(6s)` test against a synthetic never-resolving future, forcing the real
+  `tokio::time::timeout(5s, ...)` arm shared by `resolve_entity_by_name`, `graph_facts`, and
+  `graph_history` instead of only exercising the "no store configured" short-circuit (#5770).
+  A real `GraphStore`-backed integration test was not attempted — `GraphStore` is a concrete
+  type with no trait seam, and combining `tokio::time::pause()` with the SQLite-backed store
+  is a known source of flakiness elsewhere in the workspace — so this proves the shared
+  timeout mechanism deterministically but does not itself invoke `graph_facts`/`graph_history`.
+- `feat(serve,acp)`: `zeph serve-sessions --acp` now runs the ACP protocol transport in-process
+  instead of hard-erroring (#5420). Combined mode runs ACP-over-HTTP (`zeph_acp::acp_router`)
+  on a **second** `axum::serve` listener bound to `[acp] http_bind`, sharing one
+  `SemanticMemory`/`SQLite` pool and one `TaskSupervisor` with the existing `/sessions*` HTTP
+  API — not two independent pools writing the same database file concurrently, and not ACP
+  stdio (which has no cancellation hook and can't be lifecycle-managed alongside a network
+  daemon). Requires the `acp-http` feature (bundled in `ide`); without it, `--acp` is a hard
+  error naming the feature to rebuild with. A wildcard-aware pre-check rejects
+  `[serve] http_addr`/`[acp] http_bind` combinations that would bind overlapping addresses on
+  the same port before either listener binds. A second guard refuses a non-loopback
+  `[acp] http_bind` when `[acp] auth_token` is unset — mirrors the existing `[serve]
+  require_auth` guard so enabling `require_auth` can't give a false impression that the whole
+  combined process (both listeners share the same `acp_sessions` table) is authenticated. Either
+  listener's fatal error now cancels the other's shutdown immediately (previously a crashed
+  listener could leave its sibling silently serving until an external SIGTERM). Extracted a new
+  spawn-free `build_shared_core` (`src/acp.rs`) used by both `zeph serve-sessions` and standalone
+  ACP session construction, and a new `build_combined_deps` production sharing path for the
+  combined command. No new configuration surface — reuses existing
+  `[serve]`/`[acp]`/`[session]` keys.
+- `test(serve)`: added `src/serve/test_support.rs` — a router-level test harness
+  (`ServeTestHarness`) driving the real production `axum::Router` via
+  `tower::ServiceExt::oneshot`, covering `/health`, the full `/sessions*` CRUD surface, SSE
+  event streaming, and bearer-auth enforcement (#5435). Its `build_combined_deps_shares_one_
+  memory_pool` test asserts `Arc::ptr_eq` against the actual production `build_combined_deps`
+  output, proving the #5420 pool-sharing invariant rather than a hand-reassembled test double.
+- `test(core)`: closed three zero-coverage gaps flagged during PR #5763's dedup refactor
+  (#5764, #5765, #5766). `graph_facts`/`graph_history` (`agent_access_impl.rs`) now have
+  happy-path, entity-not-found, unavailable-store, and self-loop-edge tests, plus a `/conv fork`
+  test. `reset_conversation` (`context/assembly.rs`) now has tests exercising the actual command
+  (not just its flag parser), covering `--keep-plan` state preservation, state clearing without
+  the flag, and background-handle abort with history reset. `ShadowSentinel::record_tool_event`
+  (`shadow_sentinel.rs`) now has normal-path and persist-failure tests, the latter asserting the
+  correct warn-log context string via a real dropped-table error and a `tracing_subscriber::Layer`
+  capture. Test-only change, no production code modified.
+
+- `feat(memory)`: add `memory.qdrant_timeout_secs` config field, wired into
+  `QdrantOps::with_timeout` at all 5 production `QdrantOps::new` construction sites:
+  `AppBuilder::new` (`src/bootstrap/mod.rs`, via the extracted `build_qdrant_ops` helper),
+  `src/commands/doctor.rs`, `src/commands/ingest.rs`, `src/commands/knowledge.rs`, and
+  `src/commands/project.rs` (`PurgeEngine`, 2 call sites). Previously `QdrantOps::with_timeout`
+  had no production caller — every Qdrant gRPC call used the hardcoded 10-second default with
+  no way for an operator to tune it. Defaults to `10` (seconds), matching prior behavior
+  exactly. A `migrate-config` step adds a commented `qdrant_timeout_secs = 10` advisory under
+  `[memory]` for existing configs. (#5493)
+
+- `feat(session)`: add the `zeph-session` crate foundation (spec-068 P0, #5343) — an append-only
+  JSONL event log (`SessionEventLog`) as the durable source of truth for a conversation, the
+  `SessionEvent` schema (reusing `zeph_llm::provider::MessagePart` and
+  `zeph_common::memory::AnchoredSummary`), `SessionStore` (metadata CRUD over the existing
+  `acp_sessions` table, promoted from ACP-only to channel-agnostic per spec-068 Decision D1),
+  `ReplayEngine` (deterministic fold of an event log into agent-ready messages — never calls the
+  LLM or a tool executor), and the `Condenser` trait contract with the INV-SP-4 non-overlap guard
+  (`validate_non_overlap`). New migration `106_session_persistence.sql` (SQLite + PostgreSQL) adds
+  `last_seq`/`event_count`/`forked_from`/`forked_at_seq`/`status`/`last_condensed_seq` to
+  `acp_sessions`. New `session` Cargo feature (added to the `desktop`/`server` bundles).
+
+- `feat(session)`: wire the durable JSONL event log into the live agent turn loop (spec-068 P1,
+  #5343). New `zeph_agent_persistence::SessionSink` dual-writes every persisted user/assistant
+  message to the session's `events.jsonl` **before** the `SQLite` `messages` projection
+  (INV-SP-1), called from `Agent::persist_message` — the single choke point already shared by
+  every channel and every tool-loop persistence call site. `[session]` config gains `enabled`
+  (default `true`), `data_dir` (default `.zeph/sessions`), `encrypt` (deferred, default `false`),
+  `max_event_log_mb`, and a new `[session.condense]` block (`condense_provider`, `threshold`,
+  `keep_recent`) — `--migrate-config` step 70 surfaces the new keys as commented advisories.
+  CLI/TUI/Telegram channels mint (and reuse, across restarts, keyed by `conversation_id`) a
+  session id in `runner.rs`; ACP sessions reuse their existing ACP session id directly, with no
+  separate minting step.
+
+  **Write-path cutover** (critic-flagged correction): retired both live per-turn writers to the
+  legacy `acp_session_events` table in `crates/zeph-acp/src/agent/mod.rs` —
+  `persist_user_message_async` (an unsupervised `tokio::spawn`, `EXEMPT #5144`) and the
+  notify-drainer's per-`SessionUpdate` write (also `EXEMPT #5144`) — since the same content now
+  reaches the JSONL log through the shared `Agent::persist_message` path once a `SessionSink` is
+  attached. `SessionSink` is the sole live writer for conversation-session history; no partial
+  double-write to `acp_session_events` survives. Removes two unsupervised `tokio::spawn` sites
+  (net positive against the CI spawn-baseline tracked in `.claude/rules/continuous-improvement.md`).
+  Dead code this cutover exposed (`session_update_to_event`, `content_chunk_text` in
+  `crates/zeph-acp/src/agent/helpers.rs`) removed rather than `#[allow(dead_code)]`-suppressed.
+
+  **Known gap** (tracked for the spec §12.3 read-handler thinning follow-up, out of scope for this
+  cutover): `do_load_session`'s replay of historical `SessionUpdate`s (`agent_thought`,
+  `tool_call_update` deltas, `config_option_update` — variants with no `SessionEvent` equivalent)
+  now has nothing new to replay for sessions created after this cutover, since it still reads the
+  now-frozen `acp_session_events` table.
+
+- `feat(session)`: replay-based `MessageState` hydration for ACP session resume/load/fork (spec-068
+  P1, #5343). Every ACP session spawned via `spawn_acp_agent` (`src/acp.rs`) — `do_new_session`,
+  `do_load_session`, `do_fork_session`, `do_resume_session` all share this one spawner — now folds
+  its `events.jsonl` (if non-empty) via `ReplayEngine::fold` and seeds `MessageState` from the
+  result, via a new `AgentBuilder::with_preloaded_messages` builder method, **before** the existing
+  `SQLite`-based `Agent::load_history()` call. `load_history()` gained an explicit
+  `MessageState::history_preloaded` guard (not a `messages.is_empty()` check — `Agent::new` always
+  seeds `messages` with the system-prompt message, so emptiness never distinguishes "already
+  hydrated" from "not yet loaded") so it becomes a safe no-op once replay has already populated
+  history, rather than duplicating every message (`PersistenceService::load_history` appends, it
+  does not replace). A session with an empty/absent JSONL log (brand-new sessions, and legacy
+  sessions that predate this feature) falls through unchanged to the existing `SQLite` path — no
+  retroactive synthesis, matching spec §18's legacy-session decision.
+
+- `feat(cli)`: enrich `zeph sessions` (spec-068 P1, #5343). `sessions list` now shows
+  `status`/`event_count`/`forked_from` columns sourced from `zeph_session::SessionStore`. New
+  `sessions show <id> [--from N] [--to N] [--events]` prints session metadata (status, timestamps,
+  conversation id, `last_seq`, `event_count`, `last_condensed_seq`, fork provenance) and, with
+  `--events`, the session's JSONL event log (optionally sliced by `seq` range). `sessions resume
+  <id>` gained a `--print` flag that dumps the JSONL event log (replacing the old
+  `acp_session_events`-sourced dump — the source of truth moved to JSONL). The `Sessions` CLI
+  command is no longer gated behind the `acp` feature alone — it's now available under
+  `any(feature = "acp", feature = "session")`, since the underlying data (`acp_sessions`) is
+  channel-agnostic as of spec-068 Decision D1, not ACP-specific.
+
+- `feat(session)`: INV-SP-3 projection reconciliation (spec-068 §13, #5343). New
+  `zeph_agent_persistence::reconcile_projection`, called from `spawn_acp_agent` alongside the
+  replay-hydration wiring: when `acp_sessions.event_count` trails the session's JSONL event log
+  (e.g. a crash between the log append and the `SQLite` write of the same turn), rebuilds the
+  missing `messages` rows forward from the log. Deliberately conservative — reconciles only a gap
+  containing exclusively `UserMessage`/`AssistantMessage` events; any gap containing a
+  `ToolCall`/`ToolResult`/`Condensation`/`Compaction`/`ForkPoint` event is left stale (logged, not
+  guessed at) rather than risk writing an incorrect row. Not correctness-critical for
+  resume/load/fork itself (which already sources conversation history from the JSONL log directly
+  when it has content); keeps other features that read `messages` directly (semantic search,
+  history displays) in sync with the log after a crash.
+
+- `feat(session)`: `ForkEngine` — eager-copy session forking (spec-068 P2 §7, #5343). New
+  `zeph_session::ForkEngine::fork(data_dir, src_id, new_id, at_seq, store)`: copies parent events
+  `[0, at_seq)` (or the whole log when `at_seq` is `None`) into a caller-allocated child session's
+  own, fully self-contained JSONL log, prefixed with a synthetic `SessionStarted { forked_from:
+  Some((src_id, at_seq)) }` header; creates the child's `acp_sessions` row via
+  `SessionStore::record_fork`; appends a `ForkPoint` provenance event to the parent's log.
+  Copy-on-write forking is explicitly deferred (spec §15 NEVER) in favor of eager copy for MVP
+  simplicity and independence from the parent's subsequent condensation. `new_id` is
+  caller-supplied (not minted internally) since ACP's `do_fork_session` needs the id before the
+  fork call completes, to construct the session's in-memory entry.
+
+- `feat(acp)`: `do_fork_session` delegates to `ForkEngine::fork` when `[session] enabled = true`
+  (spec-068 P2, #5343). New `AcpServerConfig.session_data_dir` /
+  `ZephAcpAgentState.session_data_dir` (threaded through `build_agent_state`) gate the new path.
+  `fork_conversation` now forks the durable JSONL log via `ForkEngine::fork` and links the new
+  `SQLite` conversation to the `acp_sessions` row `ForkEngine::fork` already created (via
+  `record_fork`) rather than creating a second row — the legacy `acp_session_events`
+  `import_acp_events`/`load_acp_events` copy is retired for new forks (the JSONL log is now the
+  sole source of truth for forked history, matching the P1 write-path cutover's philosophy). The
+  `SQLite` `messages`/`conversations` copy (`copy_conversation`) is unchanged. When persistence is
+  disabled, behavior is unchanged from before spec-068.
+
+- `feat(cli)`: `sessions fork/export/import` (spec-068 P2, #5343). `sessions fork <id> [--at
+  <seq>]` mints a new session id and delegates to `ForkEngine::fork`. `sessions export <id>
+  <path.jsonl>` copies a session's validated (INV-SP-2 torn-tail-truncated) event log to a file.
+  `sessions import <path.jsonl>` restores a previously-exported log as a brand-new session (fresh
+  id, no `forked_from` provenance — an import is a restore, not a fork).
+
+- `feat(session)`: `LlmCondenser` — the default `Condenser` implementation (spec-068 P2 §8,
+  #5343). New `zeph_session::LlmCondenser`, reusing
+  `zeph_context::summarization::summarize_structured` (`zeph-session` now depends on
+  `zeph-context` — confirmed `cargo tree` still excludes `zeph-durable`/`zeph-memory`/`zeph-core`,
+  INV-1 preserved). `should_condense` triggers once `budget_used_fraction` reaches a configurable
+  threshold and there are more than `keep_recent` messages; `condense` keeps the last
+  `keep_recent` messages un-summarized, folds the rest via `ReplayEngine::fold`, and summarizes
+  via the LLM, enforcing INV-SP-4 (`validate_non_overlap`) on the computed `replaced_range`. New
+  `SessionError::Llm` variant for summarization failures.
+
+- `feat(session)`: `Compaction` event hook (spec-068 P2 §8.1, #5343). New
+  `SessionSink::record_compaction(tier, cleared_count)`, called from `Agent::maybe_compact`
+  (`crates/zeph-core/src/agent/context/summarization/scheduling.rs`) whenever live in-memory
+  compaction actually pruned messages this turn — makes the prune replayable
+  (`ReplayEngine::fold` already handled `Compaction` events conservatively since P0). **Known
+  limitation**: emitted with `summary: None` — the LLM-produced hard-compaction summary text is
+  produced deep inside `zeph-agent-context`'s `do_hard_compaction`/`compact_context` and is not
+  currently surfaced to the `Agent<C>` call site that has `session_sink` access; `tier`/
+  `cleared_count` alone are recorded for now, tracked as a follow-up to fully close AC-6.
+
+- `feat(config)`: `[serve]` config section for `zeph serve` (spec-068 P3 §9, #5343). New
+  `zeph_config::ServeConfig` (`http_addr`, `require_auth`, `auth_token_vault_key`, `max_sessions`,
+  `session_idle_ttl_secs`, `max_queued_prompts`) — the bearer token itself is never stored inline
+  (only the age-vault key name to resolve it from at startup, per the vault-only secrets policy).
+  New `--migrate-config` step 71 adds a commented-out `[serve]` block for discoverability;
+  `config/default.toml` documents all fields.
+
+- `feat(core)`: `SessionActor` + `LiveSessionRegistry` for `zeph serve` (spec-068 P3 §9.2-9.3,
+  #5343). New `zeph_core::serve` module: `SessionCommand` (`Prompt`/`Cancel`/`Shutdown`),
+  `SessionOutput` (`Token`/`ToolCall`/`ToolResult`/`TurnComplete`/`Error`), and
+  `SessionActor::drive` — a single `tokio::select!` loop (no raw `tokio::spawn`) bridging an
+  `mpsc::Receiver<SessionCommand>` into an `Agent<LoopbackChannel>`'s channel input and forwarding
+  channel output as `SessionOutput` over a `broadcast::Sender`, while concurrently driving
+  `agent.run()` to completion. Graceful shutdown (explicit `Shutdown` command, or the
+  `TaskSupervisor`'s `CancellationToken` cancelling) drops the channel's input sender, letting
+  `Agent::run`'s `next_event()` observe closure and exit on its own rather than aborting mid-turn.
+  Also new `LiveSessionRegistry` (spec §9.3): pure bookkeeping
+  (`HashMap<SessionId, SessionActorHandle>` behind a `parking_lot::Mutex`, never held across
+  `.await`) with `get`/`insert`/`remove`/`idle_candidates` (no attached broadcast subscribers +
+  TTL-expired `last_active`, for a future `serve.evict` task).
+
+  `SessionActor::spawn` — the production entry point — registers a *coordinator* task under
+  `TaskSupervisor` via `spawn_oneshot(name: Arc<str>, factory)` (architect ruling D-7): a dynamic
+  `serve.session.<id>` name and `RestartPolicy::RunOnce` (no auto-restart after a crash —
+  re-driving a torn turn/replay in place is unsafe; recovery is a fresh spawn that replays the
+  durable log from the last committed `seq`). `Agent<C>`'s futures are `!Send` (same constraint
+  `zeph-acp`'s `serve_stdio` documents), and `Agent<LoopbackChannel>` itself cannot cross *any*
+  thread boundary, so `spawn` takes a `Send`-safe agent-construction factory
+  (architect ruling D-8: `FnOnce(LoopbackChannel) -> Agent<LoopbackChannel> + Send + 'static`,
+  mirroring `zeph-acp`'s `SendAgentSpawner`) rather than an already-built `Agent` — the factory
+  runs *inside* a dedicated OS thread with its own `current_thread` runtime and `LocalSet`,
+  mirroring `serve_stdio`'s exact pattern (only `Send`-safe state crosses the thread boundary; the
+  `Agent` is constructed entirely inside it). The `spawn_oneshot` task itself is a thin
+  coordinator that never touches the `!Send` `Agent` — it awaits the thread's completion signal
+  and, on process-wide supervisor shutdown, forwards cancellation onto a **per-session**
+  `CancellationToken` (new `SessionActorHandle.cancel` field, distinct from the supervisor's
+  process-wide token) so idle eviction (`serve.evict`, spec §9.3) can cancel exactly one session
+  without tearing down every live actor, while `drive` only ever selects on one cancellation
+  source regardless of trigger.
+
+- `feat(cli)`: `zeph serve-sessions` — process lifecycle for `zeph serve` (spec-068 §9, #5343).
+  New root-binary `src/serve/` module and `Command::ServeSessions` CLI variant (new `session`
+  Cargo feature dependency: `dep:axum`, `zeph-common/http-middleware`). **Naming note**: named
+  `serve-sessions` rather than the spec's literal `serve` — `Command::Serve` already names the
+  scheduler's foreground daemon (`#[cfg(all(unix, feature = "scheduler"))]`), and both features
+  can be enabled simultaneously, so a second command claiming the same top-level name isn't
+  viable; documented in the module doc and CLI help text. Implements: config resolution
+  (`--http-addr`/`--max-sessions` CLI overrides `[serve]` config), TCP bind, an unauthenticated
+  `GET /health` endpoint (status/uptime/live-session-count), and graceful shutdown — SIGTERM
+  (Unix) or Ctrl-C triggers `axum::serve`'s `with_graceful_shutdown`, cancels the process's
+  `TaskSupervisor` `CancellationToken`, then calls `shutdown_all(30s)`. Live-tested: bind, `curl
+  /health` (`{"status":"ok","uptime_secs":1,"live_sessions":0}`), SIGTERM, clean exit — verified
+  manually against the built binary. Also implements `serve.evict` (spec §9.3): a
+  `TaskSupervisor`-registered task (`RestartPolicy::Restart { max: 5, .. }`) that scans
+  `LiveSessionRegistry::idle_candidates` every minute and cancels each idle session's own
+  `SessionActorHandle::cancel` token — uses `registry.remove` rather than `registry.get` so the
+  eviction scan itself never resets the `last_active` timer it is reading. Selects on the
+  supervisor's `CancellationToken` so it exits immediately on shutdown rather than forcing
+  `shutdown_all`'s full grace-period timeout (live-tested: shutdown completed in 0s, not the 30s
+  fallback). Implements a first slice of the `/sessions*` REST surface (spec §9.4):
+  `POST /sessions` (create), `GET /sessions` (list live ids), `DELETE /sessions/:id` (end a
+  session — same `SessionActorHandle::cancel` mechanism `serve.evict` uses, caller-initiated
+  instead of TTL-triggered), backed by a new `src/serve/deps.rs` (`ServeAgentDeps`,
+  `build_serve_deps`) and `src/serve/agent_factory.rs` (`build_agent_factory`) that assemble a
+  working `Agent<LoopbackChannel>` — provider, embedding provider, skill registry/matcher,
+  memory, a core shell/file/web/cwd tool set (with sandbox + audit wired the same way ACP does),
+  and `SessionSink` durable persistence when `[session] enabled = true`. Deliberately **not** a
+  reuse of `src/acp.rs`'s `SharedAgentDeps`/`build_acp_deps` — that struct carries ~15
+  ACP-transport-only fields (permission files, ACP model-switching provider factory, auth bearer
+  tokens) that don't apply to a plain HTTP session; `ServeAgentDeps` calls the same underlying
+  `AppBuilder`/`zeph_tools`/`zeph_mcp` constructors but stops before MCP, the scheduler, and every
+  ACP-only field, at the cost of some orchestration-call duplication with `build_acp_deps`.
+  `POST /sessions` enforces `[serve] max_sessions` (`503` when at capacity). Because a live
+  session can execute shell/file/web tools and bearer-auth enforcement is not implemented yet,
+  `handle_serve_sessions_command` now refuses to start when `[serve] require_auth = true`
+  (the default) and the bind address is not loopback, rather than silently exposing
+  unauthenticated tool execution to the network. Live-tested end-to-end against a local Ollama
+  provider: `POST /sessions` → `201` with a durable `events.jsonl` written under `[session]
+  data_dir`, `GET /sessions` reflects the new id, filling `[serve] max_sessions` (5) then a 6th
+  create correctly returns `503`, `DELETE /sessions/:id` returns `204` and a repeat `DELETE`
+  returns `404`, and SIGTERM with 5 live sessions registered shuts down cleanly (`shutdown_all`
+  gated on all 6 supervised tasks — 5 session coordinators + `serve.evict` — reaching
+  `active_count() == 0`, not the 30s force-abort fallback). New `LiveSessionRegistry::ids()`
+  accessor (1 new unit test) backs the list endpoint.
+  MCP tools, the scheduler executor, and skill/config hot-reload are not wired into
+  `ServeAgentDeps`. `--acp` (running the ACP transport alongside HTTP/SSE) and `require_auth`'s
+  vault-token resolution are also not yet wired.
+
+- `feat(cli)`: `POST /sessions/:id/prompt` and `GET /sessions/:id/events` — the conversational
+  surface of `/sessions*` (spec §9.4). `prompt_session_handler` sends `SessionCommand::Prompt`
+  over the session's mailbox (fire-and-forget; `202` once queued, `404` if not live, `410` if the
+  mailbox already closed). `events_session_handler` subscribes to the session's
+  `SessionActorHandle::tx_out` broadcast and streams it as SSE via `axum::response::sse`; multiple
+  concurrent subscribers are supported (broadcast fan-out) and a lagged subscriber has missed
+  events dropped rather than the connection closed (the durable log is the source of truth for
+  anything missed). `SessionOutput` gained `Serialize` (adjacently tagged —
+  `{"type": "token", "data": "..."}` — since `Token`/`Error` wrap a bare `String` that can't
+  flatten into an internally tagged object). New `tokio-stream` dependency (`sync` feature, gated
+  behind the `session` Cargo feature) for `BroadcastStream`. Live-tested end-to-end against a
+  local Ollama provider: created a session, subscribed to its SSE stream, posted a prompt, and
+  received `{"type":"token","data":"PONG"}` followed by `{"type":"turn_complete"}` — a real
+  model round-trip, not a mock. The durable event log correctly recorded the user message at
+  `seq 0`; the persisted `assistant_message` at `seq 1` had empty `parts: []` even though the
+  correct content streamed over SSE — this looks like a pre-existing gap in `SessionSink`'s
+  dual-write content capture (P1/P2 work, not part of this REST-endpoint change) rather than
+  something introduced here; filed #5419 rather than fixing blind since it's outside this
+  change's scope.
+
+- `feat(cli)`: `GET /sessions/:id` — durable session metadata (spec §9.4). Returns
+  `zeph_session::SessionMetadata` (now `Serialize`, as is `SessionStatus`) flattened alongside a
+  `live: bool` computed from `LiveSessionRegistry`. `404` only when the session is neither live
+  nor known to `SessionStore` — a session whose actor has ended (idle eviction, explicit delete,
+  process restart) still returns its metadata with `live: false`, since the durable log allows it
+  to be resumed. Live-tested: a live session returns `live: true`; an unknown id returns `404`;
+  after `DELETE`, the same id still returns its metadata with `live: false` — matching the
+  documented resumability semantics exactly.
+
+- `feat(cli)`: `POST /sessions/:id/fork` — completes spec §9.4's `/sessions*` surface. Reuses
+  `zeph_session::ForkEngine::fork` (P2) to eager-copy the source session's durable log up to an
+  optional `at_seq` into a fresh child id, then immediately spawns a live `SessionActor` for the
+  child (a fresh `ConversationId`, same as `POST /sessions`) so the fork is usable via
+  `/prompt`+`/events` right away rather than only durably persisted. `404` when the source has no
+  durable log, `400` when `at_seq` exceeds the source log's event count, `503` at
+  `[serve] max_sessions` (the child counts as a new live session). Live-tested end-to-end against
+  a local Ollama provider: prompted a source session to completion, forked it, confirmed the
+  child's metadata shows `forked_from`/`forked_at_seq` pointing at the source and `live: true`,
+  and both the parent's and child's `events.jsonl` on disk reflect the fork correctly (child gets
+  the copied events plus a fresh `SessionStarted` header; parent gets a `ForkPoint` provenance
+  record per spec §7.2 step 8). Also verified `404` (unknown source) and `400`
+  (`at_seq` too large) against the running binary.
+
+- `feat(cli)`: wire `[serve] require_auth` / `auth_token_vault_key` bearer-auth enforcement
+  (spec §9.4) — the last major security gap flagged when `zeph serve-sessions` first landed.
+  `build_serve_deps` resolves the token from the vault at startup (`AppBuilder::vault()`,
+  extracted into `resolve_auth_token`/`build_tool_executor` helpers to stay under clippy's
+  `too_many_lines`) and returns it separately from `ServeAgentDeps` (server-level config, not an
+  agent-construction dependency). Every `/sessions*` route (not `/health`) is now layered with
+  `zeph_common::http_middleware::auth_middleware` via `AuthConfig`, the same pattern
+  `zeph-gateway`'s router uses. **Refined the earlier loopback-only bind guard**: now that auth
+  can actually be enforced, a non-loopback bind is only refused when `require_auth = true` *and*
+  no token was resolved (which would otherwise mean the API is reachable over the network while
+  rejecting every single request — a footgun, not a protection); a non-loopback bind with a
+  resolved token is legitimately safe and now allowed. Live-tested against a local Ollama
+  provider with `require_auth = true`: `/health` still succeeds unauthenticated (200);
+  `POST /sessions` without a bearer token now returns `401` (confirmed via
+  `zeph_common::http_middleware`'s own `require_auth=true but no auth_token configured,
+  rejecting request` log line); binding `0.0.0.0` with no vault token resolved correctly refuses
+  to start with a clear error message. The `require_auth = false` (default) path was already
+  exercised unauthenticated across every prior live test in this session (create/list/
+  get/delete/prompt/events/fork).
+
+- `feat(cli)`: `/conv [list | show <id>]` slash command (spec-068, #5343) — browse durable
+  conversation-sessions from inside an already-running agent, channel-agnostic by construction
+  (works identically in CLI, TUI, and Telegram, matching `/model`/`/undo`'s
+  `CommandHandler`/`AgentAccess` pattern rather than a TUI-only command). Mirrors
+  `zeph serve-sessions`'s `GET /sessions`/`GET /sessions/:id` REST endpoints, reading through the
+  same `zeph_session::SessionStore` — metadata only (title/status/event count/`forked_from`/
+  timestamps); use `zeph sessions show --events <id>` on the CLI for a full event-log dump. New
+  `AgentAccess::handle_conv` trait method (default: "not enabled in this context" message,
+  matching `handle_undo`'s pattern) with the real implementation in
+  `crates/zeph-core/src/agent/agent_access_impl.rs`, registered in the agent command registry
+  alongside `/undo`/`/redo`. New `ConvCommand` in `crates/zeph-commands/src/handlers/conv.rs`.
+  Live-tested via the interactive CLI against the shared production SQLite database: `/conv list`
+  printed the full session table (confirmed a session created by an earlier `zeph serve-sessions`
+  live test in this same session appears correctly); `/conv show <id>` printed full metadata for
+  an existing session and a clear "not found" message for an unknown one; an unrecognized
+  subcommand (`/conv bogus`) printed a usage hint rather than silently failing.
+
+- `fix(session)`: **#5419** — `SessionSink::record_message`'s `Role::Assistant` branch used only
+  `parts` and ignored `content` entirely, but the real production call sites
+  (`Agent::persist_message` from `crates/zeph-core/src/agent/tool_execution/tier_loop.rs:2435,
+  2659`) always pass an empty `parts` slice and put the response text in `content` — this was the
+  universal path for every assistant turn, not an edge case, so every durably persisted assistant
+  message had empty `parts` in production. Undermined AC-1 (resume shows empty assistant turns),
+  AC-5 (crash reconciliation reconstructs empty assistant messages), and `ReplayEngine`'s fold
+  logic for the common case. Fixed in `crates/zeph-agent-persistence/src/session_sink.rs`: when
+  `parts` is empty and `content` is non-empty, wrap `content` into a single `MessagePart::Text`;
+  an explicitly provided non-empty `parts` is used as-is and never overwritten by `content`. Two
+  new regression tests mirror both call shapes
+  (`record_assistant_message_wraps_content_when_parts_empty` for the real production shape,
+  `record_assistant_message_prefers_explicit_parts_over_content` to guard the pre-existing
+  explicit-`parts` shape against regressing). Re-verified against the exact live-Ollama repro from
+  #5419: the durable log now shows `{"seq":1,...,"kind":{"type":"assistant_message","parts":
+  [{"kind":"text","text":"PONG"}]}}` instead of empty `parts: []`.
+
+- `feat(cli)`: `zeph serve-sessions --acp` now fails fast with a clear error naming the correct
+  alternative, instead of silently logging a warning and running HTTP/SSE-only. Researched
+  in-process combination before implementing: `src/acp.rs`'s `run_acp_server`/
+  `run_acp_http_server` each build a complete, independent `SharedAgentDeps` (own
+  `SemanticMemory`/`SQLite` pool, provider, `McpManager`, skill registry, `TaskSupervisor`) with
+  no existing path to share those with `ServeAgentDeps` — running both in one process would mean
+  two independent `SQLite` connection pools writing the same database file concurrently (a real
+  contention/correctness risk, not just wasted resources) plus duplicate MCP subprocess spawning.
+  Rather than build that silently, `--acp` now errors naming the workaround (run `zeph --acp` /
+  `zeph --acp-http` as a separate process alongside `zeph serve-sessions`). Filed **#5420** for
+  proper in-process support: refactor `build_acp_deps` to accept prebuilt shared resources, the
+  same pattern it already uses for the MCP manager (`prebuilt_mcp_manager`) — real design work
+  deserving its own attention rather than being squeezed into this PR.
+
+- `feat(cli)`: `/conv resume <id>` and `/conv fork <id>` (spec-068, #5343, architect ruling D-9)
+  — mid-session live conversation swap on the CLI/TUI's single running agent. Architect ruling:
+  the "needs new live-swap machinery" estimate for descoping these was checked against code and
+  was wrong — the machinery already exists (`reset_conversation`/`/new` IS the live-swap
+  precedent; `AgentBuilder::with_preloaded_messages` IS the replay-hydration precedent; slash
+  commands already dispatch with `&mut self` between turns). New
+  `Agent::load_and_resume_conversation` (`crates/zeph-core/src/agent/context/assembly.rs`,
+  sibling to `reset_conversation`, same reset shape) sets `conversation_id` from the
+  `SessionId`<->`ConversationId` bijection (spec §5.2, resolving or minting+linking one via
+  `SessionStore`) instead of minting a fresh empty one, and applies `ReplayEngine::replay`'s
+  output to `msg.messages` (same "append replayed messages" shape as `with_preloaded_messages`,
+  the D-6 startup path). Sends `"Replaying conversation..."` over the existing TUI status
+  channel during the swap (AC-10). **Critical, explicitly-flagged bit**: re-points
+  `SessionState::session_sink` to the resumed/forked session's own `SessionEventLog` — without
+  this, `reset_conversation`'s conversation_id-only swap would leave subsequent turns silently
+  appending to the *previous* session's `events.jsonl` (INV-SP-1 accounting corruption). New
+  `SessionState::session_persistence_config` field + `AgentBuilder::with_session_persistence_config`
+  retain the `[session]` config snapshot (previously only consumed at construction via
+  `with_session_sink`) so the resume/fork swap can locate `data_dir` later; wired into all three
+  agent-construction call sites (`spawn_acp_agent`, the CLI/TUI bootstrap in `src/runner.rs`, and
+  `src/serve/agent_factory.rs`). `handle_conv_resume`/`handle_conv_fork` on `Agent<C>`
+  (`agent_access_impl.rs`) wire this into the existing `ConvCommand`/`handle_conv` dispatcher
+  (`resume <id>`/`fork <id>` subcommands, alongside `list`/`show`) rather than adding separate
+  `AgentAccess` trait methods — `ConvCommand` already forwards raw args to one entry point, so a
+  second dispatch layer would just duplicate subcommand parsing. `/conv fork <id>` reuses
+  `ForkEngine::fork` (P2) then the same resume-swap into the child — same effect as
+  `POST /sessions/:id/fork` but for the current CLI/TUI session instead of spawning a new
+  `SessionActor`. New `AgentError::Session(#[from] zeph_session::SessionError)` variant.
+  Live-tested end-to-end against a local Ollama provider: created a session via
+  `zeph serve-sessions` with real content ("the secret word is BANANA"), `/conv resume <id>` in
+  a plain CLI session showed the "Replaying conversation..." status, confirmed "2 event(s)
+  replayed", and a follow-up question correctly recalled "BANANA" via `memory_search` — proving
+  the replayed history is genuinely usable, not just cosmetically loaded. Verified the SessionSink
+  re-point specifically: new turns after resume correctly appended to the *resumed* session's
+  `events.jsonl` (seq 2-4), not a stale one. `/conv fork <id>` copied 5 events into a fresh child
+  session, immediately became the active conversation, and both logs were verified on disk (child
+  gained a `session_started` header with `forked_from`, parent gained a `fork_point` record).
+
+- `feat(session)`: legacy session lazy-bootstrap (spec-068 §18, P4). Existing installs have
+  `SQLite` `messages` rows for conversations that predate durable event-log persistence — these
+  are **not** retroactively synthesized into full event logs (lossy: no tool-call/result
+  granularity survives in the old projection). Instead, new `zeph_agent_persistence::
+  bootstrap_legacy_session` (`crates/zeph-agent-persistence/src/legacy_bootstrap.rs`) runs on
+  the first resume of such a session: no-ops if the event log already has events (already
+  bootstrapped, or #5343-native) or if the linked conversation has zero `SQLite` messages
+  (genuinely new session — `SessionSink` writes its own `SessionStarted` on the first real turn
+  instead); otherwise writes a `SessionStarted` header plus a single `Condensation`-style
+  "imported history" event (`replaced_seq_range: (0, 0)`) summarizing the pre-existing message
+  count, so `ReplayEngine::fold`'s existing (unmodified) logic produces one system message
+  representing the imported history — verified this replays correctly using the existing
+  `replace_range` fallback path (inserts the summary even when no prior in-log messages match
+  the range) rather than needing new replay logic. Old sessions cannot be forked or replayed at
+  an arbitrary historical `seq` predating this import boundary. Wired into both resume paths:
+  ACP's `spawn_acp_agent` (`src/acp.rs`, additive — inserted before the existing resume-hydration
+  read, not a restructure) and the new `/conv resume`/`Agent::load_and_resume_conversation`
+  (`crates/zeph-core/src/agent/context/assembly.rs`). Extracted a shared `reset_swap_state`
+  helper (steps 4-9 of `reset_conversation`) used by `load_and_resume_conversation` — did **not**
+  refactor `reset_conversation` itself to call it, since `reset_conversation`'s `keep_plan`
+  parameter conditionally skips the plan-cancellation step in a way `load_and_resume_conversation`
+  never needs to (resume/fork always fully resets); sharing the helper both ways would have
+  required either dropping that conditional (behavior change to the tested `/new --keep-plan`
+  path) or adding a parameter neither caller other than `/new` needs. 3 new unit tests
+  (no-op-with-existing-events, no-op-with-no-messages, bootstraps-and-is-idempotent). Live-tested
+  regression: created a normal (non-legacy, already has real session-persistence events) session
+  via `zeph serve-sessions`, then `/conv resume`d it via CLI — confirmed the bootstrap correctly
+  no-ops (event count stayed at 2, not 4) and the existing resume flow is unaffected.
+
+- `feat(cli)`: `--init` wizard steps for `[session]` and `[serve]` (spec-068, #5343, P4). New
+  `src/init/session.rs`: `step_session` prompts whether to enable durable session persistence and
+  its event-log directory; `step_serve` gates `zeph serve-sessions`'s `[serve]` settings
+  (bind address, bearer-auth requirement + vault key name, max concurrent sessions, idle eviction
+  TTL) behind a single "customize now?" confirmation rather than a per-field prompt cascade, since
+  `[serve]` has no `enabled` toggle of its own (the command is opt-in by virtue of being a
+  separate CLI subcommand) — declining leaves `ServeConfig::default()` values in place. New
+  `WizardState` fields for both, wired into `build_config()`. 2 new unit tests verifying
+  `build_config` output matches `SessionConfig`/`ServeConfig`'s own `Default` impls when the user
+  declines customization, and correctly applies overrides when they don't. Smoke-tested: `zeph
+  init` starts and reaches the first prompt without a compile or runtime crash (full interactive
+  drive-through of a wizard with ~40 prior steps was impractical to script; correctness of the
+  actual generated config is covered by the `build_config` unit tests, matching how every other
+  wizard step in this file is verified — individual `dialoguer` prompts aren't unit-tested
+  anywhere in this wizard, only their effect on the resulting `Config`).
+
+- `docs`: mdBook chapters for session persistence (spec-068, #5343) — the last P4 deliverable.
+  New `book/src/advanced/session-persistence.md` ("Session Persistence and Resume": the durable
+  JSONL event log, `SessionId`<->`ConversationId` bijection, `/conv`/`sessions` verbs, forking,
+  condensation, crash-safety invariants in plain language, legacy session lazy-bootstrap) and
+  `book/src/advanced/serve-mode.md` ("`zeph serve` — Persistent Agent Service": the REST+SSE API,
+  `SessionActor` isolation model, `serve.evict`, bearer-auth + the loopback-bind safety guard, and
+  the explicit `--acp` non-goal with a link to running ACP as a separate process). Both linked
+  from `book/src/SUMMARY.md` under "Advanced". Updated `book/src/reference/cli.md`'s `zeph
+  sessions` section (was still describing the old ACP-only, print-events-by-default behavior) with
+  the current verb set (`show`, `resume` [live agent by default, `--print` for the old behavior],
+  `fork`, `export`, `import`) plus new `zeph serve-sessions` and `/conv` entries. Updated
+  `book/src/reference/configuration.md` with `[session]`/`[session.condense]`/`[serve]` — also
+  fixed a pre-existing bug found while editing the adjacent block: `[session.provider_persistence]
+  enabled = true` was documented as a nested table, but `provider_persistence` is a plain `bool`
+  field directly on `[session]` in `zeph_config::SessionConfig`; corrected to
+  `[session] provider_persistence = true`. `mdbook build book/` succeeds with only a pre-existing,
+  unrelated warning in `changelog.md` (an unclosed HTML tag from an earlier entry, not touched by
+  this change). No `mdbook-linkcheck` preprocessor is configured, so all cross-reference links
+  added in the new/updated pages were verified manually against `SUMMARY.md`'s existing entries.
+
+- `ci`: add a `Release Build Check` job to `.github/workflows/ci.yml` that runs
+  `cargo build --release --workspace --all-targets --features
+  desktop,ide,server,chat,pdf,scheduler,testing,deep-link` on every PR and push to `main`.
+  Previously `cargo build --release` only ran at an actual release cut
+  (`.github/workflows/release.yml`), so release-profile-only regressions — such as the
+  query-depth overflow behind #5395/#5407/#5408 — were invisible to the normal commit/PR gate.
+  `cargo check --release` was evaluated and rejected: it does not reproduce this bug class
+  because it skips the codegen/LTO layout finalization where the overflow occurs, so only a
+  real `cargo build --release` (which exercises this workspace's `lto = true`,
+  `codegen-units = 1` release profile) closes the gap. Wired into the `ci-status` gate.
+  Closes #5409.
+- `test(mcp)`: add an in-process duplex-transport integration test for `McpClient` /
+  `ToolListChangedHandler`, covering a full `initialize -> tools/list -> tools/call`
+  round-trip through the real rmcp wire serialization path over `tokio::io::duplex`
+  (text, image, embedded text resource, embedded blob resource, and resource-link
+  `ContentBlock` variants, with the server echoing received tool-call arguments and
+  rejecting an unknown tool name to verify the client -> server leg), plus a
+  `tools/list_changed` notification asserting `ToolListChangedHandler::on_tool_list_changed`
+  emits a `ToolRefreshEvent`. See `crates/zeph-mcp/src/client.rs`.
+- `feat(acp)`: adopt the `model_config` `session/set_config_option` category (schema 1.1.0) for
+  per-session sampling-temperature control, independent of the `model` selector. New
+  `config_id="temperature"` option (presets `precise` 0.2 / `balanced` 0.7 / `creative` 1.0,
+  applied via `zeph_llm::GenerationOverrides`); new `[acp.model_config]` config section
+  (`default_temperature_preset`); new `zeph acp model-config show` CLI subcommand; new `--init`
+  wizard prompt. `default_temperature_preset` is now primed into the session's effective
+  provider at session creation (`do_new_session`/`do_load_session`/`do_fork_session`/
+  `do_resume_session`), not just advertised in the IDE dropdown, so the configured default is
+  effective from the very first prompt without an explicit `session/set_config_option` call.
+  Closes #5361.
+- `feat(acp)`: wire the real ACP `$/cancel_request` protocol notification onto the existing
+  `cancel_signal: Arc<Notify>`. New `unstable-cancel-request` Cargo feature on `zeph-acp` (not in
+  `default`) mapping to `agent-client-protocol/unstable_cancel_request`; `session/prompt` now
+  bridges `Responder::cancellation()`, scoped to that specific JSON-RPC request, onto the same
+  signal `session/cancel` already notifies. The bridge's watcher select is `biased` with prompt
+  completion checked first, and `drain_agent_events` drains a stale `cancel_signal` permit before
+  its main loop, so a cancellation resolving at/after prompt completion can no longer leak into
+  the next, unrelated prompt on the same session (also hardens the equivalent pre-existing
+  `session/cancel` race when no prompt is in flight). Closes #5362.
+- `test(acp)`: add live JSON-RPC round-trip coverage for the 8 previously-untested
+  `zeph-acp` handler files (`authenticate`, `close_session`, `delete_session`, `fork_session`,
+  `logout`, `resume_session`, `set_session_config_option`, `set_session_mode`), plus coverage for
+  the new `model_config`/temperature option and the `$/cancel_request` bridge, plus regression
+  tests for the two fixes above. Note: `resume_session` coverage exercises only the in-memory
+  early-return path; the store-backed reconstruction path remains untested (tracked in #5374).
+  Closes #5367.
+- `test(memory)`: add Postgres integration coverage for `save_session_config`/`get_session_config`
+  (`crates/zeph-memory/src/store/acp_sessions.rs`), previously exercised only against SQLite.
+  New tests in `crates/zeph-memory/tests/postgres_integration.rs` cover the `thinking_enabled`
+  `BOOLEAN`(Postgres)/`INTEGER`(SQLite) dialect divergence from migration `105_acp_session_config`
+  in both directions, plus `current_model`/`temperature_preset`/`auto_approve_level`, and the
+  missing-snapshot/unknown-session negative paths. Closes #5384.
+
+- `feat(tui)`: move the inference visualiser from the input separator to the right-panel
+  dashboard and redesign it as an animated braille waveform — a continuous wave mirrored about
+  the centre axis (rendered with `U+2800` braille for 2×4 sub-pixel resolution) that jerks up
+  and down in time to a sharp beat envelope, with a teal gradient brightening toward the peaks.
+  A 4-row slot is carved from the bottom of the subagents panel while the agent is busy and
+  collapses when idle. `Motion::Full` busy mode now shows an animated spinner in the input row
+  (same as `Minimal`). `TuiCommand::ToggleEqualizer` / `app:equalizer` hides or shows the slot.
+  Removes `EQ_ROWS`/`EQ_W_MAX` constants. See `crates/zeph-tui/src/widgets/wave.rs` and
+  `crates/zeph-tui/src/app/draw.rs`.
+
+- `spec(068-session-persistence)`: add specification for session persistence, event log replay,
+  fork semantics, context condensation, and `zeph serve` persistent agent service mode.
+  Introduces `zeph-session` crate, migration 105 (`acp_sessions` column additions for
+  `last_seq`/`event_count`/`forked_from`/`forked_at_seq`/`status`/`last_condensed_seq`),
+  INV-SP-1..4 crash-safety invariants, per-session actor model (mpsc-in/broadcast-out),
+  and `/conv` TUI command namespace. Closes #2807, #3102, #3074.
+
+- `feat(security)`: add MATRA threat model spec `specs/069-threat-model/spec.md` — asset
+  inventory, attack trees (vault exfiltration, shell RCE, SSRF, memory poisoning, channel
+  exfiltration), control mapping with residual risk scores, uncontrolled blast radius analysis,
+  and six binding invariants. Closes #3913.
+
+- `feat(orchestration)`: add `NetworkScope` enum (`Inherit`/`Allow`/`Deny`) to
+  `crates/zeph-orchestration/src/graph.rs` and `AssetSensitivity` enum
+  (`Public`/`Internal`/`Confidential`) to `crates/zeph-config/src/experiment.rs`. Both types
+  are advisory only — `NetworkScope` controls per-task network egress annotation; enforcement
+  for spawned sub-agents is deferred (see `specs/069-threat-model/spec.md §5`). Adds
+  `TaskNode::network_scope` and `TaskNode::asset_sensitivity` optional fields with `#[serde(default)]`
+  for backward-compatible deserialization of existing SQLite blobs. Adds
+  `OrchestrationConfig::default_asset_sensitivity` with `config --migrate-config` step 69.
+  Closes #3934.
+
+- `feat(tracing)`: add `#[tracing::instrument]` to 13 hot-path async fns across
+  three crates. `zeph-mcp` `connect.rs`: `spawn_non_oauth_connections`,
+  `process_connect_results`, `commit_connect_outputs`, `handle_connect_result`
+  (with `server_id` field), `spawn_oauth_connections`, `process_oauth_results`,
+  `commit_oauth_outputs` — MCP connect pipeline inner latency now visible in
+  traces. `zeph-channels` `discord/gateway.rs`: `gateway_loop`, `run_session`,
+  `ack_interaction`; `slack/events.rs`: `handle_event` — WebSocket reconnect
+  loop and event handling now traced. `zeph-vault` `age.rs`: `load_async`,
+  `save_async` — vault startup path now visible. All spans unconditional, use
+  `skip_all` to prevent sensitive args from leaking into traces. Closes #5203,
+  #5189, #5210.
+
+- `feat(tracing)`: add `#[tracing::instrument]` to hot-path async fns in
+  `zeph-sanitizer` (9 fns across `causal_ipi`, `sanitizer`, `ipi_filter`,
+  `quarantine`), `zeph-a2a` client and discovery (11 fns), and
+  `zeph-llm` `CandleProvider` (4 fns, `profiling`-gated). Sanitizer and A2A
+  spans use `skip_all` to prevent leaking sensitive content into traces;
+  CandleProvider follows the `#[cfg_attr(feature = "profiling", ...)]`
+  pattern consistent with `ollama` and `openai` providers. Closes #5211,
+  #5235, #5221.
+
+- `feat(tui)`: reducer/action decomposition — introduce `Action`, `Effect`, and `reduce()`
+  as the sole state-mutation path for keyboard and mouse inputs (#5076):
+  - `crates/zeph-tui/src/app/action.rs`: `Action` enum with 50+ semantic variants covering
+    scroll, panel toggles, session/view, input mode, command palette, file picker, slash
+    autocomplete, reverse search, confirm/elicitation dialogs, mouse mode, clipboard, and
+    command dispatch; supporting `ScrollDir`, `VertDir`, `PaletteEdit`, `ElicitationEdit`,
+    `CursorMove` enums.
+  - `crates/zeph-tui/src/app/reducer.rs`: `reduce(&mut App, Action) -> Vec<Effect>` as the
+    single mutation site; `Effect` enum for deferred side-effects (`SendUserInput`,
+    `SendCommand`, `CopyToClipboard`, `StartFileIndex`, `SetMouseCapture`, `Quit`);
+    `run_effects` executes effects after each reduce call; INV-R1 enforced.
+  - Existing `handle_key` wiring updated to call `reduce` via action-mapped arms.
+
+- `feat(tui)`: opt-in mouse capture (`[tui] mouse = false` default) with `/mouse on|off|toggle`
+  command and `app:mouse` command-palette entry (#5103):
+  - `crates/zeph-tui/src/app/mouse.rs`: `handle_mouse` dispatches decoded mouse events
+    through `reduce`; `decode_mouse` maps crossterm `MouseEvent` to `Action` (`ScrollUp`/
+    `ScrollDown` → `ScrollLines(±3)`, left-click → `SetActivePanel`, right-click →
+    `ScrollPage(Up)`); `Moved`/`Drag` events filtered to `AppEvent::Tick` at event source
+    (C6 invariant).
+  - `EnableAlternateScroll` and `EnableMouseCapture` treated as mutually exclusive — swapped
+    atomically in `tui_loop` post-select drain block (C2); mouse never enabled before first
+    draw (C3); panic hook and `restore_terminal` both call `DisableMouseCapture` (C7).
+  - `App` gains `mouse_enabled: bool`, `last_layout: Option<AppLayout>`, and
+    `pending_mouse_capture: Option<bool>` fields; `AppLayout` derives `Clone, Copy`.
+  - `with_mouse(enabled)` builder on `App`; `TuiConfig.mouse: bool` field; migration step 68
+    injects advisory `# mouse = false` comment under existing `[tui]` sections (idempotent,
+    4 unit-tested cases).
+  - Interactive wizard `--init` includes `step_tui_mouse` Confirm prompt (default: false).
+  - Status bar shows `mouse on (Shift+drag selects)` hint when mouse capture is active.
+  - `AppEvent::Mouse(MouseEvent)` variant added to event enum.
+
+- `feat(tui)`: micro-delights — five opt-in animation enhancements gated by
+  `[tui.delights]` config block and master-controlled by `tui.motion` (#5104):
+  - **Stream metrics**: tok/s rolling-window estimate (Low priority, status bar,
+    visible while streaming) and TTFT in milliseconds/seconds (shown after each turn).
+  - **Ephemeral toasts**: transient overlay notifications (cap 3, ~3s TTL, tick-
+    deterministic expiry); shown on tool-group completion when `completion_flash`
+    and `toasts` are both enabled.
+  - **Completion flash**: accent tint applied to all spans in a fully-resolved
+    tool-message group for ~400ms (4 ticks) after the last tool output arrives.
+  - **Smooth scroll**: ease-out-cubic interpolation (3 ticks, ~300ms) on
+    `PageUp`/`PageDown` and Insert-mode page scroll; single-line j/k scrolls
+    bypass animation; `motion = Off` falls back to instant offset change.
+  - **Splash shimmer**: one-shot bell-curve brightness sweep across the `zeph`
+    wordmark on each new splash show (~1.2s, 12 ticks); resets on rising edge of
+    `show_splash`; `shimmer_phase = None` is byte-identical to pre-feature baseline.
+  - All five features individually toggleable via `[tui.delights]` TOML fields
+    (all default `true`); `motion = Minimal` reduces to 1-tick flash / instant
+    scroll / single-frame shimmer; `motion = Off` suppresses all animation.
+  - Migration step 67 injects advisory `[tui.delights]` comment block into
+    existing configs that have a `[tui]` section (idempotent, 3-case unit-tested).
+  - Interactive wizard (`--init`) includes a `step_tui_delights` Confirm prompt.
+  - `FlashState` and `ScrollAnim` placed on `SessionSlot` (session-scoped) to
+    prevent cross-session bleed; `ToastQueue` and `SplashShimmer` on `App`.
+
+- `feat(durable)`: add `#[tracing::instrument]` to hot-path async fns in `zeph-durable`:
+  `JournalWriter::run`, `flush_buffer`, `JournalWriterHandle::append_acked`, `flush`
+  (closes #5204); `DurableContext::step`, `step_recorded`, `promise`, `sleep_until`,
+  `drain_background`, `take_resolved_promise`, `check_divergence`, `on_divergence`,
+  `resolve_ambiguous`, `run_op`, `journal_result`, `append_acked_degrading`
+  (closes #5205); `DurableTimerService::run`, `fire_due`; `DurableRetentionService::run`.
+  All `run` loops wrapped in per-iteration spans (`durable.{writer,timer,retention}.run.iter`);
+  no `span.entered()` across `.await`.
+- `feat(tui)`: status bar pressure abbreviation — adds a short-form tier before segment dropping.
+  Each segment now declares full and abbreviated forms (`12.3k tokens` → `12.3k`, `$0.01` → `$0.01`,
+  etc.); pressure ladder is full → short → drop (Critical segments never drop). Unicode-aware width
+  math throughout; hang-guard skips abbreviation when the short form is no narrower (closes #5101).
+- `feat(tui)`: live wave animation on the input separator row encodes agent state as a waveform —
+  idle shows a static line; TTFT-wait a slow swell; streaming a ripple; tool execution a choppy wave;
+  parallel background tasks a superposition of sines; stalled a flatline with error tint. Rendered
+  with `▁▂▃▄▅▆▇█` glyphs, aqua truecolor gradient, flat ansi16 accent, and `~-~-` ASCII fallback.
+  `[tui] motion = "full" | "minimal" | "off"` config field; `/motion` slash command for live switching;
+  zero allocations per frame via reused `wave_buf`; deterministic `sample(t, x, state)` pure function
+  for snapshot testing (closes #5096).
+- `feat(tui)`: breeze spinner (▹▹▹→▸▹▹→▸▸▹→▸▸▸→▹▸▸→▹▹▸) replaces braille throbber across all
+  five spinner sites; ASCII fallback (..→>..→>>.→>>>→.>>→..>) keyed off `detect_unicode_capable()`.
+  Shared `widgets/spinner.rs` module ensures one motion language everywhere (closes #5095).
+- `feat(tui)`: human-voice status verb dictionary maps raw `tui_status!` strings to short,
+  lowercase present-tense verb phrases with optional muted detail ("searching · memory").
+  37-entry `FRAGMENTS` table in `widgets/status_verbs.rs`; unmapped strings pass through verbatim
+  (closes #5097).
+- `feat(tui)`: splash wordmark replaces static cyan ASCII banner with branded `≈ zeph` lockup:
+  aqua-to-ice gradient (truecolor), plain accent (ANSI-16), `~ zeph` (ASCII-only); version line,
+  slogan "think further.", quick-hints row, and 3-tier responsive layout (closes #5094).
+- `feat(tui)`: `detect_unicode_capable()` in `theme/color_mode.rs` — independent of `NO_COLOR`;
+  `TERM=dumb` or non-UTF-8 locale disables Unicode glyphs without affecting color mode.
+
+- `feat(tui)`: per-section sidebar collapse with `Alt+1..4` hotkeys (#5244). Each sidebar panel
+  (memory, skills, resources, subagents) can be independently collapsed to a one-line `▸ Label`
+  summary. `AppLayout::compute` derives per-section heights from `collapsed_panels: [bool; 4]` in
+  app state; `effective_collapsed()` force-expands the subagents slot when any overlay (Fleet,
+  Durable, Tasks, plan, security) is active. Hotkeys bind in both normal and insert modes.
+- `feat(tui)`: syntax highlighting extended with TypeScript, Go, YAML, Markdown, and SQL (#5099).
+  TypeScript uses a concatenated JS+TS highlight query (TS grammar is a delta over JS). Go, YAML
+  (yml alias), Markdown (md alias, block-level), and SQL (mysql/psql/postgres aliases) added.
+  Capture-name mapping table extended with 15 new entries (text.title, text.literal, escape,
+  function.method, boolean, etc.). New crates: `tree-sitter-yaml 0.7.2`, `tree-sitter-sequel
+  0.3.11`; go/ts/md grammars promoted from transitive to explicit workspace dependencies.
+- `feat(tui)`: code block presentation with surface background, language label, and copy hotkey
+  (#5098). Code blocks render with a header rule (language label + `Ctrl+Y: copy` hint), surface
+  background (`palette.surface`) applied across the full block width including syntax-highlighted
+  spans, and a closing footer rule. `CopyLastCodeBlock(usize)` action added; `Ctrl+Y` copies the
+  most-recent block (or nth block by index) in both normal and insert modes. Streaming-incomplete
+  blocks are copyable. `enum LineKind { Normal, CodeBlock }` threads through `MdRenderer::finish()`
+  to drive the right-pad pass and prevent background bleed into adjacent lines.
+- `test(tui)`: unit tests for `/theme` slash command parsing variants (`ListThemes`, `SetTheme`,
+  trailing-space edge case) in `parse_session_slash` (#5245). Insta snapshot tests for
+  `elicitation` and `command_palette` modals confirming `BorderType::Rounded` corners (#5243).
+- `feat(tui)`: theme config, `/theme` slash command, `ToggleTheme` real implementation, hot-reload,
+  and `--theme` CLI flag (#5090). `SemanticPalette` presets (`zephyr`, `zephyr-light`,
+  `high-contrast`, etc.) are selectable at runtime; `apply_theme` validates names against path
+  traversal via `resolve_palette`, bumps a `theme_generation` counter so all session render caches
+  are invalidated on swap.
+- `feat(tui)`: borderless chat and input areas, rounded modal dialogs, transparent header bar
+  (#5092). Chat area uses full available height without a surrounding border box; input replaces
+  `Borders::ALL` with a thin separator line and `›` prompt glyph; `confirm`, `help`,
+  `command_palette`, `elicitation`, and `file_picker` modals use `BorderType::Rounded`; header
+  renders `⬡ zeph` brand glyph with muted metadata on transparent background.
+- `feat(tui)`: dashboard restyle with lowercase section headers and 1-column vertical separator
+  between chat and sidebar (#5093). `skills`, `memory`, and `resources` panels use muted bold
+  section labels in place of titled `Borders::ALL` blocks; `AppLayout` gains a `separator` field
+  for the 1-column vertical bar glyph between chat and side panels. Per-section collapse is deferred
+  to a follow-up issue.
+
+- `feat(tui)`: theme system 2.0 — semantic palette, 7 built-in presets, color-mode downgrade pipeline, init wizard theme step, and migration step 65 (closes #5087, #5088, #5089)
+  - New `crates/zeph-tui/src/theme/` module: `SemanticPalette` (10 colour roles + `ExtendedRoles`), `Rgb` newtype with `#rrggbb` hex serde, `EffectiveColorMode` with ANSI-256 dual-candidate downgrade (cube + gray-ramp, pick nearest), `NO_COLOR` detection per no-color.org spec.
+  - 7 built-in presets embedded at compile time: `zephyr` (default), `classic` (legacy look), `zephyr-light`, `high-contrast`, `catppuccin-mocha`, `gruvbox-dark`, `solarized-dark`.
+  - User theme files loadable from `~/.config/zeph/themes/<name>.toml` with path-traversal guard, symlink rejection, and 64 KiB cap enforced at read time.
+  - `Theme::from_palette_with_mode` derives all widget styles once at startup; widget render functions receive `&Theme` — no per-frame allocation.
+  - `build_tui_theme()` helper wires palette + color mode into the TUI App at startup (`tui_bridge.rs`, `tui_remote.rs`).
+  - Migration step 65 (`MigrateTuiThemeConfig`) appends a commented `[tui.theme]` advisory block to existing configs; idempotent with section-scoped scan.
+  - `--init` wizard `step_tui_theme`: Select prompts for preset (default: zephyr) and color mode (default: auto).
+
+- `fix(config)`: config load failures are no longer silent (#5071, #5067, #5072)
+  - Missing config file now prints a one-line notice to stderr and falls back to defaults instead of silently using defaults. Existing configs with parse errors now exit with a non-zero status and print the TOML error with file path and line number.
+  - `--init` wizard `step_policy` now prompts for `tools.policy.policy_provider` (LLM-assisted policy checks, leave blank to skip) and `tools.utility.utility_window` (consecutive low-utility call threshold, 0 = disabled).
+  - `--migrate-config` gains step 64 (`migrate_policy_provider_and_utility_window`): adds commented advisory entries for both new fields to existing configs.
+  - LLM provider connectivity test added to `--init` wizard: after configuring a provider, the wizard offers a TCP probe (default yes). On FAIL it offers to re-enter settings or continue. Completion screen now suggests `zeph doctor` for post-setup verification.
+  - `load_config_or_default` helper in `src/runner.rs` replaces all three `unwrap_or_default()` call sites with uniform error handling.
+
+- `feat(deep-link)`: `POST /deep-link` stateless validate-only ACP endpoint (spec-066 OQ-2, closes #5059)
+  - New `crates/zeph-acp/src/transport/deep_link.rs` handler behind `feature = "acp-http"`.
+  - Accepts `{ "uri": "zeph://..." }`, parses with the shared `parse_deep_link`, validates `cwd` against both the deep-link INV-CWD denylist and the ACP `additional_directories` allowlist (default-deny: empty allowlist rejects all cwd), validates model name against `available_models`.
+  - Returns `{ working_dir, prompt, prompt_trust_level: "external_untrusted", model }`. No session created, no store write.
+  - Total URI cap of 65 536 bytes before parsing (M2); NUL/C0 check on decoded cwd (M3).
+  - Status codes: 400 (malformed/oversized URI, NUL in cwd), 403 (cwd rejected), 422 (unknown model), 401 (bearer auth layer).
+  - `validate_deep_link_cwd` and `CwdValidationError` extracted from `src/url_scheme/validate.rs` (binary-only) to `crates/zeph-common/src/deep_link.rs` (shared); binary re-exports via `pub use`.
+  - 9 unit tests covering all failure/happy-path branches.
+  - `acp-http` feature now implies `zeph-common/deep-link`.
+  - Advisory contract documented in handler rustdoc and spec-066 §13.
+  - Follow-up issue filed: ACP `session/prompt` does not tag inbound prompts as `ExternalUntrusted` (INV-TRUST gap, #5063).
+- `feat(knowledge-ingest)`: Phase 0 provenance migration + recall isolation flag (spec-067 §3, closes #5015)
+  - DB migrations: `102_graph_provenance.sql` (SQLite) and `103_graph_provenance.sql` (Postgres) add `origin TEXT NOT NULL DEFAULT 'conversation'`, `import_batch_id TEXT`, `source_uri TEXT` to `graph_edges` and `origin`, `import_batch_id` to `graph_entities`.
+  - New types `GraphOrigin` (enum: `Conversation`, `Ingest`) and `GraphProvenance { origin, import_batch_id, source_uri }` in `zeph-memory::graph::types`.
+  - `Option<&GraphProvenance>` threaded through the full write path: `upsert_entity`, `insert_edge`, `insert_edge_typed`, `insert_or_supersede_with_turn_index_and_metrics`, `EntityResolver::resolve`, `resolve_via_embedding`, `resolve_edge_typed`. All existing call sites pass `None` (conversation origin, unchanged behaviour).
+  - `recall_include_imported: bool` (default `true`) in `GraphConfig` (`[memory.graph]`) and in `GraphExtractionConfig`. When `false`, `query_batch_edges` and `edges_for_entity` append `AND origin = 'conversation'`, excluding ingest-origin edges from recall. Wired via `GraphStore::with_recall_include_imported` builder and `build_graph_extraction_config` in `zeph-agent-persistence`.
+  - 6 new unit tests: `provenance_write_sets_origin_and_batch`, `provenance_none_defaults_to_conversation`, `recall_include_imported_false_excludes_ingest_edges`, `recall_include_imported_true_includes_ingest_edges`, `entity_provenance_write_sets_origin_and_batch`, `query_batch_edges_excludes_ingest_when_flag_false`.
+- `feat(knowledge)`: add `zeph knowledge` CLI with `ingest`, `rollback` (stub), and `status` subcommands. `KnowledgeSource` ValueEnum covers `specs`, `changelog`, `handoff`, `coverage`, `git-log` sources. INV-6 path allowlist enforced via canonical `starts_with(project_root)` check on both sides (closes #5017)
+- `feat(knowledge)`: add `[knowledge]` config section (`ingest_provider`, `concurrency`, `max_documents`, `recall_include_imported`, `transcript_scope`). Migration step 61 (`migrate_knowledge_config`) adds the section idempotently to existing configs. `--init` wizard emits `[knowledge]` only when non-default values are chosen (closes #5017)
+- `feat(knowledge)`: add `IngestLedger` repository in `zeph-memory` — idempotency re-read guard for both ingest sinks. Dual migrations: `sqlite/102_knowledge_ingest_ledger.sql` and `postgres/103_knowledge_ingest_ledger.sql`. `ingested_at` stored as ISO-8601 TEXT in both dialects. INV-5: re-read/cost guard only, not a drift guard; rustdoc states the limitation explicitly (closes #5016)
+- `feat(knowledge)`: wire notes sink into `zeph knowledge ingest` — static project artifacts (`specs/`, `CHANGELOG.md`, `.local/handoff/`, coverage-status, `git log`) ingested into Qdrant via existing `IngestionPipeline`. Ledger skip prevents re-embedding unchanged files. `--dry-run` reports file count, projected chunks, and estimated embed tokens without writing anything. `source_uri` threaded into Qdrant payload. Tracing spans on all I/O paths (closes #5018)
+- `feat(knowledge)`: wire `IngestProgress` channel in `zeph knowledge ingest` — removes `#[allow(dead_code)]`, adds `Ingesting { uri }` pre-write variant (FR-014/tasks.md:171), per-source `Discovered` events, `Failed`-equivalent `FileDone` on errors; dedicated mpsc printer task replaces direct `println!` calls in the ingest loop; TUI spinner integration point is now active (closes #5043)
+- `feat(knowledge)`: `zeph knowledge rollback --batch-id <id>` CLI command and `/knowledge rollback <id>` TUI slash command — removes ledger rows and graph entities/edges for the given batch; prompts for confirmation unless `--yes` is passed; warns when `edges == 0 && entities == 0` (Phase-1 limitation: Qdrant embeddings are not removed) (closes #5019)
+- `feat(knowledge)`: `zeph knowledge status` CLI command and `/knowledge status` TUI slash command — lists all ledger entries in newest-first order with `source_uri`, `content_hash`, `import_batch_id`, `ingested_at`, `entities`, and `edges` columns; TUI reply is plain text formatted the same way (closes #5020)
+- `feat(tui)`: add three knowledge command palette entries — `KnowledgeStatus`, `KnowledgeRollbackPrompt`, and `KnowledgeIngestPrompt` — accessible via `/` command input; `KnowledgeStatus` shows a `Querying knowledge index…` spinner while fetching; dispatched through `handle_knowledge_command` in `keys.rs` (closes #5020)
+- `feat(deep-link)`: Phase 3b — macOS `.app` bundle registration + stale scheme detection (spec-066 TASK-14, TASK-16; closes #5057, #5060)
+  - `src/url_scheme/register.rs`: `register_macos` now creates `~/Applications/Zeph.app` with `Contents/Info.plist` (CFBundleURLTypes entry for `zeph://`) and a symlink `Contents/MacOS/zeph → <current_exe>`; calls `lsregister -f <bundle>` to register with LaunchServices.
+  - `unregister_macos` calls `lsregister -u <bundle>` then removes the entire bundle directory.
+  - `status_macos` reads `_ZephExePath` from `Info.plist` and reports stale/ok/missing; `handle_url_scheme_status` now returns `bool` (stale=true) on all platforms.
+  - New public API: `SchemeStatus` enum (`Ok`, `NotRegistered`, `Stale(String)`) and `scheme_registration_status(current_exe)` for machine-readable checks.
+  - `UrlSchemeCommand::Status` gains `--check` flag: exits non-zero when stale or not registered.
+  - `zeph doctor` (check 16, `url_scheme.registration`): `Ok` when current, `Warn` when not registered, `Fail` when stale; gated under `#[cfg(feature = "deep-link")]`.
+  - 8 new unit tests for macOS: `register_macos_writes_bundle`, `unregister_macos_removes_bundle`, `unregister_macos_when_not_registered_is_ok`, `extract_zeph_exe_from_plist_parses_correctly`, `extract_zeph_exe_from_plist_returns_none_when_key_absent`, `scheme_status_macos_not_registered_when_no_bundle`, `scheme_status_macos_ok_when_registered_and_current`, `scheme_status_macos_stale_when_binary_missing`.
+  - 3 new Linux `scheme_status_linux_*` unit tests for machine-readable status.
+- `feat(knowledge)`: add `--source claude-code` and `--source codex` to `zeph knowledge ingest` — imports external-agent session transcripts into the knowledge graph. `ClaudeCodeJsonl` adapter reads `~/.claude/projects/<slug>/*.jsonl`; `CodexJsonl` adapter reads `~/.codex/archived_sessions/*.jsonl` filtered by `cwd`. Both require `--yes` and write with `GraphOrigin::ExternalAgent`. `GraphOrigin` enum extended with `ExternalAgent` variant; DB migrations add `'external-agent'` as an allowed origin value (closes #5024)
+- `feat(deep-link)`: Phase 3 — Linux `.desktop` registration, Windows HKCU registry, macOS stub, unit tests for Linux registration (spec-066 TASK-10–13; closes #5014)
+- `feat(deep-link)`: Phase 2 — CLI dispatch, bootstrap integration, TUI notification, and `--init` wizard step (spec-066, closes #5013)
+  - `src/url_scheme/prompt.rs`: `confirm_prompt` / `ConfirmResult` gate for INV-NOTTY (no-TTY → discard) and interactive y/N confirmation (TASK-7)
+  - `src/runner.rs`: `handle_url_open` implements INV-LOOP (`ZEPH_URL_OPEN_DEPTH` guard), URI parsing, CWD validation via `validate_deep_link_cwd`, model validation, confirm gate, CLI field stash (`deep_link_prompt`, `deep_link_uri`); `url-scheme register/unregister/status` commands wired in the main match (TASK-4, TASK-5, TASK-6)
+  - `src/tui_bridge.rs`: `TuiRunParams::deep_link_uri` field; `run_tui_agent` emits an `AgentEvent::Status` notification within 1 s of warmup and auto-clears after 3 s (TASK-8)
+  - `src/init/mod.rs`: `step_deep_link` wizard step — scheme registration toggle and `confirm_before_prompt` preference wired into `build_config` and `step_review_and_write` (TASK-9)
+- `feat(deep-link)`: Phase 1 foundation for the `zeph://` deep link scheme (spec-066, closes #5011)
+  - `deep-link` Cargo feature (included in `desktop` bundle, not in `default`)
+  - `crates/zeph-common`: `parse_deep_link(uri)` — sync, panic-free URI parser; percent-decodes query params; enforces 8192-byte prompt cap and control-char rejection; drops `auto`/`-y` params with WARN (INV-NOAUTO); backed by proptest fuzz
+  - `crates/zeph-config`: `DeepLinkConfig` + `AcpPreference` types; `confirm_before_prompt` defaults to `true` (secure default); migration step 62 injects `[deep_link]` advisory block into existing configs
+  - `src/url_scheme`: `validate_deep_link_cwd` following INV-CWD (absolute → canonicalize → case-fold → denylist → allowlist → is_dir); expanded denylist (Linux: `/etc` `/root` `/boot` `/run`; macOS: `/System` `/Library/Keychains`; Windows: `SystemRoot`/`WINDIR`)
+- `docs(spec-066)`: correct INV-TRUST reference — `TrustLevel::Untrusted` (non-existent) replaced with `ContentTrustLevel::ExternalUntrusted` from `zeph-sanitizer`; Phase 1 deferral note added; `DeferredHost` error variant removed in favour of `UnknownHost` for all unknown actions (closes #5030)
+- `feat(memory)`: add `SemanticMemory::ingest_documents` graph batch extraction API (spec-067 §2.3–§2.5, closes #5021)
+  - New module `crates/zeph-memory/src/graph/ingest/`: `IngestDocument` (valid-by-construction newtype), `IngestSourceKind` enum, sealed `IngestSourceAdapter` trait + `SubagentJsonl` adapter, `ImportBatchId` (UUIDv4), `IngestProgress` channel events, `IngestReport` with hub-degree projection.
+  - `TECH_DOC_SYSTEM_PROMPT` const selectable via `IngestSourceKind::system_prompt()`; `GraphExtractor::with_system_prompt` builder for prompt selection.
+  - `SemanticMemory::ingest_documents`: bounded concurrency via `buffer_unordered` (configurable cap), collect-errors-and-continue, ledger idempotency guard (F2), provenance threading (F1), write-quality gate + admission control ON, RPE bypassed for batch mode.
+  - Dry-run mode: writes nothing to DB or Qdrant; computes and returns hub-degree projection from extractor output for G0 measurement spike.
+  - Content size cap (`max_content_bytes`, default 512 KiB) to prevent token-spend DoS.
+  - `post_extract_validator: Option<Arc<dyn PostExtractValidator>>` seam for future validation.
+- `feat(knowledge)`: graph go-live for `--source subagents` — Phase 2 graph sink wired end-to-end (spec-067 FR-020..024, INV-4, INV-6, closes #5023)
+  - `GraphOrigin::Subagent` variant added; `ingest_documents` now accepts a per-call origin so subagent transcript imports are tagged `origin='subagent'` in `graph_edges` and `graph_entities`, correctly excluded from conversation recall.
+  - `DocOutcome::Rejected` + `IngestReport.rejected` counter: sanitizer-rejected facts now produce a distinct outcome arm, write zero rows, skip the ledger, and are reported separately in the summary.
+  - `MemoryWriteValidator` (as `PostExtractValidator`) runs on both live and dry-run branches; dry-run projected counts are post-sanitization.
+  - `validate_graph_extraction` extended to enforce operator-configured `forbidden_content_patterns` over entity names and edge facts (was silently skipped on the graph ingest path).
+  - `--source subagents` dispatch in `src/commands/knowledge.rs`: discovers JSONL transcripts from `config.agents.transcript_dir`, applies INV-6 current-project allowlist with `fs::canonicalize` per file (symlink-safe), calls `ingest_documents` with fresh `ImportBatchId` and `GraphOrigin::Subagent`.
+  - Confirmation gate (`--yes`/`-y`) wired for real graph writes; dry-run never prompts.
+  - `--dry-run` hub-degree report polished with `⚠ HUB` flag at > 15% and per-entity degree display.
+  - `Batch ID` printed in non-dry-run summary so operators can immediately use `zeph knowledge rollback --batch-id <X>`.
+  - 10 new unit tests: `DocOutcome::Rejected` arithmetic invariant, `GraphOrigin::Subagent.as_str()`, `IngestSourceKind::graph_origin()`, `forbidden_content_patterns` enforcement (3 tests), hub-degree flag, INV-6 allowlist, and confirmation gate.
+- `research(knowledge)`: Phase 2 measurement spike + kill-criterion evaluation (spec-067 §7, closes #5022)
+  - Dry-run executed over 140 spec files and 472 handoff files; hub-degree static analysis: top entity ~11–16% (borderline at 15% kill-criterion, likely PASS with crate-level resolution across 15+ `zeph-*` nodes).
+  - Signal-to-noise static estimate: ~85% non-trivial edges (PASS; kill-criterion ≥ 50%).
+  - Three multi-hop recall queries authored (Q1–Q3); each requires ≥2-hop traversal and demonstrably fails with semantic-note recall alone (causal chain reasoning).
+  - recall@5 measurement BLOCKED (Qdrant DOWN); expected graph path advantage documented with 10-query held-out eval set.
+  - **Decision: Conditional GO** for G2 (graph go-live) pending: Qdrant restoration, `--source subagents` CLI wiring, live hub-degree < 15% confirmation, and recall@5 > notes baseline.
+
+- `feat(skills,commands)`: add caveman ultra-compressed output mode (#4985). Two cooperating mechanisms: (1) bundled `caveman/SKILL.md` — natural-language activates telegraphic style via skill matcher; (2) `/caveman [on|off|status]` command — explicit runtime toggle. `SessionState::caveman_active` flag drives `CAVEMAN_DIRECTIVE` injection into the volatile system-prompt block on every turn. `CavemanConfig { default_on: bool }` in `[caveman]` config section (migration step 59). Preserves code blocks, file paths, and commands verbatim.
+- `feat(commands)`: add `/undo [N|list]` and `/redo` session commands (#4990). Session-scoped
+  checkpoint system that captures file state before write commands. Requires
+  `[tools.shell] checkpoints_enabled = true`. Checkpoints are in-memory only (lost on restart)
+  and cover regular files within `transaction_scope`. Redo-of-delete is supported. The undo
+  stack is bounded by `max_checkpoints` (default 20). Out-of-sandbox paths and symlinks are
+  excluded from snapshots. Migration step 60.
+- `feat(cli)`: add `--json` flag to `zeph durable list`, `zeph durable show`, and `zeph durable inspect`. When set, structured JSON is emitted to stdout instead of a human-readable table. `ExecutionSummary`, `RedactedEntry`, and `ExecutionStatus` now implement `serde::Serialize`; `ExecutionStatus` serializes in `snake_case` to match the DB column values. `--reveal` and `--json` are mutually exclusive (Clap `conflicts_with`) to prevent silent non-JSON output (closes #4978)
+- `feat(zeph-durable)`: criterion benchmarks for `zeph-durable` — all 10 groups from spec-064 §Benchmarks (`bench_step_run_idempotent`, `bench_step_run_atleastonce`, `bench_step_run_exactly_once_n`, `bench_parallel_n`, `bench_replay_cursor_n`, `bench_journal_append_buffered`, `bench_journal_append_acked`, `bench_payload_seal`, `bench_payload_open`, `bench_prune_batch`). NFR gate tests added in `tests/nfr_gates.rs`: NFR-DE-07 runs in CI; NFR-DE-01/02 are `#[ignore]` (5 ms bound requires release builds). Closes #4950.
+- `feat(zeph-subagent)`: durable promise adapter for subagent spawn/await (spec-064 §P4, closes #4954). `zeph-subagent` gains `durable.rs` with `make_durable_promise`, `await_durable_subagent`, `resolve_durable_promise`, `DurableResolverSeat`, and `SubagentResult`. The resolver seat carries a `Zeroizing<[u8; 32]>` token from parent to child background task (INV-9 channel rule). On parent resume after crash, `await_durable_subagent` returns the journaled `SubagentResult` immediately (spec §1038 finished-child replay). `zeph-core` wires the gate via `maybe_make_durable_seat` in `handle_agent_background` and `handle_agent_spawn_foreground`.
+
+- `feat(orchestration)`: P2 durable adapter for `/plan resume` (spec-064 §P2, closes #4952).
+  `ReplanBudgetSnapshot` captures five replan/predicate/lineage counters and is journaled on every
+  DAG pause as an `EffectClass::Idempotent` step keyed to `(graph_id, save_generation)`.  A
+  generation counter on `TaskGraph` ensures successive pause→resume→pause cycles open distinct
+  executions so replays always return the latest snapshot.  `DagScheduler::resume_from_durable`
+  restores the counters instead of zeroing them.  Call sites in `zeph-core/src/agent/plan.rs` are
+  gated on `[durable].orchestration`; when the flag is off behaviour is identical to pre-durable.
+
+- `feat(scheduler)`: P3 durable exactly-once adapter for scheduler job fires (spec-064 §P3,
+  closes #4953).  `SchedulerDurableAdapter` holds a shared `DurableBackendEnum` and
+  `JournalWriterHandle` for the scheduler's lifetime.  `fire_with_durable` opens a per-fire
+  `ExactlyOnceGuarded` execution keyed on a BLAKE3-derived `ExecutionId` from
+  `(job_name, scheduled_slot_ms)`.  On crash between `EffectIntent` and `StepResult` the
+  `OnAmbiguous::Skip` policy applies rather than an unconditional re-fire.  The `catch_up_missed`
+  startup path and `inject_custom_task` both route through `execute_handler`, which dispatches via
+  `fire_with_durable` when an adapter is present.  Gated on `[durable].scheduler`.
+
+- `feat(core)`: P1 durable adapter for the agent tool-loop (spec-064 §P1, closes #4951).
+  `SessionState` gains `durable_ctx: Option<Arc<DurableContext>>` and `durable_turn_replayed: bool`.
+  The new `call_llm_durable` helper in `tier_loop.rs` wraps each LLM turn as an
+  `ExactlyOnceGuarded / CostBearingOrBoundaryIdempotent / OnAmbiguous::Skip` durable step; a
+  `core.durable.turn` tracing span is emitted with the `execution_id` field for distributed traces.
+  When the step is replayed from the journal, `durable_turn_replayed = true` suppresses re-delivery
+  of the assistant text to the channel (spec-064 §15 RuntimeLayer observe-only). When `durable_ctx`
+  is `None` (durable disabled or `agent_turns = false`) the loop runs exactly as before with zero
+  overhead. On `DurableError` the adapter degrades gracefully to non-durable mode with a `WARN` log.
+- `feat(tui)`: `ReverseSearchState` now supports backward navigation — `select_previous()` cycles
+  toward newer matches (with wrap-around) and is bound to `Ctrl+S` in the reverse-search overlay,
+  matching bash/zsh `Ctrl+R`/`Ctrl+S` conventions. (#4691)
+- `feat(experiments)`: added `tolerate_subject_errors: bool` config field to `ExperimentConfig`
+  (default `false`, preserving existing abort-on-failure semantics). When `true`, per-case Phase 1
+  failures are excluded from scoring instead of aborting the run, matching Phase 2 graceful
+  degradation behavior. Failed cases are logged at `WARN` and counted in `error_count`; the report
+  `is_partial` flag is set to `true` so callers can distinguish partial runs from clean ones.
+  `EvalReport::is_partial` documents the partial-anchor comparison caveat. (#4856)
+
+- `feat(durable)`: scaffolded the new Layer-0 `zeph-durable` crate (spec-064) — the foundation of
+  the native durable execution layer. This first slice is type-level only, with no runtime
+  behavior: journal-boundary newtypes (`ExecutionId`/`PromiseId`/`TimerId` as UUIDv7, `StepId`,
+  `JournalSeq`, `IdempotencyKey`, plus the `ExecutionKind` discriminator), the `Journal` trait and
+  its `JournalEntry`/`EntryKind`/`ExecutionStatus` data model, the `EffectClass` side-effect
+  contract, the pure-data `DurableConfig`/`RetentionPolicy` mirroring `[durable]` TOML (all
+  spec-default-backed), and the `DurableError` type. `IdempotencyKey::derive` uses BLAKE3
+  `derive_key` with a domain-separation context and length-delimited (injective) input. The crate
+  is pure infrastructure with no business-layer dependencies (INV-1). The four `durable_*` schema
+  tables (`durable_executions`, `durable_journal`, `durable_promises`, `durable_timers`) were added
+  as numbered migrations `097`–`100` in both `zeph-db/migrations/sqlite/` and `.../postgres/`;
+  `zeph-durable` owns no `.sql` files and no `sqlx::migrate!` (INV-14). (#4944)
+- `feat(durable)`: added the journal payload AEAD boundary. `zeph-durable` now defines the
+  `PayloadCipher` seal/open trait, the `PayloadAad` location binding
+  (`execution_id`/`step_id`/`entry_kind`/`idem_key`) with a deterministic injective
+  `canonical_bytes` encoding, the `EntryKindTag` discriminator (`EntryKind::tag_enum`/`tag` now
+  delegate to a single source of truth), the metadata-only `CipherError` (with a fail-closed
+  `From<CipherError>` for `DurableError`), and the `ensure_payload_within_limit` read-side
+  `max_payload` guard (INV-11, no decode before the size check). `DurableConfig::encryption_gate`
+  enforces INV-8: AEAD may be disabled only for a single-user local backend (startup `WARN`), and
+  is rejected for shared-database or Restate deployments (`DurableError::EncryptionRequired`). The
+  concrete XChaCha20-Poly1305 cipher lives in `zeph-core::durable::XChaCha20Poly1305Cipher` (keeps
+  `zeph-durable` crypto-dependency-free, INV-1): fresh 192-bit CSPRNG nonce per seal (INV-7),
+  `key_id || nonce(24) || ciphertext || tag(16)` blob layout with a one-key rotation window, and
+  zeroized key material. Keyed from the vault `ZEPH_DURABLE_KEY`; see the new "Durable Journal
+  Encryption" security reference page for the key-rotation policy. (#4945)
+- `feat(durable)`: added the durable persistence engine to `zeph-durable`. `LocalBackend` owns a
+  dedicated `durable.db` pool (INV-14, schema applied via `zeph_db::run_migrations`), implements the
+  `Journal` trait (append, full and ranged reads, `finalize`, and a `prune` stub), AEAD-seals
+  payload-bearing entries through the injected `Option<Arc<dyn PayloadCipher>>` with the entry's
+  location bound as associated data, and stamps a keyed-BLAKE3 row HMAC over control entries when a
+  key is configured. The background `JournalWriter` actor decouples writes from the calling path:
+  buffered appends group-commit on a flush interval (dropped with a `WARN` under backpressure),
+  exactly-once appends flush all causally-preceding entries before committing (INV-4) and return
+  their `JournalSeq` over a oneshot bounded by `journal_ack_timeout_ms` (INV-12, FR-DE-11), and the
+  writer resumes from `MAX(seq)` on restart (FR-DE-12). The sealed `ExecutionBackend` trait and the
+  `DurableBackendEnum` enum dispatcher keep the backend surface closed with no `Box<dyn>` on the
+  hot path. Promise, timer, and checkpoint journal entries fail closed
+  (`DurableError::UnsupportedEntryKind`) until the promise/timer layer lands. (#4946)
+- `feat(durable)`: added the durable step primitive and the `&self` `DurableContext` — the execution
+  heart every adapter wraps. `ctx.step()` runs an operation closure and journals its result; on
+  resume it replays the journaled result without re-invoking the closure (INV-10, FR-DE-02), and
+  `ctx.step_recorded()` / `StepOutcome::{Live, Replayed}` expose the live-vs-replayed distinction for
+  double-emit suppression. Step ids are assigned structurally via an `AtomicU32` (INV-2):
+  `parallel()` returns a `ParallelScope` whose children get contiguous, eagerly-assigned ids, so a
+  parallel batch's ids are independent of completion order. Before replaying a result the context
+  compares the journaled step's `IdempotencyKey` (a BLAKE3 structural fingerprint folding the step
+  name, effect, and op fingerprint) against the current descriptor's; a mismatch raises
+  `DurableError::ReplayDivergence`, marks the journal `aborted`, and disables replay so the execution
+  restarts fresh (INV-3, FR-DE-03). `StepDescriptor::exactly_once_guarded` enforces the
+  construction-time ambiguity rule — a destructive, security-relevant, money-moving, or custom
+  guarded step without an explicit `OnAmbiguous` is rejected with
+  `DurableError::AmbiguityPolicyRequired` (FR-DE-09). A guarded step commits its `EffectIntent`
+  (ACKed) before the closure runs and its `StepResult` (ACKed) after (FR-DE-04); a guarded effect
+  that already committed a result is recognized by an idempotency-key point lookup and not re-fired,
+  even on a post-divergence fresh run (INV-13). Every ambiguous-window resolution emits a mandatory
+  structured audit record (FR-DE-10), and a writer timeout degrades the step to non-durable mode
+  rather than blocking (INV-12). The `ReplayCursor` reads the journal in bounded step-range segments
+  (NFR-DE-02). The promise, timer, and retention layers land in follow-up issues. (#4947)
+- `feat(durable)`: completed the `DurableContext` API surface with durable promises, durable timers,
+  and the retention/compaction machinery. `ctx.promise::<T>()` mints an externally-resolved handle
+  carrying a 32-byte CSPRNG resolver token (zeroized on drop); only its domain-separated BLAKE3 hash,
+  bound to `(promise_id, execution_id)`, is persisted, and `DurableHandle::resolve()` authenticates a
+  presented token in constant time before sealing and committing the value (FR-DE-05, INV-9). The
+  resolver token is the sole capability — a `PromiseId` is derivable from the journal and is not a
+  bearer secret — so the LLM, which never sees the token, cannot resolve its own promises.
+  `ctx.await_promise()` parks on a `tokio::sync::Notify` keyed by promise id with a `durable_promises`
+  poll fallback (`promise_poll_interval_secs`), degrading to pure polling above `max_parked_promises`.
+  `ctx.sleep_until()` arms a `durable_timers` row at a deterministic, position-derived `TimerId`;
+  the background `DurableTimerService` fires due timers and wakes parked waiters, and a timer whose
+  instant elapsed during downtime fires immediately on the first poll after restart (FR-DE-06).
+  Promises and timers correlate across a crash-resume by deriving their ids from
+  `(execution_id, step_id)`, so a resumed program re-attaches to the pending row rather than minting
+  an orphan. The `DurableRetentionService` prunes terminal executions past their TTL in batches,
+  yielding between them so the sweep never touches the dispatch hot path (spec NEVER); crossing the
+  soft step cap (90% of `max_steps_per_execution`) folds the committed-idempotent prefix into a
+  single AEAD-sealed `Checkpoint` entry on a background task and deletes the folded rows, while the
+  hard cap (100%) aborts with `DurableError::StepCapExceeded`. A resume replays folded steps from the
+  checkpoint snapshot — preserving each step's idempotency key for the divergence guard — without
+  re-running their operations. (#4948)
+- `feat(durable)`: wired the durable execution layer into all mandatory integration points (spec-064
+  C6). A new `zeph durable` CLI group (`list`/`show`/`inspect`/`prune`/`resume`) connects directly to
+  `durable.db` with no running agent; output is redacted by default (INV-5) and `--reveal` decrypts
+  through the vault-resolved `ZEPH_DURABLE_KEY` (FR-DE-07/FR-DE-08). The `[durable]` config section is
+  now part of the root `Config`, the `--init` wizard generates and stores `ZEPH_DURABLE_KEY` in the
+  age vault (never inline), and an additive, idempotent `--migrate-config` step adds `[durable]`
+  (default-off) to existing configs. A ratatui `DurableView` (command-palette `durable`, `D` key)
+  shows in-flight executions with mandatory status spinners (spec-011), fed by a read-only poll task.
+  The pure-data `DurableConfig`/`RetentionPolicy`/`DurableBackend` moved to `zeph-config` (single
+  source of truth, re-exported by `zeph-durable`); the AEAD enforcement gate `encryption_gate` is now
+  a free function in `zeph-durable`. (#4949)
+
+### Changed
+
+- `refactor(a2a)`: `handle_send_message` (`message/send`) and `stream_task`/
+  `drain_processor_events` (`message/stream`) in `crates/zeph-a2a/src/server/handlers.rs` each
+  reimplemented the same processor spawn/abort-handle setup, `proc_handle.await` ->
+  `TaskState` resolution (with identical Completed/Failed/panic logging), and
+  completed-artifact attachment (#5716). Extracted three shared helpers —
+  `spawn_processor`, `resolve_processor_outcome`, `finalize_artifact` — now called from both
+  handlers; the streaming-specific SSE event forwarding and the differing timeout mechanics
+  (`tokio::time::timeout` vs. `tokio::select!` with a disconnect branch) were left untouched.
+  Behavior-preserving: identical logging, artifact id format (`{task_id}-artifact`), and
+  error/panic handling at both call sites; all existing tests pass unchanged.
+
+- `ci`: shortened the CI critical path (~8m45s → ~7m15s expected) by parallelizing its two
+  serial tails. The three postgres `nextest archive` builds moved out of `build-tests` into a
+  new `build-tests-postgres` job that compiles in parallel with the main workspace archive
+  (previously they added ~70s strictly after it), and the integration job became a four-way
+  matrix (`qdrant`, `zeph-db-postgres`, `zeph-memory-postgres`, `zeph-index-postgres`) so the
+  container-backed suites run concurrently instead of serially (previously ~2m10s end-to-end,
+  now bounded by the slowest suite). Integration now depends on both build jobs; per-suite
+  container concurrency caps (`postgres-containers`, `qdrant-containers` test-groups) are
+  unchanged and apply within each matrix job.
+- `refactor(channels)`: deduplicated the `Channel::confirm` timeout/deadline-loop logic that was
+  implemented near-identically in the Telegram, Discord, and Slack adapters (send prompt with
+  timeout suffix, compute deadline, loop on `tokio::time::timeout`, skip out-of-scope messages,
+  compare reply case-insensitively against `"yes"`, deny on timeout/channel-close). A new
+  `ConfirmLoop` trait (`crates/zeph-channels/src/confirm.rs`) — mirroring the existing
+  `StreamingSend` precedent (`crates/zeph-channels/src/streaming.rs`) — provides a default
+  `run_confirm` method encoding the shared loop; each adapter implements the small per-adapter
+  hooks (`confirm_receiver`, `confirm_accepts`, `confirm_reply_text`, `confirm_send_prompt`) and
+  its `Channel::confirm` now delegates to `run_confirm` in one line (#5652). Pure refactor, no
+  behavior change.
+- `refactor(durable)`: deduplicated the "register on a `NotifyRegistry`, re-check the resolved
+  state to close the registration race, then race the notify against a poll-interval sleep,
+  falling back to pure polling above the parked cap" loop implemented independently in
+  `DurableContext::await_promise` and `DurableContext::sleep_until` (#5724). The shared logic
+  now lives in `wait_on_notify_or_poll` (new function in `crates/zeph-durable/src/waiters.rs`),
+  parameterized by the wait-duration computation, the parked-cap value, and two resolved-state
+  checks — a cheap pre-registration check and a race-closing post-registration recheck — so
+  `sleep_until`'s original asymmetry (a clock-only check before registering, a database read only
+  after) is preserved rather than paying for the database read on every iteration; the
+  post-registration recheck now also re-runs the clock check immediately before its database read
+  (previously database-only), a harmless addition that adds no extra database reads and can only
+  close the registration race faster. Pure refactor, no behavior change. Added
+  `sleep_until_wakes_on_concurrent_fire_before_due`
+  covering the in-process concurrent-wake path (previously only tested for `await_promise`).
+- `refactor(common,core,scheduler)`: deduplicated the `flock(2)`-backed pid-file guard
+  implemented independently in `zeph-core::daemon::PidGuard` and
+  `zeph-scheduler::pidfile::PidFile` — both opened the pid file with the same
+  `O_CREAT|O_RDWR|O_CLOEXEC` flags, acquired a `LOCK_EX|LOCK_NB` `flock`, mapped
+  `WOULDBLOCK` to an already-running error, truncated and wrote the current PID, and
+  unlinked the file on `Drop` (#5696). The shared logic now lives in
+  `zeph_common::pidfile::PidLockGuard` (new `zeph-common` module, Unix-only); `PidGuard`
+  and `PidFile` are thin wrappers around it that keep their existing names, method
+  signatures, and error types (`DaemonError`, `SchedulerError`). `zeph-scheduler` gained a
+  `zeph-common` dependency (behind the existing `daemon` feature); `zeph-core` dropped its
+  now-unused direct `rustix` dependency. Pure refactor, no behavior change.
+- `refactor(memory)`: `snapshot.rs`'s `chrono_now()` now delegates to
+  `zeph_common::timestamp::utc_now_rfc3339()` instead of hand-rolling the Howard Hinnant
+  O(1) civil-from-days algorithm a second time in the same workspace (#5535). Removed the
+  now-unused `unix_to_parts()` helper (18 lines). Output format is byte-identical
+  (`YYYY-MM-DDTHH:MM:SSZ`); behavior-preserving, no call-site changes needed.
+- `refactor(core)`: deduplicated two independently-duplicated code paths. `trust.rs`'s
+  `cross_session_rollout_ok_for_promote`/`_for_demote`
+  (`crates/zeph-core/src/agent/learning/trust.rs`) — identical except for which config
+  field they read (`min_sessions_before_promote` vs `_demote`) and their log message — are
+  now a single `cross_session_rollout_ok(memory, skill_name, cross_session_rollout,
+  min_sessions, action)` helper (#5662). `extract_symbol_positions_regex`
+  (`crates/zeph-core/src/lsp_hooks/hover.rs`) now calls `strip_cat_n_prefix` once instead of
+  re-deriving the same tab-prefix/digit-check/line-number logic inline (#5673). Pure
+  refactor, no behavior change.
+- `refactor(core,common,context,agent-context,mcp,memory,index)`: deduplicated three more
+  independently-duplicated code paths (epic #5714 cluster 1 remainder). Seven call sites across
+  six crates (`zeph-context`, `zeph-agent-context`, `zeph-core`, `zeph-mcp`, `zeph-memory`,
+  `zeph-index`) that reimplemented `TaskSupervisor::spawn`'s `Fn`-bound workaround for one-shot
+  futures via `Arc<Mutex<Option<Fut>>>` now call `TaskSupervisor::spawn_oneshot` directly (#5661).
+  `run_proposer`/`run_checker` (`crates/zeph-core/src/quality/`) now share a
+  `chat_json_error_outcome` helper (`quality/parser.rs`) instead of duplicating the
+  `ChatJsonError`-to-`StageOutcome` conversion (#5666). `AppBuilder::auto_budget_tokens`
+  (`src/bootstrap/mod.rs`) and `resolve_context_budget` (`crates/zeph-core/src/agent/mod.rs`)
+  now both delegate to a shared `resolve_context_budget_tokens` helper, closing a
+  `provider.context_window() == Some(0)` gap where the extraction had briefly let a
+  misconfigured zero-context-window provider through as a real budget instead of the documented
+  128k fallback (#5653). Pure refactor, no behavior change.
+- `refactor(commands,core,skills)`: deduplicated three independently-drifting code paths in the
+  commands/skills subsystem (epic #5714 duplication-backlog cluster 5). The empty-string-to-
+  `CommandOutput::Silent` branch, previously copy-pasted across 8 call sites in 7
+  `zeph-commands` handler modules, is now `CommandOutput::message_or_silent` (#5447). The
+  version-lookup-then-activate-and-write-file tail shared by `handle_skill_activate_as_string`,
+  `handle_skill_approve_as_string`, and `handle_skill_reset_as_string`
+  (`crates/zeph-core/src/agent/learning/skill_commands.rs`) is now a single
+  `activate_version_and_write` helper; each handler keeps its own version-selection predicate
+  and success message (#5663). The 8 `const TEMPLATE` + chained `.replace()` prompt builders in
+  `zeph-skills` (`evolution.rs`, `stem.rs`, `erl.rs`) now call a shared
+  `prompt_template::render` helper instead of repeating the substitution chain; the existing
+  curly-brace-safety property of `DOMAIN_GATE_PROMPT_TEMPLATE` (avoiding `format!()` because its
+  JSON example contains literal braces) is preserved unchanged (#5427). Pure refactor, no
+  behavior change; covered by 5 new unit tests targeting the extracted helpers directly.
+- `refactor(core)`: deduplicated three independently-duplicated code paths in the agent
+  conversation/graph/sentinel layer. `Agent::reset_conversation` (`/new`) and the former
+  `reset_swap_state` (`/conv resume`, `/conv fork`) shared the same ~45-line session-reset
+  block; both now call a single `reset_session_scoped_state(keep_plan)`
+  (`crates/zeph-core/src/agent/context/assembly.rs`), which the removed
+  `reset_swap_state` invoked with `keep_plan: false` (#5655).
+  `graph_facts`/`graph_history` (`crates/zeph-core/src/agent/agent_access_impl.rs`) shared an
+  entity-resolution-by-name block (5s timeout + "Qdrant unreachable" fallback) and an
+  entity-name-lookup-map-with-fallback block; both are now `resolve_entity_by_name` and
+  `build_entity_name_map`, reproducing the original per-call-site early-return semantics
+  exactly (#5656). `ShadowSentinel::check_tool_call`/`record_tool_event`
+  (`crates/zeph-core/src/agent/shadow_sentinel.rs`) shared an identical
+  clone-store-and-spawn-persist-with-warn-log block, now `persist_event(event,
+  warn_context)` (#5660). Pure refactor, no behavior change.
+- `refactor(core)`: deduplicated three independently-duplicated code paths in the agent
+  tool-dispatch pipeline. Merged `call_non_streaming`/`call_non_streaming_with_span`
+  (`crates/zeph-core/src/agent/tool_execution/llm_dispatch.rs`) into a single function
+  taking an explicit `tracing::Span` parameter; the SSE-fallback call site now passes
+  `tracing::Span::none()` (a documented no-op for `.instrument()`), which also removes a
+  now-redundant `core.tool.call_non_streaming` span on that one path — error visibility is
+  unchanged since it still surfaces once via the outer `core.tool.dispatch_chat` span (#5667).
+  Extracted `layer_context_parts()` (`layer_hooks.rs`), shared by `run_before_chat_layers`
+  and `run_after_chat_layers` instead of deriving the conversation-id/turn-number pair
+  twice (#5668). `SpeculationEngine::try_dispatch` (`speculative/mod.rs`) now resolves a
+  supervisor (real or throwaway) once before a single `spawn_oneshot` call, instead of
+  duplicating the identical spawn closure across both branches of an if/else (#5669). Pure
+  refactor, no behavior change.
+- `fix(core)`: unified `CocoonClient` construction gating between `build_cocoon_provider` and
+  `spawn_cocoon_health_checks` (`crates/zeph-core/src/provider_factory.rs`) behind a single
+  `resolve_cocoon_client_params` helper. Previously the advisory health-check path ignored a
+  provider entry's own `cocoon_access_hash` opt-in gate — it unconditionally read the vault key
+  and never errored on a missing one — while the real provider-construction path gated on it and
+  hard-failed bootstrap when the entry opted in but the vault key was absent. The health check
+  now goes through the identical gating logic; on a resolution error it logs a warning and skips
+  just that health check instead of using a wrong or ungated client (#5671). Also deduplicated
+  the identical post-verdict logging + `store_correction_in_memory` block shared by
+  `evaluate_with_llm_classifier` and `evaluate_with_judge` (`crates/zeph-core/src/agent/
+  corrections.rs`) into a single `record_correction_signal` helper, differing only in the
+  `source` field (#5676).
+- `refactor(memory,core)`: deduplicated three independently-drifting code paths in the graph
+  subsystem. `build_entity_graph_and_maps` (`crates/zeph-memory/src/graph/community.rs`) now
+  folds each edge into the graph/fact/id maps through a single `fold_edge` helper shared by its
+  streaming and paginated branches, instead of two identical inline copies (#5503). The
+  entity/edge/community count-then-publish sequence used by `Agent::sync_graph_counts` and the
+  two graph-count-sync sites in `persistence/extract.rs` is now a single `fetch_graph_counts`
+  helper (`crates/zeph-core/src/agent/utils.rs`), preserving the existing per-field
+  fallback-to-zero-on-error semantics at each of the 3 call sites (#5677). The relation/fact
+  sanitization pattern (`strip_control_chars` + trim/lowercase + `truncate_to_bytes_ref`) and its
+  `MAX_RELATION_BYTES`/`MAX_FACT_BYTES` caps are now defined once in
+  `crates/zeph-memory/src/graph/resolver/mod.rs` (`sanitize_relation`/`sanitize_fact`, both
+  `pub(crate)`) instead of being duplicated at 3 call sites across `graph/resolver/mod.rs` and
+  `semantic/graph.rs`, which previously carried a second independent `const` declaration tracked
+  only by a "mirrors the constant from..." doc comment. Pure refactor, no behavior change;
+  covered by 11 new unit tests targeting the extracted helpers directly. (#5503, #5677, #5492)
+- `refactor(common,memory,mcp,context,llm,core)`: deduplicated three hand-rolled utility
+  patterns onto shared helpers. UTF-8 char-boundary truncation (5 call sites in
+  `zeph-context`, `zeph-llm`, `zeph-memory`, `zeph-core`) now calls the existing
+  `zeph_common::text::truncate_to_bytes`/`truncate_to_bytes_ref` (#5672). Char-level
+  Levenshtein edit distance (`zeph-memory/src/graph/implicit_conflict.rs` and
+  `belief_revision.rs`) now shares its DP computation via a new
+  `zeph_memory::graph::string_similarity` module; `belief_revision::relation_similarity`
+  keeps its original byte-length normalization (only the distance computation is shared,
+  not the normalization) to avoid changing behavior for non-ASCII relation strings (#5536).
+  Bracket-matching JSON-array extraction from LLM prose (5 call sites in `zeph-memory` and
+  `zeph-mcp`) now calls a new `zeph_common::llm_response::extract_json_array_slice`; each
+  call site keeps its own existing failure policy (hard error in `zeph-mcp::pruning`,
+  empty-result fallback elsewhere) (#5520). No behavior change.
+- `refactor(core)`: split `Agent::rebuild_system_prompt` (`crates/zeph-core/src/agent/context/assembly.rs`,
+  formerly 877 lines under `#[allow(clippy::too_many_lines)]`) into 9 private methods — query
+  rewrite, embedding-based skill matching/rerank, secret-based filtering, channel-allowlist
+  resync, trust/gating, prompt formatting, MCP tool discovery, tool-schema filtering, and final
+  prompt assembly. Pure mechanical extraction, no behavior change (verified by the existing
+  test suite and a dedicated end-to-end reload test). The `clippy::too_many_lines` suppression
+  on the orchestrator is dropped; three of the extracted methods carry their own narrower,
+  justified suppression instead. (#5465)
+- `perf(skills)`: cached per-skill resource discovery (`scripts/`/`references/`/`assets/`
+  directory listings) on `Skill`/`SkillRegistry` via `OnceLock`, mirroring the existing lazy
+  skill-body cache. Previously `discover_resources()` ran up to 3 synchronous `std::fs::read_dir`
+  calls per active skill on every agent turn; now it runs once per skill per registry load,
+  eliminating blocking filesystem I/O from the turn hot path (measured ~60x faster on a warm
+  cache in a 27-skill test set). Note: the cache is invalidated on skill reload, which the file
+  watcher only triggers on `SKILL.md` changes — a resource-subdirectory change alone will not
+  refresh the cache until the next reload. (#5426)
+- `perf(core)`: `Agent::reload_skills()` (`crates/zeph-core/src/agent/skill_reload.rs`) no longer
+  performs blocking filesystem I/O (directory walk, YAML parsing, per-skill body reads) inline on
+  the agent's async loop while holding the skill registry's write lock. The new registry is now
+  built entirely off-lock inside `tokio::task::spawn_blocking`, then swapped in under a
+  microsecond-scale write lock; per-skill body loading is similarly offloaded. Matches the
+  existing `spawn_blocking` pattern already used in `heuristic_promotion.rs`. (#5421)
+
+- `refactor(memory)`: deduplicated `crates/zeph-memory/src/graph/store/mod.rs`. Replaced 8
+  independent local re-declarations of the SQLite bound-parameter batch size (`490`, derived
+  from `999 / 2 binds-per-id`) with a single module-level `SQLITE_BATCH_LIMIT_2X` constant;
+  generalized `edge_select_cols` to take a table-alias prefix instead of duplicating the
+  `graph_edges` SELECT column list at ~10 call sites; merged `bfs_core`/`bfs_core_typed` and
+  `bfs_fetch_results`/`bfs_fetch_results_typed` into single implementations parameterized by
+  `edge_types: &[EdgeType]` (empty slice = untyped path); added a `community_from_row`
+  free function replacing 3 duplicated `CommunityRow` → `Community` conversion blocks. Pure
+  refactor, no behavior change — all 4 public BFS entry points keep their original
+  signatures. (#5501, #5490)
+- `refactor(memory)`: extracted three DRY helpers out of `zeph-memory`'s duplicated sweep,
+  admission-gate, and background-embed logic. New `crates/zeph-memory/src/sweep_helpers.rs`
+  (`pub(crate)`) holds `cluster_by_cosine_similarity` (generalizes `scenes.rs`'s
+  `cluster_messages` and `tiers.rs`'s `cluster_by_similarity` over a generic candidate type),
+  `embed_batch_with_validation` (shared batch-embed + length-validation), and
+  `llm_call_with_timeout` (shared 15s-timeout LLM call), used by both `scenes.rs` and
+  `tiers.rs` (#5581). `semantic/recall.rs` gained `run_admission_gate` /
+  `run_quality_gate` / `record_admission_sample_opt` private helpers shared by all four
+  `remember*` variants — `remember_tool_output` and `remember_categorized` continue to
+  skip the quality gate, which is unchanged, load-bearing behavior (#5569). The three
+  near-identical `embed_and_store_*_bg` background tasks collapsed into one generic
+  `embed_chunk_and_store_bg` taking a boxed-future per-chunk store closure, with the
+  rate-limited Qdrant-ensure-collection warning extracted into a pure
+  `should_emit_qdrant_warn` predicate plus `warn_qdrant_ensure_failure` (#5565). No
+  behavior change; existing test coverage extended to target the new shared functions
+  directly (moved clustering tests into `sweep_helpers.rs`, added per-`remember*`-variant
+  admission/quality-gate coverage in `semantic/tests/recall.rs`).
+- `refactor(cargo)`: split 4 crates' (`zeph-orchestration`, `zeph-memory`, `zeph-tui`,
+  `zeph-acp`) `default` feature arrays that bundled the `sqlite`/`postgres`
+  backend-selection axis with an unrelated functional feature (`llm-planning`,
+  `jsonschema`, `clipboard`, and 6 `unstable-*` ACP features respectively) — a future
+  backend-only change could otherwise silently drop an unrelated feature for any
+  consumer relying on the bundled default instead of an explicit dependency
+  declaration. Every split-out feature was verified to already be declared explicitly
+  by its real consumer (`zeph-core`'s `llm-planning`, `zeph-context`'s `jsonschema`)
+  (#5631). Simplified 45 now-redundant `all(feature = "sqlite", not(feature =
+  "postgres"))` / bare `not(feature = "postgres")` cfg guards to plain `feature =
+  "sqlite"` across 7 crates (`zeph-scheduler`, `zeph-durable`, `zeph-memory`,
+  `zeph-index`, `zeph-core`, `zeph-subagent`, `zeph-orchestration`), mirroring the
+  pattern already applied to `zeph-db` for #5571 — safe because `zeph-db`'s
+  `compile_error!` guarantees both-enabled and neither-enabled are unreachable states,
+  so `not(postgres) ⟺ sqlite` for every state in which the crate compiles (#5632).
+  Also restored `zeph-acp/unstable-session-usage` forwarding in root `Cargo.toml`'s
+  `acp` feature list, recovering 4 unit tests that the `zeph-acp` default-array split
+  had silently dropped from the CI-matching test run. Pure Cargo-hygiene change, no
+  runtime behavior change.
+- `refactor(memory)`: deduplicated three more independent hand-rolled patterns in
+  `zeph-memory`. A single SQLite-datetime-to-Unix-seconds parser now lives in new
+  `crates/zeph-memory/src/sqlite_time.rs`, replacing three separate implementations
+  (`graph/types.rs`, `graph/activation.rs`, `eviction.rs`) that had drifted apart
+  (different algorithms, different return types, different fractional-second/timezone
+  tolerance); `eviction.rs`'s `Option<u64>`-returning wrapper is now a thin
+  `u64::try_from(...)` conversion over the canonical `Option<i64>` parser — this
+  changes one previously-untested edge case (a malformed/pre-1970 timestamp string now
+  falls through to `None` instead of silently returning `Some(0)`/epoch), documented
+  and pinned with a regression test since it's unreachable in practice (`datetime('now')`
+  never produces pre-1970 strings) (#5523). A new `build_ingest_documents` free function
+  in `graph/ingest/adapter.rs` replaces the near-identical context-window
+  document-assembly loop duplicated across all three `IngestSourceAdapter` impls
+  (`SubagentJsonl`, `ClaudeCodeJsonl`, `CodexJsonl`) (#5515). New
+  `crates/zeph-memory/src/llm_judge.rs` holds `embed_with_timeout_fail_open` and
+  `llm_judge_score`, consolidating four embed-timeout-fail-open call sites and three
+  single-shot LLM-judge call sites previously duplicated across `admission.rs` and
+  `quality_gate.rs`, including the subtle clamped-vs-unclamped fail-open asymmetry in
+  `refine_goal_utility_llm` (now pinned by a dedicated regression test) (#5514). No
+  behavior change beyond the one documented eviction.rs edge case above; added direct
+  unit test coverage for all three new shared helpers.
+- `refactor(core)`: extracted `build_provider_config_snapshot` and `apply_debug_dumper`
+  into `src/agent_setup.rs`, deduplicating the `ProviderConfigSnapshot` construction
+  previously copy-pasted across `runner.rs`/`acp.rs`/`daemon.rs` (completes the
+  provider-pool-wiring slice left open by the `apply_common_tool_gating` extraction
+  above) and the `DebugDumper::new` match arm across those three plus
+  `serve/agent_factory.rs`. Pure refactor, no behavior change — verified byte-identical
+  field mapping and `Ok`/`Err` semantics at every site. Refs #5610.
+- `refactor(core)`: deduplicated the 8 near-identical cancellation-handling blocks in
+  `crates/zeph-core/src/agent/tool_execution/tier_loop.rs` (`handle_confirmation_phase`,
+  `handle_retry_phase`'s entry check and its two `tokio::select!` branches,
+  `handle_reformat_phase`'s entry and post-await checks, `run_tier_execution_loop`'s
+  per-tier check, and `execute_tier_join`'s cancellation branch) into a single
+  `cancel_tool_batch` helper. Preserves the exact step order (skill-env reset, log,
+  metrics, `[Cancelled]` send, tombstone persist) at every call site — that ordering is
+  what prevents the recurring "orphaned tool_calls corrupts history" defect class
+  (#5464, #5513, #5646). Pure structural dedup, no behavior change; all existing
+  cancellation/tombstone tests pass unchanged. (#5654)
+- `refactor(core)`: deduplicated the session-digest generation pipeline in
+  `crates/zeph-core/src/agent/session_digest.rs`. The `/new`-triggered fire-and-forget
+  `generate_and_store_digest` and the shutdown-path `Agent::maybe_store_session_digest`
+  independently rebuilt the identical summarizer prompt, LLM-call-under-timeout, and
+  sanitize/truncate/store pipeline; both now delegate to a single private
+  `generate_and_persist_digest` helper, parameterized only by the log wording each call
+  site already used. Pure structural dedup, no behavior change — same prompt text, same
+  30s timeout semantics, same storage call per call site; added direct unit test coverage
+  for the shared helper's success and LLM-failure paths. (#5678)
+- `refactor(zeph-experiments)`: deduplicated `MAX_RETRIES` retry-cap constant (previously
+  defined identically in `random.rs` and `neighborhood.rs`) into a single `pub(crate)`
+  constant in `generator.rs`, and extracted the "no configured step -> (max-min)/20"
+  fallback into `ParameterRange::effective_step()` in `search_space.rs`, replacing three
+  drifted spellings across `grid.rs`/`neighborhood.rs` (#5723). Deleted orphaned,
+  never-compiled `src/mod.rs` left over from the crate-extraction refactor (#5402).
+
+- `refactor(memory)`: `HeuristicRouter::route()` and `route_with_confidence()`
+  (`crates/zeph-memory/src/router.rs`) independently recomputed the same six
+  classification signals (temporal cue, relationship pattern, structural code pattern,
+  question-word detection, word-count thresholds, `snake_case` detection), and
+  `route_with_confidence()` additionally called `self.route(query)` to get its result,
+  recomputing everything a second time. Extracted a `RouteSignals` struct and a
+  `compute_signals()` function to compute each signal exactly once, plus
+  `HeuristicRouter::decide_route()`/`decide_confidence()` helpers holding the existing
+  priority-chain and popcount-confidence logic unchanged. `route()` and
+  `route_with_confidence()` now both call `compute_signals()` once and derive their
+  result from the shared `RouteSignals`. Pure extraction — no behavior change. Closes
+  #5510.
+- `refactor(memory)`: `SemanticMemory`'s four public constructors
+  (`with_weights_and_pool_size`, `with_qdrant_ops`, `from_parts`,
+  `with_sqlite_backend_and_pool_size` in `crates/zeph-memory/src/semantic/mod.rs`) each
+  built the full ~35-field `SemanticMemory` struct via an inline literal, differing only
+  in how `qdrant` and `token_counter` were constructed. Extracted a private
+  `SemanticMemory::base()` helper that builds the struct once from the handful of
+  parameters that vary; all four constructors now delegate to it. Pure extraction — no
+  behavior change. Closes #5504.
+- `refactor(llm)`: `ClaudeProvider`'s five request call sites (`crates/zeph-llm/src/claude/mod.rs`
+  — `send_request`, `chat_with_tools_stream`, `send_stream_request`, `chat_typed`,
+  `chat_with_tools`) each duplicated the same "detect a `compact-2026-01-12` beta rejection, set
+  `server_compaction_rejected`, warn, retry once" sequence. Extracted a private
+  `handle_compact_beta_rejection` method encapsulating the detect/store/warn/retry-once
+  decision; all five call sites now delegate to it, differing only in a `variant` label passed
+  through to the warning text. Pure extraction — warning text and retry semantics unchanged.
+  Closes #5683.
+
+- `refactor(memory)`: `store/skills.rs`'s deactivate-old/activate-new skill-version-switch
+  SQL pair was copy-pasted across `save_and_activate_skill_version`, `activate_skill_version`,
+  and `ensure_skill_version_exists`. Extracted into a shared `switch_active_skill_version`
+  transaction helper. Closes #5496.
+- `refactor(memory)`: `semantic/recall.rs`'s `MemoryRoute` dispatch match was duplicated
+  between `recall_routed` and `recall_routed_async`, and had already drifted — the async
+  path was missing the Episodic arm's debug trace. Extracted into a shared `recall_by_route`
+  helper and unified the trace onto both paths. Closes #5495.
+- `refactor(orchestration)`: `dag::propagate_failure`'s trailing wildcard match arm on
+  `FailureStrategy` no longer silently falls back to `Abort`-equivalent behavior with no signal.
+  The wildcard arm is required for compilation because `FailureStrategy` is `#[non_exhaustive]`
+  (`zeph-config`), so it now logs `tracing::error!` with the unhandled variant before applying the
+  same fallback, making a future unknown variant visible in logs instead of silent. Closes #5466.
+- `refactor(orchestration)`: `LlmPlanner::plan` now forwards to `plan_with_hint(goal, agents, None)`
+  instead of duplicating the entire planning pipeline (empty-goal check, prompt build, timeout-
+  wrapped `chat_typed`, usage capture, response conversion, DAG validation). Pure behavior-preserving
+  refactor — no change in output when no topology hint is supplied. Closes #5471.
+- `refactor(mcp)`: extract shared `rmcp_tool_to_mcp_tool` helper (`crates/zeph-mcp/src/client.rs`)
+  for converting an rmcp `tools/list` entry into `McpTool`, replacing two byte-for-byte identical
+  inline closures in `ToolListChangedHandler::on_tool_list_changed` (background refresh path) and
+  `McpClient::list_tools` (initial connect / manual list path). No behavior change. Closes #5479.
+- `feat(cli)!`: `zeph sessions resume <id>` no longer dumps events to stdout by default (spec-068,
+  #5343) — it now launches a **live interactive agent** bound to that session's conversation,
+  replaying its JSONL event log to reconstruct history before accepting the next prompt (spec §10,
+  architect ruling D-6). Pass `--print` for the old dump behavior (now sourced from the JSONL
+  event log rather than the legacy `acp_session_events` table). Implementation: `Cli` gained a new
+  internal `resume_session_id` field; `runner::run` intercepts `Sessions{Resume{id, print: false}}`
+  before the one-shot command dispatch and falls through to the normal interactive bootstrap
+  (mirroring the existing `UrlOpen` dispatch precedent), then resolves `conversation_id` via
+  `SessionStore::get(id).conversation_id` instead of `latest_conversation_id()` at the single
+  point `runner.rs` resolves it — every downstream step (replay, hydrate, `SessionSink`,
+  continuation loop) was already wired for the interactive path in the P1 slice and needed no
+  changes. A session with no linked `conversation_id` (a legacy session with no recorded history)
+  errors with a message pointing at `--print`. Dead `resume_summary` (the interim hydration-summary
+  dump this replaces) removed.
+- `ci`: gate the `Release Build Check` job (`.github/workflows/ci.yml`) behind
+  `github.event_name == 'push'` in addition to the existing `run-full-ci` condition, so it only
+  runs post-merge on `main` instead of on every `pull_request` push. It is the most expensive
+  job in the workflow (`cargo build --release --workspace --all-targets` with
+  `lto = true, codegen-units = 1`), and `main` already re-verifies every change after merge, so
+  gating every feature/fix branch push behind it was wasteful. `ci-status` already treats
+  `skipped` as passing, so this does not weaken the gate for `push` runs.
+- `fix(a2a)!`: `A2aClient::with_security` no longer takes two positional bools (transposing
+  `with_security(true, false)` vs. `with_security(false, true)` was a silent foot-gun). It now
+  takes a `SecurityPolicy { require_tls, ssrf_protection }` struct, with `SecurityPolicy::hardened()`
+  / `SecurityPolicy::permissive()` presets. Closes #5381.
+- `feat(mcp)!`: upgrade `rmcp` from 1.8.0 to 2.0.0. **Breaking dependency change**:
+  `RawContent`/`Content`/`Annotated<RawContent>` are removed in favor of a unified
+  `ContentBlock` enum (`Text`/`Image`/`Audio`/`Resource`/`ResourceLink`); elicitation types
+  are renamed (`CreateElicitationRequestParams` → `ElicitRequestParams`,
+  `CreateElicitationResult` → `ElicitResult`, `PrimitiveSchema` → `PrimitiveSchemaDefinition`);
+  and the MCP Roots capability (`Root`, `ListRootsResult`) is now `#[deprecated]` per
+  [SEP-2577](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577) but
+  remains fully functional — construction is now isolated behind
+  `zeph_mcp::roots::{make_root, make_list_roots}` (see `crates/zeph-mcp/src/roots.rs`).
+  Added `zeph_mcp::render_content_blocks` / `render_content_block`
+  (`crates/zeph-mcp/src/content.rs`) as the single shared renderer for the full `ContentBlock`
+  union, replacing the previous text-only extraction at every MCP tool-result call site
+  (`zeph-mcp` executor/manager, `zeph-core` hooks dispatch, `zeph-acp` LSP provider,
+  `src/agent_setup.rs`). MCP Tasks API support is explicitly out of scope (zero existing usage).
+- `refactor(memory,index)`: extract the duplicated "probe embedding dimension, then
+  `ensure_collection`" sequence into shared helpers instead of 6+ independent
+  re-implementations. New `zeph_memory::probe_vector_size` (`crates/zeph-memory/src/embed_probe.rs`)
+  awaits an already-invoked embed future (optionally bounded by a timeout) and returns the
+  vector's dimension, used by `EmbeddingRegistry::ensure_collection`, `zeph-index`'s
+  `Indexer::ensure_collection_for_provider` (preserving its existing 15s startup timeout), and
+  `src/commands/knowledge.rs::build_ingest_resources`. New
+  `EmbeddingStore::ensure_collection_for_vector` (`crates/zeph-memory/src/embedding_store.rs`)
+  derives the dimension from an already-computed vector and ensures the collection in one call,
+  used by `admission.rs`, `semantic/recall.rs` (5 call sites), and `semantic/summarization.rs`,
+  which each already hold a real embedding rather than a throwaway probe. No behavior change.
+- `refactor(memory)`: finish the probe-then-ensure_collection dedup started above. New
+  `EmbeddingStore::ensure_named_collection_for_vector` (`crates/zeph-memory/src/embedding_store.rs`)
+  replaces 8 remaining inline `ensure_named_collection(vector.len())` call sites across
+  `episodic_consolidation.rs`, `graph/resolver/mod.rs`, and `semantic/{summarization,cross_session,
+  corrections}.rs`, eliminating a dead-fallback default (`1536`/`896`/`384`) that had already
+  diverged across the inline copies. `src/bootstrap/mod.rs`'s reasoning-strategies collection probe
+  now also calls `zeph_memory::probe_vector_size` directly instead of its own inline throwaway
+  probe. No behavior change. Closes #5393.
+
+- `build(db)`: upgrade `sqlx` 0.8.6 → 0.9.0. The `runtime-tokio-rustls` feature was split into
+  `runtime-tokio` + `tls-rustls` in `zeph-db`, `zeph-memory`, `zeph-index`, and `zeph-scheduler`.
+  The new `SqlSafeStr` bound on `query`/`query_as`/`query_scalar` requires runtime-built SQL
+  strings to be wrapped in `sqlx::AssertSqlSafe`; all 67 dynamic-SQL call sites (assembled only
+  from machine-generated placeholders, boolean-selected static clause fragments, and dialect
+  constants — never unvalidated input) were audited and wrapped. `zeph-db`'s `FullDriver` bound
+  updated for the now-lifetime-free `Database::Arguments` associated type
+  (`crates/zeph-db/src/bounds.rs`). `zeph-durable` gained `#![recursion_limit = "256"]`
+  (`crates/zeph-durable/src/lib.rs`) — sqlx 0.9's larger generated future types pushed the
+  generic `step` wrapper past the default depth limit, matching the existing precedent in
+  `zeph-core`/`zeph-acp`/`zeph-bench`/`zeph-scheduler`/`src/main.rs`.
+
+- `refactor(acp)!`: bump `agent-client-protocol` 0.14.0 → 1.0.1 and
+  `agent-client-protocol-schema` 0.13.6 → 1.1.0. Schema 1.1.0 removed the flat `pub use v1::*`
+  root re-export, so every `acp::schema::X` reference in `zeph-acp` moved to `acp::schema::v1::X`
+  (`ProtocolVersion`, `MaybeUndefined`, `IntoOption`, `IntoMaybeUndefined` stay flat at the crate
+  root — unaffected). The ACP crate root also dropped its `cookbook`/`handler`/`jsonrpcmsg`
+  modules and the six root message-enum re-exports; the one internal use site
+  (`ClientRequest::ExtMethodRequest` in `tests/integration.rs`) was repointed to
+  `acp::schema::v1::ClientRequest`. No handler, transport, or builder-chain logic changed — the
+  `Agent.builder()`/`ConnectionTo`/`Dispatch`/`Responder` SACP API is unchanged between 0.14.0 and
+  1.0.1. Also deleted 5 long-dead `#[cfg(any())]` test modules in `zeph-acp` (`terminal.rs`,
+  `custom.rs`, `fs.rs`, `mcp_bridge.rs`, `agent/mod.rs`/`agent/tests.rs`) that predated ACP 0.11
+  and were unreachable by any feature toggle.
+
+  `BREAKING CHANGE:` `zeph-acp` is a published crate whose public functions (e.g.
+  `acp_mcp_servers_to_entries`) take `agent-client-protocol`/`agent-client-protocol-schema` types
+  directly. Those upstream crates crossed a SemVer-major boundary (0.x → 1.0) with a public-API
+  path change (`schema::X` → `schema::v1::X`), so this is breaking for any *external* consumer of
+  `zeph-acp`'s public API by the dependency's own SemVer nature — independent of in-workspace
+  impact, which happens to be zero right now (no other workspace crate references
+  `agent_client_protocol::schema::*` directly). No public `zeph-acp` function signatures changed
+  shape — only the import path of the types those signatures already used.
+
+- `refactor(tests)`: migrate 772 `assert!(matches!(...))` calls to the stabilized
+  `assert_matches!` macro (MSRV 1.96). The new macro prints the actual value on failure,
+  making test output more informative. Added `#[derive(Debug)]` to 12 types that lacked it.
+  Two assertions that cannot use `assert_matches!` (key-material cipher type and
+  `dyn Stream` trait object) were left as `assert!(matches!(...))` with comments.
+
+- `feat(tui)`: give background/external requests a visually distinct equalizer wave. The
+  `WaveState::Parallel` variant is replaced by `WaveState::Network`, which now triggers on any
+  in-flight task-supervisor work (`bg_inflight >= 1` plus background shell runs) instead of only
+  `>= 2`. It renders in a **violet** gradient (vs the teal of foreground `Swell`/`Streaming`/`Tool`)
+  so concurrent background activity is separable at a glance, and the equalizer slot stays visible
+  while background requests run even when the agent itself is idle. See
+  `crates/zeph-tui/src/widgets/wave.rs` and `app/state.rs` (`wave_state`, `background_inflight`).
+
+- `fix(tui)`: correct and de-clutter the input separator row. The Insert-mode hint now reads
+  `esc for normal mode` (Esc switches Insert→Normal; it does not cancel input). The busy verb is
+  no longer duplicated on this row — it already appears in the bottom status bar and the side-panel
+  wave — so the separator shows only the prompt glyph, mode hint, token estimate, spinner, and the
+  interrupt hint. A status change (sub-agent start/complete, file indexing) now refreshes the
+  progress clock so the wave animates instead of reading as `Stalled` (a flat line). See
+  `crates/zeph-tui/src/widgets/input.rs`, `app/events.rs`, `app/keys.rs`.
+
+- `feat(hooks)`: add optional `if` conditional field to `HookDef` with `tool:<token>` DSL — hooks
+  now fire only when `ZEPH_TOOL_NAME` contains the token (case-sensitive substring, fail-closed for
+  all error cases: no colon, unknown key, empty token, empty tool name, `None` tool context).
+  Configured in TOML as `if = "tool:shell"`. Hooks without `if` fire unconditionally. A `warn!`
+  is emitted once at startup when a `tool:` condition is placed on a non-tool event
+  (`cwd_changed`, `file_changed`, `turn_complete`). Closes #3088 (partial).
+
+- `feat(hooks)`: inject `ZEPH_AGENT_TYPE` (`"main"` or `"subagent"`) and `ZEPH_AGENT_ID` into
+  all hook env maps at every lifecycle event. Sub-agent path (`zeph-subagent`) sets
+  `ZEPH_AGENT_TYPE=subagent` and `ZEPH_AGENT_ID=<task_id>` in `make_hook_env`. Main agent path
+  (`zeph-core`) injects both vars via new `insert_main_agent_ctx` helper in `hooks_dispatch.rs`,
+  called from `check_cwd_changed`, `handle_file_changed`, `mod.rs` (turn_complete), and
+  `tier_loop.rs` (pre/post-tool-use, permission_denied). `ZEPH_AGENT_ID` is omitted when no
+  conversation has been bound yet. Closes #3088 (partial).
+
+- `feat(hooks)`: extend `PostToolUseHookInput` stdin JSON with `agent_id` and `agent_type` fields
+  for `PostToolUse` and `PostToolUseFailure` events. `agent_id` is omitted when `None`
+  (`skip_serializing_if`); `agent_type` is always present. Both the main agent and sub-agent
+  populate these fields in their respective `PostToolUseHookInput` construction sites. Closes #3088.
+
+- `fix(channels)`: add `// EXEMPT` annotation and `tracing::warn!` to the raw `tokio::spawn` in
+  `spawn_guest_proxy()` (`crates/zeph-channels/src/telegram.rs`), matching the documentation
+  pattern used by the three other untracked Telegram spawn sites. The guest proxy is a singleton
+  axum server bound to an ephemeral port; TaskSupervisor routing is not feasible because restart
+  would require rebinding the port and re-pointing `bot.set_api_url()`. Closes #5309.
+
+- `feat(tracing)`: add `#[tracing::instrument]` to four startup-path async functions in
+  `src/runner.rs` — `build_typed_pages_state`, `load_rl_head`, `resolve_rl_embed_dim`, and
+  `run_experiment_report` — making their latency visible in Perfetto/Jaeger traces. Closes #5199.
+
+- `refactor(bench)`: extract shared `write_atomic` helper into `zeph_bench::utils` and remove the
+  byte-for-byte duplicate copies from `baseline.rs` and `results.rs`. Closes #5314.
+
+- `feat(bench)`: add `#[tracing::instrument]` spans to the tau2-bench multi-turn driver
+  (`bench.tau2.drive`, `bench.tau2.generate_user_message`, `bench.tau2.call_simulator`) so
+  per-turn and LLM-call latency are visible in local Chrome JSON / Perfetto traces. Closes #5315.
+
+- `feat(bench)`: add `#[tracing::instrument]` spans to the tau2-bench domain environments
+  (`bench.tau2.airline.replay_actions`, `bench.tau2.airline.execute_tool_call`,
+  `bench.tau2.retail.replay_actions`, `bench.tau2.retail.execute_tool_call`) so tool-dispatch
+  latency is visible in traces. Closes #5316.
+
+- `refactor(tui)`: migrate 27 `TuiCommand` variants from `execute_command()` fallback into
+  `reduce()`, enforcing INV-R1 (single mutation point). Groups A/B (pure state mutations +
+  formatter reads) return `vec![]`; Group C (fixed-string agent-input sends) return
+  `vec![Effect::SendUserInput(...)]`. `Effect` now derives `PartialEq`; 8 formatter methods
+  bumped to `pub(crate)`; `handle_plan_command`/`handle_memory_command` deleted (empty after
+  migration); 49 new reducer unit tests added. Deferred: theme commands (blocked on #5308),
+  `command_tx` arms, clipboard duplicates, `prefill_input` arms, session-switch arms.
+  Closes #5298.
+
+- `feat(tracing)`: promote `CommandRegistry::dispatch` in `zeph-commands` from
+  `#[cfg_attr(feature = "profiling", tracing::instrument(...))]` to an unconditional
+  `#[tracing::instrument(name = "commands.dispatch", skip(self, ctx))]` so slash-command
+  dispatch latency is visible in all production traces. Closes #5201.
+
+- `feat(tracing)`: add `#[tracing::instrument]` spans to `Scheduler::init`
+  (`sched.scheduler.init`) and `daemon_status` (`sched.daemon.status`) in `zeph-scheduler`
+  so scheduler startup and status-query paths are visible in local Chrome JSON traces.
+  Closes #5328.
+
+- `feat(tracing)`: add `#[tracing::instrument]` spans to `verify_commitish`,
+  `git_worktree_add`, and `probe_capabilities` in `zeph-worktree` so worktree creation
+  and bootstrap paths are visible in trace analysis. Closes #5313.
+
+- `refactor(skills)`: extract shared `embed_skills_with_timeout` free function
+  into `crates/zeph-skills/src/embedding.rs`, eliminating the duplicate
+  `embed_existing` body in `miner.rs` and `trace_extractor.rs`. Adds
+  `#[tracing::instrument]` spans to `save_quarantined` and `embed_existing`
+  in `trace_extractor.rs` (always-on); `miner::embed_existing` retains its
+  existing `profiling`-gated span. Closes #5290, #5291.
+
+- `feat(tracing)`: add `#[tracing::instrument]` to 21 async fns in `zeph-memory`
+  (`qdrant_ops.rs`, `embedding_registry.rs`, `graph/retrieval.rs`) using
+  `memory.qdrant.*`, `memory.embed_registry.*`, `memory.graph.retrieval.*` span
+  prefixes; `BoxFuture` trait methods instrumented via `.instrument(debug_span!(...))`;
+  private helpers use `level = "debug"` (closes #5226, #5228, #5229).
+- `feat(tracing)`: add `#[tracing::instrument]` to 13 hot-path async fns across
+  `zeph-core` learning pipeline (`write_skill_file`, `arise_trace_task`,
+  `arise_check_domain_gate`, `arise_store_version`, `stem_detection_task`,
+  `stem_generate_skill`, `erl_reflection_task`), `zeph-agent-context` deferred
+  summarization (`maybe_summarize_tool_pair`, `flush_deferred_summaries`), and
+  `zeph-skills` trace extraction (`process_candidate`, `apply_decision`,
+  `call_extract_llm`, `embed_candidate`) using `core.learning.*`,
+  `agent_context.summarization.*`, and `skills.trace_extraction.*` span prefixes
+  (closes #5176, #5196, #5171).
+
+- `feat(tracing)`: instrument 17 hot-path async fns in `zeph-core` agent module
+  (`tool_execution/mod.rs`, `autodream.rs`, `hooks_dispatch.rs`,
+  `context/summarization/{scheduling,compaction,deferred}.rs`) with
+  `#[tracing::instrument]` spans using `core.{agent|tool|context}.<fn>` naming,
+  making compaction, PII scrubbing, cache, and file-change paths visible in traces
+  (closes #5181, #5182, #5183).
+
+- `refactor(agent-context)`: collapse 10 structurally identical inject-sanitize blocks in
+  `apply_prepared_context` into a single `slots` slice + loop, eliminating DRY violation
+  (closes #5117).
+- `refactor(knowledge)`: extract `build_shared_validator` helper to deduplicate identical
+  `SharedPostExtractValidator` construction in `run_graph_ingest` and
+  `handle_external_agent_ingest` (closes #5118).
+
+- `refactor(core)`: migrate 17 direct `tokio::spawn` sites in `zeph-core` to `TaskSupervisor`/`BackgroundSupervisor` supervision; long-lived watchers (`ConfigWatcher`, `FileWatcher`, `InstructionWatcher`, `SystemMetricsCollector`) use `spawn_oneshot`, turn-scoped tasks (`heuristic_promotion`, `trace_extraction`, `experiment_session`, `durable_journal_writer`) use `spawn_oneshot` with unique per-invocation names via atomic counters (closes #5145)
+- `refactor(tools,subagent)`: migrate 11 direct `tokio::spawn` sites in `zeph-tools` and `zeph-subagent` to supervised task management; shell background runs now tracked via `TaskSupervisor`, subagent lifecycle tasks abortable on shutdown (closes #5148)
+
+- `test(context)`: add `apply_session_config_wires_fidelity_providers` unit test in `zeph-core` — asserts that non-empty `FidelityConfig::semantic_scoring_provider` / `compress_provider` names produce `Some` in `compaction.fidelity_semantic_provider` / `fidelity_compress_provider` after `apply_session_config`, and that empty names or absent config produce `None` (closes #5035)
+- `test(config)`: add 3 unit tests for `migrate_caveman_config` migration step 59 (closes #5027). Covers: fresh config (commented-out block appended), idempotency when `[caveman]` section present, idempotency when `# [caveman]` commented block present. Follows the pattern of `migrate_worktree_git_timeout` and sibling step tests.
+- `refactor(tui)`: centralise scroll-step magic numbers in `zeph-tui` — `SCROLL_STEP_PAGE = 10` constant defined once in `keys.rs` and referenced from all four `scroll_offset` mutation sites in `handle_normal_key` and `handle_insert_scroll_keys`. `SCROLL_STEP_MOUSE` omitted: mouse scroll handler was removed in #4996 (closes #4997)
+- `docs(spec-063)`: document `panic = "abort"` limitation for `CwdRestoreGuard` — the RAII Drop guarantee only holds under `panic = "unwind"`; under `panic = "abort"` (active in `[profile.release]`) Drop is skipped but the process terminates immediately so the system remains in a defined state. Updated `spec.md` and `srs.md` FR-CWD-03 accordingly (closes #4754)
+- `refactor(orchestration)`: remove `zeph-llm`, `zeph-memory`, and `zeph-sanitizer` direct dependencies from `zeph-orchestration` to comply with INV-1 (infrastructure adapters must not import higher-level business-logic crates). `RawGraphStore` trait moved to `zeph-db`; `OutputSanitizer` + `IdentitySanitizer` added to `zeph-common`; LLM-dependent modules (`planner`, `aggregator`, `verifier`, `verify_predicate`, `cascade`, `scheduler/router`) feature-gated behind `llm-planning` (default-on). **BREAKING CHANGE** for downstream users of `zeph-orchestration` with `--no-default-features`: LLM planning is now behind the `llm-planning` feature flag (closes #5003)
+- `refactor(durable)`: track `JournalWriter` `JoinHandle` in `OrchestrationState.durable_writer_task`; `shutdown()` now calls `flush_durable_writer()` (2-second bounded flush) before aborting the task, preventing loss of buffered budget snapshots on clean shutdown (closes #5004)
+- `refactor(config)`: rename `ExperimentConfig.eval_model: Option<String>` → `eval_provider: ProviderName` to comply with the multi-model design principle. `eval_provider` references a `[[llm.providers]]` name; an empty value falls back to the primary provider. Migration step 58 (`migrate_eval_model_to_provider`) comments out the old key and emits a warning. Config wizard updated to write `eval_provider`. **BREAKING CHANGE**: `experiments.eval_model` is removed; update `[experiments]` sections to use `eval_provider = "<provider-name>"` (closes #4987, #4993)
+- Add `#[must_use]` to public validate/scan functions across workspace (zeph-config, zeph-skills, zeph-orchestration, zeph-experiments, zeph-common, zeph-core, zeph-mcp, zeph-plugins, zeph-tools) to prevent silent discard of validation errors (closes #4943, #4961, #4963)
+- `docs(acp)`: fix broken intra-doc links in `transport/` and `client/error` — feature-gated items referenced as plain backtick text; private `SubagentCommand::Close` link removed from public doc (closes #4941)
+- `refactor(tools)`: extract `build_audit_entry` private helper in `ShellExecutor`; `log_audit` and `log_audit_with_context` now delegate to it (closes #4960)
+- `refactor(memory)`: extract `lock_entries` and `lock_next_id` private helpers in `InMemoryFacade` to eliminate repeated lock-poisoning boilerplate (closes #4962)
+- `refactor(tui)`: remove three dead `pub const STATUS_*` constants (`STATUS_REPLAYING`, `STATUS_PRUNING`, `STATUS_AWAITING`) from `zeph-tui::widgets::durable` — only `STATUS_UNAVAILABLE` is referenced (closes #4977)
+
+- `refactor(config)`: `SttConfig.provider` changed from `String` to `ProviderName` — enables
+  type-safe provider cross-references and removes the `default_stt_provider()` helper function.
+  `ProviderName::default()` (empty sentinel) serves the same auto-detect semantics. (#4899)
+- `refactor(config)`: `CandleConfig.source` and `.device` (and `CandleInlineConfig` equivalents)
+  changed from `String` to new `CandleSource` and `CandleDevice` enums respectively. Invalid
+  values that previously silently fell through to CPU/HuggingFace are now rejected at
+  deserialization. `select_device` in `zeph-core` now takes `CandleDevice` instead of `&str`. (#4900)
+
+- `perf(context)`: add `#[tracing::instrument]` to `embed_prepass_dyn` and `render_compressed`
+  in `zeph-context/fidelity.rs` — both async hot-path functions were invisible to local Chrome
+  JSON traces and Jaeger; now emit `context.fidelity.embed_prepass_dyn` and
+  `context.fidelity.render_compressed` spans. (#4872)
+- `refactor(llm)`: add `check_response` and `read_response_body` helpers to
+  `zeph-llm/src/http.rs`; replace duplicated `status + text().await + map_error_response`
+  pattern at 8 call sites across `openai/mod.rs` and `claude/mod.rs`. (#4877)
+- `refactor(llm)`: `OpenAiProvider` now resolves context window via three-step lookup: explicit
+  `context_window` field in `OpenAiConfig` → model-prefix table → `128_000` fallback for unknown
+  models. Eliminates silent `None` for unrecognised model names. (#4876)
+- `refactor(llm)`: `OpenAiProvider::generation_params()` private helper extracted; removes 4
+  duplicate `generation_overrides` tuple expansions in `send_request`, `send_stream_request`,
+  `debug_request_json`, and `chat_with_tools`. (#4873)
+- `build(acp)`: bump `agent-client-protocol` 0.12.1 → 0.14.0 and `agent-client-protocol-schema` = 0.13.6; remove dead `agent-client-protocol-tokio` dependency
+- `feat(acp)`: `unstable-session-usage` feature now maps to upstream `unstable_end_turn_token_usage` gate (renamed, not stabilized in 0.14.0)
+- `feat(acp)`: `unstable-elicitation` feature now also enables `agent-client-protocol/unstable_elicitation` core passthrough for `elicitation/create` handler wiring
+- `refactor(acp)`: provider ext-method types renamed to singular: `SetProvidersRequest/Response` → `SetProviderRequest/Response`, `DisableProvidersRequest/Response` → `DisableProviderRequest/Response`
+- `refactor(acp)`: logout, session/close, session/delete, session/resume, and additional-directories handlers are now unconditional (feature flags retained as no-op tombstones for workspace forwarding compatibility)
+- `refactor(zeph-agent-feedback)`: `JUDGE_RATE_LIMIT` and `JUDGE_RATE_WINDOW` constants removed;
+  rate-limit parameters are now configurable via `LearningConfig` fields `judge_rate_limit`
+  (default: `5`) and `judge_rate_window_secs` (default: `60`); existing TOML configs without
+  these fields continue to use the same defaults. `JudgeDetector::new()` now accepts
+  `rate_limit: usize` and `rate_window: Duration` arguments. (#4892)
+- `refactor(zeph-scheduler)`: introduced `CronExpr` validated newtype wrapping a `String`; raw
+  `String` fields for cron expressions replaced with `Option<CronExpr>`; hydration from SQLite
+  validates stored expressions and emits a `tracing::warn!` for invalid rows instead of
+  propagating hard errors. (#4884)
+
+### Removed
+
+- `refactor(memory)`: removed the `SqliteStore = DbStore` type alias in
+  `crates/zeph-memory/src/store/mod.rs` (#5550) by renaming the real struct `DbStore` back to
+  `SqliteStore` and migrating its 44 call sites, since the reverse migration (`SqliteStore` →
+  `DbStore`) documented in `/specs/031-database-abstraction/spec.md` never took hold in practice
+  — `SqliteStore` remained the dominant name at ~485 call sites vs. 44 for `DbStore` across the
+  workspace. This reverses that spec's Key Invariant #9 by explicit user decision (pre-1.0.0);
+  `/specs/031-database-abstraction/spec.md` is amended in the same commit to reconcile.
+- `refactor(memory)`: removed `WriteBuffer`/`BufferedWrite` (`crates/zeph-memory/src/semantic/write_buffer.rs`)
+  (#5552) — the session-scoped write-batching type had full unit test coverage but zero call
+  sites outside its own module; nothing in the persona/message write path ever constructed or
+  drained it. Deleted the module and its `semantic::mod` / crate-root re-exports.
+
+- `zeph-experiments`: removed unused `EvalError::OutOfRange` and
+  `EvalError::SearchSpaceExhausted` variants — never constructed anywhere in the
+  workspace (#5722). Breaking change for any external consumer matching on these
+  variants (unlikely pre-1.0; `EvalError` is `#[non_exhaustive]`).
+
+- `chore(core)`: removed `AgentChannelView` (`crates/zeph-core/src/agent/channel_impl.rs`),
+  the sealed `AgentChannel`/`Sealed` adapter impl, and its test module — dead code left behind
+  after #3516 (the `zeph-agent-tools` dispatcher extraction it was scaffolded for) closed
+  without ever wiring it in. `zeph-agent-tools`'s `doom_loop_hash` remains in use; the
+  `AgentChannel`/`Sealed` trait definitions are retained as scaffolding with no current
+  implementor, and their doc comments were updated to stop pointing at the now-deleted
+  implementor (#5651).
+
+- `refactor(acp)`: `session/set_model` dedicated RPC method removed (deleted upstream in 0.14.0); model switching remains fully available via `session/set_config_option` (config_id="model") and the `$/model` slash command
+- `refactor(acp)`: inbound/outbound message-id echo removed (`PromptRequest.message_id` and `PromptResponse.user_message_id` were removed upstream in 0.14.0)
+
 ### Fixed
 
 - `fix(skills)`: `RoutingHead::rerank()` (`crates/zeph-skills/src/rl_head.rs`) now returns a
@@ -32,68 +1680,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   made after `rerank()` had already released its lock — a concurrent background
   `rl_head.update()` landing in that gap could make the logged values inconsistent with the
   warmup decision `rerank()` itself branched on (TOCTOU, #5846).
-
-### Testing
-
-- `test(skills)`: added `rl_head.rs` coverage for a case where cosine order and RL-blended
-  order disagree (previously only `len()`/`update_count` were asserted for the post-warmup
-  path, never actual sort order) and a regression test asserting `RerankOutcome`'s
-  `blended`/`update_count` match the head's own counter with no drift from a second lock
-  acquisition (#5845, #5846).
-- `test(core)`: added `zeph-core` coverage for `match_and_rank_skills`'s previously-untested
-  `rl_head`-enabled branch — the RL-rerank success path plus its three skip/error paths (query
-  embed timeout, query/head embed-dim mismatch, and per-candidate skill-embedding dim
-  mismatch) — via a new `with_rl_head()`-wired `Agent` test harness (#5845).
-
-### Docs
-
-- `docs(sanitizer)`: updated `crates/zeph-sanitizer/src/shadow_memory.rs` doc comment to reflect
-  that `ShadowMemory` is actively wired into the agent tool executor via `tier_loop.rs`, rather
-  than the stale claim that it was "intended for future integration". Added cross-reference to
-  the actual call site and security event emission (#5440).
-- `docs(spec-040)`: expanded `specs/040-sanitizer/spec.md` layer table to document 5 previously
-  undocumented defense layers: `IpiFilter` (implemented, unwired), `NliSanitizer` (wired via builder),
-  `SecretMaskRegistry` (wired at LLM boundary), `ShadowMemory` (wired in tool executor),
-  and `Pipeline`/`Stage` (internal utility framework). Updated layer numbering and added wiring
-  status for each (#5440).
-
-### Performance
-
-- `perf(session)`: `ReplayEngine::replay` (`crates/zeph-session/src/replay.rs`) no longer
-  materializes a session's entire `events.jsonl` into one `Vec` before folding it — it now reads
-  via a new `SessionEventLog::read_chunked` API (`crates/zeph-session/src/log.rs`) that yields
-  parsed envelopes in bounded chunks of ≤ 100 at a time (spec-068 §6.2 step 3), folding each
-  chunk incrementally through a shared `fold_step` helper. For a session near NFR-P3's
-  100,000-event bound, this bounds peak raw-envelope memory instead of holding the full parsed
-  history resident before folding starts. `SessionEventLog::read_all` and the `Vec`-based
-  `ReplayEngine::fold` entry point are unchanged and still used by `ForkEngine::fork` and
-  `llm_condenser.rs`, which genuinely need the whole-file `Vec` (#5445).
-- `docs(session)`: revised NFR-P1 (event log append p99) and NFR-P7 (idle-actor memory) targets
-  in `specs/068-session-persistence/nfr.md` to reflect measured reality: NFR-P1's p99 target
-  moved from `< 5 ms` to `< 15 ms` (disk write-barrier/fsync latency floor confirmed via a
-  standalone harness reproducing `SessionEventLog::append`'s write+fsync pattern — batching was
-  considered and rejected as it would widen the crash-loss window NFR-R2 bounds); NFR-P7 now
-  documents a verified ~65-93 KiB per-actor housing floor plus an explicit caveat that `Agent`'s
-  own owned conversation-history state is a separate, session-length-dependent quantity not
-  covered by the "idle session" framing (follow-up bench tracked in #5840). No source change was
-  needed for either finding (#5445).
-- `test(session)`: added a real-`Agent`-based NFR-P7 memory bench
-  (`crates/zeph-core/src/serve.rs::tests::nfr_p7_real_agent_idle_session_memory_floor`, `#[ignore]`d,
-  run via `cargo nextest run -p zeph-core -E 'test(nfr_p7)' --run-ignored ignored-only`) closing
-  the measurement gap the #5445 standalone harness left open — that harness could not construct a
-  real `Agent<LoopbackChannel>` (private to `zeph-core`), so it measured `SessionActor::spawn`'s
-  housing cost only. The new test spawns real `SessionActor`s wrapping real `Agent<LoopbackChannel>`
-  instances (idle, mock-provider-backed, one shared `Arc<RwLock<SkillRegistry>>` across all actors
-  via `Agent::new_with_registry_arc`, mirroring `src/serve/agent_factory.rs`'s production sharing
-  pattern rather than a private registry per actor) via the production `SessionActor::spawn` path
-  and samples RSS via `sysinfo`, matching `system_metrics::spawn_system_metrics_task`'s existing
-  production RSS-sampling technique. Measured combined floor (housing + `Agent`'s owned state):
-  ~875-905 KiB — under the 1 MiB budget, but with far less headroom than the ~65-93 KiB
-  housing-only figure implied. This composite is a distinct, larger quantity than NFR-P7's own
-  housing-only budget; `specs/068-session-persistence/nfr.md` gained a new rationale paragraph
-  making that scope distinction explicit rather than silently redefining NFR-P7 (#5840).
-
-### Fixed
 
 - `build`: bumped `crossbeam-epoch` to 0.9.20 (from 0.9.18) to resolve RUSTSEC-2026-0204
   (invalid pointer dereference in `fmt::Pointer`/`fmt::Display` impls for `Atomic`/`Shared`
@@ -133,8 +1719,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `zeph-index` per-test `1s` overrides for the diagnosed `spawn_blocking` teardown case (#5425)
   are unchanged (#5617).
 
-### Fixed
-
 - `fix(orchestration)`: `zeph-orchestration`'s `sqlite`/`postgres` features
   (`crates/zeph-orchestration/Cargo.toml`) relied on a multi-hop transitive chain
   (`zeph-subagent` -> `zeph-sanitizer` -> `zeph-memory`) to activate `zeph-memory`'s
@@ -147,115 +1731,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `zeph-orchestration`'s own `Cargo.toml` reflecting the loss. Added direct forwards to make
   the feature declaration self-documenting and resilient to that refactor (#5596).
 
-### Fixed
-
 - `fix(core)`: the `SAFETY` comment on `handle_url_open()`'s `ZEPH_URL_OPEN_DEPTH` `set_var`
   call (`src/runner.rs`) still said `set_var` runs "on the main thread", which stopped being
   accurate once #5406 moved `main()` off the OS main thread onto a dedicated `zeph-main` thread.
   The safety invariant itself (single-threaded execution before any spawned task reads the env
   var) was never affected by that change; only the wording was stale. Reworded to be
   thread-topology-agnostic (#5422).
-
-### Added
-
-- `feat(core)`: `Agent::match_and_rank_skills`'s RL re-rank success path now emits a
-  `tracing::debug!` on every turn it fires, logging the candidate count, the active
-  `vector_backend` (`"qdrant"`/`"sqlite"`), a per-skill `(name, pre_score, post_score)`
-  breakdown after `RoutingHead::rerank()` reorders `scored`, and a `blended` flag (with
-  `update_count`/`warmup` values) distinguishing genuine cosine+RL blended output from the
-  pure cosine passthrough `rerank()` returns while `update_count < warmup_updates` — without
-  it, a short live-testing session run entirely inside the warmup window would log as if
-  blending had occurred when it hadn't, reintroducing the same "success indistinguishable
-  from inactive" ambiguity one level deeper. Previously the three existing log sites on this
-  path (embed timeout, embed dim mismatch, and the embeddings-unavailable skip branch) only
-  covered failure/skip cases, so a successful RL re-rank was indistinguishable from the
-  feature being silently inactive — blocking live cross-backend parity verification for
-  #5812/#5805 (#5834).
-- `test(core)`: extracted a `build_daemon_agent`/`BuildDaemonAgentDeps`-taking function from
-  `run_daemon()`'s `AgentBuilder` construction chain (`src/daemon.rs`), completing #5819's
-  remaining half left out of PR #5831 (`build_agent`/`BuildAgentDeps` for the CLI path,
-  `src/runner.rs`, see entry below). Kept as its own struct rather than merged into
-  `BuildAgentDeps`: the daemon path wires `with_mcp`/`with_mcp_shared_tools`/`with_provider_pool`
-  inline (the CLI path defers those to feature-gated chaining after `build_agent` returns, inside
-  `run()`) and never wires session-sink, compression, typed-pages, autosave, shutdown-summary,
-  compaction-provider, tiered-retrieval, or bare-mode config at all — unifying the two structs
-  would require default/`None` placeholders for whichever fields the other path doesn't use,
-  reintroducing the exact default-vs-omitted wiring defect class this seam exists to catch.
-  Added `build_daemon_agent_wires_skill_matching_config`, the daemon counterpart to
-  `build_agent_wires_skill_matching_config`, asserting `config.skills.confusability_threshold`
-  reaches the constructed `Agent` via the real `run_daemon()` startup path.
-
-### Added
-
-- `test(core)`: extracted a `build_agent`/`BuildAgentDeps`-taking function from `run()`'s
-  `AgentBuilder` construction chain (`src/runner.rs`), mirroring
-  `src/serve/agent_factory.rs::build_agent_factory`'s existing `Deps`-taking pattern, so the
-  real CLI startup wiring is unit-testable in isolation. Added a regression test asserting
-  `config.skills.confusability_threshold` reaches the constructed `Agent` via this path —
-  previously the only coverage of this wiring class was the test-only
-  `AgentBuilder::with_semantic_scan` setter, which bypassed the actual regression class behind
-  #5813/#5610/#5818 (a config field silently failing to reach the builder on the real startup
-  path). `run_daemon()` (`src/daemon.rs`) has an equivalent but structurally divergent
-  `AgentBuilder` chain (~15 CLI-only fields absent, different MCP-wiring interleaving) that is
-  deliberately left out of scope here — unifying it now would risk reintroducing the very
-  default-vs-omitted defect class this seam exists to catch. #5819 stays open to track that
-  remaining half.
-
-### Added
-
-- `test(memory)`: closed three low-severity test-coverage gaps left over from #5815's fix for
-  the stale cross-DB entity-id FK-violation bug (#5801, #5816). `resolve_local_target_id`
-  (`crates/zeph-memory/src/semantic/graph.rs`) had no test for its third outcome — a stale or
-  mismatched payload id whose `canonical_name` already resolves to an existing local row, so
-  the slow path reuses it instead of creating a duplicate
-  (`link_memory_notes_stale_id_resolves_existing_canonical_without_creating`).
-  `EntityResolver::handle_ambiguous_candidate`, the LLM-disambiguated call site touched by the
-  same fix, had no stale-id coverage either — every existing ambiguous-path test seeds a real
-  matching row (`resolve_ambiguous_llm_disambiguated_corrects_stale_cross_db_id`). The
-  FK-violation WARN branches added to `insert_edges` (both the APEX-MEM and legacy paths) had
-  no test manufacturing a genuine FK violation on those specific call sites
-  (`insert_edges_apex_mem_logs_warn_on_genuine_fk_violation`,
-  `insert_edges_legacy_logs_warn_on_genuine_fk_violation`), unlike `insert_similarity_edges`.
-  Also added a Postgres-backend regression test for the original #5801 scenario
-  (`note_linking_corrects_stale_cross_db_target_id_postgres`, gated behind the existing
-  `test-utils`/Docker `#[ignore]` convention) — lower-risk since `EntityResolver`/
-  `resolve_local_target_id` share a single backend-agnostic `upsert_entity` implementation
-  already exercised by ~20 other Postgres tests, but this proves the full note-linking path
-  round-trips against a real instance. A full `extract_and_store` -> `insert_edges` end-to-end
-  pipeline test (nice-to-have) was not added: `MockProvider::embed()` returns one fixed vector
-  regardless of input text, so a two-entity extraction batch cannot have only one entity match
-  a seeded stale-id phantom without both colliding at cosine 1.0 — closing this gap needs
-  input-dependent embedding support in `zeph-llm`'s test mock, out of scope for this test-only
-  change. Test-only change, no production code modified.
-
-### Changed
-
-- `refactor(a2a)`: `handle_send_message` (`message/send`) and `stream_task`/
-  `drain_processor_events` (`message/stream`) in `crates/zeph-a2a/src/server/handlers.rs` each
-  reimplemented the same processor spawn/abort-handle setup, `proc_handle.await` ->
-  `TaskState` resolution (with identical Completed/Failed/panic logging), and
-  completed-artifact attachment (#5716). Extracted three shared helpers —
-  `spawn_processor`, `resolve_processor_outcome`, `finalize_artifact` — now called from both
-  handlers; the streaming-specific SSE event forwarding and the differing timeout mechanics
-  (`tokio::time::timeout` vs. `tokio::select!` with a disconnect branch) were left untouched.
-  Behavior-preserving: identical logging, artifact id format (`{task_id}-artifact`), and
-  error/panic handling at both call sites; all existing tests pass unchanged.
-
-### Removed
-
-- `refactor(memory)`: removed the `SqliteStore = DbStore` type alias in
-  `crates/zeph-memory/src/store/mod.rs` (#5550) by renaming the real struct `DbStore` back to
-  `SqliteStore` and migrating its 44 call sites, since the reverse migration (`SqliteStore` →
-  `DbStore`) documented in `/specs/031-database-abstraction/spec.md` never took hold in practice
-  — `SqliteStore` remained the dominant name at ~485 call sites vs. 44 for `DbStore` across the
-  workspace. This reverses that spec's Key Invariant #9 by explicit user decision (pre-1.0.0);
-  `/specs/031-database-abstraction/spec.md` is amended in the same commit to reconcile.
-- `refactor(memory)`: removed `WriteBuffer`/`BufferedWrite` (`crates/zeph-memory/src/semantic/write_buffer.rs`)
-  (#5552) — the session-scoped write-batching type had full unit test coverage but zero call
-  sites outside its own module; nothing in the persona/message write path ever constructed or
-  drained it. Deleted the module and its `semantic::mod` / crate-root re-exports.
-
-### Fixed
 
 - `fix(skills,core)`: `zeph-skills::proactive::stamp_proactive_domain` and
   `zeph-core::agent::heuristic_promotion::patch_frontmatter` reimplemented the same
@@ -585,346 +2066,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `insert_similarity_edges` from `DEBUG` to `WARN`, so any remaining failure of this class is
   no longer silent.
 
-### Added
-
-- `test(memory)`: closed the last zero-coverage gap in `recall_by_route`'s dispatch —
-  `MemoryRoute::Graph` and the `recall_routed_async` entry point had no test anywhere in the
-  workspace (#5620). `recall_routed_async_hybrid_route_falls_back_to_fts5_on_no_qdrant`
-  exercises the async router path directly; `recall_routed_graph_route_behaves_like_hybrid`
-  confirms the `Graph` route's message-recall dispatch is byte-identical to `Hybrid` (dedicated
-  graph traversal happens separately via `recall_graph`). Also added Postgres-integration
-  coverage pinning `load_skill_usage`'s `invocation_count` decode (#5591), which surfaced the
-  `record_skill_usage` Postgres bug fixed above.
-- `test(core)`: added timeout-branch coverage for the graph-query timeout helper
-  (`crates/zeph-core/src/agent/agent_access_impl.rs`) via a `tokio::time::pause()` +
-  `advance(6s)` test against a synthetic never-resolving future, forcing the real
-  `tokio::time::timeout(5s, ...)` arm shared by `resolve_entity_by_name`, `graph_facts`, and
-  `graph_history` instead of only exercising the "no store configured" short-circuit (#5770).
-  A real `GraphStore`-backed integration test was not attempted — `GraphStore` is a concrete
-  type with no trait seam, and combining `tokio::time::pause()` with the SQLite-backed store
-  is a known source of flakiness elsewhere in the workspace — so this proves the shared
-  timeout mechanism deterministically but does not itself invoke `graph_facts`/`graph_history`.
-- `feat(serve,acp)`: `zeph serve-sessions --acp` now runs the ACP protocol transport in-process
-  instead of hard-erroring (#5420). Combined mode runs ACP-over-HTTP (`zeph_acp::acp_router`)
-  on a **second** `axum::serve` listener bound to `[acp] http_bind`, sharing one
-  `SemanticMemory`/`SQLite` pool and one `TaskSupervisor` with the existing `/sessions*` HTTP
-  API — not two independent pools writing the same database file concurrently, and not ACP
-  stdio (which has no cancellation hook and can't be lifecycle-managed alongside a network
-  daemon). Requires the `acp-http` feature (bundled in `ide`); without it, `--acp` is a hard
-  error naming the feature to rebuild with. A wildcard-aware pre-check rejects
-  `[serve] http_addr`/`[acp] http_bind` combinations that would bind overlapping addresses on
-  the same port before either listener binds. A second guard refuses a non-loopback
-  `[acp] http_bind` when `[acp] auth_token` is unset — mirrors the existing `[serve]
-  require_auth` guard so enabling `require_auth` can't give a false impression that the whole
-  combined process (both listeners share the same `acp_sessions` table) is authenticated. Either
-  listener's fatal error now cancels the other's shutdown immediately (previously a crashed
-  listener could leave its sibling silently serving until an external SIGTERM). Extracted a new
-  spawn-free `build_shared_core` (`src/acp.rs`) used by both `zeph serve-sessions` and standalone
-  ACP session construction, and a new `build_combined_deps` production sharing path for the
-  combined command. No new configuration surface — reuses existing
-  `[serve]`/`[acp]`/`[session]` keys.
-- `test(serve)`: added `src/serve/test_support.rs` — a router-level test harness
-  (`ServeTestHarness`) driving the real production `axum::Router` via
-  `tower::ServiceExt::oneshot`, covering `/health`, the full `/sessions*` CRUD surface, SSE
-  event streaming, and bearer-auth enforcement (#5435). Its `build_combined_deps_shares_one_
-  memory_pool` test asserts `Arc::ptr_eq` against the actual production `build_combined_deps`
-  output, proving the #5420 pool-sharing invariant rather than a hand-reassembled test double.
-- `test(core)`: closed three zero-coverage gaps flagged during PR #5763's dedup refactor
-  (#5764, #5765, #5766). `graph_facts`/`graph_history` (`agent_access_impl.rs`) now have
-  happy-path, entity-not-found, unavailable-store, and self-loop-edge tests, plus a `/conv fork`
-  test. `reset_conversation` (`context/assembly.rs`) now has tests exercising the actual command
-  (not just its flag parser), covering `--keep-plan` state preservation, state clearing without
-  the flag, and background-handle abort with history reset. `ShadowSentinel::record_tool_event`
-  (`shadow_sentinel.rs`) now has normal-path and persist-failure tests, the latter asserting the
-  correct warn-log context string via a real dropped-table error and a `tracing_subscriber::Layer`
-  capture. Test-only change, no production code modified.
-
-### Changed
-
-- `ci`: shortened the CI critical path (~8m45s → ~7m15s expected) by parallelizing its two
-  serial tails. The three postgres `nextest archive` builds moved out of `build-tests` into a
-  new `build-tests-postgres` job that compiles in parallel with the main workspace archive
-  (previously they added ~70s strictly after it), and the integration job became a four-way
-  matrix (`qdrant`, `zeph-db-postgres`, `zeph-memory-postgres`, `zeph-index-postgres`) so the
-  container-backed suites run concurrently instead of serially (previously ~2m10s end-to-end,
-  now bounded by the slowest suite). Integration now depends on both build jobs; per-suite
-  container concurrency caps (`postgres-containers`, `qdrant-containers` test-groups) are
-  unchanged and apply within each matrix job.
-- `refactor(channels)`: deduplicated the `Channel::confirm` timeout/deadline-loop logic that was
-  implemented near-identically in the Telegram, Discord, and Slack adapters (send prompt with
-  timeout suffix, compute deadline, loop on `tokio::time::timeout`, skip out-of-scope messages,
-  compare reply case-insensitively against `"yes"`, deny on timeout/channel-close). A new
-  `ConfirmLoop` trait (`crates/zeph-channels/src/confirm.rs`) — mirroring the existing
-  `StreamingSend` precedent (`crates/zeph-channels/src/streaming.rs`) — provides a default
-  `run_confirm` method encoding the shared loop; each adapter implements the small per-adapter
-  hooks (`confirm_receiver`, `confirm_accepts`, `confirm_reply_text`, `confirm_send_prompt`) and
-  its `Channel::confirm` now delegates to `run_confirm` in one line (#5652). Pure refactor, no
-  behavior change.
-- `refactor(durable)`: deduplicated the "register on a `NotifyRegistry`, re-check the resolved
-  state to close the registration race, then race the notify against a poll-interval sleep,
-  falling back to pure polling above the parked cap" loop implemented independently in
-  `DurableContext::await_promise` and `DurableContext::sleep_until` (#5724). The shared logic
-  now lives in `wait_on_notify_or_poll` (new function in `crates/zeph-durable/src/waiters.rs`),
-  parameterized by the wait-duration computation, the parked-cap value, and two resolved-state
-  checks — a cheap pre-registration check and a race-closing post-registration recheck — so
-  `sleep_until`'s original asymmetry (a clock-only check before registering, a database read only
-  after) is preserved rather than paying for the database read on every iteration; the
-  post-registration recheck now also re-runs the clock check immediately before its database read
-  (previously database-only), a harmless addition that adds no extra database reads and can only
-  close the registration race faster. Pure refactor, no behavior change. Added
-  `sleep_until_wakes_on_concurrent_fire_before_due`
-  covering the in-process concurrent-wake path (previously only tested for `await_promise`).
-- `refactor(common,core,scheduler)`: deduplicated the `flock(2)`-backed pid-file guard
-  implemented independently in `zeph-core::daemon::PidGuard` and
-  `zeph-scheduler::pidfile::PidFile` — both opened the pid file with the same
-  `O_CREAT|O_RDWR|O_CLOEXEC` flags, acquired a `LOCK_EX|LOCK_NB` `flock`, mapped
-  `WOULDBLOCK` to an already-running error, truncated and wrote the current PID, and
-  unlinked the file on `Drop` (#5696). The shared logic now lives in
-  `zeph_common::pidfile::PidLockGuard` (new `zeph-common` module, Unix-only); `PidGuard`
-  and `PidFile` are thin wrappers around it that keep their existing names, method
-  signatures, and error types (`DaemonError`, `SchedulerError`). `zeph-scheduler` gained a
-  `zeph-common` dependency (behind the existing `daemon` feature); `zeph-core` dropped its
-  now-unused direct `rustix` dependency. Pure refactor, no behavior change.
-- `refactor(memory)`: `snapshot.rs`'s `chrono_now()` now delegates to
-  `zeph_common::timestamp::utc_now_rfc3339()` instead of hand-rolling the Howard Hinnant
-  O(1) civil-from-days algorithm a second time in the same workspace (#5535). Removed the
-  now-unused `unix_to_parts()` helper (18 lines). Output format is byte-identical
-  (`YYYY-MM-DDTHH:MM:SSZ`); behavior-preserving, no call-site changes needed.
-- `refactor(core)`: deduplicated two independently-duplicated code paths. `trust.rs`'s
-  `cross_session_rollout_ok_for_promote`/`_for_demote`
-  (`crates/zeph-core/src/agent/learning/trust.rs`) — identical except for which config
-  field they read (`min_sessions_before_promote` vs `_demote`) and their log message — are
-  now a single `cross_session_rollout_ok(memory, skill_name, cross_session_rollout,
-  min_sessions, action)` helper (#5662). `extract_symbol_positions_regex`
-  (`crates/zeph-core/src/lsp_hooks/hover.rs`) now calls `strip_cat_n_prefix` once instead of
-  re-deriving the same tab-prefix/digit-check/line-number logic inline (#5673). Pure
-  refactor, no behavior change.
-- `refactor(core,common,context,agent-context,mcp,memory,index)`: deduplicated three more
-  independently-duplicated code paths (epic #5714 cluster 1 remainder). Seven call sites across
-  six crates (`zeph-context`, `zeph-agent-context`, `zeph-core`, `zeph-mcp`, `zeph-memory`,
-  `zeph-index`) that reimplemented `TaskSupervisor::spawn`'s `Fn`-bound workaround for one-shot
-  futures via `Arc<Mutex<Option<Fut>>>` now call `TaskSupervisor::spawn_oneshot` directly (#5661).
-  `run_proposer`/`run_checker` (`crates/zeph-core/src/quality/`) now share a
-  `chat_json_error_outcome` helper (`quality/parser.rs`) instead of duplicating the
-  `ChatJsonError`-to-`StageOutcome` conversion (#5666). `AppBuilder::auto_budget_tokens`
-  (`src/bootstrap/mod.rs`) and `resolve_context_budget` (`crates/zeph-core/src/agent/mod.rs`)
-  now both delegate to a shared `resolve_context_budget_tokens` helper, closing a
-  `provider.context_window() == Some(0)` gap where the extraction had briefly let a
-  misconfigured zero-context-window provider through as a real budget instead of the documented
-  128k fallback (#5653). Pure refactor, no behavior change.
-- `refactor(commands,core,skills)`: deduplicated three independently-drifting code paths in the
-  commands/skills subsystem (epic #5714 duplication-backlog cluster 5). The empty-string-to-
-  `CommandOutput::Silent` branch, previously copy-pasted across 8 call sites in 7
-  `zeph-commands` handler modules, is now `CommandOutput::message_or_silent` (#5447). The
-  version-lookup-then-activate-and-write-file tail shared by `handle_skill_activate_as_string`,
-  `handle_skill_approve_as_string`, and `handle_skill_reset_as_string`
-  (`crates/zeph-core/src/agent/learning/skill_commands.rs`) is now a single
-  `activate_version_and_write` helper; each handler keeps its own version-selection predicate
-  and success message (#5663). The 8 `const TEMPLATE` + chained `.replace()` prompt builders in
-  `zeph-skills` (`evolution.rs`, `stem.rs`, `erl.rs`) now call a shared
-  `prompt_template::render` helper instead of repeating the substitution chain; the existing
-  curly-brace-safety property of `DOMAIN_GATE_PROMPT_TEMPLATE` (avoiding `format!()` because its
-  JSON example contains literal braces) is preserved unchanged (#5427). Pure refactor, no
-  behavior change; covered by 5 new unit tests targeting the extracted helpers directly.
-- `refactor(core)`: deduplicated three independently-duplicated code paths in the agent
-  conversation/graph/sentinel layer. `Agent::reset_conversation` (`/new`) and the former
-  `reset_swap_state` (`/conv resume`, `/conv fork`) shared the same ~45-line session-reset
-  block; both now call a single `reset_session_scoped_state(keep_plan)`
-  (`crates/zeph-core/src/agent/context/assembly.rs`), which the removed
-  `reset_swap_state` invoked with `keep_plan: false` (#5655).
-  `graph_facts`/`graph_history` (`crates/zeph-core/src/agent/agent_access_impl.rs`) shared an
-  entity-resolution-by-name block (5s timeout + "Qdrant unreachable" fallback) and an
-  entity-name-lookup-map-with-fallback block; both are now `resolve_entity_by_name` and
-  `build_entity_name_map`, reproducing the original per-call-site early-return semantics
-  exactly (#5656). `ShadowSentinel::check_tool_call`/`record_tool_event`
-  (`crates/zeph-core/src/agent/shadow_sentinel.rs`) shared an identical
-  clone-store-and-spawn-persist-with-warn-log block, now `persist_event(event,
-  warn_context)` (#5660). Pure refactor, no behavior change.
-- `refactor(core)`: deduplicated three independently-duplicated code paths in the agent
-  tool-dispatch pipeline. Merged `call_non_streaming`/`call_non_streaming_with_span`
-  (`crates/zeph-core/src/agent/tool_execution/llm_dispatch.rs`) into a single function
-  taking an explicit `tracing::Span` parameter; the SSE-fallback call site now passes
-  `tracing::Span::none()` (a documented no-op for `.instrument()`), which also removes a
-  now-redundant `core.tool.call_non_streaming` span on that one path — error visibility is
-  unchanged since it still surfaces once via the outer `core.tool.dispatch_chat` span (#5667).
-  Extracted `layer_context_parts()` (`layer_hooks.rs`), shared by `run_before_chat_layers`
-  and `run_after_chat_layers` instead of deriving the conversation-id/turn-number pair
-  twice (#5668). `SpeculationEngine::try_dispatch` (`speculative/mod.rs`) now resolves a
-  supervisor (real or throwaway) once before a single `spawn_oneshot` call, instead of
-  duplicating the identical spawn closure across both branches of an if/else (#5669). Pure
-  refactor, no behavior change.
-- `fix(core)`: unified `CocoonClient` construction gating between `build_cocoon_provider` and
-  `spawn_cocoon_health_checks` (`crates/zeph-core/src/provider_factory.rs`) behind a single
-  `resolve_cocoon_client_params` helper. Previously the advisory health-check path ignored a
-  provider entry's own `cocoon_access_hash` opt-in gate — it unconditionally read the vault key
-  and never errored on a missing one — while the real provider-construction path gated on it and
-  hard-failed bootstrap when the entry opted in but the vault key was absent. The health check
-  now goes through the identical gating logic; on a resolution error it logs a warning and skips
-  just that health check instead of using a wrong or ungated client (#5671). Also deduplicated
-  the identical post-verdict logging + `store_correction_in_memory` block shared by
-  `evaluate_with_llm_classifier` and `evaluate_with_judge` (`crates/zeph-core/src/agent/
-  corrections.rs`) into a single `record_correction_signal` helper, differing only in the
-  `source` field (#5676).
-- `refactor(memory,core)`: deduplicated three independently-drifting code paths in the graph
-  subsystem. `build_entity_graph_and_maps` (`crates/zeph-memory/src/graph/community.rs`) now
-  folds each edge into the graph/fact/id maps through a single `fold_edge` helper shared by its
-  streaming and paginated branches, instead of two identical inline copies (#5503). The
-  entity/edge/community count-then-publish sequence used by `Agent::sync_graph_counts` and the
-  two graph-count-sync sites in `persistence/extract.rs` is now a single `fetch_graph_counts`
-  helper (`crates/zeph-core/src/agent/utils.rs`), preserving the existing per-field
-  fallback-to-zero-on-error semantics at each of the 3 call sites (#5677). The relation/fact
-  sanitization pattern (`strip_control_chars` + trim/lowercase + `truncate_to_bytes_ref`) and its
-  `MAX_RELATION_BYTES`/`MAX_FACT_BYTES` caps are now defined once in
-  `crates/zeph-memory/src/graph/resolver/mod.rs` (`sanitize_relation`/`sanitize_fact`, both
-  `pub(crate)`) instead of being duplicated at 3 call sites across `graph/resolver/mod.rs` and
-  `semantic/graph.rs`, which previously carried a second independent `const` declaration tracked
-  only by a "mirrors the constant from..." doc comment. Pure refactor, no behavior change;
-  covered by 11 new unit tests targeting the extracted helpers directly. (#5503, #5677, #5492)
-- `refactor(common,memory,mcp,context,llm,core)`: deduplicated three hand-rolled utility
-  patterns onto shared helpers. UTF-8 char-boundary truncation (5 call sites in
-  `zeph-context`, `zeph-llm`, `zeph-memory`, `zeph-core`) now calls the existing
-  `zeph_common::text::truncate_to_bytes`/`truncate_to_bytes_ref` (#5672). Char-level
-  Levenshtein edit distance (`zeph-memory/src/graph/implicit_conflict.rs` and
-  `belief_revision.rs`) now shares its DP computation via a new
-  `zeph_memory::graph::string_similarity` module; `belief_revision::relation_similarity`
-  keeps its original byte-length normalization (only the distance computation is shared,
-  not the normalization) to avoid changing behavior for non-ASCII relation strings (#5536).
-  Bracket-matching JSON-array extraction from LLM prose (5 call sites in `zeph-memory` and
-  `zeph-mcp`) now calls a new `zeph_common::llm_response::extract_json_array_slice`; each
-  call site keeps its own existing failure policy (hard error in `zeph-mcp::pruning`,
-  empty-result fallback elsewhere) (#5520). No behavior change.
-- `refactor(core)`: split `Agent::rebuild_system_prompt` (`crates/zeph-core/src/agent/context/assembly.rs`,
-  formerly 877 lines under `#[allow(clippy::too_many_lines)]`) into 9 private methods — query
-  rewrite, embedding-based skill matching/rerank, secret-based filtering, channel-allowlist
-  resync, trust/gating, prompt formatting, MCP tool discovery, tool-schema filtering, and final
-  prompt assembly. Pure mechanical extraction, no behavior change (verified by the existing
-  test suite and a dedicated end-to-end reload test). The `clippy::too_many_lines` suppression
-  on the orchestrator is dropped; three of the extracted methods carry their own narrower,
-  justified suppression instead. (#5465)
-- `perf(skills)`: cached per-skill resource discovery (`scripts/`/`references/`/`assets/`
-  directory listings) on `Skill`/`SkillRegistry` via `OnceLock`, mirroring the existing lazy
-  skill-body cache. Previously `discover_resources()` ran up to 3 synchronous `std::fs::read_dir`
-  calls per active skill on every agent turn; now it runs once per skill per registry load,
-  eliminating blocking filesystem I/O from the turn hot path (measured ~60x faster on a warm
-  cache in a 27-skill test set). Note: the cache is invalidated on skill reload, which the file
-  watcher only triggers on `SKILL.md` changes — a resource-subdirectory change alone will not
-  refresh the cache until the next reload. (#5426)
-- `perf(core)`: `Agent::reload_skills()` (`crates/zeph-core/src/agent/skill_reload.rs`) no longer
-  performs blocking filesystem I/O (directory walk, YAML parsing, per-skill body reads) inline on
-  the agent's async loop while holding the skill registry's write lock. The new registry is now
-  built entirely off-lock inside `tokio::task::spawn_blocking`, then swapped in under a
-  microsecond-scale write lock; per-skill body loading is similarly offloaded. Matches the
-  existing `spawn_blocking` pattern already used in `heuristic_promotion.rs`. (#5421)
-
-- `refactor(memory)`: deduplicated `crates/zeph-memory/src/graph/store/mod.rs`. Replaced 8
-  independent local re-declarations of the SQLite bound-parameter batch size (`490`, derived
-  from `999 / 2 binds-per-id`) with a single module-level `SQLITE_BATCH_LIMIT_2X` constant;
-  generalized `edge_select_cols` to take a table-alias prefix instead of duplicating the
-  `graph_edges` SELECT column list at ~10 call sites; merged `bfs_core`/`bfs_core_typed` and
-  `bfs_fetch_results`/`bfs_fetch_results_typed` into single implementations parameterized by
-  `edge_types: &[EdgeType]` (empty slice = untyped path); added a `community_from_row`
-  free function replacing 3 duplicated `CommunityRow` → `Community` conversion blocks. Pure
-  refactor, no behavior change — all 4 public BFS entry points keep their original
-  signatures. (#5501, #5490)
-- `refactor(memory)`: extracted three DRY helpers out of `zeph-memory`'s duplicated sweep,
-  admission-gate, and background-embed logic. New `crates/zeph-memory/src/sweep_helpers.rs`
-  (`pub(crate)`) holds `cluster_by_cosine_similarity` (generalizes `scenes.rs`'s
-  `cluster_messages` and `tiers.rs`'s `cluster_by_similarity` over a generic candidate type),
-  `embed_batch_with_validation` (shared batch-embed + length-validation), and
-  `llm_call_with_timeout` (shared 15s-timeout LLM call), used by both `scenes.rs` and
-  `tiers.rs` (#5581). `semantic/recall.rs` gained `run_admission_gate` /
-  `run_quality_gate` / `record_admission_sample_opt` private helpers shared by all four
-  `remember*` variants — `remember_tool_output` and `remember_categorized` continue to
-  skip the quality gate, which is unchanged, load-bearing behavior (#5569). The three
-  near-identical `embed_and_store_*_bg` background tasks collapsed into one generic
-  `embed_chunk_and_store_bg` taking a boxed-future per-chunk store closure, with the
-  rate-limited Qdrant-ensure-collection warning extracted into a pure
-  `should_emit_qdrant_warn` predicate plus `warn_qdrant_ensure_failure` (#5565). No
-  behavior change; existing test coverage extended to target the new shared functions
-  directly (moved clustering tests into `sweep_helpers.rs`, added per-`remember*`-variant
-  admission/quality-gate coverage in `semantic/tests/recall.rs`).
-- `refactor(cargo)`: split 4 crates' (`zeph-orchestration`, `zeph-memory`, `zeph-tui`,
-  `zeph-acp`) `default` feature arrays that bundled the `sqlite`/`postgres`
-  backend-selection axis with an unrelated functional feature (`llm-planning`,
-  `jsonschema`, `clipboard`, and 6 `unstable-*` ACP features respectively) — a future
-  backend-only change could otherwise silently drop an unrelated feature for any
-  consumer relying on the bundled default instead of an explicit dependency
-  declaration. Every split-out feature was verified to already be declared explicitly
-  by its real consumer (`zeph-core`'s `llm-planning`, `zeph-context`'s `jsonschema`)
-  (#5631). Simplified 45 now-redundant `all(feature = "sqlite", not(feature =
-  "postgres"))` / bare `not(feature = "postgres")` cfg guards to plain `feature =
-  "sqlite"` across 7 crates (`zeph-scheduler`, `zeph-durable`, `zeph-memory`,
-  `zeph-index`, `zeph-core`, `zeph-subagent`, `zeph-orchestration`), mirroring the
-  pattern already applied to `zeph-db` for #5571 — safe because `zeph-db`'s
-  `compile_error!` guarantees both-enabled and neither-enabled are unreachable states,
-  so `not(postgres) ⟺ sqlite` for every state in which the crate compiles (#5632).
-  Also restored `zeph-acp/unstable-session-usage` forwarding in root `Cargo.toml`'s
-  `acp` feature list, recovering 4 unit tests that the `zeph-acp` default-array split
-  had silently dropped from the CI-matching test run. Pure Cargo-hygiene change, no
-  runtime behavior change.
-- `refactor(memory)`: deduplicated three more independent hand-rolled patterns in
-  `zeph-memory`. A single SQLite-datetime-to-Unix-seconds parser now lives in new
-  `crates/zeph-memory/src/sqlite_time.rs`, replacing three separate implementations
-  (`graph/types.rs`, `graph/activation.rs`, `eviction.rs`) that had drifted apart
-  (different algorithms, different return types, different fractional-second/timezone
-  tolerance); `eviction.rs`'s `Option<u64>`-returning wrapper is now a thin
-  `u64::try_from(...)` conversion over the canonical `Option<i64>` parser — this
-  changes one previously-untested edge case (a malformed/pre-1970 timestamp string now
-  falls through to `None` instead of silently returning `Some(0)`/epoch), documented
-  and pinned with a regression test since it's unreachable in practice (`datetime('now')`
-  never produces pre-1970 strings) (#5523). A new `build_ingest_documents` free function
-  in `graph/ingest/adapter.rs` replaces the near-identical context-window
-  document-assembly loop duplicated across all three `IngestSourceAdapter` impls
-  (`SubagentJsonl`, `ClaudeCodeJsonl`, `CodexJsonl`) (#5515). New
-  `crates/zeph-memory/src/llm_judge.rs` holds `embed_with_timeout_fail_open` and
-  `llm_judge_score`, consolidating four embed-timeout-fail-open call sites and three
-  single-shot LLM-judge call sites previously duplicated across `admission.rs` and
-  `quality_gate.rs`, including the subtle clamped-vs-unclamped fail-open asymmetry in
-  `refine_goal_utility_llm` (now pinned by a dedicated regression test) (#5514). No
-  behavior change beyond the one documented eviction.rs edge case above; added direct
-  unit test coverage for all three new shared helpers.
-- `refactor(core)`: extracted `build_provider_config_snapshot` and `apply_debug_dumper`
-  into `src/agent_setup.rs`, deduplicating the `ProviderConfigSnapshot` construction
-  previously copy-pasted across `runner.rs`/`acp.rs`/`daemon.rs` (completes the
-  provider-pool-wiring slice left open by the `apply_common_tool_gating` extraction
-  above) and the `DebugDumper::new` match arm across those three plus
-  `serve/agent_factory.rs`. Pure refactor, no behavior change — verified byte-identical
-  field mapping and `Ok`/`Err` semantics at every site. Refs #5610.
-- `refactor(core)`: deduplicated the 8 near-identical cancellation-handling blocks in
-  `crates/zeph-core/src/agent/tool_execution/tier_loop.rs` (`handle_confirmation_phase`,
-  `handle_retry_phase`'s entry check and its two `tokio::select!` branches,
-  `handle_reformat_phase`'s entry and post-await checks, `run_tier_execution_loop`'s
-  per-tier check, and `execute_tier_join`'s cancellation branch) into a single
-  `cancel_tool_batch` helper. Preserves the exact step order (skill-env reset, log,
-  metrics, `[Cancelled]` send, tombstone persist) at every call site — that ordering is
-  what prevents the recurring "orphaned tool_calls corrupts history" defect class
-  (#5464, #5513, #5646). Pure structural dedup, no behavior change; all existing
-  cancellation/tombstone tests pass unchanged. (#5654)
-- `refactor(core)`: deduplicated the session-digest generation pipeline in
-  `crates/zeph-core/src/agent/session_digest.rs`. The `/new`-triggered fire-and-forget
-  `generate_and_store_digest` and the shutdown-path `Agent::maybe_store_session_digest`
-  independently rebuilt the identical summarizer prompt, LLM-call-under-timeout, and
-  sanitize/truncate/store pipeline; both now delegate to a single private
-  `generate_and_persist_digest` helper, parameterized only by the log wording each call
-  site already used. Pure structural dedup, no behavior change — same prompt text, same
-  30s timeout semantics, same storage call per call site; added direct unit test coverage
-  for the shared helper's success and LLM-failure paths. (#5678)
-- `refactor(zeph-experiments)`: deduplicated `MAX_RETRIES` retry-cap constant (previously
-  defined identically in `random.rs` and `neighborhood.rs`) into a single `pub(crate)`
-  constant in `generator.rs`, and extracted the "no configured step -> (max-min)/20"
-  fallback into `ParameterRange::effective_step()` in `search_space.rs`, replacing three
-  drifted spellings across `grid.rs`/`neighborhood.rs` (#5723). Deleted orphaned,
-  never-compiled `src/mod.rs` left over from the crate-extraction refactor (#5402).
-
-### Removed
-
-- `zeph-experiments`: removed unused `EvalError::OutOfRange` and
-  `EvalError::SearchSpaceExhausted` variants — never constructed anywhere in the
-  workspace (#5722). Breaking change for any external consumer matching on these
-  variants (unlikely pre-1.0; `EvalError` is `#[non_exhaustive]`).
-
-### Fixed
-
 - `fix(tui)`: the status bar's busy segment (`push_busy_segment()` in
   `crates/zeph-tui/src/widgets/status.rs`) was the one remaining spinner site still hardcoding
   its own braille frame table instead of the shared `breeze_frame()` helper used by
@@ -1054,18 +2195,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   knowledge-ingest CLI (`src/commands/knowledge.rs`) intentionally keep passing `None` — both
   iterate historical messages out of live turn order, where a real turn index would be
   misleading.
-
-### Removed
-
-- `chore(core)`: removed `AgentChannelView` (`crates/zeph-core/src/agent/channel_impl.rs`),
-  the sealed `AgentChannel`/`Sealed` adapter impl, and its test module — dead code left behind
-  after #3516 (the `zeph-agent-tools` dispatcher extraction it was scaffolded for) closed
-  without ever wiring it in. `zeph-agent-tools`'s `doom_loop_hash` remains in use; the
-  `AgentChannel`/`Sealed` trait definitions are retained as scaffolding with no current
-  implementor, and their doc comments were updated to stop pointing at the now-deleted
-  implementor (#5651).
-
-### Fixed
 
 - `fix(core)`: `ShadowSentinel::classify_tool` (`crates/zeph-core/src/agent/shadow_sentinel.rs`)
   gated probe engagement for MCP-origin tools entirely on a fixed keyword-substring list
@@ -1973,612 +3102,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   class already fixed 3 times over (#5464, #5513, #5646). The tombstone persist now runs first,
   and a subsequent notification-send failure is logged rather than propagated, so it can never
   again suppress the tombstone write. (#5717)
-
-### Changed
-
-- `refactor(memory)`: `HeuristicRouter::route()` and `route_with_confidence()`
-  (`crates/zeph-memory/src/router.rs`) independently recomputed the same six
-  classification signals (temporal cue, relationship pattern, structural code pattern,
-  question-word detection, word-count thresholds, `snake_case` detection), and
-  `route_with_confidence()` additionally called `self.route(query)` to get its result,
-  recomputing everything a second time. Extracted a `RouteSignals` struct and a
-  `compute_signals()` function to compute each signal exactly once, plus
-  `HeuristicRouter::decide_route()`/`decide_confidence()` helpers holding the existing
-  priority-chain and popcount-confidence logic unchanged. `route()` and
-  `route_with_confidence()` now both call `compute_signals()` once and derive their
-  result from the shared `RouteSignals`. Pure extraction — no behavior change. Closes
-  #5510.
-- `refactor(memory)`: `SemanticMemory`'s four public constructors
-  (`with_weights_and_pool_size`, `with_qdrant_ops`, `from_parts`,
-  `with_sqlite_backend_and_pool_size` in `crates/zeph-memory/src/semantic/mod.rs`) each
-  built the full ~35-field `SemanticMemory` struct via an inline literal, differing only
-  in how `qdrant` and `token_counter` were constructed. Extracted a private
-  `SemanticMemory::base()` helper that builds the struct once from the handful of
-  parameters that vary; all four constructors now delegate to it. Pure extraction — no
-  behavior change. Closes #5504.
-- `refactor(llm)`: `ClaudeProvider`'s five request call sites (`crates/zeph-llm/src/claude/mod.rs`
-  — `send_request`, `chat_with_tools_stream`, `send_stream_request`, `chat_typed`,
-  `chat_with_tools`) each duplicated the same "detect a `compact-2026-01-12` beta rejection, set
-  `server_compaction_rejected`, warn, retry once" sequence. Extracted a private
-  `handle_compact_beta_rejection` method encapsulating the detect/store/warn/retry-once
-  decision; all five call sites now delegate to it, differing only in a `variant` label passed
-  through to the warning text. Pure extraction — warning text and retry semantics unchanged.
-  Closes #5683.
-
-### Added
-
-- `feat(memory)`: add `memory.qdrant_timeout_secs` config field, wired into
-  `QdrantOps::with_timeout` at all 5 production `QdrantOps::new` construction sites:
-  `AppBuilder::new` (`src/bootstrap/mod.rs`, via the extracted `build_qdrant_ops` helper),
-  `src/commands/doctor.rs`, `src/commands/ingest.rs`, `src/commands/knowledge.rs`, and
-  `src/commands/project.rs` (`PurgeEngine`, 2 call sites). Previously `QdrantOps::with_timeout`
-  had no production caller — every Qdrant gRPC call used the hardcoded 10-second default with
-  no way for an operator to tune it. Defaults to `10` (seconds), matching prior behavior
-  exactly. A `migrate-config` step adds a commented `qdrant_timeout_secs = 10` advisory under
-  `[memory]` for existing configs. (#5493)
-
-- `feat(session)`: add the `zeph-session` crate foundation (spec-068 P0, #5343) — an append-only
-  JSONL event log (`SessionEventLog`) as the durable source of truth for a conversation, the
-  `SessionEvent` schema (reusing `zeph_llm::provider::MessagePart` and
-  `zeph_common::memory::AnchoredSummary`), `SessionStore` (metadata CRUD over the existing
-  `acp_sessions` table, promoted from ACP-only to channel-agnostic per spec-068 Decision D1),
-  `ReplayEngine` (deterministic fold of an event log into agent-ready messages — never calls the
-  LLM or a tool executor), and the `Condenser` trait contract with the INV-SP-4 non-overlap guard
-  (`validate_non_overlap`). New migration `106_session_persistence.sql` (SQLite + PostgreSQL) adds
-  `last_seq`/`event_count`/`forked_from`/`forked_at_seq`/`status`/`last_condensed_seq` to
-  `acp_sessions`. New `session` Cargo feature (added to the `desktop`/`server` bundles).
-
-- `feat(session)`: wire the durable JSONL event log into the live agent turn loop (spec-068 P1,
-  #5343). New `zeph_agent_persistence::SessionSink` dual-writes every persisted user/assistant
-  message to the session's `events.jsonl` **before** the `SQLite` `messages` projection
-  (INV-SP-1), called from `Agent::persist_message` — the single choke point already shared by
-  every channel and every tool-loop persistence call site. `[session]` config gains `enabled`
-  (default `true`), `data_dir` (default `.zeph/sessions`), `encrypt` (deferred, default `false`),
-  `max_event_log_mb`, and a new `[session.condense]` block (`condense_provider`, `threshold`,
-  `keep_recent`) — `--migrate-config` step 70 surfaces the new keys as commented advisories.
-  CLI/TUI/Telegram channels mint (and reuse, across restarts, keyed by `conversation_id`) a
-  session id in `runner.rs`; ACP sessions reuse their existing ACP session id directly, with no
-  separate minting step.
-
-  **Write-path cutover** (critic-flagged correction): retired both live per-turn writers to the
-  legacy `acp_session_events` table in `crates/zeph-acp/src/agent/mod.rs` —
-  `persist_user_message_async` (an unsupervised `tokio::spawn`, `EXEMPT #5144`) and the
-  notify-drainer's per-`SessionUpdate` write (also `EXEMPT #5144`) — since the same content now
-  reaches the JSONL log through the shared `Agent::persist_message` path once a `SessionSink` is
-  attached. `SessionSink` is the sole live writer for conversation-session history; no partial
-  double-write to `acp_session_events` survives. Removes two unsupervised `tokio::spawn` sites
-  (net positive against the CI spawn-baseline tracked in `.claude/rules/continuous-improvement.md`).
-  Dead code this cutover exposed (`session_update_to_event`, `content_chunk_text` in
-  `crates/zeph-acp/src/agent/helpers.rs`) removed rather than `#[allow(dead_code)]`-suppressed.
-
-  **Known gap** (tracked for the spec §12.3 read-handler thinning follow-up, out of scope for this
-  cutover): `do_load_session`'s replay of historical `SessionUpdate`s (`agent_thought`,
-  `tool_call_update` deltas, `config_option_update` — variants with no `SessionEvent` equivalent)
-  now has nothing new to replay for sessions created after this cutover, since it still reads the
-  now-frozen `acp_session_events` table.
-
-- `feat(session)`: replay-based `MessageState` hydration for ACP session resume/load/fork (spec-068
-  P1, #5343). Every ACP session spawned via `spawn_acp_agent` (`src/acp.rs`) — `do_new_session`,
-  `do_load_session`, `do_fork_session`, `do_resume_session` all share this one spawner — now folds
-  its `events.jsonl` (if non-empty) via `ReplayEngine::fold` and seeds `MessageState` from the
-  result, via a new `AgentBuilder::with_preloaded_messages` builder method, **before** the existing
-  `SQLite`-based `Agent::load_history()` call. `load_history()` gained an explicit
-  `MessageState::history_preloaded` guard (not a `messages.is_empty()` check — `Agent::new` always
-  seeds `messages` with the system-prompt message, so emptiness never distinguishes "already
-  hydrated" from "not yet loaded") so it becomes a safe no-op once replay has already populated
-  history, rather than duplicating every message (`PersistenceService::load_history` appends, it
-  does not replace). A session with an empty/absent JSONL log (brand-new sessions, and legacy
-  sessions that predate this feature) falls through unchanged to the existing `SQLite` path — no
-  retroactive synthesis, matching spec §18's legacy-session decision.
-
-- `feat(cli)`: enrich `zeph sessions` (spec-068 P1, #5343). `sessions list` now shows
-  `status`/`event_count`/`forked_from` columns sourced from `zeph_session::SessionStore`. New
-  `sessions show <id> [--from N] [--to N] [--events]` prints session metadata (status, timestamps,
-  conversation id, `last_seq`, `event_count`, `last_condensed_seq`, fork provenance) and, with
-  `--events`, the session's JSONL event log (optionally sliced by `seq` range). `sessions resume
-  <id>` gained a `--print` flag that dumps the JSONL event log (replacing the old
-  `acp_session_events`-sourced dump — the source of truth moved to JSONL). The `Sessions` CLI
-  command is no longer gated behind the `acp` feature alone — it's now available under
-  `any(feature = "acp", feature = "session")`, since the underlying data (`acp_sessions`) is
-  channel-agnostic as of spec-068 Decision D1, not ACP-specific.
-
-- `feat(session)`: INV-SP-3 projection reconciliation (spec-068 §13, #5343). New
-  `zeph_agent_persistence::reconcile_projection`, called from `spawn_acp_agent` alongside the
-  replay-hydration wiring: when `acp_sessions.event_count` trails the session's JSONL event log
-  (e.g. a crash between the log append and the `SQLite` write of the same turn), rebuilds the
-  missing `messages` rows forward from the log. Deliberately conservative — reconciles only a gap
-  containing exclusively `UserMessage`/`AssistantMessage` events; any gap containing a
-  `ToolCall`/`ToolResult`/`Condensation`/`Compaction`/`ForkPoint` event is left stale (logged, not
-  guessed at) rather than risk writing an incorrect row. Not correctness-critical for
-  resume/load/fork itself (which already sources conversation history from the JSONL log directly
-  when it has content); keeps other features that read `messages` directly (semantic search,
-  history displays) in sync with the log after a crash.
-
-- `feat(session)`: `ForkEngine` — eager-copy session forking (spec-068 P2 §7, #5343). New
-  `zeph_session::ForkEngine::fork(data_dir, src_id, new_id, at_seq, store)`: copies parent events
-  `[0, at_seq)` (or the whole log when `at_seq` is `None`) into a caller-allocated child session's
-  own, fully self-contained JSONL log, prefixed with a synthetic `SessionStarted { forked_from:
-  Some((src_id, at_seq)) }` header; creates the child's `acp_sessions` row via
-  `SessionStore::record_fork`; appends a `ForkPoint` provenance event to the parent's log.
-  Copy-on-write forking is explicitly deferred (spec §15 NEVER) in favor of eager copy for MVP
-  simplicity and independence from the parent's subsequent condensation. `new_id` is
-  caller-supplied (not minted internally) since ACP's `do_fork_session` needs the id before the
-  fork call completes, to construct the session's in-memory entry.
-
-- `feat(acp)`: `do_fork_session` delegates to `ForkEngine::fork` when `[session] enabled = true`
-  (spec-068 P2, #5343). New `AcpServerConfig.session_data_dir` /
-  `ZephAcpAgentState.session_data_dir` (threaded through `build_agent_state`) gate the new path.
-  `fork_conversation` now forks the durable JSONL log via `ForkEngine::fork` and links the new
-  `SQLite` conversation to the `acp_sessions` row `ForkEngine::fork` already created (via
-  `record_fork`) rather than creating a second row — the legacy `acp_session_events`
-  `import_acp_events`/`load_acp_events` copy is retired for new forks (the JSONL log is now the
-  sole source of truth for forked history, matching the P1 write-path cutover's philosophy). The
-  `SQLite` `messages`/`conversations` copy (`copy_conversation`) is unchanged. When persistence is
-  disabled, behavior is unchanged from before spec-068.
-
-- `feat(cli)`: `sessions fork/export/import` (spec-068 P2, #5343). `sessions fork <id> [--at
-  <seq>]` mints a new session id and delegates to `ForkEngine::fork`. `sessions export <id>
-  <path.jsonl>` copies a session's validated (INV-SP-2 torn-tail-truncated) event log to a file.
-  `sessions import <path.jsonl>` restores a previously-exported log as a brand-new session (fresh
-  id, no `forked_from` provenance — an import is a restore, not a fork).
-
-- `feat(session)`: `LlmCondenser` — the default `Condenser` implementation (spec-068 P2 §8,
-  #5343). New `zeph_session::LlmCondenser`, reusing
-  `zeph_context::summarization::summarize_structured` (`zeph-session` now depends on
-  `zeph-context` — confirmed `cargo tree` still excludes `zeph-durable`/`zeph-memory`/`zeph-core`,
-  INV-1 preserved). `should_condense` triggers once `budget_used_fraction` reaches a configurable
-  threshold and there are more than `keep_recent` messages; `condense` keeps the last
-  `keep_recent` messages un-summarized, folds the rest via `ReplayEngine::fold`, and summarizes
-  via the LLM, enforcing INV-SP-4 (`validate_non_overlap`) on the computed `replaced_range`. New
-  `SessionError::Llm` variant for summarization failures.
-
-- `feat(session)`: `Compaction` event hook (spec-068 P2 §8.1, #5343). New
-  `SessionSink::record_compaction(tier, cleared_count)`, called from `Agent::maybe_compact`
-  (`crates/zeph-core/src/agent/context/summarization/scheduling.rs`) whenever live in-memory
-  compaction actually pruned messages this turn — makes the prune replayable
-  (`ReplayEngine::fold` already handled `Compaction` events conservatively since P0). **Known
-  limitation**: emitted with `summary: None` — the LLM-produced hard-compaction summary text is
-  produced deep inside `zeph-agent-context`'s `do_hard_compaction`/`compact_context` and is not
-  currently surfaced to the `Agent<C>` call site that has `session_sink` access; `tier`/
-  `cleared_count` alone are recorded for now, tracked as a follow-up to fully close AC-6.
-
-- `feat(config)`: `[serve]` config section for `zeph serve` (spec-068 P3 §9, #5343). New
-  `zeph_config::ServeConfig` (`http_addr`, `require_auth`, `auth_token_vault_key`, `max_sessions`,
-  `session_idle_ttl_secs`, `max_queued_prompts`) — the bearer token itself is never stored inline
-  (only the age-vault key name to resolve it from at startup, per the vault-only secrets policy).
-  New `--migrate-config` step 71 adds a commented-out `[serve]` block for discoverability;
-  `config/default.toml` documents all fields.
-
-- `feat(core)`: `SessionActor` + `LiveSessionRegistry` for `zeph serve` (spec-068 P3 §9.2-9.3,
-  #5343). New `zeph_core::serve` module: `SessionCommand` (`Prompt`/`Cancel`/`Shutdown`),
-  `SessionOutput` (`Token`/`ToolCall`/`ToolResult`/`TurnComplete`/`Error`), and
-  `SessionActor::drive` — a single `tokio::select!` loop (no raw `tokio::spawn`) bridging an
-  `mpsc::Receiver<SessionCommand>` into an `Agent<LoopbackChannel>`'s channel input and forwarding
-  channel output as `SessionOutput` over a `broadcast::Sender`, while concurrently driving
-  `agent.run()` to completion. Graceful shutdown (explicit `Shutdown` command, or the
-  `TaskSupervisor`'s `CancellationToken` cancelling) drops the channel's input sender, letting
-  `Agent::run`'s `next_event()` observe closure and exit on its own rather than aborting mid-turn.
-  Also new `LiveSessionRegistry` (spec §9.3): pure bookkeeping
-  (`HashMap<SessionId, SessionActorHandle>` behind a `parking_lot::Mutex`, never held across
-  `.await`) with `get`/`insert`/`remove`/`idle_candidates` (no attached broadcast subscribers +
-  TTL-expired `last_active`, for a future `serve.evict` task).
-
-  `SessionActor::spawn` — the production entry point — registers a *coordinator* task under
-  `TaskSupervisor` via `spawn_oneshot(name: Arc<str>, factory)` (architect ruling D-7): a dynamic
-  `serve.session.<id>` name and `RestartPolicy::RunOnce` (no auto-restart after a crash —
-  re-driving a torn turn/replay in place is unsafe; recovery is a fresh spawn that replays the
-  durable log from the last committed `seq`). `Agent<C>`'s futures are `!Send` (same constraint
-  `zeph-acp`'s `serve_stdio` documents), and `Agent<LoopbackChannel>` itself cannot cross *any*
-  thread boundary, so `spawn` takes a `Send`-safe agent-construction factory
-  (architect ruling D-8: `FnOnce(LoopbackChannel) -> Agent<LoopbackChannel> + Send + 'static`,
-  mirroring `zeph-acp`'s `SendAgentSpawner`) rather than an already-built `Agent` — the factory
-  runs *inside* a dedicated OS thread with its own `current_thread` runtime and `LocalSet`,
-  mirroring `serve_stdio`'s exact pattern (only `Send`-safe state crosses the thread boundary; the
-  `Agent` is constructed entirely inside it). The `spawn_oneshot` task itself is a thin
-  coordinator that never touches the `!Send` `Agent` — it awaits the thread's completion signal
-  and, on process-wide supervisor shutdown, forwards cancellation onto a **per-session**
-  `CancellationToken` (new `SessionActorHandle.cancel` field, distinct from the supervisor's
-  process-wide token) so idle eviction (`serve.evict`, spec §9.3) can cancel exactly one session
-  without tearing down every live actor, while `drive` only ever selects on one cancellation
-  source regardless of trigger.
-
-- `feat(cli)`: `zeph serve-sessions` — process lifecycle for `zeph serve` (spec-068 §9, #5343).
-  New root-binary `src/serve/` module and `Command::ServeSessions` CLI variant (new `session`
-  Cargo feature dependency: `dep:axum`, `zeph-common/http-middleware`). **Naming note**: named
-  `serve-sessions` rather than the spec's literal `serve` — `Command::Serve` already names the
-  scheduler's foreground daemon (`#[cfg(all(unix, feature = "scheduler"))]`), and both features
-  can be enabled simultaneously, so a second command claiming the same top-level name isn't
-  viable; documented in the module doc and CLI help text. Implements: config resolution
-  (`--http-addr`/`--max-sessions` CLI overrides `[serve]` config), TCP bind, an unauthenticated
-  `GET /health` endpoint (status/uptime/live-session-count), and graceful shutdown — SIGTERM
-  (Unix) or Ctrl-C triggers `axum::serve`'s `with_graceful_shutdown`, cancels the process's
-  `TaskSupervisor` `CancellationToken`, then calls `shutdown_all(30s)`. Live-tested: bind, `curl
-  /health` (`{"status":"ok","uptime_secs":1,"live_sessions":0}`), SIGTERM, clean exit — verified
-  manually against the built binary. Also implements `serve.evict` (spec §9.3): a
-  `TaskSupervisor`-registered task (`RestartPolicy::Restart { max: 5, .. }`) that scans
-  `LiveSessionRegistry::idle_candidates` every minute and cancels each idle session's own
-  `SessionActorHandle::cancel` token — uses `registry.remove` rather than `registry.get` so the
-  eviction scan itself never resets the `last_active` timer it is reading. Selects on the
-  supervisor's `CancellationToken` so it exits immediately on shutdown rather than forcing
-  `shutdown_all`'s full grace-period timeout (live-tested: shutdown completed in 0s, not the 30s
-  fallback). Implements a first slice of the `/sessions*` REST surface (spec §9.4):
-  `POST /sessions` (create), `GET /sessions` (list live ids), `DELETE /sessions/:id` (end a
-  session — same `SessionActorHandle::cancel` mechanism `serve.evict` uses, caller-initiated
-  instead of TTL-triggered), backed by a new `src/serve/deps.rs` (`ServeAgentDeps`,
-  `build_serve_deps`) and `src/serve/agent_factory.rs` (`build_agent_factory`) that assemble a
-  working `Agent<LoopbackChannel>` — provider, embedding provider, skill registry/matcher,
-  memory, a core shell/file/web/cwd tool set (with sandbox + audit wired the same way ACP does),
-  and `SessionSink` durable persistence when `[session] enabled = true`. Deliberately **not** a
-  reuse of `src/acp.rs`'s `SharedAgentDeps`/`build_acp_deps` — that struct carries ~15
-  ACP-transport-only fields (permission files, ACP model-switching provider factory, auth bearer
-  tokens) that don't apply to a plain HTTP session; `ServeAgentDeps` calls the same underlying
-  `AppBuilder`/`zeph_tools`/`zeph_mcp` constructors but stops before MCP, the scheduler, and every
-  ACP-only field, at the cost of some orchestration-call duplication with `build_acp_deps`.
-  `POST /sessions` enforces `[serve] max_sessions` (`503` when at capacity). Because a live
-  session can execute shell/file/web tools and bearer-auth enforcement is not implemented yet,
-  `handle_serve_sessions_command` now refuses to start when `[serve] require_auth = true`
-  (the default) and the bind address is not loopback, rather than silently exposing
-  unauthenticated tool execution to the network. Live-tested end-to-end against a local Ollama
-  provider: `POST /sessions` → `201` with a durable `events.jsonl` written under `[session]
-  data_dir`, `GET /sessions` reflects the new id, filling `[serve] max_sessions` (5) then a 6th
-  create correctly returns `503`, `DELETE /sessions/:id` returns `204` and a repeat `DELETE`
-  returns `404`, and SIGTERM with 5 live sessions registered shuts down cleanly (`shutdown_all`
-  gated on all 6 supervised tasks — 5 session coordinators + `serve.evict` — reaching
-  `active_count() == 0`, not the 30s force-abort fallback). New `LiveSessionRegistry::ids()`
-  accessor (1 new unit test) backs the list endpoint.
-  MCP tools, the scheduler executor, and skill/config hot-reload are not wired into
-  `ServeAgentDeps`. `--acp` (running the ACP transport alongside HTTP/SSE) and `require_auth`'s
-  vault-token resolution are also not yet wired.
-
-- `feat(cli)`: `POST /sessions/:id/prompt` and `GET /sessions/:id/events` — the conversational
-  surface of `/sessions*` (spec §9.4). `prompt_session_handler` sends `SessionCommand::Prompt`
-  over the session's mailbox (fire-and-forget; `202` once queued, `404` if not live, `410` if the
-  mailbox already closed). `events_session_handler` subscribes to the session's
-  `SessionActorHandle::tx_out` broadcast and streams it as SSE via `axum::response::sse`; multiple
-  concurrent subscribers are supported (broadcast fan-out) and a lagged subscriber has missed
-  events dropped rather than the connection closed (the durable log is the source of truth for
-  anything missed). `SessionOutput` gained `Serialize` (adjacently tagged —
-  `{"type": "token", "data": "..."}` — since `Token`/`Error` wrap a bare `String` that can't
-  flatten into an internally tagged object). New `tokio-stream` dependency (`sync` feature, gated
-  behind the `session` Cargo feature) for `BroadcastStream`. Live-tested end-to-end against a
-  local Ollama provider: created a session, subscribed to its SSE stream, posted a prompt, and
-  received `{"type":"token","data":"PONG"}` followed by `{"type":"turn_complete"}` — a real
-  model round-trip, not a mock. The durable event log correctly recorded the user message at
-  `seq 0`; the persisted `assistant_message` at `seq 1` had empty `parts: []` even though the
-  correct content streamed over SSE — this looks like a pre-existing gap in `SessionSink`'s
-  dual-write content capture (P1/P2 work, not part of this REST-endpoint change) rather than
-  something introduced here; filed #5419 rather than fixing blind since it's outside this
-  change's scope.
-
-- `feat(cli)`: `GET /sessions/:id` — durable session metadata (spec §9.4). Returns
-  `zeph_session::SessionMetadata` (now `Serialize`, as is `SessionStatus`) flattened alongside a
-  `live: bool` computed from `LiveSessionRegistry`. `404` only when the session is neither live
-  nor known to `SessionStore` — a session whose actor has ended (idle eviction, explicit delete,
-  process restart) still returns its metadata with `live: false`, since the durable log allows it
-  to be resumed. Live-tested: a live session returns `live: true`; an unknown id returns `404`;
-  after `DELETE`, the same id still returns its metadata with `live: false` — matching the
-  documented resumability semantics exactly.
-
-- `feat(cli)`: `POST /sessions/:id/fork` — completes spec §9.4's `/sessions*` surface. Reuses
-  `zeph_session::ForkEngine::fork` (P2) to eager-copy the source session's durable log up to an
-  optional `at_seq` into a fresh child id, then immediately spawns a live `SessionActor` for the
-  child (a fresh `ConversationId`, same as `POST /sessions`) so the fork is usable via
-  `/prompt`+`/events` right away rather than only durably persisted. `404` when the source has no
-  durable log, `400` when `at_seq` exceeds the source log's event count, `503` at
-  `[serve] max_sessions` (the child counts as a new live session). Live-tested end-to-end against
-  a local Ollama provider: prompted a source session to completion, forked it, confirmed the
-  child's metadata shows `forked_from`/`forked_at_seq` pointing at the source and `live: true`,
-  and both the parent's and child's `events.jsonl` on disk reflect the fork correctly (child gets
-  the copied events plus a fresh `SessionStarted` header; parent gets a `ForkPoint` provenance
-  record per spec §7.2 step 8). Also verified `404` (unknown source) and `400`
-  (`at_seq` too large) against the running binary.
-
-- `feat(cli)`: wire `[serve] require_auth` / `auth_token_vault_key` bearer-auth enforcement
-  (spec §9.4) — the last major security gap flagged when `zeph serve-sessions` first landed.
-  `build_serve_deps` resolves the token from the vault at startup (`AppBuilder::vault()`,
-  extracted into `resolve_auth_token`/`build_tool_executor` helpers to stay under clippy's
-  `too_many_lines`) and returns it separately from `ServeAgentDeps` (server-level config, not an
-  agent-construction dependency). Every `/sessions*` route (not `/health`) is now layered with
-  `zeph_common::http_middleware::auth_middleware` via `AuthConfig`, the same pattern
-  `zeph-gateway`'s router uses. **Refined the earlier loopback-only bind guard**: now that auth
-  can actually be enforced, a non-loopback bind is only refused when `require_auth = true` *and*
-  no token was resolved (which would otherwise mean the API is reachable over the network while
-  rejecting every single request — a footgun, not a protection); a non-loopback bind with a
-  resolved token is legitimately safe and now allowed. Live-tested against a local Ollama
-  provider with `require_auth = true`: `/health` still succeeds unauthenticated (200);
-  `POST /sessions` without a bearer token now returns `401` (confirmed via
-  `zeph_common::http_middleware`'s own `require_auth=true but no auth_token configured,
-  rejecting request` log line); binding `0.0.0.0` with no vault token resolved correctly refuses
-  to start with a clear error message. The `require_auth = false` (default) path was already
-  exercised unauthenticated across every prior live test in this session (create/list/
-  get/delete/prompt/events/fork).
-
-- `feat(cli)`: `/conv [list | show <id>]` slash command (spec-068, #5343) — browse durable
-  conversation-sessions from inside an already-running agent, channel-agnostic by construction
-  (works identically in CLI, TUI, and Telegram, matching `/model`/`/undo`'s
-  `CommandHandler`/`AgentAccess` pattern rather than a TUI-only command). Mirrors
-  `zeph serve-sessions`'s `GET /sessions`/`GET /sessions/:id` REST endpoints, reading through the
-  same `zeph_session::SessionStore` — metadata only (title/status/event count/`forked_from`/
-  timestamps); use `zeph sessions show --events <id>` on the CLI for a full event-log dump. New
-  `AgentAccess::handle_conv` trait method (default: "not enabled in this context" message,
-  matching `handle_undo`'s pattern) with the real implementation in
-  `crates/zeph-core/src/agent/agent_access_impl.rs`, registered in the agent command registry
-  alongside `/undo`/`/redo`. New `ConvCommand` in `crates/zeph-commands/src/handlers/conv.rs`.
-  Live-tested via the interactive CLI against the shared production SQLite database: `/conv list`
-  printed the full session table (confirmed a session created by an earlier `zeph serve-sessions`
-  live test in this same session appears correctly); `/conv show <id>` printed full metadata for
-  an existing session and a clear "not found" message for an unknown one; an unrecognized
-  subcommand (`/conv bogus`) printed a usage hint rather than silently failing.
-
-- `fix(session)`: **#5419** — `SessionSink::record_message`'s `Role::Assistant` branch used only
-  `parts` and ignored `content` entirely, but the real production call sites
-  (`Agent::persist_message` from `crates/zeph-core/src/agent/tool_execution/tier_loop.rs:2435,
-  2659`) always pass an empty `parts` slice and put the response text in `content` — this was the
-  universal path for every assistant turn, not an edge case, so every durably persisted assistant
-  message had empty `parts` in production. Undermined AC-1 (resume shows empty assistant turns),
-  AC-5 (crash reconciliation reconstructs empty assistant messages), and `ReplayEngine`'s fold
-  logic for the common case. Fixed in `crates/zeph-agent-persistence/src/session_sink.rs`: when
-  `parts` is empty and `content` is non-empty, wrap `content` into a single `MessagePart::Text`;
-  an explicitly provided non-empty `parts` is used as-is and never overwritten by `content`. Two
-  new regression tests mirror both call shapes
-  (`record_assistant_message_wraps_content_when_parts_empty` for the real production shape,
-  `record_assistant_message_prefers_explicit_parts_over_content` to guard the pre-existing
-  explicit-`parts` shape against regressing). Re-verified against the exact live-Ollama repro from
-  #5419: the durable log now shows `{"seq":1,...,"kind":{"type":"assistant_message","parts":
-  [{"kind":"text","text":"PONG"}]}}` instead of empty `parts: []`.
-
-- `feat(cli)`: `zeph serve-sessions --acp` now fails fast with a clear error naming the correct
-  alternative, instead of silently logging a warning and running HTTP/SSE-only. Researched
-  in-process combination before implementing: `src/acp.rs`'s `run_acp_server`/
-  `run_acp_http_server` each build a complete, independent `SharedAgentDeps` (own
-  `SemanticMemory`/`SQLite` pool, provider, `McpManager`, skill registry, `TaskSupervisor`) with
-  no existing path to share those with `ServeAgentDeps` — running both in one process would mean
-  two independent `SQLite` connection pools writing the same database file concurrently (a real
-  contention/correctness risk, not just wasted resources) plus duplicate MCP subprocess spawning.
-  Rather than build that silently, `--acp` now errors naming the workaround (run `zeph --acp` /
-  `zeph --acp-http` as a separate process alongside `zeph serve-sessions`). Filed **#5420** for
-  proper in-process support: refactor `build_acp_deps` to accept prebuilt shared resources, the
-  same pattern it already uses for the MCP manager (`prebuilt_mcp_manager`) — real design work
-  deserving its own attention rather than being squeezed into this PR.
-
-- `feat(cli)`: `/conv resume <id>` and `/conv fork <id>` (spec-068, #5343, architect ruling D-9)
-  — mid-session live conversation swap on the CLI/TUI's single running agent. Architect ruling:
-  the "needs new live-swap machinery" estimate for descoping these was checked against code and
-  was wrong — the machinery already exists (`reset_conversation`/`/new` IS the live-swap
-  precedent; `AgentBuilder::with_preloaded_messages` IS the replay-hydration precedent; slash
-  commands already dispatch with `&mut self` between turns). New
-  `Agent::load_and_resume_conversation` (`crates/zeph-core/src/agent/context/assembly.rs`,
-  sibling to `reset_conversation`, same reset shape) sets `conversation_id` from the
-  `SessionId`<->`ConversationId` bijection (spec §5.2, resolving or minting+linking one via
-  `SessionStore`) instead of minting a fresh empty one, and applies `ReplayEngine::replay`'s
-  output to `msg.messages` (same "append replayed messages" shape as `with_preloaded_messages`,
-  the D-6 startup path). Sends `"Replaying conversation..."` over the existing TUI status
-  channel during the swap (AC-10). **Critical, explicitly-flagged bit**: re-points
-  `SessionState::session_sink` to the resumed/forked session's own `SessionEventLog` — without
-  this, `reset_conversation`'s conversation_id-only swap would leave subsequent turns silently
-  appending to the *previous* session's `events.jsonl` (INV-SP-1 accounting corruption). New
-  `SessionState::session_persistence_config` field + `AgentBuilder::with_session_persistence_config`
-  retain the `[session]` config snapshot (previously only consumed at construction via
-  `with_session_sink`) so the resume/fork swap can locate `data_dir` later; wired into all three
-  agent-construction call sites (`spawn_acp_agent`, the CLI/TUI bootstrap in `src/runner.rs`, and
-  `src/serve/agent_factory.rs`). `handle_conv_resume`/`handle_conv_fork` on `Agent<C>`
-  (`agent_access_impl.rs`) wire this into the existing `ConvCommand`/`handle_conv` dispatcher
-  (`resume <id>`/`fork <id>` subcommands, alongside `list`/`show`) rather than adding separate
-  `AgentAccess` trait methods — `ConvCommand` already forwards raw args to one entry point, so a
-  second dispatch layer would just duplicate subcommand parsing. `/conv fork <id>` reuses
-  `ForkEngine::fork` (P2) then the same resume-swap into the child — same effect as
-  `POST /sessions/:id/fork` but for the current CLI/TUI session instead of spawning a new
-  `SessionActor`. New `AgentError::Session(#[from] zeph_session::SessionError)` variant.
-  Live-tested end-to-end against a local Ollama provider: created a session via
-  `zeph serve-sessions` with real content ("the secret word is BANANA"), `/conv resume <id>` in
-  a plain CLI session showed the "Replaying conversation..." status, confirmed "2 event(s)
-  replayed", and a follow-up question correctly recalled "BANANA" via `memory_search` — proving
-  the replayed history is genuinely usable, not just cosmetically loaded. Verified the SessionSink
-  re-point specifically: new turns after resume correctly appended to the *resumed* session's
-  `events.jsonl` (seq 2-4), not a stale one. `/conv fork <id>` copied 5 events into a fresh child
-  session, immediately became the active conversation, and both logs were verified on disk (child
-  gained a `session_started` header with `forked_from`, parent gained a `fork_point` record).
-
-- `feat(session)`: legacy session lazy-bootstrap (spec-068 §18, P4). Existing installs have
-  `SQLite` `messages` rows for conversations that predate durable event-log persistence — these
-  are **not** retroactively synthesized into full event logs (lossy: no tool-call/result
-  granularity survives in the old projection). Instead, new `zeph_agent_persistence::
-  bootstrap_legacy_session` (`crates/zeph-agent-persistence/src/legacy_bootstrap.rs`) runs on
-  the first resume of such a session: no-ops if the event log already has events (already
-  bootstrapped, or #5343-native) or if the linked conversation has zero `SQLite` messages
-  (genuinely new session — `SessionSink` writes its own `SessionStarted` on the first real turn
-  instead); otherwise writes a `SessionStarted` header plus a single `Condensation`-style
-  "imported history" event (`replaced_seq_range: (0, 0)`) summarizing the pre-existing message
-  count, so `ReplayEngine::fold`'s existing (unmodified) logic produces one system message
-  representing the imported history — verified this replays correctly using the existing
-  `replace_range` fallback path (inserts the summary even when no prior in-log messages match
-  the range) rather than needing new replay logic. Old sessions cannot be forked or replayed at
-  an arbitrary historical `seq` predating this import boundary. Wired into both resume paths:
-  ACP's `spawn_acp_agent` (`src/acp.rs`, additive — inserted before the existing resume-hydration
-  read, not a restructure) and the new `/conv resume`/`Agent::load_and_resume_conversation`
-  (`crates/zeph-core/src/agent/context/assembly.rs`). Extracted a shared `reset_swap_state`
-  helper (steps 4-9 of `reset_conversation`) used by `load_and_resume_conversation` — did **not**
-  refactor `reset_conversation` itself to call it, since `reset_conversation`'s `keep_plan`
-  parameter conditionally skips the plan-cancellation step in a way `load_and_resume_conversation`
-  never needs to (resume/fork always fully resets); sharing the helper both ways would have
-  required either dropping that conditional (behavior change to the tested `/new --keep-plan`
-  path) or adding a parameter neither caller other than `/new` needs. 3 new unit tests
-  (no-op-with-existing-events, no-op-with-no-messages, bootstraps-and-is-idempotent). Live-tested
-  regression: created a normal (non-legacy, already has real session-persistence events) session
-  via `zeph serve-sessions`, then `/conv resume`d it via CLI — confirmed the bootstrap correctly
-  no-ops (event count stayed at 2, not 4) and the existing resume flow is unaffected.
-
-- `feat(cli)`: `--init` wizard steps for `[session]` and `[serve]` (spec-068, #5343, P4). New
-  `src/init/session.rs`: `step_session` prompts whether to enable durable session persistence and
-  its event-log directory; `step_serve` gates `zeph serve-sessions`'s `[serve]` settings
-  (bind address, bearer-auth requirement + vault key name, max concurrent sessions, idle eviction
-  TTL) behind a single "customize now?" confirmation rather than a per-field prompt cascade, since
-  `[serve]` has no `enabled` toggle of its own (the command is opt-in by virtue of being a
-  separate CLI subcommand) — declining leaves `ServeConfig::default()` values in place. New
-  `WizardState` fields for both, wired into `build_config()`. 2 new unit tests verifying
-  `build_config` output matches `SessionConfig`/`ServeConfig`'s own `Default` impls when the user
-  declines customization, and correctly applies overrides when they don't. Smoke-tested: `zeph
-  init` starts and reaches the first prompt without a compile or runtime crash (full interactive
-  drive-through of a wizard with ~40 prior steps was impractical to script; correctness of the
-  actual generated config is covered by the `build_config` unit tests, matching how every other
-  wizard step in this file is verified — individual `dialoguer` prompts aren't unit-tested
-  anywhere in this wizard, only their effect on the resulting `Config`).
-
-- `docs`: mdBook chapters for session persistence (spec-068, #5343) — the last P4 deliverable.
-  New `book/src/advanced/session-persistence.md` ("Session Persistence and Resume": the durable
-  JSONL event log, `SessionId`<->`ConversationId` bijection, `/conv`/`sessions` verbs, forking,
-  condensation, crash-safety invariants in plain language, legacy session lazy-bootstrap) and
-  `book/src/advanced/serve-mode.md` ("`zeph serve` — Persistent Agent Service": the REST+SSE API,
-  `SessionActor` isolation model, `serve.evict`, bearer-auth + the loopback-bind safety guard, and
-  the explicit `--acp` non-goal with a link to running ACP as a separate process). Both linked
-  from `book/src/SUMMARY.md` under "Advanced". Updated `book/src/reference/cli.md`'s `zeph
-  sessions` section (was still describing the old ACP-only, print-events-by-default behavior) with
-  the current verb set (`show`, `resume` [live agent by default, `--print` for the old behavior],
-  `fork`, `export`, `import`) plus new `zeph serve-sessions` and `/conv` entries. Updated
-  `book/src/reference/configuration.md` with `[session]`/`[session.condense]`/`[serve]` — also
-  fixed a pre-existing bug found while editing the adjacent block: `[session.provider_persistence]
-  enabled = true` was documented as a nested table, but `provider_persistence` is a plain `bool`
-  field directly on `[session]` in `zeph_config::SessionConfig`; corrected to
-  `[session] provider_persistence = true`. `mdbook build book/` succeeds with only a pre-existing,
-  unrelated warning in `changelog.md` (an unclosed HTML tag from an earlier entry, not touched by
-  this change). No `mdbook-linkcheck` preprocessor is configured, so all cross-reference links
-  added in the new/updated pages were verified manually against `SUMMARY.md`'s existing entries.
-
-- `ci`: add a `Release Build Check` job to `.github/workflows/ci.yml` that runs
-  `cargo build --release --workspace --all-targets --features
-  desktop,ide,server,chat,pdf,scheduler,testing,deep-link` on every PR and push to `main`.
-  Previously `cargo build --release` only ran at an actual release cut
-  (`.github/workflows/release.yml`), so release-profile-only regressions — such as the
-  query-depth overflow behind #5395/#5407/#5408 — were invisible to the normal commit/PR gate.
-  `cargo check --release` was evaluated and rejected: it does not reproduce this bug class
-  because it skips the codegen/LTO layout finalization where the overflow occurs, so only a
-  real `cargo build --release` (which exercises this workspace's `lto = true`,
-  `codegen-units = 1` release profile) closes the gap. Wired into the `ci-status` gate.
-  Closes #5409.
-- `test(mcp)`: add an in-process duplex-transport integration test for `McpClient` /
-  `ToolListChangedHandler`, covering a full `initialize -> tools/list -> tools/call`
-  round-trip through the real rmcp wire serialization path over `tokio::io::duplex`
-  (text, image, embedded text resource, embedded blob resource, and resource-link
-  `ContentBlock` variants, with the server echoing received tool-call arguments and
-  rejecting an unknown tool name to verify the client -> server leg), plus a
-  `tools/list_changed` notification asserting `ToolListChangedHandler::on_tool_list_changed`
-  emits a `ToolRefreshEvent`. See `crates/zeph-mcp/src/client.rs`.
-- `feat(acp)`: adopt the `model_config` `session/set_config_option` category (schema 1.1.0) for
-  per-session sampling-temperature control, independent of the `model` selector. New
-  `config_id="temperature"` option (presets `precise` 0.2 / `balanced` 0.7 / `creative` 1.0,
-  applied via `zeph_llm::GenerationOverrides`); new `[acp.model_config]` config section
-  (`default_temperature_preset`); new `zeph acp model-config show` CLI subcommand; new `--init`
-  wizard prompt. `default_temperature_preset` is now primed into the session's effective
-  provider at session creation (`do_new_session`/`do_load_session`/`do_fork_session`/
-  `do_resume_session`), not just advertised in the IDE dropdown, so the configured default is
-  effective from the very first prompt without an explicit `session/set_config_option` call.
-  Closes #5361.
-- `feat(acp)`: wire the real ACP `$/cancel_request` protocol notification onto the existing
-  `cancel_signal: Arc<Notify>`. New `unstable-cancel-request` Cargo feature on `zeph-acp` (not in
-  `default`) mapping to `agent-client-protocol/unstable_cancel_request`; `session/prompt` now
-  bridges `Responder::cancellation()`, scoped to that specific JSON-RPC request, onto the same
-  signal `session/cancel` already notifies. The bridge's watcher select is `biased` with prompt
-  completion checked first, and `drain_agent_events` drains a stale `cancel_signal` permit before
-  its main loop, so a cancellation resolving at/after prompt completion can no longer leak into
-  the next, unrelated prompt on the same session (also hardens the equivalent pre-existing
-  `session/cancel` race when no prompt is in flight). Closes #5362.
-- `test(acp)`: add live JSON-RPC round-trip coverage for the 8 previously-untested
-  `zeph-acp` handler files (`authenticate`, `close_session`, `delete_session`, `fork_session`,
-  `logout`, `resume_session`, `set_session_config_option`, `set_session_mode`), plus coverage for
-  the new `model_config`/temperature option and the `$/cancel_request` bridge, plus regression
-  tests for the two fixes above. Note: `resume_session` coverage exercises only the in-memory
-  early-return path; the store-backed reconstruction path remains untested (tracked in #5374).
-  Closes #5367.
-- `test(memory)`: add Postgres integration coverage for `save_session_config`/`get_session_config`
-  (`crates/zeph-memory/src/store/acp_sessions.rs`), previously exercised only against SQLite.
-  New tests in `crates/zeph-memory/tests/postgres_integration.rs` cover the `thinking_enabled`
-  `BOOLEAN`(Postgres)/`INTEGER`(SQLite) dialect divergence from migration `105_acp_session_config`
-  in both directions, plus `current_model`/`temperature_preset`/`auto_approve_level`, and the
-  missing-snapshot/unknown-session negative paths. Closes #5384.
-
-### Changed
-
-- `refactor(memory)`: `store/skills.rs`'s deactivate-old/activate-new skill-version-switch
-  SQL pair was copy-pasted across `save_and_activate_skill_version`, `activate_skill_version`,
-  and `ensure_skill_version_exists`. Extracted into a shared `switch_active_skill_version`
-  transaction helper. Closes #5496.
-- `refactor(memory)`: `semantic/recall.rs`'s `MemoryRoute` dispatch match was duplicated
-  between `recall_routed` and `recall_routed_async`, and had already drifted — the async
-  path was missing the Episodic arm's debug trace. Extracted into a shared `recall_by_route`
-  helper and unified the trace onto both paths. Closes #5495.
-- `refactor(orchestration)`: `dag::propagate_failure`'s trailing wildcard match arm on
-  `FailureStrategy` no longer silently falls back to `Abort`-equivalent behavior with no signal.
-  The wildcard arm is required for compilation because `FailureStrategy` is `#[non_exhaustive]`
-  (`zeph-config`), so it now logs `tracing::error!` with the unhandled variant before applying the
-  same fallback, making a future unknown variant visible in logs instead of silent. Closes #5466.
-- `refactor(orchestration)`: `LlmPlanner::plan` now forwards to `plan_with_hint(goal, agents, None)`
-  instead of duplicating the entire planning pipeline (empty-goal check, prompt build, timeout-
-  wrapped `chat_typed`, usage capture, response conversion, DAG validation). Pure behavior-preserving
-  refactor — no change in output when no topology hint is supplied. Closes #5471.
-- `refactor(mcp)`: extract shared `rmcp_tool_to_mcp_tool` helper (`crates/zeph-mcp/src/client.rs`)
-  for converting an rmcp `tools/list` entry into `McpTool`, replacing two byte-for-byte identical
-  inline closures in `ToolListChangedHandler::on_tool_list_changed` (background refresh path) and
-  `McpClient::list_tools` (initial connect / manual list path). No behavior change. Closes #5479.
-- `feat(cli)!`: `zeph sessions resume <id>` no longer dumps events to stdout by default (spec-068,
-  #5343) — it now launches a **live interactive agent** bound to that session's conversation,
-  replaying its JSONL event log to reconstruct history before accepting the next prompt (spec §10,
-  architect ruling D-6). Pass `--print` for the old dump behavior (now sourced from the JSONL
-  event log rather than the legacy `acp_session_events` table). Implementation: `Cli` gained a new
-  internal `resume_session_id` field; `runner::run` intercepts `Sessions{Resume{id, print: false}}`
-  before the one-shot command dispatch and falls through to the normal interactive bootstrap
-  (mirroring the existing `UrlOpen` dispatch precedent), then resolves `conversation_id` via
-  `SessionStore::get(id).conversation_id` instead of `latest_conversation_id()` at the single
-  point `runner.rs` resolves it — every downstream step (replay, hydrate, `SessionSink`,
-  continuation loop) was already wired for the interactive path in the P1 slice and needed no
-  changes. A session with no linked `conversation_id` (a legacy session with no recorded history)
-  errors with a message pointing at `--print`. Dead `resume_summary` (the interim hydration-summary
-  dump this replaces) removed.
-- `ci`: gate the `Release Build Check` job (`.github/workflows/ci.yml`) behind
-  `github.event_name == 'push'` in addition to the existing `run-full-ci` condition, so it only
-  runs post-merge on `main` instead of on every `pull_request` push. It is the most expensive
-  job in the workflow (`cargo build --release --workspace --all-targets` with
-  `lto = true, codegen-units = 1`), and `main` already re-verifies every change after merge, so
-  gating every feature/fix branch push behind it was wasteful. `ci-status` already treats
-  `skipped` as passing, so this does not weaken the gate for `push` runs.
-- `fix(a2a)!`: `A2aClient::with_security` no longer takes two positional bools (transposing
-  `with_security(true, false)` vs. `with_security(false, true)` was a silent foot-gun). It now
-  takes a `SecurityPolicy { require_tls, ssrf_protection }` struct, with `SecurityPolicy::hardened()`
-  / `SecurityPolicy::permissive()` presets. Closes #5381.
-- `feat(mcp)!`: upgrade `rmcp` from 1.8.0 to 2.0.0. **Breaking dependency change**:
-  `RawContent`/`Content`/`Annotated<RawContent>` are removed in favor of a unified
-  `ContentBlock` enum (`Text`/`Image`/`Audio`/`Resource`/`ResourceLink`); elicitation types
-  are renamed (`CreateElicitationRequestParams` → `ElicitRequestParams`,
-  `CreateElicitationResult` → `ElicitResult`, `PrimitiveSchema` → `PrimitiveSchemaDefinition`);
-  and the MCP Roots capability (`Root`, `ListRootsResult`) is now `#[deprecated]` per
-  [SEP-2577](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577) but
-  remains fully functional — construction is now isolated behind
-  `zeph_mcp::roots::{make_root, make_list_roots}` (see `crates/zeph-mcp/src/roots.rs`).
-  Added `zeph_mcp::render_content_blocks` / `render_content_block`
-  (`crates/zeph-mcp/src/content.rs`) as the single shared renderer for the full `ContentBlock`
-  union, replacing the previous text-only extraction at every MCP tool-result call site
-  (`zeph-mcp` executor/manager, `zeph-core` hooks dispatch, `zeph-acp` LSP provider,
-  `src/agent_setup.rs`). MCP Tasks API support is explicitly out of scope (zero existing usage).
-- `refactor(memory,index)`: extract the duplicated "probe embedding dimension, then
-  `ensure_collection`" sequence into shared helpers instead of 6+ independent
-  re-implementations. New `zeph_memory::probe_vector_size` (`crates/zeph-memory/src/embed_probe.rs`)
-  awaits an already-invoked embed future (optionally bounded by a timeout) and returns the
-  vector's dimension, used by `EmbeddingRegistry::ensure_collection`, `zeph-index`'s
-  `Indexer::ensure_collection_for_provider` (preserving its existing 15s startup timeout), and
-  `src/commands/knowledge.rs::build_ingest_resources`. New
-  `EmbeddingStore::ensure_collection_for_vector` (`crates/zeph-memory/src/embedding_store.rs`)
-  derives the dimension from an already-computed vector and ensures the collection in one call,
-  used by `admission.rs`, `semantic/recall.rs` (5 call sites), and `semantic/summarization.rs`,
-  which each already hold a real embedding rather than a throwaway probe. No behavior change.
-- `refactor(memory)`: finish the probe-then-ensure_collection dedup started above. New
-  `EmbeddingStore::ensure_named_collection_for_vector` (`crates/zeph-memory/src/embedding_store.rs`)
-  replaces 8 remaining inline `ensure_named_collection(vector.len())` call sites across
-  `episodic_consolidation.rs`, `graph/resolver/mod.rs`, and `semantic/{summarization,cross_session,
-  corrections}.rs`, eliminating a dead-fallback default (`1536`/`896`/`384`) that had already
-  diverged across the inline copies. `src/bootstrap/mod.rs`'s reasoning-strategies collection probe
-  now also calls `zeph_memory::probe_vector_size` directly instead of its own inline throwaway
-  probe. No behavior change. Closes #5393.
-
-### Fixed
 
 - `fix(skills)`: `SkillGenerator::generate` awaited both of its `provider.chat()` calls (initial
   generation and the single retry on parse failure) with no timeout, unlike every other external
@@ -3785,191 +4308,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   keep an apostrophe/hyphen-joined compound name inside a single token. Closes #5530, closes
   #5463.
 
-### Changed
-
-- `build(db)`: upgrade `sqlx` 0.8.6 → 0.9.0. The `runtime-tokio-rustls` feature was split into
-  `runtime-tokio` + `tls-rustls` in `zeph-db`, `zeph-memory`, `zeph-index`, and `zeph-scheduler`.
-  The new `SqlSafeStr` bound on `query`/`query_as`/`query_scalar` requires runtime-built SQL
-  strings to be wrapped in `sqlx::AssertSqlSafe`; all 67 dynamic-SQL call sites (assembled only
-  from machine-generated placeholders, boolean-selected static clause fragments, and dialect
-  constants — never unvalidated input) were audited and wrapped. `zeph-db`'s `FullDriver` bound
-  updated for the now-lifetime-free `Database::Arguments` associated type
-  (`crates/zeph-db/src/bounds.rs`). `zeph-durable` gained `#![recursion_limit = "256"]`
-  (`crates/zeph-durable/src/lib.rs`) — sqlx 0.9's larger generated future types pushed the
-  generic `step` wrapper past the default depth limit, matching the existing precedent in
-  `zeph-core`/`zeph-acp`/`zeph-bench`/`zeph-scheduler`/`src/main.rs`.
-
-- `refactor(acp)!`: bump `agent-client-protocol` 0.14.0 → 1.0.1 and
-  `agent-client-protocol-schema` 0.13.6 → 1.1.0. Schema 1.1.0 removed the flat `pub use v1::*`
-  root re-export, so every `acp::schema::X` reference in `zeph-acp` moved to `acp::schema::v1::X`
-  (`ProtocolVersion`, `MaybeUndefined`, `IntoOption`, `IntoMaybeUndefined` stay flat at the crate
-  root — unaffected). The ACP crate root also dropped its `cookbook`/`handler`/`jsonrpcmsg`
-  modules and the six root message-enum re-exports; the one internal use site
-  (`ClientRequest::ExtMethodRequest` in `tests/integration.rs`) was repointed to
-  `acp::schema::v1::ClientRequest`. No handler, transport, or builder-chain logic changed — the
-  `Agent.builder()`/`ConnectionTo`/`Dispatch`/`Responder` SACP API is unchanged between 0.14.0 and
-  1.0.1. Also deleted 5 long-dead `#[cfg(any())]` test modules in `zeph-acp` (`terminal.rs`,
-  `custom.rs`, `fs.rs`, `mcp_bridge.rs`, `agent/mod.rs`/`agent/tests.rs`) that predated ACP 0.11
-  and were unreachable by any feature toggle.
-
-  `BREAKING CHANGE:` `zeph-acp` is a published crate whose public functions (e.g.
-  `acp_mcp_servers_to_entries`) take `agent-client-protocol`/`agent-client-protocol-schema` types
-  directly. Those upstream crates crossed a SemVer-major boundary (0.x → 1.0) with a public-API
-  path change (`schema::X` → `schema::v1::X`), so this is breaking for any *external* consumer of
-  `zeph-acp`'s public API by the dependency's own SemVer nature — independent of in-workspace
-  impact, which happens to be zero right now (no other workspace crate references
-  `agent_client_protocol::schema::*` directly). No public `zeph-acp` function signatures changed
-  shape — only the import path of the types those signatures already used.
-
-- `refactor(tests)`: migrate 772 `assert!(matches!(...))` calls to the stabilized
-  `assert_matches!` macro (MSRV 1.96). The new macro prints the actual value on failure,
-  making test output more informative. Added `#[derive(Debug)]` to 12 types that lacked it.
-  Two assertions that cannot use `assert_matches!` (key-material cipher type and
-  `dyn Stream` trait object) were left as `assert!(matches!(...))` with comments.
-
-- `feat(tui)`: give background/external requests a visually distinct equalizer wave. The
-  `WaveState::Parallel` variant is replaced by `WaveState::Network`, which now triggers on any
-  in-flight task-supervisor work (`bg_inflight >= 1` plus background shell runs) instead of only
-  `>= 2`. It renders in a **violet** gradient (vs the teal of foreground `Swell`/`Streaming`/`Tool`)
-  so concurrent background activity is separable at a glance, and the equalizer slot stays visible
-  while background requests run even when the agent itself is idle. See
-  `crates/zeph-tui/src/widgets/wave.rs` and `app/state.rs` (`wave_state`, `background_inflight`).
-
-- `fix(tui)`: correct and de-clutter the input separator row. The Insert-mode hint now reads
-  `esc for normal mode` (Esc switches Insert→Normal; it does not cancel input). The busy verb is
-  no longer duplicated on this row — it already appears in the bottom status bar and the side-panel
-  wave — so the separator shows only the prompt glyph, mode hint, token estimate, spinner, and the
-  interrupt hint. A status change (sub-agent start/complete, file indexing) now refreshes the
-  progress clock so the wave animates instead of reading as `Stalled` (a flat line). See
-  `crates/zeph-tui/src/widgets/input.rs`, `app/events.rs`, `app/keys.rs`.
-
-### Added
-
-- `feat(tui)`: move the inference visualiser from the input separator to the right-panel
-  dashboard and redesign it as an animated braille waveform — a continuous wave mirrored about
-  the centre axis (rendered with `U+2800` braille for 2×4 sub-pixel resolution) that jerks up
-  and down in time to a sharp beat envelope, with a teal gradient brightening toward the peaks.
-  A 4-row slot is carved from the bottom of the subagents panel while the agent is busy and
-  collapses when idle. `Motion::Full` busy mode now shows an animated spinner in the input row
-  (same as `Minimal`). `TuiCommand::ToggleEqualizer` / `app:equalizer` hides or shows the slot.
-  Removes `EQ_ROWS`/`EQ_W_MAX` constants. See `crates/zeph-tui/src/widgets/wave.rs` and
-  `crates/zeph-tui/src/app/draw.rs`.
-
-### Research
-
-- `docs(cocoon)`: add stable non-positional threat IDs (`T-BIN-SUBST`, `T-COMP-ATTEST`,
-  `T-LOCAL-INTERCEPT`, `T-QDRANT-EXFIL`, `T-BALANCE-SIDE`, `T-CRED-EXFIL`, `T-CRASH-LOOP`,
-  `T-STALE-ATTEST`) to `threat-model.md` §4 table; cross-reference SG-7 (§2) and Challenge 1
-  (§3) to `T-COMP-ATTEST`; correct #4650's positional "row T-4" reference to stable ID (#4650)
-- `docs(cocoon)`: add compound attestation monitoring checklist §15.5 to `spec.md` — defines
-  signals to watch in Cocoon releases (attestation endpoints, release-note keywords, capability
-  fields), trigger→action flow for filing P2 implementation issue, and cross-ref to CI
-  dependency-watch loop; #4650 is the open tracking anchor (#4650)
-- `docs(cocoon)`: qualify E2E Option B for containerised deployments in §16.2 — "no security
-  over RA-TLS" claim qualified to bare-metal/loopback topology; in Docker Compose / Kubernetes
-  topologies where the Zeph→sidecar hop is a real network segment, Option B provides additional
-  protection; Option A remains preferred; add containerised topology open question to §17 (#3677)
-- `docs(cocoon)`: add TaskSupervisor AC requirement and cross-reference in §16.1 — managed
-  sidecar MUST use `TaskSupervisor::spawn_restartable` with circuit breaker (spec-039); designate
-  `cocoon doctor --start` as the managed entry point; add cross-ref: #4650 resolution weakens
-  trust-boundary objection to managed mode (#3676)
-- `docs(cocoon)`: add GA/experimental open questions for E2E encryption maturity and Option A
-  support to §17; annotate §16.2 perf claims as unmeasured; note reserved config stanzas are
-  intentionally commented until supervisor-backed implementations land (#3677)
-
-### Added
-
-- `spec(068-session-persistence)`: add specification for session persistence, event log replay,
-  fork semantics, context condensation, and `zeph serve` persistent agent service mode.
-  Introduces `zeph-session` crate, migration 105 (`acp_sessions` column additions for
-  `last_seq`/`event_count`/`forked_from`/`forked_at_seq`/`status`/`last_condensed_seq`),
-  INV-SP-1..4 crash-safety invariants, per-session actor model (mpsc-in/broadcast-out),
-  and `/conv` TUI command namespace. Closes #2807, #3102, #3074.
-
-- `feat(security)`: add MATRA threat model spec `specs/069-threat-model/spec.md` — asset
-  inventory, attack trees (vault exfiltration, shell RCE, SSRF, memory poisoning, channel
-  exfiltration), control mapping with residual risk scores, uncontrolled blast radius analysis,
-  and six binding invariants. Closes #3913.
-
-- `feat(orchestration)`: add `NetworkScope` enum (`Inherit`/`Allow`/`Deny`) to
-  `crates/zeph-orchestration/src/graph.rs` and `AssetSensitivity` enum
-  (`Public`/`Internal`/`Confidential`) to `crates/zeph-config/src/experiment.rs`. Both types
-  are advisory only — `NetworkScope` controls per-task network egress annotation; enforcement
-  for spawned sub-agents is deferred (see `specs/069-threat-model/spec.md §5`). Adds
-  `TaskNode::network_scope` and `TaskNode::asset_sensitivity` optional fields with `#[serde(default)]`
-  for backward-compatible deserialization of existing SQLite blobs. Adds
-  `OrchestrationConfig::default_asset_sensitivity` with `config --migrate-config` step 69.
-  Closes #3934.
-
-### Changed
-
-- `feat(hooks)`: add optional `if` conditional field to `HookDef` with `tool:<token>` DSL — hooks
-  now fire only when `ZEPH_TOOL_NAME` contains the token (case-sensitive substring, fail-closed for
-  all error cases: no colon, unknown key, empty token, empty tool name, `None` tool context).
-  Configured in TOML as `if = "tool:shell"`. Hooks without `if` fire unconditionally. A `warn!`
-  is emitted once at startup when a `tool:` condition is placed on a non-tool event
-  (`cwd_changed`, `file_changed`, `turn_complete`). Closes #3088 (partial).
-
-- `feat(hooks)`: inject `ZEPH_AGENT_TYPE` (`"main"` or `"subagent"`) and `ZEPH_AGENT_ID` into
-  all hook env maps at every lifecycle event. Sub-agent path (`zeph-subagent`) sets
-  `ZEPH_AGENT_TYPE=subagent` and `ZEPH_AGENT_ID=<task_id>` in `make_hook_env`. Main agent path
-  (`zeph-core`) injects both vars via new `insert_main_agent_ctx` helper in `hooks_dispatch.rs`,
-  called from `check_cwd_changed`, `handle_file_changed`, `mod.rs` (turn_complete), and
-  `tier_loop.rs` (pre/post-tool-use, permission_denied). `ZEPH_AGENT_ID` is omitted when no
-  conversation has been bound yet. Closes #3088 (partial).
-
-- `feat(hooks)`: extend `PostToolUseHookInput` stdin JSON with `agent_id` and `agent_type` fields
-  for `PostToolUse` and `PostToolUseFailure` events. `agent_id` is omitted when `None`
-  (`skip_serializing_if`); `agent_type` is always present. Both the main agent and sub-agent
-  populate these fields in their respective `PostToolUseHookInput` construction sites. Closes #3088.
-
-- `fix(channels)`: add `// EXEMPT` annotation and `tracing::warn!` to the raw `tokio::spawn` in
-  `spawn_guest_proxy()` (`crates/zeph-channels/src/telegram.rs`), matching the documentation
-  pattern used by the three other untracked Telegram spawn sites. The guest proxy is a singleton
-  axum server bound to an ephemeral port; TaskSupervisor routing is not feasible because restart
-  would require rebinding the port and re-pointing `bot.set_api_url()`. Closes #5309.
-
-- `feat(tracing)`: add `#[tracing::instrument]` to four startup-path async functions in
-  `src/runner.rs` — `build_typed_pages_state`, `load_rl_head`, `resolve_rl_embed_dim`, and
-  `run_experiment_report` — making their latency visible in Perfetto/Jaeger traces. Closes #5199.
-
-- `refactor(bench)`: extract shared `write_atomic` helper into `zeph_bench::utils` and remove the
-  byte-for-byte duplicate copies from `baseline.rs` and `results.rs`. Closes #5314.
-
-- `feat(bench)`: add `#[tracing::instrument]` spans to the tau2-bench multi-turn driver
-  (`bench.tau2.drive`, `bench.tau2.generate_user_message`, `bench.tau2.call_simulator`) so
-  per-turn and LLM-call latency are visible in local Chrome JSON / Perfetto traces. Closes #5315.
-
-- `feat(bench)`: add `#[tracing::instrument]` spans to the tau2-bench domain environments
-  (`bench.tau2.airline.replay_actions`, `bench.tau2.airline.execute_tool_call`,
-  `bench.tau2.retail.replay_actions`, `bench.tau2.retail.execute_tool_call`) so tool-dispatch
-  latency is visible in traces. Closes #5316.
-
-- `refactor(tui)`: migrate 27 `TuiCommand` variants from `execute_command()` fallback into
-  `reduce()`, enforcing INV-R1 (single mutation point). Groups A/B (pure state mutations +
-  formatter reads) return `vec![]`; Group C (fixed-string agent-input sends) return
-  `vec![Effect::SendUserInput(...)]`. `Effect` now derives `PartialEq`; 8 formatter methods
-  bumped to `pub(crate)`; `handle_plan_command`/`handle_memory_command` deleted (empty after
-  migration); 49 new reducer unit tests added. Deferred: theme commands (blocked on #5308),
-  `command_tx` arms, clipboard duplicates, `prefill_input` arms, session-switch arms.
-  Closes #5298.
-
-- `feat(tracing)`: promote `CommandRegistry::dispatch` in `zeph-commands` from
-  `#[cfg_attr(feature = "profiling", tracing::instrument(...))]` to an unconditional
-  `#[tracing::instrument(name = "commands.dispatch", skip(self, ctx))]` so slash-command
-  dispatch latency is visible in all production traces. Closes #5201.
-
-- `feat(tracing)`: add `#[tracing::instrument]` spans to `Scheduler::init`
-  (`sched.scheduler.init`) and `daemon_status` (`sched.daemon.status`) in `zeph-scheduler`
-  so scheduler startup and status-query paths are visible in local Chrome JSON traces.
-  Closes #5328.
-
-- `feat(tracing)`: add `#[tracing::instrument]` spans to `verify_commitish`,
-  `git_worktree_add`, and `probe_capabilities` in `zeph-worktree` so worktree creation
-  and bootstrap paths are visible in trace analysis. Closes #5313.
-
-### Fixed
-
 - `fix(tui)`: remove duplicate `last_assistant_content` / `last_assistant_code_blocks`
   from `keys.rs`; call-sites now use the `pub(crate)` versions in `state.rs`. Closes #5296.
 
@@ -4001,127 +4339,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   only uninstrumented public async fn in `CodeStore`, making Qdrant collection-creation
   timing and errors invisible in traces. Closes #5292.
 
-### Changed
-
-- `refactor(skills)`: extract shared `embed_skills_with_timeout` free function
-  into `crates/zeph-skills/src/embedding.rs`, eliminating the duplicate
-  `embed_existing` body in `miner.rs` and `trace_extractor.rs`. Adds
-  `#[tracing::instrument]` spans to `save_quarantined` and `embed_existing`
-  in `trace_extractor.rs` (always-on); `miner::embed_existing` retains its
-  existing `profiling`-gated span. Closes #5290, #5291.
-
-### Added
-
-- `feat(tracing)`: add `#[tracing::instrument]` to 13 hot-path async fns across
-  three crates. `zeph-mcp` `connect.rs`: `spawn_non_oauth_connections`,
-  `process_connect_results`, `commit_connect_outputs`, `handle_connect_result`
-  (with `server_id` field), `spawn_oauth_connections`, `process_oauth_results`,
-  `commit_oauth_outputs` — MCP connect pipeline inner latency now visible in
-  traces. `zeph-channels` `discord/gateway.rs`: `gateway_loop`, `run_session`,
-  `ack_interaction`; `slack/events.rs`: `handle_event` — WebSocket reconnect
-  loop and event handling now traced. `zeph-vault` `age.rs`: `load_async`,
-  `save_async` — vault startup path now visible. All spans unconditional, use
-  `skip_all` to prevent sensitive args from leaking into traces. Closes #5203,
-  #5189, #5210.
-
-- `feat(tracing)`: add `#[tracing::instrument]` to hot-path async fns in
-  `zeph-sanitizer` (9 fns across `causal_ipi`, `sanitizer`, `ipi_filter`,
-  `quarantine`), `zeph-a2a` client and discovery (11 fns), and
-  `zeph-llm` `CandleProvider` (4 fns, `profiling`-gated). Sanitizer and A2A
-  spans use `skip_all` to prevent leaking sensitive content into traces;
-  CandleProvider follows the `#[cfg_attr(feature = "profiling", ...)]`
-  pattern consistent with `ollama` and `openai` providers. Closes #5211,
-  #5235, #5221.
-
-- `feat(tui)`: reducer/action decomposition — introduce `Action`, `Effect`, and `reduce()`
-  as the sole state-mutation path for keyboard and mouse inputs (#5076):
-  - `crates/zeph-tui/src/app/action.rs`: `Action` enum with 50+ semantic variants covering
-    scroll, panel toggles, session/view, input mode, command palette, file picker, slash
-    autocomplete, reverse search, confirm/elicitation dialogs, mouse mode, clipboard, and
-    command dispatch; supporting `ScrollDir`, `VertDir`, `PaletteEdit`, `ElicitationEdit`,
-    `CursorMove` enums.
-  - `crates/zeph-tui/src/app/reducer.rs`: `reduce(&mut App, Action) -> Vec<Effect>` as the
-    single mutation site; `Effect` enum for deferred side-effects (`SendUserInput`,
-    `SendCommand`, `CopyToClipboard`, `StartFileIndex`, `SetMouseCapture`, `Quit`);
-    `run_effects` executes effects after each reduce call; INV-R1 enforced.
-  - Existing `handle_key` wiring updated to call `reduce` via action-mapped arms.
-
-- `feat(tui)`: opt-in mouse capture (`[tui] mouse = false` default) with `/mouse on|off|toggle`
-  command and `app:mouse` command-palette entry (#5103):
-  - `crates/zeph-tui/src/app/mouse.rs`: `handle_mouse` dispatches decoded mouse events
-    through `reduce`; `decode_mouse` maps crossterm `MouseEvent` to `Action` (`ScrollUp`/
-    `ScrollDown` → `ScrollLines(±3)`, left-click → `SetActivePanel`, right-click →
-    `ScrollPage(Up)`); `Moved`/`Drag` events filtered to `AppEvent::Tick` at event source
-    (C6 invariant).
-  - `EnableAlternateScroll` and `EnableMouseCapture` treated as mutually exclusive — swapped
-    atomically in `tui_loop` post-select drain block (C2); mouse never enabled before first
-    draw (C3); panic hook and `restore_terminal` both call `DisableMouseCapture` (C7).
-  - `App` gains `mouse_enabled: bool`, `last_layout: Option<AppLayout>`, and
-    `pending_mouse_capture: Option<bool>` fields; `AppLayout` derives `Clone, Copy`.
-  - `with_mouse(enabled)` builder on `App`; `TuiConfig.mouse: bool` field; migration step 68
-    injects advisory `# mouse = false` comment under existing `[tui]` sections (idempotent,
-    4 unit-tested cases).
-  - Interactive wizard `--init` includes `step_tui_mouse` Confirm prompt (default: false).
-  - Status bar shows `mouse on (Shift+drag selects)` hint when mouse capture is active.
-  - `AppEvent::Mouse(MouseEvent)` variant added to event enum.
-
-- `feat(tui)`: micro-delights — five opt-in animation enhancements gated by
-  `[tui.delights]` config block and master-controlled by `tui.motion` (#5104):
-  - **Stream metrics**: tok/s rolling-window estimate (Low priority, status bar,
-    visible while streaming) and TTFT in milliseconds/seconds (shown after each turn).
-  - **Ephemeral toasts**: transient overlay notifications (cap 3, ~3s TTL, tick-
-    deterministic expiry); shown on tool-group completion when `completion_flash`
-    and `toasts` are both enabled.
-  - **Completion flash**: accent tint applied to all spans in a fully-resolved
-    tool-message group for ~400ms (4 ticks) after the last tool output arrives.
-  - **Smooth scroll**: ease-out-cubic interpolation (3 ticks, ~300ms) on
-    `PageUp`/`PageDown` and Insert-mode page scroll; single-line j/k scrolls
-    bypass animation; `motion = Off` falls back to instant offset change.
-  - **Splash shimmer**: one-shot bell-curve brightness sweep across the `zeph`
-    wordmark on each new splash show (~1.2s, 12 ticks); resets on rising edge of
-    `show_splash`; `shimmer_phase = None` is byte-identical to pre-feature baseline.
-  - All five features individually toggleable via `[tui.delights]` TOML fields
-    (all default `true`); `motion = Minimal` reduces to 1-tick flash / instant
-    scroll / single-frame shimmer; `motion = Off` suppresses all animation.
-  - Migration step 67 injects advisory `[tui.delights]` comment block into
-    existing configs that have a `[tui]` section (idempotent, 3-case unit-tested).
-  - Interactive wizard (`--init`) includes a `step_tui_delights` Confirm prompt.
-  - `FlashState` and `ScrollAnim` placed on `SessionSlot` (session-scoped) to
-    prevent cross-session bleed; `ToastQueue` and `SplashShimmer` on `App`.
-
-### Changed
-
-- `feat(tracing)`: add `#[tracing::instrument]` to 21 async fns in `zeph-memory`
-  (`qdrant_ops.rs`, `embedding_registry.rs`, `graph/retrieval.rs`) using
-  `memory.qdrant.*`, `memory.embed_registry.*`, `memory.graph.retrieval.*` span
-  prefixes; `BoxFuture` trait methods instrumented via `.instrument(debug_span!(...))`;
-  private helpers use `level = "debug"` (closes #5226, #5228, #5229).
-- `feat(tracing)`: add `#[tracing::instrument]` to 13 hot-path async fns across
-  `zeph-core` learning pipeline (`write_skill_file`, `arise_trace_task`,
-  `arise_check_domain_gate`, `arise_store_version`, `stem_detection_task`,
-  `stem_generate_skill`, `erl_reflection_task`), `zeph-agent-context` deferred
-  summarization (`maybe_summarize_tool_pair`, `flush_deferred_summaries`), and
-  `zeph-skills` trace extraction (`process_candidate`, `apply_decision`,
-  `call_extract_llm`, `embed_candidate`) using `core.learning.*`,
-  `agent_context.summarization.*`, and `skills.trace_extraction.*` span prefixes
-  (closes #5176, #5196, #5171).
-
-- `feat(tracing)`: instrument 17 hot-path async fns in `zeph-core` agent module
-  (`tool_execution/mod.rs`, `autodream.rs`, `hooks_dispatch.rs`,
-  `context/summarization/{scheduling,compaction,deferred}.rs`) with
-  `#[tracing::instrument]` spans using `core.{agent|tool|context}.<fn>` naming,
-  making compaction, PII scrubbing, cache, and file-change paths visible in traces
-  (closes #5181, #5182, #5183).
-
-- `refactor(agent-context)`: collapse 10 structurally identical inject-sanitize blocks in
-  `apply_prepared_context` into a single `slots` slice + loop, eliminating DRY violation
-  (closes #5117).
-- `refactor(knowledge)`: extract `build_shared_validator` helper to deduplicate identical
-  `SharedPostExtractValidator` construction in `run_graph_ingest` and
-  `handle_external_agent_ingest` (closes #5118).
-
-### Fixed
-
 - `fix(skills)`: migrate `SkillWatcher` background task from raw `tokio::spawn` to
   `TaskSupervisor::spawn_oneshot` so the watcher is named, observable in `list_tasks()`,
   and abortable via `shutdown_all()` (closes #5170).
@@ -4132,48 +4349,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `fix(llm)`: eliminate raw `tokio::spawn` in `CandleProvider::chat_stream` by replacing
   the fake-streaming mpsc pattern with `tokio_stream::iter` over pre-built chunks —
   structured concurrency, no dropped `JoinHandle` (closes #5219).
-
-
-### Added
-
-- `feat(durable)`: add `#[tracing::instrument]` to hot-path async fns in `zeph-durable`:
-  `JournalWriter::run`, `flush_buffer`, `JournalWriterHandle::append_acked`, `flush`
-  (closes #5204); `DurableContext::step`, `step_recorded`, `promise`, `sleep_until`,
-  `drain_background`, `take_resolved_promise`, `check_divergence`, `on_divergence`,
-  `resolve_ambiguous`, `run_op`, `journal_result`, `append_acked_degrading`
-  (closes #5205); `DurableTimerService::run`, `fire_due`; `DurableRetentionService::run`.
-  All `run` loops wrapped in per-iteration spans (`durable.{writer,timer,retention}.run.iter`);
-  no `span.entered()` across `.await`.
-- `feat(tui)`: status bar pressure abbreviation — adds a short-form tier before segment dropping.
-  Each segment now declares full and abbreviated forms (`12.3k tokens` → `12.3k`, `$0.01` → `$0.01`,
-  etc.); pressure ladder is full → short → drop (Critical segments never drop). Unicode-aware width
-  math throughout; hang-guard skips abbreviation when the short form is no narrower (closes #5101).
-- `feat(tui)`: live wave animation on the input separator row encodes agent state as a waveform —
-  idle shows a static line; TTFT-wait a slow swell; streaming a ripple; tool execution a choppy wave;
-  parallel background tasks a superposition of sines; stalled a flatline with error tint. Rendered
-  with `▁▂▃▄▅▆▇█` glyphs, aqua truecolor gradient, flat ansi16 accent, and `~-~-` ASCII fallback.
-  `[tui] motion = "full" | "minimal" | "off"` config field; `/motion` slash command for live switching;
-  zero allocations per frame via reused `wave_buf`; deterministic `sample(t, x, state)` pure function
-  for snapshot testing (closes #5096).
-- `feat(tui)`: breeze spinner (▹▹▹→▸▹▹→▸▸▹→▸▸▸→▹▸▸→▹▹▸) replaces braille throbber across all
-  five spinner sites; ASCII fallback (..→>..→>>.→>>>→.>>→..>) keyed off `detect_unicode_capable()`.
-  Shared `widgets/spinner.rs` module ensures one motion language everywhere (closes #5095).
-- `feat(tui)`: human-voice status verb dictionary maps raw `tui_status!` strings to short,
-  lowercase present-tense verb phrases with optional muted detail ("searching · memory").
-  37-entry `FRAGMENTS` table in `widgets/status_verbs.rs`; unmapped strings pass through verbatim
-  (closes #5097).
-- `feat(tui)`: splash wordmark replaces static cyan ASCII banner with branded `≈ zeph` lockup:
-  aqua-to-ice gradient (truecolor), plain accent (ANSI-16), `~ zeph` (ASCII-only); version line,
-  slogan "think further.", quick-hints row, and 3-tier responsive layout (closes #5094).
-- `feat(tui)`: `detect_unicode_capable()` in `theme/color_mode.rs` — independent of `NO_COLOR`;
-  `TERM=dumb` or non-UTF-8 locale disables Unicode glyphs without affecting color mode.
-
-### Changed
-
-- `refactor(core)`: migrate 17 direct `tokio::spawn` sites in `zeph-core` to `TaskSupervisor`/`BackgroundSupervisor` supervision; long-lived watchers (`ConfigWatcher`, `FileWatcher`, `InstructionWatcher`, `SystemMetricsCollector`) use `spawn_oneshot`, turn-scoped tasks (`heuristic_promotion`, `trace_extraction`, `experiment_session`, `durable_journal_writer`) use `spawn_oneshot` with unique per-invocation names via atomic counters (closes #5145)
-- `refactor(tools,subagent)`: migrate 11 direct `tokio::spawn` sites in `zeph-tools` and `zeph-subagent` to supervised task management; shell background runs now tracked via `TaskSupervisor`, subagent lifecycle tasks abortable on shutdown (closes #5148)
-
-### Fixed
 
 - `refactor(channels)`: `DiscordChannel` was always storing `supervisor: None` in the struct
   literal even when a real supervisor was passed; now stores `supervisor.cloned()` so `Debug`
@@ -4189,47 +4364,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `tokio::fs::read_to_string` (#5191).
 - `fix(tui)`: `run_tui_remote` called `resolve_palette` (which may invoke `std::fs` for user
   themes) directly on the async thread; now runs via `tokio::task::spawn_blocking` (#5173).
-
-### Added
-
-- `feat(tui)`: per-section sidebar collapse with `Alt+1..4` hotkeys (#5244). Each sidebar panel
-  (memory, skills, resources, subagents) can be independently collapsed to a one-line `▸ Label`
-  summary. `AppLayout::compute` derives per-section heights from `collapsed_panels: [bool; 4]` in
-  app state; `effective_collapsed()` force-expands the subagents slot when any overlay (Fleet,
-  Durable, Tasks, plan, security) is active. Hotkeys bind in both normal and insert modes.
-- `feat(tui)`: syntax highlighting extended with TypeScript, Go, YAML, Markdown, and SQL (#5099).
-  TypeScript uses a concatenated JS+TS highlight query (TS grammar is a delta over JS). Go, YAML
-  (yml alias), Markdown (md alias, block-level), and SQL (mysql/psql/postgres aliases) added.
-  Capture-name mapping table extended with 15 new entries (text.title, text.literal, escape,
-  function.method, boolean, etc.). New crates: `tree-sitter-yaml 0.7.2`, `tree-sitter-sequel
-  0.3.11`; go/ts/md grammars promoted from transitive to explicit workspace dependencies.
-- `feat(tui)`: code block presentation with surface background, language label, and copy hotkey
-  (#5098). Code blocks render with a header rule (language label + `Ctrl+Y: copy` hint), surface
-  background (`palette.surface`) applied across the full block width including syntax-highlighted
-  spans, and a closing footer rule. `CopyLastCodeBlock(usize)` action added; `Ctrl+Y` copies the
-  most-recent block (or nth block by index) in both normal and insert modes. Streaming-incomplete
-  blocks are copyable. `enum LineKind { Normal, CodeBlock }` threads through `MdRenderer::finish()`
-  to drive the right-pad pass and prevent background bleed into adjacent lines.
-- `test(tui)`: unit tests for `/theme` slash command parsing variants (`ListThemes`, `SetTheme`,
-  trailing-space edge case) in `parse_session_slash` (#5245). Insta snapshot tests for
-  `elicitation` and `command_palette` modals confirming `BorderType::Rounded` corners (#5243).
-- `feat(tui)`: theme config, `/theme` slash command, `ToggleTheme` real implementation, hot-reload,
-  and `--theme` CLI flag (#5090). `SemanticPalette` presets (`zephyr`, `zephyr-light`,
-  `high-contrast`, etc.) are selectable at runtime; `apply_theme` validates names against path
-  traversal via `resolve_palette`, bumps a `theme_generation` counter so all session render caches
-  are invalidated on swap.
-- `feat(tui)`: borderless chat and input areas, rounded modal dialogs, transparent header bar
-  (#5092). Chat area uses full available height without a surrounding border box; input replaces
-  `Borders::ALL` with a thin separator line and `›` prompt glyph; `confirm`, `help`,
-  `command_palette`, `elicitation`, and `file_picker` modals use `BorderType::Rounded`; header
-  renders `⬡ zeph` brand glyph with muted metadata on transparent background.
-- `feat(tui)`: dashboard restyle with lowercase section headers and 1-column vertical separator
-  between chat and sidebar (#5093). `skills`, `memory`, and `resources` panels use muted bold
-  section labels in place of titled `Borders::ALL` blocks; `AppLayout` gains a `separator` field
-  for the 1-column vertical bar glyph between chat and side panels. Per-section collapse is deferred
-  to a follow-up issue.
-
-### Fixed
 
 - `refactor(channels)`: migrate Discord gateway, Discord register-commands, and Slack events server
   raw `tokio::spawn` sites in `zeph-channels` to `TaskSupervisor`; Discord and Slack adapters now
@@ -4287,120 +4421,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `unicode-width` added as a direct dependency of `zeph-tui` (previously only transitive via ratatui).
   - 14 CJK/emoji regression tests added across `layout.rs`, `subagents.rs`, `status.rs`, and `chat.ms`.
 
-### Added
-
-- `feat(tui)`: theme system 2.0 — semantic palette, 7 built-in presets, color-mode downgrade pipeline, init wizard theme step, and migration step 65 (closes #5087, #5088, #5089)
-  - New `crates/zeph-tui/src/theme/` module: `SemanticPalette` (10 colour roles + `ExtendedRoles`), `Rgb` newtype with `#rrggbb` hex serde, `EffectiveColorMode` with ANSI-256 dual-candidate downgrade (cube + gray-ramp, pick nearest), `NO_COLOR` detection per no-color.org spec.
-  - 7 built-in presets embedded at compile time: `zephyr` (default), `classic` (legacy look), `zephyr-light`, `high-contrast`, `catppuccin-mocha`, `gruvbox-dark`, `solarized-dark`.
-  - User theme files loadable from `~/.config/zeph/themes/<name>.toml` with path-traversal guard, symlink rejection, and 64 KiB cap enforced at read time.
-  - `Theme::from_palette_with_mode` derives all widget styles once at startup; widget render functions receive `&Theme` — no per-frame allocation.
-  - `build_tui_theme()` helper wires palette + color mode into the TUI App at startup (`tui_bridge.rs`, `tui_remote.rs`).
-  - Migration step 65 (`MigrateTuiThemeConfig`) appends a commented `[tui.theme]` advisory block to existing configs; idempotent with section-scoped scan.
-  - `--init` wizard `step_tui_theme`: Select prompts for preset (default: zephyr) and color mode (default: auto).
-
-- `fix(config)`: config load failures are no longer silent (#5071, #5067, #5072)
-  - Missing config file now prints a one-line notice to stderr and falls back to defaults instead of silently using defaults. Existing configs with parse errors now exit with a non-zero status and print the TOML error with file path and line number.
-  - `--init` wizard `step_policy` now prompts for `tools.policy.policy_provider` (LLM-assisted policy checks, leave blank to skip) and `tools.utility.utility_window` (consecutive low-utility call threshold, 0 = disabled).
-  - `--migrate-config` gains step 64 (`migrate_policy_provider_and_utility_window`): adds commented advisory entries for both new fields to existing configs.
-  - LLM provider connectivity test added to `--init` wizard: after configuring a provider, the wizard offers a TCP probe (default yes). On FAIL it offers to re-enter settings or continue. Completion screen now suggests `zeph doctor` for post-setup verification.
-  - `load_config_or_default` helper in `src/runner.rs` replaces all three `unwrap_or_default()` call sites with uniform error handling.
-
-
-
-- `feat(deep-link)`: `POST /deep-link` stateless validate-only ACP endpoint (spec-066 OQ-2, closes #5059)
-  - New `crates/zeph-acp/src/transport/deep_link.rs` handler behind `feature = "acp-http"`.
-  - Accepts `{ "uri": "zeph://..." }`, parses with the shared `parse_deep_link`, validates `cwd` against both the deep-link INV-CWD denylist and the ACP `additional_directories` allowlist (default-deny: empty allowlist rejects all cwd), validates model name against `available_models`.
-  - Returns `{ working_dir, prompt, prompt_trust_level: "external_untrusted", model }`. No session created, no store write.
-  - Total URI cap of 65 536 bytes before parsing (M2); NUL/C0 check on decoded cwd (M3).
-  - Status codes: 400 (malformed/oversized URI, NUL in cwd), 403 (cwd rejected), 422 (unknown model), 401 (bearer auth layer).
-  - `validate_deep_link_cwd` and `CwdValidationError` extracted from `src/url_scheme/validate.rs` (binary-only) to `crates/zeph-common/src/deep_link.rs` (shared); binary re-exports via `pub use`.
-  - 9 unit tests covering all failure/happy-path branches.
-  - `acp-http` feature now implies `zeph-common/deep-link`.
-  - Advisory contract documented in handler rustdoc and spec-066 §13.
-  - Follow-up issue filed: ACP `session/prompt` does not tag inbound prompts as `ExternalUntrusted` (INV-TRUST gap, #5063).
-- `feat(knowledge-ingest)`: Phase 0 provenance migration + recall isolation flag (spec-067 §3, closes #5015)
-  - DB migrations: `102_graph_provenance.sql` (SQLite) and `103_graph_provenance.sql` (Postgres) add `origin TEXT NOT NULL DEFAULT 'conversation'`, `import_batch_id TEXT`, `source_uri TEXT` to `graph_edges` and `origin`, `import_batch_id` to `graph_entities`.
-  - New types `GraphOrigin` (enum: `Conversation`, `Ingest`) and `GraphProvenance { origin, import_batch_id, source_uri }` in `zeph-memory::graph::types`.
-  - `Option<&GraphProvenance>` threaded through the full write path: `upsert_entity`, `insert_edge`, `insert_edge_typed`, `insert_or_supersede_with_turn_index_and_metrics`, `EntityResolver::resolve`, `resolve_via_embedding`, `resolve_edge_typed`. All existing call sites pass `None` (conversation origin, unchanged behaviour).
-  - `recall_include_imported: bool` (default `true`) in `GraphConfig` (`[memory.graph]`) and in `GraphExtractionConfig`. When `false`, `query_batch_edges` and `edges_for_entity` append `AND origin = 'conversation'`, excluding ingest-origin edges from recall. Wired via `GraphStore::with_recall_include_imported` builder and `build_graph_extraction_config` in `zeph-agent-persistence`.
-  - 6 new unit tests: `provenance_write_sets_origin_and_batch`, `provenance_none_defaults_to_conversation`, `recall_include_imported_false_excludes_ingest_edges`, `recall_include_imported_true_includes_ingest_edges`, `entity_provenance_write_sets_origin_and_batch`, `query_batch_edges_excludes_ingest_when_flag_false`.
-- `feat(knowledge)`: add `zeph knowledge` CLI with `ingest`, `rollback` (stub), and `status` subcommands. `KnowledgeSource` ValueEnum covers `specs`, `changelog`, `handoff`, `coverage`, `git-log` sources. INV-6 path allowlist enforced via canonical `starts_with(project_root)` check on both sides (closes #5017)
-- `feat(knowledge)`: add `[knowledge]` config section (`ingest_provider`, `concurrency`, `max_documents`, `recall_include_imported`, `transcript_scope`). Migration step 61 (`migrate_knowledge_config`) adds the section idempotently to existing configs. `--init` wizard emits `[knowledge]` only when non-default values are chosen (closes #5017)
-- `feat(knowledge)`: add `IngestLedger` repository in `zeph-memory` — idempotency re-read guard for both ingest sinks. Dual migrations: `sqlite/102_knowledge_ingest_ledger.sql` and `postgres/103_knowledge_ingest_ledger.sql`. `ingested_at` stored as ISO-8601 TEXT in both dialects. INV-5: re-read/cost guard only, not a drift guard; rustdoc states the limitation explicitly (closes #5016)
-- `feat(knowledge)`: wire notes sink into `zeph knowledge ingest` — static project artifacts (`specs/`, `CHANGELOG.md`, `.local/handoff/`, coverage-status, `git log`) ingested into Qdrant via existing `IngestionPipeline`. Ledger skip prevents re-embedding unchanged files. `--dry-run` reports file count, projected chunks, and estimated embed tokens without writing anything. `source_uri` threaded into Qdrant payload. Tracing spans on all I/O paths (closes #5018)
-- `feat(knowledge)`: wire `IngestProgress` channel in `zeph knowledge ingest` — removes `#[allow(dead_code)]`, adds `Ingesting { uri }` pre-write variant (FR-014/tasks.md:171), per-source `Discovered` events, `Failed`-equivalent `FileDone` on errors; dedicated mpsc printer task replaces direct `println!` calls in the ingest loop; TUI spinner integration point is now active (closes #5043)
-- `feat(knowledge)`: `zeph knowledge rollback --batch-id <id>` CLI command and `/knowledge rollback <id>` TUI slash command — removes ledger rows and graph entities/edges for the given batch; prompts for confirmation unless `--yes` is passed; warns when `edges == 0 && entities == 0` (Phase-1 limitation: Qdrant embeddings are not removed) (closes #5019)
-- `feat(knowledge)`: `zeph knowledge status` CLI command and `/knowledge status` TUI slash command — lists all ledger entries in newest-first order with `source_uri`, `content_hash`, `import_batch_id`, `ingested_at`, `entities`, and `edges` columns; TUI reply is plain text formatted the same way (closes #5020)
-- `feat(tui)`: add three knowledge command palette entries — `KnowledgeStatus`, `KnowledgeRollbackPrompt`, and `KnowledgeIngestPrompt` — accessible via `/` command input; `KnowledgeStatus` shows a `Querying knowledge index…` spinner while fetching; dispatched through `handle_knowledge_command` in `keys.rs` (closes #5020)
-- `feat(deep-link)`: Phase 3b — macOS `.app` bundle registration + stale scheme detection (spec-066 TASK-14, TASK-16; closes #5057, #5060)
-  - `src/url_scheme/register.rs`: `register_macos` now creates `~/Applications/Zeph.app` with `Contents/Info.plist` (CFBundleURLTypes entry for `zeph://`) and a symlink `Contents/MacOS/zeph → <current_exe>`; calls `lsregister -f <bundle>` to register with LaunchServices.
-  - `unregister_macos` calls `lsregister -u <bundle>` then removes the entire bundle directory.
-  - `status_macos` reads `_ZephExePath` from `Info.plist` and reports stale/ok/missing; `handle_url_scheme_status` now returns `bool` (stale=true) on all platforms.
-  - New public API: `SchemeStatus` enum (`Ok`, `NotRegistered`, `Stale(String)`) and `scheme_registration_status(current_exe)` for machine-readable checks.
-  - `UrlSchemeCommand::Status` gains `--check` flag: exits non-zero when stale or not registered.
-  - `zeph doctor` (check 16, `url_scheme.registration`): `Ok` when current, `Warn` when not registered, `Fail` when stale; gated under `#[cfg(feature = "deep-link")]`.
-  - 8 new unit tests for macOS: `register_macos_writes_bundle`, `unregister_macos_removes_bundle`, `unregister_macos_when_not_registered_is_ok`, `extract_zeph_exe_from_plist_parses_correctly`, `extract_zeph_exe_from_plist_returns_none_when_key_absent`, `scheme_status_macos_not_registered_when_no_bundle`, `scheme_status_macos_ok_when_registered_and_current`, `scheme_status_macos_stale_when_binary_missing`.
-  - 3 new Linux `scheme_status_linux_*` unit tests for machine-readable status.
-- `feat(knowledge)`: add `--source claude-code` and `--source codex` to `zeph knowledge ingest` — imports external-agent session transcripts into the knowledge graph. `ClaudeCodeJsonl` adapter reads `~/.claude/projects/<slug>/*.jsonl`; `CodexJsonl` adapter reads `~/.codex/archived_sessions/*.jsonl` filtered by `cwd`. Both require `--yes` and write with `GraphOrigin::ExternalAgent`. `GraphOrigin` enum extended with `ExternalAgent` variant; DB migrations add `'external-agent'` as an allowed origin value (closes #5024)
-- `feat(deep-link)`: Phase 3 — Linux `.desktop` registration, Windows HKCU registry, macOS stub, unit tests for Linux registration (spec-066 TASK-10–13; closes #5014)
-- `feat(deep-link)`: Phase 2 — CLI dispatch, bootstrap integration, TUI notification, and `--init` wizard step (spec-066, closes #5013)
-  - `src/url_scheme/prompt.rs`: `confirm_prompt` / `ConfirmResult` gate for INV-NOTTY (no-TTY → discard) and interactive y/N confirmation (TASK-7)
-  - `src/runner.rs`: `handle_url_open` implements INV-LOOP (`ZEPH_URL_OPEN_DEPTH` guard), URI parsing, CWD validation via `validate_deep_link_cwd`, model validation, confirm gate, CLI field stash (`deep_link_prompt`, `deep_link_uri`); `url-scheme register/unregister/status` commands wired in the main match (TASK-4, TASK-5, TASK-6)
-  - `src/tui_bridge.rs`: `TuiRunParams::deep_link_uri` field; `run_tui_agent` emits an `AgentEvent::Status` notification within 1 s of warmup and auto-clears after 3 s (TASK-8)
-  - `src/init/mod.rs`: `step_deep_link` wizard step — scheme registration toggle and `confirm_before_prompt` preference wired into `build_config` and `step_review_and_write` (TASK-9)
-- `feat(deep-link)`: Phase 1 foundation for the `zeph://` deep link scheme (spec-066, closes #5011)
-  - `deep-link` Cargo feature (included in `desktop` bundle, not in `default`)
-  - `crates/zeph-common`: `parse_deep_link(uri)` — sync, panic-free URI parser; percent-decodes query params; enforces 8192-byte prompt cap and control-char rejection; drops `auto`/`-y` params with WARN (INV-NOAUTO); backed by proptest fuzz
-  - `crates/zeph-config`: `DeepLinkConfig` + `AcpPreference` types; `confirm_before_prompt` defaults to `true` (secure default); migration step 62 injects `[deep_link]` advisory block into existing configs
-  - `src/url_scheme`: `validate_deep_link_cwd` following INV-CWD (absolute → canonicalize → case-fold → denylist → allowlist → is_dir); expanded denylist (Linux: `/etc` `/root` `/boot` `/run`; macOS: `/System` `/Library/Keychains`; Windows: `SystemRoot`/`WINDIR`)
-- `docs(spec-066)`: correct INV-TRUST reference — `TrustLevel::Untrusted` (non-existent) replaced with `ContentTrustLevel::ExternalUntrusted` from `zeph-sanitizer`; Phase 1 deferral note added; `DeferredHost` error variant removed in favour of `UnknownHost` for all unknown actions (closes #5030)
-- `feat(memory)`: add `SemanticMemory::ingest_documents` graph batch extraction API (spec-067 §2.3–§2.5, closes #5021)
-  - New module `crates/zeph-memory/src/graph/ingest/`: `IngestDocument` (valid-by-construction newtype), `IngestSourceKind` enum, sealed `IngestSourceAdapter` trait + `SubagentJsonl` adapter, `ImportBatchId` (UUIDv4), `IngestProgress` channel events, `IngestReport` with hub-degree projection.
-  - `TECH_DOC_SYSTEM_PROMPT` const selectable via `IngestSourceKind::system_prompt()`; `GraphExtractor::with_system_prompt` builder for prompt selection.
-  - `SemanticMemory::ingest_documents`: bounded concurrency via `buffer_unordered` (configurable cap), collect-errors-and-continue, ledger idempotency guard (F2), provenance threading (F1), write-quality gate + admission control ON, RPE bypassed for batch mode.
-  - Dry-run mode: writes nothing to DB or Qdrant; computes and returns hub-degree projection from extractor output for G0 measurement spike.
-  - Content size cap (`max_content_bytes`, default 512 KiB) to prevent token-spend DoS.
-  - `post_extract_validator: Option<Arc<dyn PostExtractValidator>>` seam for future validation.
-- `feat(knowledge)`: graph go-live for `--source subagents` — Phase 2 graph sink wired end-to-end (spec-067 FR-020..024, INV-4, INV-6, closes #5023)
-  - `GraphOrigin::Subagent` variant added; `ingest_documents` now accepts a per-call origin so subagent transcript imports are tagged `origin='subagent'` in `graph_edges` and `graph_entities`, correctly excluded from conversation recall.
-  - `DocOutcome::Rejected` + `IngestReport.rejected` counter: sanitizer-rejected facts now produce a distinct outcome arm, write zero rows, skip the ledger, and are reported separately in the summary.
-  - `MemoryWriteValidator` (as `PostExtractValidator`) runs on both live and dry-run branches; dry-run projected counts are post-sanitization.
-  - `validate_graph_extraction` extended to enforce operator-configured `forbidden_content_patterns` over entity names and edge facts (was silently skipped on the graph ingest path).
-  - `--source subagents` dispatch in `src/commands/knowledge.rs`: discovers JSONL transcripts from `config.agents.transcript_dir`, applies INV-6 current-project allowlist with `fs::canonicalize` per file (symlink-safe), calls `ingest_documents` with fresh `ImportBatchId` and `GraphOrigin::Subagent`.
-  - Confirmation gate (`--yes`/`-y`) wired for real graph writes; dry-run never prompts.
-  - `--dry-run` hub-degree report polished with `⚠ HUB` flag at > 15% and per-entity degree display.
-  - `Batch ID` printed in non-dry-run summary so operators can immediately use `zeph knowledge rollback --batch-id <X>`.
-  - 10 new unit tests: `DocOutcome::Rejected` arithmetic invariant, `GraphOrigin::Subagent.as_str()`, `IngestSourceKind::graph_origin()`, `forbidden_content_patterns` enforcement (3 tests), hub-degree flag, INV-6 allowlist, and confirmation gate.
-- `research(knowledge)`: Phase 2 measurement spike + kill-criterion evaluation (spec-067 §7, closes #5022)
-  - Dry-run executed over 140 spec files and 472 handoff files; hub-degree static analysis: top entity ~11–16% (borderline at 15% kill-criterion, likely PASS with crate-level resolution across 15+ `zeph-*` nodes).
-  - Signal-to-noise static estimate: ~85% non-trivial edges (PASS; kill-criterion ≥ 50%).
-  - Three multi-hop recall queries authored (Q1–Q3); each requires ≥2-hop traversal and demonstrably fails with semantic-note recall alone (causal chain reasoning).
-  - recall@5 measurement BLOCKED (Qdrant DOWN); expected graph path advantage documented with 10-query held-out eval set.
-  - **Decision: Conditional GO** for G2 (graph go-live) pending: Qdrant restoration, `--source subagents` CLI wiring, live hub-degree < 15% confirmation, and recall@5 > notes baseline.
-
-### Fixed
-
 - `fix(knowledge)`: make `knowledge rollback` atomic — wraps graph-edge, graph-entity, and ledger DELETEs in a single `BEGIN IMMEDIATE` SQLite transaction; propagates ledger errors instead of silently discarding them (closes #5054)
 - fix(deep-link): add `#[non_exhaustive]` to `DeepLinkError` to prevent future variant additions from breaking downstream match expressions (closes #5045)
 - fix(deep-link): gate `DeepLinkConfig` and `deep_link` modules behind `#[cfg(feature = "deep-link")]` to match stated intent in module doc (closes #5046)
 - `fix(llm)`: `CompatibleProvider` now delegates `context_window()`, `supports_vision()`, and `last_reasoning_tokens()` to its inner `OpenAiProvider` instead of returning trait defaults (`None`, `false`, `None`). Callers that depend on context-budget decisions, vision capability detection, or reasoning-token accounting now receive correct values for compatible endpoints (closes #5048)
-
-### Changed
-
-- `test(context)`: add `apply_session_config_wires_fidelity_providers` unit test in `zeph-core` — asserts that non-empty `FidelityConfig::semantic_scoring_provider` / `compress_provider` names produce `Some` in `compaction.fidelity_semantic_provider` / `fidelity_compress_provider` after `apply_session_config`, and that empty names or absent config produce `None` (closes #5035)
-- `test(config)`: add 3 unit tests for `migrate_caveman_config` migration step 59 (closes #5027). Covers: fresh config (commented-out block appended), idempotency when `[caveman]` section present, idempotency when `# [caveman]` commented block present. Follows the pattern of `migrate_worktree_git_timeout` and sibling step tests.
-- `refactor(tui)`: centralise scroll-step magic numbers in `zeph-tui` — `SCROLL_STEP_PAGE = 10` constant defined once in `keys.rs` and referenced from all four `scroll_offset` mutation sites in `handle_normal_key` and `handle_insert_scroll_keys`. `SCROLL_STEP_MOUSE` omitted: mouse scroll handler was removed in #4996 (closes #4997)
-- `docs(spec-063)`: document `panic = "abort"` limitation for `CwdRestoreGuard` — the RAII Drop guarantee only holds under `panic = "unwind"`; under `panic = "abort"` (active in `[profile.release]`) Drop is skipped but the process terminates immediately so the system remains in a defined state. Updated `spec.md` and `srs.md` FR-CWD-03 accordingly (closes #4754)
-- `refactor(orchestration)`: remove `zeph-llm`, `zeph-memory`, and `zeph-sanitizer` direct dependencies from `zeph-orchestration` to comply with INV-1 (infrastructure adapters must not import higher-level business-logic crates). `RawGraphStore` trait moved to `zeph-db`; `OutputSanitizer` + `IdentitySanitizer` added to `zeph-common`; LLM-dependent modules (`planner`, `aggregator`, `verifier`, `verify_predicate`, `cascade`, `scheduler/router`) feature-gated behind `llm-planning` (default-on). **BREAKING CHANGE** for downstream users of `zeph-orchestration` with `--no-default-features`: LLM planning is now behind the `llm-planning` feature flag (closes #5003)
-- `refactor(durable)`: track `JournalWriter` `JoinHandle` in `OrchestrationState.durable_writer_task`; `shutdown()` now calls `flush_durable_writer()` (2-second bounded flush) before aborting the task, preventing loss of buffered budget snapshots on clean shutdown (closes #5004)
-- `refactor(config)`: rename `ExperimentConfig.eval_model: Option<String>` → `eval_provider: ProviderName` to comply with the multi-model design principle. `eval_provider` references a `[[llm.providers]]` name; an empty value falls back to the primary provider. Migration step 58 (`migrate_eval_model_to_provider`) comments out the old key and emits a warning. Config wizard updated to write `eval_provider`. **BREAKING CHANGE**: `experiments.eval_model` is removed; update `[experiments]` sections to use `eval_provider = "<provider-name>"` (closes #4987, #4993)
-- Add `#[must_use]` to public validate/scan functions across workspace (zeph-config, zeph-skills, zeph-orchestration, zeph-experiments, zeph-common, zeph-core, zeph-mcp, zeph-plugins, zeph-tools) to prevent silent discard of validation errors (closes #4943, #4961, #4963)
-- `docs(acp)`: fix broken intra-doc links in `transport/` and `client/error` — feature-gated items referenced as plain backtick text; private `SubagentCommand::Close` link removed from public doc (closes #4941)
-- `refactor(tools)`: extract `build_audit_entry` private helper in `ShellExecutor`; `log_audit` and `log_audit_with_context` now delegate to it (closes #4960)
-- `refactor(memory)`: extract `lock_entries` and `lock_next_id` private helpers in `InMemoryFacade` to eliminate repeated lock-poisoning boilerplate (closes #4962)
-- `refactor(tui)`: remove three dead `pub const STATUS_*` constants (`STATUS_REPLAYING`, `STATUS_PRUNING`, `STATUS_AWAITING`) from `zeph-tui::widgets::durable` — only `STATUS_UNAVAILABLE` is referenced (closes #4977)
-
-### Fixed
 
 - `fix(tools)`: `CheckpointStack::undo` now returns a distinct error message ("Undo count must be > 0.") when called with `n = 0` instead of the misleading "Nothing to undo." message, which falsely implied the stack was empty (closes #5033)
 - `fix(tools)`: `has_traversal` now detects Windows-style path traversal sequences using backslash separators (`..\\`) in addition to forward slashes, preventing sandbox escape via `affected_paths` on Windows or cross-platform paths (closes #5032)
@@ -4418,149 +4442,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `fix(init)`: align the default config output path in the init wizard with the runtime config search order. The wizard now defaults to `$XDG_CONFIG_HOME/zeph/config.toml` (same as `resolve_config_path`), so a config written during `zeph init` is found automatically on the next `zeph` invocation (closes #4984)
 - `fix(skills)`: when the embedding matcher is unavailable (no embedding provider configured, or embed/Qdrant infrastructure failure), skill injection now uses the description-only compact format (`format_skills_prompt_compact`) instead of injecting all skill bodies. Eliminates the ~57k-token baseline footprint for Claude-only and Ollama-without-embeddings setups; affected sessions see a `tracing::warn` pointing to embedding provider configuration (closes #4989)
 - `fix(durable)`: emit `durable.journal.writer.degraded_appends_total` metrics counter in `append_acked_degrading` when `JournalUnavailable` is returned — the degradation path was previously observable only via `WARN` log (closes #4973)
-
-### Added
-
-- `feat(skills,commands)`: add caveman ultra-compressed output mode (#4985). Two cooperating mechanisms: (1) bundled `caveman/SKILL.md` — natural-language activates telegraphic style via skill matcher; (2) `/caveman [on|off|status]` command — explicit runtime toggle. `SessionState::caveman_active` flag drives `CAVEMAN_DIRECTIVE` injection into the volatile system-prompt block on every turn. `CavemanConfig { default_on: bool }` in `[caveman]` config section (migration step 59). Preserves code blocks, file paths, and commands verbatim.
-- `feat(commands)`: add `/undo [N|list]` and `/redo` session commands (#4990). Session-scoped
-  checkpoint system that captures file state before write commands. Requires
-  `[tools.shell] checkpoints_enabled = true`. Checkpoints are in-memory only (lost on restart)
-  and cover regular files within `transaction_scope`. Redo-of-delete is supported. The undo
-  stack is bounded by `max_checkpoints` (default 20). Out-of-sandbox paths and symlinks are
-  excluded from snapshots. Migration step 60.
-- `feat(cli)`: add `--json` flag to `zeph durable list`, `zeph durable show`, and `zeph durable inspect`. When set, structured JSON is emitted to stdout instead of a human-readable table. `ExecutionSummary`, `RedactedEntry`, and `ExecutionStatus` now implement `serde::Serialize`; `ExecutionStatus` serializes in `snake_case` to match the DB column values. `--reveal` and `--json` are mutually exclusive (Clap `conflicts_with`) to prevent silent non-JSON output (closes #4978)
-- `feat(zeph-durable)`: criterion benchmarks for `zeph-durable` — all 10 groups from spec-064 §Benchmarks (`bench_step_run_idempotent`, `bench_step_run_atleastonce`, `bench_step_run_exactly_once_n`, `bench_parallel_n`, `bench_replay_cursor_n`, `bench_journal_append_buffered`, `bench_journal_append_acked`, `bench_payload_seal`, `bench_payload_open`, `bench_prune_batch`). NFR gate tests added in `tests/nfr_gates.rs`: NFR-DE-07 runs in CI; NFR-DE-01/02 are `#[ignore]` (5 ms bound requires release builds). Closes #4950.
-- `feat(zeph-subagent)`: durable promise adapter for subagent spawn/await (spec-064 §P4, closes #4954). `zeph-subagent` gains `durable.rs` with `make_durable_promise`, `await_durable_subagent`, `resolve_durable_promise`, `DurableResolverSeat`, and `SubagentResult`. The resolver seat carries a `Zeroizing<[u8; 32]>` token from parent to child background task (INV-9 channel rule). On parent resume after crash, `await_durable_subagent` returns the journaled `SubagentResult` immediately (spec §1038 finished-child replay). `zeph-core` wires the gate via `maybe_make_durable_seat` in `handle_agent_background` and `handle_agent_spawn_foreground`.
-
-- `feat(orchestration)`: P2 durable adapter for `/plan resume` (spec-064 §P2, closes #4952).
-  `ReplanBudgetSnapshot` captures five replan/predicate/lineage counters and is journaled on every
-  DAG pause as an `EffectClass::Idempotent` step keyed to `(graph_id, save_generation)`.  A
-  generation counter on `TaskGraph` ensures successive pause→resume→pause cycles open distinct
-  executions so replays always return the latest snapshot.  `DagScheduler::resume_from_durable`
-  restores the counters instead of zeroing them.  Call sites in `zeph-core/src/agent/plan.rs` are
-  gated on `[durable].orchestration`; when the flag is off behaviour is identical to pre-durable.
-
-- `feat(scheduler)`: P3 durable exactly-once adapter for scheduler job fires (spec-064 §P3,
-  closes #4953).  `SchedulerDurableAdapter` holds a shared `DurableBackendEnum` and
-  `JournalWriterHandle` for the scheduler's lifetime.  `fire_with_durable` opens a per-fire
-  `ExactlyOnceGuarded` execution keyed on a BLAKE3-derived `ExecutionId` from
-  `(job_name, scheduled_slot_ms)`.  On crash between `EffectIntent` and `StepResult` the
-  `OnAmbiguous::Skip` policy applies rather than an unconditional re-fire.  The `catch_up_missed`
-  startup path and `inject_custom_task` both route through `execute_handler`, which dispatches via
-  `fire_with_durable` when an adapter is present.  Gated on `[durable].scheduler`.
-
-- `feat(core)`: P1 durable adapter for the agent tool-loop (spec-064 §P1, closes #4951).
-  `SessionState` gains `durable_ctx: Option<Arc<DurableContext>>` and `durable_turn_replayed: bool`.
-  The new `call_llm_durable` helper in `tier_loop.rs` wraps each LLM turn as an
-  `ExactlyOnceGuarded / CostBearingOrBoundaryIdempotent / OnAmbiguous::Skip` durable step; a
-  `core.durable.turn` tracing span is emitted with the `execution_id` field for distributed traces.
-  When the step is replayed from the journal, `durable_turn_replayed = true` suppresses re-delivery
-  of the assistant text to the channel (spec-064 §15 RuntimeLayer observe-only). When `durable_ctx`
-  is `None` (durable disabled or `agent_turns = false`) the loop runs exactly as before with zero
-  overhead. On `DurableError` the adapter degrades gracefully to non-durable mode with a `WARN` log.
-- `feat(tui)`: `ReverseSearchState` now supports backward navigation — `select_previous()` cycles
-  toward newer matches (with wrap-around) and is bound to `Ctrl+S` in the reverse-search overlay,
-  matching bash/zsh `Ctrl+R`/`Ctrl+S` conventions. (#4691)
-- `feat(experiments)`: added `tolerate_subject_errors: bool` config field to `ExperimentConfig`
-  (default `false`, preserving existing abort-on-failure semantics). When `true`, per-case Phase 1
-  failures are excluded from scoring instead of aborting the run, matching Phase 2 graceful
-  degradation behavior. Failed cases are logged at `WARN` and counted in `error_count`; the report
-  `is_partial` flag is set to `true` so callers can distinguish partial runs from clean ones.
-  `EvalReport::is_partial` documents the partial-anchor comparison caveat. (#4856)
-
-- `feat(durable)`: scaffolded the new Layer-0 `zeph-durable` crate (spec-064) — the foundation of
-  the native durable execution layer. This first slice is type-level only, with no runtime
-  behavior: journal-boundary newtypes (`ExecutionId`/`PromiseId`/`TimerId` as UUIDv7, `StepId`,
-  `JournalSeq`, `IdempotencyKey`, plus the `ExecutionKind` discriminator), the `Journal` trait and
-  its `JournalEntry`/`EntryKind`/`ExecutionStatus` data model, the `EffectClass` side-effect
-  contract, the pure-data `DurableConfig`/`RetentionPolicy` mirroring `[durable]` TOML (all
-  spec-default-backed), and the `DurableError` type. `IdempotencyKey::derive` uses BLAKE3
-  `derive_key` with a domain-separation context and length-delimited (injective) input. The crate
-  is pure infrastructure with no business-layer dependencies (INV-1). The four `durable_*` schema
-  tables (`durable_executions`, `durable_journal`, `durable_promises`, `durable_timers`) were added
-  as numbered migrations `097`–`100` in both `zeph-db/migrations/sqlite/` and `.../postgres/`;
-  `zeph-durable` owns no `.sql` files and no `sqlx::migrate!` (INV-14). (#4944)
-- `feat(durable)`: added the journal payload AEAD boundary. `zeph-durable` now defines the
-  `PayloadCipher` seal/open trait, the `PayloadAad` location binding
-  (`execution_id`/`step_id`/`entry_kind`/`idem_key`) with a deterministic injective
-  `canonical_bytes` encoding, the `EntryKindTag` discriminator (`EntryKind::tag_enum`/`tag` now
-  delegate to a single source of truth), the metadata-only `CipherError` (with a fail-closed
-  `From<CipherError>` for `DurableError`), and the `ensure_payload_within_limit` read-side
-  `max_payload` guard (INV-11, no decode before the size check). `DurableConfig::encryption_gate`
-  enforces INV-8: AEAD may be disabled only for a single-user local backend (startup `WARN`), and
-  is rejected for shared-database or Restate deployments (`DurableError::EncryptionRequired`). The
-  concrete XChaCha20-Poly1305 cipher lives in `zeph-core::durable::XChaCha20Poly1305Cipher` (keeps
-  `zeph-durable` crypto-dependency-free, INV-1): fresh 192-bit CSPRNG nonce per seal (INV-7),
-  `key_id || nonce(24) || ciphertext || tag(16)` blob layout with a one-key rotation window, and
-  zeroized key material. Keyed from the vault `ZEPH_DURABLE_KEY`; see the new "Durable Journal
-  Encryption" security reference page for the key-rotation policy. (#4945)
-- `feat(durable)`: added the durable persistence engine to `zeph-durable`. `LocalBackend` owns a
-  dedicated `durable.db` pool (INV-14, schema applied via `zeph_db::run_migrations`), implements the
-  `Journal` trait (append, full and ranged reads, `finalize`, and a `prune` stub), AEAD-seals
-  payload-bearing entries through the injected `Option<Arc<dyn PayloadCipher>>` with the entry's
-  location bound as associated data, and stamps a keyed-BLAKE3 row HMAC over control entries when a
-  key is configured. The background `JournalWriter` actor decouples writes from the calling path:
-  buffered appends group-commit on a flush interval (dropped with a `WARN` under backpressure),
-  exactly-once appends flush all causally-preceding entries before committing (INV-4) and return
-  their `JournalSeq` over a oneshot bounded by `journal_ack_timeout_ms` (INV-12, FR-DE-11), and the
-  writer resumes from `MAX(seq)` on restart (FR-DE-12). The sealed `ExecutionBackend` trait and the
-  `DurableBackendEnum` enum dispatcher keep the backend surface closed with no `Box<dyn>` on the
-  hot path. Promise, timer, and checkpoint journal entries fail closed
-  (`DurableError::UnsupportedEntryKind`) until the promise/timer layer lands. (#4946)
-- `feat(durable)`: added the durable step primitive and the `&self` `DurableContext` — the execution
-  heart every adapter wraps. `ctx.step()` runs an operation closure and journals its result; on
-  resume it replays the journaled result without re-invoking the closure (INV-10, FR-DE-02), and
-  `ctx.step_recorded()` / `StepOutcome::{Live, Replayed}` expose the live-vs-replayed distinction for
-  double-emit suppression. Step ids are assigned structurally via an `AtomicU32` (INV-2):
-  `parallel()` returns a `ParallelScope` whose children get contiguous, eagerly-assigned ids, so a
-  parallel batch's ids are independent of completion order. Before replaying a result the context
-  compares the journaled step's `IdempotencyKey` (a BLAKE3 structural fingerprint folding the step
-  name, effect, and op fingerprint) against the current descriptor's; a mismatch raises
-  `DurableError::ReplayDivergence`, marks the journal `aborted`, and disables replay so the execution
-  restarts fresh (INV-3, FR-DE-03). `StepDescriptor::exactly_once_guarded` enforces the
-  construction-time ambiguity rule — a destructive, security-relevant, money-moving, or custom
-  guarded step without an explicit `OnAmbiguous` is rejected with
-  `DurableError::AmbiguityPolicyRequired` (FR-DE-09). A guarded step commits its `EffectIntent`
-  (ACKed) before the closure runs and its `StepResult` (ACKed) after (FR-DE-04); a guarded effect
-  that already committed a result is recognized by an idempotency-key point lookup and not re-fired,
-  even on a post-divergence fresh run (INV-13). Every ambiguous-window resolution emits a mandatory
-  structured audit record (FR-DE-10), and a writer timeout degrades the step to non-durable mode
-  rather than blocking (INV-12). The `ReplayCursor` reads the journal in bounded step-range segments
-  (NFR-DE-02). The promise, timer, and retention layers land in follow-up issues. (#4947)
-- `feat(durable)`: completed the `DurableContext` API surface with durable promises, durable timers,
-  and the retention/compaction machinery. `ctx.promise::<T>()` mints an externally-resolved handle
-  carrying a 32-byte CSPRNG resolver token (zeroized on drop); only its domain-separated BLAKE3 hash,
-  bound to `(promise_id, execution_id)`, is persisted, and `DurableHandle::resolve()` authenticates a
-  presented token in constant time before sealing and committing the value (FR-DE-05, INV-9). The
-  resolver token is the sole capability — a `PromiseId` is derivable from the journal and is not a
-  bearer secret — so the LLM, which never sees the token, cannot resolve its own promises.
-  `ctx.await_promise()` parks on a `tokio::sync::Notify` keyed by promise id with a `durable_promises`
-  poll fallback (`promise_poll_interval_secs`), degrading to pure polling above `max_parked_promises`.
-  `ctx.sleep_until()` arms a `durable_timers` row at a deterministic, position-derived `TimerId`;
-  the background `DurableTimerService` fires due timers and wakes parked waiters, and a timer whose
-  instant elapsed during downtime fires immediately on the first poll after restart (FR-DE-06).
-  Promises and timers correlate across a crash-resume by deriving their ids from
-  `(execution_id, step_id)`, so a resumed program re-attaches to the pending row rather than minting
-  an orphan. The `DurableRetentionService` prunes terminal executions past their TTL in batches,
-  yielding between them so the sweep never touches the dispatch hot path (spec NEVER); crossing the
-  soft step cap (90% of `max_steps_per_execution`) folds the committed-idempotent prefix into a
-  single AEAD-sealed `Checkpoint` entry on a background task and deletes the folded rows, while the
-  hard cap (100%) aborts with `DurableError::StepCapExceeded`. A resume replays folded steps from the
-  checkpoint snapshot — preserving each step's idempotency key for the divergence guard — without
-  re-running their operations. (#4948)
-- `feat(durable)`: wired the durable execution layer into all mandatory integration points (spec-064
-  C6). A new `zeph durable` CLI group (`list`/`show`/`inspect`/`prune`/`resume`) connects directly to
-  `durable.db` with no running agent; output is redacted by default (INV-5) and `--reveal` decrypts
-  through the vault-resolved `ZEPH_DURABLE_KEY` (FR-DE-07/FR-DE-08). The `[durable]` config section is
-  now part of the root `Config`, the `--init` wizard generates and stores `ZEPH_DURABLE_KEY` in the
-  age vault (never inline), and an additive, idempotent `--migrate-config` step adds `[durable]`
-  (default-off) to existing configs. A ratatui `DurableView` (command-palette `durable`, `D` key)
-  shows in-flight executions with mandatory status spinners (spec-011), fed by a read-only poll task.
-  The pure-data `DurableConfig`/`RetentionPolicy`/`DurableBackend` moved to `zeph-config` (single
-  source of truth, re-exported by `zeph-durable`); the AEAD enforcement gate `encryption_gate` is now
-  a free function in `zeph-durable`. (#4949)
-
-### Fixed
 
 - `fix(memory)`: `SqliteStore::upsert_agent_session` bound the `turns` count as a bare `u32`,
   which only implements `sqlx::Type<Sqlite>` (PostgreSQL has no unsigned integer types). This
@@ -4620,6 +4501,157 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   added builder `OpenAiProvider::with_completion_tokens_param`. When set, the override bypasses
   the built-in prefix table so fine-tuned or newly-released models that don't follow the
   `o<digit>` / `gpt-5` naming convention no longer produce 400 API errors. (#4890)
+
+- fix(index): resolve `[index] embedding_provider` once in the binary runner and pass the resolved
+  `AnyProvider` into both the code indexer and the code retriever, eliminating the previous
+  double-construction where `build_provider_from_entry` was called twice for the same provider name
+  on every startup. Adds `embedding_provider: String` (record-keeping, not resolution) to
+  `IndexerConfig` and `RetrievalConfig` in `zeph-index`. Extracts `resolve_index_embed_provider`
+  helper in `bootstrap/provider.rs` as the canonical single resolution point. (#4885)
+- `refactor(llm)`: `parse_gemini_error` in `zeph-llm` now delegates the base `ApiError` and
+  `ContextLengthExceeded` construction to `crate::http::map_error_response`, consistent with all
+  other backends (claude, openai, gonka, cocoon). Gemini-specific `RESOURCE_EXHAUSTED → RateLimited`
+  handling is preserved. (#4868)
+- refactor(memory): remove `ScoredCandidate` single-field wrapper in `tiered_retrieval.rs` ([#4867](https://github.com/bug-ops/zeph/issues/4867))
+- fix(memory): replace `.entered()` span guard with removal in `tiered_retrieval.rs` async fn ([#4866](https://github.com/bug-ops/zeph/issues/4866))
+- `zeph-subagent`: removed public `transcript::utc_now_pub()` — use `transcript::utc_now()` (now `pub(crate)`) from within the crate instead. Closes #4886.
+- `zeph-subagent`: `SubAgentManager::resume` now emits `subagent.manager.resume` tracing span. Closes #4883.
+
+- `docs(config)`: `CandleConfig` in `zeph-config` now has a `///` doc comment describing its
+  purpose (`[llm.candle]` TOML section) and its relationship to `CandleInlineConfig`. (#4869)
+
+- `fix(core)`: `ShadowEventStore`'s three query methods (`record`, `get_trajectory`,
+  `get_tool_history`) used raw `sqlx::query`/`sqlx::query_as` with literal `?` placeholders instead
+  of `zeph_db::query*(sql!(...))`, so under a `postgres`-feature build the placeholders were never
+  rewritten to `$1, $2, ...` and every call to the `ShadowSentinel` safety-audit-trail persistence
+  layer would fail at runtime (#5494).
+- `fix(core,security)`: `ShadowSentinel`'s cross-session pattern detection was schema/comment-only —
+  `ShadowEventStore::get_tool_history` had zero callers, so probe context was built exclusively from
+  the current session's own trajectory (#5449). `check_tool_call` now merges cross-session tool
+  history (same `tool_id`, other sessions) into the probe context, reserving half of
+  `max_context_events` for each source so neither can fully starve the other. Closing this out
+  required wiring the previously-dead-code writer as well: `record_tool_event` had no production
+  caller either, so even after wiring the reader, no `tool_call` events existed to read back. Added
+  `ProbeGate::record(...)` (`zeph-tools`), called from `ShadowProbeExecutor` on `Allow`/`Deny`
+  outcomes (never `Skip`, to avoid recording low-risk/disabled calls) and skipped when the result is
+  `Err(ToolError::ConfirmationRequired { .. })` (avoids double-recording confirmation-gated calls,
+  which would otherwise record once as a spurious failure and again after user confirmation).
+  `get_tool_history` also gained a SQL-level `exclude_session_id` filter so the current session's
+  own rows cannot crowd out cross-session rows within the query's `LIMIT`.
+
+- `docs(llm)`: fixed two unqualified `` [`CandleClassifier`] `` intra-doc links in
+  `crates/zeph-llm/src/classifier/ner.rs` that broke `RUSTDOCFLAGS="--deny
+  rustdoc::broken_intra_doc_links" cargo doc` — both now use the qualified
+  `` [`super::candle::CandleClassifier`] `` form already used elsewhere in the same file (#5458).
+- `test(llm)`: the ignored `candle_pii` integration test `real_model_detects_email` asserted that
+  `iiiorg/piiranha-v1-detect-personal-information` flags `"Contact John Smith at
+  john@example.com for details."` as PII, which failed even after the earlier `classifier.bias`
+  fix (#5457). A numerical diff against the real `torch`+`transformers` reference
+  implementation showed the candle port's per-token logits match the reference **exactly** (4
+  decimal places) — there is no bug in the candle-transformers DeBERTa-v2 port or in this
+  crate's loading code. The checkpoint itself is simply weak at free-text given-name/surname/
+  email recognition in casual sentences; it reliably flags structured PII (SSNs, street
+  addresses, phone numbers) with >0.99 confidence, verified against the same reference
+  implementation. Replaced the test with `real_model_detects_ssn`, which exercises a
+  verified-detected SSN sentence instead, and added a new characterization test
+  (`free_text_names_yield_no_confident_span`) on the original email/name sentence so the
+  known weak-spot behavior is pinned and any future drift — regression or improvement — in
+  `candle-transformers`, the cached checkpoint, or the threshold gets caught by CI instead of
+  passing silently. The investigation trail (safetensors key audit, reference-implementation
+  numeric diff) is preserved in the `PiiNerHead` doc comment in `candle_pii.rs`. Closes #5457.
+
+### Testing
+
+- `test(skills)`: added `rl_head.rs` coverage for a case where cosine order and RL-blended
+  order disagree (previously only `len()`/`update_count` were asserted for the post-warmup
+  path, never actual sort order) and a regression test asserting `RerankOutcome`'s
+  `blended`/`update_count` match the head's own counter with no drift from a second lock
+  acquisition (#5845, #5846).
+- `test(core)`: added `zeph-core` coverage for `match_and_rank_skills`'s previously-untested
+  `rl_head`-enabled branch — the RL-rerank success path plus its three skip/error paths (query
+  embed timeout, query/head embed-dim mismatch, and per-candidate skill-embedding dim
+  mismatch) — via a new `with_rl_head()`-wired `Agent` test harness (#5845).
+
+### Docs
+
+- `docs(sanitizer)`: updated `crates/zeph-sanitizer/src/shadow_memory.rs` doc comment to reflect
+  that `ShadowMemory` is actively wired into the agent tool executor via `tier_loop.rs`, rather
+  than the stale claim that it was "intended for future integration". Added cross-reference to
+  the actual call site and security event emission (#5440).
+- `docs(spec-040)`: expanded `specs/040-sanitizer/spec.md` layer table to document 5 previously
+  undocumented defense layers: `IpiFilter` (implemented, unwired), `NliSanitizer` (wired via builder),
+  `SecretMaskRegistry` (wired at LLM boundary), `ShadowMemory` (wired in tool executor),
+  and `Pipeline`/`Stage` (internal utility framework). Updated layer numbering and added wiring
+  status for each (#5440).
+
+### Performance
+
+- `perf(session)`: `ReplayEngine::replay` (`crates/zeph-session/src/replay.rs`) no longer
+  materializes a session's entire `events.jsonl` into one `Vec` before folding it — it now reads
+  via a new `SessionEventLog::read_chunked` API (`crates/zeph-session/src/log.rs`) that yields
+  parsed envelopes in bounded chunks of ≤ 100 at a time (spec-068 §6.2 step 3), folding each
+  chunk incrementally through a shared `fold_step` helper. For a session near NFR-P3's
+  100,000-event bound, this bounds peak raw-envelope memory instead of holding the full parsed
+  history resident before folding starts. `SessionEventLog::read_all` and the `Vec`-based
+  `ReplayEngine::fold` entry point are unchanged and still used by `ForkEngine::fork` and
+  `llm_condenser.rs`, which genuinely need the whole-file `Vec` (#5445).
+- `docs(session)`: revised NFR-P1 (event log append p99) and NFR-P7 (idle-actor memory) targets
+  in `specs/068-session-persistence/nfr.md` to reflect measured reality: NFR-P1's p99 target
+  moved from `< 5 ms` to `< 15 ms` (disk write-barrier/fsync latency floor confirmed via a
+  standalone harness reproducing `SessionEventLog::append`'s write+fsync pattern — batching was
+  considered and rejected as it would widen the crash-loss window NFR-R2 bounds); NFR-P7 now
+  documents a verified ~65-93 KiB per-actor housing floor plus an explicit caveat that `Agent`'s
+  own owned conversation-history state is a separate, session-length-dependent quantity not
+  covered by the "idle session" framing (follow-up bench tracked in #5840). No source change was
+  needed for either finding (#5445).
+- `test(session)`: added a real-`Agent`-based NFR-P7 memory bench
+  (`crates/zeph-core/src/serve.rs::tests::nfr_p7_real_agent_idle_session_memory_floor`, `#[ignore]`d,
+  run via `cargo nextest run -p zeph-core -E 'test(nfr_p7)' --run-ignored ignored-only`) closing
+  the measurement gap the #5445 standalone harness left open — that harness could not construct a
+  real `Agent<LoopbackChannel>` (private to `zeph-core`), so it measured `SessionActor::spawn`'s
+  housing cost only. The new test spawns real `SessionActor`s wrapping real `Agent<LoopbackChannel>`
+  instances (idle, mock-provider-backed, one shared `Arc<RwLock<SkillRegistry>>` across all actors
+  via `Agent::new_with_registry_arc`, mirroring `src/serve/agent_factory.rs`'s production sharing
+  pattern rather than a private registry per actor) via the production `SessionActor::spawn` path
+  and samples RSS via `sysinfo`, matching `system_metrics::spawn_system_metrics_task`'s existing
+  production RSS-sampling technique. Measured combined floor (housing + `Agent`'s owned state):
+  ~875-905 KiB — under the 1 MiB budget, but with far less headroom than the ~65-93 KiB
+  housing-only figure implied. This composite is a distinct, larger quantity than NFR-P7's own
+  housing-only budget; `specs/068-session-persistence/nfr.md` gained a new rationale paragraph
+  making that scope distinction explicit rather than silently redefining NFR-P7 (#5840).
+
+- `perf(llm)`: added profiling-gated tracing spans
+  (`#[cfg_attr(feature = "profiling", tracing::instrument(name = "llm.router.<fn>", skip_all))]`)
+  to the four `pub(crate) async` methods in `zeph-llm/src/router/select.rs` that perform embedding
+  I/O or an LLM-judge call — `bandit_features`, `bandit_select_provider`, `evaluate_quality`,
+  `embed_cached` — so they surface in local Chrome JSON traces / Perfetto for latency analysis.
+  The split in #4920 left them uninstrumented. (#4926)
+- `perf(core)`: added a `#[tracing::instrument(name = "core.persist.rpe_should_skip", skip_all,
+  level = "debug")]` span to `rpe_should_skip` in `zeph-core/src/agent/persistence/extract.rs`,
+  which performs an embedding call with a timeout on the persistence path. The sibling
+  `enqueue_graph_extraction_task` and `load_history` were already instrumented in #4921. (#4929)
+
+### Research
+
+- `docs(cocoon)`: add stable non-positional threat IDs (`T-BIN-SUBST`, `T-COMP-ATTEST`,
+  `T-LOCAL-INTERCEPT`, `T-QDRANT-EXFIL`, `T-BALANCE-SIDE`, `T-CRED-EXFIL`, `T-CRASH-LOOP`,
+  `T-STALE-ATTEST`) to `threat-model.md` §4 table; cross-reference SG-7 (§2) and Challenge 1
+  (§3) to `T-COMP-ATTEST`; correct #4650's positional "row T-4" reference to stable ID (#4650)
+- `docs(cocoon)`: add compound attestation monitoring checklist §15.5 to `spec.md` — defines
+  signals to watch in Cocoon releases (attestation endpoints, release-note keywords, capability
+  fields), trigger→action flow for filing P2 implementation issue, and cross-ref to CI
+  dependency-watch loop; #4650 is the open tracking anchor (#4650)
+- `docs(cocoon)`: qualify E2E Option B for containerised deployments in §16.2 — "no security
+  over RA-TLS" claim qualified to bare-metal/loopback topology; in Docker Compose / Kubernetes
+  topologies where the Zeph→sidecar hop is a real network segment, Option B provides additional
+  protection; Option A remains preferred; add containerised topology open question to §17 (#3677)
+- `docs(cocoon)`: add TaskSupervisor AC requirement and cross-reference in §16.1 — managed
+  sidecar MUST use `TaskSupervisor::spawn_restartable` with circuit breaker (spec-039); designate
+  `cocoon doctor --start` as the managed entry point; add cross-ref: #4650 resolution weakens
+  trust-boundary objection to managed mode (#3676)
+- `docs(cocoon)`: add GA/experimental open questions for E2E encryption maturity and Option A
+  support to §17; annotate §16.2 perf claims as unmeasured; note reserved config stanzas are
+  intentionally commented until supervisor-backed implementations land (#3677)
 
 ### Refactored
 
@@ -4721,126 +4753,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and module declarations. The largest submodule is now 816 lines. Public API is unchanged:
   `McpManager`, `McpTransport`, `ServerConnectOutcome`, and `ServerEntry` are still re-exported
   from the crate root, and all inherent methods keep their original visibility. (#4919)
-
-### Performance
-
-- `perf(llm)`: added profiling-gated tracing spans
-  (`#[cfg_attr(feature = "profiling", tracing::instrument(name = "llm.router.<fn>", skip_all))]`)
-  to the four `pub(crate) async` methods in `zeph-llm/src/router/select.rs` that perform embedding
-  I/O or an LLM-judge call — `bandit_features`, `bandit_select_provider`, `evaluate_quality`,
-  `embed_cached` — so they surface in local Chrome JSON traces / Perfetto for latency analysis.
-  The split in #4920 left them uninstrumented. (#4926)
-- `perf(core)`: added a `#[tracing::instrument(name = "core.persist.rpe_should_skip", skip_all,
-  level = "debug")]` span to `rpe_should_skip` in `zeph-core/src/agent/persistence/extract.rs`,
-  which performs an embedding call with a timeout on the persistence path. The sibling
-  `enqueue_graph_extraction_task` and `load_history` were already instrumented in #4921. (#4929)
-
-### Changed
-
-- `refactor(config)`: `SttConfig.provider` changed from `String` to `ProviderName` — enables
-  type-safe provider cross-references and removes the `default_stt_provider()` helper function.
-  `ProviderName::default()` (empty sentinel) serves the same auto-detect semantics. (#4899)
-- `refactor(config)`: `CandleConfig.source` and `.device` (and `CandleInlineConfig` equivalents)
-  changed from `String` to new `CandleSource` and `CandleDevice` enums respectively. Invalid
-  values that previously silently fell through to CPU/HuggingFace are now rejected at
-  deserialization. `select_device` in `zeph-core` now takes `CandleDevice` instead of `&str`. (#4900)
-
-- `perf(context)`: add `#[tracing::instrument]` to `embed_prepass_dyn` and `render_compressed`
-  in `zeph-context/fidelity.rs` — both async hot-path functions were invisible to local Chrome
-  JSON traces and Jaeger; now emit `context.fidelity.embed_prepass_dyn` and
-  `context.fidelity.render_compressed` spans. (#4872)
-- `refactor(llm)`: add `check_response` and `read_response_body` helpers to
-  `zeph-llm/src/http.rs`; replace duplicated `status + text().await + map_error_response`
-  pattern at 8 call sites across `openai/mod.rs` and `claude/mod.rs`. (#4877)
-- `refactor(llm)`: `OpenAiProvider` now resolves context window via three-step lookup: explicit
-  `context_window` field in `OpenAiConfig` → model-prefix table → `128_000` fallback for unknown
-  models. Eliminates silent `None` for unrecognised model names. (#4876)
-- `refactor(llm)`: `OpenAiProvider::generation_params()` private helper extracted; removes 4
-  duplicate `generation_overrides` tuple expansions in `send_request`, `send_stream_request`,
-  `debug_request_json`, and `chat_with_tools`. (#4873)
-- `build(acp)`: bump `agent-client-protocol` 0.12.1 → 0.14.0 and `agent-client-protocol-schema` = 0.13.6; remove dead `agent-client-protocol-tokio` dependency
-- `feat(acp)`: `unstable-session-usage` feature now maps to upstream `unstable_end_turn_token_usage` gate (renamed, not stabilized in 0.14.0)
-- `feat(acp)`: `unstable-elicitation` feature now also enables `agent-client-protocol/unstable_elicitation` core passthrough for `elicitation/create` handler wiring
-- `refactor(acp)`: provider ext-method types renamed to singular: `SetProvidersRequest/Response` → `SetProviderRequest/Response`, `DisableProvidersRequest/Response` → `DisableProviderRequest/Response`
-- `refactor(acp)`: logout, session/close, session/delete, session/resume, and additional-directories handlers are now unconditional (feature flags retained as no-op tombstones for workspace forwarding compatibility)
-- `refactor(zeph-agent-feedback)`: `JUDGE_RATE_LIMIT` and `JUDGE_RATE_WINDOW` constants removed;
-  rate-limit parameters are now configurable via `LearningConfig` fields `judge_rate_limit`
-  (default: `5`) and `judge_rate_window_secs` (default: `60`); existing TOML configs without
-  these fields continue to use the same defaults. `JudgeDetector::new()` now accepts
-  `rate_limit: usize` and `rate_window: Duration` arguments. (#4892)
-- `refactor(zeph-scheduler)`: introduced `CronExpr` validated newtype wrapping a `String`; raw
-  `String` fields for cron expressions replaced with `Option<CronExpr>`; hydration from SQLite
-  validates stored expressions and emits a `tracing::warn!` for invalid rows instead of
-  propagating hard errors. (#4884)
-
-### Removed
-
-- `refactor(acp)`: `session/set_model` dedicated RPC method removed (deleted upstream in 0.14.0); model switching remains fully available via `session/set_config_option` (config_id="model") and the `$/model` slash command
-- `refactor(acp)`: inbound/outbound message-id echo removed (`PromptRequest.message_id` and `PromptResponse.user_message_id` were removed upstream in 0.14.0)
-
-### Fixed
-
-- fix(index): resolve `[index] embedding_provider` once in the binary runner and pass the resolved
-  `AnyProvider` into both the code indexer and the code retriever, eliminating the previous
-  double-construction where `build_provider_from_entry` was called twice for the same provider name
-  on every startup. Adds `embedding_provider: String` (record-keeping, not resolution) to
-  `IndexerConfig` and `RetrievalConfig` in `zeph-index`. Extracts `resolve_index_embed_provider`
-  helper in `bootstrap/provider.rs` as the canonical single resolution point. (#4885)
-- `refactor(llm)`: `parse_gemini_error` in `zeph-llm` now delegates the base `ApiError` and
-  `ContextLengthExceeded` construction to `crate::http::map_error_response`, consistent with all
-  other backends (claude, openai, gonka, cocoon). Gemini-specific `RESOURCE_EXHAUSTED → RateLimited`
-  handling is preserved. (#4868)
-- refactor(memory): remove `ScoredCandidate` single-field wrapper in `tiered_retrieval.rs` ([#4867](https://github.com/bug-ops/zeph/issues/4867))
-- fix(memory): replace `.entered()` span guard with removal in `tiered_retrieval.rs` async fn ([#4866](https://github.com/bug-ops/zeph/issues/4866))
-- `zeph-subagent`: removed public `transcript::utc_now_pub()` — use `transcript::utc_now()` (now `pub(crate)`) from within the crate instead. Closes #4886.
-- `zeph-subagent`: `SubAgentManager::resume` now emits `subagent.manager.resume` tracing span. Closes #4883.
-
-### Fixed
-- `docs(config)`: `CandleConfig` in `zeph-config` now has a `///` doc comment describing its
-  purpose (`[llm.candle]` TOML section) and its relationship to `CandleInlineConfig`. (#4869)
-
-### Fixed
-- `fix(core)`: `ShadowEventStore`'s three query methods (`record`, `get_trajectory`,
-  `get_tool_history`) used raw `sqlx::query`/`sqlx::query_as` with literal `?` placeholders instead
-  of `zeph_db::query*(sql!(...))`, so under a `postgres`-feature build the placeholders were never
-  rewritten to `$1, $2, ...` and every call to the `ShadowSentinel` safety-audit-trail persistence
-  layer would fail at runtime (#5494).
-- `fix(core,security)`: `ShadowSentinel`'s cross-session pattern detection was schema/comment-only —
-  `ShadowEventStore::get_tool_history` had zero callers, so probe context was built exclusively from
-  the current session's own trajectory (#5449). `check_tool_call` now merges cross-session tool
-  history (same `tool_id`, other sessions) into the probe context, reserving half of
-  `max_context_events` for each source so neither can fully starve the other. Closing this out
-  required wiring the previously-dead-code writer as well: `record_tool_event` had no production
-  caller either, so even after wiring the reader, no `tool_call` events existed to read back. Added
-  `ProbeGate::record(...)` (`zeph-tools`), called from `ShadowProbeExecutor` on `Allow`/`Deny`
-  outcomes (never `Skip`, to avoid recording low-risk/disabled calls) and skipped when the result is
-  `Err(ToolError::ConfirmationRequired { .. })` (avoids double-recording confirmation-gated calls,
-  which would otherwise record once as a spurious failure and again after user confirmation).
-  `get_tool_history` also gained a SQL-level `exclude_session_id` filter so the current session's
-  own rows cannot crowd out cross-session rows within the query's `LIMIT`.
-
-### Fixed
-- `docs(llm)`: fixed two unqualified `` [`CandleClassifier`] `` intra-doc links in
-  `crates/zeph-llm/src/classifier/ner.rs` that broke `RUSTDOCFLAGS="--deny
-  rustdoc::broken_intra_doc_links" cargo doc` — both now use the qualified
-  `` [`super::candle::CandleClassifier`] `` form already used elsewhere in the same file (#5458).
-- `test(llm)`: the ignored `candle_pii` integration test `real_model_detects_email` asserted that
-  `iiiorg/piiranha-v1-detect-personal-information` flags `"Contact John Smith at
-  john@example.com for details."` as PII, which failed even after the earlier `classifier.bias`
-  fix (#5457). A numerical diff against the real `torch`+`transformers` reference
-  implementation showed the candle port's per-token logits match the reference **exactly** (4
-  decimal places) — there is no bug in the candle-transformers DeBERTa-v2 port or in this
-  crate's loading code. The checkpoint itself is simply weak at free-text given-name/surname/
-  email recognition in casual sentences; it reliably flags structured PII (SSNs, street
-  addresses, phone numbers) with >0.99 confidence, verified against the same reference
-  implementation. Replaced the test with `real_model_detects_ssn`, which exercises a
-  verified-detected SSN sentence instead, and added a new characterization test
-  (`free_text_names_yield_no_confident_span`) on the original email/name sentence so the
-  known weak-spot behavior is pinned and any future drift — regression or improvement — in
-  `candle-transformers`, the cached checkpoint, or the threshold gets caught by CI instead of
-  passing silently. The investigation trail (safetensors key audit, reference-implementation
-  numeric diff) is preserved in the `PiiNerHead` doc comment in `candle_pii.rs`. Closes #5457.
-
 
 ## [0.21.4] - 2026-06-05
 
@@ -12185,7 +12097,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.21.4...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/bug-ops/zeph/compare/v0.21.4...v0.22.0
 [0.21.4]: https://github.com/bug-ops/zeph/compare/v0.21.3...v0.21.4
 [0.21.3]: https://github.com/bug-ops/zeph/compare/v0.21.2...v0.21.3
 [0.21.2]: https://github.com/bug-ops/zeph/compare/v0.21.1...v0.21.2

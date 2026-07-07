@@ -5,7 +5,7 @@ resolver = "3"
 [workspace.package]
 edition = "2024"
 rust-version = "1.96"
-version = "0.21.4"
+version = "0.22.0"
 authors = ["bug-ops"]
 license = "MIT"
 repository = "https://github.com/bug-ops/zeph"
@@ -151,38 +151,38 @@ url = "2.5.8"
 uuid = "1.23.4"
 walkdir = "2.5"
 wiremock = "0.6.5"
-zeph-a2a = { path = "crates/zeph-a2a", version = "0.21.4" }
-zeph-acp = { path = "crates/zeph-acp", default-features = false, version = "0.21.4" }
-zeph-agent-context = { path = "crates/zeph-agent-context", default-features = false, version = "0.21.4" }
-zeph-agent-feedback = { path = "crates/zeph-agent-feedback", version = "0.21.4" }
-zeph-agent-persistence = { path = "crates/zeph-agent-persistence", default-features = false, version = "0.21.4" }
-zeph-agent-tools = { path = "crates/zeph-agent-tools", default-features = false, version = "0.21.4" }
-zeph-bench = { path = "crates/zeph-bench", default-features = false, version = "0.21.4" }
-zeph-channels = { path = "crates/zeph-channels", default-features = false, version = "0.21.4" }
-zeph-commands = { path = "crates/zeph-commands", version = "0.21.4" }
-zeph-common = { path = "crates/zeph-common", version = "0.21.4" }
-zeph-config = { path = "crates/zeph-config", version = "0.21.4" }
-zeph-context = { path = "crates/zeph-context", version = "0.21.4" }
-zeph-core = { path = "crates/zeph-core", default-features = false, version = "0.21.4" }
-zeph-db = { path = "crates/zeph-db", default-features = false, version = "0.21.4" }
-zeph-durable = { path = "crates/zeph-durable", default-features = false, version = "0.21.4" }
-zeph-experiments = { path = "crates/zeph-experiments", default-features = false, version = "0.21.4" }
-zeph-gateway = { path = "crates/zeph-gateway", version = "0.21.4" }
-zeph-index = { path = "crates/zeph-index", default-features = false, version = "0.21.4" }
-zeph-llm = { path = "crates/zeph-llm", version = "0.21.4" }
-zeph-mcp = { path = "crates/zeph-mcp", default-features = false, version = "0.21.4" }
-zeph-memory = { path = "crates/zeph-memory", default-features = false, version = "0.21.4" }
-zeph-orchestration = { path = "crates/zeph-orchestration", default-features = false, version = "0.21.4" }
-zeph-plugins = { path = "crates/zeph-plugins", default-features = false, version = "0.21.4" }
-zeph-sanitizer = { path = "crates/zeph-sanitizer", default-features = false, version = "0.21.4" }
-zeph-scheduler = { path = "crates/zeph-scheduler", default-features = false, version = "0.21.4" }
-zeph-session = { path = "crates/zeph-session", default-features = false, version = "0.21.4" }
-zeph-skills = { path = "crates/zeph-skills", default-features = false, version = "0.21.4" }
-zeph-subagent = { path = "crates/zeph-subagent", default-features = false, version = "0.21.4" }
-zeph-tools = { path = "crates/zeph-tools", default-features = false, version = "0.21.4" }
-zeph-tui = { path = "crates/zeph-tui", default-features = false, version = "0.21.4" }
-zeph-worktree = { path = "crates/zeph-worktree", version = "0.21.4" }
-zeph-vault = { path = "crates/zeph-vault", version = "0.21.4" }
+zeph-a2a = { path = "crates/zeph-a2a", version = "0.22.0" }
+zeph-acp = { path = "crates/zeph-acp", default-features = false, version = "0.22.0" }
+zeph-agent-context = { path = "crates/zeph-agent-context", default-features = false, version = "0.22.0" }
+zeph-agent-feedback = { path = "crates/zeph-agent-feedback", version = "0.22.0" }
+zeph-agent-persistence = { path = "crates/zeph-agent-persistence", default-features = false, version = "0.22.0" }
+zeph-agent-tools = { path = "crates/zeph-agent-tools", default-features = false, version = "0.22.0" }
+zeph-bench = { path = "crates/zeph-bench", default-features = false, version = "0.22.0" }
+zeph-channels = { path = "crates/zeph-channels", default-features = false, version = "0.22.0" }
+zeph-commands = { path = "crates/zeph-commands", version = "0.22.0" }
+zeph-common = { path = "crates/zeph-common", version = "0.22.0" }
+zeph-config = { path = "crates/zeph-config", version = "0.22.0" }
+zeph-context = { path = "crates/zeph-context", version = "0.22.0" }
+zeph-core = { path = "crates/zeph-core", default-features = false, version = "0.22.0" }
+zeph-db = { path = "crates/zeph-db", default-features = false, version = "0.22.0" }
+zeph-durable = { path = "crates/zeph-durable", default-features = false, version = "0.22.0" }
+zeph-experiments = { path = "crates/zeph-experiments", default-features = false, version = "0.22.0" }
+zeph-gateway = { path = "crates/zeph-gateway", version = "0.22.0" }
+zeph-index = { path = "crates/zeph-index", default-features = false, version = "0.22.0" }
+zeph-llm = { path = "crates/zeph-llm", version = "0.22.0" }
+zeph-mcp = { path = "crates/zeph-mcp", default-features = false, version = "0.22.0" }
+zeph-memory = { path = "crates/zeph-memory", default-features = false, version = "0.22.0" }
+zeph-orchestration = { path = "crates/zeph-orchestration", default-features = false, version = "0.22.0" }
+zeph-plugins = { path = "crates/zeph-plugins", default-features = false, version = "0.22.0" }
+zeph-sanitizer = { path = "crates/zeph-sanitizer", default-features = false, version = "0.22.0" }
+zeph-scheduler = { path = "crates/zeph-scheduler", default-features = false, version = "0.22.0" }
+zeph-session = { path = "crates/zeph-session", default-features = false, version = "0.22.0" }
+zeph-skills = { path = "crates/zeph-skills", default-features = false, version = "0.22.0" }
+zeph-subagent = { path = "crates/zeph-subagent", default-features = false, version = "0.22.0" }
+zeph-tools = { path = "crates/zeph-tools", default-features = false, version = "0.22.0" }
+zeph-tui = { path = "crates/zeph-tui", default-features = false, version = "0.22.0" }
+zeph-worktree = { path = "crates/zeph-worktree", version = "0.22.0" }
+zeph-vault = { path = "crates/zeph-vault", version = "0.22.0" }
 zeroize = { version = "1.9.0", default-features = false }
 
 [workspace.lints.rust]
