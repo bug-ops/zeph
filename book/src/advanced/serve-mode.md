@@ -75,17 +75,44 @@ on a network you fully trust.
 
 ## `--acp`
 
-The `--acp` flag does **not** run the ACP protocol transport in the same process as
-`zeph serve-sessions` — combining them would mean two independent database connection pools
-writing the same session-store file concurrently. Run ACP separately instead:
+The `--acp` flag runs the ACP (Agent Client Protocol) transport **in-process** with
+`zeph serve-sessions`. Both the `/sessions*` HTTP API and the ACP-over-HTTP transport bind
+to separate listeners and share a single `SemanticMemory`/SQLite pool and `TaskSupervisor`,
+avoiding concurrent writes to the same database file.
+
+```bash
+# Combined mode (recommended for IDE integration)
+zeph serve-sessions --acp
+```
+
+This requires the `acp-http` feature (bundled in the `ide` feature bundle). Without it,
+`--acp` produces a clear error naming the feature to rebuild with.
+
+### Combined Mode Specifics
+
+- **Listeners**: `/sessions*` routes bind to `[serve] http_addr`; ACP-over-HTTP binds to
+  `[acp] http_bind` (a second, independent address/port).
+- **Shared state**: one `SemanticMemory`/SQLite pool, one `TaskSupervisor`, one durable
+  event log directory (`[session] data_dir`). Sessions created via either listener are
+  visible and resumable from the other.
+- **Authentication**: if `[serve] require_auth = true`, you must also set `[acp]
+  auth_token` (resolved from the vault). A non-loopback `[acp] http_bind` with an unset
+  auth token is rejected at startup to prevent accidentally exposing the shared `acp_sessions`
+  table unauthenticated.
+- **Lifecycle**: if either listener crashes, the other is immediately cancelled and the
+  process exits. This avoids silently serving with a broken listener in the background.
+
+Alternatively, run them in separate processes (for debugging, or if you prefer separate
+resource pools):
 
 ```bash
 zeph serve-sessions &
-zeph --acp        # or --acp-http, in a second process
+zeph --acp-http  # in a second process, over HTTP transport
 ```
 
 Both processes share the same durable event logs on disk (via `[session] data_dir`), so sessions
-created in one are visible and resumable from the other.
+created in one are visible and resumable from the other. However, this uses two independent
+database connection pools, so scale carefully.
 
 ## Configuration
 

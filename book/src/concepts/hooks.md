@@ -27,6 +27,18 @@ args = ["add", "$ZEPH_TOOL_NAME"]
 fail_closed = false                  # If true, hook failure aborts the tool chain (default: false)
 ```
 
+**Conditional hooks** — optionally fire only when a condition is met:
+
+```toml
+[[hooks.post_tool_use]]
+tools = "*"                          # Match all tools
+if = "tool:shell"                    # Fire only when ZEPH_TOOL_NAME contains "shell"
+command = "echo"
+args = ["Shell tool executed: $ZEPH_TOOL_NAME"]
+```
+
+The `if` field supports the `tool:<token>` condition, which fires only when the tool name contains the given substring. Unknown condition types and malformed conditions silently skip the hook. A startup warning is emitted if `tool:` filters are placed on events that have no tool context (e.g., `cwd_changed`).
+
 Environment variables available to hook processes:
 
 | Variable | Available in | Description |
@@ -34,6 +46,8 @@ Environment variables available to hook processes:
 | `ZEPH_TOOL_NAME` | pre + post | Tool name (e.g., `shell`, `web_scrape`) |
 | `ZEPH_TOOL_ARGS_JSON` | pre + post | Tool arguments as JSON (truncated to 64 KiB via UTF-8 boundary) |
 | `ZEPH_TOOL_DURATION_MS` | post only | Time taken to execute the tool (milliseconds) |
+| `ZEPH_AGENT_TYPE` | all events | `main` for the interactive agent, `subagent` for spawned agents |
+| `ZEPH_AGENT_ID` | all events | Conversation ID (main agent) or task ID (subagents), when available |
 | `ZEPH_SESSION_ID` | pre + post (main agent only) | Session ID; omitted in subagent hooks |
 
 **Hook firing order:**

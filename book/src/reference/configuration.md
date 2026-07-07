@@ -676,12 +676,22 @@ rate_limit = 60
 
 [acp]
 enabled = false                    # Auto-start ACP server on plain `zeph` startup using the configured transport (default: false)
+agent_name = "zeph"                # Agent name advertised to IDE clients (default: "zeph")
+transport = "stdio"                # Transport mode: "stdio" (default), "http", or "both" (default: "stdio")
+http_bind = "127.0.0.1:9800"       # Bind address for HTTP transport; used with transport="http" or "both" (default: "127.0.0.1:9800")
 max_sessions = 4                   # Max concurrent ACP sessions; LRU eviction when exceeded (default: 4)
 session_idle_timeout_secs = 1800   # Idle session reaper timeout in seconds (default: 1800)
 broadcast_capacity = 256           # Skill/config reload broadcast backlog shared by ACP sessions (default: 256)
-# permission_file = "~/.config/zeph/acp-permissions.toml"  # Path to persisted permission decisions (default: ~/.config/zeph/acp-permissions.toml)
-# auth_bearer_token = ""           # Bearer token for ACP HTTP/WS auth (env: ZEPH_ACP_AUTH_TOKEN, CLI: --acp-auth-token); omit for open mode (local use only)
-discovery_enabled = true           # Expose GET /.well-known/acp.json manifest endpoint (env: ZEPH_ACP_DISCOVERY_ENABLED, default: true)
+# permission_file = "~/.config/zeph/acp-permissions.toml"  # Path to persisted permission decisions
+# auth_bearer_token = ""           # Bearer token for ACP HTTP/WS auth (env: ZEPH_ACP_AUTH_TOKEN); omit for open mode (local use only)
+discovery_enabled = true           # Expose GET /.well-known/acp.json manifest endpoint (default: true)
+available_models = []              # Models advertised to IDE for switching: ["claude:claude-sonnet-4-5", "ollama:llama3"] (default: [])
+additional_directories = []        # Extra workspace directories ACP clients may reference (default: [])
+auth_methods = ["agent"]           # Auth methods advertised in initialize (currently only "agent" supported) (default: ["agent"])
+message_ids_enabled = true         # Echo PromptRequest.message_id onto responses (requires unstable-message-id feature) (default: true)
+
+[acp.model_config]
+default_temperature_preset = "balanced"  # Default sampling-temperature: "precise" (0.2), "balanced" (0.7), or "creative" (1.0) (default: "balanced")
 
 [acp.lsp]
 enabled = true                     # Enable LSP extension when IDE advertises meta["lsp"] (default: true)

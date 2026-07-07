@@ -43,6 +43,8 @@ The vector tables are created automatically via migration `011_vector_store.sql`
    ```toml
    [memory]
    vector_backend = "qdrant"  # default, can be omitted
+   qdrant_url = "http://localhost:6334"  # Qdrant server address (default)
+   qdrant_timeout_secs = 10  # gRPC call timeout in seconds (default: 10)
 
    [memory.semantic]
    enabled = true
@@ -50,6 +52,11 @@ The vector tables are created automatically via migration `011_vector_store.sql`
    ```
 
 3. **Automatic setup:** Qdrant collection (`zeph_conversations`) is created automatically on first use with correct vector dimensions (1024 for `qwen3-embedding`) and Cosine distance metric. No manual initialization required.
+
+### Connection Tuning
+
+- **`qdrant_url`**: address of the Qdrant server (default: `http://localhost:6334`). For remote deployments, use the server's network address.
+- **`qdrant_timeout_secs`**: per-call gRPC timeout in seconds. Increase this if Qdrant is overloaded or your network is slow; decrease it for faster failure detection. Default is 10 seconds, matching the hardcoded behavior in earlier versions.
 
 ## How It Works
 

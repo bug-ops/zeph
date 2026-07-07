@@ -587,13 +587,29 @@ Only the changed option is included in the notification, not the full option set
 
 Each config option is assigned a category for IDE grouping:
 
-| Option | Category |
-|--------|----------|
-| `model` | `Model` |
-| `thinking` | `ThoughtLevel` |
-| `auto_approve` | `Other` |
+| Option | Category | Values |
+|--------|----------|--------|
+| `model` | `Model` | Model identifiers (e.g., `claude:claude-sonnet-4-5`, `ollama:llama2`) |
+| `temperature` | `Model` | Presets: `precise` (0.2), `balanced` (0.7), `creative` (1.0) |
+| `thinking` | `ThoughtLevel` | Extended thinking mode (if supported by the model) |
+| `auto_approve` | `Other` | Boolean approval for automated actions |
 
 IDEs that support category-based grouping can organize the model picker and settings panel accordingly.
+
+### Temperature Presets
+
+The `temperature` option allows the IDE to control sampling behavior for the active LLM provider:
+
+```toml
+[acp.model_config]
+default_temperature_preset = "balanced"  # "precise", "balanced", or "creative" (default: "balanced")
+```
+
+- `precise` (0.2): Low variance, deterministic output — ideal for code generation and technical writing.
+- `balanced` (0.7): Default/medium variance — good for general-purpose reasoning.
+- `creative` (1.0): Maximum variance — for brainstorming and exploratory tasks.
+
+The preset is applied to the session's effective LLM provider at session creation and can be changed mid-session via `set_session_config_option`.
 
 ## Extension notifications
 
