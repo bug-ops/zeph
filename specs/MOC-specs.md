@@ -148,6 +148,15 @@ status: moc
 ### Durable Execution
 - [[064-durable-execution/spec|Durable Execution]] — `zeph-durable` Layer-0 crate: append-only journal, `DurableStep`/`DurableContext` (`&self` + `AtomicU32`), `EffectClass`+`OnAmbiguous` (construction-time error for destructive-unspecified), `JournalWriter` actor (mpsc capacity=1024, group-commit, ACK, supervised restart), AEAD `PayloadCipher` (XChaCha20-Poly1305, vault-keyed `ZEPH_DURABLE_KEY`, AAD-bound to step identity), `DurablePromise`/resolver-token auth, `DurableTimer`, dedicated `durable.db` (own pool+migrations), `ReplayDivergence` fingerprint guard, `read_execution_range` cursor (O(segment)); P1 agent-loop (explicit tier_loop.rs rewrite, LLM gate), P2 orchestration `/plan resume` (replan-budget restore), P3 scheduler exactly-once, P4 subagent durable promise; `restate` optional feature in `server` bundle
 
+### Deep Link Scheme
+- [[066-deep-link-scheme/spec|Deep Link Scheme]] — `zeph://` URI scheme: `zeph url-open`, `zeph url-scheme {register,unregister,status}`, OS registration (Linux `.desktop`/Windows HKCU full, macOS dispatch-only stub), INV-CWD security validation order, `[deep_link]` config section, `deep-link` feature flag; ACP attach deferred to v2; GitHub #4687
+
+### Session Persistence
+- [[068-session-persistence/spec|Session Persistence]] — new `zeph-session` crate: append-only JSONL `SessionEventLog` as source of truth, deterministic `ReplayEngine` (no tool re-execution), eager-copy `ForkEngine`, `Condenser`/`LlmCondenser`, INV-SP-1..4 crash invariants, per-session `SessionActor` (mpsc-in/broadcast-out) + `LiveSessionRegistry` for `zeph serve`, HTTP/SSE API, `/conv` TUI commands, SQLite+PostgreSQL migration 105; GitHub #2807, #3102, #3074
+
+### Threat Model
+- [[069-threat-model/spec|MATRA Threat Model]] — asset-centric threat model (arXiv:2605.10763): asset inventory (vault, SQLite, Qdrant, ShellExecutor, WebScrapeExecutor, channel adapters, MCP client, subagent transcripts, orchestration planner), attack trees, control mapping, uncontrolled blast radius; `NetworkScope` + `AssetSensitivity` classification on orchestration `TaskNode` (advisory-only pending runner wiring); GitHub #3913, #3934
+
 ---
 
 ## System-Wide Features
@@ -230,7 +239,10 @@ status: moc
 | 063 | [[063-worktree-subsystem/spec\|Worktree Subsystem]] | specify | approved |
 | 064 | [[064-durable-execution/spec\|Durable Execution]] | specify | approved |
 | 065 | [[065-ephemeral-plugins-provider-overrides/spec\|Ephemeral Plugins & Provider Overrides]] | specify | implemented |
+| 066 | [[066-deep-link-scheme/spec\|Deep Link Scheme]] | specify | approved |
 | 067 | [[067-knowledge-ingest/spec\|Knowledge Ingest]] | specify | draft |
+| 068 | [[068-session-persistence/spec\|Session Persistence]] | specify | draft |
+| 069 | [[069-threat-model/spec\|MATRA Threat Model]] | specify | approved |
 
 ---
 

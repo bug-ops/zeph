@@ -100,6 +100,11 @@ default = ["scheduler", "sqlite", "profiling", "sandbox"]
 | `pdf` | `zeph-memory/pdf` | pdf-extract crate; large optional dep |
 | `postgres` | `zeph-db/postgres`, `zeph-memory/postgres` | Mutually exclusive with `sqlite` |
 | `sqlite` | `zeph-db/sqlite`, `zeph-memory/sqlite` | Mutually exclusive with `postgres` (also in default) |
+| `deep-link` | `zeph-common/deep-link`, `zeph-config/deep-link` | `zeph://` URI scheme registration/dispatch (spec #066); optional OS integration |
+| `session` | `dep:axum`, `dep:tokio-stream`, `zeph-common/http-middleware` | Session persistence + `zeph serve` mode (spec #068, new `zeph-session` crate); HTTP/SSE session API |
+
+> [!note]
+> This table is not a complete enumeration of every flag in the root `Cargo.toml` — flags added since the §1 count was last taken (e.g. `prometheus`, `testing`, `bench`, `profiling-alloc`, `profiling-pyroscope`, `gonka`, `cocoon`, `index`) are not all listed here yet. Only `deep-link` and `session`, introduced in the same cycle that added specs #066/#068, are backfilled above; a full inventory reconciliation against `Cargo.toml`'s `[features]` block is tracked as follow-up work.
 
 ### 3.3 Always-On Capabilities (No Flag)
 

@@ -25,7 +25,7 @@ See `[[constitution]]` for project-wide non-negotiable rules.
 
 ## Numbering Scheme
 
-Spec IDs (001–067) follow a logical grouping:
+Spec IDs (001–069) follow a logical grouping:
 
 - **001–010**: Foundational contracts and core systems (invariants, loop, providers, memory, skills, tools, channels, mcp, orchestration, security)
 - **011–020**: User-facing features and operational integration (TUI, graph memory, protocols, self-learning, filtering, indexing, scheduler, gateway, config loading)
@@ -48,8 +48,10 @@ Spec IDs (001–067) follow a logical grouping:
 - **063**: Worktree subsystem — `zeph-worktree` crate, `worktree.base_ref: fresh|head`, CwdGuard serialisation, startup probe, CLI commands, `git_timeout_secs` (default 30, migration step 55), `--init` wizard `step_worktree()`; GitHub #4655, #4704, #4784, #4847
 - **064**: Durable execution — `zeph-durable` Layer-0 crate, journal/replay, `DurableStep`, `EffectClass`, `JournalWriter` actor, AEAD payload cipher, `DurablePromise`/timers, dedicated `durable.db`, P1-P4 integration adapters (agent-loop, orchestration, scheduler, subagent); `restate` feature flag
 - **065**: Ephemeral plugin loading and provider override persistence — `--plugin-url` HTTPS-only session-scoped plugin loading (`TempDir` lifetime, blocking scan), provider parameter override persistence (`reasoning_effort`/`temperature` via `channel_preferences` key-value row, no ALTER TABLE); GitHub #3918
+- **066**: `zeph://` deep link scheme — `zeph url-open`, `zeph url-scheme {register,unregister,status}`, OS registration (Linux/Windows full, macOS dispatch-only), INV-CWD security validation order, `[deep_link]` config, `deep-link` feature flag; ACP attach deferred to v2; GitHub #4687
 - **067**: Knowledge Ingest — `zeph knowledge ingest` operator command with two sinks: static project artifacts → semantic notes (existing `IngestionPipeline`, no graph) and subagent transcripts → knowledge graph (gated by a measurement spike); Phase 0 provenance columns (`origin`/`import_batch_id`/`source_uri`) + `rollback`; honors write-gate (004-9) + admission (004-3), only RPE bypassed; sanitizer on write path; external Claude/Codex import deferred to Phase 3; code stays in `zeph-index`; epic #5012, milestone M29 [draft]
-- **068**: MATRA Threat Model — asset-centric threat model (arXiv:2605.10763) for Zeph: asset inventory (vault, SQLite, Qdrant, ShellExecutor, WebScrapeExecutor, channel adapters, MCP client, subagent transcripts, orchestration planner), attack trees, control mapping, uncontrolled blast radius; orchestration-specific: `NetworkScope` enum + `AssetSensitivity` classification on `TaskNode`; advisory-only pending runner wiring (#3913, #3934)
+- **068**: Session persistence, event log replay, fork, condensation, and `zeph serve` mode — append-only JSONL `SessionEventLog` as source of truth, `ReplayEngine`, `ForkEngine`, `Condenser`/`LlmCondenser`, INV-SP-1..4 crash invariants, per-session `SessionActor`, `LiveSessionRegistry`, HTTP/SSE API, `/conv` TUI commands; new `zeph-session` crate; GitHub #2807, #3102, #3074 [draft]
+- **069**: MATRA Threat Model — asset-centric threat model (arXiv:2605.10763) for Zeph: asset inventory (vault, SQLite, Qdrant, ShellExecutor, WebScrapeExecutor, channel adapters, MCP client, subagent transcripts, orchestration planner), attack trees, control mapping, uncontrolled blast radius; orchestration-specific: `NetworkScope` enum + `AssetSensitivity` classification on `TaskNode`; advisory-only pending runner wiring (#3913, #3934)
 
 ---
 

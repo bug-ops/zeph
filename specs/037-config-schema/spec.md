@@ -16,6 +16,8 @@ related:
   - "[[020-config-loading/spec]]"
   - "[[022-config-simplification/spec]]"
   - "[[029-feature-flags/spec]]"
+  - "[[066-deep-link-scheme/spec]]"
+  - "[[068-session-persistence/spec]]"
 ---
 
 # Spec: Configuration Schema (`zeph-config`)
@@ -105,6 +107,9 @@ use `#[serde(default)]` — they may be omitted; defaults apply automatically.
 | `[magic_docs]` | `MagicDocsConfig` | defaulted | Auto-maintained markdown docs |
 | `[telemetry]` | `TelemetryConfig` | defaulted | Profiling and tracing (spec #035) |
 | `[metrics]` | `MetricsConfig` | defaulted | Prometheus metrics (spec #036) |
+| `[session]` | `SessionConfig` | defaulted | Session persistence: event log, replay, fork (spec #068, feature: session) |
+| `[serve]` | `ServeConfig` | defaulted | `zeph serve` mode: `SessionActor`/`LiveSessionRegistry`, HTTP/SSE API (spec #068, feature: session) |
+| `[deep_link]` | `DeepLinkConfig` | defaulted | `zeph://` URI scheme registration and dispatch (spec #066, feature: deep-link) |
 
 ### Key sections: agent
 

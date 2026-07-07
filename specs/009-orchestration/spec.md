@@ -386,6 +386,18 @@ LLM planner marks each task as `parallel` or `sequential`. `DagScheduler.tick()`
 
 ---
 
+## NetworkScope and AssetSensitivity per Task
+
+`NetworkScope` enum and `AssetSensitivity` classification annotate `TaskNode` (`crates/zeph-orchestration/src/graph.rs`), added alongside the MATRA threat model (#5342). They record, per task, what network access and asset-risk tier a planned step is expected to need.
+
+**Advisory only**: neither field is currently read by the scheduler, `DagScheduler.tick()`, or sub-agent spawn paths (`scheduler_loop.rs`, `zeph-subagent`'s spawn dispatch) — they are structured metadata for future enforcement, not an active security control. See `[[069-threat-model/spec]]` §4.1/§5.2 for the full threat model and the enforcement gap this leaves open.
+
+### Key Invariants
+
+- NEVER treat `network_scope`/`asset_sensitivity` as an enforced boundary until a scheduler/spawn-path enforcement change lands — today they are unread by dispatch logic
+
+---
+
 ## Cascade-Aware DAG Routing
 
 

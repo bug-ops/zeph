@@ -1493,7 +1493,8 @@ only valid when `database_backend = "sqlite"`.
    (`D: DatabaseDriver`) instead. Concrete backend names appear only in:
    (a) the `DatabaseDriver` implementors themselves (`SqliteDriver`, `PostgresDriver`),
    (b) the `Dialect` implementors (`Sqlite`, `Postgres`), and
-   (c) backward-compatible type aliases (`SqliteStore = DbStore`, `SqliteVectorStore`).
+   (c) backward-compatible type aliases (`SqliteVectorStore`) — see Amendment 3 below
+   for the `SqliteStore` exception.
    New code must use the generic forms.
 
    **Amendment 3 [2026-07-06]**: Exception for `SqliteStore` (issue #5550) — the
@@ -1727,14 +1728,14 @@ Example for `messages` table (tested from `zeph-memory` integration tests):
 // crates/zeph-memory/tests/pg_store.rs
 #[cfg(feature = "postgres")]
 mod tests {
-    use zeph_memory::SqliteStore; // or DbStore after rename
+    use zeph_memory::SqliteStore;
     // ... use pg_pool from zeph-db test fixture via re-export or inline
 
     #[tokio::test]
     #[ignore = "requires docker"]
     async fn message_crud_roundtrip() {
         let (pool, _container) = zeph_db::test_utils::pg_pool().await;
-        let store = DbStore::from_pool(pool);
+        let store = SqliteStore::from_pool(pool);
 
         let cid = "test-conv-1";
         store.save_message(cid, "user", "hello", &[]).await.unwrap();
