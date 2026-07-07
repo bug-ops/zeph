@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-common)](https://crates.io/crates/zeph-common)
 [![docs.rs](https://img.shields.io/docsrs/zeph-common)](https://docs.rs/zeph-common)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Shared utility functions and security primitives for the Zeph workspace. Zero `zeph-*` dependencies — safe to depend on from any crate.
 
@@ -63,6 +63,9 @@ assert!(!is_private_ip(&addr)); // false — public IP
 | Feature | Description |
 |---------|-------------|
 | `treesitter` | Enables tree-sitter parser helpers and ts-query constants for Rust, Python, JS, TS, Go |
+| `http-middleware` | Enables the `http_middleware` module (shared axum bearer-token auth with constant-time comparison and per-IP rate limiting) |
+| `jsonschema` | Derives `schemars::JsonSchema` on shared types (e.g. `memory` types) for JSON-schema generation |
+| `deep-link` | Enables the `deep_link` module for parsing/handling `zeph://` deep links |
 
 ## Installation
 

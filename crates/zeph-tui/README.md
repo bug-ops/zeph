@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-tui)](https://crates.io/crates/zeph-tui)
 [![docs.rs](https://img.shields.io/docsrs/zeph-tui)](https://docs.rs/zeph-tui)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Ratatui-based TUI dashboard with real-time metrics and multi-session support for Zeph.
 
@@ -148,9 +148,13 @@ The command palette is opened with `:` in normal mode. Type to fuzzy-filter entr
 
 | Feature | Description |
 |---------|-------------|
-| `experiments` | Enables experiment-related TUI commands and widgets |
-| `guardrail` | Enables the security panel and SEC status bar indicator |
-| `lsp-context` | Enables LSP context injection status display |
+| `sqlite` | SQLite backend forwarded to `zeph-memory`/`zeph-core`/`zeph-subagent` (enabled by `default`) |
+| `postgres` | PostgreSQL backend forwarded to the same crates |
+| `clipboard` | System clipboard integration via `arboard` |
+| `cocoon` | Enables cocoon-related command palette entries |
+| `profiling` | Emits `tracing` instrumentation spans (e.g. around `run_tui`) |
+
+Feature-gated command-palette and slash entries (e.g. `graph:*`, `experiment:*`, `plan:*`, `scheduler:*`, `gateway:*`, `daemon:*`) are driven by feature flags on the root `zeph` crate, not by this crate directly.
 
 ## Installation
 

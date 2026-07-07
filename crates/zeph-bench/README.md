@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-bench)](https://crates.io/crates/zeph-bench)
 [![docs.rs](https://img.shields.io/docsrs/zeph-bench)](https://docs.rs/zeph-bench)
 [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main)](https://github.com/bug-ops/zeph/actions)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 [![License](https://img.shields.io/crates/l/zeph-bench)](../../LICENSE)
 
 Benchmark harness for evaluating Zeph agent performance on standardized datasets.
@@ -95,7 +95,7 @@ use std::path::Path;
 struct MyLoader;
 
 impl DatasetLoader for MyLoader {
-    fn name(&self) -> &str { "my-dataset" }
+    fn name(&self) -> &'static str { "my-dataset" }
 
     fn load(&self, path: &Path) -> Result<Vec<Scenario>, zeph_bench::BenchError> {
         // parse your file format here
@@ -107,8 +107,13 @@ struct MyEvaluator;
 
 impl Evaluator for MyEvaluator {
     fn evaluate(&self, scenario: &Scenario, response: &str) -> EvalResult {
-        let score = if response.trim() == scenario.expected.trim() { 1.0 } else { 0.0 };
-        EvalResult { score }
+        let passed = response.trim() == scenario.expected.trim();
+        EvalResult {
+            scenario_id: scenario.id.clone(),
+            score: if passed { 1.0 } else { 0.0 },
+            passed,
+            details: format!("exact_match={passed}"),
+        }
     }
 }
 ```
@@ -124,7 +129,7 @@ impl Evaluator for MyEvaluator {
 | tau-bench | JSON | Task completion (exact) | Ready |
 
 > [!IMPORTANT]
-> Requires Rust 1.95 or later.
+> Requires Rust 1.96 or later.
 
 ## Architecture
 
@@ -141,7 +146,7 @@ state between runs. Results accumulate into a `BenchRun` and are persisted by `R
 
 ```toml
 [dependencies]
-zeph-bench = "0.21"
+zeph-bench = "0.22"
 ```
 
 This crate is part of the [Zeph](https://github.com/bug-ops/zeph) workspace. See the

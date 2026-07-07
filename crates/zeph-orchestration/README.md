@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-orchestration)](https://crates.io/crates/zeph-orchestration)
 [![docs.rs](https://img.shields.io/docsrs/zeph-orchestration)](https://docs.rs/zeph-orchestration)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 DAG-based task orchestration with failure propagation, LLM planning, and SQLite persistence for Zeph.
 
@@ -18,12 +18,17 @@ Implements the multi-agent task orchestration pipeline extracted from `zeph-core
 | `graph` | `TaskGraph`, `TaskNode`, `TaskId`, `GraphId` typed identifiers; `TaskStatus`, `GraphStatus`, `FailureStrategy` (abort/retry/skip/ask) |
 | `dag` | DAG validation (cycle detection via topological sort), `ready_tasks`, `propagate_failure`, `reset_for_retry` |
 | `scheduler` | `DagScheduler` tick-based execution engine; `SchedulerAction` command pattern; `TaskEvent`, `TaskOutcome` |
-| `planner` | `Planner` trait + `LlmPlanner` — goal decomposition via `chat_typed` structured output; maps string task IDs to `TaskId` |
-| `aggregator` | `Aggregator` trait + `LlmAggregator` — synthesizes completed task outputs; per-task character budget; content-sanitized before injection |
+| `topology` | `TopologyClassifier`, `Topology`, `DispatchStrategy` — DAG shape analysis for dispatch selection |
+| `cascade` | `CascadeDetector`, `CascadeConfig`, `RegionHealth` — cascading-failure detection and abort decisions |
+| `lineage` | `ErrorLineage`, `classify_error` — error provenance tracking across the DAG |
 | `router` | `AgentRouter` trait + `RuleBasedRouter` — 3-step fallback task-to-agent routing |
-| `plan_cache` | `PlanCache` — caches plan templates by normalized goal hash; `PlanTemplate` captures task structure from a `TaskGraph` for reuse; `normalize_goal` + `goal_hash` for deterministic cache keys |
 | `command` | `PlanCommand` parser for `/plan` CLI slash commands |
 | `error` | `OrchestrationError` unified error type |
+| `planner` | `Planner` trait + `LlmPlanner` — goal decomposition via `chat_typed` structured output (feature `llm-planning`) |
+| `aggregator` | `Aggregator` trait + `LlmAggregator` — synthesizes completed task outputs; content-sanitized before injection (feature `llm-planning`) |
+| `verifier` | `PlanVerifier` — post-task completeness verifier with targeted replan (feature `llm-planning`) |
+| `plan_cache` | `PlanCache` — caches plan templates by normalized goal hash; `normalize_goal` + `goal_hash` for deterministic cache keys (feature `llm-planning`) |
+| `adaptorch` | `TopologyAdvisor` — adaptive topology hints for the scheduler (feature `llm-planning`) |
 
 ## Usage
 
@@ -73,10 +78,25 @@ When a goal is decomposed into a task graph, the resulting structure is cached a
 - `zeph-sanitizer::ContentSanitizer` wraps cross-task context before injection
 - `zeph-subagent::SubAgentManager::spawn_for_task()` spawns sub-agents per task
 
+## Feature flags
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `sqlite` | yes | SQLite backend for graph persistence (via `zeph-db`, `zeph-durable`, `zeph-memory`, `zeph-subagent`) |
+| `postgres` | no | PostgreSQL backend |
+| `llm-planning` | no | Enables the LLM-dependent modules (`planner`, `aggregator`, `verifier`, `verify_predicate`, `plan_cache`, `adaptorch`) and the `zeph-llm` dependency |
+| `test-utils` | no | Testcontainers for PostgreSQL integration tests (implies `postgres` and `llm-planning`) |
+
+> [!NOTE]
+> Without `llm-planning`, the crate builds as a pure-DAG scheduler subset with no `zeph-llm` dependency — useful for embedding the scheduler without an LLM backend.
+
 ## Installation
 
 ```bash
 cargo add zeph-orchestration
+
+# With LLM-backed planning and aggregation
+cargo add zeph-orchestration --features llm-planning
 ```
 
 Enabled via the `orchestration` feature flag on the root `zeph` crate.

@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-a2a)](https://crates.io/crates/zeph-a2a)
 [![docs.rs](https://img.shields.io/docsrs/zeph-a2a)](https://docs.rs/zeph-a2a)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 A2A protocol client and server with agent discovery for Zeph.
 
@@ -59,13 +59,14 @@ A2aServer::new(addr, sender)
     .await?;
 ```
 
-Token comparison uses `subtle::ConstantTimeEq` to prevent timing attacks.
+The token is hashed once at construction time; each request compares blake3 hashes of both sides to prevent timing attacks. `A2aServer::require_auth(true)` rejects all requests when no token is configured.
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| `server` | Enables `A2aServer` with axum HTTP handler and bearer auth (requires `axum`, `blake3`, `tower`) |
+| `server` | Enables `A2aServer`, `TaskManager`, and `TaskProcessor` with an axum HTTP handler and bearer auth (requires `axum`, `tower`, `tower-http`) |
+| `ibct`   | Enables `Ibct` token issuance and verification (HMAC-SHA256) |
 
 ## Installation
 

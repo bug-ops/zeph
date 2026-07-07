@@ -3,13 +3,13 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-mcp)](https://crates.io/crates/zeph-mcp)
 [![docs.rs](https://img.shields.io/docsrs/zeph-mcp)](https://docs.rs/zeph-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 MCP client with multi-server lifecycle and Qdrant tool registry for Zeph.
 
 ## Overview
 
-Implements the Model Context Protocol client for Zeph, managing connections to multiple MCP servers, discovering their tools at startup, and routing tool calls through a unified executor. Built on rmcp 0.17.
+Implements the Model Context Protocol client for Zeph, managing connections to multiple MCP servers, discovering their tools at startup, and routing tool calls through a unified executor. Built on rmcp 2.0.
 
 ## Key Modules
 
@@ -217,9 +217,13 @@ args = ["mcp-server-fetch"]
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| `mock` | Enables `MockMcpClient` for downstream tests |
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `sqlite` | yes | SQLite backend (via `zeph-db`, `zeph-memory`, `zeph-tools`) |
+| `postgres` | no | PostgreSQL backend |
+| `mock` | no | Exposes `MockMcpCaller` for downstream tests |
+| `test-utils` | no | Test utilities and testcontainers for PostgreSQL integration tests (implies `postgres`) |
+| `profiling` | no | Extra tracing spans for latency profiling |
 
 ## Installation
 

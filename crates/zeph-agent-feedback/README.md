@@ -3,6 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-agent-feedback)](https://crates.io/crates/zeph-agent-feedback)
 [![docs.rs](https://img.shields.io/docsrs/zeph-agent-feedback)](https://docs.rs/zeph-agent-feedback)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Implicit correction detection for the [Zeph](https://github.com/bug-ops/zeph) AI agent.
 
@@ -17,10 +18,10 @@ Detects when a user is implicitly correcting a previous agent response — witho
 
 ```toml
 [dependencies]
-zeph-agent-feedback = { version = "0.21", workspace = true }
+zeph-agent-feedback = { version = "0.22", workspace = true }
 ```
 
-**Note:** Requires Rust 1.95 or later (Edition 2024).
+**Note:** Requires Rust 1.96 or later (Edition 2024).
 
 ## Usage
 
@@ -41,13 +42,18 @@ if let Some(signal) = detector.detect("that's wrong, try again", &history) {
 ### LLM judge (borderline cases)
 
 ```rust,no_run
+use std::time::Duration;
 use zeph_agent_feedback::{FeedbackDetector, JudgeDetector};
 
-let mut judge = JudgeDetector::new(0.4, 0.7); // low..high borderline zone
+// new(adaptive_low, adaptive_high, rate_limit, rate_window)
+let mut judge = JudgeDetector::new(0.4, 0.7, 5, Duration::from_secs(60));
 let signal = detector.detect(user_msg, &history);
 
 if judge.should_invoke(signal.as_ref()) && judge.check_rate_limit() {
-    let verdict = JudgeDetector::evaluate(&provider, user_msg, assistant_msg, 0.6).await?;
+    // evaluate(provider, user_msg, assistant_msg, confidence_threshold, timeout)
+    let verdict =
+        JudgeDetector::evaluate(&provider, user_msg, assistant_msg, 0.6, Duration::from_secs(30))
+            .await?;
     if let Some(correction) = verdict.into_signal(user_msg) {
         // handle confirmed correction
     }
@@ -81,7 +87,14 @@ Each language uses two pattern tiers:
 // check synchronously, then spawn
 if judge.check_rate_limit() {
     tokio::spawn(async move {
-        let _ = JudgeDetector::evaluate(&provider, user_msg, assistant_msg, threshold).await;
+        let _ = JudgeDetector::evaluate(
+            &provider,
+            user_msg,
+            assistant_msg,
+            threshold,
+            Duration::from_secs(30),
+        )
+        .await;
     });
 }
 ```

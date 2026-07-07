@@ -3,26 +3,26 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-acp)](https://crates.io/crates/zeph-acp)
 [![docs.rs](https://img.shields.io/docsrs/zeph-acp)](https://docs.rs/zeph-acp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 ACP (Agent Client Protocol) server adapter for embedding Zeph in IDE environments.
 
 ## Overview
 
-Implements the [Agent Client Protocol](https://agentclientprotocol.org) server side, allowing IDEs and editors to drive the Zeph agent loop over stdio, HTTP+SSE, or WebSocket transports. The crate wires IDE-proxied capabilities — file system access, terminal execution, and permission gates — into the agent loop via `AcpContext`, exposes `AgentSpawner` as the integration point for the host application, and supports runtime model switching via `ProviderFactory` and MCP server management via `ext_method`. Built on the `agent-client-protocol` SDK v0.10.
+Implements the [Agent Client Protocol](https://agentclientprotocol.org) server side, allowing IDEs and editors to drive the Zeph agent loop over stdio, HTTP+SSE, or WebSocket transports. The crate wires IDE-proxied capabilities — file system access, terminal execution, and permission gates — into the agent loop via `AcpContext`, exposes `AgentSpawner` as the integration point for the host application, and supports runtime model switching via `ProviderFactory` and MCP server management via `ext_method`. Built on the `agent-client-protocol` SDK v1.0.
 
 ## Installation
 
 ```toml
 [dependencies]
-zeph-acp = "0.21"
+zeph-acp = "0.22"
 
 # With HTTP+SSE transport
-zeph-acp = { version = "0.21", features = ["acp-http"] }
+zeph-acp = { version = "0.22", features = ["acp-http"] }
 ```
 
 **Important:**
-> Requires Rust 1.95 or later.
+> Requires Rust 1.96 or later.
 
 ## Features
 
@@ -363,9 +363,13 @@ The `initialize` response includes an `auth_hint` key in its metadata map. For s
 | `unstable-session-fork` | unstable | Enables the `fork_session` ACP method. See below. |
 | `unstable-session-resume` | unstable | Enables the `resume_session` ACP method. See below. |
 | `unstable-session-usage` | unstable | Enables `UsageUpdate` events — token counts (input, output, cache) sent to the IDE after each turn. See below. |
-| `unstable-session-info-update` | unstable | Enables `SessionInfoUpdate` — agent-generated session title emitted to the IDE after the first turn. See below. |
-| `unstable-elicitation` | unstable | Exposes elicitation schema types (`ElicitationRequest`, etc.) for future agent-loop integration. SDK methods not yet available in 0.10.3. |
+| `unstable-elicitation` | unstable | Exposes elicitation schema types (`ElicitationRequest`, etc.) for future agent-loop integration. |
+| `unstable-llm-providers` | unstable | Exposes the `LlmProtocol` wire type for advertising available LLM providers to the IDE. |
 | `unstable-logout` | unstable | Enables the `logout` ACP method and advertises `auth.logout` capability. Zeph logout is a no-op (vault-based auth). |
+| `unstable-auth-methods` | unstable | Enables the ACP auth-methods extension. |
+| `unstable-boolean-config` | unstable | Enables boolean-valued session config options. |
+| `unstable-cancel-request` | unstable | Wires the real `$/cancel_request` protocol notification onto the internal cancel signal. |
+| `unstable-message-id` / `unstable-session-add-dirs` / `unstable-session-delete` | stable in SDK | Retained as no-op flags; the underlying methods stabilized upstream and need no gate. |
 
 **Warning:**
 > All `unstable-*` features have wire protocol that is not yet finalized. Expect breaking changes before these features graduate to stable.
@@ -378,7 +382,6 @@ zeph-acp = { version = "*", features = [
     "unstable-session-fork",
     "unstable-session-resume",
     "unstable-session-usage",
-    "unstable-session-info-update",
     "unstable-elicitation",
     "unstable-logout",
 ] }
@@ -388,7 +391,7 @@ All flags are independent and can be combined freely.
 
 ### `session/list` (stable)
 
-The `list_sessions` method on `ZephAcpAgent` is stable as of `agent-client-protocol` 0.10.3 — no feature flag required. Returns a snapshot of all active in-memory sessions as `SessionInfo` records (session ID, working directory, last-updated timestamp). Supports an optional `cwd` filter — when provided, only sessions whose working directory matches the given path are returned.
+The `list_sessions` method on `ZephAcpAgent` is stable as of `agent-client-protocol` 1.0 — no feature flag required. Returns a snapshot of all active in-memory sessions as `SessionInfo` records (session ID, working directory, last-updated timestamp). Supports an optional `cwd` filter — when provided, only sessions whose working directory matches the given path are returned.
 
 The `initialize` response always advertises `SessionListCapabilities` in the `session` capabilities block, signalling to the IDE that the server supports session enumeration.
 
@@ -421,9 +424,9 @@ Enables `UsageUpdate` session events. After each agent turn `ZephAcpAgent` emits
 
 The IDE can use this data to display running cost estimates or token budgets without polling a separate endpoint.
 
-### `unstable-session-info-update`
+### Session info update
 
-Enables `SessionInfoUpdate` events. After the first completed turn in a new session, `ZephAcpAgent` emits a `SessionUpdate::SessionInfoUpdate` containing a short, LLM-generated title derived from the opening message. The IDE can use this title to label the session in its sidebar or tab bar.
+`SessionInfoUpdate` events are emitted unconditionally (no feature flag). After the first completed turn in a new session, `ZephAcpAgent` emits a `SessionUpdate::SessionInfoUpdate` containing a short, LLM-generated title derived from the opening message. The IDE can use this title to label the session in its sidebar or tab bar.
 
 ## Plan updates
 

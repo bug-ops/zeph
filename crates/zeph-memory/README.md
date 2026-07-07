@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-memory)](https://crates.io/crates/zeph-memory)
 [![docs.rs](https://img.shields.io/docsrs/zeph-memory)](https://docs.rs/zeph-memory)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Semantic memory with SQLite and Qdrant for Zeph agent.
 
@@ -61,7 +61,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `graph::retrieval` | `graph_recall` — query-time graph retrieval: fuzzy entity matching (including aliases), BFS from seed entities, composite scoring, canonical-name deduplication; spreading activation path via `SpreadingActivation` when enabled |
 | `anchored_summary` | `AnchoredSummary` — structured summarization that preserves factual anchors (entities, relationships, decisions) during compaction |
 | `compaction_probe` | `CompactionProbeConfig`, `validate_compaction` — post-compaction quality validation via probe question generation and answer scoring |
-| `sqlite::experiments` | `ExperimentResultRow`, `NewExperimentResult`, `SessionSummaryRow` — SQLite persistence for experiment results and session summaries (feature-gated: `experiments`) |
+| `store::experiments` | `ExperimentResultRow`, `NewExperimentResult`, `SessionSummaryRow` — SQLite persistence for experiment results and session summaries |
 | `forgetting` | `SleepGate` — background forgetting sweep that soft-deletes messages below `forgetting_floor`; configurable interval and floor threshold via `[memory.forgetting]` |
 | `consolidation` | Background memory consolidation — promotes/demotes entries between tiers based on access patterns |
 | `tiers` | `MemScene` tiered memory — hot working memory, episodic scene buffer, and long-term archive with background consolidation |
@@ -423,12 +423,16 @@ Organises memories as leaf nodes and periodically consolidates similar clusters 
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| `experiments` | Experiment result and session summary persistence in SQLite |
-| `pdf` | PDF document loading via `pdf-extract` |
-| `sqlite` | SQLite backend (default) |
-| `postgres` | PostgreSQL backend via `zeph-db` |
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `sqlite` | yes | SQLite backend via `zeph-db` |
+| `postgres` | no | PostgreSQL backend via `zeph-db` |
+| `pdf` | no | PDF document loading via `pdf-extract` (`PdfLoader`) |
+| `scheduler` | no | Pulls in `zeph-scheduler` for scheduled memory maintenance |
+| `jsonschema` | no | JSON-schema validation via `zeph-common/jsonschema` |
+| `testing` | no | Test utilities (enables `zeph-llm/testing`) |
+| `test-utils` | no | Testcontainers for PostgreSQL integration tests (implies `postgres`) |
+| `profiling` | no | Extra tracing spans for latency profiling |
 
 ## Installation
 
@@ -437,9 +441,6 @@ cargo add zeph-memory
 
 # With PDF document loading
 cargo add zeph-memory --features pdf
-
-# With experiment result persistence
-cargo add zeph-memory --features experiments
 ```
 
 ## Documentation

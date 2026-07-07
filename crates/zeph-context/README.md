@@ -1,5 +1,10 @@
 # zeph-context
 
+[![Crates.io](https://img.shields.io/crates/v/zeph-context)](https://crates.io/crates/zeph-context)
+[![docs.rs](https://img.shields.io/docsrs/zeph-context)](https://docs.rs/zeph-context)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
+
 Context budget, lifecycle management, compaction strategy, and stateless context assembler for the
 [Zeph](https://github.com/bug-ops/zeph) AI agent.
 
@@ -14,9 +19,14 @@ populate `ContextMemoryView` before each assembly pass.
 - `assembler` — `ContextAssembler` parallel fetch coordinator; classifies each slot into a `TypedPage`, enforces per-type fidelity invariants at compaction boundaries, and emits a `CompactionAuditSink` record per compacted page
 - `input` — `ContextAssemblyInput`, `ContextMemoryView`, `IndexAccess` trait
 - `slot` — `ContextSlot`, `CompactionOutcome`, message-chunking helpers
-- `typed_page` — `TypedPage` (BLAKE3 content-hash id), `PageType` enum (`ToolOutput`, `ConversationTurn`, `MemoryExcerpt`, `SystemContext`), per-type `PageInvariant` implementations, and `InvariantRegistry`
-- `audit` — `CompactionAuditSink` — bounded async mpsc channel that records one audit entry per compacted page; consumers can drain it for observability or compliance logging
-- `error` — `ContextError`
+- `typed_page` — `TypedPage` (BLAKE3 content-hash id), `PageType` enum (`ToolOutput`, `ConversationTurn`, `MemoryExcerpt`, `SystemContext`), per-type `PageInvariant` implementations, `InvariantRegistry`, and the `CompactionAuditSink` bounded async mpsc channel that records one audit entry per compacted page
+- `summarization` — pure prompt-building helpers for context compaction
+- `tool_result_compress` — per-result and batch-level token-budget enforcement for tool outputs
+- `compression_feedback` — context-loss detection and failure classification
+- `microcompact` — low-value tool detection helpers for time-based microcompact
+- `fidelity` — heuristic fidelity scorer for Context-Adaptive Memory (CAM)
+- `turn_context` — `TurnId` and `TurnContext` per-turn carrier
+- `error` — `AssemblerError`
 
 ## ClawVM typed-page compaction
 
@@ -33,4 +43,4 @@ At every compaction boundary the invariant is checked before the LLM compaction 
 
 ## License
 
-MIT OR Apache-2.0
+MIT — see [LICENSE](../../LICENSE).

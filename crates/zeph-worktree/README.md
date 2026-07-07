@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-worktree)](https://crates.io/crates/zeph-worktree)
 [![docs.rs](https://img.shields.io/docsrs/zeph-worktree)](https://docs.rs/zeph-worktree)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Git worktree lifecycle management for Zeph subagents.
 
@@ -44,7 +44,7 @@ async fn main() -> Result<(), zeph_worktree::WorktreeError> {
     // Verify git ≥ 2.5 is available and the path is a repository.
     probe_capabilities(&runner, &repo).await?;
 
-    let mgr = DefaultWorktreeManager::new(repo, WorktreeConfig::default(), runner)?;
+    let mgr = DefaultWorktreeManager::new(repo, WorktreeConfig::default(), runner).await?;
 
     // Create a worktree for a subagent.
     let handle = mgr.create("agent-42").await?;

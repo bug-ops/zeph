@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-core)](https://crates.io/crates/zeph-core)
 [![docs.rs](https://img.shields.io/docsrs/zeph-core)](https://docs.rs/zeph-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Core agent loop, configuration, context builder, metrics, vault, and sub-agent orchestration for Zeph.
 
@@ -52,10 +52,10 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle with background execution, `SubAgentDef` YAML definitions with 4-level resolution priority (CLI > project > user > config) and scope labels, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access (with `tools.except` additional denylist), `PermissionMode` enum (`Default`, `AcceptEdits`, `DontAsk`, `BypassPermissions`, `Plan`), `max_turns` turn cap, A2A in-process channels, `SubAgentState` lifecycle enum (`Submitted`, `Working`, `Completed`, `Failed`, `Canceled`), real-time status tracking, persistent JSONL transcript storage with resume-by-ID (`TranscriptWriter`/`TranscriptReader`, `TranscriptMeta` sidecar, prefix-based ID lookup, automatic old transcript sweep); CRUD helpers: `serialize_to_markdown()` (round-trip Markdown serialization), `save_atomic()` (write-rename with parent-dir creation and name validation), `delete_file()`, `default_template()` (scaffold for new definitions); `AgentsCommand` enum drives the `zeph agents` CLI subcommands |
 | `subagent::hooks` | Lifecycle hooks for sub-agents: `HookDef` (shell command with timeout and fail-open/closed policy), `HookMatcher` (pipe-separated tool-name patterns), `SubagentHooks` (per-agent `PreToolUse`/`PostToolUse` from YAML frontmatter); config-level `SubagentStart`/`SubagentStop` events; `fire_hooks()` executes sequentially with env-cleared sandbox and child kill on timeout |
 | `subagent::memory` | Persistent memory scopes for sub-agents: `MemoryScope` enum (`User`, `Project`, `Local`), `resolve_memory_dir()` / `ensure_memory_dir()` for directory lifecycle, `load_memory_content()` reads MEMORY.md (first 200 lines, 256 KiB cap, symlink boundary check, null byte guard), `escape_memory_content()` prevents prompt injection via `<agent-memory>` tag escaping. Memory is auto-injected into the sub-agent system prompt and Read/Write/Edit tools are auto-enabled |
-| `experiments` | Autonomous self-experimentation engine (feature-gated: `experiments`): `Variation` config mutations (temperature, top-p, top-k, frequency/presence penalty, system prompt), `ExperimentResult` with LLM-as-judge scoring, `ExperimentStatus` lifecycle; `ExperimentConfig` under `[experiments]` with `max_experiments`, `max_wall_time_secs`, `eval_budget_tokens`, `min_improvement`, optional `eval_model` and `benchmark_file`; `ExperimentSchedule` for cron-based periodic runs (`cron`, `max_experiments_per_run`, `max_wall_time_secs`); the scheduler registers a `TaskKind::Experiment` handler when both `scheduler` and `experiments` features are active; `BenchmarkSet` / `BenchmarkCase` loaded from TOML files via `from_file()` with path traversal protection and file size limit; `Evaluator` with parallel judge scoring via `FuturesUnordered`, per-invocation token budget enforcement via `AtomicU64`, XML boundary tags for prompt injection defense; `EvalReport` with mean score, p50/p95 latency, partial-run detection, error count; **Parameter variation engine**: `SearchSpace` with `ParameterRange` (min/max/step/default per parameter kind), `ConfigSnapshot` for baseline capture and rollback, `VariationGenerator` trait with three strategies — `GridStep` (exhaustive sweep), `Random` (uniform sampling), `Neighborhood` (local search around current best); one-at-a-time constraint isolates each parameter change, `OrderedFloat`-based `HashSet<Variation>` deduplication prevents retesting; **`experiment_cmd`** sub-module dispatches `/experiment` slash commands (`start`, `stop`, `status`, `report`, `best`) with `CancellationToken`-based concurrent session guard |
+| `experiments` | Autonomous self-experimentation engine (integrates `zeph-experiments`): `Variation` config mutations (temperature, top-p, top-k, frequency/presence penalty, system prompt), `ExperimentResult` with LLM-as-judge scoring, `ExperimentStatus` lifecycle; `ExperimentConfig` under `[experiments]` with `max_experiments`, `max_wall_time_secs`, `eval_budget_tokens`, `min_improvement`, optional `eval_model` and `benchmark_file`; `ExperimentSchedule` for cron-based periodic runs (`cron`, `max_experiments_per_run`, `max_wall_time_secs`); the scheduler registers a `TaskKind::Experiment` handler when the `scheduler` feature is active; `BenchmarkSet` / `BenchmarkCase` loaded from TOML files via `from_file()` with path traversal protection and file size limit; `Evaluator` with parallel judge scoring via `FuturesUnordered`, per-invocation token budget enforcement via `AtomicU64`, XML boundary tags for prompt injection defense; `EvalReport` with mean score, p50/p95 latency, partial-run detection, error count; **Parameter variation engine**: `SearchSpace` with `ParameterRange` (min/max/step/default per parameter kind), `ConfigSnapshot` for baseline capture and rollback, `VariationGenerator` trait with three strategies — `GridStep` (exhaustive sweep), `Random` (uniform sampling), `Neighborhood` (local search around current best); one-at-a-time constraint isolates each parameter change, `OrderedFloat`-based `HashSet<Variation>` deduplication prevents retesting; **`experiment_cmd`** sub-module dispatches `/experiment` slash commands (`start`, `stop`, `status`, `report`, `best`) with `CancellationToken`-based concurrent session guard |
 | `orchestration` | DAG-based task orchestration: `TaskGraph` with `TaskNode` dependency tracking, `GraphId`/`TaskId` typed identifiers, `FailureStrategy` (abort/retry/skip/ask), `GraphStatus`/`TaskStatus` lifecycle enums, `GraphPersistence<S>` typed wrapper over `RawGraphStore`, DAG validation (cycle detection, structural invariants via topological sort), `OrchestrationConfig` under `[orchestration]`; `Planner` trait for goal decomposition with `LlmPlanner<P>` implementation — uses `chat_typed` for structured JSON output, maps string task IDs to `TaskId`, validates agent hints against available `SubAgentDef` set; tick-based `DagScheduler` execution engine with command pattern (`SchedulerAction`), `AgentRouter` trait + `RuleBasedRouter` for task-to-agent routing, `spawn_for_task()` on `SubAgentManager` for orchestrated task spawning, cross-task context injection with `ContentSanitizer` integration, stale event guard preventing timed-out agent completions from corrupting retry state; `Aggregator` trait + `LlmAggregator<P>` — synthesizes completed task outputs into a coherent response via a single LLM call; per-task character budget derived from `aggregator_max_tokens` (default 4096), task results spotlighted via `ContentSanitizer` before inclusion, raw-concatenation fallback on LLM failure; `PlanCommand` enum with `/plan` CLI commands (goal, status, list, cancel, confirm, resume, retry) integrated into the agent loop; `OrchestrationMetrics` (plans_total, tasks_total/completed/failed/skipped) always present in `MetricsSnapshot`; pending-plan confirmation flow with `confirm_before_execute` config |
 | `hooks` | `[hooks]` config with `[[hooks.cwd_changed]]` and `[[hooks.file_changed]]` event hooks; `set_working_directory` tool allows the LLM to change the agent's working directory, emitting a `CwdChanged` event; `FileChangeWatcher` via `notify-debouncer-mini` emits `FileChanged` events for watched paths; hook shell commands receive `ZEPH_OLD_CWD` / `ZEPH_NEW_CWD` (cwd hooks) and `ZEPH_CHANGED_PATH` (file hooks) environment variables |
-| `lsp_hooks` | LSP context injection hooks (feature-gated: `lsp-context`): `LspHookRunner` integrates with the agent tool loop to automatically inject LSP-derived context before each LLM call; `LspNote` type carries formatted content with estimated token counts; `DiagnosticsOnSave` hook fetches compiler diagnostics from mcpls after `write_file` completes; `HoverOnRead` hook pre-fetches hover info for key symbols (function/struct/enum/trait definitions) after `read_file` completes using concurrent `join_all` MCP calls; `ReferencesOnRename` hook fetches all reference sites before `rename_symbol` executes so the model sees the full impact; notes are injected as `Role::User` messages with `[lsp ...]` prefix, following the established pattern of `[semantic recall]`, `[known facts]`, and `[code context]`; per-turn token budget enforced in `drain_notes()` — notes exceeding the budget are dropped with a debug log; graceful degradation when mcpls is unavailable: `is_available()` checks the `McpManager` client list, individual MCP call failures are swallowed at `debug` level, and the agent loop continues normally |
+| `lsp_hooks` | LSP context injection hooks: `LspHookRunner` integrates with the agent tool loop to automatically inject LSP-derived context before each LLM call; `LspNote` type carries formatted content with estimated token counts; `DiagnosticsOnSave` hook fetches compiler diagnostics from mcpls after `write_file` completes; `HoverOnRead` hook pre-fetches hover info for key symbols (function/struct/enum/trait definitions) after `read_file` completes using concurrent `join_all` MCP calls; `ReferencesOnRename` hook fetches all reference sites before `rename_symbol` executes so the model sees the full impact; notes are injected as `Role::User` messages with `[lsp ...]` prefix, following the established pattern of `[semantic recall]`, `[known facts]`, and `[code context]`; per-turn token budget enforced in `drain_notes()` — notes exceeding the budget are dropped with a debug log; graceful degradation when mcpls is unavailable: `is_available()` checks the `McpManager` client list, individual MCP call failures are swallowed at `debug` level, and the agent loop continues normally |
 
 **Re-exports:** `Agent`, `content_hash`, `DiffData`
 
@@ -83,7 +83,7 @@ Key `InstructionConfig` fields (TOML section `[agent.instructions]`):
 > [!TIP]
 > Instruction files support hot reload — edit any watched `.md` file while the agent is running and the updated content is applied within 500 ms on the next inference turn. The watcher starts automatically when at least one instruction path is resolved.
 
-Key `LspConfig` fields (TOML section `[agent.lsp]`, requires `lsp-context` feature):
+Key `LspConfig` fields (TOML section `[agent.lsp]`):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -161,7 +161,7 @@ Key `CompressionGuidelinesConfig` fields (TOML section `[memory.compression_guid
 | `categorized_guidelines` | bool | `false` | Tag ACON failure pairs by category (tool_output / assistant_reasoning / user_context) and maintain per-category guideline blocks |
 
 > [!NOTE]
-> `archive_tool_outputs` requires the `compression-guidelines` feature flag. `categorized_guidelines` is also gated behind `compression-guidelines`. Both are disabled by default and must be explicitly opted in.
+> `archive_tool_outputs` (Memex) and `categorized_guidelines` (ACON per-category) are both disabled by default and must be explicitly opted in via the config keys above.
 
 ```toml
 [agent]
@@ -283,7 +283,7 @@ Lifecycle hooks can be attached at two levels: config-level `SubagentStart`/`Sub
 
 ## Plan Commands
 
-In-session commands for task orchestration (requires `orchestration` feature):
+In-session commands for task orchestration (integrates `zeph-orchestration`):
 
 | Command | Description |
 |---------|-------------|
@@ -316,7 +316,7 @@ Key `OrchestrationConfig` fields (TOML section `[orchestration]`):
 
 ## Experiment Commands
 
-In-session commands for autonomous self-experimentation (requires `experiments` feature):
+In-session commands for autonomous self-experimentation (integrates `zeph-experiments`):
 
 | Command | Description |
 |---------|-------------|
@@ -425,19 +425,22 @@ timeout_secs = 5
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| `candle` | Local inference via Candle (enables `zeph-llm/candle`) |
-| `cuda` | CUDA backend for Candle (implies `candle`) |
-| `metal` | Metal backend for Candle on Apple Silicon (implies `candle`) |
-| `guardrail` | Advanced content guardrails via `zeph-sanitizer` |
-| `lsp-context` | LSP context injection hooks via `LspHookRunner` |
-| `compression-guidelines` | LLM-guided compaction guidelines in context assembly; enables `archive_tool_outputs` (Memex) and `categorized_guidelines` (ACON per-category) config options |
-| `experiments` | Autonomous self-experimentation engine |
-| `policy-enforcer` | Policy enforcement for tool execution |
-| `scheduler` | Integration with `zeph-scheduler` for cron-based tasks |
-| `context-compression` | Proactive context compression strategy |
-| `mock` | `MockVaultProvider` for tests |
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `sqlite` | ✓ | SQLite storage backend; propagates to every storage-backed workspace crate |
+| `postgres` | — | PostgreSQL storage backend; propagates to the same set of crates (mutually exclusive with `sqlite`) |
+| `candle` | — | Local inference via Candle (enables `zeph-llm/candle`) |
+| `cuda` | — | CUDA backend for Candle |
+| `metal` | — | Metal backend for Candle on Apple Silicon |
+| `classifiers` | — | Local NER / classifier models (`zeph-llm/classifiers`, `zeph-sanitizer/classifiers`) |
+| `gonka` | — | Gonka distributed-inference provider (`zeph-llm/gonka`) |
+| `cocoon` | — | Cocoon encrypted-provider support (`zeph-llm/cocoon`, `zeph-commands/cocoon`) |
+| `index` | — | AST-based code indexing and repo map (`zeph-agent-context/index`) |
+| `scheduler` | — | Cron-based scheduler integration; exposes the `SchedulerExecutor` tools |
+| `sysinfo` | — | System resource metrics via the `sysinfo` crate |
+| `profiling` | — | Runtime profiling via `tracing-subscriber` |
+| `profiling-alloc` | — | Allocation profiling (implies `profiling`) |
+| `mock` | — | `MockVaultProvider` for tests (`zeph-vault/mock`) |
 
 ## Installation
 

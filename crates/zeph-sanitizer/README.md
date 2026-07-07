@@ -1,7 +1,9 @@
 # zeph-sanitizer
 
+[![Crates.io](https://img.shields.io/crates/v/zeph-sanitizer)](https://crates.io/crates/zeph-sanitizer)
+[![docs.rs](https://img.shields.io/docsrs/zeph-sanitizer)](https://docs.rs/zeph-sanitizer)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Content sanitization, exfiltration guard, PII filtering, and quarantine for Zeph — untrusted input isolation before LLM context injection.
 
@@ -9,22 +11,19 @@ Content sanitization, exfiltration guard, PII filtering, and quarantine for Zeph
 
 Implements a multi-stage security pipeline that processes all external data before it enters the LLM context window. The pipeline detects prompt injection patterns, wraps content in spotlighting XML delimiters, optionally routes high-risk sources through an isolated quarantine LLM call, and guards outbound paths against data exfiltration. Memory retrieval sources are classified via `MemorySourceHint` to suppress false positive injection flags on recalled user conversations and LLM-generated summaries.
 
-> [!NOTE]
-> This crate is marked `publish = false`. It is an internal workspace crate not published to crates.io.
-
 ## Key types
 
 | Type | Description |
 |------|-------------|
 | `ContentSanitizer` | 4-step pipeline: truncate → strip control chars → detect injections → spotlighting XML wrap |
-| `TrustLevel` | `Trusted` / `LocalUntrusted` / `ExternalUntrusted` |
+| `ContentTrustLevel` | `Trusted` / `LocalUntrusted` / `ExternalUntrusted` |
 | `ContentSourceKind` | Source category (tool output, web scrape, document, etc.) |
-| `SanitizedContent` | Output with injection flag list and wrapped content |
-| `InjectionFlag` | Detected injection pattern with matched text |
-| `QuarantinedSummarizer` | Dual LLM pattern — routes high-risk content through an isolated, tool-less LLM call |
-| `ExfiltrationGuard` | Three outbound guards: markdown image tracking, tool URL cross-validation, memory write suppression |
+| `SanitizedContent` | Output with `body`, `source`, `injection_flags`, and `was_truncated` |
+| `InjectionFlag` | Detected injection pattern (`pattern_name`, `byte_offset`, `matched_text`) |
+| `quarantine::QuarantinedSummarizer` | Dual LLM pattern — routes high-risk content through an isolated, tool-less LLM call |
+| `exfiltration::ExfiltrationGuard` | Three outbound guards: markdown image tracking, tool URL cross-validation, memory write suppression |
 | `ContentSource` | Source metadata with `ContentSourceKind` and optional `MemorySourceHint` for memory retrieval classification |
-| `MemorySourceHint` | `ConversationHistory` / `LlmSummary` / `ExternalDocument` — classifies memory retrieval sources to suppress false positive injection flags on recalled user text and LLM-generated summaries |
+| `MemorySourceHint` | `ConversationHistory` / `LlmSummary` / `ExternalContent` — classifies memory retrieval sources to suppress false positive injection flags on recalled user text and LLM-generated summaries |
 
 ## Sanitization pipeline
 
@@ -41,20 +40,19 @@ External data
 ## Usage
 
 ```rust
-use zeph_sanitizer::{ContentSanitizer, ContentSourceKind, TrustLevel};
+use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
+use zeph_config::ContentIsolationConfig;
 
-let sanitizer = ContentSanitizer::from_config(&config.security.content_isolation);
+let config = ContentIsolationConfig::default();
+let sanitizer = ContentSanitizer::new(&config);
 
-let result = sanitizer.sanitize(
-    &raw_content,
-    ContentSourceKind::WebScrape,
-    TrustLevel::ExternalUntrusted,
-)?;
+let source = ContentSource::new(ContentSourceKind::WebScrape);
+let result = sanitizer.sanitize("Hello world", source);
 
-// result.content contains the wrapped, injection-cleaned text
-// result.injection_flags contains any detected patterns
+// result.body contains the wrapped, injection-cleaned text
+// result.injection_flags contains any detected patterns (advisory — content is never removed)
 for flag in &result.injection_flags {
-    tracing::warn!("Injection detected: {}", flag.pattern);
+    tracing::warn!("Injection detected: {}", flag.pattern_name);
 }
 ```
 
@@ -67,7 +65,7 @@ max_content_size = 65536     # bytes; content truncated before injection detecti
 
 [security.content_isolation.quarantine]
 enabled = true
-sources = ["web_scrape", "document"]  # source kinds routed through quarantine
+sources = ["web_scrape", "a2a_message"]  # source kinds routed through quarantine
 model = "claude-haiku-4-5-20251001"   # optional; defaults to primary provider
 max_tokens = 2048
 
@@ -80,9 +78,13 @@ block_injection_flagged_memory_writes = true
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| `guardrail` | Activates advanced guardrail checks in the sanitization pipeline |
+`zeph-memory` (and transitively `zeph-db`) needs exactly one backend selected to compile; `sqlite` is the default so the crate builds in isolation.
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `sqlite` | yes | SQLite backend for `zeph-memory` |
+| `postgres` | no | PostgreSQL backend for `zeph-memory` |
+| `classifiers` | no | ML-backed injection detection (`classify_injection`) and NER-based PII detection (`detect_pii`); requires an attached classifier backend via `with_classifier` / `with_pii_detector` |
 
 ## Security metrics
 
@@ -101,11 +103,8 @@ block_injection_flagged_memory_writes = true
 
 ## Installation
 
-This crate is a workspace-internal dependency. Reference it from another workspace crate:
-
-```toml
-[dependencies]
-zeph-sanitizer = { workspace = true }
+```bash
+cargo add zeph-sanitizer
 ```
 
 ## Documentation

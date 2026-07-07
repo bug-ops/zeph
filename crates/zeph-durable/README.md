@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-durable)](https://crates.io/crates/zeph-durable)
 [![docs.rs](https://img.shields.io/docsrs/zeph-durable)](https://docs.rs/zeph-durable)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Native durable execution layer for [Zeph](https://github.com/bug-ops/zeph) — journals the *control
 flow* of an execution (steps, promises, timers) so a crashed or interrupted run can resume at the
@@ -15,8 +15,10 @@ point of failure instead of restarting from scratch.
 > contract, the persistence engine (`LocalBackend`, the background `JournalWriter` actor, the sealed
 > `ExecutionBackend` dispatcher), and the execution heart — the `&self` `DurableContext` with
 > deterministic step ids, the fingerprint-guarded replay cursor, the exactly-once intent/result
-> protocol, and `parallel()` batches — have landed. The promise/timer layer, journal retention, the
-> CLI/TUI integration, and the consuming adapters land in follow-up issues of the epic.
+> protocol, and `parallel()` batches — have landed, as have the promise/timer layer
+> (`DurablePromise`, `DurableHandle`, `DurableTimerService`) and journal retention
+> (`DurableRetentionService`). The CLI/TUI integration and the consuming adapters land in follow-up
+> issues of the epic.
 
 ## Overview
 
@@ -58,6 +60,11 @@ a dedicated `durable.db` (SQLite) or a feature-gated Restate backend.
 - **writer** — the background `JournalWriter` actor and its cloneable `JournalWriterHandle`:
   group-commit for buffered appends, flush-before-commit ACKs for exactly-once entries, and
   `MAX(seq)` restart resume.
+- **promise** — the durable promise primitive: `DurablePromise<T>` (a journaled, resumable await
+  point) and `DurableHandle` for out-of-band resolution.
+- **timer** — `DurableTimerService`, a polling actor that fires journaled timers on resume.
+- **retention** — `DurableRetentionService`, the background pruner that enforces `RetentionPolicy`
+  (TTL, execution/journal-byte caps) against the `durable.db` pool.
 - **error** — the crate-wide `DurableError`.
 
 ## Architecture & invariants
@@ -163,7 +170,7 @@ let reply: String = ctx
 
 ## MSRV
 
-Rust **1.95** (Edition 2024, resolver 3).
+Rust **1.96** (Edition 2024, resolver 3).
 
 ## License
 

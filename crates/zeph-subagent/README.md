@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-subagent)](https://crates.io/crates/zeph-subagent)
 [![docs.rs](https://img.shields.io/docsrs/zeph-subagent)](https://docs.rs/zeph-subagent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Subagent management for Zeph — spawning, zero-trust grants, JSONL transcripts, scoped tool access, and lifecycle hooks.
 
@@ -25,6 +25,9 @@ Manages the full lifecycle of sub-agents: loading YAML definitions from disk, sp
 | `state` | `SubAgentState` — `Submitted`/`Working`/`Completed`/`Failed`/`Canceled` |
 | `resolve` | Definition discovery and 4-level priority resolution (CLI > project > user > config) |
 | `command` | `AgentsCommand` enum driving `/agent` and `zeph agents` CLI subcommands |
+| `fleet` | `FleetRegistry`, `SharedFleetRegistry`, `FleetSessionInfo`, `FleetSessionStatus` — live registry of running sub-agent sessions |
+| `durable` | `DurableResolverSeat`, `SubagentResult`, `make_durable_promise`/`resolve_durable_promise`/`await_durable_subagent` — durable promises for crash-resumable spawns via `zeph-durable` |
+| `cwd_guard` | `CwdLock` — process-wide working-directory lock for sub-agents that run without a dedicated worktree |
 
 ## Usage
 
@@ -119,6 +122,13 @@ Resume a previous session:
 ```
 
 `TranscriptReader` performs prefix-based lookup — partial IDs are resolved to the most recent matching session.
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| `sqlite` | SQLite backend forwarded to `zeph-durable`/`zeph-sanitizer`/`zeph-skills`/`zeph-tools` (enabled by `default`) |
+| `postgres` | PostgreSQL backend forwarded to the same crates |
 
 ## Installation
 

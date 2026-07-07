@@ -1,7 +1,9 @@
 # zeph-experiments
 
+[![Crates.io](https://img.shields.io/crates/v/zeph-experiments)](https://crates.io/crates/zeph-experiments)
+[![docs.rs](https://img.shields.io/docsrs/zeph-experiments)](https://docs.rs/zeph-experiments)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Experiment engine for adaptive agent behavior — autonomous hyperparameter search and A/B testing for Zeph.
 
@@ -9,16 +11,13 @@ Experiment engine for adaptive agent behavior — autonomous hyperparameter sear
 
 Provides a self-experimentation loop that mutates agent configuration parameters (temperature, top-p, system prompt), runs benchmark evaluations using LLM-as-judge scoring, and tracks results in SQLite. Three search strategies — exhaustive grid sweep, random sampling, and local neighborhood search — are available. Experiments can be triggered on-demand via slash commands or scheduled via cron.
 
-> [!NOTE]
-> This crate is marked `publish = false`. It is an internal workspace crate not published to crates.io.
-
 ## Key types
 
 | Type | Description |
 |------|-------------|
 | `Variation` | A config mutation (temperature, top-p, top-k, frequency/presence penalty, system prompt) |
 | `ExperimentResult` | Single experiment outcome with LLM-as-judge score and latency |
-| `ExperimentStatus` | Lifecycle enum (`Idle`, `Running`, `Completed`, `Failed`) |
+| `ExperimentEngine` | Orchestrator: evaluates a baseline, iterates variations (greedy hill-climbing), and persists results; yields an `ExperimentSessionReport` |
 | `BenchmarkSet` / `BenchmarkCase` | Evaluation dataset loaded from a TOML file |
 | `Evaluator` | Runs benchmark cases with parallel judge scoring and token budget enforcement |
 | `EvalReport` | Summary with mean score, p50/p95 latency, error count |
@@ -51,7 +50,7 @@ max_experiments = 10
 max_wall_time_secs = 300
 eval_budget_tokens = 4096
 min_improvement = 0.05       # minimum score gain to accept a variation
-eval_model = "claude-haiku-4-5-20251001"   # optional; defaults to primary provider
+eval_provider = "fast"       # references a [[llm.providers]] name; empty = primary provider
 
 # Scheduled experiments via cron
 [experiments.schedule]
@@ -66,11 +65,12 @@ Benchmark datasets are loaded from TOML files:
 # benchmark.toml
 [[cases]]
 prompt = "Explain Rust ownership in one sentence."
-expected_keywords = ["ownership", "borrow", "move"]
+reference = "Each value has a single owner; the value is dropped when the owner goes out of scope."
+tags = ["rust", "concepts"]
 
 [[cases]]
 prompt = "Write a hello world in Python."
-expected_keywords = ["print", "hello"]
+reference = "print(\"hello world\")"
 ```
 
 Pass the benchmark file via config:
@@ -80,28 +80,20 @@ Pass the benchmark file via config:
 benchmark_file = ".zeph/benchmarks/core.toml"
 ```
 
-## Features
-
-| Feature | Description |
-|---------|-------------|
-| `experiments` | Activates the experiment engine (required) |
-| `mock` | Enables `MockProvider` for offline testing |
-
 ## Installation
 
-This crate is a workspace-internal dependency. Reference it from another workspace crate:
+```bash
+cargo add zeph-experiments
+```
+
+Or reference it from another workspace crate:
 
 ```toml
 [dependencies]
 zeph-experiments = { workspace = true }
 ```
 
-Enable the feature flag:
-
-```toml
-[features]
-experiments = ["zeph-experiments/experiments"]
-```
+This crate exposes no Cargo features — the engine is always available once the dependency is added.
 
 ## Documentation
 

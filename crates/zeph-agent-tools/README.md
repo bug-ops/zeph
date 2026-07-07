@@ -3,6 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-agent-tools)](https://crates.io/crates/zeph-agent-tools)
 [![docs.rs](https://img.shields.io/docsrs/zeph-agent-tools)](https://docs.rs/zeph-agent-tools)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Agent tool dispatcher for Zeph: provides the `AgentChannel` sealed trait, borrowed event
 carriers, and doom-loop detection utilities used by the tool dispatch loop in `zeph-core`.
@@ -53,6 +54,15 @@ adapter type `AgentChannelView<'a, C>`. This avoids the circular dependency that
 from referencing `zeph_core::channel::Channel` directly from inside the dispatcher crate.
 
 `zeph-core` depends on this crate; downstream channels (`zeph-channels`) do not.
+
+## Features
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `sqlite` | on | SQLite backend forwarded to `zeph-mcp`, `zeph-orchestration`, `zeph-sanitizer`, `zeph-skills`, `zeph-tools`, and `zeph-agent-persistence` |
+| `postgres` | off | PostgreSQL backend forwarded to the same downstream crates |
+
+A storage backend must be selected for the crate to compile; `sqlite` is the default.
 
 > **Note:** This crate is Phase 2 scaffolding (issue #3516). The `AgentChannel` trait and
 > borrowed event carriers are complete. Full `ToolDispatcher` extraction from `zeph-core` is

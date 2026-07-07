@@ -3,9 +3,17 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-agent-persistence)](https://crates.io/crates/zeph-agent-persistence)
 [![docs.rs](https://img.shields.io/docsrs/zeph-agent-persistence)](https://docs.rs/zeph-agent-persistence)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Agent persistence service for Zeph: loads conversation history from and writes messages to the
 `SemanticMemory` backend (SQLite + Qdrant), with tool-pair sanitization and embedding decisions.
+
+## Installation
+
+```toml
+[dependencies]
+zeph-agent-persistence = { version = "0.22", workspace = true }
+```
 
 ## Key types
 
@@ -32,7 +40,6 @@ use zeph_llm::provider::Role;
 async fn example(
     memory_view: &mut MemoryPersistenceView<'_>,
     security: &SecurityView<'_>,
-    config: &zeph_config::Config,
     metrics: &mut MetricsView<'_>,
 ) {
     let svc = PersistenceService::new();
@@ -46,7 +53,7 @@ async fn example(
 
     let mut last_id = None;
     let outcome = svc
-        .persist_message(req, &mut last_id, memory_view, security, config, metrics)
+        .persist_message(req, &mut last_id, memory_view, security, metrics)
         .await;
 
     if let Some(id) = outcome.message_id {
@@ -64,6 +71,15 @@ the persistence and tool-dispatch subsystems independently evolvable.
 `zeph-core` depends on this crate and constructs the borrow-lens views (`MemoryPersistenceView`,
 `SecurityView`, `MetricsView`) from disjoint field projections of `Agent<C>`, then delegates to
 `PersistenceService` methods.
+
+## Features
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `sqlite` | on | SQLite backend forwarded to `zeph-memory` and `zeph-session` |
+| `postgres` | off | PostgreSQL backend forwarded to the same downstream crates |
+
+A storage backend must be selected for the crate to compile; `sqlite` is the default.
 
 ## License
 

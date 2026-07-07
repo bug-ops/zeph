@@ -3,13 +3,13 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-llm)](https://crates.io/crates/zeph-llm)
 [![docs.rs](https://img.shields.io/docsrs/zeph-llm)](https://docs.rs/zeph-llm)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 LLM provider abstraction with Ollama, Claude, OpenAI, Gemini, Gonka, and Candle backends.
 
 ## Overview
 
-Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, OpenAI, Google Gemini, Gonka (signed native transport), and OpenAI-compatible endpoints. Includes an orchestrator for multi-model coordination, a router for model selection, an optional Candle backend for local inference, and an SQLite-backed response cache with blake3 key hashing and TTL expiry.
+Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, OpenAI, Google Gemini, Gonka (signed native transport), and OpenAI-compatible endpoints. Includes a `RouterProvider` that selects among backends via four strategies (EMA, Thompson sampling, cascade, LinUCB bandit), a typed structured-extraction layer (`Extractor` / `chat_typed`), an optional Candle backend for local inference, and a disk-backed cache for remote model listings.
 
 ## Key modules
 
@@ -21,23 +21,26 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 | `openai` | OpenAI backend with `with_client()` builder for shared `reqwest::Client` |
 | `gemini` | Google Gemini backend (`generateContent` + `streamGenerateContent?alt=sse`); system prompt mapped to `systemInstruction`, `assistant` role to `"model"`, consecutive same-role message merging, thinking parts surfaced as `StreamChunk::Thinking`, `functionCall` parts in SSE stream emitted as `StreamChunk::ToolUse`; configured via `[llm.gemini]` and `ZEPH_GEMINI_API_KEY` |
 | `compatible` | Generic OpenAI-compatible endpoint backend |
-| `gonka` | Gonka native inference backend — signed HTTP transport via `RequestSigner` (HMAC-based), `EndpointPool` for weighted multi-node load balancing; supports `chat`, `chat_stream`, `embed`, and `chat_with_tools` |
-| `candle_provider` | Local inference via Candle (optional feature) |
-| `orchestrator` | Multi-model coordination and fallback; `send_with_retry()` helper deduplicates retry logic |
-| `router` | Model selection and routing logic with two strategies: EMA latency tracking and Thompson Sampling (Beta distributions). `RouterProvider` dispatches to the configured strategy and records outcomes per provider. Providers stored as `Arc<[AnyProvider]>` — `clone()` on every LLM request is O(1) regardless of chain length |
-| `vision` | Image input support — base64-encoded images in LLM requests; optional dedicated `vision_model` per provider |
-| `extractor` | `chat_typed<T>()` — typed LLM output via JSON Schema (`schemars`); per-`TypeId` schema caching |
+| `gonka` | Gonka native inference backend — signed HTTP transport via `RequestSigner`, `EndpointPool` for weighted multi-node load balancing; supports `chat`, `chat_stream`, `embed`, and `chat_with_tools` (feature `gonka`) |
+| `candle_provider` | Local inference via Candle (feature `candle`) |
+| `any` | `AnyProvider` enum wrapping every backend for uniform dispatch |
+| `router` | `RouterProvider` selects among backends via four strategies: EMA latency tracking, Thompson sampling (Beta distributions), cascade escalation, and LinUCB bandit. Providers stored as `Arc<[AnyProvider]>` — `clone()` on every LLM request is O(1) regardless of chain length |
+| `extractor` | `Extractor` / `chat_typed<T>()` — typed LLM output via JSON Schema (`schemars`); per-`TypeId` schema caching |
 | `sse` | Shared `sse_to_chat_stream()` helpers for Claude and OpenAI SSE parsing |
-| `stt` | `SpeechToText` trait and `WhisperProvider` (OpenAI Whisper, feature-gated behind `stt`) |
-| `candle_whisper` | Local offline STT via Candle (whisper-tiny/base/small, feature-gated behind `candle`) |
+| `stt` | `SpeechToText` trait and `WhisperProvider` (OpenAI Whisper API) |
+| `whisper` | Whisper model plumbing shared by the STT backends |
+| `candle_whisper` | Local offline STT via Candle (whisper-tiny/base/small, feature `candle`) |
+| `classifier` | Candle-backed classifiers and metrics (feature `classifiers`) |
+| `model_cache` | Disk-backed cache for remote model listings (24-hour TTL) |
+| `masking` | `MaskedProvider` / `OutboundMasker` — outbound secret masking |
 | `http` | `default_client()` — shared HTTP client with standard timeouts and user-agent |
 | `error` | `LlmError` — unified error type; `ContextLengthExceeded` variant with `is_context_length_error()` heuristic matching across provider error formats (Claude, OpenAI, Ollama) |
 
-**Re-exports:** `LlmProvider`, `LlmError`
+**Re-exports:** `LlmProvider`, `LlmProviderDyn`, `LlmError`, `Extractor`, `ChatStream`, `StreamChunk`, `CompatibleConfig`, `OpenAiConfig`, `MaskedProvider`, `SpeechToText`
 
 ## Router strategies
 
-The router supports two strategies for ordering providers in the fallback chain. Set the strategy in `[llm.router]`:
+The router supports four strategies — EMA and Thompson sampling reorder the fallback chain (covered below); cascade and LinUCB bandit have their own sections further down. Set the strategy in `[llm.router]`:
 
 ### EMA (default)
 
@@ -246,34 +249,29 @@ Store the API key in the vault: `zeph vault set ZEPH_GEMINI_API_KEY AIza...`
 
 ## Features
 
+All backends (Ollama, Claude, OpenAI, Gemini, compatible) and the OpenAI Whisper STT path are always compiled — no default features are required. `schemars`, `chat_typed`, and `Extractor` are always available. The optional features below add local inference and specialized backends.
+
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `schema` | on | `schemars` dependency, `chat_typed`, `Extractor`, and per-`TypeId` schema caching |
-| `mock` | off | `MockProvider` for unit testing without a live LLM endpoint |
-| `stt` | off | `WhisperProvider` using OpenAI Whisper API (requires `reqwest/multipart`) |
-| `candle` | off | Local GGUF inference via Candle; pulls in `candle-core`, `candle-nn`, `candle-transformers`, `hf-hub`, `tokenizers`, `symphonia`, `rubato` |
-| `cuda` | off | Enables CUDA backend for Candle (implies `candle`) |
-| `metal` | off | Enables Metal backend for Candle on Apple Silicon (implies `candle`) |
-
-To compile without `schemars`:
-
-```bash
-cargo build -p zeph-llm --no-default-features
-```
+| `candle` | off | Local inference via Candle; pulls in `candle-core`, `candle-nn`, `candle-transformers`, `hf-hub`, `tokenizers`, `symphonia`, `rubato`. Enables `candle_provider` and `candle_whisper` |
+| `classifiers` | off | Candle-backed classifiers (implies `candle`) |
+| `cuda` | off | CUDA backend for Candle (implies `candle`) |
+| `metal` | off | Metal backend for Candle on Apple Silicon (implies `candle`) |
+| `gonka` | off | Gonka native signed-transport backend (`k256`, `bech32`, `ripemd`) |
+| `cocoon` | off | Cocoon provider integration |
+| `testing` | off | Exposes `MockProvider` for unit testing without a live LLM endpoint |
+| `profiling` | off | Extra tracing spans for latency profiling |
 
 ## Installation
 
 ```bash
 cargo add zeph-llm
 
-# Without schemars (chat_typed and Extractor not available)
-cargo add zeph-llm --no-default-features
-
 # With local inference via Candle
 cargo add zeph-llm --features candle
 
-# With OpenAI Whisper STT
-cargo add zeph-llm --features stt
+# With the Gonka native backend
+cargo add zeph-llm --features gonka
 ```
 
 ## Documentation

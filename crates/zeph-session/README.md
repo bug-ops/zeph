@@ -9,13 +9,13 @@ Conversation-session persistence for [Zeph](https://github.com/bug-ops/zeph): an
 event log, deterministic replay, and fork engine, shared by every channel (CLI, TUI, Telegram, ACP,
 `zeph serve`).
 
-> [!IMPORTANT]
-> This crate is **under active construction** (spec-068, issue
-> [#5343](https://github.com/bug-ops/zeph/issues/5343)). The foundation — `SessionEvent` schema,
-> the JSONL event log with torn-append recovery, the `acp_sessions` metadata store, the replay
-> engine, and the `Condenser` trait contract — has landed. The fork engine, the default
-> `LlmCondenser`, agent-loop wiring (`SessionSink`), `zeph serve`, and the `/conv` TUI commands
-> land in follow-up phases of the plan.
+> [!NOTE]
+> Implements spec-068 (issue [#5343](https://github.com/bug-ops/zeph/issues/5343)): the
+> `SessionEvent` schema, the JSONL event log with torn-append recovery, the `acp_sessions`
+> metadata store, the deterministic replay engine, the `Condenser` trait contract and its default
+> `LlmCondenser`, and the eager-copy `ForkEngine`. It is consumed by `zeph-core` (agent-loop
+> `SessionSink` wiring, `zeph serve` per-session actors, `/conv` commands) and `zeph-acp`
+> (session load/list/fork/resume handlers).
 
 ## Overview
 
@@ -36,3 +36,46 @@ single-writer actor model) but is a **separate** crate — the two record differ
 different storage formats. `zeph-session` does not depend on `zeph-durable`, and vice versa.
 
 See `specs/068-session-persistence/spec.md` and `plan.md` for the full design and phased rollout.
+
+## Module map
+
+| Module | Description |
+|--------|-------------|
+| `event` | `SessionEvent` tagged enum and its `SessionEventEnvelope` on-disk wrapper |
+| `log` | `SessionEventLog` — append-only JSONL writer/reader with torn-append truncation (INV-SP-2) |
+| `store` | `SessionStore` — CRUD over the `acp_sessions` metadata index |
+| `replay` | `ReplayEngine` — deterministic fold of an event log into agent-ready messages; never calls the LLM |
+| `condenser` | `Condenser` trait contract and the non-overlap guard (INV-SP-4) |
+| `llm_condenser` | `LlmCondenser` — default `Condenser`, reusing `zeph_context::summarization` |
+| `fork` | `ForkEngine` — eager-copy session forking |
+| `error` | `SessionError` — crate-wide error enum |
+
+## Usage
+
+The on-disk layout for one session is derived from the data directory and session id:
+
+```rust
+use std::path::Path;
+
+let dir = zeph_session::session_dir(Path::new(".zeph/sessions"), "abc-123");
+assert_eq!(dir, Path::new(".zeph/sessions/sessions/abc-123"));
+```
+
+## Features
+
+Exactly one storage backend must be selected for the `acp_sessions` metadata index; `sqlite` is the default.
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `sqlite` | yes | SQLite backend for `zeph-db` |
+| `postgres` | no | PostgreSQL backend for `zeph-db` |
+
+## Installation
+
+```bash
+cargo add zeph-session
+```
+
+## License
+
+MIT

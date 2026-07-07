@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-tools)](https://crates.io/crates/zeph-tools)
 [![docs.rs](https://img.shields.io/docsrs/zeph-tools)](https://docs.rs/zeph-tools)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Tool executor trait with shell, web scrape, and composite executors for Zeph.
 
@@ -136,7 +136,7 @@ TAFC injects a reasoning step before tool selection, allowing the LLM to evaluat
 
 ## Speculative tool dispatch
 
-`SpeculativeEngine` pre-runs read-only tool calls while the LLM generates its response. Results are cached in `SpeculativeCache` and reused when the model issues the same tool call — eliminating the round-trip latency for deterministic read operations. Non-deterministic or state-mutating tools are excluded from speculation via the `requires_confirmation` policy gate.
+Speculative dispatch pre-runs read-only tool calls while the LLM generates its response and reuses the cached result when the model issues the same call — eliminating the round-trip latency for deterministic read operations. Non-deterministic or state-mutating tools are excluded from speculation via the `requires_confirmation` policy gate. Configure via `SpeculativeConfig` / `SpeculationMode` under `[tools.speculative]`.
 
 ## Dynamic tool schema filtering
 
@@ -188,8 +188,10 @@ Rules are merged into `PolicyEnforcer` at startup. `[tools.policy]` rules always
 
 | Feature | Description |
 |---------|-------------|
-| `policy-enforcer` | Enables `PolicyEnforcerConfig` and policy-based tool access control |
-| `sandbox` | Enables OS-level tool isolation: macOS Seatbelt (Sandbox framework) and Linux Landlock + seccomp BPF |
+| `sqlite` | SQLite backend for `zeph-db`/`zeph-sanitizer` (enabled by `default`) |
+| `postgres` | PostgreSQL backend for `zeph-db`/`zeph-sanitizer` |
+| `sandbox` | Gates Linux-only Landlock + seccomp BPF deps; the macOS Seatbelt backend compiles unconditionally |
+| `profiling` | Emits `tracing` instrumentation spans around executor hot paths |
 
 ## Installation
 

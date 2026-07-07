@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-config)](https://crates.io/crates/zeph-config)
 [![docs.rs](https://img.shields.io/docsrs/zeph-config)](https://docs.rs/zeph-config)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Pure-data configuration types for Zeph — all TOML config structs with serde derive, validation, and migration support.
 
@@ -46,23 +46,15 @@ embedding_model = "qwen3-embedding"
 ## Usage
 
 ```rust
-use zeph_config::Config;
-
-// Load config from the default path (~/.config/zeph/config.toml)
-let config = Config::load(None)?;
-
-println!("Provider: {}", config.llm.effective_provider());
-println!("Max tool iterations: {}", config.agent.max_tool_iterations);
-```
-
-Custom path and environment overrides:
-
-```rust
 use std::path::Path;
 use zeph_config::Config;
 
-let config = Config::load(Some(Path::new("/etc/zeph/config.toml")))?;
-// ZEPH_LLM_PROVIDER, ZEPH_LOG_LEVEL, etc. are applied automatically
+// Load config from a TOML file (falls back to defaults when the file does not exist).
+// Env-var overrides (ZEPH_LLM_PROVIDER, ZEPH_LOG_LEVEL, …) are applied automatically.
+let config = Config::load(Path::new("/etc/zeph/config.toml"))?;
+
+println!("Provider: {}", config.llm.effective_provider());
+println!("Max tool iterations: {}", config.agent.max_tool_iterations);
 ```
 
 Config migration (add missing sections from the canonical default):
@@ -76,11 +68,7 @@ zeph migrate-config --in-place # update file in place
 
 | Feature | Description |
 |---------|-------------|
-| `guardrail` | Enables `GuardrailConfig` under `[security.guardrail]` |
-| `lsp-context` | Enables `LspConfig` under `[agent.lsp]` for LSP context injection hooks |
-| `compression-guidelines` | Enables `CompressionGuidelinesConfig` under `[memory.compression]` |
-| `experiments` | Enables `ExperimentConfig` and `ExperimentSchedule` under `[experiments]` |
-| `policy-enforcer` | Enables `PolicyEnforcerConfig` under `[tools.policy]` |
+| `deep-link` | Enables `zeph://` deep-link config fields (paired with the `deep-link` feature in `zeph-common`) |
 
 ## Environment variable overrides
 

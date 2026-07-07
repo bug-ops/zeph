@@ -3,13 +3,13 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-scheduler)](https://crates.io/crates/zeph-scheduler)
 [![docs.rs](https://img.shields.io/docsrs/zeph-scheduler)](https://docs.rs/zeph-scheduler)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Cron-based periodic and one-shot task scheduler with SQLite persistence for Zeph.
 
 ## Overview
 
-Manages recurring and deferred background tasks. Periodic tasks run on a cron schedule; one-shot tasks fire at a specific point in time. All job state, next-run timestamps, and task mode are persisted in SQLite. The scheduler is controlled at runtime via an `mpsc` channel — tasks can be added or cancelled without restarting the agent. When combined with the `experiments` feature flag, the scheduler can run autonomous experiment sessions on a cron schedule via `TaskKind::Experiment`. Task prompts are injected with an explicit execution prefix for unambiguous agent-loop recognition. Feature-gated behind `scheduler`.
+Manages recurring and deferred background tasks. Periodic tasks run on a cron schedule; one-shot tasks fire at a specific point in time. All job state, next-run timestamps, and task mode are persisted in SQLite. The scheduler is controlled at runtime via an `mpsc` channel — tasks can be added or cancelled without restarting the agent. `TaskKind::Experiment` lets the `zeph-experiments` crate run autonomous experiment sessions on a cron schedule. Task prompts are injected with an explicit execution prefix for unambiguous agent-loop recognition. Enabled via the root `zeph` crate's `scheduler` feature bundle.
 
 ## Key Modules
 
@@ -19,6 +19,8 @@ Manages recurring and deferred background tasks. Periodic tasks run on a cron sc
 - **handlers** — `CustomTaskHandler` — injects a sanitized prompt into the agent loop via `mpsc::Sender<String>`
 - **sanitize** — `sanitize_task_prompt` — strips control characters and truncates to 512 code points
 - **update_check** — `UpdateCheckHandler` for GitHub releases version check
+- **durable** — `SchedulerDurableAdapter` bridges scheduled runs onto the `zeph-durable` journaled execution layer for crash-resume
+- **daemon** / **pidfile** — `#[cfg(all(unix, feature = "daemon"))]` — `DaemonConfig`, `detach_and_run`, `run_foreground`, `daemon_status`, `stop_daemon`, and the `PidFile` `flock(2)` guard
 - **error** — `SchedulerError` error types
 
 ## Task Modes
@@ -54,7 +56,7 @@ Messages are drained at the start of every tick. The channel capacity is 64 slot
 | `TaskKind::SkillRefresh` | `skill_refresh` | Hot-reload changed skill files |
 | `TaskKind::HealthCheck` | `health_check` | Periodic self-diagnostics |
 | `TaskKind::UpdateCheck` | `update_check` | Check GitHub releases for a newer version |
-| `TaskKind::Experiment` | `experiment` | Run an autonomous experiment session (requires `experiments` feature) |
+| `TaskKind::Experiment` | `experiment` | Run an autonomous experiment session (driven by the `zeph-experiments` crate) |
 | `TaskKind::Custom(String)` | any other string | Custom prompt injected into the agent loop |
 
 ## CustomTaskHandler
@@ -189,7 +191,15 @@ cargo add zeph-scheduler
 Enabled via the `scheduler` feature flag on the root `zeph` crate.
 
 > [!IMPORTANT]
-> Requires Rust 1.95 or later.
+> Requires Rust 1.96 or later.
+
+## Features
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `sqlite` | yes | SQLite backend for `zeph-db` / `zeph-durable` job persistence |
+| `postgres` | no | PostgreSQL backend for `zeph-db` / `zeph-durable` |
+| `daemon` | no | Unix daemon lifecycle: `PidFile`, `detach_and_run`, `run_foreground`, `daemon_status`, `stop_daemon`. Pulls in `rustix` for advisory `flock(2)` pid-file locking; `#[cfg(unix)]`-gated |
 
 ## Documentation
 
