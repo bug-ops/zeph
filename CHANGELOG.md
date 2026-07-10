@@ -16,6 +16,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   resume`). `events` is still fully read via `SessionEventLog::read_all` — a deliberate second
   sequential I/O pass, not a second in-memory copy — since `reconcile_projection` and
   `maybe_condense_on_resume` need the full owned event list (#5851).
+- `fix`: corrected root `Cargo.toml`'s `[workspace.package] license` from `"MIT"` to
+  `"MIT OR Apache-2.0"`, matching the project's actual, long-standing SPDX header convention —
+  every `.rs` file across the workspace has carried `// SPDX-License-Identifier: MIT OR Apache-2.0`
+  since v0.12.0 via `./.github/scripts/add-spdx-headers.sh`/`./scripts/add-spdx-headers.sh`, but
+  `license.workspace = true` was propagating the narrower MIT-only license to every crate's Cargo
+  metadata, contradicting those headers. Added `LICENSE-APACHE` at the repo root (the standard
+  Apache License, Version 2.0 text) alongside the existing MIT `LICENSE`, so both halves of the
+  dual-license declaration have a corresponding license file (#5855).
 
 ### Changed
 

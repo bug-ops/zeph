@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/zeph-db)](https://crates.io/crates/zeph-db)
 [![docs.rs](https://img.shields.io/docsrs/zeph-db)](https://docs.rs/zeph-db)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](../../LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Database abstraction layer for [Zeph](https://github.com/bug-ops/zeph) — unified SQLite and PostgreSQL backends with compile-time backend selection, automatic migrations, dialect-aware SQL helpers, and FTS support.
@@ -171,4 +171,4 @@ Rust **1.96** (Edition 2024, resolver 3).
 
 ## License
 
-MIT — see [LICENSE](../../LICENSE).
+Licensed under either of [MIT](../../LICENSE) or [Apache License, Version 2.0](../../LICENSE-APACHE) at your option.

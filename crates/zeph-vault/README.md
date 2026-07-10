@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/zeph-vault)](https://crates.io/crates/zeph-vault)
 [![docs.rs](https://img.shields.io/docsrs/zeph-vault)](https://docs.rs/zeph-vault)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](../../LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 `VaultProvider` trait and backends (env, age) for Zeph secret management.
@@ -86,4 +86,4 @@ Full documentation: <https://bug-ops.github.io/zeph/>
 
 ## License
 
-MIT
+Licensed under either of [MIT](../../LICENSE) or [Apache License, Version 2.0](../../LICENSE-APACHE) at your option.

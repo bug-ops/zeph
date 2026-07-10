@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/zeph-session)](https://crates.io/crates/zeph-session)
 [![docs.rs](https://img.shields.io/docsrs/zeph-session)](https://docs.rs/zeph-session)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](../../LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Conversation-session persistence for [Zeph](https://github.com/bug-ops/zeph): an append-only JSONL
@@ -78,4 +78,4 @@ cargo add zeph-session
 
 ## License
 
-MIT
+Licensed under either of [MIT](../../LICENSE) or [Apache License, Version 2.0](../../LICENSE-APACHE) at your option.

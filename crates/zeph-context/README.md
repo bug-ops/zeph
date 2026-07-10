@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/zeph-context)](https://crates.io/crates/zeph-context)
 [![docs.rs](https://img.shields.io/docsrs/zeph-context)](https://docs.rs/zeph-context)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](../../LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Context budget, lifecycle management, compaction strategy, and stateless context assembler for the
@@ -43,4 +43,4 @@ At every compaction boundary the invariant is checked before the LLM compaction 
 
 ## License
 
-MIT — see [LICENSE](../../LICENSE).
+Licensed under either of [MIT](../../LICENSE) or [Apache License, Version 2.0](../../LICENSE-APACHE) at your option.

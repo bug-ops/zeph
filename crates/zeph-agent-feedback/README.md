@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/zeph-agent-feedback)](https://crates.io/crates/zeph-agent-feedback)
 [![docs.rs](https://img.shields.io/docsrs/zeph-agent-feedback)](https://docs.rs/zeph-agent-feedback)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../../LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](../../LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
 
 Implicit correction detection for the [Zeph](https://github.com/bug-ops/zeph) AI agent.
@@ -101,4 +101,4 @@ if judge.check_rate_limit() {
 
 ## License
 
-MIT — see [LICENSE](../../LICENSE).
+Licensed under either of [MIT](../../LICENSE) or [Apache License, Version 2.0](../../LICENSE-APACHE) at your option.
