@@ -202,6 +202,13 @@ impl CompatibleProvider {
     pub fn set_reasoning_effort(&mut self, effort: Option<String>) {
         self.inner.set_reasoning_effort(effort);
     }
+
+    /// Return the currently configured `reasoning_effort` value on the inner
+    /// [`OpenAiProvider`], if any.
+    #[must_use]
+    pub fn current_reasoning_effort(&self) -> Option<String> {
+        self.inner.reasoning_effort.clone()
+    }
 }
 
 impl LlmProvider for CompatibleProvider {

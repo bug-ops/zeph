@@ -715,6 +715,7 @@ channels.
 | `--vault-key <PATH>` | Path to age identity (private key) file (default: `~/.config/zeph/vault-key.txt`, overrides `ZEPH_VAULT_KEY` env var) |
 | `--vault-path <PATH>` | Path to age-encrypted secrets file (default: `~/.config/zeph/secrets.age`, overrides `ZEPH_VAULT_PATH` env var) |
 | `--thinking <MODE>` | Enable Claude thinking mode: `extended:<budget>`, `adaptive`, or `adaptive:<effort>` (`low`/`medium`/`high`). Overrides config. Example: `--thinking extended:10000` |
+| `--reasoning-effort <LEVEL>` | Set the default reasoning-effort level (`low`/`medium`/`high`) at startup for every configured provider that supports it: Claude (adaptive thinking), OpenAI/Compatible (`reasoning_effort`), Gemini (thinking level). No startup equivalent exists for a thinking-token *budget* on non-Claude providers — configure `thinking_budget` in `config.toml` for Gemini, or use the runtime `/think-tokens` command. Can also be changed mid-session with `/reasoning-effort`, session-only |
 | `--guardrail` | Enable LLM-based guardrail (prompt injection pre-screening). Overrides `security.guardrail.enabled` |
 | `--graph-memory` | Enable graph-based knowledge memory for this session, overriding `memory.graph.enabled`. See [Graph Memory](../concepts/graph-memory.md) |
 | `--compression-guidelines` | Enable ACON failure-driven compression guidelines for this session, overriding `memory.compression_guidelines.enabled`. Requires `compression-guidelines` feature at compile time; silently ignored otherwise. See [Memory](../concepts/memory.md) |

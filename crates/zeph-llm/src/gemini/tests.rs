@@ -1949,3 +1949,38 @@ fn thinking_budget_invalid_values_rejected() {
             .is_err()
     );
 }
+
+#[test]
+fn set_thinking_budget_runtime_mutates_in_place() {
+    let mut p = GeminiProvider::new("key".into(), "gemini-2.5-flash".into(), 2048);
+    assert!(p.current_thinking_budget().is_none());
+
+    p.set_thinking_budget(Some(1024)).unwrap();
+    assert_eq!(p.current_thinking_budget(), Some(1024));
+
+    // M1: disable maps to Some(0), the explicit runtime "off" — None would mean "unset,
+    // fall back to config default", which could silently re-enable thinking.
+    p.set_thinking_budget(Some(0)).unwrap();
+    assert_eq!(p.current_thinking_budget(), Some(0));
+}
+
+#[test]
+fn set_thinking_budget_out_of_range_rejected() {
+    let mut p = GeminiProvider::new("key".into(), "gemini-2.5-flash".into(), 2048);
+    let err = p.set_thinking_budget(Some(-2)).unwrap_err();
+    assert!(err.to_string().contains("out of range"), "{err}");
+    let err = p.set_thinking_budget(Some(32769)).unwrap_err();
+    assert!(err.to_string().contains("out of range"), "{err}");
+}
+
+#[test]
+fn set_thinking_level_runtime_mutates_in_place() {
+    let mut p = GeminiProvider::new("key".into(), "gemini-2.5-flash".into(), 2048);
+    assert!(p.current_reasoning_effort().is_none());
+
+    p.set_thinking_level(Some(ThinkingLevel::High));
+    assert_eq!(p.current_reasoning_effort().as_deref(), Some("high"));
+
+    p.set_thinking_level(None);
+    assert!(p.current_reasoning_effort().is_none());
+}

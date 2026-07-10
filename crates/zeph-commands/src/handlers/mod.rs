@@ -31,10 +31,12 @@ pub mod model;
 pub mod plan;
 pub mod plugins;
 pub mod policy;
+pub mod reasoning_effort;
 pub mod scheduler;
 pub mod session;
 pub mod skill;
 pub mod status;
 #[cfg(test)]
 pub mod test_helpers;
+pub mod think_tokens;
 pub mod trajectory;

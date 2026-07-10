@@ -44,6 +44,7 @@ use crate::provider::{
 };
 use crate::router::RouterProvider;
 use crate::router::triage::TriageRouter;
+use zeph_config::ThinkingConfig;
 
 /// Generates a match over all `AnyProvider` variants, binding the inner provider
 /// and evaluating the given closure for each arm.
@@ -119,6 +120,80 @@ pub enum AnyProvider {
     /// built (`zeph_core::provider_factory::build_provider_from_entry`) — this is a structural
     /// choke point, not a per-call-site opt-in.
     Masked(Box<MaskedProvider>),
+}
+
+/// Runtime reasoning-effort level for the `/reasoning-effort` slash command.
+///
+/// Owned by `zeph-llm` (the crate that owns [`AnyProvider`]) rather than `zeph-commands`, so
+/// lower layers own the domain type and the command layer only parses into it. Mapped
+/// per-backend by [`AnyProvider::apply_reasoning_effort`]: Claude → `ThinkingConfig::Adaptive`,
+/// OpenAI/Compatible → the existing string-based `reasoning_effort` field, Gemini →
+/// `thinking_level`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningEffort {
+    /// Minimal reasoning depth; fastest responses.
+    Low,
+    /// Balanced reasoning depth.
+    Medium,
+    /// Maximum reasoning depth; slowest responses.
+    High,
+}
+
+impl ReasoningEffort {
+    /// Return the lowercase string representation (`"low"`, `"medium"`, `"high"`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
+impl From<ReasoningEffort> for zeph_config::ThinkingEffort {
+    fn from(effort: ReasoningEffort) -> Self {
+        match effort {
+            ReasoningEffort::Low => Self::Low,
+            ReasoningEffort::Medium => Self::Medium,
+            ReasoningEffort::High => Self::High,
+        }
+    }
+}
+
+impl From<ReasoningEffort> for zeph_config::GeminiThinkingLevel {
+    fn from(effort: ReasoningEffort) -> Self {
+        match effort {
+            ReasoningEffort::Low => Self::Low,
+            ReasoningEffort::Medium => Self::Medium,
+            ReasoningEffort::High => Self::High,
+        }
+    }
+}
+
+impl std::str::FromStr for ReasoningEffort {
+    type Err = String;
+
+    /// Parse a reasoning-effort level from a case-insensitive string.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_llm::any::ReasoningEffort;
+    ///
+    /// assert_eq!("HIGH".parse::<ReasoningEffort>(), Ok(ReasoningEffort::High));
+    /// assert!("minimal".parse::<ReasoningEffort>().is_err());
+    /// ```
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            other => Err(format!(
+                "unknown reasoning effort '{other}' — expected low|medium|high"
+            )),
+        }
+    }
 }
 
 impl AnyProvider {
@@ -458,6 +533,129 @@ impl AnyProvider {
             Self::Compatible(p) => p.set_reasoning_effort(effort),
             Self::Masked(p) => p.inner.set_reasoning_effort(effort),
             _ => {}
+        }
+    }
+
+    /// Set the runtime thinking-token budget on the active provider (`/think-tokens`).
+    ///
+    /// `None` disables thinking, mapped to each backend's native "off" representation:
+    /// Claude clears its `thinking` config and restores `max_tokens` to the construction-time
+    /// baseline (see [`crate::claude::ClaudeProvider::set_thinking`]); Gemini maps `None` to
+    /// `Some(0)`, its explicit disable value — never to `None`/unset, which could silently
+    /// re-enable thinking at the config default. `Some(n)` sets an explicit token budget.
+    ///
+    /// Only `Claude` and `Gemini` support a thinking-token budget. All other provider
+    /// variants return [`crate::LlmError::ModelCapabilityMismatch`] — this command never silently
+    /// no-ops.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `budget` is outside the active provider's valid range, or when
+    /// the active provider does not support a thinking-token budget.
+    pub fn set_thinking_budget(&mut self, budget: Option<u32>) -> Result<(), crate::LlmError> {
+        match self {
+            Self::Claude(p) => {
+                let thinking = budget.map(|n| ThinkingConfig::Extended { budget_tokens: n });
+                p.set_thinking(thinking)
+            }
+            Self::Gemini(p) => {
+                let i = match budget {
+                    // M1: Gemini's explicit disable value, never `None` (which means
+                    // "unset — fall back to config default" and could silently re-enable
+                    // thinking, the opposite of what the user asked for).
+                    None => 0,
+                    Some(n) => i32::try_from(n).unwrap_or(i32::MAX),
+                };
+                p.set_thinking_budget(Some(i))
+            }
+            Self::Masked(p) => p.inner.set_thinking_budget(budget),
+            other => Err(crate::LlmError::ModelCapabilityMismatch {
+                provider: other.name().to_owned(),
+                message: "does not support a thinking-token budget".into(),
+            }),
+        }
+    }
+
+    /// Apply a `/reasoning-effort` level to the active provider, mapped per-backend:
+    ///
+    /// - `Claude` → `ThinkingConfig::Adaptive { effort }`, overriding any active `Extended`
+    ///   token budget (the two are mutually-exclusive variants of the same `thinking` field —
+    ///   see [`Self::set_thinking_budget`]).
+    /// - `OpenAI` / `Compatible` → the existing string-based `reasoning_effort` field.
+    /// - `Gemini` → `thinking_level`.
+    /// - All other providers → [`crate::LlmError::ModelCapabilityMismatch`].
+    ///
+    /// This is the new session-only runtime entry point for `/reasoning-effort`. It is
+    /// deliberately separate from [`Self::set_reasoning_effort`] (the OpenAI-only,
+    /// string-based persistence-restore path) — merging them would blur this feature's
+    /// session-only scope boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the active provider does not support a reasoning-effort level.
+    pub fn apply_reasoning_effort(
+        &mut self,
+        effort: ReasoningEffort,
+    ) -> Result<(), crate::LlmError> {
+        match self {
+            Self::Claude(p) => p.set_thinking(Some(ThinkingConfig::Adaptive {
+                effort: Some(effort.into()),
+            })),
+            Self::OpenAi(p) => {
+                p.set_reasoning_effort(Some(effort.as_str().to_owned()));
+                Ok(())
+            }
+            Self::Compatible(p) => {
+                p.set_reasoning_effort(Some(effort.as_str().to_owned()));
+                Ok(())
+            }
+            Self::Gemini(p) => {
+                p.set_thinking_level(Some(effort.into()));
+                Ok(())
+            }
+            Self::Masked(p) => p.inner.apply_reasoning_effort(effort),
+            other => Err(crate::LlmError::ModelCapabilityMismatch {
+                provider: other.name().to_owned(),
+                message: "does not support reasoning effort".into(),
+            }),
+        }
+    }
+
+    /// Return the current thinking-token budget on the active provider, if any is set.
+    ///
+    /// `None` means thinking is disabled, the provider is in effort-based mode (Claude
+    /// `Adaptive`), or the provider does not support a token budget at all. Used by the
+    /// `/think-tokens` no-arg display path and by the `/provider` switch's reset-notice check.
+    #[must_use]
+    pub fn current_thinking_budget(&self) -> Option<u32> {
+        match self {
+            Self::Claude(p) => p.current_thinking_budget(),
+            // `0` (disabled) and `-1` (dynamic, unreachable via /think-tokens per M1) both
+            // display as "off" — only a positive explicit budget is shown as a number.
+            Self::Gemini(p) => p
+                .current_thinking_budget()
+                .and_then(|b| u32::try_from(b).ok())
+                .filter(|&b| b > 0),
+            Self::Masked(p) => p.inner().current_thinking_budget(),
+            _ => None,
+        }
+    }
+
+    /// Return the current reasoning-effort level on the active provider, if any is set.
+    ///
+    /// `None` means no effort level is set, the provider is in token-budget mode (Claude
+    /// `Extended`), or the provider does not support an effort level at all. Used by the
+    /// `/reasoning-effort` no-arg display path and by the `/provider` switch's reset-notice
+    /// check.
+    #[must_use]
+    pub fn current_reasoning_effort(&self) -> Option<String> {
+        match self {
+            Self::Claude(p) => p.current_reasoning_effort(),
+            Self::OpenAi(p) => p.reasoning_effort.clone(),
+            Self::Compatible(p) => p.current_reasoning_effort(),
+            Self::Gemini(p) => p.current_reasoning_effort(),
+            Self::Masked(p) => p.inner().current_reasoning_effort(),
+            _ => None,
         }
     }
 
@@ -1075,5 +1273,201 @@ mod tests {
             matches!(patched, AnyProvider::Ollama(_)),
             "variant must remain Ollama after with_generation_overrides"
         );
+    }
+
+    // ── ReasoningEffort ──────────────────────────────────────────────────────
+
+    #[test]
+    fn reasoning_effort_from_str_case_insensitive() {
+        assert_eq!("low".parse(), Ok(ReasoningEffort::Low));
+        assert_eq!("MEDIUM".parse(), Ok(ReasoningEffort::Medium));
+        assert_eq!("High".parse(), Ok(ReasoningEffort::High));
+    }
+
+    #[test]
+    fn reasoning_effort_from_str_rejects_unknown() {
+        assert!("minimal".parse::<ReasoningEffort>().is_err());
+        assert!("".parse::<ReasoningEffort>().is_err());
+    }
+
+    #[test]
+    fn reasoning_effort_as_str_roundtrip() {
+        for effort in [
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+        ] {
+            assert_eq!(effort.as_str().parse(), Ok(effort));
+        }
+    }
+
+    // ── set_thinking_budget / apply_reasoning_effort fan-out ────────────────
+
+    fn openai_provider() -> crate::openai::OpenAiProvider {
+        crate::openai::OpenAiProvider::new(crate::openai::OpenAiConfig {
+            api_key: "key".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4o".into(),
+            max_tokens: 1024,
+            embedding_model: None,
+            reasoning_effort: None,
+            context_window: None,
+            completion_tokens_param: None,
+        })
+    }
+
+    fn compatible_provider() -> crate::compatible::CompatibleProvider {
+        crate::compatible::CompatibleProvider::new(crate::compatible::CompatibleConfig {
+            provider_name: "together".into(),
+            api_key: "key".into(),
+            base_url: "https://api.together.xyz/v1".into(),
+            model: "m".into(),
+            max_tokens: 1024,
+            embedding_model: None,
+            completion_tokens_param: None,
+        })
+    }
+
+    #[test]
+    fn set_thinking_budget_claude_sets_and_clears() {
+        let mut provider = AnyProvider::Claude(ClaudeProvider::new("k".into(), "m".into(), 1024));
+        provider.set_thinking_budget(Some(8000)).unwrap();
+        assert_eq!(provider.current_thinking_budget(), Some(8000));
+
+        provider.set_thinking_budget(None).unwrap();
+        assert!(provider.current_thinking_budget().is_none());
+    }
+
+    #[test]
+    fn set_thinking_budget_gemini_none_maps_to_disable() {
+        let mut provider = AnyProvider::Gemini(GeminiProvider::new(
+            "k".into(),
+            "gemini-2.5-flash".into(),
+            1024,
+        ));
+        provider.set_thinking_budget(Some(1024)).unwrap();
+        assert_eq!(provider.current_thinking_budget(), Some(1024));
+
+        // M1: off maps to Gemini's native Some(0) disable value, not None/unset.
+        provider.set_thinking_budget(None).unwrap();
+        let AnyProvider::Gemini(ref inner) = provider else {
+            unreachable!()
+        };
+        assert_eq!(inner.current_thinking_budget(), Some(0));
+        // Display path folds the disabled 0 into "off" (None).
+        assert!(provider.current_thinking_budget().is_none());
+    }
+
+    #[test]
+    fn set_thinking_budget_unsupported_provider_returns_capability_mismatch() {
+        let mut provider = AnyProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "m".into(),
+            "e".into(),
+        ));
+        let err = provider.set_thinking_budget(Some(1024)).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::LlmError::ModelCapabilityMismatch { .. }
+        ));
+        assert!(err.to_string().contains("ollama"), "{err}");
+    }
+
+    #[test]
+    fn set_thinking_budget_masked_dispatches_to_inner() {
+        let inner = AnyProvider::Claude(ClaudeProvider::new("k".into(), "m".into(), 1024));
+        let mut provider = inner.masked(std::sync::Arc::new(NoopMasker));
+        provider.set_thinking_budget(Some(4000)).unwrap();
+        assert_eq!(provider.current_thinking_budget(), Some(4000));
+    }
+
+    #[test]
+    fn apply_reasoning_effort_claude_sets_adaptive_and_overrides_extended() {
+        let mut provider = AnyProvider::Claude(ClaudeProvider::new("k".into(), "m".into(), 1024));
+        provider.set_thinking_budget(Some(8000)).unwrap();
+        assert_eq!(provider.current_thinking_budget(), Some(8000));
+
+        // Cross-override: Extended and Adaptive share one field on Claude.
+        provider
+            .apply_reasoning_effort(ReasoningEffort::High)
+            .unwrap();
+        assert_eq!(provider.current_reasoning_effort().as_deref(), Some("high"));
+        assert!(provider.current_thinking_budget().is_none());
+    }
+
+    #[test]
+    fn apply_reasoning_effort_openai_sets_string_field() {
+        let mut provider = AnyProvider::OpenAi(openai_provider());
+        provider
+            .apply_reasoning_effort(ReasoningEffort::Medium)
+            .unwrap();
+        assert_eq!(
+            provider.current_reasoning_effort().as_deref(),
+            Some("medium")
+        );
+    }
+
+    #[test]
+    fn apply_reasoning_effort_compatible_sets_string_field() {
+        let mut provider = AnyProvider::Compatible(compatible_provider());
+        provider
+            .apply_reasoning_effort(ReasoningEffort::Low)
+            .unwrap();
+        assert_eq!(provider.current_reasoning_effort().as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn apply_reasoning_effort_gemini_sets_thinking_level() {
+        let mut provider =
+            AnyProvider::Gemini(GeminiProvider::new("k".into(), "gemini-3-pro".into(), 1024));
+        provider
+            .apply_reasoning_effort(ReasoningEffort::High)
+            .unwrap();
+        assert_eq!(provider.current_reasoning_effort().as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn apply_reasoning_effort_unsupported_provider_returns_capability_mismatch() {
+        let mut provider = AnyProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "m".into(),
+            "e".into(),
+        ));
+        let err = provider
+            .apply_reasoning_effort(ReasoningEffort::Low)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::LlmError::ModelCapabilityMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn apply_reasoning_effort_masked_dispatches_to_inner() {
+        let inner = AnyProvider::OpenAi(openai_provider());
+        let mut provider = inner.masked(std::sync::Arc::new(NoopMasker));
+        provider
+            .apply_reasoning_effort(ReasoningEffort::High)
+            .unwrap();
+        assert_eq!(provider.current_reasoning_effort().as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn current_thinking_budget_and_effort_none_by_default() {
+        let provider = AnyProvider::Ollama(OllamaProvider::new(
+            "http://localhost:11434",
+            "m".into(),
+            "e".into(),
+        ));
+        assert!(provider.current_thinking_budget().is_none());
+        assert!(provider.current_reasoning_effort().is_none());
+    }
+
+    #[derive(Debug)]
+    struct NoopMasker;
+    impl crate::masking::OutboundMasker for NoopMasker {
+        fn mask(&self, _text: &str) -> Option<String> {
+            None
+        }
     }
 }

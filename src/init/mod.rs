@@ -79,6 +79,11 @@ pub(crate) struct WizardState {
     pub(crate) acp_default_temperature_preset: zeph_config::AcpTemperaturePreset,
     pub(crate) thinking: Option<ThinkingConfig>,
     pub(crate) enable_extended_context: bool,
+    /// Default `reasoning_effort` for `OpenAI`/Compatible providers (`"low"|"medium"|"high"`).
+    /// Claude and Gemini configure their equivalent reasoning depth via `thinking` /
+    /// `gemini_thinking_level` above — this field is `OpenAI`-specific to avoid two
+    /// conflicting wizard prompts for the same knob on those providers.
+    pub(crate) reasoning_effort: Option<String>,
     pub(crate) agents_default_permission_mode: Option<PermissionMode>,
     pub(crate) agents_default_disallowed_tools: Vec<String>,
     pub(crate) agents_allow_bypass_permissions: bool,
@@ -364,6 +369,7 @@ impl Default for WizardState {
             acp_default_temperature_preset: zeph_config::AcpTemperaturePreset::default(),
             thinking: None,
             enable_extended_context: false,
+            reasoning_effort: None,
             agents_default_permission_mode: None,
             agents_default_disallowed_tools: Vec::new(),
             agents_allow_bypass_permissions: false,
@@ -766,6 +772,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             thinking: state.thinking.clone(),
             server_compaction: state.server_compaction_enabled,
             enable_extended_context: state.enable_extended_context,
+            reasoning_effort: state.reasoning_effort.clone(),
             thinking_level: state.gemini_thinking_level,
             vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
             gonka_nodes: state.gonka_nodes.clone(),
@@ -3285,6 +3292,34 @@ mod tests {
             Some("text-embedding-3-small")
         );
         assert_eq!(config.llm.embedding_model, "text-embedding-3-small");
+    }
+
+    #[test]
+    fn build_config_openai_writes_reasoning_effort() {
+        let state = WizardState {
+            provider: Some(ProviderKind::OpenAi),
+            model: Some("o3".into()),
+            reasoning_effort: Some("high".into()),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(
+            config.llm.providers[0].reasoning_effort.as_deref(),
+            Some("high")
+        );
+    }
+
+    #[test]
+    fn build_config_reasoning_effort_defaults_to_none_when_skipped() {
+        let state = WizardState {
+            provider: Some(ProviderKind::OpenAi),
+            model: Some("gpt-4o".into()),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.llm.providers[0].reasoning_effort.is_none());
     }
 
     // ── #4983: provider_effective_name edge cases ────────────────────────────

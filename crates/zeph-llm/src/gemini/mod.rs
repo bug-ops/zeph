@@ -96,7 +96,7 @@ impl GeminiProvider {
 
     #[must_use]
     pub fn with_thinking_level(mut self, level: ThinkingLevel) -> Self {
-        self.thinking_level = Some(level);
+        self.set_thinking_level(Some(level));
         self
     }
 
@@ -108,16 +108,67 @@ impl GeminiProvider {
     ///
     /// Returns [`LlmError::InvalidInput`] if `budget` is outside the valid range.
     pub fn with_thinking_budget(mut self, budget: i32) -> Result<Self, LlmError> {
-        if budget != -1 && !(0..=32768).contains(&budget) {
+        self.set_thinking_budget(Some(budget))?;
+        Ok(self)
+    }
+
+    /// Set the thinking level at runtime, in place. Pass `None` to clear it.
+    ///
+    /// Mirrors [`Self::with_thinking_level`] but mutates in place instead of consuming
+    /// `self`, for use by the runtime `/reasoning-effort` command.
+    pub fn set_thinking_level(&mut self, level: Option<ThinkingLevel>) {
+        self.thinking_level = level;
+    }
+
+    /// Set the thinking budget (tokens) at runtime, in place. Pass `None` to clear it.
+    ///
+    /// Mirrors [`Self::with_thinking_budget`] but mutates in place instead of consuming
+    /// `self`, for use by the runtime `/think-tokens` command. Callers implementing "disable"
+    /// semantics should pass `Some(0)`, not `None` — `None` means "unset, fall back to the
+    /// config default", which could silently re-enable thinking.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError::InvalidInput`] if `Some(budget)` is outside the valid range
+    /// `-1` (dynamic), `0` (disable), `1-32768`.
+    pub fn set_thinking_budget(&mut self, budget: Option<i32>) -> Result<(), LlmError> {
+        if let Some(b) = budget
+            && b != -1
+            && !(0..=32768).contains(&b)
+        {
             return Err(LlmError::InvalidInput {
                 provider: "gemini".into(),
                 message: format!(
-                    "thinking_budget {budget} is out of range; valid: -1 (dynamic), 0 (disable), 1-32768"
+                    "thinking_budget {b} is out of range; valid: -1 (dynamic), 0 (disable), 1-32768"
                 ),
             });
         }
-        self.thinking_budget = Some(budget);
-        Ok(self)
+        self.thinking_budget = budget;
+        Ok(())
+    }
+
+    /// Return the currently configured thinking budget (tokens), if any.
+    #[must_use]
+    pub fn current_thinking_budget(&self) -> Option<i32> {
+        self.thinking_budget
+    }
+
+    /// Return the currently configured thinking level, if any, as a lowercase string.
+    #[must_use]
+    pub fn current_reasoning_effort(&self) -> Option<String> {
+        self.thinking_level.map(|level| {
+            // GeminiThinkingLevel is #[non_exhaustive]; fall back to "medium" rather than
+            // fail to compile on a future upstream variant.
+            #[allow(clippy::match_same_arms)]
+            match level {
+                ThinkingLevel::Minimal => "minimal",
+                ThinkingLevel::Low => "low",
+                ThinkingLevel::Medium => "medium",
+                ThinkingLevel::High => "high",
+                _ => "medium",
+            }
+            .to_owned()
+        })
     }
 
     #[must_use]

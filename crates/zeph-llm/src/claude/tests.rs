@@ -1760,6 +1760,106 @@ fn with_thinking_keeps_max_tokens_when_already_high() {
 }
 
 #[test]
+fn set_thinking_none_restores_base_max_tokens_after_enable() {
+    // S1 regression: enable (bumps max_tokens to the 16k floor) → off must restore the
+    // originally configured max_tokens, not leave it stuck at the floor.
+    let mut provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+    provider
+        .set_thinking(Some(ThinkingConfig::Extended {
+            budget_tokens: 8000,
+        }))
+        .unwrap();
+    assert!(provider.max_tokens >= MIN_MAX_TOKENS_WITH_THINKING);
+
+    provider.set_thinking(None).unwrap();
+    assert_eq!(
+        provider.max_tokens, 1024,
+        "max_tokens must be restored to the construction-time baseline, not left at the floor"
+    );
+    assert!(provider.thinking.is_none());
+}
+
+#[test]
+fn set_thinking_enable_disable_enable_is_idempotent() {
+    // S1: repeated enable/disable cycles must never ratchet max_tokens upward permanently —
+    // every `Some(_)` step recomputes from the immutable base_max_tokens baseline.
+    let mut provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+    for budget in [8000, 12_000, 4000] {
+        provider
+            .set_thinking(Some(ThinkingConfig::Extended {
+                budget_tokens: budget,
+            }))
+            .unwrap();
+        assert_eq!(provider.max_tokens, MIN_MAX_TOKENS_WITH_THINKING);
+
+        provider.set_thinking(None).unwrap();
+        assert_eq!(provider.max_tokens, 1024);
+    }
+}
+
+#[test]
+fn set_thinking_out_of_range_budget_rejected() {
+    let mut provider = ClaudeProvider::new("k".into(), "m".into(), 32_000);
+    let err = provider
+        .set_thinking(Some(ThinkingConfig::Extended { budget_tokens: 0 }))
+        .unwrap_err();
+    assert!(err.to_string().contains("out of range"), "{err}");
+}
+
+#[test]
+fn set_thinking_construction_parity_with_with_thinking() {
+    // Construction-time behavior via `with_thinking` must remain byte-for-byte identical to
+    // calling `set_thinking` directly after `new` (delegation must not change semantics).
+    let via_with_thinking = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024)
+        .with_thinking(ThinkingConfig::Extended {
+            budget_tokens: 8000,
+        })
+        .unwrap();
+
+    let mut via_set_thinking = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+    via_set_thinking
+        .set_thinking(Some(ThinkingConfig::Extended {
+            budget_tokens: 8000,
+        }))
+        .unwrap();
+
+    assert_eq!(via_with_thinking.max_tokens, via_set_thinking.max_tokens);
+    assert_eq!(via_with_thinking.thinking, via_set_thinking.thinking);
+}
+
+#[test]
+fn current_thinking_budget_reflects_extended_config() {
+    let mut provider = ClaudeProvider::new("k".into(), "m".into(), 32_000);
+    assert!(provider.current_thinking_budget().is_none());
+    provider
+        .set_thinking(Some(ThinkingConfig::Extended {
+            budget_tokens: 8000,
+        }))
+        .unwrap();
+    assert_eq!(provider.current_thinking_budget(), Some(8000));
+    assert!(provider.current_reasoning_effort().is_none());
+}
+
+#[test]
+fn current_reasoning_effort_reflects_adaptive_config() {
+    let mut provider = ClaudeProvider::new("k".into(), "m".into(), 32_000);
+    provider
+        .set_thinking(Some(ThinkingConfig::Adaptive {
+            effort: Some(ThinkingEffort::High),
+        }))
+        .unwrap();
+    assert_eq!(provider.current_reasoning_effort().as_deref(), Some("high"));
+    assert!(provider.current_thinking_budget().is_none());
+}
+
+#[test]
+fn current_thinking_budget_and_effort_none_when_disabled() {
+    let provider = ClaudeProvider::new("k".into(), "m".into(), 32_000);
+    assert!(provider.current_thinking_budget().is_none());
+    assert!(provider.current_reasoning_effort().is_none());
+}
+
+#[test]
 fn build_thinking_param_extended_returns_enabled_with_budget() {
     let provider = ClaudeProvider::new("k".into(), "m".into(), 16_000)
         .with_thinking(ThinkingConfig::Extended {

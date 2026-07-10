@@ -185,6 +185,28 @@ provider_persistence = false
 
 Provider preferences are stored in SQLite alongside session metadata. If you switch providers and the session crashes before a successful turn, the previous provider preference is restored on the next session start.
 
+### Runtime Thinking Controls
+
+Two channel-agnostic slash commands adjust the active provider's reasoning depth mid-session, taking effect on the very next turn — no restart required:
+
+```
+> /think-tokens 8k
+think-tokens: set to 8000 (provider: claude)
+
+> /reasoning-effort high
+reasoning-effort: set to high (provider: claude)
+```
+
+- `/think-tokens [N|Nk|NM|off]` — a token-budget knob. Supported by Claude (extended thinking) and Gemini (`thinking_budget`). Accepts a bare integer or a `k`/`M`-suffixed value (e.g. `8k`, `1M`); `0` or `off` disables thinking.
+- `/reasoning-effort [low|medium|high]` — an effort-level knob. Supported by Claude (adaptive thinking), OpenAI/Compatible (`reasoning_effort`), and Gemini (`thinking_level`).
+- Run either command with no argument to display the current setting.
+- On Claude, `Extended` (token budget) and `Adaptive` (effort level) are mutually-exclusive variants of one `thinking` config field — setting one via either command overrides the other, and the confirmation message says so.
+- **Session-only, never persisted.** These overrides live only in the running process's memory — they are not written to `config.toml` or SQLite, and do not survive a restart.
+- **Reset on `/provider` switch.** Switching providers builds a fresh instance from the static config pool; any active `/think-tokens`/`/reasoning-effort` override on the old provider is dropped. The switch confirmation includes a note when this happens, so you know to re-run the command if you want it on the new provider too.
+- A provider that does not support the given knob returns an explicit message (e.g. `provider 'ollama' does not support a thinking-token budget`) — it never silently no-ops.
+
+The `--reasoning-effort <low|medium|high>` CLI flag sets the same effort level at startup for every configured provider that supports it (see [CLI Reference](../reference/cli.md)).
+
 ## Response Caching
 
 Enable SQLite-backed response caching to avoid redundant LLM calls for identical requests. The cache key is a blake3 hash of the full message history and model name. Streaming responses bypass the cache.

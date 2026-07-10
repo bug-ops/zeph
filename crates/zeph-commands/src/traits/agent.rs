@@ -188,6 +188,30 @@ pub trait AgentAccess: Send {
         arg: &'a str,
     ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 
+    // ----- /think-tokens, /reasoning-effort -----
+
+    /// Handle `/think-tokens [N|Nk|NM|off]` and return a user-visible result.
+    ///
+    /// Empty `arg` displays the active provider's current thinking-token budget. A non-empty
+    /// `arg` parses and applies a new budget (or disables thinking on `0`/`off`). Session-only:
+    /// never persisted. Returns a "not supported by provider X" message for providers that
+    /// do not support a thinking-token budget.
+    fn handle_think_tokens<'a>(
+        &'a mut self,
+        arg: &'a str,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
+
+    /// Handle `/reasoning-effort [low|medium|high]` and return a user-visible result.
+    ///
+    /// Empty `arg` displays the active provider's current reasoning-effort level. A non-empty
+    /// `arg` parses and applies a new level. Session-only: never persisted. Returns a "not
+    /// supported by provider X" message for providers that do not support a reasoning-effort
+    /// level.
+    fn handle_reasoning_effort<'a>(
+        &'a mut self,
+        arg: &'a str,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
+
     // ----- /skill -----
 
     /// Handle `/skill [subcommand]` and return a user-visible result.
@@ -683,6 +707,20 @@ impl AgentAccess for NullAgent {
     }
 
     fn handle_provider<'a>(
+        &'a mut self,
+        _arg: &'a str,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+        Box::pin(async { String::new() })
+    }
+
+    fn handle_think_tokens<'a>(
+        &'a mut self,
+        _arg: &'a str,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+        Box::pin(async { String::new() })
+    }
+
+    fn handle_reasoning_effort<'a>(
         &'a mut self,
         _arg: &'a str,
     ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {

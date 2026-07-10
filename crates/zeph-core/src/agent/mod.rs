@@ -610,9 +610,11 @@ impl<C: Channel> Agent<C> {
                     plan::PlanCommand,
                     plugins::PluginsCommand,
                     policy::PolicyCommand,
+                    reasoning_effort::ReasoningEffortCommand,
                     scheduler::SchedulerCommand,
                     skill::{FeedbackCommand, SkillCommand, SkillsCommand},
                     status::{FocusCommand, GuardrailCommand, SideQuestCommand, StatusCommand},
+                    think_tokens::ThinkTokensCommand,
                     trajectory::{ScopeCommand, TrajectoryCommand},
                 };
 
@@ -624,6 +626,8 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(GuidelinesCommand);
                 agent_reg.register(ModelCommand);
                 agent_reg.register(ProviderCommand);
+                agent_reg.register(ThinkTokensCommand);
+                agent_reg.register(ReasoningEffortCommand);
                 // Phase 6 migrations: /skill, /skills, /feedback use clone-before-await pattern.
                 agent_reg.register(SkillCommand);
                 agent_reg.register(SkillsCommand);

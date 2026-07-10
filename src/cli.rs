@@ -99,6 +99,15 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "MODE")]
     pub(crate) thinking: Option<String>,
 
+    /// Set the default reasoning-effort level at startup for every configured provider that
+    /// supports it (Claude adaptive thinking, `OpenAI`/Compatible `reasoning_effort`, Gemini
+    /// thinking level). Overrides config.toml `reasoning_effort`/`thinking_level` settings.
+    /// Can also be changed at runtime with `/reasoning-effort`. There is no `--think-tokens`
+    /// startup flag — `--thinking extended:N` remains the Claude-only startup token-budget
+    /// mechanism; use the runtime `/think-tokens` command for other providers.
+    #[arg(long, value_name = "LEVEL", value_parser = ["low", "medium", "high"])]
+    pub(crate) reasoning_effort: Option<String>,
+
     /// Additional sub-agent definition paths (file or directory containing .md files).
     /// Can be specified multiple times. Takes highest priority over all other sources.
     #[arg(long = "agents", value_name = "PATH")]

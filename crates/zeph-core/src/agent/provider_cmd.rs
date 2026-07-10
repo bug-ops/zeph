@@ -463,6 +463,14 @@ impl<C: Channel> Agent<C> {
                 let model_name = entry.effective_model();
                 let configured_name = entry.effective_name();
 
+                // S2: capture whether a runtime `/think-tokens` or `/reasoning-effort`
+                // override is active on the OLD provider instance, before it is replaced —
+                // `self.provider` still references the old instance at this point. The new
+                // provider is built fresh from the static config pool and never carries the
+                // override forward, so the switch confirmation must say so.
+                let had_reasoning_override = self.provider.current_thinking_budget().is_some()
+                    || self.provider.current_reasoning_effort().is_some();
+
                 self.set_provider(new_provider);
                 self.runtime.config.model_name.clone_from(&model_name);
                 self.runtime
@@ -491,16 +499,21 @@ impl<C: Channel> Agent<C> {
                 self.persist_channel_provider(configured_name.clone(), overrides);
                 // Refresh the TUI context gauge with the new provider's window size.
                 self.publish_context_budget();
-                self.build_switch_message(&configured_name)
+                self.build_switch_message(&configured_name, had_reasoning_override)
             }
             Err(e) => format!("Failed to switch to '{name}': {e}"),
         }
     }
 
     /// Build the switch confirmation message, including embedding provider notice when relevant.
-    fn build_switch_message(&self, configured_name: &str) -> String {
+    ///
+    /// `had_reasoning_override` is `true` when the OLD provider instance had an active runtime
+    /// `/think-tokens` or `/reasoning-effort` override (S2) — in that case a reset notice is
+    /// appended, since the newly built provider never carries the override forward and is
+    /// otherwise a silent, user-visible behavior change.
+    fn build_switch_message(&self, configured_name: &str, had_reasoning_override: bool) -> String {
         let embed_name = self.embedding_provider.name();
-        if embed_name.eq_ignore_ascii_case(configured_name) {
+        let mut msg = if embed_name.eq_ignore_ascii_case(configured_name) {
             format!(
                 "Switched to provider: {} (model: {})",
                 configured_name, self.runtime.config.model_name
@@ -515,7 +528,16 @@ impl<C: Channel> Agent<C> {
                  provider '{}'.",
                 configured_name, self.runtime.config.model_name, embed_name
             )
+        };
+        if had_reasoning_override {
+            let _ = write!(
+                msg,
+                " Note: thinking / reasoning-effort settings are per-provider and do not \
+                 carry over. '{configured_name}' now uses its configured defaults — re-run \
+                 /think-tokens or /reasoning-effort to set them for this provider."
+            );
         }
+        msg
     }
 }
 
@@ -529,6 +551,8 @@ mod tests {
         MockChannel, MockToolExecutor, QuickTestAgent, create_test_registry, mock_provider,
     };
     use zeph_config::{ProviderEntry, ProviderKind};
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::claude::ClaudeProvider;
     use zeph_llm::provider::LlmProvider as _;
 
     fn make_entry(name: &str, kind: ProviderKind, model: Option<&str>) -> ProviderEntry {
@@ -732,7 +756,7 @@ mod tests {
         // scenario where names match by asserting the message format for a successful switch
         // where both sides resolve to the same LlmProvider::name().
         // The critical invariant: notice is omitted iff embedding_provider.name() == configured_name.
-        let msg = agent.build_switch_message("ollama");
+        let msg = agent.build_switch_message("ollama", false);
         assert!(
             !msg.contains("Embedding operations"),
             "no notice when embedding provider name == new chat provider name: {msg}"
@@ -807,6 +831,91 @@ mod tests {
             agent.embedding_provider.name(),
             embed_name_before,
             "embedding_provider must not change after /provider switch"
+        );
+    }
+
+    // ── S2: reset notice on /provider switch after a runtime override (#3098) ────
+
+    /// The switch confirmation must warn when the OLD provider had an active runtime
+    /// `/think-tokens` override — the newly built provider never carries it forward.
+    #[tokio::test]
+    async fn provider_switch_shows_reset_notice_when_think_tokens_override_was_active() {
+        let mut claude_provider = AnyProvider::Claude(ClaudeProvider::new(
+            "key".into(),
+            "claude-sonnet-4-6".into(),
+            4096,
+        ));
+        claude_provider.set_thinking_budget(Some(8000)).unwrap();
+
+        let entry_target = make_entry("ollama2", ProviderKind::Ollama, Some("llama3.2"));
+        let snapshot = ollama_snapshot();
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(claude_provider, channel, registry, None, 5, executor);
+        agent.runtime.providers.provider_pool = vec![entry_target];
+        agent.runtime.providers.provider_config_snapshot = Some(snapshot);
+
+        let out = agent.handle_provider_command_as_string("ollama2").await;
+        assert!(out.contains("Switched to provider:"), "unexpected: {out}");
+        assert!(
+            out.contains("thinking / reasoning-effort settings are per-provider"),
+            "expected reset notice: {out}"
+        );
+    }
+
+    /// The switch confirmation must warn when the OLD provider had an active runtime
+    /// `/reasoning-effort` override — even though `/think-tokens` was never touched.
+    #[tokio::test]
+    async fn provider_switch_shows_reset_notice_when_reasoning_effort_override_was_active() {
+        let mut claude_provider = AnyProvider::Claude(ClaudeProvider::new(
+            "key".into(),
+            "claude-sonnet-4-6".into(),
+            4096,
+        ));
+        claude_provider
+            .apply_reasoning_effort(zeph_llm::any::ReasoningEffort::High)
+            .unwrap();
+
+        let entry_target = make_entry("ollama2", ProviderKind::Ollama, Some("llama3.2"));
+        let snapshot = ollama_snapshot();
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(claude_provider, channel, registry, None, 5, executor);
+        agent.runtime.providers.provider_pool = vec![entry_target];
+        agent.runtime.providers.provider_config_snapshot = Some(snapshot);
+
+        let out = agent.handle_provider_command_as_string("ollama2").await;
+        assert!(
+            out.contains("thinking / reasoning-effort settings are per-provider"),
+            "expected reset notice: {out}"
+        );
+    }
+
+    /// No reset notice when no runtime override was ever active on the old provider.
+    #[tokio::test]
+    async fn provider_switch_no_reset_notice_when_no_override_active() {
+        let entry_a = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
+        let entry_b = make_entry("ollama2", ProviderKind::Ollama, Some("llama3.2"));
+        let snapshot = ollama_snapshot();
+        let provider_a =
+            crate::provider_factory::build_provider_for_switch(&entry_a, &snapshot, None).unwrap();
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider_a, channel, registry, None, 5, executor);
+        agent.runtime.providers.provider_pool = vec![entry_a, entry_b];
+        agent.runtime.providers.provider_config_snapshot = Some(snapshot);
+
+        let out = agent.handle_provider_command_as_string("ollama2").await;
+        assert!(out.contains("Switched to provider:"), "unexpected: {out}");
+        assert!(
+            !out.contains("thinking / reasoning-effort settings are per-provider"),
+            "no reset notice expected: {out}"
         );
     }
 

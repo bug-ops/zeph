@@ -246,6 +246,18 @@ pub(super) fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyho
                     .default("gpt-4o".into())
                     .interact_text()?,
             );
+            let effort_opts = ["skip (no reasoning_effort)", "low", "medium", "high"];
+            let effort_sel = Select::new()
+                .with_prompt("Default reasoning effort (for o-series/reasoning models)")
+                .items(effort_opts)
+                .default(0)
+                .interact()?;
+            state.reasoning_effort = match effort_sel {
+                1 => Some("low".to_owned()),
+                2 => Some("medium".to_owned()),
+                3 => Some("high".to_owned()),
+                _ => None,
+            };
         }
         3 => {
             state.provider = Some(ProviderKind::Gemini);

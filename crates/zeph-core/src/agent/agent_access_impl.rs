@@ -19,6 +19,7 @@ use tracing::Instrument as _;
 use zeph_commands::CommandError;
 use zeph_commands::traits::agent::AgentAccess;
 use zeph_db;
+use zeph_llm::provider::LlmProvider as _;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::{Edge, Entity, GraphExtractionConfig, GraphStore, MessageId, extract_and_store};
 
@@ -895,6 +896,96 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         arg: &'a str,
     ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
         Box::pin(async move { self.handle_provider_command_as_string(arg).await })
+    }
+
+    // ----- /think-tokens, /reasoning-effort -----
+
+    fn handle_think_tokens<'a>(
+        &'a mut self,
+        arg: &'a str,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+        Box::pin(async move {
+            let arg = arg.trim();
+            let provider_name = self.provider.name().to_owned();
+            if arg.is_empty() {
+                return match self.provider.current_thinking_budget() {
+                    Some(n) => format!("think-tokens: {n} (provider: {provider_name})"),
+                    None => format!("think-tokens: off (provider: {provider_name})"),
+                };
+            }
+
+            let budget = match zeph_commands::handlers::think_tokens::parse_token_budget(arg) {
+                Ok(b) => b,
+                Err(e) => return format!("think-tokens: {e}"),
+            };
+
+            // Captured before the mutation so the cross-override note (Claude's Extended and
+            // Adaptive thinking share one config field) only fires when this call actually
+            // cleared a previously active reasoning-effort level.
+            let had_reasoning_effort = self.provider.current_reasoning_effort().is_some();
+            match self.provider.set_thinking_budget(budget) {
+                Ok(()) => {
+                    let mut msg = match budget {
+                        Some(n) => format!("think-tokens: set to {n} (provider: {provider_name})"),
+                        None => format!("think-tokens: disabled (provider: {provider_name})"),
+                    };
+                    if had_reasoning_effort && self.provider.current_reasoning_effort().is_none() {
+                        msg.push_str(
+                            " Note: this overrides the previously set reasoning-effort level \
+                             — Claude's Extended and Adaptive thinking share one config field.",
+                        );
+                    }
+                    msg
+                }
+                Err(zeph_llm::LlmError::ModelCapabilityMismatch { provider, message }) => {
+                    format!("provider `{provider}` {message}")
+                }
+                Err(e) => format!("think-tokens: {e}"),
+            }
+        })
+    }
+
+    fn handle_reasoning_effort<'a>(
+        &'a mut self,
+        arg: &'a str,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+        Box::pin(async move {
+            let arg = arg.trim();
+            let provider_name = self.provider.name().to_owned();
+            if arg.is_empty() {
+                return match self.provider.current_reasoning_effort() {
+                    Some(e) => format!("reasoning-effort: {e} (provider: {provider_name})"),
+                    None => format!("reasoning-effort: off (provider: {provider_name})"),
+                };
+            }
+
+            let effort: zeph_llm::any::ReasoningEffort = match arg.parse() {
+                Ok(e) => e,
+                Err(e) => return format!("reasoning-effort: {e}"),
+            };
+
+            // Captured before the mutation — see the matching comment in handle_think_tokens.
+            let had_thinking_budget = self.provider.current_thinking_budget().is_some();
+            match self.provider.apply_reasoning_effort(effort) {
+                Ok(()) => {
+                    let mut msg = format!(
+                        "reasoning-effort: set to {} (provider: {provider_name})",
+                        effort.as_str()
+                    );
+                    if had_thinking_budget && self.provider.current_thinking_budget().is_none() {
+                        msg.push_str(
+                            " Note: this overrides the previously set thinking-token budget \
+                             — Claude's Extended and Adaptive thinking share one config field.",
+                        );
+                    }
+                    msg
+                }
+                Err(zeph_llm::LlmError::ModelCapabilityMismatch { provider, message }) => {
+                    format!("provider `{provider}` {message}")
+                }
+                Err(e) => format!("reasoning-effort: {e}"),
+            }
+        })
     }
 
     // ----- /policy -----
@@ -3198,5 +3289,134 @@ path = "skill-second"
             .await
             .unwrap();
         assert!(result.contains("path traversal") && result.contains("not allowed"));
+    }
+
+    // ── /think-tokens, /reasoning-effort (#3098) ─────────────────────────
+
+    fn claude_agent() -> Agent<MockChannel> {
+        let provider = zeph_llm::any::AnyProvider::Claude(zeph_llm::claude::ClaudeProvider::new(
+            "key".into(),
+            "claude-sonnet-4-6".into(),
+            4096,
+        ));
+        Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+    }
+
+    #[tokio::test]
+    async fn handle_think_tokens_empty_arg_displays_off_by_default() {
+        let mut agent = claude_agent();
+        let out = agent.handle_think_tokens("").await;
+        assert!(out.contains("off"), "{out}");
+        assert!(out.contains("claude"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn handle_think_tokens_sets_and_displays_budget() {
+        let mut agent = claude_agent();
+        let set = agent.handle_think_tokens("8k").await;
+        assert!(set.contains("8000"), "{set}");
+
+        let show = agent.handle_think_tokens("").await;
+        assert!(show.contains("8000"), "{show}");
+    }
+
+    #[tokio::test]
+    async fn handle_think_tokens_off_disables() {
+        let mut agent = claude_agent();
+        agent.handle_think_tokens("8k").await;
+        let out = agent.handle_think_tokens("off").await;
+        assert!(out.contains("disabled"), "{out}");
+        assert!(agent.provider.current_thinking_budget().is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_think_tokens_invalid_parse_returns_error_no_mutation() {
+        let mut agent = claude_agent();
+        let out = agent.handle_think_tokens("1.2.3k").await;
+        assert!(out.contains("think-tokens"), "{out}");
+        assert!(agent.provider.current_thinking_budget().is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_think_tokens_unsupported_provider_returns_explicit_message() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        let out = agent.handle_think_tokens("8k").await;
+        assert!(out.contains("does not support"), "{out}");
+        assert!(out.contains("mock"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn handle_think_tokens_cross_override_note_when_reasoning_effort_was_active() {
+        let mut agent = claude_agent();
+        agent.handle_reasoning_effort("high").await;
+        let out = agent.handle_think_tokens("8k").await;
+        assert!(
+            out.contains("overrides the previously set reasoning-effort"),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_reasoning_effort_empty_arg_displays_off_by_default() {
+        let mut agent = claude_agent();
+        let out = agent.handle_reasoning_effort("").await;
+        assert!(out.contains("off"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn handle_reasoning_effort_sets_and_displays_level() {
+        let mut agent = claude_agent();
+        let set = agent.handle_reasoning_effort("high").await;
+        assert!(set.contains("high"), "{set}");
+
+        let show = agent.handle_reasoning_effort("").await;
+        assert!(show.contains("high"), "{show}");
+    }
+
+    #[tokio::test]
+    async fn handle_reasoning_effort_invalid_parse_returns_error_no_mutation() {
+        let mut agent = claude_agent();
+        let out = agent.handle_reasoning_effort("minimal").await;
+        assert!(out.contains("reasoning-effort"), "{out}");
+        assert!(agent.provider.current_reasoning_effort().is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_reasoning_effort_unsupported_provider_returns_explicit_message() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        let out = agent.handle_reasoning_effort("high").await;
+        assert!(out.contains("does not support"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn handle_reasoning_effort_cross_override_note_when_think_tokens_was_active() {
+        let mut agent = claude_agent();
+        agent.handle_think_tokens("8k").await;
+        let out = agent.handle_reasoning_effort("high").await;
+        assert!(
+            out.contains("overrides the previously set thinking-token budget"),
+            "{out}"
+        );
     }
 }

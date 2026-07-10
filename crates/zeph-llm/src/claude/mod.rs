@@ -102,6 +102,11 @@ pub struct ClaudeProvider {
     api_key: String,
     model: String,
     max_tokens: u32,
+    /// The `max_tokens` value captured at construction, before any `with_thinking`/
+    /// `set_thinking` call. Immutable baseline used to recompute the effective `max_tokens`
+    /// on every runtime thinking change, so enable→disable→re-enable cycles never ratchet
+    /// the value upward permanently (see [`Self::set_thinking`]).
+    base_max_tokens: u32,
     thinking: Option<ThinkingConfig>,
     pub(crate) status_tx: Option<StatusTx>,
     /// Whether to attach `cache_control` to user messages in multi-turn conversations.
@@ -137,6 +142,7 @@ impl fmt::Debug for ClaudeProvider {
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
             .field("max_tokens", &self.max_tokens)
+            .field("base_max_tokens", &self.base_max_tokens)
             .field("thinking", &self.thinking)
             .field("status_tx", &self.status_tx.is_some())
             .field("cache_user_messages", &self.cache_user_messages)
@@ -175,6 +181,7 @@ impl Clone for ClaudeProvider {
             api_key: self.api_key.clone(),
             model: self.model.clone(),
             max_tokens: self.max_tokens,
+            base_max_tokens: self.base_max_tokens,
             thinking: self.thinking.clone(),
             status_tx: self.status_tx.clone(),
             cache_user_messages: self.cache_user_messages,
@@ -215,6 +222,7 @@ impl ClaudeProvider {
             api_key,
             model,
             max_tokens,
+            base_max_tokens: max_tokens,
             thinking: None,
             status_tx: None,
             cache_user_messages: true,
@@ -420,14 +428,29 @@ impl ClaudeProvider {
         self
     }
 
-    /// Configure thinking mode for Claude extended/adaptive thinking.
+    /// Configure thinking mode at runtime, in place.
+    ///
+    /// `None` restores `max_tokens` to the value captured at construction
+    /// (`base_max_tokens`), clearing any thinking-token floor — this is what makes
+    /// `/think-tokens off` after `/think-tokens 8k` restore the user's originally configured
+    /// `max_tokens` instead of leaving it stuck at the 16k thinking floor.
+    ///
+    /// `Some(_)` always recomputes the effective `max_tokens` from the immutable
+    /// `base_max_tokens` baseline, never from a previously-floored `self.max_tokens` — every
+    /// enable call is idempotent regardless of prior state.
     ///
     /// # Errors
     ///
-    /// Returns an error if `budget_tokens` is outside the API-allowed range
-    /// `[1024, 128_000]` or if `budget_tokens >= max_tokens` after the automatic
-    /// 16 000-token floor is applied.
-    pub fn with_thinking(mut self, thinking: ThinkingConfig) -> Result<Self, LlmError> {
+    /// Returns an error if `Some(ThinkingConfig::Extended { budget_tokens })` has
+    /// `budget_tokens` outside the API-allowed range `[1024, 128_000]`, or
+    /// `budget_tokens >= max_tokens` after the automatic 16 000-token floor is applied.
+    pub fn set_thinking(&mut self, thinking: Option<ThinkingConfig>) -> Result<(), LlmError> {
+        let Some(thinking) = thinking else {
+            self.max_tokens = self.base_max_tokens;
+            self.thinking = None;
+            return Ok(());
+        };
+
         if let ThinkingConfig::Extended { budget_tokens } = thinking {
             const MIN_BUDGET: u32 = 1_024;
             const MAX_BUDGET: u32 = 128_000;
@@ -439,7 +462,7 @@ impl ClaudeProvider {
                     ),
                 });
             }
-            let max_tokens = self.max_tokens.max(MIN_MAX_TOKENS_WITH_THINKING);
+            let max_tokens = self.base_max_tokens.max(MIN_MAX_TOKENS_WITH_THINKING);
             if budget_tokens >= max_tokens {
                 return Err(LlmError::InvalidInput {
                     provider: "claude".into(),
@@ -450,9 +473,19 @@ impl ClaudeProvider {
             }
             self.max_tokens = max_tokens;
         } else {
-            self.max_tokens = self.max_tokens.max(MIN_MAX_TOKENS_WITH_THINKING);
+            self.max_tokens = self.base_max_tokens.max(MIN_MAX_TOKENS_WITH_THINKING);
         }
         self.thinking = Some(thinking);
+        Ok(())
+    }
+
+    /// Configure thinking mode for Claude extended/adaptive thinking.
+    ///
+    /// # Errors
+    ///
+    /// Forwards errors from [`Self::set_thinking`].
+    pub fn with_thinking(mut self, thinking: ThinkingConfig) -> Result<Self, LlmError> {
+        self.set_thinking(Some(thinking))?;
         Ok(self)
     }
 
@@ -465,6 +498,37 @@ impl ClaudeProvider {
         match thinking {
             Some(t) => self.with_thinking(t),
             None => Ok(self),
+        }
+    }
+
+    /// Return the current Extended-thinking token budget, or `None` if thinking is disabled
+    /// or set to `Adaptive`.
+    #[must_use]
+    pub fn current_thinking_budget(&self) -> Option<u32> {
+        match self.thinking {
+            Some(ThinkingConfig::Extended { budget_tokens }) => Some(budget_tokens),
+            _ => None,
+        }
+    }
+
+    /// Return the current Adaptive-thinking effort level as a lowercase string (`"low"`,
+    /// `"medium"`, `"high"`), or `None` if thinking is disabled or set to `Extended`.
+    #[must_use]
+    pub fn current_reasoning_effort(&self) -> Option<String> {
+        match self.thinking {
+            Some(ThinkingConfig::Adaptive { effort }) => Some(
+                // ThinkingEffort is #[non_exhaustive]; fall back to "medium" for any future
+                // variant rather than failing to compile on an upstream addition.
+                #[allow(clippy::match_same_arms)]
+                match effort.unwrap_or_default() {
+                    ThinkingEffort::Low => "low",
+                    ThinkingEffort::Medium => "medium",
+                    ThinkingEffort::High => "high",
+                    _ => "medium",
+                }
+                .to_owned(),
+            ),
+            _ => None,
         }
     }
 

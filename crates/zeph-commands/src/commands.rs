@@ -146,6 +146,20 @@ pub const COMMANDS: &[CommandInfo] = &[
         category: SlashCategory::Configuration,
         feature_gate: None,
     },
+    CommandInfo {
+        name: "/think-tokens",
+        args: "[N|Nk|NM|off]",
+        description: "Show or set the active provider's runtime thinking-token budget (session-only, not persisted). Examples: `/think-tokens 8k`, `/think-tokens off`",
+        category: SlashCategory::Configuration,
+        feature_gate: None,
+    },
+    CommandInfo {
+        name: "/reasoning-effort",
+        args: "[low|medium|high]",
+        description: "Show or set the active provider's runtime reasoning-effort level (session-only, not persisted). Example: `/reasoning-effort high`",
+        category: SlashCategory::Configuration,
+        feature_gate: None,
+    },
     // --- Memory ---
     CommandInfo {
         name: "/feedback",

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+
+- `feat(llm,commands,core)`: added runtime `/think-tokens [N|Nk|NM|off]` and
+  `/reasoning-effort [low|medium|high]` slash commands that mutate the active LLM provider's
+  thinking-token budget or reasoning-effort level mid-session, taking effect on the very next
+  turn — no restart required (#3098). Session-only: never persisted across restarts or
+  `/provider` switches (the switch confirmation now warns when an active override is dropped).
+  Supported per-provider: Claude (`Extended`/`Adaptive` thinking, mutually exclusive — setting
+  one overrides the other), OpenAI/Compatible (`reasoning_effort`), Gemini (`thinking_budget`/
+  `thinking_level`); unsupported providers return an explicit "not supported" message rather
+  than a silent no-op. Fixed a latent bug in `ClaudeProvider::with_thinking` along the way: a
+  `base_max_tokens` snapshot now makes `max_tokens` restoration exact on disable, instead of the
+  previous construction-only logic which could only ever raise `max_tokens` to the 16k thinking
+  floor and never lower it back. Added a new `--reasoning-effort <low|medium|high>` CLI flag and
+  a matching `--init` wizard prompt for OpenAI providers (Claude and Gemini already prompt for
+  their equivalent reasoning-depth setting).
+
 ### Fixed
 
 - `fix(session)`: `hydrate_from_event_log` (`crates/zeph-agent-persistence/src/hydrate.rs`) now

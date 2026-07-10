@@ -238,7 +238,7 @@ accordingly.
 
 ## Key Invariants
 
-- Provider methods are always `&self` — immutable, concurrent-safe
+- Provider methods are always `&self` — immutable, concurrent-safe. This scopes to **request/inference** methods (`chat`, `chat_stream`, `chat_with_tools`, …). In-place `&mut self` config setters applied only at turn boundaries between requests (e.g. `set_reasoning_effort`, and the runtime `set_thinking`/`set_thinking_budget`/`set_thinking_level`/`apply_reasoning_effort` setters from `[[specs/070-runtime-thinking-controls/spec]]`) are exempt — request methods remain `&self`.
 - `debug_request_json()` must return exactly the JSON that would be sent to the API — used for debugging and testing
 - `last_usage()` is updated after every call — must be accurate for cost tracking
 - `chat`, `chat_stream`, `chat_with_tools` are independent codepaths — do not delegate one to another

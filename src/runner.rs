@@ -1288,6 +1288,33 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         }
     }
 
+    // --reasoning-effort applies to every configured provider that supports a reasoning-effort
+    // level, fanned out to each provider's native representation (mirrors
+    // `AnyProvider::apply_reasoning_effort`'s runtime fan-out, but at config-merge time, before
+    // `app.build_provider()` constructs the live providers). There is no startup token-budget
+    // equivalent for Gemini/OpenAI — `--thinking extended:N` remains Claude-only (M2); the
+    // runtime `/think-tokens` command covers the mid-session case for all providers.
+    if let Some(ref effort_str) = cli.reasoning_effort {
+        let effort = parse_reasoning_effort_arg(effort_str)?;
+        for entry in &mut app.config_mut().llm.providers {
+            match entry.provider_type {
+                zeph_core::config::ProviderKind::Claude => {
+                    entry.thinking = Some(ThinkingConfig::Adaptive {
+                        effort: Some(effort.into()),
+                    });
+                }
+                zeph_core::config::ProviderKind::OpenAi
+                | zeph_core::config::ProviderKind::Compatible => {
+                    entry.reasoning_effort = Some(effort.as_str().to_owned());
+                }
+                zeph_core::config::ProviderKind::Gemini => {
+                    entry.thinking_level = Some(effort.into());
+                }
+                _ => {}
+            }
+        }
+    }
+
     // Early-exit: print experiment results from SQLite without building a provider.
     if cli.experiment_report {
         return run_experiment_report(&app).await;
@@ -4438,6 +4465,12 @@ fn parse_thinking_arg(s: &str) -> anyhow::Result<ThinkingConfig> {
     )
 }
 
+/// Parse a `--reasoning-effort` value. `clap`'s `value_parser` already restricts the CLI arg to
+/// `low`/`medium`/`high`, so this only ever fails when called directly (e.g. in tests).
+fn parse_reasoning_effort_arg(s: &str) -> anyhow::Result<zeph_llm::any::ReasoningEffort> {
+    s.parse().map_err(|e: String| anyhow::anyhow!(e))
+}
+
 /// Split a `--plugin-url` argument into `(url, sha256)`.
 ///
 /// Accepts either a plain URL (`https://host/plugin.tar.gz`) or an inline
@@ -4940,6 +4973,89 @@ mod tests {
                 effort: Some(ThinkingEffort::Medium)
             }
         );
+    }
+
+    // --- parse_reasoning_effort_arg ---
+
+    #[test]
+    fn parse_reasoning_effort_arg_valid_values() {
+        assert_eq!(
+            parse_reasoning_effort_arg("low").unwrap(),
+            zeph_llm::any::ReasoningEffort::Low
+        );
+        assert_eq!(
+            parse_reasoning_effort_arg("MEDIUM").unwrap(),
+            zeph_llm::any::ReasoningEffort::Medium
+        );
+        assert_eq!(
+            parse_reasoning_effort_arg("high").unwrap(),
+            zeph_llm::any::ReasoningEffort::High
+        );
+    }
+
+    #[test]
+    fn parse_reasoning_effort_arg_invalid_is_error() {
+        assert!(parse_reasoning_effort_arg("minimal").is_err());
+        assert!(parse_reasoning_effort_arg("").is_err());
+    }
+
+    #[test]
+    fn cli_reasoning_effort_flag_applies_to_claude_openai_gemini_providers() {
+        let mut app_config = zeph_core::config::Config::default();
+        app_config.llm.providers = vec![
+            zeph_config::ProviderEntry {
+                provider_type: zeph_core::config::ProviderKind::Claude,
+                ..zeph_config::ProviderEntry::default()
+            },
+            zeph_config::ProviderEntry {
+                provider_type: zeph_core::config::ProviderKind::OpenAi,
+                ..zeph_config::ProviderEntry::default()
+            },
+            zeph_config::ProviderEntry {
+                provider_type: zeph_core::config::ProviderKind::Gemini,
+                ..zeph_config::ProviderEntry::default()
+            },
+            zeph_config::ProviderEntry {
+                provider_type: zeph_core::config::ProviderKind::Ollama,
+                ..zeph_config::ProviderEntry::default()
+            },
+        ];
+
+        let effort = parse_reasoning_effort_arg("high").unwrap();
+        for entry in &mut app_config.llm.providers {
+            match entry.provider_type {
+                zeph_core::config::ProviderKind::Claude => {
+                    entry.thinking = Some(ThinkingConfig::Adaptive {
+                        effort: Some(effort.into()),
+                    });
+                }
+                zeph_core::config::ProviderKind::OpenAi
+                | zeph_core::config::ProviderKind::Compatible => {
+                    entry.reasoning_effort = Some(effort.as_str().to_owned());
+                }
+                zeph_core::config::ProviderKind::Gemini => {
+                    entry.thinking_level = Some(effort.into());
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(
+            app_config.llm.providers[0].thinking,
+            Some(ThinkingConfig::Adaptive {
+                effort: Some(ThinkingEffort::High)
+            })
+        );
+        assert_eq!(
+            app_config.llm.providers[1].reasoning_effort.as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            app_config.llm.providers[2].thinking_level,
+            Some(zeph_config::GeminiThinkingLevel::High)
+        );
+        assert!(app_config.llm.providers[3].thinking.is_none());
+        assert!(app_config.llm.providers[3].reasoning_effort.is_none());
     }
 
     #[test]
