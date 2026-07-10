@@ -48,6 +48,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (Ema/Thompson/Cascade/Bandit/Triage). Also warns when more than one `embed = true` entry
   exists in the pool (only the first is used) and logs which provider serves embeds when no
   dedicated entry is configured (#5859).
+- `fix(init)`: the `zeph init` durable-execution wizard step no longer unconditionally overwrites
+  an existing `ZEPH_DURABLE_KEY` in the age vault. `ZEPH_DURABLE_KEY` is the AEAD key sealing
+  every payload in `durable_journal`; silently rotating it permanently and irrecoverably orphaned
+  all previously-sealed payloads (`replay integrity check failed: sealed payload did not
+  authenticate`). The wizard now detects a pre-existing key and reuses it by default; rotating it
+  requires typing an explicit `rotate` confirmation phrase after a warning about permanent,
+  irrecoverable payload loss (#5874).
 - `fix(session)`: `hydrate_from_event_log` (`crates/zeph-agent-persistence/src/hydrate.rs`) now
   folds the replayed `messages` via `ReplayEngine::replay`'s bounded/chunked reader (spec-068
   §6.2, ≤ 100 envelopes in memory at once) instead of `ReplayEngine::fold(events.clone(), up_to)`
