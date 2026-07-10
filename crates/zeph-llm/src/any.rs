@@ -548,6 +548,12 @@ impl AnyProvider {
     /// variants return [`crate::LlmError::ModelCapabilityMismatch`] — this command never silently
     /// no-ops.
     ///
+    /// `Self::Router` and `Self::Triage` delegate to their applicable inner provider (the one
+    /// that served the most recent call, or a deterministic fallback if none has yet) via
+    /// their internal `set_thinking_budget_delegated` helpers. Use
+    /// [`Self::capability_delegation_advisory`] after a successful call to check whether the
+    /// routing strategy may pick a different inner provider on the next turn.
+    ///
     /// # Errors
     ///
     /// Returns an error when `budget` is outside the active provider's valid range, or when
@@ -569,6 +575,8 @@ impl AnyProvider {
                 p.set_thinking_budget(Some(i))
             }
             Self::Masked(p) => p.inner.set_thinking_budget(budget),
+            Self::Router(r) => r.set_thinking_budget_delegated(budget),
+            Self::Triage(t) => t.set_thinking_budget_delegated(budget),
             other => Err(crate::LlmError::ModelCapabilityMismatch {
                 provider: other.name().to_owned(),
                 message: "does not support a thinking-token budget".into(),
@@ -583,6 +591,8 @@ impl AnyProvider {
     ///   see [`Self::set_thinking_budget`]).
     /// - `OpenAI` / `Compatible` → the existing string-based `reasoning_effort` field.
     /// - `Gemini` → `thinking_level`.
+    /// - `Router` / `Triage` → delegates to the applicable inner provider, mirroring
+    ///   [`Self::set_thinking_budget`]'s delegation behavior.
     /// - All other providers → [`crate::LlmError::ModelCapabilityMismatch`].
     ///
     /// This is the new session-only runtime entry point for `/reasoning-effort`. It is
@@ -614,6 +624,8 @@ impl AnyProvider {
                 Ok(())
             }
             Self::Masked(p) => p.inner.apply_reasoning_effort(effort),
+            Self::Router(r) => r.apply_reasoning_effort_delegated(effort),
+            Self::Triage(t) => t.apply_reasoning_effort_delegated(effort),
             other => Err(crate::LlmError::ModelCapabilityMismatch {
                 provider: other.name().to_owned(),
                 message: "does not support reasoning effort".into(),
@@ -626,6 +638,9 @@ impl AnyProvider {
     /// `None` means thinking is disabled, the provider is in effort-based mode (Claude
     /// `Adaptive`), or the provider does not support a token budget at all. Used by the
     /// `/think-tokens` no-arg display path and by the `/provider` switch's reset-notice check.
+    ///
+    /// `Self::Router` and `Self::Triage` return the value from their applicable inner
+    /// provider (see [`Self::set_thinking_budget`]).
     #[must_use]
     pub fn current_thinking_budget(&self) -> Option<u32> {
         match self {
@@ -637,6 +652,8 @@ impl AnyProvider {
                 .and_then(|b| u32::try_from(b).ok())
                 .filter(|&b| b > 0),
             Self::Masked(p) => p.inner().current_thinking_budget(),
+            Self::Router(r) => r.current_thinking_budget_delegated(),
+            Self::Triage(t) => t.current_thinking_budget_delegated(),
             _ => None,
         }
     }
@@ -647,6 +664,9 @@ impl AnyProvider {
     /// `Extended`), or the provider does not support an effort level at all. Used by the
     /// `/reasoning-effort` no-arg display path and by the `/provider` switch's reset-notice
     /// check.
+    ///
+    /// `Self::Router` and `Self::Triage` return the value from their applicable inner
+    /// provider (see [`Self::set_thinking_budget`]).
     #[must_use]
     pub fn current_reasoning_effort(&self) -> Option<String> {
         match self {
@@ -655,6 +675,28 @@ impl AnyProvider {
             Self::Compatible(p) => p.current_reasoning_effort(),
             Self::Gemini(p) => p.current_reasoning_effort(),
             Self::Masked(p) => p.inner().current_reasoning_effort(),
+            Self::Router(r) => r.current_reasoning_effort_delegated(),
+            Self::Triage(t) => t.current_reasoning_effort_delegated(),
+            _ => None,
+        }
+    }
+
+    /// Returns a short advisory when the active provider is a routed pool (`Self::Router` /
+    /// `Self::Triage`) whose selection strategy may pick a different inner provider on the
+    /// next turn than the one a mutating capability command ([`Self::set_thinking_budget`],
+    /// [`Self::apply_reasoning_effort`]) just configured.
+    ///
+    /// `None` for non-routed variants, deterministic strategies (`RouterStrategy::Cascade`),
+    /// and degenerate single-provider pools — in those cases the applicable provider on the
+    /// next dispatch is guaranteed to be the same one the command just mutated, so no warning
+    /// is needed. See spec `049-router-thinking-budget-delegation` §6 for the resolved
+    /// edge-case behavior this implements.
+    #[must_use]
+    pub fn capability_delegation_advisory(&self) -> Option<String> {
+        match self {
+            Self::Router(r) => r.capability_delegation_advisory(),
+            Self::Triage(t) => t.capability_delegation_advisory(),
+            Self::Masked(p) => p.inner().capability_delegation_advisory(),
             _ => None,
         }
     }

@@ -1923,3 +1923,253 @@ async fn chat_stream_all_providers_exhausted_preserves_last_error() {
         ),
     }
 }
+
+// ── #5883: capability delegation (/think-tokens, /reasoning-effort) ────────
+
+#[test]
+fn router_set_thinking_budget_delegates_to_last_active_provider() {
+    use crate::claude::ClaudeProvider;
+    use crate::ollama::OllamaProvider;
+
+    let ollama = AnyProvider::Ollama(OllamaProvider::new(
+        "http://127.0.0.1:1",
+        "m".into(),
+        "e".into(),
+    ));
+    let claude = AnyProvider::Claude(ClaudeProvider::new("k".into(), "m".into(), 1024));
+    let mut r = RouterProvider::new(vec![ollama, claude]);
+    *r.state.last_active_provider.lock() = Some("claude".to_owned());
+
+    r.set_thinking_budget_delegated(Some(4096)).unwrap();
+
+    assert_eq!(r.state.providers[1].current_thinking_budget(), Some(4096));
+    // The un-targeted provider must be untouched.
+    assert_eq!(r.state.providers[0].current_thinking_budget(), None);
+}
+
+#[test]
+fn router_capability_target_falls_back_to_first_when_no_dispatch_yet() {
+    use crate::ollama::OllamaProvider;
+
+    let p1 = AnyProvider::Ollama(OllamaProvider::new(
+        "http://127.0.0.1:1",
+        "m".into(),
+        "e".into(),
+    ));
+    let p2 = AnyProvider::Ollama(OllamaProvider::new(
+        "http://127.0.0.1:2",
+        "m".into(),
+        "e".into(),
+    ));
+    let r = RouterProvider::new(vec![p1, p2]);
+    assert_eq!(r.capability_target_index(), Some(0));
+}
+
+#[test]
+fn router_capability_target_falls_back_to_first_on_config_drift() {
+    use crate::ollama::OllamaProvider;
+
+    let p1 = AnyProvider::Ollama(OllamaProvider::new(
+        "http://127.0.0.1:1",
+        "m".into(),
+        "e".into(),
+    ));
+    let r = RouterProvider::new(vec![p1]);
+    // Names a provider that is no longer (or never was) in the pool.
+    *r.state.last_active_provider.lock() = Some("stale-provider".to_owned());
+    assert_eq!(r.capability_target_index(), Some(0));
+}
+
+#[test]
+fn router_capability_target_none_for_empty_pool() {
+    let r = RouterProvider::new(vec![]);
+    assert_eq!(r.capability_target_index(), None);
+}
+
+/// M3: `capability_target_index`'s name->slot lookup is a pre-existing, shared assumption
+/// (also relied on by `last_selected_provider_kind`/`record_quality_outcome`) that duplicate
+/// provider names resolve to the FIRST matching slot. `OllamaProvider::new` defaults
+/// `provider_name` to `"ollama"` unless `.with_provider_name(...)` overrides it, so two
+/// default-named Ollama entries in the same pool naturally collide.
+#[test]
+fn router_capability_target_resolves_duplicate_name_to_first_slot() {
+    use crate::ollama::OllamaProvider;
+
+    let p1 = AnyProvider::Ollama(OllamaProvider::new(
+        "http://127.0.0.1:1",
+        "m1".into(),
+        "e".into(),
+    ));
+    let p2 = AnyProvider::Ollama(OllamaProvider::new(
+        "http://127.0.0.1:2",
+        "m2".into(),
+        "e".into(),
+    ));
+    assert_eq!(p1.name(), "ollama");
+    assert_eq!(p2.name(), "ollama");
+
+    let r = RouterProvider::new(vec![p1, p2]);
+    *r.state.last_active_provider.lock() = Some("ollama".to_owned());
+    assert_eq!(r.capability_target_index(), Some(0));
+}
+
+#[test]
+fn router_set_thinking_budget_names_real_inner_provider_on_mismatch() {
+    use crate::ollama::OllamaProvider;
+
+    // Ollama does not support a thinking-token budget — FR-005: the error must name the
+    // real inner provider, not the generic "router" string.
+    let ollama = AnyProvider::Ollama(OllamaProvider::new(
+        "http://127.0.0.1:1",
+        "m".into(),
+        "e".into(),
+    ));
+    let mut r = RouterProvider::new(vec![ollama]);
+    let err = r.set_thinking_budget_delegated(Some(1024)).unwrap_err();
+    match err {
+        LlmError::ModelCapabilityMismatch { provider, .. } => assert_eq!(provider, "ollama"),
+        other => panic!("expected ModelCapabilityMismatch naming ollama, got {other:?}"),
+    }
+}
+
+/// M2 regression: the setter must mutate the SAME authoritative `RouterProvider` instance
+/// that dispatch later clones-at-entry from, even when `Arc::get_mut` fails because another
+/// clone (e.g. an in-flight `spawn_asi_update` task) is sharing the `providers` Arc. This is
+/// the common runtime path (`spawn_asi_update` holds a clone for up to `embed_timeout_ms`
+/// after every turn), not a defensive fallback — see `with_target_provider_mut` doc comment.
+#[test]
+fn router_set_thinking_budget_rebuild_path_persists_on_authoritative_instance() {
+    use crate::claude::ClaudeProvider;
+
+    let claude = AnyProvider::Claude(ClaudeProvider::new("k".into(), "m".into(), 1024));
+    let mut r = RouterProvider::new(vec![claude]);
+
+    // Simulate an in-flight background clone (e.g. `spawn_asi_update`) holding a reference to
+    // the same `providers` Arc, bumping its refcount above 1 so `Arc::get_mut` fails.
+    let stale_clone = r.clone();
+    assert!(Arc::ptr_eq(
+        &r.state.providers,
+        &stale_clone.state.providers
+    ));
+
+    r.set_thinking_budget_delegated(Some(2048)).unwrap();
+
+    // The rebuild replaced `r.state.providers` with a new Arc — no longer the same allocation
+    // the stale clone holds.
+    assert!(!Arc::ptr_eq(
+        &r.state.providers,
+        &stale_clone.state.providers
+    ));
+    // The authoritative instance's next dispatch observes the mutation.
+    assert_eq!(r.state.providers[0].current_thinking_budget(), Some(2048));
+    // The stale clone's (now-orphaned) slice is untouched — expected: it will be dropped, not
+    // dispatched through again.
+    assert_eq!(
+        stale_clone.state.providers[0].current_thinking_budget(),
+        None
+    );
+}
+
+#[test]
+fn router_capability_delegation_advisory_present_for_resampling_multi_provider_pool() {
+    use crate::claude::ClaudeProvider;
+    use crate::ollama::OllamaProvider;
+
+    let claude = AnyProvider::Claude(ClaudeProvider::new("k".into(), "m".into(), 1024));
+    let ollama = AnyProvider::Ollama(OllamaProvider::new(
+        "http://127.0.0.1:1",
+        "m".into(),
+        "e".into(),
+    ));
+    let mut r = RouterProvider::new(vec![claude, ollama]);
+    r.strategy = RouterStrategy::Thompson;
+
+    let advisory = r.capability_delegation_advisory();
+    assert!(advisory.is_some());
+    assert!(advisory.unwrap().contains("claude"));
+}
+
+#[test]
+fn router_capability_delegation_advisory_absent_for_cascade() {
+    use crate::claude::ClaudeProvider;
+    use crate::ollama::OllamaProvider;
+
+    let claude = AnyProvider::Claude(ClaudeProvider::new("k".into(), "m".into(), 1024));
+    let ollama = AnyProvider::Ollama(OllamaProvider::new(
+        "http://127.0.0.1:1",
+        "m".into(),
+        "e".into(),
+    ));
+    let mut r = RouterProvider::new(vec![claude, ollama]);
+    r.strategy = RouterStrategy::Cascade;
+
+    assert_eq!(r.capability_delegation_advisory(), None);
+}
+
+#[test]
+fn router_capability_delegation_advisory_absent_for_single_provider_pool() {
+    use crate::claude::ClaudeProvider;
+
+    let claude = AnyProvider::Claude(ClaudeProvider::new("k".into(), "m".into(), 1024));
+    let mut r = RouterProvider::new(vec![claude]);
+    r.strategy = RouterStrategy::Thompson;
+
+    assert_eq!(r.capability_delegation_advisory(), None);
+}
+
+#[test]
+fn masked_router_set_thinking_budget_delegates_through_inner() {
+    use crate::claude::ClaudeProvider;
+    use crate::masking::MaskedProvider;
+
+    #[derive(Debug)]
+    struct NoopMasker;
+    impl crate::masking::OutboundMasker for NoopMasker {
+        fn mask(&self, _text: &str) -> Option<String> {
+            None
+        }
+    }
+
+    let claude = AnyProvider::Claude(ClaudeProvider::new("k".into(), "m".into(), 1024));
+    let router = RouterProvider::new(vec![claude]);
+    let mut masked = AnyProvider::Masked(Box::new(MaskedProvider::new(
+        AnyProvider::Router(Box::new(router)),
+        std::sync::Arc::new(NoopMasker),
+    )));
+
+    masked.set_thinking_budget(Some(4096)).unwrap();
+    assert_eq!(masked.current_thinking_budget(), Some(4096));
+}
+
+/// FR-008: `Masked(Triage(...))` must delegate transparently through `p.inner`/`p.inner()`,
+/// mirroring the `Masked(Router(...))` case above.
+#[test]
+fn masked_triage_set_thinking_budget_delegates_through_inner() {
+    use crate::claude::ClaudeProvider;
+    use crate::masking::MaskedProvider;
+    use crate::router::triage::{ComplexityTier, TriageRouter};
+
+    #[derive(Debug)]
+    struct NoopMasker;
+    impl crate::masking::OutboundMasker for NoopMasker {
+        fn mask(&self, _text: &str) -> Option<String> {
+            None
+        }
+    }
+
+    let triage_provider = AnyProvider::Claude(ClaudeProvider::new("k".into(), "m".into(), 1024));
+    let claude = AnyProvider::Claude(ClaudeProvider::new("k".into(), "m".into(), 1024));
+    let router = TriageRouter::new(
+        triage_provider,
+        vec![(ComplexityTier::Simple, claude)],
+        5,
+        100,
+    );
+    let mut masked = AnyProvider::Masked(Box::new(MaskedProvider::new(
+        AnyProvider::Triage(Box::new(router)),
+        std::sync::Arc::new(NoopMasker),
+    )));
+
+    masked.set_thinking_budget(Some(4096)).unwrap();
+    assert_eq!(masked.current_thinking_budget(), Some(4096));
+}

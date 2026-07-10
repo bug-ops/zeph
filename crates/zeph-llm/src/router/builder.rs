@@ -583,6 +583,146 @@ impl RouterProvider {
         self.status_tx = Some(tx);
     }
 
+    /// Resolve the pool index that runtime capability commands (`/think-tokens`,
+    /// `/reasoning-effort`) target: the inner provider that served the most recent call, or
+    /// the first configured provider as a deterministic fallback (FR-006) when no dispatch has
+    /// happened yet this session, or when `last_active_provider` names a provider no longer in
+    /// the pool (config drift). Returns `None` only for an empty pool.
+    pub(crate) fn capability_target_index(&self) -> Option<usize> {
+        if self.state.providers.is_empty() {
+            return None;
+        }
+        let name = self.state.last_active_provider.lock().clone();
+        match name {
+            Some(name) => Some(
+                self.state
+                    .providers
+                    .iter()
+                    .position(|p| p.name() == name)
+                    .unwrap_or(0),
+            ),
+            None => Some(0),
+        }
+    }
+
+    /// Mutate the pooled provider at `idx` in place.
+    ///
+    /// `RouterState::providers` is `Arc<[AnyProvider]>`; `Arc::get_mut` succeeds at refcount 1
+    /// (the common case for a slash command holding `&mut` to the sole owned
+    /// `AnyProvider::Router`). The rebuild branch below is **not** a defensive fallback: any
+    /// in-flight `spawn_asi_update` background task clones `RouterProvider` (sharing this same
+    /// `providers` Arc) for up to `embed_timeout_ms` (default 5000ms) after every turn, so a
+    /// `/think-tokens`/`/reasoning-effort` issued shortly after a turn routinely takes this
+    /// path. The stale clone keeps its old (transient) slice; the authoritative router's *next*
+    /// dispatch reads the freshly rebuilt Arc, so the mutation still persists (FR-007).
+    ///
+    /// Correctness invariant: this mutates the authoritative `RouterProvider` instance. Dispatch
+    /// (`chat`/`chat_with_tools`) reads `self.state` on the same authoritative instance the
+    /// agent holds, so a setter call landing before the next dispatch is guaranteed to be
+    /// observed by it. A future refactor that caches a pre-cloned dispatch copy ahead of time
+    /// would silently break this.
+    fn with_target_provider_mut<T>(
+        &mut self,
+        idx: usize,
+        f: impl FnOnce(&mut AnyProvider) -> T,
+    ) -> T {
+        if let Some(providers) = Arc::get_mut(&mut self.state.providers) {
+            f(&mut providers[idx])
+        } else {
+            let mut v: Vec<_> = self.state.providers.iter().cloned().collect();
+            let out = f(&mut v[idx]);
+            self.state.providers = Arc::from(v);
+            out
+        }
+    }
+
+    /// Delegated implementation of [`crate::any::AnyProvider::set_thinking_budget`] for
+    /// `Self::Router`. See [`Self::capability_target_index`] for target resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError::ModelCapabilityMismatch`] naming `"router"` when the pool is empty,
+    /// or the real inner provider's own error when it does not support a thinking-token budget.
+    pub(crate) fn set_thinking_budget_delegated(
+        &mut self,
+        budget: Option<u32>,
+    ) -> Result<(), LlmError> {
+        let idx =
+            self.capability_target_index()
+                .ok_or_else(|| LlmError::ModelCapabilityMismatch {
+                    provider: "router".to_owned(),
+                    message: "router has no configured providers".into(),
+                })?;
+        tracing::debug!(
+            target_idx = idx,
+            strategy = ?self.strategy,
+            "router: delegating set_thinking_budget to applicable inner provider"
+        );
+        self.with_target_provider_mut(idx, |p| p.set_thinking_budget(budget))
+    }
+
+    /// Delegated implementation of [`crate::any::AnyProvider::apply_reasoning_effort`] for
+    /// `Self::Router`. See [`Self::capability_target_index`] for target resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError::ModelCapabilityMismatch`] naming `"router"` when the pool is empty,
+    /// or the real inner provider's own error when it does not support a reasoning-effort level.
+    pub(crate) fn apply_reasoning_effort_delegated(
+        &mut self,
+        effort: crate::any::ReasoningEffort,
+    ) -> Result<(), LlmError> {
+        let idx =
+            self.capability_target_index()
+                .ok_or_else(|| LlmError::ModelCapabilityMismatch {
+                    provider: "router".to_owned(),
+                    message: "router has no configured providers".into(),
+                })?;
+        tracing::debug!(
+            target_idx = idx,
+            strategy = ?self.strategy,
+            "router: delegating apply_reasoning_effort to applicable inner provider"
+        );
+        self.with_target_provider_mut(idx, |p| p.apply_reasoning_effort(effort))
+    }
+
+    /// Delegated implementation of [`crate::any::AnyProvider::current_thinking_budget`] for
+    /// `Self::Router`.
+    #[must_use]
+    pub(crate) fn current_thinking_budget_delegated(&self) -> Option<u32> {
+        let idx = self.capability_target_index()?;
+        self.state.providers[idx].current_thinking_budget()
+    }
+
+    /// Delegated implementation of [`crate::any::AnyProvider::current_reasoning_effort`] for
+    /// `Self::Router`.
+    #[must_use]
+    pub(crate) fn current_reasoning_effort_delegated(&self) -> Option<String> {
+        let idx = self.capability_target_index()?;
+        self.state.providers[idx].current_reasoning_effort()
+    }
+
+    /// Delegated implementation of [`crate::any::AnyProvider::capability_delegation_advisory`]
+    /// for `Self::Router`.
+    ///
+    /// Returns `None` when the pool has at most one provider, or when `self.strategy` is
+    /// [`RouterStrategy::Cascade`] (deterministic cheapest-first — always reselects the same
+    /// slot barring quality-driven escalation). For re-sampling strategies (`Ema`, `Thompson`,
+    /// `Bandit`) over a multi-provider pool, the next dispatch may pick a different provider
+    /// than the one just configured — see spec `049-router-thinking-budget-delegation` §6.
+    #[must_use]
+    pub(crate) fn capability_delegation_advisory(&self) -> Option<String> {
+        if self.state.providers.len() <= 1 || self.strategy == RouterStrategy::Cascade {
+            return None;
+        }
+        let idx = self.capability_target_index()?;
+        let name = self.state.providers.get(idx)?.name();
+        Some(format!(
+            "applied to {name}; routing={:?} may select a different provider on the next turn",
+            self.strategy
+        ))
+    }
+
     /// Aggregate model lists from all sub-providers, deduplicating by id.
     ///
     /// Individual sub-provider errors are logged as warnings and skipped.

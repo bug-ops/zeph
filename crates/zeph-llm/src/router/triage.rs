@@ -248,6 +248,107 @@ impl TriageRouter {
         &self.metrics
     }
 
+    /// Resolve the pool index that runtime capability commands (`/think-tokens`,
+    /// `/reasoning-effort`) target: the tier provider that served the most recent request, or
+    /// `default_index` as a deterministic fallback (FR-006) when no request has completed yet
+    /// this session. Returns `None` only for an empty pool (unreachable in practice — `new`
+    /// panics on an empty `tier_providers`).
+    fn capability_target_index(&self) -> Option<usize> {
+        if self.tier_providers.is_empty() {
+            return None;
+        }
+        let idx = self.last_provider_idx.load(Ordering::Relaxed);
+        Some(if idx == NO_LAST_PROVIDER {
+            self.default_index
+        } else {
+            idx
+        })
+    }
+
+    /// Delegated implementation of [`crate::any::AnyProvider::set_thinking_budget`] for
+    /// `Self::Triage`. `tier_providers` is a plain owned `Vec`, so the mutation is a direct
+    /// `&mut self` index — no `Arc` rebuild dance is needed (unlike
+    /// [`crate::router::RouterProvider`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError::ModelCapabilityMismatch`] naming `"triage"` when the pool is empty,
+    /// or the real inner provider's own error when it does not support a thinking-token budget.
+    pub(crate) fn set_thinking_budget_delegated(
+        &mut self,
+        budget: Option<u32>,
+    ) -> Result<(), LlmError> {
+        let idx =
+            self.capability_target_index()
+                .ok_or_else(|| LlmError::ModelCapabilityMismatch {
+                    provider: "triage".to_owned(),
+                    message: "triage router has no configured tier providers".into(),
+                })?;
+        tracing::debug!(
+            target_idx = idx,
+            "triage: delegating set_thinking_budget to applicable tier provider"
+        );
+        self.tier_providers[idx].1.set_thinking_budget(budget)
+    }
+
+    /// Delegated implementation of [`crate::any::AnyProvider::apply_reasoning_effort`] for
+    /// `Self::Triage`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError::ModelCapabilityMismatch`] naming `"triage"` when the pool is empty,
+    /// or the real inner provider's own error when it does not support a reasoning-effort level.
+    pub(crate) fn apply_reasoning_effort_delegated(
+        &mut self,
+        effort: crate::any::ReasoningEffort,
+    ) -> Result<(), LlmError> {
+        let idx =
+            self.capability_target_index()
+                .ok_or_else(|| LlmError::ModelCapabilityMismatch {
+                    provider: "triage".to_owned(),
+                    message: "triage router has no configured tier providers".into(),
+                })?;
+        tracing::debug!(
+            target_idx = idx,
+            "triage: delegating apply_reasoning_effort to applicable tier provider"
+        );
+        self.tier_providers[idx].1.apply_reasoning_effort(effort)
+    }
+
+    /// Delegated implementation of [`crate::any::AnyProvider::current_thinking_budget`] for
+    /// `Self::Triage`.
+    #[must_use]
+    pub(crate) fn current_thinking_budget_delegated(&self) -> Option<u32> {
+        let idx = self.capability_target_index()?;
+        self.tier_providers.get(idx)?.1.current_thinking_budget()
+    }
+
+    /// Delegated implementation of [`crate::any::AnyProvider::current_reasoning_effort`] for
+    /// `Self::Triage`.
+    #[must_use]
+    pub(crate) fn current_reasoning_effort_delegated(&self) -> Option<String> {
+        let idx = self.capability_target_index()?;
+        self.tier_providers.get(idx)?.1.current_reasoning_effort()
+    }
+
+    /// Delegated implementation of [`crate::any::AnyProvider::capability_delegation_advisory`]
+    /// for `Self::Triage`.
+    ///
+    /// Returns `None` when there is at most one tier provider (unambiguous target). With more
+    /// than one, per-turn classification can select a different tier provider than the one just
+    /// configured — see spec `049-router-thinking-budget-delegation` §6.
+    #[must_use]
+    pub(crate) fn capability_delegation_advisory(&self) -> Option<String> {
+        if self.tier_providers.len() <= 1 {
+            return None;
+        }
+        let idx = self.capability_target_index()?;
+        let name = self.tier_providers.get(idx)?.1.name();
+        Some(format!(
+            "applied to {name}; routing=triage may select a different provider on the next turn"
+        ))
+    }
+
     /// Classify the last user message and return the selected provider index into `tier_providers`.
     /// On failure (timeout, parse error), returns `default_index`.
     #[tracing::instrument(name = "llm.router.triage.classify", skip_all)]
@@ -711,6 +812,100 @@ mod tests {
             parts: vec![],
             metadata: MessageMetadata::default(),
         }
+    }
+
+    // ── #5883: capability delegation (/think-tokens, /reasoning-effort) ────
+
+    #[test]
+    fn triage_capability_target_falls_back_to_default_index_before_first_call() {
+        let router = TriageRouter::new(
+            mock_provider("triage-model"),
+            vec![
+                (ComplexityTier::Simple, mock_provider("simple")),
+                (ComplexityTier::Expert, mock_provider("expert")),
+            ],
+            5,
+            100,
+        );
+        assert_eq!(router.capability_target_index(), Some(0));
+    }
+
+    #[test]
+    fn triage_set_thinking_budget_delegates_to_last_provider_idx() {
+        let mut router = TriageRouter::new(
+            mock_provider("triage-model"),
+            vec![
+                (ComplexityTier::Simple, mock_provider("simple")),
+                (
+                    ComplexityTier::Expert,
+                    AnyProvider::Claude(crate::claude::ClaudeProvider::new(
+                        "k".into(),
+                        "m".into(),
+                        1024,
+                    )),
+                ),
+            ],
+            5,
+            100,
+        );
+        router.last_provider_idx.store(1, Ordering::Relaxed);
+
+        router.set_thinking_budget_delegated(Some(2048)).unwrap();
+
+        assert_eq!(
+            router.tier_providers[1].1.current_thinking_budget(),
+            Some(2048)
+        );
+        // The un-targeted tier provider must be untouched.
+        assert_eq!(router.tier_providers[0].1.current_thinking_budget(), None);
+    }
+
+    #[test]
+    fn triage_set_thinking_budget_names_real_inner_provider_on_mismatch() {
+        // Mock does not support a thinking-token budget — FR-005: the error must name the
+        // real inner provider, not the generic "triage" string.
+        let mut router = TriageRouter::new(
+            mock_provider("triage-model"),
+            vec![(ComplexityTier::Simple, mock_provider("simple"))],
+            5,
+            100,
+        );
+        let err = router
+            .set_thinking_budget_delegated(Some(1024))
+            .unwrap_err();
+        match err {
+            LlmError::ModelCapabilityMismatch { provider, .. } => {
+                assert_eq!(provider, "simple");
+            }
+            other => panic!("expected ModelCapabilityMismatch naming simple, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn triage_capability_delegation_advisory_present_for_multi_tier_pool() {
+        let router = TriageRouter::new(
+            mock_provider("triage-model"),
+            vec![
+                (ComplexityTier::Simple, mock_provider("simple")),
+                (ComplexityTier::Expert, mock_provider("expert")),
+            ],
+            5,
+            100,
+        );
+        let advisory = router.capability_delegation_advisory();
+        assert!(advisory.is_some());
+        assert!(advisory.unwrap().contains("simple"));
+    }
+
+    #[test]
+    fn triage_capability_delegation_advisory_absent_for_single_tier_pool() {
+        let router = TriageRouter::new(
+            mock_provider("triage-model"),
+            vec![(ComplexityTier::Simple, mock_provider("simple"))],
+            5,
+            100,
+        );
+        assert_eq!(router.capability_delegation_advisory(), None);
     }
 
     #[test]

@@ -935,6 +935,9 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                              — Claude's Extended and Adaptive thinking share one config field.",
                         );
                     }
+                    if let Some(advisory) = self.provider.capability_delegation_advisory() {
+                        let _ = write!(msg, " Note: {advisory}.");
+                    }
                     msg
                 }
                 Err(zeph_llm::LlmError::ModelCapabilityMismatch { provider, message }) => {
@@ -977,6 +980,9 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                             " Note: this overrides the previously set thinking-token budget \
                              — Claude's Extended and Adaptive thinking share one config field.",
                         );
+                    }
+                    if let Some(advisory) = self.provider.capability_delegation_advisory() {
+                        let _ = write!(msg, " Note: {advisory}.");
                     }
                     msg
                 }

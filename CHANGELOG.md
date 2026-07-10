@@ -24,6 +24,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(llm)`: `AnyProvider::Router` and `AnyProvider::Triage` no longer silently reject
+  `/think-tokens` and `/reasoning-effort` regardless of the selected inner provider's
+  capabilities. The four capability-mutating/-querying methods on `AnyProvider`
+  (`crates/zeph-llm/src/any.rs`) now delegate to the router's/triage's currently active
+  provider — `RouterProvider::{set_thinking_budget,apply_reasoning_effort}_delegated`
+  (`crates/zeph-llm/src/router/builder.rs`) and the equivalent `TriageRouter` methods
+  (`crates/zeph-llm/src/router/triage.rs`) — instead of unconditionally returning "not
+  supported". A new `capability_delegation_advisory` surfaces a one-line note when the
+  provider a mutation was applied to may diverge from the next turn's dispatch target
+  (e.g. Thompson/EMA/Bandit routing strategies), threaded through the existing
+  cross-override-note pattern in `crates/zeph-core/src/agent/agent_access_impl.rs` with no
+  signature changes to `AgentAccess`/`CommandOutput` (#5883).
 - `fix(a2a,config)`: `zeph --tui --connect <URL>` no longer fails against its own documented
   plain-`http://` loopback usage example (`--connect http://127.0.0.1:8080/a2a/stream`) on a
   fresh/default config. `src/tui_remote.rs` previously built the client-side `A2aClient`'s
