@@ -296,6 +296,42 @@ max_bot_chain_depth = 5
         assert!(!is_skill_allowed("web-search", &cfg));
         assert!(is_skill_allowed("Web-Search", &cfg));
     }
+
+    #[test]
+    fn a2a_client_config_defaults_are_hardened() {
+        let cfg = A2aClientConfig::default();
+        assert!(cfg.require_tls);
+        assert!(cfg.ssrf_protection);
+    }
+
+    #[test]
+    fn a2a_client_config_missing_toml_section_uses_defaults() {
+        // Absent `[a2a_client]` in an existing/fresh config.toml must deserialize to the
+        // hardened defaults, not fail — this is what makes the fix transparent for old configs.
+        let cfg: A2aClientConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg, A2aClientConfig::default());
+    }
+
+    #[test]
+    fn a2a_client_config_partial_toml_fills_missing_field_from_default() {
+        let cfg: A2aClientConfig = toml::from_str("require_tls = false\n").unwrap();
+        assert!(!cfg.require_tls);
+        assert!(cfg.ssrf_protection);
+    }
+
+    #[test]
+    fn a2a_client_config_defaults_match_a2a_server_config_defaults() {
+        // Not a type-independence guard (the compiler already enforces that `A2aServerConfig`
+        // and `A2aClientConfig` are distinct types — a `[a2a]` override cannot assign into an
+        // `A2aClientConfig` field regardless of what this test asserts). This only pins that
+        // the two structs' *default values* intentionally stay in sync: `[a2a_client]` was
+        // introduced to match `[a2a]`'s pre-#5878 hardened posture for non-loopback targets,
+        // not to silently relax it. If this fails, the drift was deliberate — update the test.
+        let server = A2aServerConfig::default();
+        let client = A2aClientConfig::default();
+        assert_eq!(server.require_tls, client.require_tls);
+        assert_eq!(server.ssrf_protection, client.ssrf_protection);
+    }
 }
 
 fn default_slack_port() -> u16 {
@@ -551,8 +587,15 @@ pub struct A2aServerConfig {
     pub auth_token: Option<String>,
     #[serde(default = "default_a2a_rate_limit")]
     pub rate_limit: u32,
+    /// Reserved, inert: no code path reads this field (the daemon's own A2A server never
+    /// checked it, and the former client reader was moved to `A2aClientConfig::require_tls`
+    /// by #5878). Kept only for TOML/env-var backward compatibility; a value here has no
+    /// effect on either the server or the `--connect` client. Slated for removal in a
+    /// dedicated follow-up PR with a `--migrate-config` step (breaking change, out of scope
+    /// for a bugfix).
     #[serde(default = "default_true")]
     pub require_tls: bool,
+    /// Reserved, inert — see [`require_tls`](Self::require_tls) for why.
     #[serde(default = "default_true")]
     pub ssrf_protection: bool,
     #[serde(default = "default_a2a_max_body")]
@@ -664,6 +707,42 @@ impl Default for A2aServerConfig {
             advertise_files: false,
             request_timeout_ms: default_a2a_request_timeout_ms(),
             task_ttl_secs: default_task_ttl_secs(),
+        }
+    }
+}
+
+/// Client-side security policy for outbound A2A connections made by `zeph --connect <URL>`
+/// (the remote-TUI-over-A2A-SSE attach feature), nested under `[a2a_client]` in TOML.
+///
+/// Deliberately separate from [`A2aServerConfig`]'s `[a2a]` section: the two configure
+/// different roles (this process attaching to a *remote* daemon vs. this process's *own*
+/// A2A server accepting inbound connections) and must not share one config subtree — a
+/// default/fresh config previously made every `--connect http://...` attempt fail with
+/// "TLS required", even against `127.0.0.1` loopback, because `[a2a]`'s server-oriented
+/// `require_tls = true` default was being reused for the client path (#5878).
+///
+/// Loopback targets (`127.0.0.1`, `::1`, `localhost` — see
+/// [`is_loopback_host`](zeph_common::net::is_loopback_host)) are always permitted over
+/// plain HTTP with SSRF protection skipped, regardless of these settings: connecting to
+/// your own local daemon is definitionally not an SSRF risk, and the CLI's documented
+/// `--connect http://127.0.0.1:8080/a2a/stream` usage example must work out of the box.
+/// Non-loopback targets are governed by `require_tls`/`ssrf_protection` below, which
+/// default to the same hardened posture as the server config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct A2aClientConfig {
+    /// Reject non-loopback endpoints that do not start with `https://`. Default: `true`.
+    pub require_tls: bool,
+    /// Resolve non-loopback endpoint hostnames via DNS and reject private/link-local
+    /// ranges. Default: `true`.
+    pub ssrf_protection: bool,
+}
+
+impl Default for A2aClientConfig {
+    fn default() -> Self {
+        Self {
+            require_tls: true,
+            ssrf_protection: true,
         }
     }
 }

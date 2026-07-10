@@ -626,6 +626,16 @@ ssrf_protection = true
 # Maximum request body size in bytes (1MB)
 max_body_size = 1048576
 
+[a2a_client]
+# Client-side security policy for `zeph --connect <URL>` (remote-TUI A2A attach).
+# Separate from [a2a] above, which governs this process's own A2A server.
+# Loopback targets (127.0.0.1, ::1, localhost) always bypass these and use plain
+# HTTP with no SSRF check, regardless of the settings below.
+# Require TLS for non-loopback --connect targets
+require_tls = true
+# Block non-loopback --connect targets that resolve to private/loopback IPs
+ssrf_protection = true
+
 [tools]
 # Enable tool execution (bash commands)
 enabled = true

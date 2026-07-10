@@ -106,3 +106,24 @@ Zeph can also connect to other A2A agents as a client:
 - `AgentRegistry` with TTL-based cache for agent card discovery
 - SSE streaming via `eventsource-stream` for real-time task updates
 - Bearer token auth passed per-call to all client methods
+
+### Remote TUI (`--connect`)
+
+`zeph --tui --connect <URL>` attaches a local TUI to a remote daemon's `/a2a/stream`
+endpoint instead of running the agent loop in-process:
+
+```bash
+zeph --tui --connect http://127.0.0.1:8080/a2a/stream
+```
+
+The `--connect` client uses its own security policy, configured under `[a2a_client]` —
+**not** the `[a2a]` section above, which only governs this process's own A2A server.
+Loopback targets (`127.0.0.1`, `::1`, `localhost`) always work over plain HTTP with no
+SSRF check, so the example above works against a fresh/default config with no manual
+overrides. Non-loopback targets still require HTTPS by default:
+
+```toml
+[a2a_client]
+require_tls = true      # required for non-loopback targets; loopback is always exempt
+ssrf_protection = true  # required for non-loopback targets; loopback is always exempt
+```

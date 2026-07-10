@@ -72,7 +72,12 @@ pub(crate) struct Cli {
     #[arg(long = "no-acp-message-ids", overrides_with = "acp_message_ids")]
     pub(crate) no_acp_message_ids: bool,
 
-    /// Connect TUI to a remote daemon via A2A SSE (requires tui + a2a features)
+    /// Connect TUI to a remote daemon via A2A SSE (requires tui + a2a features).
+    /// Example: `--connect http://127.0.0.1:8080/a2a/stream` — loopback targets
+    /// (127.0.0.1, `::1`, localhost) always work over plain HTTP out of the box.
+    /// Non-loopback targets require HTTPS by default; see the `[a2a_client]` config
+    /// section (separate from `[a2a]`, which only configures this process's own
+    /// A2A server) to adjust `require_tls`/`ssrf_protection`.
     #[cfg(all(feature = "tui", feature = "a2a"))]
     #[arg(long, value_name = "URL")]
     pub(crate) connect: Option<String>,

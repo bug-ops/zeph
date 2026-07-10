@@ -24,6 +24,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(a2a,config)`: `zeph --tui --connect <URL>` no longer fails against its own documented
+  plain-`http://` loopback usage example (`--connect http://127.0.0.1:8080/a2a/stream`) on a
+  fresh/default config. `src/tui_remote.rs` previously built the client-side `A2aClient`'s
+  `SecurityPolicy` from `config.a2a` — `A2aServerConfig`, the same struct used for the daemon's
+  own `[a2a]` server settings, whose `require_tls`/`ssrf_protection` default to `true` — so
+  every `--connect http://...` attempt failed immediately with a TLS policy error before
+  reaching the daemon, even against loopback. Added a dedicated `[a2a_client]` config section
+  (`A2aClientConfig` in `zeph-config`, env vars `ZEPH_A2A_CLIENT_REQUIRE_TLS`/
+  `ZEPH_A2A_CLIENT_SSRF_PROTECTION`) used only by the `--connect` path, leaving `[a2a]`
+  untouched for the daemon's own server. Loopback targets (`127.0.0.1`, `::1`, `localhost` —
+  new `zeph_common::net::is_loopback_host` helper) always bypass TLS/SSRF checks and connect
+  over plain HTTP regardless of `[a2a_client]` settings; non-loopback targets still require
+  HTTPS and pass DNS-based SSRF validation by default, unchanged from before (#5878).
 - `fix(skills)`: `skills.group_structured`, `skills.support_similarity_threshold`, and
   `skills.min_injection_score` are now wired into the `Agent` at cold start (`src/runner.rs`,
   `src/daemon.rs`, `src/acp.rs`, `src/serve/agent_factory.rs`), matching how `Agent::reload_config`

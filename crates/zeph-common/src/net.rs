@@ -49,6 +49,44 @@ pub fn is_private_ip(addr: IpAddr) -> bool {
     }
 }
 
+/// Returns `true` if `host` is a loopback target: an IP literal in the loopback range
+/// (`127.0.0.0/8`, `::1`) or the well-known hostname `localhost` (case-insensitive).
+///
+/// Accepts IPv6 literals with or without the bracket notation used in URL authorities
+/// (`::1` and `[::1]` both match), since callers typically extract `host` from a parsed
+/// [`url::Url`] — `Url::host_str()` retains the brackets, but `Url::host()` does not.
+///
+/// This is a syntactic check only — it does not perform DNS resolution, so it cannot
+/// be spoofed by a malicious DNS response and carries no SSRF risk of its own. Callers
+/// use it to grant loopback targets a narrow trust carve-out (e.g. allowing plain HTTP
+/// to a local daemon) without weakening SSRF protection for any other hostname, which
+/// still goes through [`resolve_and_validate`].
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_common::net::is_loopback_host;
+///
+/// assert!(is_loopback_host("127.0.0.1"));
+/// assert!(is_loopback_host("::1"));
+/// assert!(is_loopback_host("[::1]"));
+/// assert!(is_loopback_host("localhost"));
+/// assert!(is_loopback_host("LOCALHOST"));
+/// assert!(!is_loopback_host("example.com"));
+/// assert!(!is_loopback_host("10.0.0.1"));
+/// ```
+#[must_use]
+pub fn is_loopback_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let unbracketed = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'));
+    unbracketed
+        .unwrap_or(host)
+        .parse::<IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
+
 /// Error returned by [`resolve_and_validate`] when a hostname cannot be safely resolved.
 ///
 /// Callers map this into their own error type — it carries enough context (the timeout,
@@ -193,5 +231,52 @@ mod tests {
     async fn resolve_and_validate_rejects_loopback_ip_literal() {
         let err = resolve_and_validate("127.0.0.1", 443).await.unwrap_err();
         assert!(matches!(err, ResolveError::PrivateAddress { .. }));
+    }
+
+    #[test]
+    fn is_loopback_host_matches_ip_literals_and_localhost() {
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("127.0.0.2"));
+        assert!(is_loopback_host("::1"));
+        assert!(is_loopback_host("[::1]"));
+        assert!(is_loopback_host("localhost"));
+        assert!(is_loopback_host("LOCALHOST"));
+        assert!(is_loopback_host("LocalHost"));
+    }
+
+    #[test]
+    fn is_loopback_host_rejects_non_loopback() {
+        assert!(!is_loopback_host("example.com"));
+        assert!(!is_loopback_host("10.0.0.1"));
+        assert!(!is_loopback_host("192.168.1.1"));
+        assert!(!is_loopback_host("8.8.8.8"));
+        assert!(!is_loopback_host(""));
+    }
+
+    #[test]
+    fn is_loopback_host_covers_full_127_8_range() {
+        // `is_loopback_host` delegates to `IpAddr::is_loopback`, which covers the whole
+        // 127.0.0.0/8 range, not just the literal 127.0.0.1 — verify the top of that range.
+        assert!(is_loopback_host("127.255.255.255"));
+    }
+
+    #[test]
+    fn is_loopback_host_does_not_match_ipv4_mapped_ipv6_loopback() {
+        // `Ipv6Addr::is_loopback` only recognizes the literal `::1` — it does not unwrap
+        // IPv4-mapped addresses the way `is_private_ip` does (which explicitly calls
+        // `to_ipv4_mapped()`). So `::ffff:127.0.0.1` is NOT detected as loopback here.
+        // This is a known, safe-direction gap: such a host falls through to the hardened
+        // `client_cfg` policy in `resolve_client_security_policy` (fails closed, not open),
+        // so it is not a security bug — just an accepted false negative for a URL form
+        // that a caller is unlikely to type by hand.
+        assert!(!is_loopback_host("::ffff:127.0.0.1"));
+        assert!(!is_loopback_host("[::ffff:127.0.0.1]"));
+    }
+
+    #[test]
+    fn is_loopback_host_rejects_unspecified_address() {
+        // `0.0.0.0` is unspecified, not loopback — it must never get the loopback
+        // carve-out, or a locally-bound wildcard listener could be reached over plain HTTP.
+        assert!(!is_loopback_host("0.0.0.0"));
     }
 }

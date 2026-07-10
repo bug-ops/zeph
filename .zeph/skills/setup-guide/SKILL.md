@@ -121,8 +121,25 @@ export ZEPH_A2A_MAX_BODY_SIZE=1048576
 ```
 
 Rate limit: requests per minute per IP (0 = unlimited).
-TLS enforcement: reject HTTP endpoints when `require_tls = true`.
-SSRF protection: block private IPs (10.x, 172.16.x, 192.168.x, 127.x) in outbound A2A calls.
+`ZEPH_A2A_REQUIRE_TLS`/`ZEPH_A2A_SSRF_PROTECTION` are reserved on the `[a2a]` server
+config and not currently read by any code path — see `[a2a_client]` below for the
+setting that actually governs outbound `--connect` requests.
+
+## A2A Client (`--connect`)
+
+```bash
+export ZEPH_A2A_CLIENT_REQUIRE_TLS=true
+export ZEPH_A2A_CLIENT_SSRF_PROTECTION=true
+```
+
+Security policy for `zeph --tui --connect <URL>` (remote-TUI attach to another
+daemon's `/a2a/stream`). Loopback targets (`127.0.0.1`, `::1`, `localhost`) always
+bypass both checks and connect over plain HTTP — this makes
+`zeph --tui --connect http://127.0.0.1:8080/a2a/stream` work with a fresh/default
+config. Non-loopback targets require HTTPS (`require_tls`) and are DNS-validated to
+reject private/loopback ranges (`ssrf_protection`), using the same IP-range definitions
+as `[a2a]`'s (now-reserved) checks (10.x, 172.16.x, 192.168.x, 127.x) — not shared
+enforcement, since `[a2a]` no longer enforces anything on either path.
 Max body size: request payload limit in bytes (default 1 MiB).
 
 ## Tools

@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use zeph_common::secret::Secret;
 
 use crate::agent::{AgentConfig, FocusConfig, GoalConfig, SubAgentConfig};
-use crate::channels::{A2aServerConfig, DiscordConfig, McpConfig, SlackConfig, TelegramConfig};
+use crate::channels::{
+    A2aClientConfig, A2aServerConfig, DiscordConfig, McpConfig, SlackConfig, TelegramConfig,
+};
 use crate::classifiers::ClassifiersConfig;
 use crate::cli::CliConfig;
 use crate::cocoon::CocoonConfig;
@@ -65,6 +67,10 @@ pub struct Config {
     pub execution: ExecutionConfig,
     #[serde(default)]
     pub a2a: A2aServerConfig,
+    /// Client-side security policy for `zeph --connect <URL>` (remote-TUI A2A attach).
+    /// Separate from `[a2a]`, which governs this process's own A2A server (#5878).
+    #[serde(default)]
+    pub a2a_client: A2aClientConfig,
     #[serde(default)]
     pub mcp: McpConfig,
     #[serde(default)]
@@ -330,6 +336,7 @@ impl Default for Config {
             tools: ToolsConfig::default(),
             execution: ExecutionConfig::default(),
             a2a: A2aServerConfig::default(),
+            a2a_client: A2aClientConfig::default(),
             mcp: McpConfig::default(),
             index: IndexConfig::default(),
             vault: VaultConfig::default(),

@@ -4,6 +4,38 @@
 #[cfg(all(feature = "tui", feature = "a2a"))]
 use zeph_tui::{App, EventReader};
 
+/// Resolves the client-side [`SecurityPolicy`](zeph_a2a::SecurityPolicy) for a `--connect`
+/// target, applying the loopback carve-out (#5878): loopback targets (`127.0.0.1`, `::1`,
+/// `localhost`) always connect over plain HTTP with SSRF checks skipped, regardless of
+/// `client_cfg`; every other target is governed by `client_cfg.require_tls`/`ssrf_protection`.
+///
+/// `url` is matched syntactically (via [`url::Url::host_str`] + [`is_loopback_host`], no DNS
+/// resolution), so this carries no SSRF risk of its own and cannot be spoofed by a malicious
+/// DNS response.
+///
+/// [`is_loopback_host`]: zeph_common::net::is_loopback_host
+#[cfg(all(feature = "tui", feature = "a2a"))]
+fn resolve_client_security_policy(
+    url: &str,
+    client_cfg: zeph_core::config::A2aClientConfig,
+) -> zeph_a2a::SecurityPolicy {
+    let is_loopback = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(zeph_common::net::is_loopback_host))
+        .unwrap_or(false);
+    if is_loopback {
+        zeph_a2a::SecurityPolicy {
+            require_tls: false,
+            ssrf_protection: false,
+        }
+    } else {
+        zeph_a2a::SecurityPolicy {
+            require_tls: client_cfg.require_tls,
+            ssrf_protection: client_cfg.ssrf_protection,
+        }
+    }
+}
+
 #[cfg(all(feature = "tui", feature = "a2a"))]
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn run_tui_remote(
@@ -19,12 +51,11 @@ pub(crate) async fn run_tui_remote(
     config.validate()?;
     let auth_token = config.a2a.auth_token.clone();
 
-    let client = zeph_a2a::A2aClient::new(zeph_core::http::default_client()).with_security(
-        zeph_a2a::SecurityPolicy {
-            require_tls: config.a2a.require_tls,
-            ssrf_protection: config.a2a.ssrf_protection,
-        },
-    );
+    // `[a2a_client]` is a dedicated client-side policy for this `--connect` path — distinct
+    // from `[a2a]` (`A2aServerConfig`), which only governs this process's own A2A server (#5878).
+    let security = resolve_client_security_policy(&url, config.a2a_client);
+    let client =
+        zeph_a2a::A2aClient::new(zeph_core::http::default_client()).with_security(security);
 
     // Cloned before `url` is moved into the `async move` SSE pump block below.
     let remote_daemon_url = url.clone();
@@ -181,4 +212,154 @@ pub(crate) async fn run_tui_remote(
         .shutdown_all(std::time::Duration::from_secs(5))
         .await;
     Ok(())
+}
+
+#[cfg(all(test, feature = "tui", feature = "a2a"))]
+mod tests {
+    use super::resolve_client_security_policy;
+    use zeph_core::config::A2aClientConfig;
+
+    fn hardened_client_cfg() -> A2aClientConfig {
+        A2aClientConfig::default()
+    }
+
+    #[test]
+    fn loopback_ipv4_bypasses_tls_and_ssrf_even_when_hardened() {
+        let policy = resolve_client_security_policy(
+            "http://127.0.0.1:8080/a2a/stream",
+            hardened_client_cfg(),
+        );
+        assert!(!policy.require_tls);
+        assert!(!policy.ssrf_protection);
+    }
+
+    #[test]
+    fn loopback_ipv6_bypasses_tls_and_ssrf() {
+        let policy =
+            resolve_client_security_policy("http://[::1]:8080/a2a/stream", hardened_client_cfg());
+        assert!(!policy.require_tls);
+        assert!(!policy.ssrf_protection);
+    }
+
+    #[test]
+    fn loopback_hostname_bypasses_tls_and_ssrf() {
+        let policy = resolve_client_security_policy(
+            "http://localhost:8080/a2a/stream",
+            hardened_client_cfg(),
+        );
+        assert!(!policy.require_tls);
+        assert!(!policy.ssrf_protection);
+    }
+
+    #[test]
+    fn non_loopback_http_uses_configured_client_policy() {
+        let policy = resolve_client_security_policy(
+            "http://agent.example.com/a2a/stream",
+            hardened_client_cfg(),
+        );
+        assert!(policy.require_tls);
+        assert!(policy.ssrf_protection);
+    }
+
+    #[test]
+    fn non_loopback_respects_permissive_client_config() {
+        let permissive = A2aClientConfig {
+            require_tls: false,
+            ssrf_protection: false,
+        };
+        let policy =
+            resolve_client_security_policy("http://agent.example.com/a2a/stream", permissive);
+        assert!(!policy.require_tls);
+        assert!(!policy.ssrf_protection);
+    }
+
+    #[test]
+    fn unparseable_url_falls_back_to_configured_client_policy() {
+        let policy = resolve_client_security_policy("not a url", hardened_client_cfg());
+        assert!(policy.require_tls);
+        assert!(policy.ssrf_protection);
+    }
+
+    #[test]
+    fn uppercase_scheme_still_matches_loopback() {
+        // `url::Url::parse` normalizes the scheme to lowercase, but host extraction is
+        // unaffected either way — `HTTP://` must resolve identically to `http://`.
+        let policy = resolve_client_security_policy(
+            "HTTP://127.0.0.1:8080/a2a/stream",
+            hardened_client_cfg(),
+        );
+        assert!(!policy.require_tls);
+        assert!(!policy.ssrf_protection);
+    }
+
+    #[test]
+    fn userinfo_and_port_url_still_matches_loopback() {
+        // `Url::host_str()` must return only the host, ignoring userinfo and port.
+        let policy = resolve_client_security_policy(
+            "http://user:pass@127.0.0.1:8080/a2a/stream",
+            hardened_client_cfg(),
+        );
+        assert!(!policy.require_tls);
+        assert!(!policy.ssrf_protection);
+    }
+
+    #[test]
+    fn unspecified_address_is_not_treated_as_loopback() {
+        // `0.0.0.0` is unspecified, not loopback — must stay TLS/SSRF-hardened.
+        let policy =
+            resolve_client_security_policy("http://0.0.0.0:8080/a2a/stream", hardened_client_cfg());
+        assert!(policy.require_tls);
+        assert!(policy.ssrf_protection);
+    }
+
+    #[test]
+    fn top_of_loopback_range_bypasses_tls_and_ssrf() {
+        // 127.0.0.0/8 is entirely loopback, not just 127.0.0.1 — verify the top of the range.
+        let policy = resolve_client_security_policy(
+            "http://127.255.255.255:8080/a2a/stream",
+            hardened_client_cfg(),
+        );
+        assert!(!policy.require_tls);
+        assert!(!policy.ssrf_protection);
+    }
+
+    #[test]
+    fn private_non_loopback_ips_do_not_bypass_ssrf_protection() {
+        // SSRF protection must still apply to private-but-non-loopback ranges — the
+        // carve-out is loopback-only, not "any local network address".
+        for url in [
+            "http://10.0.0.1:8080/a2a/stream",
+            "http://192.168.1.1:8080/a2a/stream",
+        ] {
+            let policy = resolve_client_security_policy(url, hardened_client_cfg());
+            assert!(policy.require_tls, "expected require_tls for {url}");
+            assert!(policy.ssrf_protection, "expected ssrf_protection for {url}");
+        }
+    }
+
+    #[test]
+    fn hostname_containing_localhost_as_substring_does_not_bypass() {
+        // `is_loopback_host` compares the whole host against "localhost", not a substring
+        // match — a lookalike hostname must not get the carve-out.
+        let policy = resolve_client_security_policy(
+            "http://notlocalhost.example.com/a2a/stream",
+            hardened_client_cfg(),
+        );
+        assert!(policy.require_tls);
+        assert!(policy.ssrf_protection);
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_loopback_fails_closed_not_open() {
+        // `::ffff:127.0.0.1` is not recognized as loopback by `is_loopback_host` (see
+        // zeph_common::net tests) since `Ipv6Addr::is_loopback` doesn't unwrap IPv4-mapped
+        // addresses. Confirm the resulting behavior is safe: it falls through to the
+        // configured (hardened) client policy rather than silently bypassing security.
+        let policy = resolve_client_security_policy(
+            "http://[::ffff:127.0.0.1]:8080/a2a/stream",
+            hardened_client_cfg(),
+        );
+        assert!(policy.require_tls);
+        assert!(policy.ssrf_protection);
+    }
 }
