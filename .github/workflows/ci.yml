@@ -12,7 +12,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
   RUSTC_WRAPPER: ""
   CARGO_INCREMENTAL: "0"
 
@@ -438,13 +437,16 @@ jobs:
     timeout-minutes: 20
     # coverage uses -C instrument-coverage which produces different artifacts than
     # normal builds; sccache still helps for unchanged crates between main pushes.
-    # RUSTFLAGS is reset to empty to prevent -D warnings from promoting workspace
-    # lint warnings to errors during instrumented compilation — linting is enforced
-    # by the dedicated lint-clippy job.
+    # This job also builds with `--features full`, which includes crates (classifiers,
+    # profiling, sandbox, gonka, cocoon) outside the lint-clippy matrix, so a warning
+    # could appear here that lint-clippy never sees. CARGO_BUILD_WARNINGS overrides the
+    # repo-wide `.cargo/config.toml` deny-by-default to prevent that from promoting
+    # workspace lint warnings to errors during instrumented compilation — linting is
+    # enforced by the dedicated lint-clippy job.
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
-      RUSTFLAGS: ""
+      CARGO_BUILD_WARNINGS: "allow"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -643,8 +645,17 @@ jobs:
     if: needs.detect-changes.outputs.run-full-ci == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # `build.warnings` (repo-wide .cargo/config.toml) denies ALL local-package rustdoc
+    # warnings, not just `rustdoc::broken_intra_doc_links` — it independently catches
+    # `rustdoc::private_intra_doc_links` and `rustdoc::redundant_explicit_links` too, which
+    # this job's own RUSTDOCFLAGS never enforced. Pre-existing (unrelated to any single PR)
+    # instances of those two lints exist workspace-wide; overriding to "allow" here keeps
+    # this job's enforcement scoped to exactly what RUSTDOCFLAGS denies, unchanged from
+    # before this migration (#5873) — fixing the pre-existing instances is a separate,
+    # larger doc-cleanup effort, not in scope for a CI-gate-mechanism migration.
     env:
       RUSTDOCFLAGS: "--deny rustdoc::broken_intra_doc_links"
+      CARGO_BUILD_WARNINGS: "allow"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable

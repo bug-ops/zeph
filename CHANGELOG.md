@@ -107,6 +107,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `ci`: migrate the workspace lint-warning gate from the global `RUSTFLAGS: "-D warnings"`
+  CI env var to Cargo's native `build.warnings = "deny"` (new `.cargo/config.toml`, stabilized
+  in Rust 1.97, cargo PR rust-lang/cargo#16796). Unlike `RUSTFLAGS`, toggling `build.warnings`
+  does not change rustc's invocation fingerprint, so it no longer forces a full recompile of
+  unchanged units when switching between a plain `cargo build` and a warnings-denied one —
+  verified locally via `cargo build -v` fingerprint comparison (`Fresh` in both directions vs.
+  full recompile on `RUSTFLAGS` toggle). Coverage-parity verified for the warning classes the
+  previous gate caught (unused imports, dead code, unused variables); `build.warnings` was also
+  found to independently catch `rustdoc::broken_intra_doc_links` and `cargo clippy` lints, wider
+  than expected, but `RUSTDOCFLAGS="--deny rustdoc::broken_intra_doc_links"` and clippy's own
+  `-- -D warnings` CLI flag are left unchanged as defense-in-depth (#5873). The `coverage` job's
+  former `RUSTFLAGS: ""` reset (needed because it builds `--features full`, a superset of the
+  `lint-clippy` matrix, and must not fail on lint status — that's `lint-clippy`'s job) is now
+  `CARGO_BUILD_WARNINGS: "allow"`, the per-job env override for the same repo-wide config key.
+  The `rustdoc` job gets the same override: `build.warnings` being wider than `RUSTDOCFLAGS`
+  means it independently denies `rustdoc::private_intra_doc_links`/`redundant_explicit_links`
+  too, and 37 pre-existing instances across 10 crates (unrelated to this change) would have
+  newly failed that job; the override keeps it enforcing exactly what it always has pending a
+  separate doc-cleanup pass.
 - `chore`: raise the workspace MSRV from Rust 1.96 to 1.97 (`Cargo.toml`
   `rust-version`, CI `msrv` job, all crate README badges/notes, `specs/constitution.md`).
   Rust 1.97 (stable 2026-07-07) is now the minimum supported toolchain. This also unifies
