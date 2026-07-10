@@ -312,7 +312,7 @@ impl LlmProvider for RouterProvider {
         &self,
         text: &str,
     ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
-        let providers = self.ordered_providers();
+        let providers = self.embed_candidates();
         let status_tx = self.status_tx.clone();
         let text = text.to_owned();
         let router = self.clone();
@@ -429,7 +429,7 @@ impl LlmProvider for RouterProvider {
         &self,
         texts: &[&str],
     ) -> impl std::future::Future<Output = Result<Vec<Vec<f32>>, LlmError>> + Send {
-        let providers = self.ordered_providers();
+        let providers = self.embed_candidates();
         let status_tx = self.status_tx.clone();
         let owned = owned_strs(texts);
         let router = self.clone();

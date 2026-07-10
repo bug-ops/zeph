@@ -144,6 +144,15 @@ pub struct TriageRouter {
     last_provider_idx: Arc<AtomicUsize>,
     /// Router display name.
     name: String,
+    /// Provider explicitly flagged `embed = true` in `[[llm.providers]]`, if configured.
+    ///
+    /// When set, [`Self::embed`]/[`Self::embed_batch`] use it directly instead of scanning
+    /// `tier_providers` for the first one reporting `supports_embeddings() == true`. Without
+    /// this, a chat-only tier provider sharing a backend type with the dedicated embedding
+    /// provider (e.g. an `OllamaProvider` tier alongside a dedicated Ollama embedder) can
+    /// shadow it, since `supports_embeddings()` conveys no information about which instance
+    /// was actually configured for embeddings (#5859).
+    dedicated_embed_provider: Option<Arc<AnyProvider>>,
 }
 
 impl std::fmt::Debug for TriageRouter {
@@ -189,7 +198,20 @@ impl TriageRouter {
             metrics: Arc::new(TriageMetrics::default()),
             last_provider_idx: Arc::new(AtomicUsize::new(NO_LAST_PROVIDER)),
             name: "triage".to_owned(),
+            dedicated_embed_provider: None,
         }
+    }
+
+    /// Register the provider explicitly flagged `embed = true` in `[[llm.providers]]`.
+    ///
+    /// `embed()`/`embed_batch()` use this provider directly instead of scanning
+    /// `tier_providers` for the first one reporting `supports_embeddings() == true`, which
+    /// conveys no information about which tier instance was actually configured for
+    /// embeddings (#5859).
+    #[must_use]
+    pub fn with_embed_provider(mut self, provider: AnyProvider) -> Self {
+        self.dedicated_embed_provider = Some(Arc::new(provider));
+        self
     }
 
     /// Propagate a status sender to all tier providers.
@@ -197,6 +219,27 @@ impl TriageRouter {
         for (_, provider) in &mut self.tier_providers {
             provider.set_status_tx(tx.clone());
         }
+    }
+
+    /// Resolve the provider to use for `embed`/`embed_batch`.
+    ///
+    /// Prefers the dedicated `embed = true` provider, when configured via
+    /// [`with_embed_provider`](Self::with_embed_provider), over the first embedding-capable
+    /// tier provider, then the triage provider (the latter so that tool schema filter
+    /// initialization works when `routing = "triage"` even without a dedicated embedder).
+    fn select_embed_provider(&self) -> Option<AnyProvider> {
+        if let Some(dedicated) = self.dedicated_embed_provider.as_deref() {
+            return Some(dedicated.clone());
+        }
+        self.tier_providers
+            .iter()
+            .find(|(_, p)| p.supports_embeddings())
+            .map(|(_, p)| p.clone())
+            .or_else(|| {
+                self.triage_provider
+                    .supports_embeddings()
+                    .then(|| self.triage_provider.clone())
+            })
     }
 
     /// Returns a reference to the metrics.
@@ -498,18 +541,7 @@ impl LlmProvider for TriageRouter {
         &self,
         text: &str,
     ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
-        // Delegate to the first embedding-capable tier provider, then to the triage provider,
-        // so that tool schema filter initialization works when routing = "triage".
-        let embed_provider = self
-            .tier_providers
-            .iter()
-            .find(|(_, p)| p.supports_embeddings())
-            .map(|(_, p)| p.clone())
-            .or_else(|| {
-                self.triage_provider
-                    .supports_embeddings()
-                    .then(|| self.triage_provider.clone())
-            });
+        let embed_provider = self.select_embed_provider();
 
         let name = self.name.clone();
         let text = text.to_owned();
@@ -525,16 +557,7 @@ impl LlmProvider for TriageRouter {
         &self,
         texts: &[&str],
     ) -> impl std::future::Future<Output = Result<Vec<Vec<f32>>, LlmError>> + Send {
-        let embed_provider = self
-            .tier_providers
-            .iter()
-            .find(|(_, p)| p.supports_embeddings())
-            .map(|(_, p)| p.clone())
-            .or_else(|| {
-                self.triage_provider
-                    .supports_embeddings()
-                    .then(|| self.triage_provider.clone())
-            });
+        let embed_provider = self.select_embed_provider();
 
         let name = self.name.clone();
         let owned = owned_strs(texts);
@@ -984,6 +1007,59 @@ mod tests {
                     mock_with_embedding(expected.clone()),
                 ),
             ],
+            5,
+            50,
+        );
+        let result = router.embed("test query").await.unwrap();
+        assert_eq!(result, expected);
+    }
+
+    // ── dedicated embed provider (#5859 critic F1) ────────────────────────────
+
+    #[tokio::test]
+    async fn embed_prefers_dedicated_provider_over_embedding_capable_tier() {
+        // A chat-only tier that merely reports supports_embeddings() == true must not
+        // shadow an explicitly configured dedicated embed provider.
+        let tier_embedding = vec![1.0_f32, 2.0, 3.0];
+        let dedicated_embedding = vec![9.0_f32, 9.0, 9.0];
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![(ComplexityTier::Simple, mock_with_embedding(tier_embedding))],
+            5,
+            50,
+        )
+        .with_embed_provider(mock_with_embedding(dedicated_embedding.clone()));
+        let result = router.embed("test query").await.unwrap();
+        assert_eq!(result, dedicated_embedding);
+    }
+
+    #[tokio::test]
+    async fn embed_batch_prefers_dedicated_provider_over_embedding_capable_tier() {
+        let tier_embedding = vec![1.0_f32, 2.0, 3.0];
+        let dedicated_embedding = vec![9.0_f32, 9.0, 9.0];
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![(ComplexityTier::Simple, mock_with_embedding(tier_embedding))],
+            5,
+            50,
+        )
+        .with_embed_provider(mock_with_embedding(dedicated_embedding.clone()));
+        let result = router.embed_batch(&["a", "b"]).await.unwrap();
+        assert_eq!(
+            result,
+            vec![dedicated_embedding.clone(), dedicated_embedding]
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_falls_back_to_tier_scan_without_dedicated_provider() {
+        let expected = vec![4.0_f32, 5.0, 6.0];
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![(
+                ComplexityTier::Simple,
+                mock_with_embedding(expected.clone()),
+            )],
             5,
             50,
         );

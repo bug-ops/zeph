@@ -91,6 +91,11 @@ pub struct OllamaProvider {
     vision_model: Option<String>,
     generation_overrides: Option<GenerationOverrides>,
     usage: UsageTracker,
+    /// Name reported by [`LlmProvider::name`]. Defaults to `"ollama"`; set the TOML-configured
+    /// `name` via [`with_provider_name`](Self::with_provider_name) so that router reputation
+    /// tracking and provider selection can distinguish between multiple configured Ollama
+    /// instances (#5859).
+    provider_name: String,
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -136,7 +141,21 @@ impl OllamaProvider {
             vision_model: None,
             generation_overrides: None,
             usage: UsageTracker::default(),
+            provider_name: "ollama".to_owned(),
         }
+    }
+
+    /// Set the name reported by [`LlmProvider::name`].
+    ///
+    /// Populate this from the TOML-configured `name` field of the `[[llm.providers]]` entry
+    /// so that router reputation tracking and generic embed-provider selection can
+    /// distinguish between multiple configured Ollama instances. Without this, every
+    /// `OllamaProvider` reports the same literal `"ollama"`, which corrupts per-provider
+    /// availability tracking and embed routing when more than one Ollama entry is configured.
+    #[must_use]
+    pub fn with_provider_name(mut self, name: impl Into<String>) -> Self {
+        self.provider_name = name.into();
+        self
     }
 
     /// Override generation parameters (temperature, top-p, top-k) for this provider.
@@ -554,9 +573,8 @@ impl LlmProvider for OllamaProvider {
         true
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "ollama"
+        &self.provider_name
     }
 
     fn model_identifier(&self) -> &str {
@@ -834,6 +852,25 @@ mod tests {
         let provider =
             OllamaProvider::new("http://localhost:11434", "test".into(), "test-embed".into());
         assert_eq!(provider.name(), "ollama");
+    }
+
+    #[test]
+    fn with_provider_name_overrides_name() {
+        let provider =
+            OllamaProvider::new("http://localhost:11434", "test".into(), "test-embed".into())
+                .with_provider_name("local-chat");
+        assert_eq!(provider.name(), "local-chat");
+    }
+
+    #[test]
+    fn with_provider_name_distinguishes_multiple_instances() {
+        let chat = OllamaProvider::new("http://localhost:11434", "chat-model".into(), "e".into())
+            .with_provider_name("chat");
+        let embed = OllamaProvider::new("http://localhost:11434", "m".into(), "embed-model".into())
+            .with_provider_name("embedder");
+        assert_ne!(chat.name(), embed.name());
+        assert_eq!(chat.name(), "chat");
+        assert_eq!(embed.name(), "embedder");
     }
 
     #[test]

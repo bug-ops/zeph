@@ -10290,6 +10290,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "wiremock",
  "zeph-a2a",
  "zeph-acp",
  "zeph-agent-context",

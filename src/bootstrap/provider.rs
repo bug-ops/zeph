@@ -158,6 +158,79 @@ fn apply_coe(router: RouterProvider, config: &Config) -> RouterProvider {
     }
 }
 
+/// Look up the pool's dedicated `embed = true` provider entry.
+///
+/// Warns when more than one entry is flagged `embed = true`: only the first (in pool
+/// order) is ever used by [`apply_dedicated_embed_provider`] or `build_triage_provider`,
+/// so any additional `embed = true` entry is dead configuration — it is also excluded from
+/// the router's chat pool by `build_all_pool_providers`, meaning it is never dispatched to
+/// at all (#5859 critic finding F3).
+fn find_dedicated_embed_entry(pool: &[ProviderEntry]) -> Option<&ProviderEntry> {
+    let mut embed_entries = pool.iter().filter(|e| e.embed);
+    let first = embed_entries.next()?;
+    let rest: Vec<String> = embed_entries.map(ProviderEntry::effective_name).collect();
+    if !rest.is_empty() {
+        tracing::warn!(
+            used = first.effective_name(),
+            unused = ?rest,
+            "multiple [[llm.providers]] entries flagged embed = true; only the first is \
+             used, the rest are dead configuration (never dispatched to)"
+        );
+    }
+    Some(first)
+}
+
+/// Log the pool of chat providers that could be selected by the generic
+/// `supports_embeddings()` scan when no dedicated `embed = true` provider is configured.
+///
+/// Without this, an operator running multiple providers of the same backend type (e.g. two
+/// Ollama entries) has no way to tell from the logs which instance will actually serve
+/// `embed()` calls, since selection happens dynamically per call from the router's ordered
+/// pool (#5859 critic finding F5).
+fn log_no_dedicated_embed_provider(pool: &[ProviderEntry]) {
+    let candidates: Vec<String> = pool
+        .iter()
+        .filter(|e| !e.embed)
+        .map(ProviderEntry::effective_name)
+        .collect();
+    tracing::info!(
+        candidates = ?candidates,
+        "no dedicated embed = true provider configured; embed() will use the first chat \
+         provider reporting supports_embeddings() == true from this list, in router order"
+    );
+}
+
+/// Attach the pool's dedicated `embed = true` provider to a `RouterProvider`, if configured.
+///
+/// `build_all_pool_providers` excludes `embed = true` entries from the router's chat
+/// pool (they are not meant to be dispatched to for `chat`/`chat_stream`), which means the
+/// generic `supports_embeddings()` scan in `RouterProvider::embed`/`embed_batch` would
+/// otherwise never see them and could fall back to any chat provider of the same backend
+/// type that happens to also report `supports_embeddings() == true` (#5859). Wiring the
+/// dedicated provider in separately via `with_embed_provider` closes that gap without
+/// admitting embed-only entries into the chat pool.
+fn apply_dedicated_embed_provider(
+    router: RouterProvider,
+    pool: &[ProviderEntry],
+    config: &Config,
+) -> RouterProvider {
+    let Some(entry) = find_dedicated_embed_entry(pool) else {
+        log_no_dedicated_embed_provider(pool);
+        return router;
+    };
+    match build_provider_from_entry(entry, config, None) {
+        Ok(p) => router.with_embed_provider(p),
+        Err(e) => {
+            tracing::warn!(
+                provider = entry.effective_name(),
+                error = %e,
+                "failed to build dedicated embed provider, generic embed selection will be used"
+            );
+            router
+        }
+    }
+}
+
 /// Apply ASI and `quality_gate` configuration to a `RouterProvider` from `[llm.routing]` config.
 fn apply_routing_signals(router: RouterProvider, config: &Config) -> RouterProvider {
     let router_cfg = config.llm.router.as_ref();
@@ -345,6 +418,7 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
             let router =
                 RouterProvider::new(providers).with_ema(alpha, config.llm.router_reorder_interval);
             let router = apply_coe(router, config);
+            let router = apply_dedicated_embed_provider(router, pool, config);
             Ok(AnyProvider::Router(Box::new(apply_routing_signals(
                 router, config,
             ))))
@@ -359,6 +433,7 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
                 .map(std::path::Path::new);
             let router = RouterProvider::new(providers).with_thompson(state_path);
             let router = apply_coe(router, config);
+            let router = apply_dedicated_embed_provider(router, pool, config);
             Ok(AnyProvider::Router(Box::new(apply_routing_signals(
                 router, config,
             ))))
@@ -377,11 +452,11 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
                 .router
                 .as_ref()
                 .map_or(4, |r| r.embed_concurrency);
-            Ok(AnyProvider::Router(Box::new(
-                RouterProvider::new(providers)
-                    .with_cascade(router_cascade_cfg)
-                    .with_embed_concurrency(embed_concurrency),
-            )))
+            let router = RouterProvider::new(providers)
+                .with_cascade(router_cascade_cfg)
+                .with_embed_concurrency(embed_concurrency);
+            let router = apply_dedicated_embed_provider(router, pool, config);
+            Ok(AnyProvider::Router(Box::new(router)))
         }
         LlmRoutingStrategy::Bandit => {
             let providers = build_all_pool_providers(pool, config)?;
@@ -433,11 +508,11 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
                 .router
                 .as_ref()
                 .map_or(4, |r| r.embed_concurrency);
-            Ok(AnyProvider::Router(Box::new(
-                RouterProvider::new(providers)
-                    .with_bandit(router_bandit_cfg, state_path, embed_provider)
-                    .with_embed_concurrency(embed_concurrency),
-            )))
+            let router = RouterProvider::new(providers)
+                .with_bandit(router_bandit_cfg, state_path, embed_provider)
+                .with_embed_concurrency(embed_concurrency);
+            let router = apply_dedicated_embed_provider(router, pool, config);
+            Ok(AnyProvider::Router(Box::new(router)))
         }
         LlmRoutingStrategy::Triage => build_triage_provider(pool, config),
         _ => build_single_provider_from_pool(pool, config),
@@ -558,12 +633,29 @@ fn build_triage_provider(
         return build_single_provider_from_pool(pool, config);
     }
 
-    let router = TriageRouter::new(
+    let mut router = TriageRouter::new(
         triage_provider,
         tier_providers,
         cr.triage_timeout_secs,
         cr.max_triage_tokens,
     );
+    // #5859 critic F1: without this, TriageRouter::embed/embed_batch re-implement the same
+    // "first supports_embeddings() == true tier wins" scan that RouterProvider used to have,
+    // which can shadow a dedicated embed = true provider with a chat-only same-backend tier.
+    match find_dedicated_embed_entry(pool) {
+        Some(entry) => match build_provider_from_entry(entry, config, None) {
+            Ok(p) => router = router.with_embed_provider(p),
+            Err(e) => {
+                tracing::warn!(
+                    provider = entry.effective_name(),
+                    error = %e,
+                    "failed to build dedicated embed provider for triage routing, \
+                     generic embed selection will be used"
+                );
+            }
+        },
+        None => log_no_dedicated_embed_provider(pool),
+    }
     Ok(AnyProvider::Triage(Box::new(router)))
 }
 
@@ -788,6 +880,212 @@ mod tests {
             result.model_identifier(),
             "nomic-embed-text",
             "should use configured model"
+        );
+    }
+
+    // ── apply_dedicated_embed_provider / embed routing (#5859) ────────────────
+
+    /// End-to-end regression for #5859 symptom 1: `build_all_pool_providers` excludes
+    /// `embed = true` entries from the router's chat pool, so without
+    /// `apply_dedicated_embed_provider` wiring the dedicated embedding entry, `embed()`
+    /// falls through to whichever chat-only provider happens to also report
+    /// `supports_embeddings() == true` (every `OllamaProvider`, unconditionally).
+    ///
+    /// The chat-only entry here points at an unreachable address, so if the router ever
+    /// fell back to it for embedding, the call would fail instead of returning the mock
+    /// server's fixed vector — a network-observable proxy for provider selection.
+    #[tokio::test]
+    async fn create_provider_from_pool_ema_routes_embed_to_dedicated_entry() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use zeph_core::config::LlmRoutingStrategy;
+        use zeph_llm::provider::LlmProvider as _;
+
+        use super::create_provider_from_pool;
+
+        let embed_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/embed"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "embeddings": [[4.2, 4.2]] })),
+            )
+            .mount(&embed_server)
+            .await;
+
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.llm.routing = LlmRoutingStrategy::Ema;
+        config.llm.providers = vec![
+            ProviderEntry {
+                provider_type: ProviderKind::Ollama,
+                name: Some("embedder".into()),
+                base_url: Some(embed_server.uri()),
+                model: Some("nomic-embed-text".into()),
+                embed: true,
+                ..ProviderEntry::default()
+            },
+            ProviderEntry {
+                provider_type: ProviderKind::Ollama,
+                name: Some("chat".into()),
+                base_url: Some("http://127.0.0.1:1".into()),
+                model: Some("qwen3:8b".into()),
+                embed: false,
+                ..ProviderEntry::default()
+            },
+        ];
+
+        let provider =
+            create_provider_from_pool(&config).expect("router construction must succeed");
+        assert!(
+            matches!(provider, AnyProvider::Router(_)),
+            "Ema routing must produce a Router-wrapped provider"
+        );
+
+        let result = provider.embed("hello").await;
+        assert_eq!(
+            result.unwrap(),
+            vec![4.2, 4.2],
+            "embed() must route to the embed=true entry via the dedicated-embed-provider \
+             side channel, not the unreachable chat-only entry"
+        );
+    }
+
+    /// Same regression as above under the Cascade strategy, whose provider pool and
+    /// `apply_dedicated_embed_provider` wiring path (`create_provider_from_pool`'s
+    /// `LlmRoutingStrategy::Cascade` arm) is independent of the Ema arm.
+    #[tokio::test]
+    async fn create_provider_from_pool_cascade_routes_embed_to_dedicated_entry() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use zeph_core::config::LlmRoutingStrategy;
+        use zeph_llm::provider::LlmProvider as _;
+
+        use super::create_provider_from_pool;
+
+        let embed_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/embed"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "embeddings": [[1.5, 2.5]] })),
+            )
+            .mount(&embed_server)
+            .await;
+
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.llm.routing = LlmRoutingStrategy::Cascade;
+        config.llm.providers = vec![
+            ProviderEntry {
+                provider_type: ProviderKind::Ollama,
+                name: Some("embedder".into()),
+                base_url: Some(embed_server.uri()),
+                model: Some("nomic-embed-text".into()),
+                embed: true,
+                ..ProviderEntry::default()
+            },
+            ProviderEntry {
+                provider_type: ProviderKind::Ollama,
+                name: Some("chat".into()),
+                base_url: Some("http://127.0.0.1:1".into()),
+                model: Some("qwen3:8b".into()),
+                embed: false,
+                ..ProviderEntry::default()
+            },
+        ];
+
+        let provider =
+            create_provider_from_pool(&config).expect("router construction must succeed");
+        assert!(
+            matches!(provider, AnyProvider::Router(_)),
+            "Cascade routing must produce a Router-wrapped provider"
+        );
+
+        let result = provider.embed("hello").await;
+        assert_eq!(
+            result.unwrap(),
+            vec![1.5, 2.5],
+            "embed() must route to the embed=true entry via the dedicated-embed-provider \
+             side channel, not the unreachable chat-only entry"
+        );
+    }
+
+    /// End-to-end regression for #5859 critic finding F1 under `routing = "triage"`:
+    /// `build_triage_provider` wires the pool's `embed = true` entry into
+    /// `TriageRouter::with_embed_provider` so `embed()` uses it directly instead of
+    /// `TriageRouter::select_embed_provider`'s fallback scan for the first tier reporting
+    /// `supports_embeddings() == true` — a scan that would otherwise be shadowed by an
+    /// unrelated chat-only Ollama tier, exactly like the original `RouterProvider` bug.
+    /// The `triage.rs` unit tests prove the `TriageRouter` selection logic in isolation;
+    /// this test proves the bootstrap wiring (`find_dedicated_embed_entry` →
+    /// `build_provider_from_entry` → `with_embed_provider`) is actually invoked.
+    #[tokio::test]
+    async fn build_triage_provider_routes_embed_to_dedicated_entry() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use zeph_config::{ComplexityRoutingConfig, TierMapping};
+        use zeph_core::config::LlmRoutingStrategy;
+        use zeph_llm::provider::LlmProvider as _;
+
+        use super::create_provider_from_pool;
+
+        let embed_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/embed"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "embeddings": [[7.0, 8.0]] })),
+            )
+            .mount(&embed_server)
+            .await;
+
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.llm.routing = LlmRoutingStrategy::Triage;
+        config.llm.providers = vec![
+            ProviderEntry {
+                provider_type: ProviderKind::Ollama,
+                name: Some("chat".into()),
+                base_url: Some("http://127.0.0.1:1".into()),
+                model: Some("qwen3:8b".into()),
+                embed: false,
+                ..ProviderEntry::default()
+            },
+            ProviderEntry {
+                provider_type: ProviderKind::Ollama,
+                name: Some("embedder".into()),
+                base_url: Some(embed_server.uri()),
+                model: Some("nomic-embed-text".into()),
+                embed: true,
+                ..ProviderEntry::default()
+            },
+        ];
+        // bypass_single_provider = false: a single "simple" tier mapped to the sole
+        // non-embed entry would otherwise be collapsed to build_single_provider_from_pool,
+        // which does not exercise the TriageRouter/with_embed_provider path at all.
+        config.llm.complexity_routing = Some(ComplexityRoutingConfig {
+            triage_provider: None,
+            bypass_single_provider: false,
+            tiers: TierMapping {
+                simple: Some("chat".into()),
+                ..TierMapping::default()
+            },
+            max_triage_tokens: 50,
+            triage_timeout_secs: 5,
+            fallback_strategy: None,
+        });
+
+        let provider =
+            create_provider_from_pool(&config).expect("triage router construction must succeed");
+        assert!(
+            matches!(provider, AnyProvider::Triage(_)),
+            "routing = \"triage\" must produce a Triage-wrapped provider"
+        );
+
+        let result = provider.embed("hello").await;
+        assert_eq!(
+            result.unwrap(),
+            vec![7.0, 8.0],
+            "embed() must route to the embed=true entry via the dedicated-embed-provider \
+             side channel, not the first tier reporting supports_embeddings() == true"
         );
     }
 }

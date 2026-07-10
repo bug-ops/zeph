@@ -397,6 +397,7 @@ serial_test.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }
+wiremock.workspace = true
 zeph-commands.workspace = true
 zeph-core.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }

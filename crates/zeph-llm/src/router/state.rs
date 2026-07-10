@@ -90,6 +90,15 @@ pub struct RouterState {
 
     /// Cache hits from `TurnEmbedCache` this session.
     pub embed_cache_hits: Arc<AtomicU64>,
+
+    /// Provider explicitly flagged `embed = true` in `[[llm.providers]]`, if configured.
+    ///
+    /// When set, `RouterProvider::embed`/`embed_batch` try this provider first, ahead of
+    /// the generic `supports_embeddings()` scan over `providers`. This prevents a chat-only
+    /// provider that merely reports `supports_embeddings() == true` (e.g. every
+    /// [`crate::ollama::OllamaProvider`], regardless of its configured `embedding_model`)
+    /// from shadowing a dedicated embedding provider in the pool (#5859).
+    pub dedicated_embed_provider: Option<Arc<AnyProvider>>,
 }
 
 impl RouterState {
@@ -114,6 +123,7 @@ impl RouterState {
             embed_semaphore: None,
             embed_call_count: Arc::new(AtomicU64::new(0)),
             embed_cache_hits: Arc::new(AtomicU64::new(0)),
+            dedicated_embed_provider: None,
         }
     }
 }

@@ -268,7 +268,8 @@ fn build_ollama_provider(entry: &ProviderEntry, config: &Config) -> AnyProvider 
         .embedding_model
         .clone()
         .unwrap_or_else(|| config.llm.embedding_model.clone());
-    let mut provider = OllamaProvider::new(base_url, model, embed);
+    let mut provider =
+        OllamaProvider::new(base_url, model, embed).with_provider_name(entry.effective_name());
     if let Some(ref vm) = entry.vision_model {
         provider = provider.with_vision_model(vm.clone());
     }
@@ -1097,6 +1098,42 @@ mod tests {
         let primary = build_provider_from_entry(&entry, &config, None).unwrap();
         let resolved = resolve_named_provider(&config, &primary, "fast");
         assert_eq!(resolved.name(), primary.name());
+    }
+
+    /// Regression for #5859: two `[[llm.providers]]` entries of `type = "ollama"` with
+    /// distinct configured `name` fields must build `AnyProvider`s with distinct
+    /// `.name()` values. Before the fix, `OllamaProvider::name()` returned the hardcoded
+    /// literal `"ollama"` for every instance regardless of `entry.effective_name()`,
+    /// corrupting router reputation tracking and embed-provider selection whenever more
+    /// than one Ollama entry was configured.
+    #[test]
+    fn build_provider_from_entry_ollama_distinct_entries_yield_distinct_provider_names() {
+        let config = Config::default();
+        let entry_a = ProviderEntry {
+            provider_type: ProviderKind::Ollama,
+            name: Some("ollama-chat".into()),
+            model: Some("qwen3:8b".into()),
+            ..ProviderEntry::default()
+        };
+        let entry_b = ProviderEntry {
+            provider_type: ProviderKind::Ollama,
+            name: Some("ollama-embed".into()),
+            model: Some("nomic-embed-text".into()),
+            embed: true,
+            ..ProviderEntry::default()
+        };
+
+        let provider_a = build_provider_from_entry(&entry_a, &config, None).unwrap();
+        let provider_b = build_provider_from_entry(&entry_b, &config, None).unwrap();
+
+        assert_ne!(
+            provider_a.name(),
+            provider_b.name(),
+            "two distinct Ollama [[llm.providers]] entries must yield distinct \
+             AnyProvider::name() values"
+        );
+        assert_eq!(provider_a.name(), "ollama-chat");
+        assert_eq!(provider_b.name(), "ollama-embed");
     }
 
     #[cfg(feature = "cocoon")]

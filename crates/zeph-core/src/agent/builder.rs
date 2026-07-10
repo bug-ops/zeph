@@ -3214,10 +3214,14 @@ mod tests {
             .fidelity_semantic_provider
             .as_ref()
             .expect("fidelity_semantic_provider must be Some for registered provider name");
+        // Post-#5859: OllamaProvider::name() returns the configured `[[llm.providers]]`
+        // name ("named-test"), not the hardcoded literal "ollama" — the model check below
+        // is what actually proves resolution reached the registered Ollama entry.
         assert_eq!(
             sem.name(),
-            "ollama",
-            "registered named provider must resolve to Ollama, not the Mock primary fallback"
+            "named-test",
+            "registered named provider must resolve to the registered Ollama entry, \
+             not the Mock primary fallback"
         );
         assert_eq!(
             sem.model_identifier(),
@@ -3234,8 +3238,9 @@ mod tests {
             .expect("fidelity_compress_provider must be Some for registered provider name");
         assert_eq!(
             cmp.name(),
-            "ollama",
-            "registered named compress provider must resolve to Ollama, not the Mock primary fallback"
+            "named-test",
+            "registered named compress provider must resolve to the registered Ollama entry, \
+             not the Mock primary fallback"
         );
 
         // Unregistered name → both fields fall back to the primary (Mock) provider.
@@ -3302,9 +3307,13 @@ mod tests {
 
         // Looked up with different casing than the registered entry's name.
         let resolved = agent.resolve_background_provider("named-test");
+        // Post-#5859: OllamaProvider::name() returns the registered entry's configured name
+        // ("Named-Test", original casing preserved), not the hardcoded literal "ollama" — this
+        // is what actually proves the case-insensitive lookup matched the registered entry
+        // rather than falling back to the primary (which would report a different name).
         assert_eq!(
             resolved.name(),
-            "ollama",
+            "Named-Test",
             "resolve_background_provider must match pool entries case-insensitively"
         );
     }

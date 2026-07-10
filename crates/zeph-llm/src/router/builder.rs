@@ -80,6 +80,32 @@ impl RouterProvider {
         self
     }
 
+    /// Register the provider explicitly flagged `embed = true` in `[[llm.providers]]`.
+    ///
+    /// `embed()`/`embed_batch()` try this provider first, ahead of the generic scan over
+    /// `providers` for any backend that merely reports `supports_embeddings() == true`.
+    /// Without this, a chat-only provider sharing a backend type with the dedicated
+    /// embedding provider (e.g. two `OllamaProvider` instances) can shadow it and silently
+    /// fall back to an unconfigured default embedding model (#5859).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use zeph_llm::router::RouterProvider;
+    /// # use zeph_llm::any::AnyProvider;
+    /// # use zeph_llm::ollama::OllamaProvider;
+    /// let embedder = AnyProvider::Ollama(
+    ///     OllamaProvider::new("http://localhost:11434", "chat-model".into(), "nomic-embed-text".into())
+    ///         .with_provider_name("embedder"),
+    /// );
+    /// let router = RouterProvider::new(vec![]).with_embed_provider(embedder);
+    /// ```
+    #[must_use]
+    pub fn with_embed_provider(mut self, provider: AnyProvider) -> Self {
+        self.state.dedicated_embed_provider = Some(Arc::new(provider));
+        self
+    }
+
     /// Set the maximum number of concurrent `embed_batch` calls.
     ///
     /// A value of 0 disables the semaphore (unlimited). Default is no semaphore.

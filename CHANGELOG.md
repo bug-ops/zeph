@@ -34,6 +34,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Added `AgentBuilder::with_skill_group_config` (mirrors the existing
   `with_skill_matching_config`) and a `/skills injection` subcommand to make the wired values
   observable from outside `zeph-core` (#5867, #5862).
+- `fix(llm)`: `OllamaProvider::name()` (`crates/zeph-llm/src/ollama.rs`) no longer returns the
+  hardcoded literal `"ollama"` — it now returns the TOML-configured `[[llm.providers]]` `name`
+  via a new `provider_name` field / `with_provider_name()` builder, mirroring
+  `CompatibleProvider`. This broke two things whenever a config declared more than one
+  `type = "ollama"` provider: router reputation/Thompson-sampling state (keyed on
+  `provider.name()`) cross-contaminated between distinct Ollama instances, and the router's
+  generic embed path could route to a chat-only Ollama instance instead of a dedicated
+  embedder. Fixed the latter by adding a `dedicated_embed_provider` side-channel
+  (`RouterState`/`RouterProvider::with_embed_provider()`/`embed_candidates()`,
+  `TriageRouter::with_embed_provider()`) so any pool entry explicitly flagged `embed = true` is
+  preferred over the generic `supports_embeddings()` scan across all routing strategies
+  (Ema/Thompson/Cascade/Bandit/Triage). Also warns when more than one `embed = true` entry
+  exists in the pool (only the first is used) and logs which provider serves embeds when no
+  dedicated entry is configured (#5859).
 - `fix(session)`: `hydrate_from_event_log` (`crates/zeph-agent-persistence/src/hydrate.rs`) now
   folds the replayed `messages` via `ReplayEngine::replay`'s bounded/chunked reader (spec-068
   §6.2, ≤ 100 envelopes in memory at once) instead of `ReplayEngine::fold(events.clone(), up_to)`

@@ -913,6 +913,56 @@ async fn embed_falls_back_immediately_on_unavailable() {
     );
 }
 
+// ── Dedicated embed provider tests (#5859) ────────────────────────────────
+
+/// A chat-only provider that also (incorrectly, like every `OllamaProvider`) reports
+/// `supports_embeddings() == true` must not shadow a provider explicitly registered via
+/// `with_embed_provider`. The dedicated provider's embedding must win.
+#[tokio::test]
+async fn embed_prefers_dedicated_provider_over_chat_only_fallback() {
+    use crate::mock::MockProvider;
+
+    let chat_only = AnyProvider::Mock({
+        let mut m = MockProvider::default().with_name("chat");
+        m.supports_embeddings = true;
+        m.embedding = vec![1.0, 0.0];
+        m
+    });
+    let dedicated = AnyProvider::Mock({
+        let mut m = MockProvider::default().with_name("embedder");
+        m.supports_embeddings = true;
+        m.embedding = vec![0.0, 1.0];
+        m
+    });
+    let r = RouterProvider::new(vec![chat_only]).with_embed_provider(dedicated);
+    let result = r.embed("text").await.unwrap();
+    assert_eq!(
+        result,
+        vec![0.0, 1.0],
+        "embed() must route to the dedicated provider, not the chat-only fallback"
+    );
+}
+
+/// `embed_candidates()` prepends the dedicated provider ahead of the generic ordered
+/// scan, and dedupes it out of its original position when it is also present in
+/// `providers` (e.g. because a caller registered the same instance twice).
+#[test]
+fn embed_candidates_prepends_and_dedupes_dedicated_provider() {
+    use crate::mock::MockProvider;
+
+    let dedicated = AnyProvider::Mock(MockProvider::default().with_name("embedder"));
+    let other = AnyProvider::Mock(MockProvider::default().with_name("chat"));
+    let r = RouterProvider::new(vec![other, dedicated.clone()]).with_embed_provider(dedicated);
+
+    let candidates = r.embed_candidates();
+    let names: Vec<&str> = candidates.iter().map(AnyProvider::name).collect();
+    assert_eq!(
+        names,
+        vec!["embedder", "chat"],
+        "dedicated provider must be first and not duplicated"
+    );
+}
+
 /// Provider returns `RateLimited` twice then succeeds via `embed_batch`.
 #[tokio::test]
 async fn embed_batch_retries_on_rate_limited_then_succeeds() {

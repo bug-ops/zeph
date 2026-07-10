@@ -736,27 +736,23 @@ mod tests {
         let entry_b = make_entry("mock2", ProviderKind::Ollama, Some("llama3.2"));
         let snapshot = ollama_snapshot();
 
-        // Build a real Ollama provider for entry_b to switch to.
+        // Build a real Ollama provider for entry_b to switch to. Post-#5859,
+        // provider_b.name() == "mock2" (entry_b's configured name), not the literal "ollama".
         let provider_b =
             crate::provider_factory::build_provider_for_switch(&entry_b, &snapshot, None).unwrap();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        // embedding_provider defaults to provider.clone() (mock). After switch the chat
-        // provider becomes Ollama("llama3.2") with name "ollama".
-        // Embedding stays as mock (name "mock") != "ollama" → notice expected.
-        // Instead, let's directly set embedding_provider to the same provider we switch to.
+        // Set embedding_provider to the same provider we are about to "switch" to, so
+        // embedding_provider.name() ("mock2") matches the configured_name passed to
+        // build_switch_message below — the critical invariant under test: notice is
+        // omitted iff embedding_provider.name() == configured_name. No reasoning-effort
+        // override is set in this scenario.
         agent = agent.with_embedding_provider(provider_b.clone());
         agent.runtime.config.active_provider_name = "mock2".to_owned();
         agent.runtime.providers.provider_pool = vec![entry_a, entry_b];
         agent.runtime.providers.provider_config_snapshot = Some(snapshot);
 
-        // Manually invoke build_switch_message — the provider names match since we assigned
-        // embed = provider_b and we will switch to "mock2". provider_b.name() == "ollama"
-        // and the configured_name is "mock2". They differ in this case, so we test the
-        // scenario where names match by asserting the message format for a successful switch
-        // where both sides resolve to the same LlmProvider::name().
-        // The critical invariant: notice is omitted iff embedding_provider.name() == configured_name.
-        let msg = agent.build_switch_message("ollama", false);
+        let msg = agent.build_switch_message("mock2", false);
         assert!(
             !msg.contains("Embedding operations"),
             "no notice when embedding provider name == new chat provider name: {msg}"

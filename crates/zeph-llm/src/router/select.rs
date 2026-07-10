@@ -230,6 +230,22 @@ impl RouterProvider {
         }
     }
 
+    /// Candidate providers for `embed`/`embed_batch`, with the dedicated `embed = true`
+    /// provider (if configured via [`crate::router::RouterProvider::with_embed_provider`])
+    /// moved to the front.
+    ///
+    /// This keeps the existing `supports_embeddings()` fallback loop intact while ensuring
+    /// a provider explicitly configured for embeddings is tried before any provider that
+    /// merely reports `supports_embeddings() == true` (#5859).
+    pub(crate) fn embed_candidates(&self) -> Vec<AnyProvider> {
+        let mut providers = self.ordered_providers();
+        if let Some(dedicated) = self.state.dedicated_embed_provider.as_deref() {
+            providers.retain(|p| p.name() != dedicated.name());
+            providers.insert(0, dedicated.clone());
+        }
+        providers
+    }
+
     fn ema_ordered_providers(&self) -> Vec<AnyProvider> {
         let order = self.state.provider_order.lock();
         let mut ordered: Vec<AnyProvider> = order
