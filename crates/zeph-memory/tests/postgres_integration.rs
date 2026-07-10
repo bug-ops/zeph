@@ -1153,9 +1153,9 @@ mod pg {
         let (pool, _container) = start_pg().await;
         let store = SqliteStore::from_pool(pool.clone()).await.unwrap();
 
-        store.create_acp_session("sess-1").await.unwrap();
+        store.create_acp_session("sess-1", None).await.unwrap();
         // Calling twice must not error (INSERT_IGNORE / ON CONFLICT DO NOTHING).
-        store.create_acp_session("sess-1").await.unwrap();
+        store.create_acp_session("sess-1", None).await.unwrap();
 
         let count: i64 = sqlx::query_scalar(zeph_db::sql!(
             "SELECT COUNT(*) FROM acp_sessions WHERE id = ?"
@@ -1168,7 +1168,7 @@ mod pg {
 
         let cid = store.create_conversation().await.unwrap();
         store
-            .create_acp_session_with_conversation("sess-2", cid)
+            .create_acp_session_with_conversation("sess-2", cid, None)
             .await
             .unwrap();
         let linked_cid: (Option<i64>,) = sqlx::query_as(zeph_db::sql!(
@@ -1194,7 +1194,7 @@ mod pg {
         let (pool, _container) = start_pg().await;
         let store = SqliteStore::from_pool(pool).await.unwrap();
 
-        store.create_acp_session("sess-ts-1").await.unwrap();
+        store.create_acp_session("sess-ts-1", None).await.unwrap();
 
         let list = store.list_acp_sessions(10).await.unwrap();
         assert_eq!(list.len(), 1);
@@ -1231,7 +1231,7 @@ mod pg {
         let (pool, _container) = start_pg().await;
         let store = SqliteStore::from_pool(pool).await.unwrap();
 
-        store.create_acp_session("sess-1").await.unwrap();
+        store.create_acp_session("sess-1", None).await.unwrap();
         let snapshot = AcpSessionConfigSnapshot {
             current_model: "claude:opus".to_owned(),
             temperature_preset: "creative".to_owned(),
@@ -1263,7 +1263,7 @@ mod pg {
         let (pool, _container) = start_pg().await;
         let store = SqliteStore::from_pool(pool).await.unwrap();
 
-        store.create_acp_session("sess-1").await.unwrap();
+        store.create_acp_session("sess-1", None).await.unwrap();
         let snapshot = AcpSessionConfigSnapshot {
             current_model: "claude:sonnet".to_owned(),
             temperature_preset: "precise".to_owned(),
@@ -1295,7 +1295,7 @@ mod pg {
         let (pool, _container) = start_pg().await;
         let store = SqliteStore::from_pool(pool).await.unwrap();
 
-        store.create_acp_session("sess-1").await.unwrap();
+        store.create_acp_session("sess-1", None).await.unwrap();
         assert!(
             store.get_session_config("sess-1").await.unwrap().is_none(),
             "session with no saved config must return None, not a zeroed snapshot"

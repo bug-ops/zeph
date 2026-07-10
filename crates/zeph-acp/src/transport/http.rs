@@ -328,6 +328,20 @@ pub async fn health_handler(State(state): State<AcpHttpState>) -> impl IntoRespo
     (status, Json(body))
 }
 
+/// Derive the connection's `owner_key` (#5868) from the auth layer's matched identity.
+///
+/// `token_identity` is `Some` only when [`BearerAuthLayer`](super::auth::BearerAuthLayer)
+/// ran and matched a configured client — i.e. `auth_clients` is non-empty. When
+/// `auth_clients` is empty (unauthenticated deployment) or no layer ran, falls back to
+/// [`crate::transport::OWNER_KEY_LOCAL`], the same bucket stdio uses.
+#[cfg(feature = "acp-http")]
+pub(crate) fn derive_owner_key(token_identity: Option<&super::auth::TokenIdentity>) -> String {
+    token_identity.map_or_else(
+        || crate::transport::OWNER_KEY_LOCAL.to_owned(),
+        |t| t.0.clone(),
+    )
+}
+
 /// Spawn an in-process ACP agent connection on a dedicated thread.
 ///
 /// Agent futures are `!Send` (they call `spawn_local` internally), so each connection
@@ -341,6 +355,7 @@ pub async fn health_handler(State(state): State<AcpHttpState>) -> impl IntoRespo
 pub(crate) fn spawn_agent_connection(
     spawner: crate::agent::SendAgentSpawner,
     server_config: AcpServerConfig,
+    owner_key: String,
 ) -> std::io::Result<(DuplexStream, DuplexStream)> {
     let (client_w, agent_r) = tokio::io::duplex(BRIDGE_BUFFER_SIZE);
     let (agent_w, client_r) = tokio::io::duplex(BRIDGE_BUFFER_SIZE);
@@ -360,6 +375,7 @@ pub(crate) fn spawn_agent_connection(
                     server_config,
                     writer,
                     reader,
+                    owner_key,
                 )
                 .await
                 {
@@ -379,18 +395,21 @@ pub(crate) fn spawn_agent_connection(
 #[cfg(feature = "acp-http")]
 pub(crate) fn create_connection(
     state: &AcpHttpState,
+    owner_key: &str,
 ) -> Result<(String, Arc<ConnectionHandle>), StatusCode> {
     if state.connections.len() >= state.server_config.max_sessions {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    let (reader, writer) =
-        spawn_agent_connection(state.spawner.clone(), (*state.server_config).clone()).map_err(
-            |e| {
-                tracing::error!("failed to spawn ACP agent thread: {e}");
-                StatusCode::SERVICE_UNAVAILABLE
-            },
-        )?;
+    let (reader, writer) = spawn_agent_connection(
+        state.spawner.clone(),
+        (*state.server_config).clone(),
+        owner_key.to_owned(),
+    )
+    .map_err(|e| {
+        tracing::error!("failed to spawn ACP agent thread: {e}");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
 
     let (tx, _) = broadcast::channel(256);
     let tx2 = tx.clone();
@@ -432,6 +451,7 @@ pub(crate) fn create_connection(
 #[tracing::instrument(skip_all, name = "acp.http.post")]
 pub async fn post_handler(
     State(state): State<AcpHttpState>,
+    token_identity: Option<axum::extract::Extension<super::auth::TokenIdentity>>,
     headers: HeaderMap,
     body: String,
 ) -> Result<impl IntoResponse, StatusCode> {
@@ -448,7 +468,8 @@ pub async fn post_handler(
                 .ok_or(StatusCode::NOT_FOUND)?;
             (id.to_owned(), handle)
         } else {
-            create_connection(&state)?
+            let owner_key = derive_owner_key(token_identity.as_ref().map(|e| &e.0));
+            create_connection(&state, &owner_key)?
         };
 
     {
@@ -543,6 +564,7 @@ pub async fn get_handler(
 #[tracing::instrument(skip_all, name = "acp.http.list_sessions")]
 pub async fn list_sessions_handler(
     State(state): State<AcpHttpState>,
+    token_identity: Option<axum::extract::Extension<super::auth::TokenIdentity>>,
 ) -> Result<impl IntoResponse, StatusCode> {
     if !state.ready.load(Ordering::Acquire) {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
@@ -551,8 +573,9 @@ pub async fn list_sessions_handler(
         .store
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let owner_key = derive_owner_key(token_identity.as_ref().map(|e| &e.0));
     let sessions = store
-        .list_acp_sessions(state.server_config.max_history)
+        .list_acp_sessions_for_owner(state.server_config.max_history, &owner_key)
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "failed to list ACP sessions");
@@ -580,6 +603,7 @@ pub async fn list_sessions_handler(
 #[tracing::instrument(skip_all, name = "acp.http.session_messages", fields(session_id = %session_id))]
 pub async fn session_messages_handler(
     State(state): State<AcpHttpState>,
+    token_identity: Option<axum::extract::Extension<super::auth::TokenIdentity>>,
     Path(session_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
     if !state.ready.load(Ordering::Acquire) {
@@ -592,11 +616,16 @@ pub async fn session_messages_handler(
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
-    let exists = store.acp_session_exists(&session_id).await.map_err(|e| {
-        tracing::warn!(error = %e, "failed to check ACP session existence");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    if !exists {
+    // Read-only gate (#5868): does not claim a legacy NULL row.
+    let owner_key = derive_owner_key(token_identity.as_ref().map(|e| &e.0));
+    let accessible = store
+        .acp_session_accessible_for_owner(&session_id, &owner_key)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "failed to check ACP session existence");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !accessible {
         return Err(StatusCode::NOT_FOUND);
     }
 

@@ -42,7 +42,7 @@ fn test_state() -> AcpHttpState {
             provider_factory: None,
             available_models: shared_models(vec![]),
             mcp_manager: None,
-            auth_bearer_token: None,
+            auth_clients: Vec::new(),
             discovery_enabled: true,
             terminal_timeout_secs: 120,
             project_rules: vec![],
@@ -68,7 +68,7 @@ fn test_state_with_session_data_dir(data_dir: std::path::PathBuf) -> AcpHttpStat
             provider_factory: None,
             available_models: shared_models(vec![]),
             mcp_manager: None,
-            auth_bearer_token: None,
+            auth_clients: Vec::new(),
             discovery_enabled: true,
             terminal_timeout_secs: 120,
             project_rules: vec![],
@@ -95,7 +95,7 @@ fn state_with_max_sessions(max: usize) -> AcpHttpState {
             provider_factory: None,
             available_models: shared_models(vec![]),
             mcp_manager: None,
-            auth_bearer_token: None,
+            auth_clients: Vec::new(),
             discovery_enabled: true,
             terminal_timeout_secs: 120,
             project_rules: vec![],
@@ -365,7 +365,10 @@ fn state_with_auth(token: &str) -> AcpHttpState {
             provider_factory: None,
             available_models: shared_models(vec![]),
             mcp_manager: None,
-            auth_bearer_token: Some(token.into()),
+            auth_clients: vec![crate::transport::AcpClientToken {
+                id: "default".into(),
+                token: (token).into(),
+            }],
             discovery_enabled: true,
             terminal_timeout_secs: 120,
             project_rules: vec![],
@@ -428,7 +431,7 @@ async fn auth_wrong_token_returns_401() {
 
 #[tokio::test]
 async fn auth_none_mode_allows_all_requests() {
-    // test_state() has auth_bearer_token: None — no auth layer applied.
+    // test_state() has auth_clients: Vec::new() — no auth layer applied.
     let router = acp_router(test_state());
 
     let req = Request::builder()
@@ -492,7 +495,10 @@ async fn health_returns_503_when_not_ready() {
             provider_factory: None,
             available_models: std::sync::Arc::new(parking_lot::RwLock::new(Vec::new())),
             mcp_manager: None,
-            auth_bearer_token: Some("secret".into()),
+            auth_clients: vec![crate::transport::AcpClientToken {
+                id: "default".into(),
+                token: ("secret").into(),
+            }],
             discovery_enabled: true,
             terminal_timeout_secs: 120,
             project_rules: vec![],
@@ -532,7 +538,7 @@ async fn acp_post_returns_503_when_server_not_ready() {
             provider_factory: None,
             available_models: std::sync::Arc::new(parking_lot::RwLock::new(Vec::new())),
             mcp_manager: None,
-            auth_bearer_token: None,
+            auth_clients: Vec::new(),
             discovery_enabled: true,
             terminal_timeout_secs: 120,
             project_rules: vec![],
@@ -631,7 +637,7 @@ async fn discovery_disabled_returns_404() {
             provider_factory: None,
             available_models: shared_models(vec![]),
             mcp_manager: None,
-            auth_bearer_token: None,
+            auth_clients: Vec::new(),
             discovery_enabled: false,
             terminal_timeout_secs: 120,
             project_rules: vec![],
@@ -705,7 +711,7 @@ async fn agent_json_disabled_returns_404() {
             provider_factory: None,
             available_models: shared_models(vec![]),
             mcp_manager: None,
-            auth_bearer_token: None,
+            auth_clients: Vec::new(),
             discovery_enabled: false,
             terminal_timeout_secs: 120,
             project_rules: vec![],
@@ -747,7 +753,7 @@ async fn reaper_removes_expired_connections() {
             provider_factory: None,
             available_models: shared_models(vec![]),
             mcp_manager: None,
-            auth_bearer_token: None,
+            auth_clients: Vec::new(),
             discovery_enabled: true,
             terminal_timeout_secs: 120,
             project_rules: vec![],
@@ -836,7 +842,10 @@ async fn list_sessions_returns_session_data() {
     let store = zeph_memory::store::SqliteStore::new(":memory:")
         .await
         .expect("SqliteStore::new");
-    store.create_acp_session("sess-1").await.unwrap();
+    store
+        .create_acp_session("sess-1", Some(crate::transport::OWNER_KEY_LOCAL))
+        .await
+        .unwrap();
     // Regression guard for the S1 false-green (spec-068 §12.3 / D-2): `list_acp_sessions`
     // now derives `message_count` from `acp_sessions.event_count`, so the fixture must drive
     // it through `zeph_session::SessionStore::update_seq` — the same primitive
@@ -868,6 +877,116 @@ async fn list_sessions_returns_session_data() {
     assert_eq!(arr[0]["id"], "sess-1");
     assert_eq!(arr[0]["title"], "Test Session");
     assert_eq!(arr[0]["message_count"], 1);
+}
+
+// ── Owner scoping tests (#5868) ───────────────────────────────────────────────
+
+fn state_with_two_clients() -> AcpHttpState {
+    AcpHttpState::new(
+        noop_spawner(),
+        AcpServerConfig {
+            agent_name: "test".into(),
+            agent_version: "0.0.1".into(),
+            max_sessions: 4,
+            session_idle_timeout_secs: 1800,
+            permission_file: None,
+            provider_factory: None,
+            available_models: shared_models(vec![]),
+            mcp_manager: None,
+            auth_clients: vec![
+                crate::transport::AcpClientToken {
+                    id: "alice".into(),
+                    token: "token-a".into(),
+                },
+                crate::transport::AcpClientToken {
+                    id: "bob".into(),
+                    token: "token-b".into(),
+                },
+            ],
+            discovery_enabled: true,
+            terminal_timeout_secs: 120,
+            project_rules: vec![],
+            title_max_chars: 60,
+            max_history: 100,
+            sqlite_path: None,
+            ready_notification: None,
+            ..Default::default()
+        },
+    )
+    .with_ready(true)
+}
+
+#[tokio::test]
+async fn list_sessions_isolates_distinct_token_clients() {
+    use axum::body::to_bytes;
+
+    let store = zeph_memory::store::SqliteStore::new(":memory:")
+        .await
+        .expect("SqliteStore::new");
+    store
+        .create_acp_session("alice-sess", Some("alice"))
+        .await
+        .unwrap();
+    store
+        .create_acp_session("bob-sess", Some("bob"))
+        .await
+        .unwrap();
+
+    let state = state_with_two_clients().with_store(store);
+    let router = acp_router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/sessions")
+        .header("authorization", "Bearer token-a")
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["id"], "alice-sess");
+
+    let req2 = Request::builder()
+        .method("GET")
+        .uri("/sessions")
+        .header("authorization", "Bearer token-b")
+        .body(Body::empty())
+        .unwrap();
+    let response2 = router.oneshot(req2).await.unwrap();
+    assert_eq!(response2.status(), StatusCode::OK);
+    let body2 = to_bytes(response2.into_body(), 65536).await.unwrap();
+    let json2: serde_json::Value = serde_json::from_slice(&body2).unwrap();
+    let arr2 = json2.as_array().unwrap();
+    assert_eq!(arr2.len(), 1);
+    assert_eq!(arr2[0]["id"], "bob-sess");
+}
+
+#[tokio::test]
+async fn session_messages_cross_owner_returns_404() {
+    let store = zeph_memory::store::SqliteStore::new(":memory:")
+        .await
+        .expect("SqliteStore::new");
+    let session_id = "00000000-0000-0000-0000-000000000002";
+    store
+        .create_acp_session(session_id, Some("alice"))
+        .await
+        .unwrap();
+
+    let state = state_with_two_clients().with_store(store);
+    let router = acp_router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/sessions/{session_id}/messages"))
+        .header("authorization", "Bearer token-b")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 // ── GET /sessions/{id}/messages tests ────────────────────────────────────────
@@ -930,7 +1049,10 @@ async fn session_messages_returns_events_for_known_session() {
         .await
         .expect("SqliteStore::new");
     let session_id = "00000000-0000-0000-0000-000000000001";
-    store.create_acp_session(session_id).await.unwrap();
+    store
+        .create_acp_session(session_id, Some(crate::transport::OWNER_KEY_LOCAL))
+        .await
+        .unwrap();
 
     // Regression guard for the S1-class false-green: message_messages_handler now reads the
     // durable JSONL event log (spec-068 §12.3 / D-2), not the legacy acp_session_events table —

@@ -24,10 +24,10 @@ use crate::transport::http::AcpHttpState;
 /// Returns a JSON document describing the agent's identity, supported transports,
 /// and authentication requirements. This endpoint is never behind auth middleware.
 pub async fn discovery_handler(State(state): State<AcpHttpState>) -> impl IntoResponse {
-    let auth = if state.server_config.auth_bearer_token.is_some() {
-        json!({ "type": "bearer" })
-    } else {
+    let auth = if state.server_config.auth_clients.is_empty() {
         Value::Null
+    } else {
+        json!({ "type": "bearer" })
     };
 
     let manifest = json!({

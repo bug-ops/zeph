@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        76,
-        "MIGRATIONS registry must contain all 76 sequential steps"
+        77,
+        "MIGRATIONS registry must contain all 77 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1410,6 +1410,39 @@ fn migrate_acp_subagents_idempotent_on_existing_block() {
     assert_eq!(result.output, src);
 }
 
+// ── migrate_acp_auth_clients_config ───────────────────────────────────────
+
+#[test]
+fn migrate_acp_auth_clients_adds_block_when_absent() {
+    let src = "[acp]\nauth_token = \"legacy\"\n";
+    let result = migrate_acp_auth_clients_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result
+            .sections_changed
+            .contains(&"acp.auth_clients".to_owned())
+    );
+    assert!(result.output.contains("# [[acp.auth_clients]]"));
+    assert!(result.output.contains("token_vault_key"));
+}
+
+#[test]
+fn migrate_acp_auth_clients_idempotent_on_existing_block() {
+    let src = "[acp]\nauth_token = \"legacy\"\n# [[acp.auth_clients]]\n# id = \"x\"\n";
+    let result = migrate_acp_auth_clients_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn migrate_acp_auth_clients_skipped_when_live_block_present() {
+    let src =
+        "[acp]\nauth_token = \"legacy\"\n[[acp.auth_clients]]\nid = \"alice\"\ntoken = \"t\"\n";
+    let result = migrate_acp_auth_clients_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
 // ── migrate_hooks_permission_denied_config ────────────────────────────────
 
 #[test]
@@ -1645,7 +1678,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 76);
+    assert_eq!(MIGRATIONS.len(), 77);
 }
 
 #[test]
@@ -1684,7 +1717,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–76).
+    // Names must follow the documented step order (steps 1–77).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1762,6 +1795,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_pii_filter_names",
         "migrate_qdrant_timeout_secs",
         "migrate_utility_high_gain_tools",
+        "migrate_acp_auth_clients_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

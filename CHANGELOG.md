@@ -7,6 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Added
 
+- `feat(acp)`: `[[acp.auth_clients]]` — named bearer-token clients for the ACP HTTP/WS
+  transport (#5868), enabling genuine multi-tenant/multi-window isolation of persisted ACP
+  session listing. `crates/zeph-acp/src/transport/auth.rs`'s `BearerAuthLayer` now authenticates
+  against a named-client credential set instead of one server-wide token; the matched client's
+  stable `id` becomes the connection's `owner_key`, threaded through `build_agent_state` and
+  scoping every session-persistence access path (`list_sessions`, `load_session`,
+  `resume_session`, `fork_session`, the REST `/sessions*` CRUD handlers, and the deprecated
+  `_session/*` ext methods). The legacy `[acp] auth_token` scalar keeps working unchanged,
+  synthesized as a client with id `"default"`; unauthenticated HTTP and stdio both resolve to
+  the `"acp-local"` bucket, matching pre-#5868 behavior for every deployment that does not
+  configure `auth_clients`. Each entry accepts an inline `token` or a `token_vault_key` resolved
+  from the age vault at startup (mirrors `[serve] auth_token_vault_key`). Config validation
+  rejects the reserved ids `"default"`/`"acp-local"`, duplicate ids, and duplicate tokens across
+  `auth_token` + `auth_clients` (inline collisions at config-load time; vault-resolved
+  collisions at startup, after the vault unlocks). `--init` gained a matching wizard prompt and
+  `migrate-config` a new step (77) that surfaces the new array as a commented block.
+  Note: this closes the isolation gap for genuine multi-token **HTTP/WS** deployments only — the
+  literal Zed-over-stdio scenario from the issue is unaffected by this change (stdio has no
+  token multiplexing to redesign; use distinct `sqlite_path` values per window instead).
 - `feat(llm,commands,core)`: added runtime `/think-tokens [N|Nk|NM|off]` and
   `/reasoning-effort [low|medium|high]` slash commands that mutate the active LLM provider's
   thinking-token budget or reasoning-effort level mid-session, taking effect on the very next
@@ -70,6 +89,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`crates/zeph-gateway/src/server.rs`), discarding the original `std::io::Error` entirely — it
   now carries the typed error through directly, matching the convention already used by sibling
   crates (`zeph-orchestration`, `zeph-mcp`) (#5863).
+- `fix(acp,memory,db)`: ACP persisted-session listing and loading (`do_list_sessions`,
+  `do_load_session`, `do_resume_session`, `do_fork_session` in `crates/zeph-acp/src/agent/mod.rs`,
+  the REST `/sessions*` handlers, and the deprecated `_session/*` ext methods) previously queried
+  the shared `acp_sessions` table with no owner scoping at all — every ACP connection (any
+  bearer token, or any stdio process sharing the same SQLite path) could list, load, resume, or
+  delete every other connection's persisted sessions (#5868). Added a nullable `owner_key`
+  column (migration 108, sqlite + postgres) stamped with the connection's authenticated identity
+  (see the `[[acp.auth_clients]]` entry above); `NULL` rows are legacy pre-fix rows or
+  non-ACP-channel rows (CLI/TUI/Telegram via `zeph_session::SessionStore::create`, spec-068
+  Decision D1) and are never scoped by ACP handlers. Loading/resuming/forking a legacy
+  `NULL`-owner row atomically claims it for the current connection via a single
+  `UPDATE ... WHERE (owner_key IS NULL OR owner_key = ?) RETURNING id` statement — no
+  read-then-claim race window — and uniformly reports "not found" for both a missing session and
+  one owned by a different connection, so a foreign `owner_key` can never be distinguished from a
+  nonexistent id. Also corrected the `ZephAcpAgentState` doc comment, which incorrectly claimed
+  the struct is shared across all connections — a fresh instance is built per connection by
+  `build_agent_state`.
 - `fix(skills)`: `skills.group_structured`, `skills.support_similarity_threshold`, and
   `skills.min_injection_score` are now wired into the `Agent` at cold start (`src/runner.rs`,
   `src/daemon.rs`, `src/acp.rs`, `src/serve/agent_factory.rs`), matching how `Agent::reload_config`

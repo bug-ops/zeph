@@ -82,6 +82,9 @@ impl Config {
         self.validate_provider_names()?;
         self.validate_mcp_misc()?;
         self.validate_scheduler()?;
+        self.acp
+            .validate_auth_clients()
+            .map_err(ConfigError::Validation)?;
         Ok(())
     }
 

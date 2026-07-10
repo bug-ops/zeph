@@ -1941,7 +1941,7 @@ impl<C: Channel> Agent<C> {
         let new_id = zeph_common::SessionId::generate();
 
         let fork_result =
-            zeph_session::ForkEngine::fork(&data_dir, id, new_id.as_str(), None, &store)
+            zeph_session::ForkEngine::fork(&data_dir, id, new_id.as_str(), None, &store, None)
                 .await
                 .map_err(|e| CommandError::new(e.to_string()))?;
 

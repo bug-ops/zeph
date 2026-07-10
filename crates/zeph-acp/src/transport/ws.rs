@@ -62,6 +62,7 @@ const WS_PONG_TIMEOUT: Duration = Duration::from_secs(90);
 pub async fn ws_upgrade_handler(
     ws: WebSocketUpgrade,
     State(state): State<AcpHttpState>,
+    token_identity: Option<axum::extract::Extension<super::auth::TokenIdentity>>,
 ) -> Response {
     if !state.ready.load(Ordering::Acquire) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -69,8 +70,9 @@ pub async fn ws_upgrade_handler(
     if !state.try_reserve_ws_slot() {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
+    let owner_key = super::http::derive_owner_key(token_identity.as_ref().map(|e| &e.0));
     ws.max_message_size(WS_MAX_MESSAGE_SIZE)
-        .on_upgrade(move |socket| handle_ws(socket, state))
+        .on_upgrade(move |socket| handle_ws(socket, state, owner_key))
         .into_response()
 }
 
@@ -105,20 +107,23 @@ fn register_ws_session(state: &AcpHttpState, session_id: &str) {
 
 #[cfg(feature = "acp-http")]
 #[allow(clippy::too_many_lines)]
-async fn handle_ws(socket: WebSocket, state: AcpHttpState) {
+async fn handle_ws(socket: WebSocket, state: AcpHttpState, owner_key: String) {
     let session_id = uuid::Uuid::new_v4().to_string();
     register_ws_session(&state, &session_id);
 
-    let (reader, mut writer) =
-        match spawn_agent_connection(state.spawner.clone(), (*state.server_config).clone()) {
-            Ok(streams) => streams,
-            Err(e) => {
-                tracing::error!("failed to spawn ACP agent thread: {e}");
-                state.release_ws_slot();
-                state.remove_connection(&session_id);
-                return;
-            }
-        };
+    let (reader, mut writer) = match spawn_agent_connection(
+        state.spawner.clone(),
+        (*state.server_config).clone(),
+        owner_key,
+    ) {
+        Ok(streams) => streams,
+        Err(e) => {
+            tracing::error!("failed to spawn ACP agent thread: {e}");
+            state.release_ws_slot();
+            state.remove_connection(&session_id);
+            return;
+        }
+    };
 
     let (mut ws_tx, mut ws_rx) = socket.split();
 

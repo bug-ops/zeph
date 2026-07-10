@@ -550,10 +550,11 @@ impl SessionEntry {
 
 type SessionMap = Arc<Mutex<std::collections::HashMap<acp::schema::v1::SessionId, SessionEntry>>>;
 
-/// ACP agent state shared across all connections.
+/// Per-connection ACP agent state.
 ///
-/// Wraps session management, configuration, and per-session tool executors.
-/// Pass an `Arc<ZephAcpAgentState>` to [`run_agent`] to drive the dispatch loop.
+/// A fresh instance is built per ACP connection by `build_agent_state` — it is **not** shared
+/// across connections. Wraps session management, configuration, and per-session tool
+/// executors. Pass an `Arc<ZephAcpAgentState>` to [`run_agent`] to drive the dispatch loop.
 pub struct ZephAcpAgentState {
     pub(crate) spawner: AgentSpawner,
     pub(crate) sessions: SessionMap,
@@ -617,6 +618,10 @@ pub struct ZephAcpAgentState {
     /// Connection-scoped provider overrides (no `session_id` in ACP schema).
     #[cfg(feature = "unstable-llm-providers")]
     pub(crate) global_provider_overrides: Mutex<HashMap<String, ProviderSetOverride>>,
+    /// Authenticated identity of this connection (#5868), scoping persisted ACP session
+    /// list/load/resume. `"acp-local"` for stdio and unauthenticated HTTP; the matched
+    /// bearer-token client id for authenticated HTTP/WS. Set once in `build_agent_state`.
+    pub(crate) owner_key: String,
 }
 
 /// Backward-compatible alias.
@@ -670,7 +675,15 @@ impl ZephAcpAgentState {
             global_disabled_providers: Mutex::new(HashSet::new()),
             #[cfg(feature = "unstable-llm-providers")]
             global_provider_overrides: Mutex::new(HashMap::new()),
+            owner_key: crate::transport::OWNER_KEY_LOCAL.to_owned(),
         }
+    }
+
+    /// Set this connection's owner identity (#5868) — see the `owner_key` field doc.
+    #[must_use]
+    pub fn with_owner_key(mut self, owner_key: impl Into<String>) -> Self {
+        self.owner_key = owner_key.into();
+        self
     }
 
     /// Configure the additional-directories allowlist policy.
@@ -1738,15 +1751,18 @@ impl ZephAcpAgentState {
             return Err(acp::Error::internal_error().data("session not found"));
         };
 
-        let exists = store
-            .acp_session_exists(&args.session_id.to_string())
+        // Atomic claim-on-load (#5868): scopes access to this connection's owner_key and
+        // self-heals legacy NULL-owner rows by claiming them on first load. Returns false
+        // uniformly for "doesn't exist" and "owned by a different owner" — no info leak.
+        let claimed = store
+            .claim_acp_session_for_owner(&args.session_id.to_string(), &self.owner_key)
             .await
             .map_err(|e| {
                 tracing::warn!(error = %e, session_id = %args.session_id, "failed to check ACP session existence");
                 acp::Error::internal_error().data("internal error")
             })?;
 
-        if !exists {
+        if !claimed {
             return Err(acp::Error::internal_error().data("session not found"));
         }
 
@@ -1859,7 +1875,10 @@ impl ZephAcpAgentState {
         };
 
         if let Some(ref store) = self.store {
-            match store.list_acp_sessions(self.max_history).await {
+            match store
+                .list_acp_sessions_for_owner(self.max_history, &self.owner_key)
+                .await
+            {
                 Ok(persisted) => {
                     for persisted_info in persisted {
                         let sid = acp::schema::v1::SessionId::new(&*persisted_info.id);
@@ -1971,14 +1990,15 @@ impl ZephAcpAgentState {
             match self.store.as_ref() {
                 None => return Err(acp::Error::internal_error().data("session not found")),
                 Some(s) => {
-                    let exists = s
-                        .acp_session_exists(&args.session_id.to_string())
+                    // Atomic claim-on-fork (#5868): same self-healing scoping as do_load_session.
+                    let claimed = s
+                        .claim_acp_session_for_owner(&args.session_id.to_string(), &self.owner_key)
                         .await
                         .map_err(|e| {
                             tracing::warn!(error = %e, "failed to check ACP session existence");
                             acp::Error::internal_error().data("internal error")
                         })?;
-                    if !exists {
+                    if !claimed {
                         return Err(acp::Error::internal_error().data("session not found"));
                     }
                 }
@@ -2104,15 +2124,16 @@ impl ZephAcpAgentState {
             return Err(acp::Error::internal_error().data("session not found"));
         };
 
-        let exists = store
-            .acp_session_exists(&args.session_id.to_string())
+        // Atomic claim-on-resume (#5868) — see do_load_session.
+        let claimed = store
+            .claim_acp_session_for_owner(&args.session_id.to_string(), &self.owner_key)
             .await
             .map_err(|e| {
                 tracing::warn!(error = %e, session_id = %args.session_id, "failed to check ACP session existence");
                 acp::Error::internal_error().data("internal error")
             })?;
 
-        if !exists {
+        if !claimed {
             return Err(acp::Error::internal_error().data("session not found"));
         }
 
@@ -2508,13 +2529,17 @@ impl ZephAcpAgentState {
                 if let Some(ref store) = self.store {
                     let sid = session_id.to_string();
                     let store = store.clone();
+                    let owner_key = self.owner_key.clone();
                     // EXEMPT(#5144): fire-and-forget DB delete+recreate; independent per-session
                     // operation — supervisor adds no meaningful lifecycle observability here.
                     tokio::spawn(async move {
-                        if let Err(e) = store.delete_acp_session_checked(&sid).await {
+                        // Scoped to owner (#5868): this is our own session (already established
+                        // for this connection), so `_for_owner` here is a defense-in-depth match
+                        // of the create below, not a new access-control decision.
+                        if let Err(e) = store.delete_acp_session_for_owner(&sid, &owner_key).await {
                             tracing::warn!(error = %e, "failed to clear session history");
                         }
-                        if let Err(e) = store.create_acp_session(&sid).await {
+                        if let Err(e) = store.create_acp_session(&sid, Some(&owner_key)).await {
                             tracing::warn!(error = %e, "failed to recreate session after clear");
                         }
                     });
@@ -2949,6 +2974,7 @@ impl ZephAcpAgentState {
                 &new_id_str,
                 None,
                 &session_store,
+                Some(self.owner_key.as_str()),
             )
             .await
             {
@@ -2978,7 +3004,11 @@ impl ZephAcpAgentState {
                         tracing::warn!(error = %e, "failed to link conversation to forked session");
                     }
                 } else if let Err(e) = s
-                    .create_acp_session_with_conversation(&new_id_str, forked_cid)
+                    .create_acp_session_with_conversation(
+                        &new_id_str,
+                        forked_cid,
+                        Some(&self.owner_key),
+                    )
                     .await
                 {
                     tracing::warn!(error = %e, "failed to persist forked ACP session mapping");
@@ -2993,7 +3023,9 @@ impl ZephAcpAgentState {
             Err(e) => {
                 tracing::warn!(error = %e, "failed to create conversation for forked session; history will not be copied");
                 if self.session_data_dir.is_none()
-                    && let Err(e2) = s.create_acp_session(&new_id_str).await
+                    && let Err(e2) = s
+                        .create_acp_session(&new_id_str, Some(&self.owner_key))
+                        .await
                 {
                     tracing::warn!(error = %e2, "failed to persist forked ACP session");
                 }
@@ -3183,14 +3215,17 @@ impl ZephAcpAgentState {
         let sid = session_id.to_string();
         match store.create_conversation().await {
             Ok(cid) => {
-                if let Err(e) = store.create_acp_session_with_conversation(&sid, cid).await {
+                if let Err(e) = store
+                    .create_acp_session_with_conversation(&sid, cid, Some(&self.owner_key))
+                    .await
+                {
                     tracing::warn!(error = %e, "failed to persist ACP session mapping; history may not survive restart");
                 }
                 Some(cid)
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to create conversation for ACP session; session will have no persistent history");
-                if let Err(e2) = store.create_acp_session(&sid).await {
+                if let Err(e2) = store.create_acp_session(&sid, Some(&self.owner_key)).await {
                     tracing::warn!(error = %e2, "failed to persist ACP session");
                 }
                 None

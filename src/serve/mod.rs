@@ -219,7 +219,11 @@ async fn run_serve_with_acp(
     .await?;
     let serve_config = app.config().serve.clone();
     let acp_bind_addr = app.config().acp.http_bind.clone();
-    let acp_auth_token = app.config().acp.auth_token.clone();
+    // Only checks whether *some* auth is configured (not that it resolves) — cheap enough to
+    // do before `acp_deps` exists; the multi-client set (with vault resolution) is built later
+    // by `build_combined_deps` -> `resolve_acp_auth_clients`.
+    let acp_has_auth_configured =
+        app.config().acp.auth_token.is_some() || !app.config().acp.auth_clients.is_empty();
 
     check_acp_http_port_clash(http_addr, &acp_bind_addr)?;
 
@@ -230,7 +234,7 @@ async fn run_serve_with_acp(
     // operator false confidence that the whole combined process is authenticated, while the
     // ACP listener — sharing the same `acp_sessions` table serve's guard protects — could be
     // reachable non-loopback with no token at all.
-    check_acp_auth_guard(&acp_bind_addr, acp_auth_token.is_some())?;
+    check_acp_auth_guard(&acp_bind_addr, acp_has_auth_configured)?;
 
     let cancel = tokio_util::sync::CancellationToken::new();
     let supervisor = Arc::new(TaskSupervisor::new(cancel.clone()));

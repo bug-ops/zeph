@@ -35,17 +35,28 @@ pub struct AcpSessionConfigSnapshot {
 impl SqliteStore {
     /// Create a new ACP session record.
     ///
+    /// `owner` stamps `owner_key` (#5868): the authenticated ACP client identity that may
+    /// list/load this session. `None` leaves it unowned — used by non-ACP channels
+    /// (CLI/TUI/Telegram via `zeph_session::SessionStore::create`, which does not call this
+    /// method at all and so is unaffected either way; `None` here is for ACP callers that
+    /// intentionally create an unowned row, e.g. none today, but kept for forward compat).
+    ///
     /// # Errors
     ///
     /// Returns an error if the database write fails.
-    pub async fn create_acp_session(&self, session_id: &str) -> Result<(), MemoryError> {
+    pub async fn create_acp_session(
+        &self,
+        session_id: &str,
+        owner: Option<&str>,
+    ) -> Result<(), MemoryError> {
         let sql = zeph_db::rewrite_placeholders(&format!(
-            "{} INTO acp_sessions (id) VALUES (?){}",
+            "{} INTO acp_sessions (id, owner_key) VALUES (?, ?){}",
             <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
         ));
         zeph_db::query(sqlx::AssertSqlSafe(sql))
             .bind(session_id)
+            .bind(owner)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -357,7 +368,217 @@ impl SqliteStore {
         Ok(count > 0)
     }
 
+    /// List ACP sessions owned by `owner`, ordered by last activity descending (#5868).
+    ///
+    /// Unlike [`Self::list_acp_sessions`], this is strictly scoped: rows owned by another
+    /// `owner_key` or left `NULL` (legacy/non-ACP rows) are never returned. Pass `limit = 0`
+    /// for unlimited results.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn list_acp_sessions_for_owner(
+        &self,
+        limit: usize,
+        owner: &str,
+    ) -> Result<Vec<AcpSessionInfo>, MemoryError> {
+        #[allow(clippy::cast_possible_wrap)]
+        let sql_limit: i64 = if limit == 0 { -1 } else { limit as i64 };
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let updated_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("updated_at");
+        let raw = format!(
+            "SELECT s.id, s.title, s.{created_at_sel}, s.{updated_at_sel}, \
+             s.event_count AS message_count \
+             FROM acp_sessions s \
+             WHERE s.owner_key = ? \
+             ORDER BY s.updated_at DESC \
+             LIMIT ?"
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows = zeph_db::query_as::<_, (String, Option<String>, String, String, i64)>(
+            sqlx::AssertSqlSafe(query_sql),
+        )
+        .bind(owner)
+        .bind(sql_limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, title, created_at, updated_at, message_count)| AcpSessionInfo {
+                    id,
+                    title,
+                    created_at,
+                    updated_at,
+                    message_count,
+                },
+            )
+            .collect())
+    }
+
+    /// Fetch metadata for a session, scoped to `owner` (#5868).
+    ///
+    /// Returns `None` both when the session does not exist and when it is owned by a
+    /// different `owner_key` — the two cases are indistinguishable to the caller by design,
+    /// to avoid leaking existence of another owner's session (mirrors
+    /// [`Self::claim_acp_session_for_owner`]'s uniform not-found semantics). A `NULL`
+    /// (legacy/non-ACP) `owner_key` is treated as accessible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn get_acp_session_info_for_owner(
+        &self,
+        session_id: &str,
+        owner: &str,
+    ) -> Result<Option<AcpSessionInfo>, MemoryError> {
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let updated_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("updated_at");
+        let raw = format!(
+            "SELECT s.id, s.title, s.{created_at_sel}, s.{updated_at_sel}, \
+             s.event_count AS message_count \
+             FROM acp_sessions s \
+             WHERE s.id = ? AND (s.owner_key = ? OR s.owner_key IS NULL)"
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let row = zeph_db::query_as::<_, (String, Option<String>, String, String, i64)>(
+            sqlx::AssertSqlSafe(query_sql),
+        )
+        .bind(session_id)
+        .bind(owner)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(
+            |(id, title, created_at, updated_at, message_count)| AcpSessionInfo {
+                id,
+                title,
+                created_at,
+                updated_at,
+                message_count,
+            },
+        ))
+    }
+
+    /// Non-mutating accessibility gate: `true` iff `session_id` exists and is owned by
+    /// `owner` or is unowned (`NULL`, legacy/non-ACP row) (#5868).
+    ///
+    /// Use for read-only access gates that must NOT silently claim a legacy row (e.g. the
+    /// HTTP `session_messages_handler`). For load/resume/fork, prefer
+    /// [`Self::claim_acp_session_for_owner`], which additionally claims unowned rows
+    /// atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn acp_session_accessible_for_owner(
+        &self,
+        session_id: &str,
+        owner: &str,
+    ) -> Result<bool, MemoryError> {
+        let count: i64 = zeph_db::query_scalar(sql!(
+            "SELECT COUNT(*) FROM acp_sessions WHERE id = ? AND (owner_key = ? OR owner_key IS NULL)"
+        ))
+        .bind(session_id)
+        .bind(owner)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count > 0)
+    }
+
+    /// Atomically grant `owner` access to `session_id`, claiming it if currently unowned
+    /// (`NULL`, legacy/non-ACP row) (#5868).
+    ///
+    /// A single `UPDATE ... RETURNING` statement — no read-then-claim race window. Returns
+    /// `true` iff the row exists AND is accessible: either it was `NULL` and is now claimed
+    /// for `owner`, or it was already owned by `owner` (a redundant, harmless no-op write).
+    /// Returns `false` uniformly for "session does not exist" and "owned by a different
+    /// owner" — callers must map both to the same not-found response so a foreign
+    /// `owner_key` can never be distinguished from a missing session.
+    ///
+    /// Use for load/resume/fork existence checks. For read-only gates that must not claim,
+    /// use [`Self::acp_session_accessible_for_owner`] instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database write fails.
+    pub async fn claim_acp_session_for_owner(
+        &self,
+        session_id: &str,
+        owner: &str,
+    ) -> Result<bool, MemoryError> {
+        let row: Option<(String,)> = zeph_db::query_as(sql!(
+            "UPDATE acp_sessions SET owner_key = ? \
+             WHERE id = ? AND (owner_key IS NULL OR owner_key = ?) \
+             RETURNING id"
+        ))
+        .bind(owner)
+        .bind(session_id)
+        .bind(owner)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
+    }
+
+    /// Delete an ACP session scoped to `owner`, returning `true` iff a row was deleted
+    /// (#5868).
+    ///
+    /// Matches [`Self::delete_acp_session_checked`]'s TOCTOU-free single-statement shape,
+    /// additionally restricted to rows owned by `owner` or unowned (`NULL`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database write fails.
+    pub async fn delete_acp_session_for_owner(
+        &self,
+        session_id: &str,
+        owner: &str,
+    ) -> Result<bool, MemoryError> {
+        let result = zeph_db::query(sql!(
+            "DELETE FROM acp_sessions WHERE id = ? AND (owner_key = ? OR owner_key IS NULL)"
+        ))
+        .bind(session_id)
+        .bind(owner)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Update the title of a session scoped to `owner`, returning `true` iff a row was
+    /// updated (#5868).
+    ///
+    /// Matches [`Self::update_session_title_checked`]'s TOCTOU-free single-statement shape,
+    /// additionally restricted to rows owned by `owner` or unowned (`NULL`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database write fails.
+    pub async fn update_session_title_for_owner(
+        &self,
+        session_id: &str,
+        title: &str,
+        owner: &str,
+    ) -> Result<bool, MemoryError> {
+        let result = zeph_db::query(sql!(
+            "UPDATE acp_sessions SET title = ? \
+             WHERE id = ? AND (owner_key = ? OR owner_key IS NULL)"
+        ))
+        .bind(title)
+        .bind(session_id)
+        .bind(owner)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Create a new ACP session record with an associated conversation.
+    ///
+    /// `owner` stamps `owner_key` (#5868) — see [`Self::create_acp_session`].
     ///
     /// # Errors
     ///
@@ -366,15 +587,17 @@ impl SqliteStore {
         &self,
         session_id: &str,
         conversation_id: ConversationId,
+        owner: Option<&str>,
     ) -> Result<(), MemoryError> {
         let sql = zeph_db::rewrite_placeholders(&format!(
-            "{} INTO acp_sessions (id, conversation_id) VALUES (?, ?){}",
+            "{} INTO acp_sessions (id, conversation_id, owner_key) VALUES (?, ?, ?){}",
             <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
         ));
         zeph_db::query(sqlx::AssertSqlSafe(sql))
             .bind(session_id)
             .bind(conversation_id)
+            .bind(owner)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -494,7 +717,7 @@ mod tests {
     #[tokio::test]
     async fn create_and_exists() {
         let store = make_store().await;
-        store.create_acp_session("sess-1").await.unwrap();
+        store.create_acp_session("sess-1", None).await.unwrap();
         assert!(store.acp_session_exists("sess-1").await.unwrap());
         assert!(!store.acp_session_exists("sess-2").await.unwrap());
     }
@@ -502,7 +725,7 @@ mod tests {
     #[tokio::test]
     async fn session_config_round_trips() {
         let store = make_store().await;
-        store.create_acp_session("sess-1").await.unwrap();
+        store.create_acp_session("sess-1", None).await.unwrap();
         let snapshot = AcpSessionConfigSnapshot {
             current_model: "claude:opus".to_owned(),
             temperature_preset: "creative".to_owned(),
@@ -528,7 +751,7 @@ mod tests {
     #[tokio::test]
     async fn session_config_missing_snapshot_returns_none() {
         let store = make_store().await;
-        store.create_acp_session("sess-1").await.unwrap();
+        store.create_acp_session("sess-1", None).await.unwrap();
         assert!(store.get_session_config("sess-1").await.unwrap().is_none());
     }
 
@@ -541,7 +764,7 @@ mod tests {
     #[tokio::test]
     async fn save_and_load_events() {
         let store = make_store().await;
-        store.create_acp_session("sess-1").await.unwrap();
+        store.create_acp_session("sess-1", None).await.unwrap();
         store
             .save_acp_event("sess-1", "user_message", "hello")
             .await
@@ -562,7 +785,7 @@ mod tests {
     #[tokio::test]
     async fn delete_cascades_events() {
         let store = make_store().await;
-        store.create_acp_session("sess-1").await.unwrap();
+        store.create_acp_session("sess-1", None).await.unwrap();
         store
             .save_acp_event("sess-1", "user_message", "hello")
             .await
@@ -584,13 +807,13 @@ mod tests {
     #[tokio::test]
     async fn list_sessions_includes_title_and_message_count() {
         let store = make_store().await;
-        store.create_acp_session("sess-b").await.unwrap();
+        store.create_acp_session("sess-b", None).await.unwrap();
 
         // Sleep so that sess-a's events land in a different second than sess-b's
         // created_at, making the updated_at DESC ordering deterministic.
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
-        store.create_acp_session("sess-a").await.unwrap();
+        store.create_acp_session("sess-a", None).await.unwrap();
         bump_event_count(&store, "sess-a", 2).await;
         store
             .update_session_title("sess-a", "My Chat")
@@ -614,7 +837,7 @@ mod tests {
         let store = make_store().await;
         for i in 0..5u8 {
             store
-                .create_acp_session(&format!("sess-{i}"))
+                .create_acp_session(&format!("sess-{i}"), None)
                 .await
                 .unwrap();
         }
@@ -627,7 +850,7 @@ mod tests {
         let store = make_store().await;
         for i in 0..3u8 {
             store
-                .create_acp_session(&format!("sess-{i}"))
+                .create_acp_session(&format!("sess-{i}"), None)
                 .await
                 .unwrap();
         }
@@ -640,7 +863,7 @@ mod tests {
         let store = make_store().await;
         for i in 0..5u8 {
             store
-                .create_acp_session(&format!("sess-{i}"))
+                .create_acp_session(&format!("sess-{i}"), None)
                 .await
                 .unwrap();
         }
@@ -658,7 +881,7 @@ mod tests {
     #[tokio::test]
     async fn get_acp_session_info_returns_data() {
         let store = make_store().await;
-        store.create_acp_session("sess-x").await.unwrap();
+        store.create_acp_session("sess-x", None).await.unwrap();
         bump_event_count(&store, "sess-x", 1).await;
         store.update_session_title("sess-x", "Test").await.unwrap();
 
@@ -671,7 +894,7 @@ mod tests {
     #[tokio::test]
     async fn updated_at_trigger_fires_on_event_insert() {
         let store = make_store().await;
-        store.create_acp_session("sess-t").await.unwrap();
+        store.create_acp_session("sess-t", None).await.unwrap();
 
         let before = store
             .get_acp_session_info("sess-t")
@@ -707,7 +930,7 @@ mod tests {
         let store = make_store().await;
         let cid = store.create_conversation().await.unwrap();
         store
-            .create_acp_session_with_conversation("sess-1", cid)
+            .create_acp_session_with_conversation("sess-1", cid, None)
             .await
             .unwrap();
         let retrieved = store
@@ -720,7 +943,7 @@ mod tests {
     #[tokio::test]
     async fn get_conversation_id_returns_none_for_legacy_session() {
         let store = make_store().await;
-        store.create_acp_session("legacy").await.unwrap();
+        store.create_acp_session("legacy", None).await.unwrap();
         let cid = store
             .get_acp_session_conversation_id("legacy")
             .await
@@ -741,7 +964,7 @@ mod tests {
     #[tokio::test]
     async fn set_conversation_id_updates_existing_session() {
         let store = make_store().await;
-        store.create_acp_session("sess-2").await.unwrap();
+        store.create_acp_session("sess-2", None).await.unwrap();
         let cid = store.create_conversation().await.unwrap();
         store
             .set_acp_session_conversation_id("sess-2", cid)
@@ -822,11 +1045,11 @@ mod tests {
         let cid1 = store.create_conversation().await.unwrap();
         let cid2 = store.create_conversation().await.unwrap();
         store
-            .create_acp_session_with_conversation("sess-a", cid1)
+            .create_acp_session_with_conversation("sess-a", cid1, None)
             .await
             .unwrap();
         store
-            .create_acp_session_with_conversation("sess-b", cid2)
+            .create_acp_session_with_conversation("sess-b", cid2, None)
             .await
             .unwrap();
 
@@ -845,5 +1068,254 @@ mod tests {
             retrieved1, retrieved2,
             "concurrent sessions must get distinct conversation_ids"
         );
+    }
+
+    // ── Owner-scoped access (#5868) ────────────────────────────────────────────
+
+    /// Regression guard (#5868): the unscoped CLI-facing methods (`list_acp_sessions`,
+    /// `acp_session_exists`, `delete_acp_session_checked`) must keep seeing every row
+    /// regardless of `owner_key` — CLI/operator access is intentionally global, and a future
+    /// change that accidentally scoped these instead of the `_for_owner` siblings would break
+    /// `zeph sessions list`/`zeph sessions delete` silently.
+    #[tokio::test]
+    async fn cli_facing_unscoped_methods_see_all_owners_and_legacy_rows() {
+        let store = make_store().await;
+        store
+            .create_acp_session("mine", Some("owner-a"))
+            .await
+            .unwrap();
+        store
+            .create_acp_session("theirs", Some("owner-b"))
+            .await
+            .unwrap();
+        store.create_acp_session("legacy", None).await.unwrap();
+
+        let sessions = store.list_acp_sessions(0).await.unwrap();
+        assert_eq!(sessions.len(), 3);
+
+        assert!(store.acp_session_exists("mine").await.unwrap());
+        assert!(store.acp_session_exists("theirs").await.unwrap());
+        assert!(store.acp_session_exists("legacy").await.unwrap());
+
+        assert!(store.delete_acp_session_checked("theirs").await.unwrap());
+        assert!(!store.acp_session_exists("theirs").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn list_for_owner_excludes_other_owners_and_legacy_rows() {
+        let store = make_store().await;
+        store
+            .create_acp_session("mine", Some("owner-a"))
+            .await
+            .unwrap();
+        store
+            .create_acp_session("theirs", Some("owner-b"))
+            .await
+            .unwrap();
+        store.create_acp_session("legacy", None).await.unwrap();
+
+        let sessions = store
+            .list_acp_sessions_for_owner(0, "owner-a")
+            .await
+            .unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "mine");
+    }
+
+    #[tokio::test]
+    async fn get_info_for_owner_returns_none_for_foreign_owner() {
+        let store = make_store().await;
+        store
+            .create_acp_session("theirs", Some("owner-b"))
+            .await
+            .unwrap();
+        let info = store
+            .get_acp_session_info_for_owner("theirs", "owner-a")
+            .await
+            .unwrap();
+        assert!(info.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_info_for_owner_accessible_for_legacy_null_row() {
+        let store = make_store().await;
+        store.create_acp_session("legacy", None).await.unwrap();
+        let info = store
+            .get_acp_session_info_for_owner("legacy", "owner-a")
+            .await
+            .unwrap();
+        assert!(info.is_some());
+    }
+
+    #[tokio::test]
+    async fn accessible_for_owner_true_for_own_and_legacy_false_for_foreign() {
+        let store = make_store().await;
+        store
+            .create_acp_session("mine", Some("owner-a"))
+            .await
+            .unwrap();
+        store.create_acp_session("legacy", None).await.unwrap();
+        store
+            .create_acp_session("theirs", Some("owner-b"))
+            .await
+            .unwrap();
+
+        assert!(
+            store
+                .acp_session_accessible_for_owner("mine", "owner-a")
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .acp_session_accessible_for_owner("legacy", "owner-a")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .acp_session_accessible_for_owner("theirs", "owner-a")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .acp_session_accessible_for_owner("no-such", "owner-a")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_for_owner_claims_legacy_null_row() {
+        let store = make_store().await;
+        store.create_acp_session("legacy", None).await.unwrap();
+
+        assert!(
+            store
+                .claim_acp_session_for_owner("legacy", "owner-a")
+                .await
+                .unwrap()
+        );
+
+        // Now owned by owner-a: a foreign owner can no longer claim or list it.
+        assert!(
+            !store
+                .claim_acp_session_for_owner("legacy", "owner-b")
+                .await
+                .unwrap()
+        );
+        let sessions = store
+            .list_acp_sessions_for_owner(0, "owner-a")
+            .await
+            .unwrap();
+        assert_eq!(sessions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn claim_for_owner_is_idempotent_for_the_same_owner() {
+        let store = make_store().await;
+        store
+            .create_acp_session("mine", Some("owner-a"))
+            .await
+            .unwrap();
+
+        assert!(
+            store
+                .claim_acp_session_for_owner("mine", "owner-a")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_for_owner_returns_false_for_missing_session() {
+        let store = make_store().await;
+        assert!(
+            !store
+                .claim_acp_session_for_owner("no-such", "owner-a")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_for_owner_refuses_foreign_owner() {
+        let store = make_store().await;
+        store
+            .create_acp_session("theirs", Some("owner-b"))
+            .await
+            .unwrap();
+
+        assert!(
+            !store
+                .delete_acp_session_for_owner("theirs", "owner-a")
+                .await
+                .unwrap()
+        );
+        assert!(store.acp_session_exists("theirs").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn delete_for_owner_deletes_own_and_legacy_rows() {
+        let store = make_store().await;
+        store
+            .create_acp_session("mine", Some("owner-a"))
+            .await
+            .unwrap();
+        store.create_acp_session("legacy", None).await.unwrap();
+
+        assert!(
+            store
+                .delete_acp_session_for_owner("mine", "owner-a")
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .delete_acp_session_for_owner("legacy", "owner-a")
+                .await
+                .unwrap()
+        );
+        assert!(!store.acp_session_exists("mine").await.unwrap());
+        assert!(!store.acp_session_exists("legacy").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn update_title_for_owner_refuses_foreign_owner() {
+        let store = make_store().await;
+        store
+            .create_acp_session("theirs", Some("owner-b"))
+            .await
+            .unwrap();
+
+        assert!(
+            !store
+                .update_session_title_for_owner("theirs", "new title", "owner-a")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn update_title_for_owner_updates_own_row() {
+        let store = make_store().await;
+        store
+            .create_acp_session("mine", Some("owner-a"))
+            .await
+            .unwrap();
+
+        assert!(
+            store
+                .update_session_title_for_owner("mine", "new title", "owner-a")
+                .await
+                .unwrap()
+        );
+        let info = store
+            .get_acp_session_info_for_owner("mine", "owner-a")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.title.as_deref(), Some("new title"));
     }
 }

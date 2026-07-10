@@ -297,6 +297,11 @@ impl SessionStore {
     /// Does not touch the parent's log (the `ForkPoint` provenance event is appended by
     /// [`crate::replay`]'s `ForkEngine`, which owns the parent's [`crate::log::SessionEventLog`]).
     ///
+    /// `owner` stamps `owner_key` (#5868): ACP's `fork_conversation` passes its connection's
+    /// owner identity so the freshly forked child is immediately listable by its creator;
+    /// the CLI's `sessions fork` passes `None` (operator-scoped, unowned — consistent with
+    /// every other CLI-side session row).
+    ///
     /// # Errors
     ///
     /// Returns [`SessionError::Db`] if either write fails.
@@ -307,9 +312,11 @@ impl SessionStore {
         new_session_id: &str,
         src_session_id: &str,
         forked_at_seq: u64,
+        owner: Option<&str>,
     ) -> Result<(), SessionError> {
         let stmt = zeph_db::rewrite_placeholders(&format!(
-            "{} INTO acp_sessions (id, status, forked_from, forked_at_seq) VALUES (?, 'active', ?, ?){}",
+            "{} INTO acp_sessions (id, status, forked_from, forked_at_seq, owner_key) \
+             VALUES (?, 'active', ?, ?, ?){}",
             <ActiveDialect as Dialect>::INSERT_IGNORE,
             <ActiveDialect as Dialect>::CONFLICT_NOTHING,
         ));
@@ -317,6 +324,7 @@ impl SessionStore {
             .bind(new_session_id)
             .bind(src_session_id)
             .bind(forked_at_seq as i64)
+            .bind(owner)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -438,10 +446,59 @@ mod tests {
     async fn record_fork_sets_provenance() {
         let store = SessionStore::new(make_pool().await);
         store.create("parent").await.unwrap();
-        store.record_fork("child", "parent", 12).await.unwrap();
+        store
+            .record_fork("child", "parent", 12, None)
+            .await
+            .unwrap();
         let meta = store.get("child").await.unwrap().unwrap();
         assert_eq!(meta.forked_from.as_deref(), Some("parent"));
         assert_eq!(meta.forked_at_seq, Some(12));
+    }
+
+    /// Regression test (#5868): `record_fork`'s own `INSERT` must stamp `owner_key` on the
+    /// child row, mirroring `create_acp_session`. Found mid-implementation: `record_fork`
+    /// (used by `ForkEngine::fork`, ACP's `fork_conversation` under `[session] enabled = true`)
+    /// has a separate INSERT statement that bypassed `create_acp_session` entirely — every fork
+    /// would have landed `owner_key = NULL` regardless of the `owner` argument, making it
+    /// invisible in the fork-creator's own scoped `list_sessions` immediately after forking.
+    #[tokio::test]
+    async fn record_fork_stamps_owner_key_on_child_row() {
+        let pool = make_pool().await;
+        let store = SessionStore::new(pool.clone());
+        store.create("parent").await.unwrap();
+        store
+            .record_fork("child", "parent", 12, Some("alice"))
+            .await
+            .unwrap();
+
+        let owner_key: Option<String> =
+            zeph_db::query_scalar(sql!("SELECT owner_key FROM acp_sessions WHERE id = ?"))
+                .bind("child")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(owner_key.as_deref(), Some("alice"));
+    }
+
+    /// `record_fork(owner: None)` (the CLI / non-ACP fork path) must leave the child row
+    /// unowned, matching every other non-ACP write path (spec-068 Decision D1).
+    #[tokio::test]
+    async fn record_fork_with_no_owner_leaves_child_row_unowned() {
+        let pool = make_pool().await;
+        let store = SessionStore::new(pool.clone());
+        store.create("parent").await.unwrap();
+        store
+            .record_fork("child", "parent", 12, None)
+            .await
+            .unwrap();
+
+        let owner_key: Option<String> =
+            zeph_db::query_scalar(sql!("SELECT owner_key FROM acp_sessions WHERE id = ?"))
+                .bind("child")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(owner_key.is_none());
     }
 
     #[tokio::test]

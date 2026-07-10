@@ -66,7 +66,7 @@ const MAX_BODY_BYTES: usize = 1_048_576;
 ///
 /// - `DefaultBodyLimit::max(1_048_576)` — rejects oversized POST bodies
 /// - `CorsLayer` with empty origin list — denies all cross-origin requests by default
-/// - `BearerAuthLayer` — applied to `/acp` routes when `auth_bearer_token` is `Some`
+/// - `BearerAuthLayer` — applied to `/acp` routes when `auth_clients` is non-empty
 ///
 /// # Examples
 ///
@@ -106,14 +106,16 @@ pub fn acp_router(state: AcpHttpState) -> Router {
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(CorsLayer::new());
 
-    let acp_routes = if let Some(token) = state.server_config.auth_bearer_token.clone() {
-        acp_routes.layer(BearerAuthLayer::new(token))
-    } else {
+    let acp_routes = if state.server_config.auth_clients.is_empty() {
         tracing::warn!(
             "ACP HTTP server started without bearer token authentication; \
              session history endpoints are publicly accessible"
         );
         acp_routes
+    } else {
+        acp_routes.layer(BearerAuthLayer::new(
+            state.server_config.auth_clients.clone(),
+        ))
     };
 
     let mut router = Router::new()

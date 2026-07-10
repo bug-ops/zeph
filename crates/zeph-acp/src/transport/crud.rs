@@ -169,6 +169,7 @@ async fn validate_working_dir(
 /// Returns `500 Internal Server Error` if the database write fails.
 pub async fn create_session_handler(
     State(state): State<AcpHttpState>,
+    token_identity: Option<axum::extract::Extension<super::auth::TokenIdentity>>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
     if !state.ready.load(std::sync::atomic::Ordering::Acquire) {
@@ -182,17 +183,24 @@ pub async fn create_session_handler(
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
+    let owner_key = super::http::derive_owner_key(token_identity.as_ref().map(|e| &e.0));
     let session_id = uuid::Uuid::new_v4().to_string();
 
-    store.create_acp_session(&session_id).await.map_err(|e| {
-        tracing::warn!(error = %e, "failed to create ACP session");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    store
+        .create_acp_session(&session_id, Some(&owner_key))
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "failed to create ACP session");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
-    let info = store.get_acp_session_info(&session_id).await.map_err(|e| {
-        tracing::warn!(error = %e, "failed to retrieve created ACP session");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let info = store
+        .get_acp_session_info_for_owner(&session_id, &owner_key)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "failed to retrieve created ACP session");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     let Some(info) = info else {
         tracing::warn!(session_id, "created ACP session not found immediately");
@@ -213,6 +221,7 @@ pub async fn create_session_handler(
 /// Returns `500 Internal Server Error` if the database query fails.
 pub async fn get_session_handler(
     State(state): State<AcpHttpState>,
+    token_identity: Option<axum::extract::Extension<super::auth::TokenIdentity>>,
     Path(session_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
     if !state.ready.load(std::sync::atomic::Ordering::Acquire) {
@@ -225,8 +234,9 @@ pub async fn get_session_handler(
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
+    let owner_key = super::http::derive_owner_key(token_identity.as_ref().map(|e| &e.0));
     let info = store
-        .get_acp_session_info(&session_id)
+        .get_acp_session_info_for_owner(&session_id, &owner_key)
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "failed to get ACP session info");
@@ -251,6 +261,7 @@ pub async fn get_session_handler(
 /// Returns `500 Internal Server Error` if the database write or subsequent query fails.
 pub async fn update_session_handler(
     State(state): State<AcpHttpState>,
+    token_identity: Option<axum::extract::Extension<super::auth::TokenIdentity>>,
     Path(session_id): Path<String>,
     Json(req): Json<UpdateSessionRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
@@ -270,26 +281,30 @@ pub async fn update_session_handler(
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    let owner_key = super::http::derive_owner_key(token_identity.as_ref().map(|e| &e.0));
     let found = if let Some(title) = req.title {
         store
-            .update_session_title_checked(&session_id, &title)
+            .update_session_title_for_owner(&session_id, &title, &owner_key)
             .await
             .map_err(|e| {
                 tracing::warn!(error = %e, "failed to update ACP session title");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?
     } else {
-        store.acp_session_exists(&session_id).await.map_err(|e| {
-            tracing::warn!(error = %e, "failed to check ACP session existence");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
+        store
+            .acp_session_accessible_for_owner(&session_id, &owner_key)
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, "failed to check ACP session existence");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
     };
     if !found {
         return Err(StatusCode::NOT_FOUND);
     }
 
     let info = store
-        .get_acp_session_info(&session_id)
+        .get_acp_session_info_for_owner(&session_id, &owner_key)
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "failed to fetch updated ACP session info");
@@ -306,7 +321,9 @@ pub async fn update_session_handler(
 /// Active in-memory connections for the session are also dropped.
 /// Returns `204 No Content` on success.
 ///
-/// Single-tenant only: any authenticated caller can delete any session.
+/// Scoped to the caller's owner identity (#5868): only sessions owned by the caller, or
+/// unowned legacy/non-ACP rows, can be deleted — a session owned by a different client is
+/// reported as `404 Not Found`, identical to a nonexistent id.
 ///
 /// # Errors
 ///
@@ -316,6 +333,7 @@ pub async fn update_session_handler(
 /// Returns `500 Internal Server Error` if the database delete fails.
 pub async fn delete_session_handler(
     State(state): State<AcpHttpState>,
+    token_identity: Option<axum::extract::Extension<super::auth::TokenIdentity>>,
     Path(session_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
     if !state.ready.load(std::sync::atomic::Ordering::Acquire) {
@@ -328,8 +346,9 @@ pub async fn delete_session_handler(
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
+    let owner_key = super::http::derive_owner_key(token_identity.as_ref().map(|e| &e.0));
     let deleted = store
-        .delete_acp_session_checked(&session_id)
+        .delete_acp_session_for_owner(&session_id, &owner_key)
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "failed to delete ACP session");
@@ -691,7 +710,7 @@ mod tests {
             .store
             .as_ref()
             .unwrap()
-            .create_acp_session(&session_id)
+            .create_acp_session(&session_id, Some(crate::transport::OWNER_KEY_LOCAL))
             .await
             .unwrap();
 
@@ -724,7 +743,7 @@ mod tests {
             .store
             .as_ref()
             .unwrap()
-            .create_acp_session(&session_id)
+            .create_acp_session(&session_id, Some(crate::transport::OWNER_KEY_LOCAL))
             .await
             .unwrap();
 
@@ -742,5 +761,174 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    // ── Cross-owner scoping (#5868) ────────────────────────────────────────────
+
+    fn two_clients() -> Vec<crate::transport::AcpClientToken> {
+        vec![
+            crate::transport::AcpClientToken {
+                id: "alice".into(),
+                token: "token-a".into(),
+            },
+            crate::transport::AcpClientToken {
+                id: "bob".into(),
+                token: "token-b".into(),
+            },
+        ]
+    }
+
+    fn build_router_with_auth(
+        state: AcpHttpState,
+        clients: Vec<crate::transport::AcpClientToken>,
+    ) -> Router {
+        build_router(state).layer(crate::transport::auth::BearerAuthLayer::new(clients))
+    }
+
+    fn authed(method: &str, uri: String, bearer: &str) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_session_cross_owner_returns_404() {
+        let state = state_with_store().await;
+        let app = build_router_with_auth(state, two_clients());
+
+        // alice creates a session.
+        let create_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/sessions")
+                    .header("authorization", "Bearer token-a")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_resp.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(create_resp.into_body(), 4096)
+            .await
+            .unwrap();
+        let info: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let session_id = info["id"].as_str().unwrap().to_owned();
+
+        // alice can read her own session.
+        let own_resp = app
+            .clone()
+            .oneshot(authed("GET", format!("/sessions/{session_id}"), "token-a"))
+            .await
+            .unwrap();
+        assert_eq!(own_resp.status(), StatusCode::OK);
+
+        // bob cannot — indistinguishable from a missing session.
+        let foreign_resp = app
+            .oneshot(authed("GET", format!("/sessions/{session_id}"), "token-b"))
+            .await
+            .unwrap();
+        assert_eq!(foreign_resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn patch_session_cross_owner_returns_404_and_does_not_update() {
+        let state = state_with_store().await;
+        let app = build_router_with_auth(state, two_clients());
+
+        let create_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/sessions")
+                    .header("authorization", "Bearer token-a")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(create_resp.into_body(), 4096)
+            .await
+            .unwrap();
+        let info: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let session_id = info["id"].as_str().unwrap().to_owned();
+
+        let body = serde_json::json!({ "title": "hijacked" });
+        let foreign_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/sessions/{session_id}"))
+                    .header("authorization", "Bearer token-b")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(foreign_resp.status(), StatusCode::NOT_FOUND);
+
+        // Confirm the title was NOT changed — read it back as the rightful owner.
+        let own_resp = app
+            .oneshot(authed("GET", format!("/sessions/{session_id}"), "token-a"))
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(own_resp.into_body(), 4096)
+            .await
+            .unwrap();
+        let info: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_ne!(info["title"], "hijacked");
+    }
+
+    #[tokio::test]
+    async fn delete_session_cross_owner_returns_404_and_does_not_delete() {
+        let state = state_with_store().await;
+        let app = build_router_with_auth(state, two_clients());
+
+        let create_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/sessions")
+                    .header("authorization", "Bearer token-a")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(create_resp.into_body(), 4096)
+            .await
+            .unwrap();
+        let info: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let session_id = info["id"].as_str().unwrap().to_owned();
+
+        let foreign_resp = app
+            .clone()
+            .oneshot(authed(
+                "DELETE",
+                format!("/sessions/{session_id}"),
+                "token-b",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(foreign_resp.status(), StatusCode::NOT_FOUND);
+
+        // Still there for the rightful owner.
+        let own_resp = app
+            .oneshot(authed("GET", format!("/sessions/{session_id}"), "token-a"))
+            .await
+            .unwrap();
+        assert_eq!(own_resp.status(), StatusCode::OK);
     }
 }

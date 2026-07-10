@@ -596,20 +596,21 @@ pub trait Migration: Send + Sync {
 
 mod steps;
 use steps::{
-    MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
-    MigrateAutodreamConfig, MigrateCavemanConfig, MigrateCocoonProviderNotice,
-    MigrateCocoonShowBalance, MigrateCompressionPredictorConfig, MigrateDatabaseUrl,
-    MigrateDeepLinkConfig, MigrateDurableConfig, MigrateEgressConfig, MigrateEmbedProviderRename,
-    MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig,
-    MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
-    MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
-    MigrateKnowledgeConfig, MigrateLlmStreamLimits, MigrateMagicDocsConfig,
-    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpRetryAndToolTimeout,
-    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported,
-    MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread,
-    MigrateMemoryPersonaConfig, MigrateMemoryReasoning, MigrateMemoryReasoningJudge,
-    MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig,
-    MigrateNliConfig, MigrateOrchestrationAssetSensitivity, MigrateOrchestrationPersistence,
+    MigrateAcpAuthClientsConfig, MigrateAcpSubagentsConfig, MigrateAgentBudgetHint,
+    MigrateAgentRetryToToolsRetry, MigrateAutodreamConfig, MigrateCavemanConfig,
+    MigrateCocoonProviderNotice, MigrateCocoonShowBalance, MigrateCompressionPredictorConfig,
+    MigrateDatabaseUrl, MigrateDeepLinkConfig, MigrateDurableConfig, MigrateEgressConfig,
+    MigrateEmbedProviderRename, MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults,
+    MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
+    MigrateGoalsConfig, MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig,
+    MigrateHooksTurnComplete, MigrateKnowledgeConfig, MigrateLlmStreamLimits,
+    MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
+    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryGraph,
+    MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
+    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
+    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
+    MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateNliConfig,
+    MigrateOrchestrationAssetSensitivity, MigrateOrchestrationPersistence,
     MigrateOrchestratorProvider, MigrateOtelFilter, MigratePiiFilterNames,
     MigratePlannerModelToProvider, MigratePolicyProviderAndUtilityWindow,
     MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQdrantTimeoutSecs,
@@ -623,7 +624,7 @@ use steps::{
     MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–76).
+/// Ordered registry of all sequential migration steps (steps 1–77).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -759,6 +760,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateQdrantTimeoutSecs),
             // Step 76 — add high_gain_tools advisory under [tools.utility] (#5659)
             Box::new(MigrateUtilityHighGainTools),
+            // Step 77 — add [[acp.auth_clients]] advisory block (#5868)
+            Box::new(MigrateAcpAuthClientsConfig),
         ]
     });
 

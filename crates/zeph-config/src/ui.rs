@@ -39,6 +39,41 @@ fn default_acp_discovery_enabled() -> bool {
     true
 }
 
+/// Reserved `[[acp.auth_clients]]` id colliding with the synthesized legacy `auth_token` client.
+pub const ACP_AUTH_CLIENT_ID_DEFAULT: &str = "default";
+/// Reserved `[[acp.auth_clients]]` id colliding with the unauthenticated/stdio owner bucket.
+pub const ACP_AUTH_CLIENT_ID_LOCAL: &str = "acp-local";
+
+/// A single named ACP HTTP/WS bearer-token credential (#5868).
+///
+/// Each entry authenticates one `Authorization: Bearer <token>` value and, on match, becomes
+/// the request's owner identity for ACP session-persistence scoping (`owner_key`). Exactly one
+/// of `token` / `token_vault_key` must be set — `token` is inline (parity with the legacy
+/// `[acp] auth_token` field), `token_vault_key` resolves the secret from the age vault at
+/// startup, mirroring `[serve] auth_token_vault_key`.
+#[derive(Clone, Deserialize, Serialize)]
+pub struct AcpAuthClient {
+    /// Stable owner label surviving token rotation. Must be non-empty, unique among
+    /// `auth_clients`, and must not be `"default"` or `"acp-local"` (reserved sentinels).
+    pub id: String,
+    /// Inline bearer token. Mutually exclusive with `token_vault_key`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// Vault key to resolve the bearer token from at startup. Mutually exclusive with `token`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_vault_key: Option<String>,
+}
+
+impl std::fmt::Debug for AcpAuthClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AcpAuthClient")
+            .field("id", &self.id)
+            .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
+            .field("token_vault_key", &self.token_vault_key)
+            .finish()
+    }
+}
+
 fn default_acp_lsp_max_diagnostics_per_file() -> usize {
     20
 }
@@ -645,6 +680,11 @@ pub struct AcpConfig {
     /// reverse proxy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_token: Option<String>,
+    /// Named ACP HTTP/WS bearer-token clients (#5868), for genuine multi-tenant/multi-window
+    /// isolation of persisted session listing. Coexists with the legacy `auth_token` field,
+    /// which is synthesized as a client with id `"default"`. See [`AcpAuthClient`].
+    #[serde(default)]
+    pub auth_clients: Vec<AcpAuthClient>,
     /// Whether to serve the /.well-known/acp.json agent discovery manifest.
     /// Only effective when transport is "http" or "both". Default: true.
     #[serde(default = "default_acp_discovery_enabled")]
@@ -703,6 +743,7 @@ impl Default for AcpConfig {
             transport: default_acp_transport(),
             http_bind: default_acp_http_bind(),
             auth_token: None,
+            auth_clients: Vec::new(),
             discovery_enabled: default_acp_discovery_enabled(),
             lsp: AcpLspConfig::default(),
             additional_directories: Vec::new(),
@@ -732,6 +773,7 @@ impl std::fmt::Debug for AcpConfig {
                 "auth_token",
                 &self.auth_token.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("auth_clients", &self.auth_clients)
             .field("discovery_enabled", &self.discovery_enabled)
             .field("lsp", &self.lsp)
             .field("additional_directories", &self.additional_directories)
@@ -741,6 +783,90 @@ impl std::fmt::Debug for AcpConfig {
             .field("timeouts", &self.timeouts)
             .field("model_config", &self.model_config)
             .finish()
+    }
+}
+
+impl AcpConfig {
+    /// Validate `auth_token` / `auth_clients` coexistence (#5868).
+    ///
+    /// Checks only what is decidable from the config file alone — `id` uniqueness, the
+    /// reserved-sentinel rule, exactly-one-of `token`/`token_vault_key` per entry, non-empty
+    /// inline tokens, and duplicate *inline* tokens (including the legacy `auth_token`).
+    /// Vault-resolved tokens are cross-checked for collisions at startup instead (after the
+    /// vault is unlocked), since that value isn't known here.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable message describing the first violation found.
+    pub fn validate_auth_clients(&self) -> Result<(), String> {
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut seen_inline_tokens = std::collections::HashSet::new();
+
+        if let Some(ref token) = self.auth_token {
+            if token.trim().is_empty() {
+                return Err("[acp] auth_token must not be empty or whitespace-only".to_owned());
+            }
+            seen_inline_tokens.insert(token.as_str());
+        }
+
+        for client in &self.auth_clients {
+            if client.id.is_empty() {
+                return Err("[[acp.auth_clients]] entry has an empty id".to_owned());
+            }
+            if client.id == ACP_AUTH_CLIENT_ID_DEFAULT || client.id == ACP_AUTH_CLIENT_ID_LOCAL {
+                return Err(format!(
+                    "[[acp.auth_clients]] id {:?} is reserved (collides with the legacy \
+                     auth_token client or the unauthenticated/stdio owner bucket)",
+                    client.id
+                ));
+            }
+            if client.id.contains(':') {
+                return Err(format!(
+                    "[[acp.auth_clients]] id {:?} must not contain ':'",
+                    client.id
+                ));
+            }
+            if !seen_ids.insert(client.id.as_str()) {
+                return Err(format!(
+                    "[[acp.auth_clients]] id {:?} is duplicated",
+                    client.id
+                ));
+            }
+            match (&client.token, &client.token_vault_key) {
+                (Some(_), Some(_)) => {
+                    return Err(format!(
+                        "[[acp.auth_clients]] id {:?} sets both token and token_vault_key; \
+                         exactly one must be set",
+                        client.id
+                    ));
+                }
+                (None, None) => {
+                    return Err(format!(
+                        "[[acp.auth_clients]] id {:?} sets neither token nor token_vault_key; \
+                         exactly one must be set",
+                        client.id
+                    ));
+                }
+                (Some(token), None) => {
+                    if token.trim().is_empty() {
+                        return Err(format!(
+                            "[[acp.auth_clients]] id {:?} has an empty or whitespace-only token",
+                            client.id
+                        ));
+                    }
+                    if !seen_inline_tokens.insert(token.as_str()) {
+                        return Err(format!(
+                            "[[acp.auth_clients]] id {:?} has a token that collides with \
+                             another configured client's inline token",
+                            client.id
+                        ));
+                    }
+                }
+                (None, Some(_)) => {}
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -1000,6 +1126,201 @@ mod tests {
     fn acp_auth_method_known_variant_succeeds() {
         let m = serde_json::from_str::<AcpAuthMethod>(r#""agent""#).unwrap();
         assert_eq!(m, AcpAuthMethod::Agent);
+    }
+
+    // ── AcpConfig::validate_auth_clients (#5868) ──────────────────────────────
+
+    fn client(id: &str, token: &str) -> AcpAuthClient {
+        AcpAuthClient {
+            id: id.to_owned(),
+            token: Some(token.to_owned()),
+            token_vault_key: None,
+        }
+    }
+
+    #[test]
+    fn validate_auth_clients_empty_config_ok() {
+        assert!(AcpConfig::default().validate_auth_clients().is_ok());
+    }
+
+    #[test]
+    fn validate_auth_clients_legacy_auth_token_only_ok() {
+        let cfg = AcpConfig {
+            auth_token: Some("secret".to_owned()),
+            ..AcpConfig::default()
+        };
+        assert!(cfg.validate_auth_clients().is_ok());
+    }
+
+    #[test]
+    fn validate_auth_clients_single_client_ok() {
+        let cfg = AcpConfig {
+            auth_clients: vec![client("alice", "token-a")],
+            ..AcpConfig::default()
+        };
+        assert!(cfg.validate_auth_clients().is_ok());
+    }
+
+    #[test]
+    fn validate_auth_clients_coexist_with_legacy_ok() {
+        let cfg = AcpConfig {
+            auth_token: Some("legacy".to_owned()),
+            auth_clients: vec![client("alice", "token-a"), client("bob", "token-b")],
+            ..AcpConfig::default()
+        };
+        assert!(cfg.validate_auth_clients().is_ok());
+    }
+
+    #[test]
+    fn validate_auth_clients_rejects_reserved_id_default() {
+        let cfg = AcpConfig {
+            auth_clients: vec![client(ACP_AUTH_CLIENT_ID_DEFAULT, "token-a")],
+            ..AcpConfig::default()
+        };
+        let err = cfg.validate_auth_clients().unwrap_err();
+        assert!(err.contains("reserved"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_auth_clients_rejects_reserved_id_acp_local() {
+        let cfg = AcpConfig {
+            auth_clients: vec![client(ACP_AUTH_CLIENT_ID_LOCAL, "token-a")],
+            ..AcpConfig::default()
+        };
+        let err = cfg.validate_auth_clients().unwrap_err();
+        assert!(err.contains("reserved"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_auth_clients_rejects_duplicate_id() {
+        let cfg = AcpConfig {
+            auth_clients: vec![client("alice", "token-a"), client("alice", "token-b")],
+            ..AcpConfig::default()
+        };
+        let err = cfg.validate_auth_clients().unwrap_err();
+        assert!(err.contains("duplicated"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_auth_clients_rejects_id_containing_colon() {
+        let cfg = AcpConfig {
+            auth_clients: vec![client("alice:2", "token-a")],
+            ..AcpConfig::default()
+        };
+        let err = cfg.validate_auth_clients().unwrap_err();
+        assert!(err.contains("':'"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_auth_clients_rejects_empty_id() {
+        let cfg = AcpConfig {
+            auth_clients: vec![client("", "token-a")],
+            ..AcpConfig::default()
+        };
+        let err = cfg.validate_auth_clients().unwrap_err();
+        assert!(err.contains("empty id"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_auth_clients_rejects_neither_token_nor_vault_key() {
+        let cfg = AcpConfig {
+            auth_clients: vec![AcpAuthClient {
+                id: "alice".to_owned(),
+                token: None,
+                token_vault_key: None,
+            }],
+            ..AcpConfig::default()
+        };
+        let err = cfg.validate_auth_clients().unwrap_err();
+        assert!(err.contains("neither"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_auth_clients_rejects_both_token_and_vault_key() {
+        let cfg = AcpConfig {
+            auth_clients: vec![AcpAuthClient {
+                id: "alice".to_owned(),
+                token: Some("token-a".to_owned()),
+                token_vault_key: Some("ZEPH_ACP_TOKEN_ALICE".to_owned()),
+            }],
+            ..AcpConfig::default()
+        };
+        let err = cfg.validate_auth_clients().unwrap_err();
+        assert!(err.contains("both"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_auth_clients_vault_key_only_ok() {
+        let cfg = AcpConfig {
+            auth_clients: vec![AcpAuthClient {
+                id: "alice".to_owned(),
+                token: None,
+                token_vault_key: Some("ZEPH_ACP_TOKEN_ALICE".to_owned()),
+            }],
+            ..AcpConfig::default()
+        };
+        assert!(cfg.validate_auth_clients().is_ok());
+    }
+
+    #[test]
+    fn validate_auth_clients_rejects_duplicate_inline_tokens_across_clients() {
+        let cfg = AcpConfig {
+            auth_clients: vec![client("alice", "shared"), client("bob", "shared")],
+            ..AcpConfig::default()
+        };
+        let err = cfg.validate_auth_clients().unwrap_err();
+        assert!(err.contains("collides"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_auth_clients_rejects_inline_token_colliding_with_legacy_default_token() {
+        let cfg = AcpConfig {
+            auth_token: Some("shared".to_owned()),
+            auth_clients: vec![client("alice", "shared")],
+            ..AcpConfig::default()
+        };
+        let err = cfg.validate_auth_clients().unwrap_err();
+        assert!(err.contains("collides"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_auth_clients_rejects_empty_legacy_auth_token() {
+        let cfg = AcpConfig {
+            auth_token: Some(String::new()),
+            ..AcpConfig::default()
+        };
+        let err = cfg.validate_auth_clients().unwrap_err();
+        assert!(err.contains("empty"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_auth_clients_rejects_whitespace_only_legacy_auth_token() {
+        let cfg = AcpConfig {
+            auth_token: Some("   ".to_owned()),
+            ..AcpConfig::default()
+        };
+        let err = cfg.validate_auth_clients().unwrap_err();
+        assert!(err.contains("empty"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_auth_clients_rejects_empty_inline_client_token() {
+        let cfg = AcpConfig {
+            auth_clients: vec![client("alice", "")],
+            ..AcpConfig::default()
+        };
+        let err = cfg.validate_auth_clients().unwrap_err();
+        assert!(err.contains("empty"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_auth_clients_rejects_whitespace_only_inline_client_token() {
+        let cfg = AcpConfig {
+            auth_clients: vec![client("alice", "   ")],
+            ..AcpConfig::default()
+        };
+        let err = cfg.validate_auth_clients().unwrap_err();
+        assert!(err.contains("empty"), "unexpected error: {err}");
     }
 
     #[test]

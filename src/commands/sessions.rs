@@ -204,9 +204,10 @@ async fn fork_session_cli(
     at: Option<u64>,
 ) -> anyhow::Result<()> {
     let new_id = zeph_common::SessionId::generate();
-    let result = zeph_session::ForkEngine::fork(data_dir, id, new_id.as_str(), at, session_store)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to fork session: {e}"))?;
+    let result =
+        zeph_session::ForkEngine::fork(data_dir, id, new_id.as_str(), at, session_store, None)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to fork session: {e}"))?;
 
     println!(
         "Forked session {id} -> {} ({} event(s) copied).",

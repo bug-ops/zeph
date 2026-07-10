@@ -27,6 +27,83 @@ fn resolve_runtime_path(path: &std::path::Path, cwd: &std::path::Path) -> std::p
     }
 }
 
+/// Resolve `[acp] auth_token` and `[[acp.auth_clients]]` into the named-client credential set
+/// consumed by [`zeph_acp::AcpServerConfig::auth_clients`] (#5868).
+///
+/// The legacy scalar `auth_token` is synthesized as the `"default"` client. Each
+/// `auth_clients` entry resolves its token from either the inline `token` field or, when
+/// `token_vault_key` is set, the age vault. A vault key that fails to resolve (missing or
+/// backend error) disables that one client (warned, not fatal) — mirrors
+/// `serve::deps::resolve_auth_token`'s soft-fail precedent for the same class of vault
+/// lookup. `zeph_config::AcpConfig::validate_auth_clients` already rejects inline-token
+/// collisions and reserved ids at config-load time; the cross-set duplicate check here catches
+/// the one thing that validation cannot (a vault-resolved token colliding with another token),
+/// since the vault is not unlocked at config-load time.
+///
+/// # Errors
+///
+/// Returns an error if two configured clients (across `auth_token` and `auth_clients`,
+/// inline or vault-resolved) end up with the same resolved token.
+#[cfg(any(feature = "acp", feature = "acp-http"))]
+async fn resolve_acp_auth_clients(
+    acp_config: &zeph_config::AcpConfig,
+    vault: &dyn zeph_core::vault::VaultProvider,
+) -> anyhow::Result<Vec<zeph_acp::AcpClientToken>> {
+    let mut clients = Vec::new();
+    let mut seen_tokens: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    if let Some(ref token) = acp_config.auth_token {
+        seen_tokens.insert(token.clone());
+        clients.push(zeph_acp::AcpClientToken {
+            id: zeph_config::ACP_AUTH_CLIENT_ID_DEFAULT.to_owned(),
+            token: token.clone(),
+        });
+    }
+
+    for client in &acp_config.auth_clients {
+        let token = if let Some(ref t) = client.token {
+            Some(t.clone())
+        } else if let Some(ref key) = client.token_vault_key {
+            match vault.get_secret(key).await {
+                Ok(Some(t)) => Some(t),
+                Ok(None) => {
+                    tracing::warn!(
+                        id = %client.id, vault_key = %key,
+                        "acp.auth_clients: vault key not found; client disabled"
+                    );
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        id = %client.id, vault_key = %key, error = %e,
+                        "acp.auth_clients: failed to resolve token from vault; client disabled"
+                    );
+                    None
+                }
+            }
+        } else {
+            // Unreachable in practice: AcpConfig::validate_auth_clients rejects entries with
+            // neither field set before this function ever runs.
+            None
+        };
+
+        let Some(token) = token else { continue };
+
+        anyhow::ensure!(
+            seen_tokens.insert(token.clone()),
+            "[[acp.auth_clients]] id {:?} resolves to a token that collides with another \
+             configured client's token",
+            client.id
+        );
+        clients.push(zeph_acp::AcpClientToken {
+            id: client.id.clone(),
+            token,
+        });
+    }
+
+    Ok(clients)
+}
+
 #[cfg(feature = "acp")]
 fn log_acp_runtime_paths(config: &zeph_core::config::Config, config_path: &std::path::Path) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -295,7 +372,7 @@ pub(crate) struct SharedAgentDeps {
     acp_session_idle_timeout_secs: u64,
     acp_permission_file: Option<std::path::PathBuf>,
     acp_available_models: std::sync::Arc<RwLock<Vec<String>>>,
-    acp_auth_bearer_token: Option<String>,
+    acp_auth_clients: Vec<zeph_acp::AcpClientToken>,
     acp_discovery_enabled: bool,
     /// Maximum characters for auto-generated session titles.
     acp_title_max_chars: usize,
@@ -859,6 +936,7 @@ async fn build_acp_deps(
     // `src/runner.rs`'s CLI-path snapshot construction, so ACP sessions get a populated
     // `provider_pool` too (previously left empty, breaking `resolve_background_provider`).
     let provider_config_snapshot = agent_setup::build_provider_config_snapshot(config);
+    let acp_auth_clients = resolve_acp_auth_clients(&config.acp, app.vault()).await?;
 
     let deps = SharedAgentDeps {
         provider,
@@ -978,7 +1056,7 @@ async fn build_acp_deps(
                 config.acp.available_models.clone()
             },
         )),
-        acp_auth_bearer_token: config.acp.auth_token.clone(),
+        acp_auth_clients,
         acp_discovery_enabled: config.acp.discovery_enabled,
         acp_title_max_chars: config.memory.sessions.title_max_chars,
         acp_max_history: config.memory.sessions.max_history,
@@ -2056,7 +2134,7 @@ pub(crate) async fn run_acp_server(
         available_models: std::sync::Arc::clone(&deps.acp_available_models),
         provider_names: deps.acp_provider_names.clone(),
         mcp_manager: Some(mcp_manager_for_acp),
-        auth_bearer_token: deps.acp_auth_bearer_token.clone(),
+        auth_clients: deps.acp_auth_clients.clone(),
         discovery_enabled: deps.acp_discovery_enabled,
         terminal_timeout_secs: deps.acp_timeouts.terminal_secs,
         project_rules: deps.acp_project_rules.clone(),
@@ -2097,6 +2175,7 @@ pub(crate) async fn run_acp_server(
 ///
 /// Returns an error if the agent stack cannot be built or the server fails to bind.
 #[cfg(feature = "acp-http")]
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn run_acp_http_server(
     config_path: Option<&std::path::Path>,
     vault_backend: Option<&str>,
@@ -2112,8 +2191,25 @@ pub(crate) async fn run_acp_http_server(
     log_acp_runtime_paths(app.config(), app.config_path());
     let bind_addr = bind_override.map_or_else(|| app.config().acp.http_bind.clone(), str::to_owned);
 
-    // CLI flag overrides config/env values for auth token.
-    let auth_bearer_token = auth_token_override.or(app.config().acp.auth_token.clone());
+    // CLI flag overrides config/env values for the "default" client's token; other
+    // configured `[[acp.auth_clients]]` entries are unaffected.
+    let mut auth_clients = resolve_acp_auth_clients(&app.config().acp, app.vault()).await?;
+    if let Some(override_token) = auth_token_override {
+        auth_clients.retain(|c| c.id != zeph_config::ACP_AUTH_CLIENT_ID_DEFAULT);
+        // Same collision guard `resolve_acp_auth_clients` applies to every other client —
+        // the CLI override must not silently bypass it and reintroduce a shared-owner_key leak.
+        anyhow::ensure!(
+            !auth_clients.iter().any(|c| c.token == override_token),
+            "--acp-auth-token collides with a configured [[acp.auth_clients]] token"
+        );
+        auth_clients.insert(
+            0,
+            zeph_acp::AcpClientToken {
+                id: zeph_config::ACP_AUTH_CLIENT_ID_DEFAULT.to_owned(),
+                token: override_token,
+            },
+        );
+    }
     let mcp_manager_for_acp = Arc::new(crate::bootstrap::create_mcp_manager_with_vault(
         app.config(),
         false,
@@ -2138,7 +2234,7 @@ pub(crate) async fn run_acp_http_server(
         )),
         provider_names: acp_provider_names(app.config()),
         mcp_manager: Some(Arc::clone(&mcp_manager_for_acp)),
-        auth_bearer_token,
+        auth_clients,
         discovery_enabled: app.config().acp.discovery_enabled,
         terminal_timeout_secs: app.config().acp.timeouts.terminal_secs,
         project_rules: collect_project_rules(&app.skill_paths_for_registry()),
@@ -2255,7 +2351,7 @@ pub(crate) fn acp_http_server_config(deps: &mut SharedAgentDeps) -> zeph_acp::Ac
         available_models: std::sync::Arc::clone(&deps.acp_available_models),
         provider_names: deps.acp_provider_names.clone(),
         mcp_manager: Some(std::sync::Arc::clone(&deps.mcp_manager)),
-        auth_bearer_token: deps.acp_auth_bearer_token.clone(),
+        auth_clients: deps.acp_auth_clients.clone(),
         discovery_enabled: deps.acp_discovery_enabled,
         terminal_timeout_secs: deps.acp_timeouts.terminal_secs,
         project_rules: deps.acp_project_rules.clone(),
@@ -2331,6 +2427,203 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use zeph_tools::executor::ToolExecutor;
+
+    // ── resolve_acp_auth_clients (#5868) ──────────────────────────────────────
+
+    /// In-memory `VaultProvider` for `resolve_acp_auth_clients` tests — implements the real
+    /// trait directly rather than pulling in `MockVaultProvider` (which needs the `zeph-core
+    /// mock` feature threaded into this binary crate's dev-dependencies).
+    #[derive(Default)]
+    struct TestVault {
+        secrets: std::collections::HashMap<String, String>,
+        /// Keys that simulate a backend error (as opposed to a plain miss) on lookup.
+        erroring_keys: std::collections::HashSet<String>,
+    }
+
+    impl TestVault {
+        fn with_secret(mut self, key: &str, value: &str) -> Self {
+            self.secrets.insert(key.to_owned(), value.to_owned());
+            self
+        }
+
+        fn with_erroring_key(mut self, key: &str) -> Self {
+            self.erroring_keys.insert(key.to_owned());
+            self
+        }
+    }
+
+    impl zeph_core::vault::VaultProvider for TestVault {
+        fn get_secret(
+            &self,
+            key: &str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<Option<String>, zeph_core::vault::VaultError>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            let result = if self.erroring_keys.contains(key) {
+                Err(zeph_core::vault::VaultError::Backend(
+                    "simulated backend failure".to_owned(),
+                ))
+            } else {
+                Ok(self.secrets.get(key).cloned())
+            };
+            Box::pin(async move { result })
+        }
+    }
+
+    fn acp_config_with(
+        auth_token: Option<&str>,
+        auth_clients: Vec<zeph_config::AcpAuthClient>,
+    ) -> zeph_config::AcpConfig {
+        zeph_config::AcpConfig {
+            auth_token: auth_token.map(str::to_owned),
+            auth_clients,
+            ..zeph_config::AcpConfig::default()
+        }
+    }
+
+    fn inline_client(id: &str, token: &str) -> zeph_config::AcpAuthClient {
+        zeph_config::AcpAuthClient {
+            id: id.to_owned(),
+            token: Some(token.to_owned()),
+            token_vault_key: None,
+        }
+    }
+
+    fn vault_client(id: &str, vault_key: &str) -> zeph_config::AcpAuthClient {
+        zeph_config::AcpAuthClient {
+            id: id.to_owned(),
+            token: None,
+            token_vault_key: Some(vault_key.to_owned()),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_acp_auth_clients_empty_config_returns_empty() {
+        let cfg = acp_config_with(None, vec![]);
+        let clients = resolve_acp_auth_clients(&cfg, &TestVault::default())
+            .await
+            .unwrap();
+        assert!(clients.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolve_acp_auth_clients_legacy_token_becomes_default_client() {
+        let cfg = acp_config_with(Some("legacy-secret"), vec![]);
+        let clients = resolve_acp_auth_clients(&cfg, &TestVault::default())
+            .await
+            .unwrap();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].id, zeph_config::ACP_AUTH_CLIENT_ID_DEFAULT);
+        assert_eq!(clients[0].token, "legacy-secret");
+    }
+
+    #[tokio::test]
+    async fn resolve_acp_auth_clients_inline_token_resolved_directly() {
+        let cfg = acp_config_with(None, vec![inline_client("alice", "token-a")]);
+        let clients = resolve_acp_auth_clients(&cfg, &TestVault::default())
+            .await
+            .unwrap();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].id, "alice");
+        assert_eq!(clients[0].token, "token-a");
+    }
+
+    #[tokio::test]
+    async fn resolve_acp_auth_clients_vault_key_resolved_from_vault() {
+        let cfg = acp_config_with(None, vec![vault_client("alice", "ZEPH_ACP_TOKEN_ALICE")]);
+        let vault = TestVault::default().with_secret("ZEPH_ACP_TOKEN_ALICE", "vault-token-a");
+        let clients = resolve_acp_auth_clients(&cfg, &vault).await.unwrap();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].id, "alice");
+        assert_eq!(clients[0].token, "vault-token-a");
+    }
+
+    #[tokio::test]
+    async fn resolve_acp_auth_clients_missing_vault_key_soft_disables_client() {
+        let cfg = acp_config_with(
+            None,
+            vec![
+                vault_client("alice", "ZEPH_ACP_TOKEN_ALICE"),
+                inline_client("bob", "token-b"),
+            ],
+        );
+        // No secret registered for ZEPH_ACP_TOKEN_ALICE -> Ok(None) -> alice silently dropped.
+        let clients = resolve_acp_auth_clients(&cfg, &TestVault::default())
+            .await
+            .unwrap();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].id, "bob");
+    }
+
+    #[tokio::test]
+    async fn resolve_acp_auth_clients_vault_backend_error_soft_disables_client() {
+        let cfg = acp_config_with(
+            None,
+            vec![
+                vault_client("alice", "ZEPH_ACP_TOKEN_ALICE"),
+                inline_client("bob", "token-b"),
+            ],
+        );
+        let vault = TestVault::default().with_erroring_key("ZEPH_ACP_TOKEN_ALICE");
+        let clients = resolve_acp_auth_clients(&cfg, &vault).await.unwrap();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].id, "bob");
+    }
+
+    #[tokio::test]
+    async fn resolve_acp_auth_clients_rejects_vault_token_colliding_with_inline_token() {
+        let cfg = acp_config_with(
+            None,
+            vec![
+                inline_client("alice", "shared-secret"),
+                vault_client("bob", "ZEPH_ACP_TOKEN_BOB"),
+            ],
+        );
+        let vault = TestVault::default().with_secret("ZEPH_ACP_TOKEN_BOB", "shared-secret");
+        let err = resolve_acp_auth_clients(&cfg, &vault).await.unwrap_err();
+        assert!(
+            err.to_string().contains("collides"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_acp_auth_clients_rejects_two_vault_tokens_resolving_to_same_secret() {
+        let cfg = acp_config_with(
+            None,
+            vec![
+                vault_client("alice", "ZEPH_ACP_TOKEN_ALICE"),
+                vault_client("bob", "ZEPH_ACP_TOKEN_BOB"),
+            ],
+        );
+        let vault = TestVault::default()
+            .with_secret("ZEPH_ACP_TOKEN_ALICE", "same-secret")
+            .with_secret("ZEPH_ACP_TOKEN_BOB", "same-secret");
+        let err = resolve_acp_auth_clients(&cfg, &vault).await.unwrap_err();
+        assert!(
+            err.to_string().contains("collides"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_acp_auth_clients_rejects_vault_token_colliding_with_legacy_default() {
+        let cfg = acp_config_with(
+            Some("legacy-secret"),
+            vec![vault_client("alice", "ZEPH_ACP_TOKEN_ALICE")],
+        );
+        let vault = TestVault::default().with_secret("ZEPH_ACP_TOKEN_ALICE", "legacy-secret");
+        let err = resolve_acp_auth_clients(&cfg, &vault).await.unwrap_err();
+        assert!(
+            err.to_string().contains("collides"),
+            "unexpected error: {err}"
+        );
+    }
 
     fn make_rules_dir(dir: &std::path::Path, files: &[&str]) {
         let rules = dir.join(".claude").join("rules");

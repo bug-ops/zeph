@@ -378,6 +378,7 @@ pub(super) async fn fork_session_handler(
         new_id.as_str(),
         body.at_seq,
         &store,
+        None,
     )
     .await
     .map_err(|e| match e {

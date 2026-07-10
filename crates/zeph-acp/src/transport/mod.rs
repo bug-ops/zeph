@@ -59,6 +59,37 @@ pub struct ReadyNotification {
 /// Thread-safe, shared list of available model identifiers advertised in `new_session`.
 pub type SharedAvailableModels = std::sync::Arc<parking_lot::RwLock<Vec<String>>>;
 
+/// Reserved owner-key sentinels (#5868): the synthesized legacy `auth_token` client id, and
+/// the unauthenticated/stdio owner bucket. `[[acp.auth_clients]]` entries must not use either
+/// (enforced by `zeph_config::AcpConfig::validate_auth_clients`).
+pub const OWNER_KEY_DEFAULT: &str = "default";
+/// See [`OWNER_KEY_DEFAULT`].
+pub const OWNER_KEY_LOCAL: &str = "acp-local";
+
+/// A single named ACP HTTP/WS bearer-token credential (#5868).
+///
+/// Authenticates one `Authorization: Bearer <token>` value against
+/// `BearerAuthLayer` (feature `acp-http`); on match, `id` becomes the request's `owner_key`
+/// for ACP session-persistence scoping. Not gated behind `acp-http` itself because it lives on
+/// the transport-agnostic [`AcpServerConfig`]; only the HTTP/WS transport actually
+/// authenticates against it.
+#[derive(Clone)]
+pub struct AcpClientToken {
+    /// Stable owner label surviving token rotation.
+    pub id: String,
+    /// The bearer token this client authenticates with.
+    pub token: String,
+}
+
+impl std::fmt::Debug for AcpClientToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AcpClientToken")
+            .field("id", &self.id)
+            .field("token", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// Configuration for the ACP server, threaded through to the agent on every connection.
 ///
 /// Construct with `AcpServerConfig::default()` and override the fields you need.
@@ -102,12 +133,13 @@ pub struct AcpServerConfig {
     pub provider_names: Vec<(String, agent_client_protocol_schema::v1::LlmProtocol)>,
     /// Optional shared MCP manager for `ext_method` add/remove/list.
     pub mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
-    /// Bearer token for HTTP and WebSocket transport authentication.
+    /// Named bearer-token clients for HTTP and WebSocket transport authentication (#5868).
     ///
-    /// When `Some`, all `/acp` and `/acp/ws` requests must include the token in
-    /// an `Authorization: Bearer <token>` header. When `None`, the endpoints are
-    /// publicly accessible and a warning is logged at startup.
-    pub auth_bearer_token: Option<String>,
+    /// When non-empty, all `/acp` and `/acp/ws` requests must include a matching token in an
+    /// `Authorization: Bearer <token>` header; the matched client's `id` becomes the
+    /// connection's `owner_key`. When empty, the endpoints are publicly accessible
+    /// (`owner_key` falls back to [`OWNER_KEY_LOCAL`]) and a warning is logged at startup.
+    pub auth_clients: Vec<AcpClientToken>,
     /// Whether to serve the `/.well-known/acp.json` discovery manifest.
     pub discovery_enabled: bool,
     /// Timeout in seconds for terminal command execution before the process is killed.
@@ -156,7 +188,7 @@ impl Clone for AcpServerConfig {
             #[cfg(feature = "unstable-llm-providers")]
             provider_names: self.provider_names.clone(),
             mcp_manager: self.mcp_manager.clone(),
-            auth_bearer_token: self.auth_bearer_token.clone(),
+            auth_clients: self.auth_clients.clone(),
             discovery_enabled: self.discovery_enabled,
             terminal_timeout_secs: self.terminal_timeout_secs,
             project_rules: self.project_rules.clone(),
@@ -187,7 +219,7 @@ impl Default for AcpServerConfig {
             #[cfg(feature = "unstable-llm-providers")]
             provider_names: Vec::new(),
             mcp_manager: None,
-            auth_bearer_token: None,
+            auth_clients: Vec::new(),
             discovery_enabled: true,
             terminal_timeout_secs: 120,
             project_rules: Vec::new(),

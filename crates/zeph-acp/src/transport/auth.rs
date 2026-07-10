@@ -7,6 +7,14 @@
 //! timing side-channels. Both the provided and expected tokens are hashed to
 //! fixed-length digests before comparison, eliminating the length side-channel
 //! present in direct byte comparison.
+//!
+//! Supports multiple named clients (#5868): each configured
+//! [`AcpClientToken`](crate::transport::AcpClientToken) authenticates its own token, and on
+//! match the matched client's `id` is injected as [`TokenIdentity`] into the request's
+//! extensions — downstream handlers read it to derive the connection's `owner_key` for ACP
+//! session-persistence scoping.
+
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode, header};
@@ -14,17 +22,28 @@ use axum::response::IntoResponse;
 use subtle::ConstantTimeEq as _;
 use tower::{Layer, Service};
 
-/// Tower middleware layer that validates `Authorization: Bearer <token>` headers
-/// using constant-time comparison to prevent timing attacks.
+use crate::transport::AcpClientToken;
+
+/// Authenticated client identity, injected into request extensions by [`BearerAuthLayer`] on
+/// a successful bearer-token match. Absent when no auth layer is applied (empty client list).
+///
+/// `pub` (not `pub(crate)`) solely so it can appear as an `axum` extractor parameter type on
+/// the `pub` HTTP handler functions in this crate; it is not part of the crate's documented
+/// public API (not re-exported at the crate root).
+#[derive(Clone, Debug)]
+pub struct TokenIdentity(pub(crate) String);
+
+/// Tower middleware layer that validates `Authorization: Bearer <token>` headers against a
+/// named-client credential set, using constant-time comparison to prevent timing attacks.
 #[derive(Clone)]
 pub(crate) struct BearerAuthLayer {
-    token: String,
+    clients: Arc<Vec<AcpClientToken>>,
 }
 
 impl BearerAuthLayer {
-    pub(crate) fn new(token: impl Into<String>) -> Self {
+    pub(crate) fn new(clients: Vec<AcpClientToken>) -> Self {
         Self {
-            token: token.into(),
+            clients: Arc::new(clients),
         }
     }
 }
@@ -35,7 +54,7 @@ impl<S> Layer<S> for BearerAuthLayer {
     fn layer(&self, inner: S) -> Self::Service {
         BearerAuthMiddleware {
             inner,
-            token: self.token.clone(),
+            clients: Arc::clone(&self.clients),
         }
     }
 }
@@ -44,7 +63,19 @@ impl<S> Layer<S> for BearerAuthLayer {
 #[derive(Clone)]
 pub(crate) struct BearerAuthMiddleware<S> {
     inner: S,
-    token: String,
+    clients: Arc<Vec<AcpClientToken>>,
+}
+
+/// Find the first configured client whose token matches `provided`, in configured order.
+/// Every candidate is compared via hashed constant-time equality (no early exit on token
+/// bytes) — only the outer `find` short-circuits on which candidate matched, which config
+/// validation (unique tokens) already makes a non-issue in practice.
+fn match_client<'a>(clients: &'a [AcpClientToken], provided: &str) -> Option<&'a AcpClientToken> {
+    let h_provided = blake3::hash(provided.as_bytes());
+    clients.iter().find(|c| {
+        let h_expected = blake3::hash(c.token.as_bytes());
+        bool::from(h_provided.as_bytes().ct_eq(h_expected.as_bytes()))
+    })
 }
 
 impl<S> Service<Request<Body>> for BearerAuthMiddleware<S>
@@ -65,23 +96,17 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let expected = self.token.clone();
-
-        let authorized = req
+    fn call(&mut self, mut req: Request<Body>) -> Self::Future {
+        let matched = req
             .headers()
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
-            // Hash both sides first so ct_eq operates on fixed-length digests,
-            // eliminating the length side-channel present in direct byte comparison.
-            .is_some_and(|provided| {
-                let h_provided = blake3::hash(provided.as_bytes());
-                let h_expected = blake3::hash(expected.as_bytes());
-                h_provided.as_bytes().ct_eq(h_expected.as_bytes()).into()
-            });
+            .and_then(|provided| match_client(&self.clients, provided))
+            .map(|c| c.id.clone());
 
-        if authorized {
+        if let Some(id) = matched {
+            req.extensions_mut().insert(TokenIdentity(id));
             let fut = self.inner.call(req);
             Box::pin(fut)
         } else {
@@ -99,47 +124,87 @@ mod tests {
 
     use super::*;
 
+    fn client(id: &str, token: &str) -> AcpClientToken {
+        AcpClientToken {
+            id: id.to_owned(),
+            token: token.to_owned(),
+        }
+    }
+
     fn ok_handler() -> axum::Router {
-        axum::Router::new().route("/", get(|| async { StatusCode::OK }))
+        axum::Router::new().route(
+            "/",
+            get(|req: Request<Body>| async move {
+                req.extensions()
+                    .get::<TokenIdentity>()
+                    .map_or_else(String::new, |id| id.0.clone())
+            }),
+        )
     }
 
-    fn app_with_token(token: &str) -> axum::Router {
-        ok_handler().layer(BearerAuthLayer::new(token))
+    fn app_with_clients(clients: Vec<AcpClientToken>) -> axum::Router {
+        ok_handler().layer(BearerAuthLayer::new(clients))
     }
 
-    async fn send(app: axum::Router, auth: Option<&str>) -> StatusCode {
+    async fn send(app: axum::Router, auth: Option<&str>) -> (StatusCode, String) {
         let mut builder = Request::builder().method("GET").uri("/");
         if let Some(v) = auth {
             builder = builder.header("authorization", v);
         }
         let req = builder.body(Body::empty()).unwrap();
-        app.oneshot(req).await.unwrap().status()
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
     }
 
     #[tokio::test]
-    async fn correct_token_accepted() {
-        let app = app_with_token("my-secret");
-        assert_eq!(send(app, Some("Bearer my-secret")).await, StatusCode::OK);
+    async fn correct_token_accepted_and_identifies_client() {
+        let app = app_with_clients(vec![client("default", "my-secret")]);
+        let (status, body) = send(app, Some("Bearer my-secret")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "default");
     }
 
     #[tokio::test]
     async fn wrong_token_rejected() {
-        let app = app_with_token("my-secret");
+        let app = app_with_clients(vec![client("default", "my-secret")]);
         assert_eq!(
-            send(app, Some("Bearer wrong")).await,
+            send(app, Some("Bearer wrong")).await.0,
             StatusCode::UNAUTHORIZED
         );
     }
 
     #[tokio::test]
     async fn empty_token_rejected() {
-        let app = app_with_token("my-secret");
-        assert_eq!(send(app, Some("Bearer ")).await, StatusCode::UNAUTHORIZED);
+        let app = app_with_clients(vec![client("default", "my-secret")]);
+        assert_eq!(send(app, Some("Bearer ")).await.0, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn missing_header_rejected() {
-        let app = app_with_token("my-secret");
-        assert_eq!(send(app, None).await, StatusCode::UNAUTHORIZED);
+        let app = app_with_clients(vec![client("default", "my-secret")]);
+        assert_eq!(send(app, None).await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn multi_client_each_token_identifies_its_own_client() {
+        let app = app_with_clients(vec![client("alice", "token-a"), client("bob", "token-b")]);
+        let (status_a, body_a) = send(app.clone(), Some("Bearer token-a")).await;
+        assert_eq!(status_a, StatusCode::OK);
+        assert_eq!(body_a, "alice");
+
+        let (status_b, body_b) = send(app, Some("Bearer token-b")).await;
+        assert_eq!(status_b, StatusCode::OK);
+        assert_eq!(body_b, "bob");
+    }
+
+    #[tokio::test]
+    async fn multi_client_unknown_token_rejected() {
+        let app = app_with_clients(vec![client("alice", "token-a"), client("bob", "token-b")]);
+        assert_eq!(
+            send(app, Some("Bearer token-c")).await.0,
+            StatusCode::UNAUTHORIZED
+        );
     }
 }

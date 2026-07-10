@@ -73,6 +73,8 @@ pub(crate) struct WizardState {
     pub(crate) acp_agent_name: String,
     pub(crate) acp_agent_version: String,
     pub(crate) acp_additional_directories: Vec<std::path::PathBuf>,
+    /// Named bearer-token clients for HTTP/WS multi-tenant isolation (#5868).
+    pub(crate) acp_auth_clients: Vec<zeph_config::AcpAuthClient>,
     pub(crate) acp_auth_methods: Vec<zeph_config::AcpAuthMethod>,
     pub(crate) acp_message_ids_enabled: bool,
     pub(crate) acp_subagents_enabled: bool,
@@ -363,6 +365,7 @@ impl Default for WizardState {
             acp_agent_name: String::new(),
             acp_agent_version: String::new(),
             acp_additional_directories: Vec::new(),
+            acp_auth_clients: Vec::new(),
             acp_auth_methods: vec![zeph_config::AcpAuthMethod::Agent],
             acp_message_ids_enabled: true,
             acp_subagents_enabled: false,
@@ -1328,6 +1331,7 @@ fn apply_acp_config(config: &mut Config, state: &WizardState) {
             agent_name: state.acp_agent_name.clone(),
             agent_version: state.acp_agent_version.clone(),
             additional_directories,
+            auth_clients: state.acp_auth_clients.clone(),
             auth_methods: state.acp_auth_methods.clone(),
             message_ids_enabled: state.acp_message_ids_enabled,
             subagents: zeph_config::AcpSubagentsConfig {
@@ -1446,6 +1450,36 @@ fn step_acp(state: &mut WizardState) -> anyhow::Result<()> {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(std::path::PathBuf::from)
+            .collect();
+
+        // Named bearer-token clients (#5868) — enables genuine multi-tenant/multi-window
+        // isolation of persisted ACP sessions over HTTP/WS. Skippable: single-token or
+        // stdio-only deployments need no entries here.
+        let auth_clients_input: String = Input::new()
+            .with_prompt(
+                "Named bearer-token clients for HTTP/WS multi-tenant isolation \
+                 (comma-separated \"id:token\" pairs; empty = none, use [acp] auth_token instead)",
+            )
+            .default(String::new())
+            .allow_empty(true)
+            .interact_text()?;
+        state.acp_auth_clients = auth_clients_input
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .filter_map(|pair| match pair.split_once(':') {
+                Some((id, token)) if !id.is_empty() && !token.is_empty() => {
+                    Some(zeph_config::AcpAuthClient {
+                        id: id.to_owned(),
+                        token: Some(token.to_owned()),
+                        token_vault_key: None,
+                    })
+                }
+                _ => {
+                    eprintln!("Warning: skipping malformed auth client entry {pair:?} (expected \"id:token\")");
+                    None
+                }
+            })
             .collect();
 
         // PR 4 MVP: only "agent" is offered; kept as a prompt for discoverability.

@@ -94,7 +94,10 @@ pub use lsp::{AcpLspProvider, DiagnosticsCache, LspProvider};
 pub use mcp_bridge::acp_mcp_servers_to_entries;
 pub use permission::AcpPermissionGate;
 pub use terminal::AcpShellExecutor;
-pub use transport::{AcpServerConfig, serve_connection, serve_stdio};
+pub use transport::{
+    AcpClientToken, AcpServerConfig, OWNER_KEY_DEFAULT, OWNER_KEY_LOCAL, serve_connection,
+    serve_stdio,
+};
 
 #[cfg(feature = "acp-http")]
 pub use agent::SendAgentSpawner;

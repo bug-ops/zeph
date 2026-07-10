@@ -211,9 +211,11 @@ async fn handle_session_list(
     let mut sessions: std::collections::HashMap<String, SessionListEntry> =
         std::collections::HashMap::with_capacity(in_memory.len());
 
-    // Load persisted sessions first (lower priority, overridden by in-memory).
+    // Load persisted sessions first (lower priority, overridden by in-memory). Scoped to this
+    // connection's owner (#5868) — this deprecated ext method predates owner scoping and was
+    // otherwise as unscoped as the native `list_sessions` handler it is superseded by.
     if let Some(ref store) = agent.store {
-        match store.list_acp_sessions(0).await {
+        match store.list_acp_sessions_for_owner(0, &agent.owner_key).await {
             Ok(rows) => {
                 sessions.reserve(rows.len());
                 for row in rows {
@@ -272,11 +274,12 @@ async fn handle_session_get(
     if !in_memory {
         match &agent.store {
             Some(store) => {
-                let exists = store
-                    .acp_session_exists(sid)
+                // Read-only gate (#5868): does not claim a legacy NULL row.
+                let accessible = store
+                    .acp_session_accessible_for_owner(sid, &agent.owner_key)
                     .await
                     .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-                if !exists {
+                if !accessible {
                     return Err(session_not_found());
                 }
             }
@@ -327,7 +330,10 @@ async fn handle_session_delete(
     }
 
     let removed_store = if let Some(ref store) = agent.store {
-        match store.delete_acp_session_checked(&params.session_id).await {
+        match store
+            .delete_acp_session_for_owner(&params.session_id, &agent.owner_key)
+            .await
+        {
             Ok(existed) => existed,
             Err(e) => {
                 tracing::warn!(error = %e, session_id = %params.session_id, "failed to delete ACP session from store");
@@ -351,16 +357,28 @@ async fn handle_session_export(
     validate_session_id(&params.session_id)?;
 
     let events = match &agent.store {
-        Some(store) => store
-            .load_acp_events(&params.session_id)
-            .await
-            .map_err(|e| acp::Error::internal_error().data(e.to_string()))?
-            .into_iter()
-            .map(|e| SessionEventEntry {
-                event_type: e.event_type,
-                payload: e.payload,
-            })
-            .collect(),
+        Some(store) => {
+            // Read-only gate (#5868): `load_acp_events` itself has no owner column to filter
+            // on (it's keyed by session_id only), so ownership must be checked here before
+            // reading — this handler previously had no existence/ownership check at all.
+            let accessible = store
+                .acp_session_accessible_for_owner(&params.session_id, &agent.owner_key)
+                .await
+                .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+            if !accessible {
+                return Err(session_not_found());
+            }
+            store
+                .load_acp_events(&params.session_id)
+                .await
+                .map_err(|e| acp::Error::internal_error().data(e.to_string()))?
+                .into_iter()
+                .map(|e| SessionEventEntry {
+                    event_type: e.event_type,
+                    payload: e.payload,
+                })
+                .collect()
+        }
         None => vec![],
     };
 
@@ -386,7 +404,7 @@ async fn handle_session_import(
 
     if let Some(ref store) = agent.store {
         store
-            .create_acp_session(&new_id)
+            .create_acp_session(&new_id, Some(&agent.owner_key))
             .await
             .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
         let pairs: Vec<(&str, &str)> = params

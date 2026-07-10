@@ -83,6 +83,49 @@ pub fn migrate_acp_subagents_config(toml_src: &str) -> Result<MigrationResult, M
     })
 }
 
+/// Add a commented-out `[[acp.auth_clients]]` block if the config lacks it (#5868).
+///
+/// Introduced alongside named-client bearer-token isolation for ACP HTTP/WS session
+/// persistence scoping. `AcpConfig::auth_clients` has `#[serde(default)]` so existing
+/// configs (including those with only the legacy scalar `[acp] auth_token`) parse without
+/// changes; this migration only surfaces the new array for discoverability.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the
+/// migration function convention for use in chained pipelines.
+pub fn migrate_acp_auth_clients_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src
+        .lines()
+        .any(|l| l.trim() == "[[acp.auth_clients]]" || l.trim() == "# [[acp.auth_clients]]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [[acp.auth_clients]] — named bearer-token clients for genuine \
+         multi-tenant/multi-window\n\
+         # isolation of ACP HTTP/WS persisted session listing (#5868). Coexists with the \
+         legacy\n\
+         # scalar `auth_token` above (synthesized as the \"default\" client). Reserved ids: \
+         \"default\",\n\
+         # \"acp-local\". Exactly one of `token` / `token_vault_key` must be set per entry.\n\
+         # [[acp.auth_clients]]\n\
+         # id = \"zed-alice\"\n\
+         # token = \"...\"                # inline, or:\n\
+         # token_vault_key = \"ZEPH_ACP_TOKEN_ALICE\"  # resolved from the age vault at startup\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["acp.auth_clients".to_owned()],
+    })
+}
+
 /// Add a commented-out `[[hooks.permission_denied]]` block if the config lacks it (#3309).
 ///
 /// Introduced alongside the reactive env hooks and MCP tool dispatch feature (#3303).

@@ -41,6 +41,8 @@ impl ForkEngine {
     /// `LoopbackChannel`/entry), and the CLI mints a fresh `SessionId::generate()` before calling
     /// in.
     ///
+    /// `owner` stamps the child row's `owner_key` (#5868) — see [`SessionStore::record_fork`].
+    ///
     /// # Errors
     ///
     /// Returns [`SessionError::NotFound`] if `src_id` has no session-store row,
@@ -53,6 +55,7 @@ impl ForkEngine {
         new_id: &str,
         at_seq: Option<u64>,
         store: &SessionStore,
+        owner: Option<&str>,
     ) -> Result<ForkResult, SessionError> {
         if store.get(src_id).await?.is_none() {
             return Err(SessionError::NotFound(src_id.to_owned()));
@@ -111,7 +114,7 @@ impl ForkEngine {
                 .await?;
         }
 
-        store.record_fork(new_id, src_id, at_seq).await?;
+        store.record_fork(new_id, src_id, at_seq, owner).await?;
         store
             .update_seq(
                 new_id,
@@ -218,7 +221,7 @@ mod tests {
         let data_dir = tempfile::tempdir().unwrap();
         seed_parent(data_dir.path(), &store, "parent").await;
 
-        let result = ForkEngine::fork(data_dir.path(), "parent", "child", Some(3), &store)
+        let result = ForkEngine::fork(data_dir.path(), "parent", "child", Some(3), &store, None)
             .await
             .unwrap();
         assert_eq!(result.events_copied, 3);
@@ -237,7 +240,7 @@ mod tests {
         let data_dir = tempfile::tempdir().unwrap();
         seed_parent(data_dir.path(), &store, "parent").await;
 
-        ForkEngine::fork(data_dir.path(), "parent", "child", Some(2), &store)
+        ForkEngine::fork(data_dir.path(), "parent", "child", Some(2), &store, None)
             .await
             .unwrap();
 
@@ -246,13 +249,44 @@ mod tests {
         assert_eq!(meta.forked_at_seq, Some(2));
     }
 
+    /// Regression test (#5868): `ForkEngine::fork`'s `owner` argument must reach the child
+    /// row's `owner_key` column end-to-end (through `record_fork`), not just at the
+    /// `SessionStore::record_fork` unit level.
+    #[tokio::test]
+    async fn fork_propagates_owner_to_child_row() {
+        let pool = make_pool().await;
+        let store = SessionStore::new(pool.clone());
+        let data_dir = tempfile::tempdir().unwrap();
+        seed_parent(data_dir.path(), &store, "parent").await;
+
+        ForkEngine::fork(
+            data_dir.path(),
+            "parent",
+            "child",
+            Some(2),
+            &store,
+            Some("alice"),
+        )
+        .await
+        .unwrap();
+
+        let owner_key: Option<String> = zeph_db::query_scalar(zeph_db::sql!(
+            "SELECT owner_key FROM acp_sessions WHERE id = ?"
+        ))
+        .bind("child")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(owner_key.as_deref(), Some("alice"));
+    }
+
     #[tokio::test]
     async fn test_fork_appends_forkpoint_to_parent() {
         let store = SessionStore::new(make_pool().await);
         let data_dir = tempfile::tempdir().unwrap();
         seed_parent(data_dir.path(), &store, "parent").await;
 
-        ForkEngine::fork(data_dir.path(), "parent", "child", Some(2), &store)
+        ForkEngine::fork(data_dir.path(), "parent", "child", Some(2), &store, None)
             .await
             .unwrap();
 
@@ -271,7 +305,7 @@ mod tests {
         let data_dir = tempfile::tempdir().unwrap();
         seed_parent(data_dir.path(), &store, "parent").await;
 
-        let err = ForkEngine::fork(data_dir.path(), "parent", "child", Some(100), &store)
+        let err = ForkEngine::fork(data_dir.path(), "parent", "child", Some(100), &store, None)
             .await
             .unwrap_err();
         assert!(matches!(err, SessionError::InvalidForkPoint(_)));
@@ -282,7 +316,7 @@ mod tests {
         let store = SessionStore::new(make_pool().await);
         let data_dir = tempfile::tempdir().unwrap();
 
-        let err = ForkEngine::fork(data_dir.path(), "no-such", "child", Some(0), &store)
+        let err = ForkEngine::fork(data_dir.path(), "no-such", "child", Some(0), &store, None)
             .await
             .unwrap_err();
         assert!(matches!(err, SessionError::NotFound(_)));
@@ -294,7 +328,7 @@ mod tests {
         let data_dir = tempfile::tempdir().unwrap();
         seed_parent(data_dir.path(), &store, "parent").await;
 
-        let result = ForkEngine::fork(data_dir.path(), "parent", "child", None, &store)
+        let result = ForkEngine::fork(data_dir.path(), "parent", "child", None, &store, None)
             .await
             .unwrap();
         // seed_parent appends 4 events total.

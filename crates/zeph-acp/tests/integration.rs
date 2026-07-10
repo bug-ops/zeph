@@ -158,7 +158,13 @@ async fn initialize_handshake() {
     local
         .run_until(async {
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 let resp = cx
                     .send_request(acp::schema::v1::InitializeRequest::new(
@@ -189,7 +195,13 @@ async fn new_session_returns_session_id() {
         .run_until(async {
             let workdir = temp_workdir();
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -225,7 +237,13 @@ async fn cancel_notification_does_not_panic() {
         .run_until(async {
             let workdir = temp_workdir();
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -259,7 +277,13 @@ async fn unknown_ext_method_returns_null() {
     local
         .run_until(async {
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -306,7 +330,8 @@ async fn providers_list_reflects_configured_provider_names() {
                 "test-agent",
                 vec![("openai", zeph_acp::LlmProtocol::OpenAi)],
             );
-            let server_fut = serve_connection(noop_spawner(), config, sw, sr);
+            let server_fut =
+                serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -347,7 +372,13 @@ async fn load_session_unknown_id_returns_error() {
         .run_until(async {
             let workdir = temp_workdir();
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -386,7 +417,13 @@ async fn session_list_contains_created_sessions() {
         .run_until(async {
             let workdir = temp_workdir();
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -435,7 +472,13 @@ async fn prompt_round_trip_returns_end_turn() {
             let workdir = temp_workdir();
             let (sw, sr, cw, cr) = duplex_pair();
             // echo_spawner reads the message and signals Flush so drain_agent_events exits.
-            let server_fut = serve_connection(echo_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                echo_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -488,6 +531,7 @@ async fn drain_until_stop_collects_text_chunks() {
                 test_config("test-agent"),
                 sw,
                 sr,
+                "acp-local".to_owned(),
             );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
@@ -548,7 +592,13 @@ async fn cancel_before_prompt_is_a_no_op() {
         .run_until(async {
             let workdir = temp_workdir();
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(echo_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                echo_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -608,8 +658,13 @@ async fn late_cancel_after_prompt_completion_does_not_affect_next_prompt() {
         .run_until(async {
             let workdir = temp_workdir();
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut =
-                serve_connection(multi_turn_echo_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                multi_turn_echo_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -680,7 +735,13 @@ async fn authenticate_returns_default_response() {
     local
         .run_until(async {
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -710,7 +771,13 @@ async fn logout_returns_default_response() {
     local
         .run_until(async {
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -742,7 +809,13 @@ async fn close_session_removes_session_from_memory() {
         .run_until(async {
             let workdir = temp_workdir();
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -793,7 +866,13 @@ async fn delete_session_removes_session_from_list() {
         .run_until(async {
             let workdir = temp_workdir();
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -844,7 +923,13 @@ async fn fork_session_creates_distinct_session_id() {
         .run_until(async {
             let workdir = temp_workdir();
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -912,7 +997,8 @@ async fn fork_session_copies_event_log_when_persistence_enabled() {
                 session_data_dir: Some(session_data_dir.clone()),
                 ..test_config("test-agent")
             };
-            let server_fut = serve_connection(noop_spawner(), config, sw, sr);
+            let server_fut =
+                serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -1013,7 +1099,13 @@ async fn resume_session_reconnects_to_existing_session() {
         .run_until(async {
             let workdir = temp_workdir();
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -1077,7 +1169,8 @@ async fn resume_session_reconstructs_from_store_after_restart() {
                     sqlite_path: Some(sqlite_path.clone()),
                     ..test_config("test-agent")
                 };
-                let server_fut = serve_connection(noop_spawner(), config, sw, sr);
+                let server_fut =
+                    serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
                 let client_fut =
                     acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                         cx.send_request(acp::schema::v1::InitializeRequest::new(
@@ -1106,7 +1199,8 @@ async fn resume_session_reconstructs_from_store_after_restart() {
                 sqlite_path: Some(sqlite_path.clone()),
                 ..test_config("test-agent")
             };
-            let server_fut = serve_connection(echo_spawner(), config, sw, sr);
+            let server_fut =
+                serve_connection(echo_spawner(), config, sw, sr, "acp-local".to_owned());
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -1178,7 +1272,8 @@ async fn load_session_succeeds_from_event_log_with_no_legacy_rows() {
                     session_data_dir: Some(session_data_dir.clone()),
                     ..test_config("test-agent")
                 };
-                let server_fut = serve_connection(noop_spawner(), config, sw, sr);
+                let server_fut =
+                    serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
                 let client_fut =
                     acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                         cx.send_request(acp::schema::v1::InitializeRequest::new(
@@ -1225,7 +1320,8 @@ async fn load_session_succeeds_from_event_log_with_no_legacy_rows() {
                 session_data_dir: Some(session_data_dir),
                 ..test_config("test-agent")
             };
-            let server_fut = serve_connection(noop_spawner(), config, sw, sr);
+            let server_fut =
+                serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -1269,6 +1365,7 @@ async fn fork_session_inherits_config_from_in_memory_source() {
                 test_config_with_models("test-agent", vec!["claude:sonnet"]),
                 sw,
                 sr,
+                "acp-local".to_owned(),
             );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
@@ -1371,7 +1468,8 @@ async fn resume_session_inherits_temperature_preset_after_close() {
             config.provider_factory = Some(factory);
             config.sqlite_path = Some(":memory:".to_owned());
 
-            let server_fut = serve_connection(noop_spawner(), config, sw, sr);
+            let server_fut =
+                serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -1438,7 +1536,13 @@ async fn set_session_mode_switches_mode() {
         .run_until(async {
             let workdir = temp_workdir();
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -1484,6 +1588,7 @@ async fn set_session_config_option_model_switches_active_model() {
                 test_config_with_models("test-agent", vec!["claude:sonnet", "ollama:llama3"]),
                 sw,
                 sr,
+                "acp-local".to_owned(),
             );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
@@ -1543,6 +1648,7 @@ async fn set_session_config_option_temperature_preset_changes() {
                 test_config_with_models("test-agent", vec!["claude:sonnet"]),
                 sw,
                 sr,
+            "acp-local".to_owned(),
             );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
@@ -1630,7 +1736,8 @@ async fn default_temperature_preset_is_primed_at_session_creation() {
                 default_temperature_preset: zeph_config::AcpTemperaturePreset::Creative,
             };
 
-            let server_fut = serve_connection(noop_spawner(), config, sw, sr);
+            let server_fut =
+                serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -1676,7 +1783,13 @@ async fn set_session_config_option_unknown_config_id_errors() {
         .run_until(async {
             let workdir = temp_workdir();
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -1723,7 +1836,13 @@ async fn cancel_request_during_prompt_cancels() {
             let (sw, sr, cw, cr) = duplex_pair();
             // echo_spawner reads the message and flushes; the $/cancel_request watcher in
             // handle_prompt notifies the same cancel_signal session/cancel uses.
-            let server_fut = serve_connection(echo_spawner(), test_config("test-agent"), sw, sr);
+            let server_fut = serve_connection(
+                echo_spawner(),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -1774,6 +1893,326 @@ async fn cancel_request_during_prompt_cancels() {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
                     assert!(result.is_ok(), "cancel_request test failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+// ── Cross-owner scoping at the stdio JSON-RPC layer (#5868) ──────────────────────────
+
+/// Creates a fresh connection with the given `owner`, issues `session/new`, and disconnects.
+/// Helper for the cross-owner tests below — a shared `sqlite_path` means the resulting session
+/// persists with `owner` stamped as its `owner_key`.
+async fn create_owned_session(
+    sqlite_path: &str,
+    owner: &str,
+    workdir: &std::path::Path,
+) -> acp::schema::v1::SessionId {
+    let (sw, sr, cw, cr) = duplex_pair();
+    let config = AcpServerConfig {
+        sqlite_path: Some(sqlite_path.to_owned()),
+        ..test_config("test-agent")
+    };
+    let server_fut = serve_connection(noop_spawner(), config, sw, sr, owner.to_owned());
+    let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+        cx.send_request(acp::schema::v1::InitializeRequest::new(
+            acp::schema::ProtocolVersion::LATEST,
+        ))
+        .block_task()
+        .await?;
+        let session_id = cx
+            .send_request(acp::schema::v1::NewSessionRequest::new(workdir))
+            .block_task()
+            .await?
+            .session_id;
+        Ok(session_id)
+    });
+    tokio::select! {
+        res = server_fut => panic!("server exited before client: {res:?}"),
+        result = client_fut => result.expect("session/new failed"),
+    }
+}
+
+/// `session/list` scopes persisted sessions to the calling connection's `owner_key`: a session
+/// created by one connection's owner must not appear in a different owner's list, even when
+/// both connections share the same `sqlite_path`.
+#[tokio::test(flavor = "current_thread")]
+async fn list_sessions_isolated_by_owner_across_stdio_connections() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
+            let sqlite_path = db_dir
+                .path()
+                .join("acp-owner-list-test.db")
+                .to_string_lossy()
+                .into_owned();
+
+            // Two distinct owners each create a session on the shared store, then disconnect.
+            let alice_session = create_owned_session(&sqlite_path, "alice", workdir.path()).await;
+            let bob_session = create_owned_session(&sqlite_path, "bob", workdir.path()).await;
+
+            // A fresh connection as "alice" lists sessions: must see her own, not bob's.
+            let (sw, sr, cw, cr) = duplex_pair();
+            let config = AcpServerConfig {
+                sqlite_path: Some(sqlite_path.clone()),
+                ..test_config("test-agent")
+            };
+            let server_fut = serve_connection(noop_spawner(), config, sw, sr, "alice".to_owned());
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+                let resp = cx
+                    .send_request(acp::schema::v1::ListSessionsRequest::new())
+                    .block_task()
+                    .await?;
+                let ids: Vec<&acp::schema::v1::SessionId> =
+                    resp.sessions.iter().map(|s| &s.session_id).collect();
+                assert!(
+                    ids.contains(&&alice_session),
+                    "alice's own session missing from her list: {ids:?}"
+                );
+                assert!(
+                    !ids.contains(&&bob_session),
+                    "bob's session leaked into alice's list: {ids:?}"
+                );
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "cross-owner list_sessions test failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// `session/resume` on a session owned by a different connection must fail — a foreign
+/// `owner_key` is indistinguishable from a nonexistent session id.
+#[tokio::test(flavor = "current_thread")]
+async fn resume_session_cross_owner_fails() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
+            let sqlite_path = db_dir
+                .path()
+                .join("acp-owner-resume-test.db")
+                .to_string_lossy()
+                .into_owned();
+
+            let session_id = {
+                let (sw, sr, cw, cr) = duplex_pair();
+                let config = AcpServerConfig {
+                    sqlite_path: Some(sqlite_path.clone()),
+                    ..test_config("test-agent")
+                };
+                let server_fut =
+                    serve_connection(noop_spawner(), config, sw, sr, "alice".to_owned());
+                let client_fut =
+                    acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::schema::v1::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
+                        let session_id = cx
+                            .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
+                        Ok(session_id)
+                    });
+                tokio::select! {
+                    res = server_fut => panic!("server exited before client: {res:?}"),
+                    result = client_fut => result.expect("session/new failed"),
+                }
+            };
+
+            // A different owner ("bob") tries to resume alice's session on the same store.
+            let (sw, sr, cw, cr) = duplex_pair();
+            let config = AcpServerConfig {
+                sqlite_path: Some(sqlite_path.clone()),
+                ..test_config("test-agent")
+            };
+            let server_fut = serve_connection(echo_spawner(), config, sw, sr, "bob".to_owned());
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+                cx.send_request(acp::schema::v1::ResumeSessionRequest::new(
+                    session_id,
+                    workdir.path(),
+                ))
+                .block_task()
+                .await
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(
+                        result.is_err(),
+                        "bob must not be able to resume alice's session, got: {result:?}"
+                    );
+                }
+            }
+        })
+        .await;
+}
+
+/// `session/load` on a session owned by a different connection must fail (mirrors
+/// `resume_session_cross_owner_fails` for the `load_session` handler).
+#[tokio::test(flavor = "current_thread")]
+async fn load_session_cross_owner_fails() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
+            let sqlite_path = db_dir
+                .path()
+                .join("acp-owner-load-test.db")
+                .to_string_lossy()
+                .into_owned();
+
+            let session_id = {
+                let (sw, sr, cw, cr) = duplex_pair();
+                let config = AcpServerConfig {
+                    sqlite_path: Some(sqlite_path.clone()),
+                    ..test_config("test-agent")
+                };
+                let server_fut =
+                    serve_connection(noop_spawner(), config, sw, sr, "alice".to_owned());
+                let client_fut =
+                    acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::schema::v1::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
+                        let session_id = cx
+                            .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
+                        Ok(session_id)
+                    });
+                tokio::select! {
+                    res = server_fut => panic!("server exited before client: {res:?}"),
+                    result = client_fut => result.expect("session/new failed"),
+                }
+            };
+
+            let (sw, sr, cw, cr) = duplex_pair();
+            let config = AcpServerConfig {
+                sqlite_path: Some(sqlite_path.clone()),
+                ..test_config("test-agent")
+            };
+            let server_fut = serve_connection(echo_spawner(), config, sw, sr, "bob".to_owned());
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+                cx.send_request(acp::schema::v1::LoadSessionRequest::new(
+                    session_id,
+                    workdir.path(),
+                ))
+                .block_task()
+                .await
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(
+                        result.is_err(),
+                        "bob must not be able to load alice's session, got: {result:?}"
+                    );
+                }
+            }
+        })
+        .await;
+}
+
+/// `session/fork` sourced from a session owned by a different connection must fail.
+#[cfg(feature = "unstable-session-fork")]
+#[tokio::test(flavor = "current_thread")]
+async fn fork_session_cross_owner_fails() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
+            let sqlite_path = db_dir
+                .path()
+                .join("acp-owner-fork-test.db")
+                .to_string_lossy()
+                .into_owned();
+
+            let session_id = {
+                let (sw, sr, cw, cr) = duplex_pair();
+                let config = AcpServerConfig {
+                    sqlite_path: Some(sqlite_path.clone()),
+                    ..test_config("test-agent")
+                };
+                let server_fut =
+                    serve_connection(noop_spawner(), config, sw, sr, "alice".to_owned());
+                let client_fut =
+                    acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::schema::v1::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
+                        let session_id = cx
+                            .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
+                        Ok(session_id)
+                    });
+                tokio::select! {
+                    res = server_fut => panic!("server exited before client: {res:?}"),
+                    result = client_fut => result.expect("session/new failed"),
+                }
+            };
+
+            let (sw, sr, cw, cr) = duplex_pair();
+            let config = AcpServerConfig {
+                sqlite_path: Some(sqlite_path.clone()),
+                ..test_config("test-agent")
+            };
+            let server_fut = serve_connection(noop_spawner(), config, sw, sr, "bob".to_owned());
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+                cx.send_request(acp::schema::v1::ForkSessionRequest::new(
+                    session_id,
+                    workdir.path(),
+                ))
+                .block_task()
+                .await
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(
+                        result.is_err(),
+                        "bob must not be able to fork alice's session, got: {result:?}"
+                    );
                 }
             }
         })

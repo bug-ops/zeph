@@ -70,10 +70,13 @@ where
 
 /// Build a [`ZephAcpAgentState`] from the provided configuration.
 ///
-/// Shared by stdio and HTTP transports.
+/// Shared by stdio and HTTP transports. `owner_key` (#5868) is the authenticated ACP
+/// connection identity that scopes persisted session list/load/resume — `"acp-local"` for
+/// stdio, the matched bearer-token client id for authenticated HTTP/WS.
 pub(crate) async fn build_agent_state(
     spawner: AgentSpawner,
     server_config: AcpServerConfig,
+    owner_key: String,
 ) -> Arc<ZephAcpAgentState> {
     let mut agent = ZephAcpAgentState::new(
         spawner,
@@ -83,7 +86,8 @@ pub(crate) async fn build_agent_state(
     )
     .with_agent_info(server_config.agent_name, server_config.agent_version)
     .with_title_max_chars(server_config.title_max_chars)
-    .with_max_history(server_config.max_history);
+    .with_max_history(server_config.max_history)
+    .with_owner_key(owner_key);
 
     if let Some(ref path) = server_config.sqlite_path {
         match SqliteStore::new(path).await {
@@ -156,7 +160,12 @@ pub async fn serve_stdio(
         );
     }
 
-    let state = build_agent_state(spawner, server_config).await;
+    let state = build_agent_state(
+        spawner,
+        server_config,
+        crate::transport::OWNER_KEY_LOCAL.to_owned(),
+    )
+    .await;
 
     // Run the agent on a dedicated thread with a larger stack.
     // Agent session tasks use spawn_local (futures are !Send), so the thread
@@ -203,6 +212,9 @@ pub async fn serve_stdio(
 /// The HTTP transport satisfies this requirement by running each connection
 /// on a dedicated thread with a `current_thread` runtime and `LocalSet`.
 ///
+/// `owner_key` (#5868) scopes this connection's persisted session list/load/resume — see
+/// [`build_agent_state`].
+///
 /// # Errors
 ///
 /// Returns `AcpError::Transport` if the underlying JSON-RPC I/O fails.
@@ -211,12 +223,13 @@ pub async fn serve_connection<W, R>(
     server_config: AcpServerConfig,
     writer: W,
     reader: R,
+    owner_key: String,
 ) -> Result<(), AcpError>
 where
     W: futures::AsyncWrite + Unpin + Send + 'static,
     R: futures::AsyncRead + Unpin + Send + 'static,
 {
-    let state = build_agent_state(spawner, server_config).await;
+    let state = build_agent_state(spawner, server_config, owner_key).await;
     tokio::task::LocalSet::new()
         .run_until(run_agent(state, acp::ByteStreams::new(writer, reader)))
         .await
