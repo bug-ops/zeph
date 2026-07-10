@@ -23,6 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `crates/zeph-session/src/log.rs` for the identical torn-tail warn+repair epilogue duplicated
   between `read_events` and `read_events_chunked` (#5852).
 
+### Fixed
+
+- `docs(orchestration)`: corrected `zeph-orchestration` crate-level doc comment claiming `llm-planning` feature is enabled by default; it is not (default feature set is `sqlite` only). Updated docs to clarify opt-in behavior and reference `LlmPlanner`/`LlmAggregator` APIs (#5856).
+
 ## [0.22.0] - 2026-07-07
 ### Added
 

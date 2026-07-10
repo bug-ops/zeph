@@ -47,9 +47,10 @@
 //!
 //! # Feature flags
 //!
-//! - `llm-planning` *(default)*: enables LLM-dependent modules (`planner`, `aggregator`,
+//! - `llm-planning`: enables LLM-dependent modules (`planner`, `aggregator`,
 //!   `verifier`, `verify_predicate`, `plan_cache`, `adaptorch`) and the `zeph-llm` dependency.
-//!   Disable with `default-features = false` to get the pure-DAG subset with no LLM dep.
+//!   Not enabled by default (the crate's default feature set is `sqlite` only) — opt in
+//!   explicitly with `features = ["llm-planning"]` to use `LlmPlanner`/`LlmAggregator`.
 //!
 //! # Example: build a plan and run the scheduler
 //!
