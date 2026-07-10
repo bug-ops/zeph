@@ -480,8 +480,9 @@ impl<C: crate::channel::Channel> Agent<C> {
         match subcommand {
             "" => self.handle_skills_command_as_string().await,
             "confusability" => self.handle_skills_confusability_as_string().await,
+            "injection" => self.handle_skills_injection_as_string(),
             other => Ok(format!(
-                "Unknown /skills subcommand: '{other}'. Available: confusability"
+                "Unknown /skills subcommand: '{other}'. Available: confusability, injection"
             )),
         }
     }
@@ -630,6 +631,20 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         let report = matcher.confusability_report(&refs, threshold).await;
         Ok(report.to_string())
+    }
+
+    /// Report the current `GoSkills` grouping / injection-score config, as applied to this
+    /// `Agent` instance. Exists so tests outside `zeph-core` can observe that
+    /// `group_structured`, `support_similarity_threshold`, and `min_injection_score` reached
+    /// the constructed `Agent` at cold start, mirroring `handle_skills_confusability_as_string`.
+    #[tracing::instrument(skip_all, name = "core.agent.handle_skills_injection")]
+    fn handle_skills_injection_as_string(&self) -> Result<String, error::AgentError> {
+        Ok(format!(
+            "Skill injection config: group_structured={}, support_similarity_threshold={:.2}, min_injection_score={:.2}",
+            self.services.skill.group_structured,
+            self.services.skill.support_similarity_threshold,
+            self.services.skill.min_injection_score,
+        ))
     }
 }
 

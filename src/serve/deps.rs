@@ -44,6 +44,12 @@ pub(crate) struct ServeAgentDeps {
     pub(crate) skill_disambiguation_threshold: f32,
     pub(crate) skill_two_stage_matching: bool,
     pub(crate) skill_confusability_threshold: f32,
+    /// `config.skills.group_structured`/`support_similarity_threshold`/`min_injection_score`,
+    /// wired into `Agent::with_skill_group_config` per session — mirrors `src/runner.rs` and
+    /// `src/daemon.rs` (#5867: previously left on hardcoded builder defaults for `/sessions`).
+    pub(crate) skill_group_structured: bool,
+    pub(crate) skill_support_similarity_threshold: f32,
+    pub(crate) skill_min_injection_score: f32,
     /// `config.skills.generation_provider`/`disambiguate_provider`, wired into
     /// `Agent::with_skill_provider_names` per session (#5818).
     pub(crate) skill_generation_provider: String,
@@ -186,6 +192,9 @@ pub(crate) async fn assemble_serve_deps(
         skill_disambiguation_threshold: config.skills.disambiguation_threshold,
         skill_two_stage_matching: config.skills.two_stage_matching,
         skill_confusability_threshold: config.skills.confusability_threshold,
+        skill_group_structured: config.skills.group_structured,
+        skill_support_similarity_threshold: config.skills.support_similarity_threshold,
+        skill_min_injection_score: config.skills.min_injection_score,
         skill_generation_provider: config.skills.generation_provider.as_str().to_owned(),
         skill_disambiguate_provider: config.skills.disambiguate_provider.as_str().to_owned(),
         semantic_scan: config.skills.semantic_scan,

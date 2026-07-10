@@ -24,6 +24,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(skills)`: `skills.group_structured`, `skills.support_similarity_threshold`, and
+  `skills.min_injection_score` are now wired into the `Agent` at cold start (`src/runner.rs`,
+  `src/daemon.rs`, `src/acp.rs`, `src/serve/agent_factory.rs`), matching how `Agent::reload_config`
+  already applies them on a config-file hot-reload. Previously a freshly started session silently
+  ran on `SkillState::new()`'s hardcoded defaults (`false` / `0.50` / `0.20`) for these three
+  fields until a hot-reload fired — `GoSkills` grouped `<active_skill>` injection
+  (`skills.group_structured = true`) was 0% functional on any cold start regardless of config.
+  Added `AgentBuilder::with_skill_group_config` (mirrors the existing
+  `with_skill_matching_config`) and a `/skills injection` subcommand to make the wired values
+  observable from outside `zeph-core` (#5867, #5862).
 - `fix(session)`: `hydrate_from_event_log` (`crates/zeph-agent-persistence/src/hydrate.rs`) now
   folds the replayed `messages` via `ReplayEngine::replay`'s bounded/chunked reader (spec-068
   §6.2, ≤ 100 envelopes in memory at once) instead of `ReplayEngine::fold(events.clone(), up_to)`

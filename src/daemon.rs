@@ -327,6 +327,11 @@ where
         config.skills.two_stage_matching,
         config.skills.confusability_threshold,
     )
+    .with_skill_group_config(
+        config.skills.group_structured,
+        config.skills.support_similarity_threshold,
+        config.skills.min_injection_score,
+    )
     .with_skill_provider_names(
         config.skills.generation_provider.as_str().to_owned(),
         config.skills.disambiguate_provider.as_str().to_owned(),
@@ -1257,6 +1262,93 @@ mod tests {
             "config.skills.confusability_threshold = 0.42 must reach the built Agent's \
              ConfusabilityReport exactly (not e.g. 0.77, disambiguation_threshold's value, from a \
              swapped with_skill_matching_config argument); got: {output}"
+        );
+    }
+
+    /// #5867 regression: `build_daemon_agent` must call `Agent::with_skill_group_config` so
+    /// `config.skills.group_structured`/`support_similarity_threshold`/`min_injection_score`
+    /// reach the real, constructed `Agent` via the same `AgentBuilder` chain `run_daemon()`
+    /// actually uses at startup — the daemon-path counterpart to
+    /// `build_agent_wires_skill_group_config` (`src/runner.rs`), for the same class of
+    /// cold-start wiring gap previously found for `confusability_threshold` et al. (#5819).
+    /// Asserts the exact values echoed by `/skills injection`'s `Display` output, not just
+    /// "non-default", so a swapped argument in `with_skill_group_config` would also be caught.
+    #[tokio::test]
+    async fn build_daemon_agent_wires_skill_group_config() {
+        use zeph_commands::traits::agent::AgentAccess as _;
+
+        let memory = make_daemon_test_memory().await;
+        let conversation_id = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut config = Config::default();
+        config.skills.group_structured = true;
+        config.skills.support_similarity_threshold = 0.73;
+        config.skills.min_injection_score = 0.35;
+
+        let skill_meta = zeph_skills::loader::SkillMeta {
+            name: "solo-skill".to_owned(),
+            description: "a lone skill with no confusable sibling".to_owned(),
+            ..Default::default()
+        };
+        let inner_matcher = zeph_skills::matcher::SkillMatcher::new(
+            &[&skill_meta],
+            build_daemon_agent_test_embed_fn,
+        )
+        .await
+        .expect("single-skill matcher construction must succeed with a constant embed_fn");
+
+        let (_reload_tx, reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_config_reload_tx, config_reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let shell_policy_handle =
+            zeph_tools::ShellExecutor::new(&zeph_tools::ShellConfig::default()).policy_handle();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let provider_config_snapshot = crate::agent_setup::build_provider_config_snapshot(&config);
+        let mcp_manager = std::sync::Arc::new(crate::bootstrap::create_mcp_manager_with_vault(
+            &config, false, None,
+        ));
+
+        let deps = BuildDaemonAgentDeps {
+            config: &config,
+            provider: mock_provider(),
+            embedding_provider: mock_provider(),
+            registry: std::sync::Arc::new(RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: Some(zeph_skills::matcher::SkillMatcherBackend::InMemory(
+                inner_matcher,
+            )),
+            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::SetCwdExecutor)),
+            session_config,
+            skill_paths: Vec::new(),
+            reload_rx,
+            plugin_dirs_supplier: || Vec::<PathBuf>::new(),
+            memory: std::sync::Arc::clone(&memory),
+            conversation_id,
+            shutdown_rx,
+            config_path: PathBuf::new(),
+            config_reload_rx,
+            shell_policy_handle,
+            mcp_tools: Vec::new(),
+            mcp_registry: None,
+            mcp_manager,
+            mcp_shared_tools: std::sync::Arc::new(RwLock::new(Vec::new())),
+            provider_config_snapshot,
+        };
+
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let mut agent = Box::pin(build_daemon_agent(deps, channel)).await;
+
+        let output = agent
+            .handle_skills("injection")
+            .await
+            .expect("handle_skills(\"injection\") must not error");
+        assert_eq!(
+            output,
+            "Skill injection config: group_structured=true, support_similarity_threshold=0.73, \
+             min_injection_score=0.35",
+            "config.skills.group_structured/support_similarity_threshold/min_injection_score \
+             must reach the built Agent exactly via with_skill_group_config; got: {output}"
         );
     }
 

@@ -413,6 +413,27 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Configure `GoSkills` grouping and injection-score thresholds.
+    ///
+    /// Mirrors `Agent::reload_config`'s assignment of these same three fields on hot-reload
+    /// (`crates/zeph-core/src/agent/config_reload.rs`) so that cold-started agents pick up
+    /// `config.toml`'s `[skills]` values from the first turn, without waiting for a
+    /// `ConfigReload` event. `support_similarity_threshold` and `min_injection_score` are
+    /// assigned raw, unclamped — `reload_config` does not clamp either field, and this method
+    /// must not diverge from it.
+    #[must_use]
+    pub fn with_skill_group_config(
+        mut self,
+        group_structured: bool,
+        support_similarity_threshold: f32,
+        min_injection_score: f32,
+    ) -> Self {
+        self.services.skill.group_structured = group_structured;
+        self.services.skill.support_similarity_threshold = support_similarity_threshold;
+        self.services.skill.min_injection_score = min_injection_score;
+        self
+    }
+
     /// Set the LLM provider names for skill generation and disambiguation.
     ///
     /// Both names are resolved at runtime via the provider registry. An empty string falls back

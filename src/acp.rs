@@ -168,6 +168,12 @@ pub(crate) struct SharedAgentDeps {
     skill_disambiguation_threshold: f32,
     skill_two_stage_matching: bool,
     skill_confusability_threshold: f32,
+    /// `config.skills.group_structured`/`support_similarity_threshold`/`min_injection_score`,
+    /// wired into `Agent::with_skill_group_config` per session — mirrors `src/runner.rs` and
+    /// `src/daemon.rs` (#5867: previously left on hardcoded builder defaults for ACP sessions).
+    skill_group_structured: bool,
+    skill_support_similarity_threshold: f32,
+    skill_min_injection_score: f32,
     /// `config.skills.generation_provider`/`disambiguate_provider`, wired into
     /// `Agent::with_skill_provider_names` per session (#5818).
     skill_generation_provider: String,
@@ -855,6 +861,9 @@ async fn build_acp_deps(
         skill_disambiguation_threshold: config.skills.disambiguation_threshold,
         skill_two_stage_matching: config.skills.two_stage_matching,
         skill_confusability_threshold: config.skills.confusability_threshold,
+        skill_group_structured: config.skills.group_structured,
+        skill_support_similarity_threshold: config.skills.support_similarity_threshold,
+        skill_min_injection_score: config.skills.min_injection_score,
         skill_generation_provider: config.skills.generation_provider.as_str().to_owned(),
         skill_disambiguate_provider: config.skills.disambiguate_provider.as_str().to_owned(),
         semantic_scan: config.skills.semantic_scan,
@@ -1093,6 +1102,9 @@ async fn spawn_acp_agent(
     let skill_disambiguation_threshold = d.skill_disambiguation_threshold;
     let skill_two_stage_matching = d.skill_two_stage_matching;
     let skill_confusability_threshold = d.skill_confusability_threshold;
+    let skill_group_structured = d.skill_group_structured;
+    let skill_support_similarity_threshold = d.skill_support_similarity_threshold;
+    let skill_min_injection_score = d.skill_min_injection_score;
     let skill_generation_provider = d.skill_generation_provider.clone();
     let skill_disambiguate_provider = d.skill_disambiguate_provider.clone();
     let semantic_scan = d.semantic_scan;
@@ -1411,6 +1423,11 @@ async fn spawn_acp_agent(
             skill_disambiguation_threshold,
             skill_two_stage_matching,
             skill_confusability_threshold,
+        )
+        .with_skill_group_config(
+            skill_group_structured,
+            skill_support_similarity_threshold,
+            skill_min_injection_score,
         )
         .with_skill_provider_names(skill_generation_provider, skill_disambiguate_provider)
         .with_semantic_scan(semantic_scan, semantic_scan_provider)
@@ -3171,22 +3188,33 @@ mod tests {
         assert!(orch_cfg.enabled);
     }
 
-    /// #5818/#5827 regression: `build_acp_deps`/`assemble_serve_deps` must populate
+    /// #5818/#5827/#5867 regression: `build_acp_deps`/`assemble_serve_deps` must populate
     /// `SharedAgentDeps`'s/`ServeAgentDeps`'s `skill_disambiguation_threshold`/
-    /// `skill_two_stage_matching`/`skill_confusability_threshold`/`skill_generation_provider`/
-    /// `skill_disambiguate_provider`/`semantic_scan`/`semantic_scan_provider` from
-    /// `config.skills.*` — previously these fields did not exist on either deps struct at all, so
-    /// neither `spawn_acp_agent` nor `build_agent_factory` could call
-    /// `Agent::with_skill_matching_config`/`with_skill_provider_names`/`with_semantic_scan`, and
-    /// every ACP/`/sessions` agent silently ran skill matching and semantic scanning on hardcoded
-    /// builder defaults regardless of config.
+    /// `skill_two_stage_matching`/`skill_confusability_threshold`/`skill_group_structured`/
+    /// `skill_support_similarity_threshold`/`skill_min_injection_score`/
+    /// `skill_generation_provider`/`skill_disambiguate_provider`/`semantic_scan`/
+    /// `semantic_scan_provider` from `config.skills.*` — previously these fields did not exist on
+    /// either deps struct at all, so neither `spawn_acp_agent` nor `build_agent_factory` could
+    /// call `Agent::with_skill_matching_config`/`with_skill_group_config`/
+    /// `with_skill_provider_names`/`with_semantic_scan`, and every ACP/`/sessions` agent silently
+    /// ran skill matching, `GoSkills` grouping/injection scoring, and semantic scanning on
+    /// hardcoded builder defaults regardless of config. `group_structured`/
+    /// `support_similarity_threshold`/`min_injection_score` (#5867) went through the identical
+    /// gap one PR later than `disambiguation_threshold`/`two_stage_matching`/
+    /// `confusability_threshold` (#5818) — same deps-population seam, added to this test rather
+    /// than a new one since `build_combined_deps` assembles all `config.skills.*` fields in one
+    /// pass.
     ///
     /// Drives the real production `build_combined_deps` (mirroring
     /// `crate::serve::test_support::build_shared_pair`'s use of a mock-provider
     /// `AppBuilder::for_test`) rather than hand-constructing deps literals, so a regression in
     /// either config-to-deps mapping (e.g. a swapped field, or one silently dropped) is caught —
     /// covers both call sites in one test since `build_combined_deps` assembles both structs from
-    /// one `SharedCore`.
+    /// one `SharedCore`. Stops at the deps struct: it does not construct a real `Agent` via
+    /// `spawn_acp_agent`/`build_agent_factory`, so the deps→`Agent`
+    /// (`with_skill_group_config`) step for the ACP path specifically is covered separately by
+    /// `build_agent_factory_wires_skill_group_config` (`src/serve/agent_factory.rs`) for the
+    /// `/sessions` path only — see handoff for the ACP-specific gap this leaves open.
     #[cfg(all(feature = "acp-http", feature = "session"))]
     #[tokio::test]
     async fn build_combined_deps_wires_skill_matching_config_from_config() {
@@ -3202,6 +3230,9 @@ mod tests {
         config.skills.disambiguation_threshold = 0.55;
         config.skills.two_stage_matching = true;
         config.skills.confusability_threshold = 0.65;
+        config.skills.group_structured = true;
+        config.skills.support_similarity_threshold = 0.73;
+        config.skills.min_injection_score = 0.35;
         config.skills.generation_provider = zeph_common::ProviderName::new("gen-test");
         config.skills.disambiguate_provider = zeph_common::ProviderName::new("disamb-test");
         config.skills.semantic_scan = true;
@@ -3227,6 +3258,18 @@ mod tests {
             (serve_deps.skill_confusability_threshold - 0.65).abs() < f32::EPSILON,
             "config.skills.confusability_threshold must flow into ServeAgentDeps"
         );
+        assert!(
+            serve_deps.skill_group_structured,
+            "config.skills.group_structured must flow into ServeAgentDeps"
+        );
+        assert!(
+            (serve_deps.skill_support_similarity_threshold - 0.73).abs() < f32::EPSILON,
+            "config.skills.support_similarity_threshold must flow into ServeAgentDeps"
+        );
+        assert!(
+            (serve_deps.skill_min_injection_score - 0.35).abs() < f32::EPSILON,
+            "config.skills.min_injection_score must flow into ServeAgentDeps"
+        );
         assert_eq!(serve_deps.skill_generation_provider, "gen-test");
         assert_eq!(serve_deps.skill_disambiguate_provider, "disamb-test");
         assert!(
@@ -3246,6 +3289,18 @@ mod tests {
         assert!(
             (acp_deps.skill_confusability_threshold - 0.65).abs() < f32::EPSILON,
             "config.skills.confusability_threshold must flow into SharedAgentDeps"
+        );
+        assert!(
+            acp_deps.skill_group_structured,
+            "config.skills.group_structured must flow into SharedAgentDeps"
+        );
+        assert!(
+            (acp_deps.skill_support_similarity_threshold - 0.73).abs() < f32::EPSILON,
+            "config.skills.support_similarity_threshold must flow into SharedAgentDeps"
+        );
+        assert!(
+            (acp_deps.skill_min_injection_score - 0.35).abs() < f32::EPSILON,
+            "config.skills.min_injection_score must flow into SharedAgentDeps"
         );
         assert_eq!(acp_deps.skill_generation_provider, "gen-test");
         assert_eq!(acp_deps.skill_disambiguate_provider, "disamb-test");

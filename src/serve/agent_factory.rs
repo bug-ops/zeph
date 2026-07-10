@@ -104,6 +104,11 @@ pub(crate) async fn build_agent_factory(
             deps.skill_two_stage_matching,
             deps.skill_confusability_threshold,
         )
+        .with_skill_group_config(
+            deps.skill_group_structured,
+            deps.skill_support_similarity_threshold,
+            deps.skill_min_injection_score,
+        )
         .with_skill_provider_names(
             deps.skill_generation_provider,
             deps.skill_disambiguate_provider,
@@ -497,6 +502,9 @@ mod tests {
             skill_disambiguation_threshold: 0.2,
             skill_two_stage_matching: false,
             skill_confusability_threshold: 0.0,
+            skill_group_structured: false,
+            skill_support_similarity_threshold: 0.50,
+            skill_min_injection_score: 0.20,
             skill_generation_provider: String::new(),
             skill_disambiguate_provider: String::new(),
             semantic_scan: false,
@@ -564,6 +572,9 @@ mod tests {
             skill_disambiguation_threshold: 0.2,
             skill_two_stage_matching: false,
             skill_confusability_threshold: 0.0,
+            skill_group_structured: false,
+            skill_support_similarity_threshold: 0.50,
+            skill_min_injection_score: 0.20,
             skill_generation_provider: String::new(),
             skill_disambiguate_provider: String::new(),
             semantic_scan: false,
@@ -658,6 +669,9 @@ mod tests {
             skill_disambiguation_threshold: 0.77,
             skill_two_stage_matching: true,
             skill_confusability_threshold: 0.42,
+            skill_group_structured: false,
+            skill_support_similarity_threshold: 0.50,
+            skill_min_injection_score: 0.20,
             skill_generation_provider: "gen".to_owned(),
             skill_disambiguate_provider: "dis".to_owned(),
             semantic_scan: false,
@@ -688,6 +702,90 @@ mod tests {
             "ServeAgentDeps::skill_confusability_threshold = 0.42 must reach the built Agent's \
              ConfusabilityReport exactly (not e.g. 0.77, disambiguation_threshold's value, from a \
              swapped with_skill_matching_config argument); got: {output}"
+        );
+    }
+
+    /// #5867 regression: `build_agent_factory` must call `Agent::with_skill_group_config` so
+    /// `ServeAgentDeps::skill_group_structured`/`skill_support_similarity_threshold`/
+    /// `skill_min_injection_score` reach the built `Agent` — previously these three fields were
+    /// only ever applied on the hot-reload path (`Agent::reload_config`), never at the
+    /// `/sessions` cold-start path built here. Mirrors
+    /// `build_agent_factory_wires_skill_matching_config` above, using non-default values distinct
+    /// from the builder's pre-fix defaults (`false`/`0.50`/`0.20`, matching `SkillState::new()`),
+    /// and asserts the exact values echoed by `/skills injection`'s `Display` output, not just
+    /// "non-default", so a swapped argument in `with_skill_group_config` would also be caught.
+    #[tokio::test]
+    async fn build_agent_factory_wires_skill_group_config() {
+        use zeph_commands::traits::agent::AgentAccess as _;
+
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("skill-group-config-test-session");
+
+        let config = zeph_core::config::Config::default();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+
+        let skill_meta = zeph_skills::loader::SkillMeta {
+            name: "solo-skill".to_owned(),
+            description: "a lone skill with no confusable sibling".to_owned(),
+            ..Default::default()
+        };
+        let inner_matcher =
+            zeph_skills::matcher::SkillMatcher::new(&[&skill_meta], embed_fn_constant)
+                .await
+                .expect("single-skill matcher construction must succeed with a constant embed_fn");
+
+        let deps = ServeAgentDeps {
+            provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            embedding_provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            registry: Arc::new(parking_lot::RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: Some(zeph_skills::matcher::SkillMatcherBackend::InMemory(
+                inner_matcher,
+            )),
+            max_active_skills: 5,
+            skill_disambiguation_threshold: 0.2,
+            skill_two_stage_matching: false,
+            skill_confusability_threshold: 0.0,
+            // Non-default values for all 3 fields under test: the builder's pre-fix defaults
+            // are false / 0.50 / 0.20, matching SkillState::new()'s hardcoded fallback.
+            skill_group_structured: true,
+            skill_support_similarity_threshold: 0.73,
+            skill_min_injection_score: 0.35,
+            skill_generation_provider: String::new(),
+            skill_disambiguate_provider: String::new(),
+            semantic_scan: false,
+            semantic_scan_provider: String::new(),
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            memory: Arc::clone(&memory),
+            history_limit: 10,
+            recall_limit: 5,
+            summarization_threshold: 1000,
+            session_config,
+            session_persistence_config: zeph_config::SessionConfig::default(),
+            resume_condenser: Arc::new(condenser),
+            resume_token_counter: Arc::new(token_counter),
+            provider_pool: Vec::new(),
+            provider_config_snapshot: zeph_core::ProviderConfigSnapshot::default(),
+        };
+
+        let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let mut agent = build_agent(channel);
+
+        let output = agent
+            .handle_skills("injection")
+            .await
+            .expect("handle_skills(\"injection\") must not error");
+        assert_eq!(
+            output,
+            "Skill injection config: group_structured=true, support_similarity_threshold=0.73, \
+             min_injection_score=0.35",
+            "ServeAgentDeps::skill_group_structured/skill_support_similarity_threshold/\
+             skill_min_injection_score must reach the built Agent exactly via \
+             with_skill_group_config; got: {output}"
         );
     }
 
@@ -728,6 +826,9 @@ mod tests {
             skill_disambiguation_threshold: 0.2,
             skill_two_stage_matching: false,
             skill_confusability_threshold: 0.0,
+            skill_group_structured: false,
+            skill_support_similarity_threshold: 0.50,
+            skill_min_injection_score: 0.20,
             skill_generation_provider: String::new(),
             skill_disambiguate_provider: String::new(),
             // Non-default values (pre-fix builder default is `false`/`""`, see
