@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- `fix(commands)`: `/image` now requires a trusted (local) session, closing a remote arbitrary
+  file read (#5967, CWE-284). `ImageCommand` previously left `requires_auth()` at its default
+  `false`, so Telegram/Discord/Slack/gateway callers — none of which are trusted by
+  `CommandRegistry::dispatch` — could invoke `/image <path>` to read any file under the server's
+  working directory that the process could access. `ImageCommand` now overrides `requires_auth()`
+  to return `true`, matching the existing `/cache-stats` and `/notify-test` handlers in the same
+  module; the command remains available from local CLI/TUI/ACP-stdio sessions.
 - `fix(mcp)`: Qdrant-backed MCP tool registry now rehydrates real `input_schema` (plus
   `output_schema`/`security_meta`) for semantically-matched tools instead of surfacing them to
   the LLM with an empty `{}` schema (#5935). `Agent::match_mcp_tools()` no longer trusts
