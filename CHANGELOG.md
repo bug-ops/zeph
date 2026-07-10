@@ -14,6 +14,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   working directory that the process could access. `ImageCommand` now overrides `requires_auth()`
   to return `true`, matching the existing `/cache-stats` and `/notify-test` handlers in the same
   module; the command remains available from local CLI/TUI/ACP-stdio sessions.
+- `fix(tools)`: `checkpoint_undo`/`checkpoint_redo`/`checkpoint_list` are now forwarded by
+  `impl ToolExecutor for std::sync::Arc<ShellExecutor>` (#5985). This impl block predates the
+  checkpoint feature and only overrode `execute`/`tool_definitions`/`execute_tool_call`/
+  `set_skill_env`, so the three checkpoint methods fell through to the trait's no-op default —
+  `/undo`, `/redo`, and `/undo list` always reported "Checkpoints are not enabled" in the plain
+  default production wiring (no `capability_scopes`/`shadow_sentinel` gating required to
+  reproduce), because `agent_setup.rs` wraps the shell executor in an `Arc` before building the
+  executor chain, so every checkpoint call resolved against the incomplete `Arc<ShellExecutor>`
+  impl rather than `ShellExecutor`'s own correct one. This is the same defect class as
+  #5899/#5905/#5906 but at the leaf type's own smart-pointer shadow-impl rather than a decorator
+  wrapper.
 - `fix(mcp)`: Qdrant-backed MCP tool registry now rehydrates real `input_schema` (plus
   `output_schema`/`security_meta`) for semantically-matched tools instead of surfacing them to
   the LLM with an empty `{}` schema (#5935). `Agent::match_mcp_tools()` no longer trusts

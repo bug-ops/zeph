@@ -3397,3 +3397,49 @@ async fn supervised_background_run_limit_still_enforced() {
 
     cancel.cancel();
 }
+
+// --- Arc<ShellExecutor> checkpoint forwarding (regression for #5985) ---
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn arc_wrapped_executor_forwards_checkpoint_methods() {
+    let dir = tempfile::tempdir().unwrap();
+    // Canonicalize so path comparisons don't trip on macOS's /var -> /private/var symlink.
+    let dir_path = dir.path().canonicalize().unwrap();
+    let file_path = dir_path.join("checkpoint_target.txt");
+
+    let config = ShellConfig {
+        checkpoints_enabled: true,
+        allowed_paths: vec![dir_path.to_string_lossy().into_owned()],
+        ..default_config()
+    };
+    // Wrapped exactly as agent_setup.rs wires the shell slot in the executor chain.
+    let executor: Arc<ShellExecutor> = Arc::new(ShellExecutor::new(&config));
+
+    let command = format!("echo hello > {}", file_path.display());
+    let response = format!("```bash\n{command}\n```");
+    executor.execute(&response).await.unwrap();
+
+    let list = executor.checkpoint_list();
+    assert!(
+        list.supported,
+        "Arc<ShellExecutor>::checkpoint_list must forward to the real impl, not the trait default"
+    );
+    assert_eq!(list.entries.len(), 1);
+    assert!(file_path.exists());
+
+    let undo = executor.checkpoint_undo(1);
+    assert!(
+        undo.supported,
+        "Arc<ShellExecutor>::checkpoint_undo must forward to the real impl, not the trait default"
+    );
+    assert_eq!(undo.deleted, 1);
+    assert!(!file_path.exists());
+
+    let redo = executor.checkpoint_redo();
+    assert!(
+        redo.supported,
+        "Arc<ShellExecutor>::checkpoint_redo must forward to the real impl, not the trait default"
+    );
+    assert!(file_path.exists());
+}

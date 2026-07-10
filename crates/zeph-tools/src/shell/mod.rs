@@ -1745,6 +1745,18 @@ impl ToolExecutor for std::sync::Arc<ShellExecutor> {
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
         self.as_ref().set_skill_env(env);
     }
+
+    fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+        self.as_ref().checkpoint_undo(n)
+    }
+
+    fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+        self.as_ref().checkpoint_redo()
+    }
+
+    fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+        self.as_ref().checkpoint_list()
+    }
 }
 
 impl ToolExecutor for ShellExecutor {
