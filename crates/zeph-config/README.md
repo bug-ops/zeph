@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-config)](https://crates.io/crates/zeph-config)
 [![docs.rs](https://img.shields.io/docsrs/zeph-config)](https://docs.rs/zeph-config)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.97-blue)](https://www.rust-lang.org)
 
 Pure-data configuration types for Zeph — all TOML config structs with serde derive, validation, and migration support.
 

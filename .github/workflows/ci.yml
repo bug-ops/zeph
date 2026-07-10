@@ -161,7 +161,7 @@ jobs:
         run: cargo clippy --profile ci --workspace --all-targets --features ${{ matrix.features }} -- -D warnings
 
   msrv:
-    name: MSRV check (1.96, ${{ matrix.label }})
+    name: MSRV check (1.97, ${{ matrix.label }})
     needs: detect-changes
     if: needs.detect-changes.outputs.run-full-ci == 'true'
     runs-on: ubuntu-latest
@@ -178,7 +178,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: "1.96"
+          toolchain: "1.97"
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           shared-key: "msrv-${{ matrix.label }}"

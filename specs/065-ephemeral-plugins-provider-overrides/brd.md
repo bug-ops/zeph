@@ -75,7 +75,7 @@ These deferrals are **explicit** (not silent omissions). They must be tracked as
 
 - No new SQLite schema migration needed (use existing `channel_preferences` key-value table with a new `pref_key`)
 - Implementation stays within `zeph-plugins`, `zeph-core`, `zeph-config`, `zeph-commands`, and the root binary crate
-- MSRV remains Rust 1.95
+- MSRV remains Rust 1.97
 - No new mandatory dependencies
 
 ## 8. Dependencies

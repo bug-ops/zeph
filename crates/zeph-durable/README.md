@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-durable)](https://crates.io/crates/zeph-durable)
 [![docs.rs](https://img.shields.io/docsrs/zeph-durable)](https://docs.rs/zeph-durable)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.97-blue)](https://www.rust-lang.org)
 
 Native durable execution layer for [Zeph](https://github.com/bug-ops/zeph) — journals the *control
 flow* of an execution (steps, promises, timers) so a crashed or interrupted run can resume at the
@@ -170,7 +170,7 @@ let reply: String = ctx
 
 ## MSRV
 
-Rust **1.96** (Edition 2024, resolver 3).
+Rust **1.97** (Edition 2024, resolver 3).
 
 ## License
 

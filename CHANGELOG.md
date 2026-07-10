@@ -27,6 +27,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `chore`: raise the workspace MSRV from Rust 1.96 to 1.97 (`Cargo.toml`
+  `rust-version`, CI `msrv` job, all crate README badges/notes, `specs/constitution.md`).
+  Rust 1.97 (stable 2026-07-07) is now the minimum supported toolchain. This also unifies
+  MSRV references that had drifted between 1.95 and 1.96 across README/spec docs. No source
+  changes accompany the bump: a review against Rust 1.89-1.97 stabilizations found no
+  1.97-specific stdlib API with a real use site (the codebase already uses `floor_char_boundary`
+  for UTF-8-safe truncation; existing `compare_exchange` sites are one-shot guards, not
+  CAS-update loops; `with_extension` sites intentionally replace the suffix).
 - `refactor(session)`: extracted a shared `finish_torn_tail` helper in
   `crates/zeph-session/src/log.rs` for the identical torn-tail warn+repair epilogue duplicated
   between `read_events` and `read_events_chunked` (#5852).

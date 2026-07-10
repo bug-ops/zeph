@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-scheduler)](https://crates.io/crates/zeph-scheduler)
 [![docs.rs](https://img.shields.io/docsrs/zeph-scheduler)](https://docs.rs/zeph-scheduler)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.97-blue)](https://www.rust-lang.org)
 
 Cron-based periodic and one-shot task scheduler with SQLite persistence for Zeph.
 
@@ -191,7 +191,7 @@ cargo add zeph-scheduler
 Enabled via the `scheduler` feature flag on the root `zeph` crate.
 
 > [!IMPORTANT]
-> Requires Rust 1.96 or later.
+> Requires Rust 1.97 or later.
 
 ## Features
 

@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-agent-feedback)](https://crates.io/crates/zeph-agent-feedback)
 [![docs.rs](https://img.shields.io/docsrs/zeph-agent-feedback)](https://docs.rs/zeph-agent-feedback)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.97-blue)](https://www.rust-lang.org)
 
 Implicit correction detection for the [Zeph](https://github.com/bug-ops/zeph) AI agent.
 
@@ -21,7 +21,7 @@ Detects when a user is implicitly correcting a previous agent response — witho
 zeph-agent-feedback = { version = "0.22", workspace = true }
 ```
 
-**Note:** Requires Rust 1.96 or later (Edition 2024).
+**Note:** Requires Rust 1.97 or later (Edition 2024).
 
 ## Usage
 

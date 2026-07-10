@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-db)](https://crates.io/crates/zeph-db)
 [![docs.rs](https://img.shields.io/docsrs/zeph-db)](https://docs.rs/zeph-db)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.97-blue)](https://www.rust-lang.org)
 
 Database abstraction layer for [Zeph](https://github.com/bug-ops/zeph) — unified SQLite and PostgreSQL backends with compile-time backend selection, automatic migrations, dialect-aware SQL helpers, and FTS support.
 
@@ -167,7 +167,7 @@ Migrations run automatically on first `DbConfig::connect` call. The active backe
 
 ## MSRV
 
-Rust **1.96** (Edition 2024, resolver 3).
+Rust **1.97** (Edition 2024, resolver 3).
 
 ## License
 

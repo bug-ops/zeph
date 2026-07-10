@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-session)](https://crates.io/crates/zeph-session)
 [![docs.rs](https://img.shields.io/docsrs/zeph-session)](https://docs.rs/zeph-session)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.97-blue)](https://www.rust-lang.org)
 
 Conversation-session persistence for [Zeph](https://github.com/bug-ops/zeph): an append-only JSONL
 event log, deterministic replay, and fork engine, shared by every channel (CLI, TUI, Telegram, ACP,

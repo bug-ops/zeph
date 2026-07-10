@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-bench)](https://crates.io/crates/zeph-bench)
 [![docs.rs](https://img.shields.io/docsrs/zeph-bench)](https://docs.rs/zeph-bench)
 [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main)](https://github.com/bug-ops/zeph/actions)
-[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.97-blue)](https://www.rust-lang.org)
 [![License](https://img.shields.io/crates/l/zeph-bench)](../../LICENSE)
 
 Benchmark harness for evaluating Zeph agent performance on standardized datasets.
@@ -129,7 +129,7 @@ impl Evaluator for MyEvaluator {
 | tau-bench | JSON | Task completion (exact) | Ready |
 
 > [!IMPORTANT]
-> Requires Rust 1.96 or later.
+> Requires Rust 1.97 or later.
 
 ## Architecture
 
