@@ -601,6 +601,7 @@ mod tests {
             matcher: None,
             memory,
             budget_tokens: 4096,
+            rl_embed_dim_resolved: None,
         };
         let cancel = tokio_util::sync::CancellationToken::new();
         let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(cancel);
@@ -656,6 +657,7 @@ mod tests {
             matcher: None,
             memory,
             budget_tokens: 4096,
+            rl_embed_dim_resolved: None,
         };
         let cancel = tokio_util::sync::CancellationToken::new();
         let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(cancel);

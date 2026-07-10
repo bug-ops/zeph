@@ -987,6 +987,10 @@ mod tests {
             resume_token_counter: Arc::new(token_counter),
             provider_pool: Vec::new(),
             provider_config_snapshot: zeph_core::ProviderConfigSnapshot::default(),
+            shadow_sentinel_config: zeph_config::ShadowSentinelConfig::default(),
+            shadow_sentinel_probe_provider: AnyProvider::Mock(
+                zeph_llm::mock::MockProvider::default(),
+            ),
         };
 
         let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
