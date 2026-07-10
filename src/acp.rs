@@ -164,6 +164,12 @@ pub(crate) struct SharedCore {
     pub(crate) matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
     pub(crate) memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
     pub(crate) budget_tokens: usize,
+    /// Resolved `SkillOrchestra` RL routing head embedding dimension (#5921), pre-computed
+    /// once here — mirrors `src/runner.rs`/`src/daemon.rs`'s `rl_embed_dim_resolved` — so
+    /// every session built from this core (ACP, `/sessions`, or the combined transport) can
+    /// load/cold-start an `RL` head without re-probing the embedding provider per session.
+    /// `None` when `config.skills.rl_routing_enabled` is `false`.
+    pub(crate) rl_embed_dim_resolved: Option<usize>,
 }
 
 /// Build the resources common to `zeph serve-sessions` and standalone ACP session
@@ -194,6 +200,27 @@ pub(crate) async fn build_shared_core(
         .build_skill_matcher(&embedding_provider, &all_meta_refs, &memory)
         .await;
 
+    // Populate trust DB for all loaded skills (#5920: previously only `runner.rs` did this,
+    // leaving ACP/`/sessions`-only agents' skills fail-open to Trusted
+    // (SkillTrustLevel::MISSING_ENTRY_FALLBACK) absent a pre-existing row — un-sanitized
+    // bodies with full tool access instead of the operator's configured restriction).
+    app.seed_skill_trust_db(&all_meta_owned, &memory).await;
+
+    // Pre-resolve RL embed dim before embedding_provider is moved into SharedCore (#5921) —
+    // mirrors `src/daemon.rs`'s `rl_embed_dim_resolved` computation.
+    let rl_embed_dim_resolved = if app.config().skills.rl_routing_enabled {
+        Some(
+            crate::runner::resolve_rl_embed_dim(
+                &app.config().skills,
+                &embedding_provider,
+                app.config().timeouts.embedding_seconds,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+
     Ok(SharedCore {
         provider,
         embedding_provider,
@@ -201,6 +228,7 @@ pub(crate) async fn build_shared_core(
         matcher,
         memory,
         budget_tokens,
+        rl_embed_dim_resolved,
     })
 }
 
@@ -260,6 +288,21 @@ pub(crate) struct SharedAgentDeps {
     /// (#5827: previously left on hardcoded builder defaults for ACP sessions).
     semantic_scan: bool,
     semantic_scan_provider: String,
+    /// `config.skills.trust`, wired into `Agent::with_trust_config` per session — mirrors
+    /// `src/runner.rs` and `src/daemon.rs` (#5920: previously left on `TrustConfig::default()`
+    /// for ACP sessions, silently ignoring the operator's configured trust levels).
+    trust_config: zeph_core::config::TrustConfig,
+    /// `config.skills.rl_routing_enabled`/`rl_learning_rate`/`rl_weight`/`rl_persist_interval`/
+    /// `rl_warmup_updates`, wired into `Agent::with_rl_routing` per session, plus the resolved
+    /// embed dim (`SharedCore::rl_embed_dim_resolved`) used to load/cold-start an `RL` head via
+    /// `Agent::with_rl_head` — mirrors `src/runner.rs` and `src/daemon.rs` (#5921: previously
+    /// never wired for ACP sessions).
+    rl_routing_enabled: bool,
+    rl_learning_rate: f32,
+    rl_weight: f32,
+    rl_persist_interval: u32,
+    rl_warmup_updates: u32,
+    rl_embed_dim_resolved: Option<usize>,
     /// Base tool composite (file/shell/scrape/diagnostics + MCP + `search_code`), *not*
     /// wrapped in any gate. `spawn_acp_agent` composites this further with `skill_loader`/
     /// `memory`/`overflow`/ACP-native fs/shell per session, then wraps the FULL per-session
@@ -488,6 +531,7 @@ async fn build_acp_deps(
             matcher,
             memory,
             budget_tokens,
+            rl_embed_dim_resolved,
         },
         acp_mem_supervisor,
     ) = if let Some(p) = prebuilt_core {
@@ -954,6 +998,13 @@ async fn build_acp_deps(
         skill_disambiguate_provider: config.skills.disambiguate_provider.as_str().to_owned(),
         semantic_scan: config.skills.semantic_scan,
         semantic_scan_provider: config.skills.semantic_scan_provider.as_str().to_owned(),
+        trust_config: config.skills.trust.clone(),
+        rl_routing_enabled: config.skills.rl_routing_enabled,
+        rl_learning_rate: config.skills.rl_learning_rate,
+        rl_weight: config.skills.rl_weight,
+        rl_persist_interval: config.skills.rl_persist_interval,
+        rl_warmup_updates: config.skills.rl_warmup_updates,
+        rl_embed_dim_resolved,
         tool_executor,
         permission_policy,
         policy_enforcer,
@@ -1517,6 +1568,14 @@ async fn spawn_acp_agent(
         )
         .with_skill_provider_names(skill_generation_provider, skill_disambiguate_provider)
         .with_semantic_scan(semantic_scan, semantic_scan_provider)
+        .with_trust_config(d.trust_config.clone())
+        .with_rl_routing(
+            d.rl_routing_enabled,
+            d.rl_learning_rate,
+            d.rl_weight,
+            d.rl_persist_interval,
+            d.rl_warmup_updates,
+        )
         .with_working_dir(session_ctx.working_dir.clone())
         .with_skill_reload(skill_paths, reload_rx)
         .with_plugin_dirs_supplier(move || plugin_dirs_supplier())
@@ -1544,6 +1603,25 @@ async fn spawn_acp_agent(
     .await;
 
     agent = agent.with_acp_session(true);
+
+    // SkillOrchestra: load persisted RL routing head weights, if enabled (#5921) — mirrors
+    // `src/runner.rs`/`src/daemon.rs`'s cold-start/load pattern. `d.rl_embed_dim_resolved` is
+    // pre-computed once in `build_shared_core`, shared across every session from this core.
+    // NOTE (S3, known limitation, not fixed here): `routing_head_weights` is a single global
+    // row (`WHERE id = 1`, last-write-wins upsert — crates/zeph-memory/src/store/skills.rs).
+    // Concurrent ACP sessions each load their own in-memory head from that row and persist back
+    // independently, so concurrent multi-session RL routing can clobber each other's learned
+    // weights. Bounded risk: `rl_routing_enabled` defaults to `false`. See #5974 for
+    // per-conversation persistence keying or write serialization.
+    if let Some(dim) = d.rl_embed_dim_resolved {
+        let head = crate::runner::load_rl_head(&d.memory)
+            .await
+            .unwrap_or_else(|| {
+                tracing::info!(dim, "rl_head: cold start, initializing fresh routing head");
+                zeph_skills::rl_head::RoutingHead::new(dim)
+            });
+        agent = agent.with_rl_head(head);
+    }
 
     if let Some(ref logger) = d.audit_logger {
         agent = agent.with_audit_logger(std::sync::Arc::clone(logger));
@@ -3489,22 +3567,25 @@ mod tests {
         assert!(orch_cfg.enabled);
     }
 
-    /// #5818/#5827/#5867 regression: `build_acp_deps`/`assemble_serve_deps` must populate
-    /// `SharedAgentDeps`'s/`ServeAgentDeps`'s `skill_disambiguation_threshold`/
+    /// #5818/#5827/#5867/#5920/#5921 regression: `build_acp_deps`/`assemble_serve_deps` must
+    /// populate `SharedAgentDeps`'s/`ServeAgentDeps`'s `skill_disambiguation_threshold`/
     /// `skill_two_stage_matching`/`skill_confusability_threshold`/`skill_group_structured`/
     /// `skill_support_similarity_threshold`/`skill_min_injection_score`/
     /// `skill_generation_provider`/`skill_disambiguate_provider`/`semantic_scan`/
-    /// `semantic_scan_provider` from `config.skills.*` — previously these fields did not exist on
-    /// either deps struct at all, so neither `spawn_acp_agent` nor `build_agent_factory` could
-    /// call `Agent::with_skill_matching_config`/`with_skill_group_config`/
-    /// `with_skill_provider_names`/`with_semantic_scan`, and every ACP/`/sessions` agent silently
-    /// ran skill matching, `GoSkills` grouping/injection scoring, and semantic scanning on
+    /// `semantic_scan_provider`/`trust_config`/`rl_routing_enabled`/`rl_learning_rate`/
+    /// `rl_weight`/`rl_persist_interval`/`rl_warmup_updates`/`rl_embed_dim_resolved` from
+    /// `config.skills.*` — previously these fields did not exist on either deps struct at all,
+    /// so neither `spawn_acp_agent` nor `build_agent_factory` could call
+    /// `Agent::with_skill_matching_config`/`with_skill_group_config`/
+    /// `with_skill_provider_names`/`with_semantic_scan`/`with_trust_config`/`with_rl_routing`,
+    /// and every ACP/`/sessions` agent silently ran skill matching, `GoSkills`
+    /// grouping/injection scoring, semantic scanning, trust classification, and RL routing on
     /// hardcoded builder defaults regardless of config. `group_structured`/
     /// `support_similarity_threshold`/`min_injection_score` (#5867) went through the identical
     /// gap one PR later than `disambiguation_threshold`/`two_stage_matching`/
-    /// `confusability_threshold` (#5818) — same deps-population seam, added to this test rather
-    /// than a new one since `build_combined_deps` assembles all `config.skills.*` fields in one
-    /// pass.
+    /// `confusability_threshold` (#5818); `trust_config`/RL fields (#5920/#5921) went through it
+    /// again — same deps-population seam, added to this test rather than a new one since
+    /// `build_combined_deps` assembles all `config.skills.*` fields in one pass.
     ///
     /// Drives the real production `build_combined_deps` (mirroring
     /// `crate::serve::test_support::build_shared_pair`'s use of a mock-provider
@@ -3512,12 +3593,29 @@ mod tests {
     /// either config-to-deps mapping (e.g. a swapped field, or one silently dropped) is caught —
     /// covers both call sites in one test since `build_combined_deps` assembles both structs from
     /// one `SharedCore`. Stops at the deps struct: it does not construct a real `Agent` via
-    /// `spawn_acp_agent`/`build_agent_factory`, so the deps→`Agent`
-    /// (`with_skill_group_config`) step for the ACP path specifically is covered separately by
-    /// `build_agent_factory_wires_skill_group_config` (`src/serve/agent_factory.rs`) for the
-    /// `/sessions` path only — see handoff for the ACP-specific gap this leaves open.
+    /// `spawn_acp_agent`/`build_agent_factory`, so the deps→`Agent` step for the ACP path
+    /// specifically is covered separately by `build_agent_factory_wires_skill_group_config` /
+    /// `build_agent_factory_wires_trust_and_rl_config` (`src/serve/agent_factory.rs`) for the
+    /// `/sessions` path only.
+    ///
+    /// **Known gap, not closed by this fix, tracked in #5887**: unlike `build_daemon_agent`/
+    /// `build_agent_factory`, `spawn_acp_agent` returns `()`, not `Agent<C>` — it builds the
+    /// agent, then internally drives `load_history()`/`run()`/`shutdown()` for the session's
+    /// full lifetime, so there is no seam to call `.handle_skills("trust")` on a real
+    /// ACP-path-constructed `Agent` without extracting a `build_acp_agent`-style helper (the
+    /// same pattern `build_daemon_agent`/`build_agent` already use — see #5819). #5887 ("extract
+    /// shared Agent skill-config builder chain duplicated across runner/daemon/acp/serve") is
+    /// the tracked follow-up for that extraction — it already covers `spawn_acp_agent`'s
+    /// construction complexity as the reason this hasn't happened yet, so a real Agent-level ACP
+    /// test falls out of #5887, not a new issue. Doing that extraction inside a "fix review
+    /// issues" pass on a P1 security-relevant construction path (~250 lines of session-scoped
+    /// setup — MCP wiring, policy enforcers, session hydration with spawned cancel-bridging
+    /// tasks — would need to move) was judged out of scope here; this deps-level test plus code
+    /// review is the coverage accepted for the ACP path specifically, same as the pre-existing
+    /// accepted gap this test's own history already documents for `skill_group_config`.
     #[cfg(all(feature = "acp-http", feature = "session"))]
     #[tokio::test]
+    #[allow(clippy::too_many_lines)] // exhaustive field-by-field assertions across 2 deps structs
     async fn build_combined_deps_wires_skill_matching_config_from_config() {
         let mut config =
             zeph_core::config::Config::load(std::path::Path::new("/nonexistent")).unwrap();
@@ -3538,6 +3636,16 @@ mod tests {
         config.skills.disambiguate_provider = zeph_common::ProviderName::new("disamb-test");
         config.skills.semantic_scan = true;
         config.skills.semantic_scan_provider = zeph_common::ProviderName::new("scan-test");
+        config.skills.trust.default_level = zeph_common::SkillTrustLevel::Quarantined;
+        config.skills.trust.local_level = zeph_common::SkillTrustLevel::Trusted;
+        config.skills.rl_routing_enabled = true;
+        config.skills.rl_learning_rate = 0.05;
+        config.skills.rl_weight = 0.3;
+        config.skills.rl_persist_interval = 5;
+        config.skills.rl_warmup_updates = 3;
+        // Explicit dim avoids a live embedding-provider probe (resolve_rl_embed_dim falls back
+        // to a network call against config.llm.providers' unreachable 127.0.0.1:1 otherwise).
+        config.skills.rl_embed_dim = Some(8);
 
         let app = crate::bootstrap::AppBuilder::for_test(config);
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -3578,6 +3686,43 @@ mod tests {
             "config.skills.semantic_scan must flow into ServeAgentDeps"
         );
         assert_eq!(serve_deps.semantic_scan_provider, "scan-test");
+        assert_eq!(
+            serve_deps.trust_config.default_level,
+            zeph_common::SkillTrustLevel::Quarantined,
+            "config.skills.trust.default_level must flow into ServeAgentDeps"
+        );
+        assert_eq!(
+            serve_deps.trust_config.local_level,
+            zeph_common::SkillTrustLevel::Trusted,
+            "config.skills.trust.local_level must flow into ServeAgentDeps"
+        );
+        assert!(
+            serve_deps.rl_routing_enabled,
+            "config.skills.rl_routing_enabled must flow into ServeAgentDeps"
+        );
+        assert!(
+            (serve_deps.rl_learning_rate - 0.05).abs() < f32::EPSILON,
+            "config.skills.rl_learning_rate must flow into ServeAgentDeps"
+        );
+        assert!(
+            (serve_deps.rl_weight - 0.3).abs() < f32::EPSILON,
+            "config.skills.rl_weight must flow into ServeAgentDeps"
+        );
+        assert_eq!(
+            serve_deps.rl_persist_interval, 5,
+            "config.skills.rl_persist_interval must flow into ServeAgentDeps"
+        );
+        assert_eq!(
+            serve_deps.rl_warmup_updates, 3,
+            "config.skills.rl_warmup_updates must flow into ServeAgentDeps"
+        );
+        assert_eq!(
+            serve_deps.rl_embed_dim_resolved,
+            Some(8),
+            "the resolved RL embed dim (SharedCore::rl_embed_dim_resolved) must flow into \
+             ServeAgentDeps, proving build_shared_core's pre-computation reaches both deps \
+             structs from one shared value"
+        );
 
         assert!(
             (acp_deps.skill_disambiguation_threshold - 0.55).abs() < f32::EPSILON,
@@ -3610,6 +3755,43 @@ mod tests {
             "config.skills.semantic_scan must flow into SharedAgentDeps"
         );
         assert_eq!(acp_deps.semantic_scan_provider, "scan-test");
+        assert_eq!(
+            acp_deps.trust_config.default_level,
+            zeph_common::SkillTrustLevel::Quarantined,
+            "config.skills.trust.default_level must flow into SharedAgentDeps"
+        );
+        assert_eq!(
+            acp_deps.trust_config.local_level,
+            zeph_common::SkillTrustLevel::Trusted,
+            "config.skills.trust.local_level must flow into SharedAgentDeps"
+        );
+        assert!(
+            acp_deps.rl_routing_enabled,
+            "config.skills.rl_routing_enabled must flow into SharedAgentDeps"
+        );
+        assert!(
+            (acp_deps.rl_learning_rate - 0.05).abs() < f32::EPSILON,
+            "config.skills.rl_learning_rate must flow into SharedAgentDeps"
+        );
+        assert!(
+            (acp_deps.rl_weight - 0.3).abs() < f32::EPSILON,
+            "config.skills.rl_weight must flow into SharedAgentDeps"
+        );
+        assert_eq!(
+            acp_deps.rl_persist_interval, 5,
+            "config.skills.rl_persist_interval must flow into SharedAgentDeps"
+        );
+        assert_eq!(
+            acp_deps.rl_warmup_updates, 3,
+            "config.skills.rl_warmup_updates must flow into SharedAgentDeps"
+        );
+        assert_eq!(
+            acp_deps.rl_embed_dim_resolved,
+            Some(8),
+            "the resolved RL embed dim (SharedCore::rl_embed_dim_resolved) must flow into \
+             SharedAgentDeps, proving build_shared_core's pre-computation reaches both deps \
+             structs from one shared value"
+        );
     }
 
     #[tokio::test]

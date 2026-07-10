@@ -85,6 +85,30 @@ pub(crate) async fn build_agent_factory(
         (None, Vec::new())
     };
 
+    // SkillOrchestra: load persisted RL routing head weights, if enabled (#5921) — mirrors
+    // `src/runner.rs`/`src/daemon.rs`'s cold-start/load pattern. Must happen here, in the async
+    // prefix, since the returned closure is a plain synchronous `FnOnce` (see module docs) and
+    // cannot `.await`. `deps.rl_embed_dim_resolved` is pre-computed once in
+    // `crate::acp::build_shared_core`, shared across every session built from that core.
+    // NOTE (S3, known limitation, not fixed here): `routing_head_weights` is a single global
+    // row (`WHERE id = 1`, last-write-wins upsert — crates/zeph-memory/src/store/skills.rs).
+    // Concurrent `/sessions` agents each load their own in-memory head from that row and
+    // persist back independently, so concurrent multi-session RL routing can clobber each
+    // other's learned weights. Bounded risk: `rl_routing_enabled` defaults to `false`. See
+    // #5974 for per-conversation persistence keying or write serialization.
+    let rl_head = if let Some(dim) = deps.rl_embed_dim_resolved {
+        Some(
+            crate::runner::load_rl_head(&deps.memory)
+                .await
+                .unwrap_or_else(|| {
+                    tracing::info!(dim, "rl_head: cold start, initializing fresh routing head");
+                    zeph_skills::rl_head::RoutingHead::new(dim)
+                }),
+        )
+    } else {
+        None
+    };
+
     move |channel| {
         // Capture before apply_session_config consumes deps.session_config (mirrors
         // spawn_acp_agent's debug_config capture in src/acp.rs).
@@ -114,6 +138,14 @@ pub(crate) async fn build_agent_factory(
             deps.skill_disambiguate_provider,
         )
         .with_semantic_scan(deps.semantic_scan, deps.semantic_scan_provider)
+        .with_trust_config(deps.trust_config)
+        .with_rl_routing(
+            deps.rl_routing_enabled,
+            deps.rl_learning_rate,
+            deps.rl_weight,
+            deps.rl_persist_interval,
+            deps.rl_warmup_updates,
+        )
         .with_memory(
             Arc::clone(&deps.memory),
             conversation_id,
@@ -126,6 +158,9 @@ pub(crate) async fn build_agent_factory(
         .with_provider_pool(deps.provider_pool, deps.provider_config_snapshot);
         if !preloaded_messages.is_empty() {
             agent = agent.with_preloaded_messages(preloaded_messages);
+        }
+        if let Some(head) = rl_head {
+            agent = agent.with_rl_head(head);
         }
         if debug_config.enabled {
             // Session-id subdirectory prefix (I2, matches spawn_acp_agent) so concurrent
@@ -509,6 +544,13 @@ mod tests {
             skill_disambiguate_provider: String::new(),
             semantic_scan: false,
             semantic_scan_provider: String::new(),
+            trust_config: zeph_core::config::TrustConfig::default(),
+            rl_routing_enabled: false,
+            rl_learning_rate: 0.0,
+            rl_weight: 0.0,
+            rl_persist_interval: 0,
+            rl_warmup_updates: 0,
+            rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             memory: Arc::clone(&memory),
             history_limit: 10,
@@ -579,6 +621,13 @@ mod tests {
             skill_disambiguate_provider: String::new(),
             semantic_scan: false,
             semantic_scan_provider: String::new(),
+            trust_config: zeph_core::config::TrustConfig::default(),
+            rl_routing_enabled: false,
+            rl_learning_rate: 0.0,
+            rl_weight: 0.0,
+            rl_persist_interval: 0,
+            rl_warmup_updates: 0,
+            rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             memory: Arc::clone(&memory),
             history_limit: 10,
@@ -676,6 +725,13 @@ mod tests {
             skill_disambiguate_provider: "dis".to_owned(),
             semantic_scan: false,
             semantic_scan_provider: String::new(),
+            trust_config: zeph_core::config::TrustConfig::default(),
+            rl_routing_enabled: false,
+            rl_learning_rate: 0.0,
+            rl_weight: 0.0,
+            rl_persist_interval: 0,
+            rl_warmup_updates: 0,
+            rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             memory: Arc::clone(&memory),
             history_limit: 10,
@@ -758,6 +814,13 @@ mod tests {
             skill_disambiguate_provider: String::new(),
             semantic_scan: false,
             semantic_scan_provider: String::new(),
+            trust_config: zeph_core::config::TrustConfig::default(),
+            rl_routing_enabled: false,
+            rl_learning_rate: 0.0,
+            rl_weight: 0.0,
+            rl_persist_interval: 0,
+            rl_warmup_updates: 0,
+            rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             memory: Arc::clone(&memory),
             history_limit: 10,
@@ -786,6 +849,95 @@ mod tests {
             "ServeAgentDeps::skill_group_structured/skill_support_similarity_threshold/\
              skill_min_injection_score must reach the built Agent exactly via \
              with_skill_group_config; got: {output}"
+        );
+    }
+
+    /// #5920/#5921 regression: `build_agent_factory` must call `Agent::with_trust_config` and
+    /// `Agent::with_rl_routing`/`with_rl_head` so `ServeAgentDeps::trust_config`/
+    /// `rl_routing_enabled`/`rl_embed_dim_resolved` reach the built `Agent` — previously these
+    /// fields did not exist on `ServeAgentDeps` at all, so every `/sessions`-created agent
+    /// silently ran skill trust classification and `SkillOrchestra` RL routing on hardcoded
+    /// builder defaults regardless of config. Mirrors
+    /// `build_agent_factory_wires_skill_group_config` above for the same wire-X-into-
+    /// ACP/serve/daemon defect class, applied to trust config and RL routing this time. Asserts
+    /// the exact `/skills trust` `Display` output, not just "non-default", so a swapped
+    /// argument or a dropped `.with_trust_config(...)`/`.with_rl_routing(...)` call would also
+    /// be caught. `rl_embed_dim_resolved: Some(8)` also exercises the RL-head cold-start path
+    /// (`build_agent_factory`'s async prefix, since the returned closure cannot `.await`).
+    #[tokio::test]
+    async fn build_agent_factory_wires_trust_and_rl_config() {
+        use zeph_commands::traits::agent::AgentAccess as _;
+
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("trust-rl-config-test-session");
+
+        let config = zeph_core::config::Config::default();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+
+        let trust_config = zeph_core::config::TrustConfig {
+            default_level: zeph_common::SkillTrustLevel::Quarantined,
+            local_level: zeph_common::SkillTrustLevel::Trusted,
+            bundled_level: zeph_common::SkillTrustLevel::Verified,
+            hash_mismatch_level: zeph_common::SkillTrustLevel::Blocked,
+            ..Default::default()
+        };
+
+        let deps = ServeAgentDeps {
+            provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            embedding_provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            registry: Arc::new(parking_lot::RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: None,
+            max_active_skills: 5,
+            skill_disambiguation_threshold: 0.2,
+            skill_two_stage_matching: false,
+            skill_confusability_threshold: 0.0,
+            skill_group_structured: false,
+            skill_support_similarity_threshold: 0.50,
+            skill_min_injection_score: 0.20,
+            skill_generation_provider: String::new(),
+            skill_disambiguate_provider: String::new(),
+            semantic_scan: false,
+            semantic_scan_provider: String::new(),
+            trust_config,
+            rl_routing_enabled: true,
+            rl_learning_rate: 0.05,
+            rl_weight: 0.3,
+            rl_persist_interval: 5,
+            rl_warmup_updates: 3,
+            rl_embed_dim_resolved: Some(8),
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            memory: Arc::clone(&memory),
+            history_limit: 10,
+            recall_limit: 5,
+            summarization_threshold: 1000,
+            session_config,
+            session_persistence_config: zeph_config::SessionConfig::default(),
+            resume_condenser: Arc::new(condenser),
+            resume_token_counter: Arc::new(token_counter),
+            provider_pool: Vec::new(),
+            provider_config_snapshot: zeph_core::ProviderConfigSnapshot::default(),
+        };
+
+        let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let mut agent = build_agent(channel);
+
+        let output = agent
+            .handle_skills("trust")
+            .await
+            .expect("handle_skills(\"trust\") must not error");
+        assert_eq!(
+            output,
+            "Skill trust config: default_level=Quarantined, local_level=Trusted, \
+             bundled_level=Verified, hash_mismatch_level=Blocked | RL routing: enabled=true, \
+             rl_head_loaded=true",
+            "ServeAgentDeps::trust_config/rl_routing_enabled/rl_embed_dim_resolved must reach \
+             the built Agent exactly via with_trust_config/with_rl_routing/with_rl_head; got: \
+             {output}"
         );
     }
 
@@ -836,6 +988,13 @@ mod tests {
             // left on their hardcoded defaults.
             semantic_scan: true,
             semantic_scan_provider: "scan-test-provider".to_owned(),
+            trust_config: zeph_core::config::TrustConfig::default(),
+            rl_routing_enabled: false,
+            rl_learning_rate: 0.0,
+            rl_weight: 0.0,
+            rl_persist_interval: 0,
+            rl_warmup_updates: 0,
+            rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             memory: Arc::clone(&memory),
             history_limit: 10,

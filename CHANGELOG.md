@@ -96,6 +96,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   relying on `build.warnings` for the other two — which the job's own `CARGO_BUILD_WARNINGS:
   allow` override disabled) so the cleanup has a standing regression guardrail instead of a
   one-time sweep (#5894).
+- `fix(skills)`: `AgentBuilder::with_trust_config` (the operator's `[skills.trust]`
+  `default_level`/`local_level`/`bundled_level`/`hash_mismatch_level`/`scan_on_load` policy) and
+  the one-time skill-trust-DB seeding step were previously wired only into `src/runner.rs`
+  (#5920, P1/security). A skill discovered by an ACP, daemon, or `/sessions`-created agent with no
+  prior trust-DB row fell back to `SkillTrustLevel::MISSING_ENTRY_FALLBACK` (**Trusted**, fail
+  **open**) rather than the operator's configured policy — a `hash_mismatch_level = "blocked"`
+  tightening, for example, was silently downgraded and un-sanitized skill bodies were injected for
+  these three entry points regardless of configuration. The trust-DB seeding block (previously a
+  CLI-only inline sequence in `runner.rs`) is now extracted into a shared
+  `AppBuilder::seed_skill_trust_db` helper called from all four entry points
+  (`runner.rs`/`daemon.rs`/`acp.rs`/`serve/agent_factory.rs`), and `.with_trust_config(...)` is now
+  called from every one of them. Separately, `AgentBuilder::with_rl_head`/`with_rl_routing` (the
+  SkillOrchestra REINFORCE-trained skill re-ranking head) were wired only into
+  `runner.rs`/`daemon.rs`, leaving ACP and `/sessions`-created agents permanently on pure-cosine
+  skill matching regardless of persisted RL weights (#5921, P2); `acp.rs` and
+  `serve/agent_factory.rs` now load-or-cold-start the head identically to `daemon.rs`. Concurrent
+  RL-enabled ACP/serve sessions sharing the single persisted `routing_head_weights` row can still
+  lose updates to each other (last-write-wins); this is documented at both call sites and tracked
+  separately (#5974), bounded by `rl_routing_enabled` defaulting to `false`.
 - `fix(llm)`: swept superseded Claude model IDs (`claude-sonnet-4-6`, `claude-opus-4-6`) to the
   current recommended defaults (`claude-sonnet-5`, `claude-opus-4-8`) across docs, config
   examples, source comments, and test fixtures. `ClaudeProvider::new()`'s staleness warning

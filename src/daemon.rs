@@ -343,6 +343,7 @@ where
     .with_skill_reload(deps.skill_paths, deps.reload_rx)
     .with_plugin_dirs_supplier(deps.plugin_dirs_supplier)
     .with_managed_skills_dir(crate::bootstrap::managed_skills_dir())
+    .with_trust_config(config.skills.trust.clone())
     .with_memory(
         deps.memory,
         deps.conversation_id,
@@ -421,6 +422,12 @@ pub(crate) async fn run_daemon(
         .await;
     let skill_count = all_meta_owned.len();
     tracing::info!("skills loaded: {skill_count}");
+
+    // Populate trust DB for all loaded skills (#5920: daemon.rs previously never called this,
+    // leaving every skill without a pre-existing trust row fail-open to Trusted
+    // (SkillTrustLevel::MISSING_ENTRY_FALLBACK) — un-sanitized bodies with full tool access
+    // instead of the operator's configured restriction).
+    app.seed_skill_trust_db(&all_meta_owned, &memory).await;
 
     let conversation_id = match memory.sqlite().latest_conversation_id().await? {
         Some(id) => id,
@@ -1357,6 +1364,82 @@ mod tests {
              min_injection_score=0.35",
             "config.skills.group_structured/support_similarity_threshold/min_injection_score \
              must reach the built Agent exactly via with_skill_group_config; got: {output}"
+        );
+    }
+
+    /// #5920/#5921 regression: `build_daemon_agent` must call `Agent::with_trust_config` and
+    /// `Agent::with_rl_routing` so `config.skills.trust.*`/`rl_routing_enabled` reach the real,
+    /// constructed `Agent` via the same `AgentBuilder` chain `run_daemon()` actually uses at
+    /// startup — the same wire-X-into-ACP/serve/daemon defect class as
+    /// `build_daemon_agent_wires_skill_group_config` above (#5867), applied to skill trust
+    /// config and the `SkillOrchestra` RL routing head this time. Asserts the exact `/skills
+    /// trust` `Display` output, not just "non-default", so a swapped argument or a dropped
+    /// `.with_trust_config(...)`/`.with_rl_routing(...)` call would also be caught.
+    #[tokio::test]
+    async fn build_daemon_agent_wires_trust_and_rl_config() {
+        use zeph_commands::traits::agent::AgentAccess as _;
+
+        let memory = make_daemon_test_memory().await;
+        let conversation_id = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut config = Config::default();
+        config.skills.trust.default_level = zeph_common::SkillTrustLevel::Quarantined;
+        config.skills.trust.local_level = zeph_common::SkillTrustLevel::Trusted;
+        config.skills.trust.bundled_level = zeph_common::SkillTrustLevel::Verified;
+        config.skills.trust.hash_mismatch_level = zeph_common::SkillTrustLevel::Blocked;
+        config.skills.rl_routing_enabled = true;
+
+        let (_reload_tx, reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_config_reload_tx, config_reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let shell_policy_handle =
+            zeph_tools::ShellExecutor::new(&zeph_tools::ShellConfig::default()).policy_handle();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let provider_config_snapshot = crate::agent_setup::build_provider_config_snapshot(&config);
+        let mcp_manager = std::sync::Arc::new(crate::bootstrap::create_mcp_manager_with_vault(
+            &config, false, None,
+        ));
+
+        let deps = BuildDaemonAgentDeps {
+            config: &config,
+            provider: mock_provider(),
+            embedding_provider: mock_provider(),
+            registry: std::sync::Arc::new(RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: None,
+            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::SetCwdExecutor)),
+            session_config,
+            skill_paths: Vec::new(),
+            reload_rx,
+            plugin_dirs_supplier: || Vec::<PathBuf>::new(),
+            memory: std::sync::Arc::clone(&memory),
+            conversation_id,
+            shutdown_rx,
+            config_path: PathBuf::new(),
+            config_reload_rx,
+            shell_policy_handle,
+            mcp_tools: Vec::new(),
+            mcp_registry: None,
+            mcp_manager,
+            mcp_shared_tools: std::sync::Arc::new(RwLock::new(Vec::new())),
+            provider_config_snapshot,
+        };
+
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let mut agent = Box::pin(build_daemon_agent(deps, channel)).await;
+
+        let output = agent
+            .handle_skills("trust")
+            .await
+            .expect("handle_skills(\"trust\") must not error");
+        assert_eq!(
+            output,
+            "Skill trust config: default_level=Quarantined, local_level=Trusted, \
+             bundled_level=Verified, hash_mismatch_level=Blocked | RL routing: enabled=true, \
+             rl_head_loaded=false",
+            "config.skills.trust.*/rl_routing_enabled must reach the built Agent exactly via \
+             with_trust_config/with_rl_routing; got: {output}"
         );
     }
 

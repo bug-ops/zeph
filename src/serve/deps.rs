@@ -32,6 +32,7 @@ use zeph_tools::ErasedToolExecutor;
 /// `build_agent` factory (see `SessionActor::spawn`) clones the fields it needs — every field
 /// here is cheap to clone (`Arc`, `Clone` provider handles, or a `usize`/config snapshot).
 #[derive(Clone)]
+#[allow(clippy::struct_excessive_bools)] // independent boolean flags; mirrors src/acp.rs's SharedAgentDeps
 pub(crate) struct ServeAgentDeps {
     pub(crate) provider: AnyProvider,
     pub(crate) embedding_provider: AnyProvider,
@@ -59,6 +60,21 @@ pub(crate) struct ServeAgentDeps {
     /// (#5827: previously left on hardcoded builder defaults for `/sessions`).
     pub(crate) semantic_scan: bool,
     pub(crate) semantic_scan_provider: String,
+    /// `config.skills.trust`, wired into `Agent::with_trust_config` per session — mirrors
+    /// `src/runner.rs` and `src/daemon.rs` (#5920: previously left on `TrustConfig::default()`
+    /// for `/sessions` agents, silently ignoring the operator's configured trust levels).
+    pub(crate) trust_config: zeph_core::config::TrustConfig,
+    /// `config.skills.rl_routing_enabled`/`rl_learning_rate`/`rl_weight`/`rl_persist_interval`/
+    /// `rl_warmup_updates`, wired into `Agent::with_rl_routing` per session, plus the resolved
+    /// embed dim (`crate::acp::SharedCore::rl_embed_dim_resolved`) used to load/cold-start an
+    /// `RL` head via `Agent::with_rl_head` — mirrors `src/runner.rs` and `src/daemon.rs`
+    /// (#5921: previously never wired for `/sessions` agents).
+    pub(crate) rl_routing_enabled: bool,
+    pub(crate) rl_learning_rate: f32,
+    pub(crate) rl_weight: f32,
+    pub(crate) rl_persist_interval: u32,
+    pub(crate) rl_warmup_updates: u32,
+    pub(crate) rl_embed_dim_resolved: Option<usize>,
     pub(crate) tool_executor: Arc<dyn ErasedToolExecutor>,
     pub(crate) memory: Arc<SemanticMemory>,
     pub(crate) history_limit: u32,
@@ -199,6 +215,13 @@ pub(crate) async fn assemble_serve_deps(
         skill_disambiguate_provider: config.skills.disambiguate_provider.as_str().to_owned(),
         semantic_scan: config.skills.semantic_scan,
         semantic_scan_provider: config.skills.semantic_scan_provider.as_str().to_owned(),
+        trust_config: config.skills.trust.clone(),
+        rl_routing_enabled: config.skills.rl_routing_enabled,
+        rl_learning_rate: config.skills.rl_learning_rate,
+        rl_weight: config.skills.rl_weight,
+        rl_persist_interval: config.skills.rl_persist_interval,
+        rl_warmup_updates: config.skills.rl_warmup_updates,
+        rl_embed_dim_resolved: core.rl_embed_dim_resolved,
         tool_executor,
         memory: Arc::clone(&core.memory),
         history_limit,

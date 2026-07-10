@@ -539,6 +539,108 @@ async fn create_skill_matcher_when_semantic_disabled() {
     assert!(result.is_none());
 }
 
+/// Regression test for #5920: `seed_skill_trust_db` — extracted from `runner.rs`'s previously
+/// CLI-only inline block so `daemon.rs`/`acp.rs`/`serve/*` seed trust rows at construction time
+/// too.
+///
+/// Covers both directions of the security-relevant classification:
+/// - **Permissive**: a locally-sourced skill lands at `config.skills.trust.local_level`
+///   (`Trusted`), not silently left at
+///   `zeph_common::SkillTrustLevel::MISSING_ENTRY_FALLBACK` (also `Trusted` — the missing-row
+///   fallback is fail-*open*, not fail-closed; see the constant's own doc comment). This
+///   direction alone proves config is read but has no security value on its own.
+/// - **Restrictive**: after the skill's `SKILL.md` content changes (hash mismatch against the
+///   already-seeded row), a second seeding pass demotes it to
+///   `config.skills.trust.hash_mismatch_level` (`Quarantined`) — this is the direction that
+///   actually matters for #5920: an operator's restrictive classification must land in the DB,
+///   not be skipped because daemon/ACP/serve never called this seeding step at all.
+#[tokio::test]
+async fn seed_skill_trust_db_applies_configured_local_level() {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let skill_dir = tmp_dir.path().join("my-skill");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(skill_dir.join("SKILL.md"), "# My Skill\n").unwrap();
+
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.skills.trust.default_level = zeph_common::SkillTrustLevel::Quarantined;
+    config.skills.trust.local_level = zeph_common::SkillTrustLevel::Trusted;
+    config.skills.trust.hash_mismatch_level = zeph_common::SkillTrustLevel::Quarantined;
+
+    let builder = AppBuilder {
+        config,
+        config_path: PathBuf::from("/nonexistent/config.toml"),
+        vault: Box::new(EnvVaultProvider),
+        age_vault: None,
+        qdrant_ops: None,
+        resolved_overlay: zeph_plugins::ResolvedOverlay::default(),
+        secret_registry: None,
+    };
+
+    let provider = AnyProvider::Ollama(OllamaProvider::new(
+        "http://localhost:11434",
+        "test".into(),
+        "embed".into(),
+    ));
+    let memory = SemanticMemory::new(
+        ":memory:",
+        "http://127.0.0.1:1",
+        None,
+        provider,
+        "test-model",
+    )
+    .await
+    .unwrap();
+
+    let meta = SkillMeta {
+        name: "my-skill".to_owned(),
+        description: "test skill".to_owned(),
+        skill_dir: skill_dir.clone(),
+        ..Default::default()
+    };
+
+    builder
+        .seed_skill_trust_db(std::slice::from_ref(&meta), &memory)
+        .await;
+
+    let row = memory
+        .sqlite()
+        .load_skill_trust("my-skill")
+        .await
+        .unwrap()
+        .expect("trust row must be seeded");
+    assert_eq!(
+        row.trust_level,
+        zeph_common::SkillTrustLevel::Trusted,
+        "local skill must be classified per config.skills.trust.local_level — this is the \
+         shared seeding logic now called by runner.rs/daemon.rs/acp.rs/serve/*"
+    );
+
+    // Restrictive direction (S2, the security-relevant one): change the skill's content so its
+    // hash no longer matches the stored row, then re-seed. A stale seeding path (or one that
+    // silently skips the hash-mismatch check) would leave this at Trusted — the fail-open
+    // posture #5920 exists to close.
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "# My Skill\n\ntampered content\n",
+    )
+    .unwrap();
+    builder.seed_skill_trust_db(&[meta], &memory).await;
+
+    let row_after_tamper = memory
+        .sqlite()
+        .load_skill_trust("my-skill")
+        .await
+        .unwrap()
+        .expect("trust row must still exist after re-seeding");
+    assert_eq!(
+        row_after_tamper.trust_level,
+        zeph_common::SkillTrustLevel::Quarantined,
+        "a skill whose content hash no longer matches the stored row must be demoted to \
+         config.skills.trust.hash_mismatch_level, not left at its prior Trusted level — this \
+         is the restrictive-direction check that actually proves the fail-open hole is closed"
+    );
+}
+
 #[test]
 fn appbuilder_qdrant_ops_invalid_url_returns_err() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
