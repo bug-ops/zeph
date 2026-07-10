@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+
+- `fix(session)`: `hydrate_from_event_log` (`crates/zeph-agent-persistence/src/hydrate.rs`) now
+  folds the replayed `messages` via `ReplayEngine::replay`'s bounded/chunked reader (spec-068
+  §6.2, ≤ 100 envelopes in memory at once) instead of `ReplayEngine::fold(events.clone(), up_to)`
+  — the clone doubled peak memory on top of the `events` `Vec` already held for
+  `reconcile_projection`/`Hydrated::events`, silently bypassing #5844's chunked-replay memory
+  bound on every session-resume path (ACP resume/load/fork, CLI `sessions resume`, `/conv
+  resume`). `events` is still fully read via `SessionEventLog::read_all` — a deliberate second
+  sequential I/O pass, not a second in-memory copy — since `reconcile_projection` and
+  `maybe_condense_on_resume` need the full owned event list (#5851).
+
+### Changed
+
+- `refactor(session)`: extracted a shared `finish_torn_tail` helper in
+  `crates/zeph-session/src/log.rs` for the identical torn-tail warn+repair epilogue duplicated
+  between `read_events` and `read_events_chunked` (#5852).
 
 ## [0.22.0] - 2026-07-07
 ### Added

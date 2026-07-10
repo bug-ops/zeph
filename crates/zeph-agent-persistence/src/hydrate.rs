@@ -11,6 +11,18 @@
 //! history instead of the durable log). [`hydrate_from_event_log`] is the single pipeline every
 //! session-open path must route through, so "which pipeline does resume use" cannot diverge
 //! again.
+//!
+//! The `messages` fold goes through [`zeph_session::ReplayEngine::replay`]'s bounded/chunked
+//! reader (spec-068 §6.2, ≤ 100 envelopes in memory at once) rather than
+//! [`zeph_session::ReplayEngine::fold`] on a cloned `Vec` (#5851) — before this fix,
+//! `hydrate_from_event_log` was not among the sanctioned whole-file-`Vec` exceptions the spec's
+//! §6.2 implementation note documents (`ForkEngine::fork`, `llm_condenser.rs`), so its
+//! `fold(events.clone(), up_to)` call defeated #5844's memory-bounding work for every resume.
+//! `events` itself is still fully materialized via [`zeph_session::SessionEventLog::read_all`],
+//! independently of the bounded fold: [`crate::reconcile::reconcile_projection`] and
+//! [`crate::maybe_condense_on_resume`] both need the full, owned event list rather than
+//! `messages`, so this second full read is a deliberate tradeoff (one extra sequential I/O
+//! pass, not a second in-memory copy) rather than a regression back to the pre-fix shape.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -109,11 +121,22 @@ pub async fn hydrate_from_event_log(
         tracing::warn!(error = %e, session_id, "legacy session lazy-bootstrap failed");
     }
 
+    // #5851 fix: fold via the bounded/chunked `ReplayEngine::replay` path (spec-068 §6.2, ≤ 100
+    // envelopes in memory at once) instead of `ReplayEngine::fold(events.clone(), up_to)`, which
+    // doubled peak memory here — the clone plus the `events` Vec below were both live at once.
+    // `replay` re-opens the log lockless (`SessionEventLog::open`, no `flock`), so it never
+    // contends with the exclusive-locked `log` handle already held above; this trades one extra
+    // sequential file read for eliminating the clone, which is the right tradeoff for NFR-P3
+    // (latency-bound, not read-count-bound).
+    let state = ReplayEngine::replay(session_path, up_to).await?;
+    // `events` is still fully materialized here — unlike `messages`, it cannot be produced from
+    // the bounded chunked path: `reconcile_projection` below and `Hydrated::events` (consumed by
+    // `crate::maybe_condense_on_resume`) both need the full, owned event list, not just the
+    // folded messages.
     let events = log.read_all().await?;
     let messages = if events.is_empty() {
         Vec::new()
     } else {
-        let state = ReplayEngine::fold(events.clone(), up_to);
         // INV-SP-3 (spec-068 §13): rebuild the SQLite `messages` projection forward from the log
         // when it trails the log's validated content (e.g. a crash between the JSONL append and
         // the SQLite write of the same turn). Not correctness-critical for `messages` (already
@@ -280,6 +303,88 @@ mod tests {
         // wrote through SessionSink/PersistenceService.
         let history = memory.sqlite().load_history(cid, 10).await.unwrap();
         assert_eq!(history.len(), 2);
+    }
+
+    /// #5851 regression: `up_to` must still bound `messages` when the fold goes through the
+    /// bounded/chunked `ReplayEngine::replay` path (post-fix) exactly as it did through
+    /// `ReplayEngine::fold(events.clone(), up_to)` (pre-fix) — the two prior tests in this module
+    /// only ever exercise `up_to = None`. Also pins down the pre-existing (unchanged by #5851)
+    /// asymmetry that `Hydrated::events` is always the *full*, unbounded log — only `messages` is
+    /// `up_to`-bounded — since `reconcile_projection`/`maybe_condense_on_resume` need the whole
+    /// event list regardless of the fold's fork-partial-history cutoff.
+    #[tokio::test]
+    async fn up_to_bounds_messages_but_not_events() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let store = SessionStore::new(memory.sqlite().pool().clone());
+        store.create("s1").await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::UserMessage {
+                text: "first".to_owned(),
+                image_refs: Vec::new(),
+            },
+        )
+        .await
+        .unwrap(); // seq 0
+        log.append(
+            None,
+            None,
+            SessionEvent::AssistantMessage {
+                parts: vec![MessagePart::Text {
+                    text: "first reply".to_owned(),
+                }],
+            },
+        )
+        .await
+        .unwrap(); // seq 1
+        log.append(
+            None,
+            None,
+            SessionEvent::UserMessage {
+                text: "second".to_owned(),
+                image_refs: Vec::new(),
+            },
+        )
+        .await
+        .unwrap(); // seq 2
+        log.append(
+            None,
+            None,
+            SessionEvent::AssistantMessage {
+                parts: vec![MessagePart::Text {
+                    text: "second reply".to_owned(),
+                }],
+            },
+        )
+        .await
+        .unwrap(); // seq 3
+        drop(log);
+
+        // up_to = 2 excludes events with seq >= 2, so only the first turn (seq 0, 1) is folded.
+        let hydrated = hydrate_from_event_log(dir.path(), &store, "s1", cid, &memory, Some(2))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            hydrated.messages.len(),
+            2,
+            "up_to must bound messages to the first turn only, through the bounded replay path"
+        );
+        assert_eq!(hydrated.messages[0].role, Role::User);
+        assert_eq!(hydrated.messages[1].role, Role::Assistant);
+
+        assert_eq!(
+            hydrated.events.len(),
+            4,
+            "Hydrated::events is always the full, unbounded log — up_to only bounds the fold, \
+             matching pre-#5851 behavior (reconcile_projection/maybe_condense_on_resume need the \
+             whole event list)"
+        );
     }
 
     /// #5646 regression: a session killed mid-tool-call (no `ToolResult` event ever appended)

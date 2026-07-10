@@ -317,6 +317,30 @@ async fn repair_torn_tail(path: &Path, valid_len: u64) -> Result<(), SessionErro
     Ok(())
 }
 
+/// Shared epilogue for [`read_events`] and [`read_events_chunked`]: warns once if a torn tail was
+/// detected (INV-SP-2), then physically repairs it when `repair` gating authorizes it.
+async fn finish_torn_tail(
+    path: &Path,
+    valid_len: u64,
+    repair: bool,
+    torn: bool,
+) -> Result<(), SessionError> {
+    if torn {
+        tracing::warn!(
+            path = %path.display(),
+            valid_len,
+            repair,
+            "dropped torn tail in session event log (INV-SP-2)"
+        );
+    }
+
+    if repair {
+        repair_torn_tail(path, valid_len).await?;
+    }
+
+    Ok(())
+}
+
 /// Read every valid line of `path`, dropping a garbled/incomplete trailing line from the
 /// in-memory result (INV-SP-2).
 ///
@@ -359,18 +383,7 @@ async fn read_events(
     let valid_len = lines.valid_len;
     drop(lines);
 
-    if torn {
-        tracing::warn!(
-            path = %path.display(),
-            valid_len,
-            repair,
-            "dropped torn tail in session event log (INV-SP-2)"
-        );
-    }
-
-    if repair {
-        repair_torn_tail(path, valid_len).await?;
-    }
+    finish_torn_tail(path, valid_len, repair, torn).await?;
 
     Ok((events, max_seq))
 }
@@ -427,18 +440,7 @@ async fn read_events_chunked(
     let valid_len = lines.valid_len;
     drop(lines);
 
-    if torn {
-        tracing::warn!(
-            path = %path.display(),
-            valid_len,
-            repair,
-            "dropped torn tail in session event log (INV-SP-2)"
-        );
-    }
-
-    if repair {
-        repair_torn_tail(path, valid_len).await?;
-    }
+    finish_torn_tail(path, valid_len, repair, torn).await?;
 
     Ok(())
 }
