@@ -772,17 +772,28 @@ impl<C: crate::channel::Channel> Agent<C> {
                     false
                 }
             };
-            if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
-                if approved {
-                    let ttl = std::time::Duration::from_mins(5);
-                    let key = req.secret_key.clone();
-                    if mgr.approve_secret(&req_handle_id, &key, ttl).is_ok() {
-                        let _ = mgr.deliver_secret(&req_handle_id, key);
+            if approved {
+                let ttl = std::time::Duration::from_mins(5);
+                let key = req.secret_key.clone();
+                let resolved = self.resolve_subagent_secret(&key);
+                if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
+                    if let Some(secret) = resolved {
+                        if mgr.approve_secret(&req_handle_id, &key, ttl).is_ok()
+                            && let Err(e) = mgr.deliver_secret(&req_handle_id, &key, secret)
+                        {
+                            tracing::warn!(error = %e, "sub-agent secret delivery failed");
+                            let _ = mgr.deny_secret(&req_handle_id);
+                        }
+                    } else {
+                        tracing::warn!(
+                            "sub-agent requested secret not resolvable from vault; denying"
+                        );
+                        let _ = mgr.deny_secret(&req_handle_id);
                     }
-                } else {
-                    denied.insert(deny_key);
-                    let _ = mgr.deny_secret(&req_handle_id);
                 }
+            } else if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
+                denied.insert(deny_key);
+                let _ = mgr.deny_secret(&req_handle_id);
             }
         }
     }

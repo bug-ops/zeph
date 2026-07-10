@@ -4,9 +4,11 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use zeph_common::secret::Secret;
+
 use super::SubAgentManager;
 use crate::error::SubAgentError;
-use crate::grants::SecretRequest;
+use crate::grants::{GrantKind, SecretRequest};
 
 /// Build the standard hook environment for a sub-agent lifecycle event.
 pub(crate) fn make_hook_env(
@@ -64,22 +66,44 @@ impl SubAgentManager {
         Ok(())
     }
 
-    /// Deliver a secret value to a waiting sub-agent loop.
+    /// Deliver a resolved secret value to a waiting sub-agent loop.
     ///
-    /// Should be called after the user approves the request and the vault value
-    /// has been resolved. Returns an error if no such agent is found.
+    /// Should be called after the user approves the request and the caller has resolved
+    /// `key` to its actual vault value (see [`approve_secret`](Self::approve_secret)).
+    /// Requires an active grant for `key` — delivery is refused if
+    /// [`approve_secret`](Self::approve_secret) was never called or the grant's TTL has
+    /// already elapsed, making
+    /// [`PermissionGrants::is_active`][crate::grants::PermissionGrants::is_active]
+    /// load-bearing rather than unused bookkeeping.
     ///
     /// # Errors
     ///
-    /// Returns [`SubAgentError::NotFound`] if the task ID is unknown.
-    pub fn deliver_secret(&mut self, task_id: &str, key: String) -> Result<(), SubAgentError> {
+    /// Returns [`SubAgentError::NotFound`] if the task ID is unknown, or
+    /// [`SubAgentError::Invalid`] if there is no active grant for `key`.
+    pub fn deliver_secret(
+        &mut self,
+        task_id: &str,
+        key: &str,
+        value: Secret,
+    ) -> Result<(), SubAgentError> {
         let handle = self
             .agents
             .get_mut(task_id)
             .ok_or_else(|| SubAgentError::NotFound(task_id.to_owned()))?;
+
+        if !handle.grants.is_active(&GrantKind::Secret(key.to_owned())) {
+            tracing::warn!(
+                task_id,
+                "secret delivery denied: no active grant (missing approval or TTL expired)"
+            );
+            return Err(SubAgentError::Invalid(
+                "no active grant for this secret".to_owned(),
+            ));
+        }
+
         handle
             .secret_tx
-            .try_send(Some(key))
+            .try_send(Some(value))
             .map_err(|e| SubAgentError::Channel(e.to_string()))
     }
 

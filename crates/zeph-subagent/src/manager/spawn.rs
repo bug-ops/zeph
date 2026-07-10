@@ -8,6 +8,7 @@ use std::time::Instant;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+use zeph_common::secret::Secret;
 use zeph_config::{BgIsolation, ContentIsolationConfig, SubAgentConfig};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, Role};
@@ -651,7 +652,7 @@ impl SubAgentManager {
         }
 
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
-        let (secret_tx, secret_rx) = mpsc::channel::<Option<String>>(4);
+        let (secret_tx, secret_rx) = mpsc::channel::<Option<Secret>>(4);
 
         let transcript_writer = self.create_transcript_writer(config, &task_id, &def.name, None);
 
@@ -1040,7 +1041,7 @@ impl SubAgentManager {
         }
 
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
-        let (secret_tx, secret_rx) = mpsc::channel::<Option<String>>(4);
+        let (secret_tx, secret_rx) = mpsc::channel::<Option<Secret>>(4);
 
         let transcript_writer =
             self.create_transcript_writer(config, &new_task_id, &def.name, Some(&original_id));

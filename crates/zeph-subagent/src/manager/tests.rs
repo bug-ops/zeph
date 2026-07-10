@@ -219,6 +219,87 @@ fn approve_secret_unknown_task_id_returns_not_found() {
     assert_matches!(err, SubAgentError::NotFound(_));
 }
 
+// ── deliver_secret grant-gating tests (#5941/#5942) ────────────────────────
+
+#[tokio::test]
+async fn deliver_secret_without_prior_approval_is_denied() {
+    // No approve_secret call at all — deliver_secret must refuse (no active grant).
+    let mut mgr = make_manager();
+    mgr.definitions.push(def_with_secrets());
+
+    let task_id = do_spawn(&mut mgr, "bot", "work").await.unwrap();
+    let err = mgr
+        .deliver_secret(
+            &task_id,
+            "api-key",
+            zeph_common::secret::Secret::new("sekrit"),
+        )
+        .unwrap_err();
+    assert_matches!(err, SubAgentError::Invalid(_));
+}
+
+#[tokio::test]
+async fn deliver_secret_for_different_key_than_approved_is_denied() {
+    // approve_secret grants "api-key"; deliver_secret is attempted for a different key.
+    let mut mgr = make_manager();
+    mgr.definitions.push(def_with_secrets());
+
+    let task_id = do_spawn(&mut mgr, "bot", "work").await.unwrap();
+    mgr.approve_secret(&task_id, "api-key", std::time::Duration::from_mins(1))
+        .unwrap();
+
+    let err = mgr
+        .deliver_secret(
+            &task_id,
+            "other-key",
+            zeph_common::secret::Secret::new("sekrit"),
+        )
+        .unwrap_err();
+    assert_matches!(err, SubAgentError::Invalid(_));
+}
+
+#[tokio::test]
+async fn deliver_secret_after_approval_sends_value_over_channel() {
+    // Positive path: approve_secret then deliver_secret with the SAME key succeeds and the
+    // resolved value is actually observable on the other end of secret_tx/secret_rx.
+    let mut mgr = make_manager();
+    mgr.definitions.push(def_with_secrets());
+
+    let task_id = do_spawn(&mut mgr, "bot", "work").await.unwrap();
+    mgr.approve_secret(&task_id, "api-key", std::time::Duration::from_mins(1))
+        .unwrap();
+
+    // Swap in a fresh channel pair we control so we can observe the receiver side —
+    // the handle's real secret_rx is owned by the (mocked) background agent loop task.
+    let (secret_tx, mut secret_rx) = tokio::sync::mpsc::channel(1);
+    mgr.agents.get_mut(&task_id).unwrap().secret_tx = secret_tx;
+
+    let result = mgr.deliver_secret(
+        &task_id,
+        "api-key",
+        zeph_common::secret::Secret::new("sekrit-value"),
+    );
+    assert!(
+        result.is_ok(),
+        "deliver_secret must succeed with an active grant"
+    );
+
+    let received = secret_rx
+        .try_recv()
+        .expect("value must be sent over the channel");
+    let secret = received.expect("delivered value must be Some, not a denial");
+    assert_eq!(secret.expose(), "sekrit-value");
+}
+
+#[test]
+fn deliver_secret_unknown_task_id_returns_not_found() {
+    let mut mgr = make_manager();
+    let err = mgr
+        .deliver_secret("unknown", "key", zeph_common::secret::Secret::new("sekrit"))
+        .unwrap_err();
+    assert_matches!(err, SubAgentError::NotFound(_));
+}
+
 #[tokio::test]
 async fn statuses_returns_active_agents() {
     let mut mgr = make_manager();
@@ -1881,7 +1962,8 @@ fn make_agent_loop_args(
         started_at: std::time::Instant::now(),
     });
     let (secret_request_tx, _secret_request_rx) = tokio::sync::mpsc::channel(1);
-    let (_secret_approved_tx, secret_rx) = tokio::sync::mpsc::channel::<Option<String>>(1);
+    let (_secret_approved_tx, secret_rx) =
+        tokio::sync::mpsc::channel::<Option<zeph_common::secret::Secret>>(1);
     AgentLoopArgs {
         provider,
         executor,

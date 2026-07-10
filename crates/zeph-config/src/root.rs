@@ -188,8 +188,12 @@ pub struct ResolvedSecrets {
     /// `skills.registry.auth_vault_key` when `skills.registry.enabled = true` (spec-045,
     /// #5869). `None` when the registry is disabled or `auth_vault_key` is unset.
     pub skill_registry_token: Option<Secret>,
-    /// Arbitrary skill secrets resolved from `ZEPH_SECRET_*` vault keys.
+    /// Arbitrary named secrets resolved from `ZEPH_SECRET_*` vault keys.
     /// Key is the lowercased name after stripping the prefix (e.g. `github_token`).
+    ///
+    /// Shared by two consumers: skill `requires_secrets` injection (see
+    /// `zeph-core::agent::tool_execution::inject_active_skill_env`) and sub-agent
+    /// `permissions.secrets` approval (see `zeph-core::agent::subagent_commands::resolve_subagent_secret`).
     pub custom: HashMap<String, Secret>,
 }
 

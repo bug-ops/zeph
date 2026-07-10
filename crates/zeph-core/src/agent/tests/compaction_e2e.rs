@@ -216,8 +216,14 @@ async fn subagent_spawn_text_collect_e2e() {
 ///
 /// Verifies that when a sub-agent emits [`REQUEST_SECRET`: api-key], the bridge:
 /// - calls `channel.confirm()` with a prompt containing the key name
-/// - on approval, delivers the secret to the sub-agent
+/// - resolves the key against `available_custom_secrets` (the vault-backed map)
+/// - on approval, delivers the *resolved value* (not the bare key name) to the sub-agent
 /// The `MockChannel` `confirm()` is pre-loaded with `true` (approve).
+///
+/// #5941/#5942 regression: previously the raw key NAME was forwarded as if it were the
+/// value, and no vault resolution ever happened. `available_custom_secrets` is populated
+/// here specifically so this test would have caught that bug — the pre-fix version of this
+/// test passed regardless of whether the value was actually resolvable.
 #[tokio::test]
 async fn foreground_spawn_secret_bridge_approves() {
     use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
@@ -227,10 +233,12 @@ async fn foreground_spawn_secret_bridge_approves() {
     // Sub-agent loop responses:
     //   turn 1: request a secret
     //   turn 2: final reply after secret delivered
-    let provider = mock_provider(vec![
+    let (mock, recorded) = MockProvider::with_responses(vec![
         "[REQUEST_SECRET: api-key]".into(),
         "done with secret".into(),
-    ]);
+    ])
+    .with_recording();
+    let provider = AnyProvider::Mock(mock);
 
     // MockChannel with confirm() → true (approve)
     let channel = MockChannel::new(vec![]).with_confirmations(vec![true]);
@@ -238,6 +246,13 @@ async fn foreground_spawn_secret_bridge_approves() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+    // Vault-resolved secret available under the normalized key — this is what
+    // `Agent::resolve_subagent_secret` looks up when the sub-agent requests "api-key".
+    agent.services.skill.available_custom_secrets.insert(
+        "api_key".to_owned(),
+        crate::vault::Secret::new("sk-live-resolved-value".to_owned()),
+    );
 
     let mut mgr = SubAgentManager::new(4);
     mgr.definitions_mut().push(SubAgentDef {
@@ -281,6 +296,33 @@ async fn foreground_spawn_secret_bridge_approves() {
     assert!(
         resp.contains("completed"),
         "sub-agent must complete successfully; got: {resp}"
+    );
+
+    // The second LLM call (turn 2) must have received an "approved" reply, not a
+    // "denied" one — proving the resolved value cleared the grant gate in
+    // `SubAgentManager::deliver_secret` (PermissionGrants::is_active) rather than being
+    // silently discarded or auto-denied due to an unresolvable key.
+    let calls = recorded.lock().unwrap();
+    assert!(
+        calls.len() >= 2,
+        "expected at least 2 LLM calls (request + post-approval turn), got {}",
+        calls.len()
+    );
+    let turn2_messages = &calls[1];
+    let reply_text: String = turn2_messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        reply_text.contains("[secret:api-key] approved"),
+        "turn 2 must see an approval reply carrying the resolved value's availability, \
+         not a denial; got messages: {reply_text}"
+    );
+    assert!(
+        !reply_text.contains("[secret:api-key] request denied"),
+        "secret request must not have been denied when the key was resolvable from the \
+         vault-backed available_custom_secrets map; got: {reply_text}"
     );
 }
 

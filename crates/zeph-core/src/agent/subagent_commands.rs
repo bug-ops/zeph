@@ -16,6 +16,22 @@ use super::{Agent, error};
 use crate::channel::Channel;
 
 impl<C: Channel> Agent<C> {
+    /// Resolve a sub-agent's requested vault-secret key against the custom secrets already
+    /// resolved from the vault at startup (`ZEPH_SECRET_<NAME>` keys — the same pre-resolved
+    /// map used for skill `requires_secrets` injection, see `tool_execution::inject_active_skill_env`).
+    ///
+    /// Matching is case-insensitive with `-` normalized to `_`, mirroring the vault-key
+    /// naming convention (`ZEPH_SECRET_MY-KEY` and `ZEPH_SECRET_MY_KEY` both resolve to
+    /// `my_key`). Returns `None` when `key` was never resolved from the vault at startup.
+    pub(crate) fn resolve_subagent_secret(&self, key: &str) -> Option<crate::vault::Secret> {
+        let normalized = key.to_lowercase().replace('-', "_");
+        self.services
+            .skill
+            .available_custom_secrets
+            .get(&normalized)
+            .map(|s| crate::vault::Secret::new(s.expose().to_owned()))
+    }
+
     /// Poll all active sub-agents for completed/failed/canceled results.
     ///
     /// Non-blocking: returns immediately with a list of `(task_id, result)` pairs
@@ -140,16 +156,27 @@ impl<C: Channel> Agent<C> {
                     crate::text::truncate_to_chars(&req.secret_key, 100)
                 );
                 let approved = self.channel.confirm(&confirm_prompt).await.unwrap_or(false);
-                if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
-                    if approved {
-                        let ttl = std::time::Duration::from_mins(5);
-                        let key = req.secret_key.clone();
-                        if mgr.approve_secret(&req_task_id, &key, ttl).is_ok() {
-                            let _ = mgr.deliver_secret(&req_task_id, key);
+                if approved {
+                    let ttl = std::time::Duration::from_mins(5);
+                    let key = req.secret_key.clone();
+                    let resolved = self.resolve_subagent_secret(&key);
+                    if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
+                        if let Some(secret) = resolved {
+                            if mgr.approve_secret(&req_task_id, &key, ttl).is_ok()
+                                && let Err(e) = mgr.deliver_secret(&req_task_id, &key, secret)
+                            {
+                                tracing::warn!(error = %e, "sub-agent secret delivery failed");
+                                let _ = mgr.deny_secret(&req_task_id);
+                            }
+                        } else {
+                            tracing::warn!(
+                                "sub-agent requested secret not resolvable from vault; denying"
+                            );
+                            let _ = mgr.deny_secret(&req_task_id);
                         }
-                    } else {
-                        let _ = mgr.deny_secret(&req_task_id);
                     }
+                } else if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
+                    let _ = mgr.deny_secret(&req_task_id);
                 }
             }
 
@@ -272,23 +299,34 @@ impl<C: Channel> Agent<C> {
             Ok(fid) => fid,
             Err(msg) => return Some(msg),
         };
+        let req = {
+            let mgr = self.services.orchestration.subagent_manager.as_mut()?;
+            mgr.try_recv_secret_request()
+                .filter(|(tid, _)| *tid == full_id)
+        };
+        let Some((_, req)) = req else {
+            return Some(format!(
+                "No pending secret request for sub-agent '{full_id}'."
+            ));
+        };
+        let key = req.secret_key.clone();
+        let ttl = std::time::Duration::from_mins(5);
+        let Some(secret) = self.resolve_subagent_secret(&key) else {
+            let mgr = self.services.orchestration.subagent_manager.as_mut()?;
+            let _ = mgr.deny_secret(&full_id);
+            return Some(format!(
+                "Secret '{key}' could not be resolved from the vault; request denied."
+            ));
+        };
         let mgr = self.services.orchestration.subagent_manager.as_mut()?;
-        if let Some((tid, req)) = mgr.try_recv_secret_request()
-            && tid == full_id
-        {
-            let key = req.secret_key.clone();
-            let ttl = std::time::Duration::from_mins(5);
-            if let Err(e) = mgr.approve_secret(&full_id, &key, ttl) {
-                return Some(format!("Approve failed: {e}"));
-            }
-            if let Err(e) = mgr.deliver_secret(&full_id, key.clone()) {
-                return Some(format!("Secret delivery failed: {e}"));
-            }
-            return Some(format!("Secret '{key}' approved for sub-agent {full_id}."));
+        if let Err(e) = mgr.approve_secret(&full_id, &key, ttl) {
+            return Some(format!("Approve failed: {e}"));
         }
-        Some(format!(
-            "No pending secret request for sub-agent '{full_id}'."
-        ))
+        if let Err(e) = mgr.deliver_secret(&full_id, &key, secret) {
+            let _ = mgr.deny_secret(&full_id);
+            return Some(format!("Secret delivery failed: {e}"));
+        }
+        Some(format!("Secret '{key}' approved for sub-agent {full_id}."))
     }
     fn handle_agent_deny(&mut self, id: &str) -> Option<String> {
         let full_id = match self.resolve_agent_id_prefix(id)? {
@@ -947,6 +985,69 @@ fn sanitize_parent_messages(
 mod tests {
     use super::*;
     use crate::agent::agent_tests::*;
+
+    // ── resolve_subagent_secret tests (#5941/#5942) ─────────────────────────
+
+    fn agent_with_custom_secret(stored_key: &str, value: &str) -> Agent<MockChannel> {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.skill.available_custom_secrets.insert(
+            stored_key.to_owned(),
+            crate::vault::Secret::new(value.to_owned()),
+        );
+        agent
+    }
+
+    #[test]
+    fn resolve_subagent_secret_exact_match() {
+        let agent = agent_with_custom_secret("my_key", "the-value");
+        let resolved = agent.resolve_subagent_secret("my_key");
+        assert_eq!(
+            resolved.map(|s| s.expose().to_owned()),
+            Some("the-value".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolve_subagent_secret_normalizes_dash_to_underscore() {
+        // Stored key is underscored (as produced by ZEPH_SECRET_<NAME> normalization);
+        // the sub-agent may request it with dashes instead.
+        let agent = agent_with_custom_secret("my_api_key", "dash-value");
+        let resolved = agent.resolve_subagent_secret("my-api-key");
+        assert_eq!(
+            resolved.map(|s| s.expose().to_owned()),
+            Some("dash-value".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolve_subagent_secret_normalizes_case() {
+        let agent = agent_with_custom_secret("upper_key", "case-value");
+        let resolved = agent.resolve_subagent_secret("UPPER_KEY");
+        assert_eq!(
+            resolved.map(|s| s.expose().to_owned()),
+            Some("case-value".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolve_subagent_secret_missing_key_returns_none() {
+        let agent = agent_with_custom_secret("known_key", "value");
+        assert!(agent.resolve_subagent_secret("unknown_key").is_none());
+    }
+
+    #[test]
+    fn resolve_subagent_secret_empty_map_returns_none() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+        assert!(agent.resolve_subagent_secret("anything").is_none());
+    }
 
     /// #5712 regression: MCP tool identification must key off `ToolDef::server_id`, not a
     /// `"mcp_"` name prefix that real `McpTool::sanitized_id()` output never produces.

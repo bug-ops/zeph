@@ -22,6 +22,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   dropping (with a `WARN` log) any hit that no longer has a live counterpart. This only affected
   the default/recommended deployment configuration (`memory.semantic.enabled = true` with a
   Qdrant backend); the in-memory `SemanticToolIndex` fallback path was never affected.
+- `fix(subagent)`: the sub-agent vault-secret request/approval flow now actually resolves
+  and delivers the secret's real value instead of discarding it (#5941, #5942). All three
+  approval call sites (`scheduler_loop::process_pending_secret_requests`,
+  `subagent_commands::poll_subagent_until_done`, `subagent_commands::handle_agent_approve`)
+  now resolve the requested key against the vault-backed custom-secrets map (the same
+  `ZEPH_SECRET_*`-derived store used for skill `requires_secrets`) before calling
+  `SubAgentManager::deliver_secret`, which now carries a `zeph_common::secret::Secret` value
+  instead of echoing back the key name. On the sub-agent side, `agent_loop.rs` no longer
+  discards the received value — it is attached as a per-tool-call `ExecutionContext` env
+  override (scoped to the requesting sub-agent's own tool calls, not the shared
+  `ShellExecutor::skill_env` slot the parent agent also uses) so a subsequent shell command
+  can reference `$KEY_NAME`. `PermissionGrants::is_active` is now load-bearing:
+  `deliver_secret` refuses to hand over a value unless there is a currently active grant for
+  that key, closing the gap where the TTL/grant bookkeeping was never actually consulted.
 - `fix(tools)`: `checkpoint_undo`/`checkpoint_redo`/`checkpoint_list` are now forwarded to the
   wrapped inner executor by `TrustGateExecutor`, `PolicyGateExecutor`,
   `AdversarialPolicyGateExecutor` (#5899), `ScopedToolExecutor`, and `ShadowProbeExecutor`

@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
+use zeph_common::secret::Secret;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{
     ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ToolDefinition,
@@ -57,7 +59,7 @@ pub(super) struct AgentLoopArgs {
     pub(super) status_tx: watch::Sender<SubAgentStatus>,
     pub(super) started_at: Instant,
     pub(super) secret_request_tx: mpsc::Sender<SecretRequest>,
-    pub(super) secret_rx: mpsc::Receiver<Option<String>>,
+    pub(super) secret_rx: mpsc::Receiver<Option<Secret>>,
     pub(super) background: bool,
     pub(super) hooks: SubagentHooks,
     pub(super) task_id: String,
@@ -192,8 +194,9 @@ async fn handle_secret_request(
     transcript_writer: Option<&TranscriptWriter>,
     seq: &mut u32,
     messages: &mut Vec<Message>,
+    granted_secrets: &mut HashMap<String, Secret>,
     secret_request_tx: &mpsc::Sender<SecretRequest>,
-    secret_rx: &mut mpsc::Receiver<Option<String>>,
+    secret_rx: &mut mpsc::Receiver<Option<Secret>>,
     cancel: &CancellationToken,
     background: bool,
     is_text_response: bool,
@@ -250,8 +253,17 @@ async fn handle_secret_request(
             }
         };
         let reply = match outcome {
-            Some(Some(_)) => {
-                format!("[secret:{key_name} approved — value available via grants]")
+            Some(Some(secret_value)) => {
+                // Accumulated for the loop's lifetime and attached to every subsequent tool
+                // call's `ExecutionContext` (see `handle_tool_step`) — a per-call override,
+                // never written into the shared `ShellExecutor::skill_env` slot, because that
+                // slot is on the same executor instance the parent agent uses and would leak
+                // the secret into unrelated tool calls made outside this sub-agent's run.
+                granted_secrets.insert(key_name.clone(), secret_value);
+                format!(
+                    "[secret:{key_name}] approved — available as ${key_name} in the tool \
+                     execution environment"
+                )
             }
             Some(None) | None => {
                 format!("[secret:{key_name}] request denied")
@@ -394,7 +406,8 @@ async fn run_turn(
     background: bool,
     started_at: Instant,
     secret_request_tx: &mpsc::Sender<SecretRequest>,
-    secret_rx: &mut mpsc::Receiver<Option<String>>,
+    secret_rx: &mut mpsc::Receiver<Option<Secret>>,
+    granted_secrets: &mut HashMap<String, Secret>,
     sanitizer: &ContentSanitizer,
     llm_timeout: std::time::Duration,
 ) -> Result<TurnOutcome, super::error::SubAgentError> {
@@ -424,6 +437,7 @@ async fn run_turn(
         transcript_writer,
         seq,
         messages,
+        granted_secrets,
         secret_request_tx,
         secret_rx,
         cancel,
@@ -440,7 +454,14 @@ async fn run_turn(
 
     let prev_len = messages.len();
     let no_tool = handle_tool_step(
-        executor, response, messages, hooks, task_id, agent_name, sanitizer,
+        executor,
+        response,
+        messages,
+        hooks,
+        task_id,
+        agent_name,
+        sanitizer,
+        &*granted_secrets,
     )
     .await;
 
@@ -473,7 +494,7 @@ async fn run_turn(
 
 // Returns `true` if no tool was called (loop should break).
 #[tracing::instrument(name = "subagent.agent_loop.handle_tool_step", skip_all)]
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn handle_tool_step(
     executor: &FilteredToolExecutor,
     response: ChatResponse,
@@ -482,6 +503,7 @@ async fn handle_tool_step(
     task_id: &str,
     agent_name: &str,
     sanitizer: &ContentSanitizer,
+    granted_secrets: &HashMap<String, Secret>,
 ) -> bool {
     match response {
         ChatResponse::Text(text) => {
@@ -527,11 +549,26 @@ async fn handle_tool_step(
                     } else {
                         serde_json::Map::new()
                     };
+                // Approved sub-agent secrets are attached as a per-call `ExecutionContext`
+                // env override (highest-priority, call-scoped) rather than the executor's
+                // shared `skill_env` slot, which is aliased with the parent agent's own tool
+                // executor and would leak the secret beyond this sub-agent's run.
+                let exec_ctx = if granted_secrets.is_empty() {
+                    None
+                } else {
+                    Some(
+                        zeph_tools::ExecutionContext::new().with_envs(
+                            granted_secrets
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.expose().to_owned())),
+                        ),
+                    )
+                };
                 let call = ToolCall {
                     tool_id: tc.name.clone(),
                     params,
                     caller_id: None,
-                    context: None,
+                    context: exec_ctx,
                     tool_call_id: String::new(),
                     skill_name: None,
                 };
@@ -705,6 +742,10 @@ pub(super) async fn run_agent_loop(
     let mut turns: u32 = 0;
     let mut last_result = String::new();
     let mut any_tool_called = false;
+    // Accumulates resolved secret values across the loop's lifetime so a later approval
+    // does not evict an earlier one from the tool executor's environment (see
+    // `handle_secret_request`).
+    let mut granted_secrets: HashMap<String, Secret> = HashMap::new();
 
     loop {
         if cancel.is_cancelled() {
@@ -735,6 +776,7 @@ pub(super) async fn run_agent_loop(
             started_at,
             &secret_request_tx,
             &mut secret_rx,
+            &mut granted_secrets,
             &sanitizer,
             llm_timeout,
         )
@@ -863,6 +905,174 @@ mod make_hook_env_tests {
             "truncated value should end with ellipsis"
         );
         assert!(args.is_char_boundary(args.len()));
+    }
+}
+
+#[cfg(test)]
+mod handle_tool_step_granted_secrets_tests {
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
+
+    use zeph_llm::provider::ToolUseRequest;
+    use zeph_tools::executor::{ErasedToolExecutor, ToolCall, ToolError, ToolOutput};
+    use zeph_tools::registry::ToolDef;
+
+    use super::*;
+    use crate::def::ToolPolicy;
+    use crate::filter::FilteredToolExecutor;
+    use crate::hooks::SubagentHooks;
+
+    /// Records every `ToolCall` it receives so tests can inspect `call.context`.
+    #[derive(Default)]
+    struct RecordingExecutor {
+        calls: Mutex<Vec<ToolCall>>,
+    }
+
+    impl ErasedToolExecutor for RecordingExecutor {
+        fn execute_erased<'a>(
+            &'a self,
+            _response: &'a str,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+
+        fn execute_confirmed_erased<'a>(
+            &'a self,
+            _response: &'a str,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+
+        fn tool_definitions_erased(&self) -> Vec<ToolDef> {
+            vec![]
+        }
+
+        fn execute_tool_call_erased<'a>(
+            &'a self,
+            call: &'a ToolCall,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            self.calls.lock().unwrap().push(call.clone());
+            Box::pin(std::future::ready(Ok(Some(ToolOutput {
+                tool_name: call.tool_id.clone(),
+                summary: "ok".into(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+            }))))
+        }
+
+        fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+            false
+        }
+
+        fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
+            false
+        }
+    }
+
+    fn tool_use_response() -> ChatResponse {
+        ChatResponse::ToolUse {
+            text: None,
+            tool_calls: vec![ToolUseRequest {
+                id: "call-1".into(),
+                name: "shell".into(),
+                input: serde_json::json!({"command": "echo $SOME_VAULT_KEY"}),
+            }],
+            thinking_blocks: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn granted_secret_is_attached_to_tool_call_context() {
+        let recorder = Arc::new(RecordingExecutor::default());
+        let executor = FilteredToolExecutor::new(
+            Arc::clone(&recorder) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let hooks = SubagentHooks::default();
+        let mut messages = Vec::new();
+        let mut granted_secrets = HashMap::new();
+        granted_secrets.insert("SOME_VAULT_KEY".to_owned(), Secret::new("the-secret-value"));
+        let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+
+        let no_tool = handle_tool_step(
+            &executor,
+            tool_use_response(),
+            &mut messages,
+            &hooks,
+            "task-1",
+            "bot",
+            &sanitizer,
+            &granted_secrets,
+        )
+        .await;
+        assert!(!no_tool, "a tool call was made");
+
+        let calls = recorder.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        let context = calls[0]
+            .context
+            .as_ref()
+            .expect("granted secrets must produce a Some(ExecutionContext)");
+        assert_eq!(
+            context
+                .env_overrides()
+                .get("SOME_VAULT_KEY")
+                .map(String::as_str),
+            Some("the-secret-value")
+        );
+    }
+
+    #[tokio::test]
+    async fn no_granted_secrets_leaves_tool_call_context_none() {
+        // Regression guard: with no granted secrets, handle_tool_step must build
+        // context: None — identical to pre-fix behavior.
+        let recorder = Arc::new(RecordingExecutor::default());
+        let executor = FilteredToolExecutor::new(
+            Arc::clone(&recorder) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let hooks = SubagentHooks::default();
+        let mut messages = Vec::new();
+        let granted_secrets: HashMap<String, Secret> = HashMap::new();
+        let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+
+        let no_tool = handle_tool_step(
+            &executor,
+            tool_use_response(),
+            &mut messages,
+            &hooks,
+            "task-1",
+            "bot",
+            &sanitizer,
+            &granted_secrets,
+        )
+        .await;
+        assert!(!no_tool);
+
+        let calls = recorder.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0].context.is_none(),
+            "no granted secrets must leave context as None"
+        );
     }
 }
 
