@@ -36,10 +36,13 @@ pub const CONTEXT_BUDGET_RESERVE_RATIO: f32 = 0.20;
 ///   `apply_quarantine_provider`.
 /// - **`mcp_config`** — passed alongside runtime MCP objects in `with_mcp()`; separating it
 ///   from `mcp_tools` / `mcp_manager` would make the call site awkward.
-/// - **Runner-only fields** (`compression`, `routing`, `autosave`, `hybrid_search`, `trust_config`,
-///   `disambiguation_threshold`, `logging_config`, `subagent`, `experiment`, `instruction`,
-///   `lsp_hooks`, `response_cache`, `cost_tracker`) — not used in ACP sessions; keeping them out
-///   avoids unused-field noise and prevents inadvertent ACP behavior changes.
+/// - **Runner-only fields** (`compression`, `routing`, `autosave`, `hybrid_search`,
+///   `logging_config`, `subagent`, `experiment`, `instruction`, `lsp_hooks`, `response_cache`,
+///   `cost_tracker`) — not used in ACP sessions; keeping them out avoids unused-field noise and
+///   prevents inadvertent ACP behavior changes. Neither `disambiguation_threshold` nor
+///   `trust_config` (#5920) belong in this category — both ARE used in ACP sessions, just wired
+///   via their own standalone builder call (`with_skill_matching_config` /
+///   `with_trust_config`) rather than through this bundle.
 /// - **Scheduler runtime objects** (`scheduler_executor`, broadcast senders) — runtime state,
 ///   not config-derived values.
 #[derive(Clone)]

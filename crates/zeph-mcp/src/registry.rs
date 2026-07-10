@@ -183,8 +183,13 @@ impl McpToolRegistry {
     /// On embedding failure or Qdrant error the method logs at `WARN` and returns an
     /// empty `Vec` — the caller should fall back to the full tool list.
     ///
-    /// Note: returned tools have an empty `input_schema` because Qdrant payloads only
-    /// store the description fields needed for prompt construction.
+    /// Returned tools have an empty `input_schema` and default `security_meta` — Qdrant
+    /// payloads only store the description fields needed for embedding and semantic
+    /// matching, not the full schema (storing it in Qdrant would let it drift from what
+    /// the connected server actually advertises). Callers that need the full tool
+    /// definition (e.g. to build the LLM tool-use prompt) **must** rehydrate each hit
+    /// against the live, in-memory tool list, keyed by `(server_id, name)`, and drop any
+    /// hit that no longer has a live match (see `Agent::match_mcp_tools` in `zeph-core`).
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(

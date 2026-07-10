@@ -481,8 +481,9 @@ impl<C: crate::channel::Channel> Agent<C> {
             "" => self.handle_skills_command_as_string().await,
             "confusability" => self.handle_skills_confusability_as_string().await,
             "injection" => self.handle_skills_injection_as_string(),
+            "trust" => self.handle_skills_trust_as_string(),
             other => Ok(format!(
-                "Unknown /skills subcommand: '{other}'. Available: confusability, injection"
+                "Unknown /skills subcommand: '{other}'. Available: confusability, injection, trust"
             )),
         }
     }
@@ -644,6 +645,32 @@ impl<C: crate::channel::Channel> Agent<C> {
             self.services.skill.group_structured,
             self.services.skill.support_similarity_threshold,
             self.services.skill.min_injection_score,
+        ))
+    }
+
+    /// Report the current skill-trust levels and `SkillOrchestra` RL routing state, as applied
+    /// to this `Agent` instance. Exists so tests outside `zeph-core` can observe that
+    /// `with_trust_config` and `with_rl_routing`/`with_rl_head` reached the constructed `Agent`
+    /// at cold start (#5920/#5921), mirroring `handle_skills_injection_as_string` (#5867) for
+    /// the same wire-X-into-ACP/serve/daemon defect class.
+    #[tracing::instrument(skip_all, name = "core.agent.handle_skills_trust")]
+    fn handle_skills_trust_as_string(&self) -> Result<String, error::AgentError> {
+        let trust = &self.services.skill.trust_config;
+        let rl_enabled = self
+            .services
+            .learning_engine
+            .rl_routing
+            .as_ref()
+            .is_some_and(|r| r.enabled);
+        Ok(format!(
+            "Skill trust config: default_level={:?}, local_level={:?}, bundled_level={:?}, \
+             hash_mismatch_level={:?} | RL routing: enabled={}, rl_head_loaded={}",
+            trust.default_level,
+            trust.local_level,
+            trust.bundled_level,
+            trust.hash_mismatch_level,
+            rl_enabled,
+            self.services.skill.rl_head.is_some(),
         ))
     }
 }

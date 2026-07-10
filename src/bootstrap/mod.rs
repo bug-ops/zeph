@@ -1078,6 +1078,129 @@ impl AppBuilder {
         registry
     }
 
+    /// Populate the skill-trust `SQLite` table for every loaded skill, classifying each by
+    /// source kind (`Bundled`/`Hub`/`Local`) against `[skills.trust]`.
+    ///
+    /// Extracted from the CLI-only bootstrap path (#5920) so `daemon.rs`, `acp.rs`, and
+    /// `serve/*` can seed trust rows at construction time too — previously only `runner.rs`
+    /// called this, so agents built via those other entry points read an empty trust table
+    /// and every skill without a pre-existing row fell back to
+    /// `zeph_common::SkillTrustLevel::MISSING_ENTRY_FALLBACK` (`Trusted` — **fail-open**, not
+    /// fail-closed: see the constant's own doc comment), silently ignoring the operator's
+    /// configured `default_level`/`local_level`/`bundled_level` and letting un-sanitized skill
+    /// bodies through with full tool access instead of the operator's intended restriction.
+    ///
+    /// Existing rows are preserved unless the skill's content hash changed (demoted to
+    /// `hash_mismatch_level`) or its source kind changed (adopts the new source kind's initial
+    /// level only when it grants *more* trust than the stored level, never overriding an
+    /// explicit operator block).
+    pub async fn seed_skill_trust_db(&self, all_meta: &[SkillMeta], memory: &SemanticMemory) {
+        let trust_cfg = self.config.skills.trust.clone();
+        let managed_dir = managed_skills_dir();
+
+        // Step 1: collect all hashes and source classifications in a single spawn_blocking
+        // to avoid blocking the async executor with synchronous FS reads.
+        // Both compute_skill_hash (std::fs::read) and .bundled marker .exists() are blocking FS calls.
+        let dirs: Vec<_> = all_meta.iter().map(|m| m.skill_dir.clone()).collect();
+        let managed_dir_clone = managed_dir.clone();
+        let bundled_names: std::collections::HashSet<String> =
+            zeph_skills::bundled_skill_names().into_iter().collect();
+        let per_skill: Vec<(Option<String>, zeph_memory::store::SourceKind)> =
+            tokio::task::spawn_blocking(move || {
+                dirs.iter()
+                    .map(|dir| {
+                        let hash = zeph_skills::compute_skill_hash(dir).ok();
+                        // .bundled marker is written by bundled.rs for skills shipped with the binary.
+                        // The allowlist check prevents a hub-installed skill with a forged .bundled
+                        // marker from receiving elevated bundled trust.
+                        let source_kind = if dir.starts_with(&managed_dir_clone) {
+                            let skill_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            let has_marker = dir.join(".bundled").exists();
+                            if has_marker && bundled_names.contains(skill_name) {
+                                zeph_memory::store::SourceKind::Bundled
+                            } else {
+                                if has_marker {
+                                    tracing::warn!(
+                                        skill = %skill_name,
+                                        "skill has .bundled marker but is not in the bundled \
+                                         skill allowlist — classifying as Hub"
+                                    );
+                                }
+                                zeph_memory::store::SourceKind::Hub
+                            }
+                        } else {
+                            zeph_memory::store::SourceKind::Local
+                        };
+                        (hash, source_kind)
+                    })
+                    .collect()
+            })
+            .await
+            .unwrap_or_else(|_| {
+                all_meta
+                    .iter()
+                    .map(|_| (None, zeph_memory::store::SourceKind::Local))
+                    .collect()
+            });
+
+        // Step 2: async DB calls using pre-computed hashes and source classifications.
+        for (meta, (maybe_hash, source_kind)) in all_meta.iter().zip(per_skill.iter()) {
+            let source_kind = source_kind.clone();
+            let initial_level = match source_kind {
+                zeph_memory::store::SourceKind::Bundled => &trust_cfg.bundled_level,
+                zeph_memory::store::SourceKind::Local | zeph_memory::store::SourceKind::File => {
+                    &trust_cfg.local_level
+                }
+                _ => &trust_cfg.default_level,
+            };
+            let Some(current_hash) = maybe_hash else {
+                tracing::warn!("failed to compute hash for '{}'", meta.name);
+                continue;
+            };
+            // Check if there's an existing record to handle hash mismatch.
+            let existing = memory
+                .sqlite()
+                .load_skill_trust(&meta.name)
+                .await
+                .ok()
+                .flatten();
+            let trust_level = if let Some(ref row) = existing {
+                if row.blake3_hash != *current_hash {
+                    trust_cfg.hash_mismatch_level
+                } else if row.source_kind != source_kind {
+                    // source_kind changed (e.g., hub → bundled on upgrade).
+                    // Never override an explicit operator block. For active trust levels,
+                    // adopt the source-kind initial level when it grants more trust.
+                    let stored = row.trust_level;
+                    if !stored.is_active() || stored.severity() <= initial_level.severity() {
+                        stored
+                    } else {
+                        *initial_level
+                    }
+                } else {
+                    row.trust_level
+                }
+            } else {
+                *initial_level
+            };
+            let source_path = meta.skill_dir.to_str();
+            if let Err(e) = memory
+                .sqlite()
+                .upsert_skill_trust(
+                    &meta.name,
+                    trust_level,
+                    source_kind,
+                    None,
+                    source_path,
+                    current_hash,
+                )
+                .await
+            {
+                tracing::warn!("failed to record trust for '{}': {e:#}", meta.name);
+            }
+        }
+    }
+
     /// Returns per-plugin skill directories expanded via `PluginManager::collect_skill_dirs`.
     ///
     /// Used by [`Self::build_registry`] and by runner/daemon/acp when constructing the agent
