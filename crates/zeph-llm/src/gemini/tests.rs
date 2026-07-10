@@ -21,6 +21,13 @@ fn gemini_name() {
 }
 
 #[test]
+fn gemini_with_provider_name_overrides_name() {
+    let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+        .with_provider_name("fast-gemini");
+    assert_eq!(p.name(), "fast-gemini");
+}
+
+#[test]
 fn gemini_supports_streaming_true() {
     let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
     assert!(p.supports_streaming());

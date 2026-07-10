@@ -35,6 +35,11 @@ pub struct GeminiProvider {
     thinking_level: Option<ThinkingLevel>,
     thinking_budget: Option<i32>,
     include_thoughts: Option<bool>,
+    /// Name reported by [`LlmProvider::name`]. Defaults to `"gemini"`; set the TOML-configured
+    /// `name` via [`with_provider_name`](Self::with_provider_name) so that router reputation
+    /// tracking and provider selection can distinguish between multiple configured Gemini
+    /// instances (#5892).
+    provider_name: String,
 }
 
 impl fmt::Debug for GeminiProvider {
@@ -52,6 +57,7 @@ impl fmt::Debug for GeminiProvider {
             .field("thinking_level", &self.thinking_level)
             .field("thinking_budget", &self.thinking_budget)
             .field("include_thoughts", &self.include_thoughts)
+            .field("provider_name", &self.provider_name)
             .finish()
     }
 }
@@ -71,6 +77,7 @@ impl Clone for GeminiProvider {
             thinking_level: self.thinking_level,
             thinking_budget: self.thinking_budget,
             include_thoughts: self.include_thoughts,
+            provider_name: self.provider_name.clone(),
         }
     }
 }
@@ -91,7 +98,21 @@ impl GeminiProvider {
             thinking_level: None,
             thinking_budget: None,
             include_thoughts: None,
+            provider_name: "gemini".to_owned(),
         }
+    }
+
+    /// Set the name reported by [`LlmProvider::name`].
+    ///
+    /// Populate this from the TOML-configured `name` field of the `[[llm.providers]]` entry
+    /// so that router reputation tracking and generic embed-provider selection can
+    /// distinguish between multiple configured Gemini instances. Without this, every
+    /// `GeminiProvider` reports the same literal `"gemini"`, which corrupts per-provider
+    /// availability tracking and embed routing when more than one Gemini entry is configured.
+    #[must_use]
+    pub fn with_provider_name(mut self, name: impl Into<String>) -> Self {
+        self.provider_name = name.into();
+        self
     }
 
     #[must_use]
@@ -1229,9 +1250,8 @@ struct EmbedValues {
 // ---------------------------------------------------------------------------
 
 impl LlmProvider for GeminiProvider {
-    #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "gemini"
+        &self.provider_name
     }
 
     fn context_window(&self) -> Option<usize> {

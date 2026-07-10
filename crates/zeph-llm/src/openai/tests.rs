@@ -183,6 +183,12 @@ fn name_returns_openai() {
 }
 
 #[test]
+fn with_provider_name_overrides_name() {
+    let provider = test_provider().with_provider_name("fast-gpt");
+    assert_eq!(provider.name(), "fast-gpt");
+}
+
+#[test]
 fn chat_request_serialization() {
     let msgs = [ApiMessage {
         role: "user",

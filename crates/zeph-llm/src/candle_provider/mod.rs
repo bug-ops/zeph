@@ -107,6 +107,11 @@ pub struct CandleProvider {
     generation_config: GenerationConfig,
     embed_model: Option<std::sync::Arc<EmbedModel>>,
     device: Device,
+    /// Name reported by [`LlmProvider::name`]. Defaults to `"candle"`; set the TOML-configured
+    /// `name` via [`with_provider_name`](Self::with_provider_name) so that router reputation
+    /// tracking and provider selection can distinguish between multiple configured Candle
+    /// instances (#5892).
+    provider_name: String,
 }
 
 impl std::fmt::Debug for CandleProvider {
@@ -116,6 +121,7 @@ impl std::fmt::Debug for CandleProvider {
             .field("generation_config", &self.generation_config)
             .field("device", &format!("{:?}", self.device))
             .field("embed_model", &self.embed_model)
+            .field("provider_name", &self.provider_name)
             .finish_non_exhaustive()
     }
 }
@@ -136,6 +142,7 @@ impl Clone for CandleProvider {
             generation_config: self.generation_config.clone(),
             embed_model: self.embed_model.clone(),
             device: self.device.clone(),
+            provider_name: self.provider_name.clone(),
         }
     }
 }
@@ -222,7 +229,21 @@ impl CandleProvider {
             generation_config,
             embed_model,
             device,
+            provider_name: "candle".to_owned(),
         })
+    }
+
+    /// Set the name reported by [`LlmProvider::name`].
+    ///
+    /// Populate this from the TOML-configured `name` field of the `[[llm.providers]]` entry
+    /// so that router reputation tracking and generic embed-provider selection can
+    /// distinguish between multiple configured Candle instances. Without this, every
+    /// `CandleProvider` reports the same literal `"candle"`, which corrupts per-provider
+    /// availability tracking and embed routing when more than one Candle entry is configured.
+    #[must_use]
+    pub fn with_provider_name(mut self, name: impl Into<String>) -> Self {
+        self.provider_name = name.into();
+        self
     }
 
     /// Return a short string identifying the compute device: `"cpu"`, `"cuda"`, or `"metal"`.
@@ -339,7 +360,7 @@ impl LlmProvider for CandleProvider {
         self.embed_model.is_some()
     }
 
-    fn name(&self) -> &'static str {
-        "candle"
+    fn name(&self) -> &str {
+        &self.provider_name
     }
 }

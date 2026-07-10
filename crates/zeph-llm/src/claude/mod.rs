@@ -133,6 +133,11 @@ pub struct ClaudeProvider {
     prompt_cache_ttl: Option<CacheTtl>,
     /// SSE buffer size caps (tool JSON, thinking, compaction). Sourced from config.
     stream_limits: zeph_config::StreamLimits,
+    /// Name reported by [`LlmProvider::name`]. Defaults to `"claude"`; set the TOML-configured
+    /// `name` via [`with_provider_name`](Self::with_provider_name) so that router reputation
+    /// tracking and provider selection can distinguish between multiple configured Claude
+    /// instances (#5892).
+    provider_name: String,
 }
 
 impl fmt::Debug for ClaudeProvider {
@@ -170,6 +175,7 @@ impl fmt::Debug for ClaudeProvider {
                 "max_tool_description_bytes",
                 &self.max_tool_description_bytes,
             )
+            .field("provider_name", &self.provider_name)
             .finish()
     }
 }
@@ -197,6 +203,7 @@ impl Clone for ClaudeProvider {
             output_schema_hint_bytes: self.output_schema_hint_bytes,
             max_tool_description_bytes: self.max_tool_description_bytes,
             stream_limits: self.stream_limits.clone(),
+            provider_name: self.provider_name.clone(),
         }
     }
 }
@@ -275,7 +282,21 @@ impl ClaudeProvider {
             enable_extended_context: false,
             prompt_cache_ttl: None,
             stream_limits: zeph_config::StreamLimits::default(),
+            provider_name: "claude".to_owned(),
         }
+    }
+
+    /// Set the name reported by [`LlmProvider::name`].
+    ///
+    /// Populate this from the TOML-configured `name` field of the `[[llm.providers]]` entry
+    /// so that router reputation tracking and generic embed-provider selection can
+    /// distinguish between multiple configured Claude instances. Without this, every
+    /// `ClaudeProvider` reports the same literal `"claude"`, which corrupts per-provider
+    /// availability tracking and embed routing when more than one Claude entry is configured.
+    #[must_use]
+    pub fn with_provider_name(mut self, name: impl Into<String>) -> Self {
+        self.provider_name = name.into();
+        self
     }
 
     /// Override generation parameters (temperature, top-p) for this provider.
@@ -1194,9 +1215,8 @@ impl LlmProvider for ClaudeProvider {
         false
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "claude"
+        &self.provider_name
     }
 
     fn model_identifier(&self) -> &str {

@@ -83,6 +83,19 @@ fn stale_model_suggestion_non_claude_or_alias_fails_open() {
 }
 
 #[test]
+fn name_defaults_to_claude() {
+    let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-5-20250929".into(), 1024);
+    assert_eq!(provider.name(), "claude");
+}
+
+#[test]
+fn with_provider_name_overrides_name() {
+    let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-5-20250929".into(), 1024)
+        .with_provider_name("quality-claude");
+    assert_eq!(provider.name(), "quality-claude");
+}
+
+#[test]
 fn split_messages_extracts_system() {
     let messages = vec![
         Message {

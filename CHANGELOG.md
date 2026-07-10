@@ -57,6 +57,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   4.6-generation pricing rows in `crates/zeph-core/src/cost.rs` and the legacy capability arms in
   `crates/zeph-llm/src/claude/types.rs` are intentionally retained alongside the new ones since
   those models are still Active (#5889).
+- `fix(llm)`: `OpenAiProvider`, `ClaudeProvider`, `GeminiProvider`, `CandleProvider`,
+  `GonkaProvider`, and `CocoonProvider` no longer hardcode `LlmProvider::name()` to their
+  type literal (`"openai"`, `"claude"`, `"gemini"`, `"candle"`, `"gonka"`, `"cocoon"`). Each
+  now carries a `provider_name` field populated from the TOML-configured `name` field of its
+  `[[llm.providers]]` entry via a new `with_provider_name` builder method, mirroring the
+  fix already applied to `OllamaProvider`/`CompatibleProvider` (#5859). Without this, router
+  reputation tracking, embed-provider selection, and the `/think-tokens`/`/reasoning-effort`
+  delegation lookup in `RouterProvider::capability_target_index`
+  (`crates/zeph-llm/src/router/builder.rs`) could not distinguish between multiple
+  configured instances of the same provider type. Unnamed entries keep falling back to the
+  provider-type literal, so legacy configs are unaffected (#5892).
 - `fix(llm)`: `AnyProvider::Router` and `AnyProvider::Triage` no longer silently reject
   `/think-tokens` and `/reasoning-effort` regardless of the selected inner provider's
   capabilities. The four capability-mutating/-querying methods on `AnyProvider`

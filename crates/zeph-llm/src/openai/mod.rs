@@ -164,6 +164,11 @@ pub struct OpenAiProvider {
     /// Override which token-limit field to use. `None` means infer from the model name prefix
     /// table via [`CompletionTokens::for_model`].
     completion_tokens_override: Option<CompletionTokensParam>,
+    /// Name reported by [`LlmProvider::name`]. Defaults to `"openai"`; set the TOML-configured
+    /// `name` via [`with_provider_name`](Self::with_provider_name) so that router reputation
+    /// tracking and provider selection can distinguish between multiple configured `OpenAI`
+    /// instances (#5892).
+    provider_name: String,
 }
 
 impl fmt::Debug for OpenAiProvider {
@@ -190,6 +195,7 @@ impl fmt::Debug for OpenAiProvider {
                 "completion_tokens_override",
                 &self.completion_tokens_override,
             )
+            .field("provider_name", &self.provider_name)
             .finish()
     }
 }
@@ -212,6 +218,7 @@ impl Clone for OpenAiProvider {
             max_tool_description_bytes: self.max_tool_description_bytes,
             context_window_override: self.context_window_override,
             completion_tokens_override: self.completion_tokens_override,
+            provider_name: self.provider_name.clone(),
         }
     }
 }
@@ -240,7 +247,21 @@ impl OpenAiProvider {
             max_tool_description_bytes: usize::MAX,
             context_window_override: cfg.context_window.map(|v| v as usize),
             completion_tokens_override: cfg.completion_tokens_param,
+            provider_name: "openai".to_owned(),
         }
+    }
+
+    /// Set the name reported by [`LlmProvider::name`].
+    ///
+    /// Populate this from the TOML-configured `name` field of the `[[llm.providers]]` entry
+    /// so that router reputation tracking and generic embed-provider selection can
+    /// distinguish between multiple configured `OpenAI` instances. Without this, every
+    /// `OpenAiProvider` reports the same literal `"openai"`, which corrupts per-provider
+    /// availability tracking and embed routing when more than one `OpenAI` entry is configured.
+    #[must_use]
+    pub fn with_provider_name(mut self, name: impl Into<String>) -> Self {
+        self.provider_name = name.into();
+        self
     }
 
     /// Override generation parameters (temperature, top-p, frequency/presence penalty).
@@ -808,9 +829,8 @@ impl LlmProvider for OpenAiProvider {
         self.embedding_model.is_some()
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "openai"
+        &self.provider_name
     }
 
     fn model_identifier(&self) -> &str {

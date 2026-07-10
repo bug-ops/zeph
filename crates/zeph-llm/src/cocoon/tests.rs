@@ -30,6 +30,18 @@ fn make_provider(base_url: &str) -> CocoonProvider {
     )
 }
 
+#[test]
+fn name_defaults_to_cocoon() {
+    let provider = make_provider("http://localhost:10000");
+    assert_eq!(provider.name(), "cocoon");
+}
+
+#[test]
+fn with_provider_name_overrides_name() {
+    let provider = make_provider("http://localhost:10000").with_provider_name("cocoon-local");
+    assert_eq!(provider.name(), "cocoon-local");
+}
+
 fn user_message(text: &str) -> Vec<Message> {
     vec![Message {
         role: Role::User,

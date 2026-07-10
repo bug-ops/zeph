@@ -152,6 +152,11 @@ pub struct GonkaProvider {
     usage: UsageTracker,
     /// Optional TUI status sender; when set, key lifecycle events are forwarded.
     pub(crate) status_tx: Option<StatusTx>,
+    /// Name reported by [`LlmProvider::name`]. Defaults to `"gonka"`; set the TOML-configured
+    /// `name` via [`with_provider_name`](Self::with_provider_name) so that router reputation
+    /// tracking and provider selection can distinguish between multiple configured Gonka
+    /// instances (#5892).
+    provider_name: String,
 }
 
 impl std::fmt::Debug for GonkaProvider {
@@ -160,6 +165,7 @@ impl std::fmt::Debug for GonkaProvider {
             .field("model", &self.inner.model_identifier())
             .field("embedding_model", &self.embedding_model)
             .field("timeout", &self.timeout)
+            .field("provider_name", &self.provider_name)
             .finish_non_exhaustive()
     }
 }
@@ -175,6 +181,7 @@ impl Clone for GonkaProvider {
             embedding_model: self.embedding_model.clone(),
             usage: UsageTracker::default(),
             status_tx: self.status_tx.clone(),
+            provider_name: self.provider_name.clone(),
         }
     }
 }
@@ -204,7 +211,21 @@ impl GonkaProvider {
             embedding_model: cfg.embedding_model,
             usage: UsageTracker::default(),
             status_tx: None,
+            provider_name: "gonka".to_owned(),
         }
+    }
+
+    /// Set the name reported by [`LlmProvider::name`].
+    ///
+    /// Populate this from the TOML-configured `name` field of the `[[llm.providers]]` entry
+    /// so that router reputation tracking and generic embed-provider selection can
+    /// distinguish between multiple configured Gonka instances. Without this, every
+    /// `GonkaProvider` reports the same literal `"gonka"`, which corrupts per-provider
+    /// availability tracking and embed routing when more than one Gonka entry is configured.
+    #[must_use]
+    pub fn with_provider_name(mut self, name: impl Into<String>) -> Self {
+        self.provider_name = name.into();
+        self
     }
 
     /// Set the TUI status sender; when set, key lifecycle events are forwarded to the TUI.
@@ -319,8 +340,8 @@ impl GonkaProvider {
 }
 
 impl LlmProvider for GonkaProvider {
-    fn name(&self) -> &'static str {
-        "gonka"
+    fn name(&self) -> &str {
+        &self.provider_name
     }
 
     fn model_identifier(&self) -> &str {

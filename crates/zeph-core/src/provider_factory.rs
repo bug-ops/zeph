@@ -299,6 +299,7 @@ fn build_claude_provider(
         .unwrap_or_else(|| "claude-haiku-4-5-20251001".to_owned());
     let max_tokens = entry.max_tokens.unwrap_or(4096);
     let provider = ClaudeProvider::new(api_key, model, max_tokens)
+        .with_provider_name(entry.effective_name())
         .with_client(llm_client(config.timeouts.llm_request_timeout_secs))
         .with_extended_context(entry.enable_extended_context)
         .with_thinking_opt(entry.thinking.clone())
@@ -349,6 +350,7 @@ fn build_openai_provider(
             context_window: None,
             completion_tokens_param: None,
         })
+        .with_provider_name(entry.effective_name())
         .with_client(llm_client(config.timeouts.llm_request_timeout_secs))
         .with_output_schema_forwarding(
             config.mcp.forward_output_schema,
@@ -379,6 +381,7 @@ fn build_gemini_provider(
         .clone()
         .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_owned());
     let mut provider = GeminiProvider::new(api_key, model, max_tokens)
+        .with_provider_name(entry.effective_name())
         .with_base_url(base_url)
         .with_client(llm_client(config.timeouts.llm_request_timeout_secs));
     if let Some(ref em) = entry.embedding_model {
@@ -519,7 +522,8 @@ fn build_gonka_provider(
         max_tokens,
         embedding_model: entry.embedding_model.clone(),
         timeout,
-    });
+    })
+    .with_provider_name(entry.effective_name());
 
     Ok(AnyProvider::Gonka(provider))
 }
@@ -635,7 +639,8 @@ fn build_cocoon_provider(
         .clone()
         .unwrap_or_else(|| "Qwen/Qwen3-0.6B".to_owned());
     let max_tokens = entry.max_tokens.unwrap_or(4096);
-    let provider = CocoonProvider::new(model, max_tokens, entry.embedding_model.clone(), client);
+    let provider = CocoonProvider::new(model, max_tokens, entry.embedding_model.clone(), client)
+        .with_provider_name(entry.effective_name());
 
     Ok(AnyProvider::Cocoon(provider))
 }
@@ -789,7 +794,7 @@ fn build_candle_provider(
         device,
         params.inference_timeout,
     )
-    .map(AnyProvider::Candle)
+    .map(|provider| AnyProvider::Candle(provider.with_provider_name(entry.effective_name())))
     .map_err(|e| BootstrapError::Provider(e.to_string()))
 }
 
@@ -1019,6 +1024,26 @@ mod tests {
             let provider = result.unwrap();
             assert_eq!(provider.name(), "gonka");
         }
+
+        /// Regression for #5892: `GonkaProvider::name()` was hardcoded to `"gonka"`; two
+        /// distinct `[[llm.providers]]` entries with distinct configured `name` fields must
+        /// build `AnyProvider`s with distinct `.name()` values.
+        #[test]
+        fn build_gonka_provider_distinct_entries_yield_distinct_provider_names() {
+            let mut entry_a = gonka_entry_with_nodes(valid_nodes());
+            entry_a.name = Some("gonka-a".into());
+            let mut entry_b = gonka_entry_with_nodes(valid_nodes());
+            entry_b.name = Some("gonka-b".into());
+            let mut config = Config::default();
+            config.secrets.gonka_private_key = Some(Secret::new(VALID_PRIV_KEY));
+
+            let provider_a = build_provider_from_entry(&entry_a, &config, None).unwrap();
+            let provider_b = build_provider_from_entry(&entry_b, &config, None).unwrap();
+
+            assert_eq!(provider_a.name(), "gonka-a");
+            assert_eq!(provider_b.name(), "gonka-b");
+            assert_ne!(provider_a.name(), provider_b.name());
+        }
     }
 
     fn make_provider_entry(
@@ -1136,6 +1161,85 @@ mod tests {
         assert_eq!(provider_b.name(), "ollama-embed");
     }
 
+    /// Regression for #5892: Claude, `OpenAI`, and Gemini backends hardcoded `name()` to
+    /// their type literal, unlike `OllamaProvider`/`CompatibleProvider` (fixed for #5859).
+    /// Two distinct `[[llm.providers]]` entries of the same `provider_type` with distinct
+    /// configured `name` fields must build `AnyProvider`s with distinct `.name()` values.
+    #[test]
+    fn build_provider_from_entry_claude_openai_gemini_distinct_entries_yield_distinct_provider_names()
+     {
+        use zeph_common::secret::Secret;
+
+        let mut config = Config::default();
+        config.secrets.claude_api_key = Some(Secret::new("test-claude-key"));
+        config.secrets.openai_api_key = Some(Secret::new("test-openai-key"));
+        config.secrets.gemini_api_key = Some(Secret::new("test-gemini-key"));
+
+        let claude_a = ProviderEntry {
+            provider_type: ProviderKind::Claude,
+            name: Some("claude-quality".into()),
+            ..ProviderEntry::default()
+        };
+        let claude_b = ProviderEntry {
+            provider_type: ProviderKind::Claude,
+            name: Some("claude-fast".into()),
+            ..ProviderEntry::default()
+        };
+        let provider_claude_a = build_provider_from_entry(&claude_a, &config, None).unwrap();
+        let provider_claude_b = build_provider_from_entry(&claude_b, &config, None).unwrap();
+        assert_eq!(provider_claude_a.name(), "claude-quality");
+        assert_eq!(provider_claude_b.name(), "claude-fast");
+        assert_ne!(provider_claude_a.name(), provider_claude_b.name());
+
+        let openai_a = ProviderEntry {
+            provider_type: ProviderKind::OpenAi,
+            name: Some("openai-quality".into()),
+            ..ProviderEntry::default()
+        };
+        let openai_b = ProviderEntry {
+            provider_type: ProviderKind::OpenAi,
+            name: Some("openai-fast".into()),
+            ..ProviderEntry::default()
+        };
+        let provider_openai_a = build_provider_from_entry(&openai_a, &config, None).unwrap();
+        let provider_openai_b = build_provider_from_entry(&openai_b, &config, None).unwrap();
+        assert_eq!(provider_openai_a.name(), "openai-quality");
+        assert_eq!(provider_openai_b.name(), "openai-fast");
+        assert_ne!(provider_openai_a.name(), provider_openai_b.name());
+
+        let gemini_a = ProviderEntry {
+            provider_type: ProviderKind::Gemini,
+            name: Some("gemini-quality".into()),
+            ..ProviderEntry::default()
+        };
+        let gemini_b = ProviderEntry {
+            provider_type: ProviderKind::Gemini,
+            name: Some("gemini-fast".into()),
+            ..ProviderEntry::default()
+        };
+        let provider_gemini_a = build_provider_from_entry(&gemini_a, &config, None).unwrap();
+        let provider_gemini_b = build_provider_from_entry(&gemini_b, &config, None).unwrap();
+        assert_eq!(provider_gemini_a.name(), "gemini-quality");
+        assert_eq!(provider_gemini_b.name(), "gemini-fast");
+        assert_ne!(provider_gemini_a.name(), provider_gemini_b.name());
+    }
+
+    /// Regression for #5892: an unnamed entry (no `name` field in `[[llm.providers]]`) must
+    /// fall back to the provider-type literal, matching pre-fix behavior for legacy configs.
+    #[test]
+    fn build_provider_from_entry_claude_unnamed_falls_back_to_type_literal() {
+        use zeph_common::secret::Secret;
+
+        let mut config = Config::default();
+        config.secrets.claude_api_key = Some(Secret::new("test-claude-key"));
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::Claude,
+            ..ProviderEntry::default()
+        };
+        let provider = build_provider_from_entry(&entry, &config, None).unwrap();
+        assert_eq!(provider.name(), "claude");
+    }
+
     #[cfg(feature = "cocoon")]
     mod cocoon_tests {
         use super::*;
@@ -1180,6 +1284,25 @@ mod tests {
                 "expected success when no access hash requested: {:?}",
                 result.err()
             );
+        }
+
+        /// Regression for #5892: `CocoonProvider::name()` was hardcoded to `"cocoon"`; two
+        /// distinct `[[llm.providers]]` entries with distinct configured `name` fields must
+        /// build `AnyProvider`s with distinct `.name()` values.
+        #[test]
+        fn build_provider_from_entry_cocoon_distinct_entries_yield_distinct_provider_names() {
+            let mut entry_a = cocoon_entry(None);
+            entry_a.name = Some("cocoon-a".into());
+            let mut entry_b = cocoon_entry(None);
+            entry_b.name = Some("cocoon-b".into());
+            let config = Config::default();
+
+            let provider_a = build_provider_from_entry(&entry_a, &config, None).unwrap();
+            let provider_b = build_provider_from_entry(&entry_b, &config, None).unwrap();
+
+            assert_eq!(provider_a.name(), "cocoon-a");
+            assert_eq!(provider_b.name(), "cocoon-b");
+            assert_ne!(provider_a.name(), provider_b.name());
         }
 
         /// `spawn_cocoon_health_checks` must share the same vault-miss gating as

@@ -114,6 +114,11 @@ pub struct CocoonProvider {
     usage: UsageTracker,
     /// Optional TUI status sender.
     pub(crate) status_tx: Option<StatusTx>,
+    /// Name reported by [`LlmProvider::name`]. Defaults to `"cocoon"`; set the TOML-configured
+    /// `name` via [`with_provider_name`](Self::with_provider_name) so that router reputation
+    /// tracking and provider selection can distinguish between multiple configured Cocoon
+    /// instances (#5892).
+    provider_name: String,
 }
 
 impl std::fmt::Debug for CocoonProvider {
@@ -121,6 +126,7 @@ impl std::fmt::Debug for CocoonProvider {
         f.debug_struct("CocoonProvider")
             .field("model", &self.inner.model_identifier())
             .field("embedding_model", &self.embedding_model)
+            .field("provider_name", &self.provider_name)
             .finish_non_exhaustive()
     }
 }
@@ -133,6 +139,7 @@ impl Clone for CocoonProvider {
             embedding_model: self.embedding_model.clone(),
             usage: UsageTracker::default(),
             status_tx: self.status_tx.clone(),
+            provider_name: self.provider_name.clone(),
         }
     }
 }
@@ -181,7 +188,21 @@ impl CocoonProvider {
             embedding_model,
             usage: UsageTracker::default(),
             status_tx: None,
+            provider_name: "cocoon".to_owned(),
         }
+    }
+
+    /// Set the name reported by [`LlmProvider::name`].
+    ///
+    /// Populate this from the TOML-configured `name` field of the `[[llm.providers]]` entry
+    /// so that router reputation tracking and generic embed-provider selection can
+    /// distinguish between multiple configured Cocoon instances. Without this, every
+    /// `CocoonProvider` reports the same literal `"cocoon"`, which corrupts per-provider
+    /// availability tracking and embed routing when more than one Cocoon entry is configured.
+    #[must_use]
+    pub fn with_provider_name(mut self, name: impl Into<String>) -> Self {
+        self.provider_name = name.into();
+        self
     }
 
     /// Set the TUI status sender; lifecycle events are forwarded to the TUI when set.
@@ -219,8 +240,8 @@ impl CocoonProvider {
 }
 
 impl LlmProvider for CocoonProvider {
-    fn name(&self) -> &'static str {
-        "cocoon"
+    fn name(&self) -> &str {
+        &self.provider_name
     }
 
     fn model_identifier(&self) -> &str {
