@@ -233,6 +233,11 @@ pub struct AdversarialPolicyInfo {
     pub provider: String,
     pub policy_count: usize,
     pub fail_open: bool,
+    /// Effective policy-LLM call timeout in milliseconds — either the explicitly
+    /// configured `timeout_ms`, or the value auto-scaled for `provider`'s kind
+    /// (local vs cloud). Surfaced so operators can tell at a glance whether a slow
+    /// local `policy_provider` got a realistic budget (see #5870).
+    pub timeout_ms: u64,
 }
 
 #[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity

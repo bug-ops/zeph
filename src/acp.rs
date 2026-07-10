@@ -630,13 +630,9 @@ async fn build_acp_deps(
             tracing::warn!("adversarial policy enabled but no policies loaded; gate is a no-op");
         }
 
-        let validator = std::sync::Arc::new(zeph_tools::PolicyValidator::new(
-            policies,
-            std::time::Duration::from_millis(adv_cfg.timeout_ms),
-            adv_cfg.fail_open,
-            adv_cfg.exempt_tools.clone(),
-        ));
-
+        // Resolve the policy provider before the timeout: when `timeout_ms` is unset, the
+        // effective timeout is scaled by the resolved provider's kind (local vs cloud) —
+        // see #5870.
         let policy_provider = if adv_cfg.policy_provider.is_empty() {
             provider.clone()
         } else {
@@ -653,6 +649,18 @@ async fn build_acp_deps(
                 }
             }
         };
+
+        let timeout_ms = adv_cfg.timeout_ms.unwrap_or_else(|| {
+            zeph_config::tools::adversarial_timeout_for_provider_kind(
+                policy_provider.provider_kind_str(),
+            )
+        });
+        let validator = std::sync::Arc::new(zeph_tools::PolicyValidator::new(
+            policies,
+            std::time::Duration::from_millis(timeout_ms),
+            adv_cfg.fail_open,
+            adv_cfg.exempt_tools.clone(),
+        ));
 
         let llm_client: std::sync::Arc<dyn zeph_tools::PolicyLlmClient> =
             std::sync::Arc::new(agent_setup::AdversarialPolicyLlmAdapter {

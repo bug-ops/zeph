@@ -99,10 +99,11 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
                     command: "[adversarial] Tool call denied by policy".to_owned(),
                 })
             }
-            PolicyDecision::Error { message } => {
+            PolicyDecision::Error { message, timed_out } => {
                 tracing::warn!(
                     tool = %call.tool_id,
                     error = %message,
+                    timed_out,
                     fail_open = self.validator.fail_open(),
                     "adversarial policy: LLM error"
                 );
@@ -116,12 +117,22 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
                     .await;
                     Ok(())
                 } else {
+                    // Operator-facing audit reason distinguishes a timeout (config/latency
+                    // problem, actionable) from a genuine LLM/network error — see #5870.
+                    // The main LLM never sees this: `ToolError::Blocked` below stays generic.
+                    let reason = if timed_out {
+                        format!(
+                            "adversarial policy check timed out (fail-closed): {message} — \
+                             raise [tools.adversarial_policy].timeout_ms or point policy_provider \
+                             at a faster model"
+                        )
+                    } else {
+                        format!("adversarial policy LLM error (fail-closed): {message}")
+                    };
                     self.write_audit(
                         call,
                         &format!("error:{message}"),
-                        AuditResult::Blocked {
-                            reason: "adversarial policy LLM error (fail-closed)".to_owned(),
-                        },
+                        AuditResult::Blocked { reason },
                         None,
                     )
                     .await;
@@ -421,10 +432,17 @@ mod tests {
             make_validator(false), // fail_open = false
             Arc::new(FailingLlm),
         );
-        let result = gate.execute_tool_call(&make_call("shell")).await;
-        assert!(
-            matches!(result, Err(ToolError::Blocked { .. })),
-            "fail-closed must block on LLM error"
+        let err = gate
+            .execute_tool_call(&make_call("shell"))
+            .await
+            .unwrap_err();
+        // #5870/MED-03: the timed_out=false (genuine error) branch must produce the exact
+        // same LLM-visible message as the timed_out=true branch (see
+        // audit_entry_distinguishes_timeout_from_generic_error) — the main LLM must never be
+        // able to distinguish an infra error from a policy error via this string.
+        assert_matches!(
+            err,
+            ToolError::Blocked { ref command } if command == "[adversarial] Tool call denied: policy check failed"
         );
     }
 
@@ -579,6 +597,71 @@ mod tests {
         assert!(
             content.contains("deny:"),
             "deny decision must be recorded in audit"
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_entry_distinguishes_timeout_from_generic_error() {
+        // #5870: the operator-facing audit reason must tell a policy-LLM timeout apart
+        // from a genuine deny/error, with an actionable hint — while the LLM-visible
+        // ToolError stays generic (see error_message_is_opaque).
+        use tempfile::TempDir;
+
+        struct SlowLlm;
+        impl PolicyLlmClient for SlowLlm {
+            fn chat<'a>(
+                &'a self,
+                _: &'a [PolicyMessage],
+            ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+                Box::pin(async {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    Ok("ALLOW".to_owned())
+                })
+            }
+        }
+
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("audit.log");
+        let audit_config = crate::config::AuditConfig {
+            enabled: true,
+            destination: crate::config::AuditDestination::File(log_path.clone()),
+            ..Default::default()
+        };
+        let audit_logger = Arc::new(
+            crate::audit::AuditLogger::from_config(&audit_config, false)
+                .await
+                .unwrap(),
+        );
+
+        let validator = Arc::new(PolicyValidator::new(
+            vec!["test policy".to_owned()],
+            Duration::from_millis(20), // shorter than SlowLlm's 200ms response
+            false,                     // fail-closed
+            Vec::new(),
+        ));
+        let (_, inner) = MockInner::new();
+        let gate = AdversarialPolicyGateExecutor::new(inner, validator, Arc::new(SlowLlm))
+            .with_audit(Arc::clone(&audit_logger));
+
+        let err = gate
+            .execute_tool_call(&make_call("shell"))
+            .await
+            .unwrap_err();
+
+        // LLM-visible error stays generic (MED-03).
+        assert_matches!(
+            err,
+            ToolError::Blocked { ref command } if command == "[adversarial] Tool call denied: policy check failed"
+        );
+
+        let content = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert!(
+            content.contains("timed out"),
+            "operator-facing audit reason must say the check timed out, not a generic error: {content}"
+        );
+        assert!(
+            content.contains("timeout_ms"),
+            "operator-facing audit reason must hint at raising timeout_ms: {content}"
         );
     }
 

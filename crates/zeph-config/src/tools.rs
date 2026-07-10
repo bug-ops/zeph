@@ -764,8 +764,55 @@ impl Default for RetryConfig {
     }
 }
 
+/// Fixed fallback timeout (ms) used for cloud policy providers, and whenever the
+/// provider kind cannot be determined.
 fn default_adversarial_timeout_ms() -> u64 {
     3_000
+}
+
+/// Timeout (ms) used for local policy providers (Ollama, Candle, or any other
+/// locally-hosted model). Local inference routinely takes 10-30s+ per completion,
+/// far above the fixed default that was tuned for cloud APIs — see #5870. Set with
+/// margin above the worst-case latency observed in #5870's own reproduction
+/// (`qwen2.5:7b` took up to `31928` ms): 45s clears that by ~13s (~41%) so the
+/// fix closes the failure window instead of merely narrowing it.
+const LOCAL_PROVIDER_ADVERSARIAL_TIMEOUT_MS: u64 = 45_000;
+
+/// Resolve the effective adversarial policy timeout for a resolved provider kind.
+///
+/// `provider_kind` is the value returned by `AnyProvider::provider_kind_str()`:
+/// `"ollama"` / `"candle"` / `"local"` for locally-hosted inference, `"cloud"` for
+/// metered API providers. Local providers get a much longer fail-closed budget,
+/// since a fixed 3s timeout made the fail-closed adversarial gate deny effectively
+/// every tool call when `policy_provider` pointed at a local Ollama model (#5870).
+///
+/// This classification is keyed on the provider's configured **type**
+/// (`[[llm.providers]].type`), not on whether its endpoint happens to be local.
+/// A `type = "openai"`/`"claude"` entry pointed at a self-hosted or localhost
+/// `base_url` (e.g. an OpenAI-compatible proxy in front of a local model) still
+/// resolves to `"cloud"` here and gets the short 3s budget. Operators running a
+/// cloud-provider-typed client against a slow self-hosted endpoint should set
+/// [`AdversarialPolicyConfig::timeout_ms`] explicitly rather than relying on
+/// auto-scaling.
+///
+/// Only used when [`AdversarialPolicyConfig::timeout_ms`] is left unset — an
+/// explicit value always takes precedence over provider-based scaling.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_config::tools::adversarial_timeout_for_provider_kind;
+///
+/// assert_eq!(adversarial_timeout_for_provider_kind("ollama"), 45_000);
+/// assert_eq!(adversarial_timeout_for_provider_kind("cloud"), 3_000);
+/// ```
+#[must_use]
+pub fn adversarial_timeout_for_provider_kind(provider_kind: &str) -> u64 {
+    if matches!(provider_kind, "ollama" | "candle" | "local") {
+        LOCAL_PROVIDER_ADVERSARIAL_TIMEOUT_MS
+    } else {
+        default_adversarial_timeout_ms()
+    }
 }
 
 /// Configuration for the LLM-based adversarial policy agent.
@@ -782,9 +829,14 @@ pub struct AdversarialPolicyConfig {
     /// Whether to allow tool calls when the policy LLM fails. Default: `false` (fail-closed).
     #[serde(default)]
     pub fail_open: bool,
-    /// Timeout in milliseconds for a single policy LLM call. Default: `3000`.
-    #[serde(default = "default_adversarial_timeout_ms")]
-    pub timeout_ms: u64,
+    /// Timeout in milliseconds for a single policy LLM call.
+    ///
+    /// When unset (the default), the effective timeout is derived at startup from the
+    /// resolved `policy_provider`'s kind via [`adversarial_timeout_for_provider_kind`]:
+    /// local providers get a much longer fail-closed budget than cloud providers. Set
+    /// this explicitly to override auto-scaling with a fixed value.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
     /// Tool names always allowed through the adversarial policy gate.
     #[serde(default = "AdversarialPolicyConfig::default_exempt_tools")]
     pub exempt_tools: Vec<String>,
@@ -797,7 +849,7 @@ impl Default for AdversarialPolicyConfig {
             policy_provider: ProviderName::default(),
             policy_file: None,
             fail_open: false,
-            timeout_ms: default_adversarial_timeout_ms(),
+            timeout_ms: None,
             exempt_tools: Self::default_exempt_tools(),
         }
     }
@@ -1616,5 +1668,40 @@ destination = "/var/log/zeph-audit.log""#,
             w.adversarial_policy.policy_provider.is_empty(),
             "omitted policy_provider must default to empty (→ primary provider used)"
         );
+    }
+
+    #[test]
+    fn adversarial_policy_timeout_ms_defaults_to_none() {
+        // None means "auto-scale by resolved policy_provider kind" — see #5870.
+        let config = AdversarialPolicyConfig::default();
+        assert_eq!(config.timeout_ms, None);
+    }
+
+    #[test]
+    fn adversarial_policy_timeout_ms_explicit_override_roundtrips() {
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            adversarial_policy: AdversarialPolicyConfig,
+        }
+        let toml_str = r"
+            [adversarial_policy]
+            enabled = true
+            timeout_ms = 90000
+        ";
+        let w: Wrapper = toml::from_str(toml_str).unwrap();
+        assert_eq!(w.adversarial_policy.timeout_ms, Some(90_000));
+
+        let json = serde_json::to_string(&w.adversarial_policy).unwrap();
+        let back: AdversarialPolicyConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.timeout_ms, Some(90_000));
+    }
+
+    #[test]
+    fn adversarial_timeout_for_provider_kind_scales_local_vs_cloud() {
+        assert_eq!(adversarial_timeout_for_provider_kind("ollama"), 45_000);
+        assert_eq!(adversarial_timeout_for_provider_kind("candle"), 45_000);
+        assert_eq!(adversarial_timeout_for_provider_kind("local"), 45_000);
+        assert_eq!(adversarial_timeout_for_provider_kind("cloud"), 3_000);
+        assert_eq!(adversarial_timeout_for_provider_kind("unknown"), 3_000);
     }
 }

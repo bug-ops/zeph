@@ -26,7 +26,15 @@ pub enum PolicyDecision {
         reason: String,
     },
     /// LLM call failed (timeout, network error, or malformed response).
-    Error { message: String },
+    Error {
+        /// Error detail (audit/log only — do NOT surface to main LLM, see MED-03).
+        message: String,
+        /// `true` when the failure was the configured `timeout_ms` elapsing rather
+        /// than a network/protocol error. Lets callers give operators an actionable
+        /// diagnostic ("raise `timeout_ms` / use a faster `policy_provider`") instead of
+        /// a generic failure, without changing what the main LLM ever sees (#5870).
+        timed_out: bool,
+    },
 }
 
 /// Validates tool calls against plain-language policies using an LLM.
@@ -75,12 +83,18 @@ impl PolicyValidator {
             Err(_elapsed) => {
                 let msg = format!("policy LLM timeout after {}ms", self.timeout.as_millis());
                 tracing::warn!("{msg}");
-                PolicyDecision::Error { message: msg }
+                PolicyDecision::Error {
+                    message: msg,
+                    timed_out: true,
+                }
             }
             Ok(Err(err)) => {
                 let msg = format!("policy LLM error: {err}");
                 tracing::warn!("{msg}");
-                PolicyDecision::Error { message: msg }
+                PolicyDecision::Error {
+                    message: msg,
+                    timed_out: false,
+                }
             }
             Ok(Ok(response)) => parse_response(&response),
         }
@@ -330,6 +344,33 @@ mod tests {
         let params = serde_json::Map::new();
         let decision = v.validate("shell", &params, &client).await;
         assert_matches!(decision, PolicyDecision::Error { .. });
+    }
+
+    #[tokio::test]
+    async fn llm_failure_is_not_marked_as_timed_out() {
+        // #5870: a network/protocol error must be distinguishable from a timeout so
+        // operators aren't told to "raise timeout_ms" for a problem that isn't one.
+        let v = make_validator(false);
+        let client = FailingLlmClient;
+        let params = serde_json::Map::new();
+        let decision = v.validate("shell", &params, &client).await;
+        assert_matches!(decision, PolicyDecision::Error { timed_out, .. } if !timed_out);
+    }
+
+    #[tokio::test]
+    async fn timeout_is_marked_as_timed_out() {
+        // #5870: the timeout case must be distinguishable from a generic LLM error so
+        // the operator-facing diagnostic can point at timeout_ms/policy_provider.
+        let v = PolicyValidator::new(
+            vec!["test policy".to_owned()],
+            Duration::from_millis(50),
+            false,
+            Vec::new(),
+        );
+        let client = TimeoutLlmClient { delay_ms: 200 };
+        let params = serde_json::Map::new();
+        let decision = v.validate("shell", &params, &client).await;
+        assert_matches!(decision, PolicyDecision::Error { timed_out, .. } if timed_out);
     }
 
     #[tokio::test]

@@ -219,8 +219,8 @@ impl<C: crate::channel::Channel> Agent<C> {
             };
             let _ = writeln!(
                 out,
-                "Adv gate:  enabled (provider={}, policies={}, fail_open={})",
-                provider_display, adv.policy_count, adv.fail_open
+                "Adv gate:  enabled (provider={}, policies={}, fail_open={}, timeout_ms={})",
+                provider_display, adv.policy_count, adv.fail_open, adv.timeout_ms
             );
         }
         append_cost_section(&mut out, metrics.cost_cents, &metrics.provider_breakdown);

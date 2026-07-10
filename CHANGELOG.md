@@ -90,6 +90,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - `docs(orchestration)`: corrected `zeph-orchestration` crate-level doc comment claiming `llm-planning` feature is enabled by default; it is not (default feature set is `sqlite` only). Updated docs to clarify opt-in behavior and reference `LlmPlanner`/`LlmAggregator` APIs (#5856).
+- `fix(tools)`: `[tools.adversarial_policy]`'s fixed 3s `timeout_ms` made the fail-closed
+  adversarial gate deny effectively every tool call when `policy_provider` pointed at a local
+  Ollama model (local completions routinely take 10-30s+, up to 31_928ms observed in the
+  issue's own reproduction). `timeout_ms` is now `Option<u64>`: left unset (the new default),
+  the effective timeout is auto-scaled from the resolved `policy_provider`'s **type** — 45s for
+  local providers (Ollama/Candle), 3s for cloud providers — via
+  `zeph_config::tools::adversarial_timeout_for_provider_kind`. This is keyed on the configured
+  provider *type*, not on whether its endpoint is actually local: a `type = "openai"`/`"claude"`
+  entry pointed at a self-hosted/localhost `base_url` still gets the 3s cloud budget, so
+  operators in that setup should set `timeout_ms` explicitly. An explicit `timeout_ms` always
+  overrides auto-scaling. Also: `PolicyDecision::Error` now carries a `timed_out: bool`
+  discriminant so a policy-LLM timeout is distinguishable from a genuine network/protocol error;
+  the operator-facing audit log reason (and `/status`'s `Adv gate:` line, which now also shows
+  the effective `timeout_ms`) surface this distinction with an actionable hint, while the
+  LLM-visible denial message stays generic per MED-03 (#5870).
 
 ## [0.22.0] - 2026-07-07
 ### Added

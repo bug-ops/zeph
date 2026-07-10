@@ -2570,13 +2570,11 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             }
 
             let policy_count = policies.len();
-            let validator = std::sync::Arc::new(zeph_tools::PolicyValidator::new(
-                policies,
-                std::time::Duration::from_millis(adv_cfg.timeout_ms),
-                adv_cfg.fail_open,
-                adv_cfg.exempt_tools.clone(),
-            ));
 
+            // Resolve the policy provider first: the effective timeout (when not
+            // explicitly configured) is scaled by the resolved provider's kind, since a
+            // fixed cloud-tuned timeout made the fail-closed gate deny every tool call
+            // against a local Ollama policy_provider — see #5870.
             let (policy_provider, resolved_provider_name) = if adv_cfg.policy_provider.is_empty() {
                 let name = provider.name().to_string();
                 (provider.clone(), name)
@@ -2601,10 +2599,23 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 }
             };
 
+            let timeout_ms = adv_cfg.timeout_ms.unwrap_or_else(|| {
+                zeph_config::tools::adversarial_timeout_for_provider_kind(
+                    policy_provider.provider_kind_str(),
+                )
+            });
+            let validator = std::sync::Arc::new(zeph_tools::PolicyValidator::new(
+                policies,
+                std::time::Duration::from_millis(timeout_ms),
+                adv_cfg.fail_open,
+                adv_cfg.exempt_tools.clone(),
+            ));
+
             adv_policy_info = Some(zeph_core::AdversarialPolicyInfo {
                 provider: resolved_provider_name,
                 policy_count,
                 fail_open: adv_cfg.fail_open,
+                timeout_ms,
             });
 
             let llm_client: std::sync::Arc<dyn zeph_tools::PolicyLlmClient> =

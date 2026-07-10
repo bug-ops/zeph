@@ -187,9 +187,20 @@ The adversarial policy agent is an optional pre-execution validation layer that 
 ```toml
 [tools.adversarial_policy]
 enabled = true
-provider = "fast"              # Provider name for validation LLM
-block_on_reject = true         # Block rejected calls (false = warn only)
+policy_provider = "fast"        # Provider name from [[llm.providers]] for validation LLM
+policy_file = "policies.txt"    # Plain-text file with one policy per line
+fail_open = false               # Block tool calls on LLM/timeout error (fail-closed, default)
+# timeout_ms = 5000              # Optional: override the auto-scaled policy LLM timeout
 ```
+
+`timeout_ms` is optional. Left unset, the timeout is auto-scaled from `policy_provider`'s
+resolved **type**: local providers (Ollama, Candle) get 45s, cloud providers get 3s, since
+local inference routinely takes 10-30s+ per completion — a fixed cloud-tuned timeout would
+otherwise deny nearly every tool call under `fail_open = false`. This is keyed on the
+provider's configured `type`, not on whether its endpoint happens to be local — a
+`type = "openai"`/`"claude"` entry pointed at a self-hosted/localhost `base_url` still gets
+the 3s cloud budget, so set `timeout_ms` explicitly in that setup. The resolved timeout and
+provider are shown by `/status`.
 
 The adversarial policy agent is distinct from the permission system — permissions are pattern-based and static, while the policy agent uses LLM reasoning to evaluate context-dependent risk.
 
