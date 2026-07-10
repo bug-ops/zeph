@@ -1814,7 +1814,7 @@ mod tests {
             ---
             name: full-agent
             description: Full featured agent
-            model: claude-opus-4-6
+            model: claude-opus-4-8
             tools:
               allow:
                 - shell
@@ -1834,7 +1834,7 @@ mod tests {
         "};
         let def = SubAgentDef::parse(content).unwrap();
         let md = def.serialize_to_markdown();
-        assert!(md.contains("model: claude-opus-4-6"));
+        assert!(md.contains("model: claude-opus-4-8"));
         assert!(md.contains("except:"));
         assert!(md.contains("shell_sudo"));
         assert!(md.contains("background: true"));

@@ -1930,7 +1930,7 @@ fn draw_header_shows_1m_ctx_badge_when_extended_context() {
 
     let (mut app, _rx, _tx) = make_app();
     app.metrics.provider_name = "claude".into();
-    app.metrics.model_name = "claude-sonnet-4-6".into();
+    app.metrics.model_name = "claude-sonnet-5".into();
     app.metrics.extended_context = true;
 
     let output = render_to_string(80, 1, |frame, area| {
@@ -1948,7 +1948,7 @@ fn draw_header_no_badge_without_extended_context() {
 
     let (mut app, _rx, _tx) = make_app();
     app.metrics.provider_name = "claude".into();
-    app.metrics.model_name = "claude-sonnet-4-6".into();
+    app.metrics.model_name = "claude-sonnet-5".into();
     app.metrics.extended_context = false;
 
     let output = render_to_string(80, 1, |frame, area| {

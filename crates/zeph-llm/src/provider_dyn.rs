@@ -117,7 +117,7 @@ pub trait LlmProviderDyn: private::Sealed + std::fmt::Debug + Send + Sync {
     /// Provider name for logging and identification.
     fn name(&self) -> &str;
 
-    /// Model identifier string (e.g. `gpt-4o-mini`, `claude-sonnet-4-6`).
+    /// Model identifier string (e.g. `gpt-4o-mini`, `claude-sonnet-5`).
     fn model_identifier(&self) -> &str;
 
     /// Whether this provider supports image input (vision).

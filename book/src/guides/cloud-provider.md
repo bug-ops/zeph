@@ -16,10 +16,10 @@ Or in config:
 [llm]
 [[llm.providers]]
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 max_tokens = 4096
 # server_compaction = true          # Server-side context compaction (Claude API beta)
-# enable_extended_context = true    # 1M token context window (Sonnet/Opus 4.6 only)
+# enable_extended_context = true    # 1M token context window (Claude Opus and Sonnet models, not Haiku)
 ```
 
 Claude does not support embeddings. Use a multi-provider setup to combine Claude chat with Ollama embeddings, or use OpenAI embeddings.
@@ -32,7 +32,7 @@ Enable `server_compaction = true` to let the Claude API manage context length on
 
 ### 1M Extended Context
 
-For Sonnet 4.6 and Opus 4.6, enable `enable_extended_context = true` to unlock the 1M token context window. The `auto_budget` feature scales accordingly. Enable with `--extended-context` CLI flag or in the provider entry in config.
+For Claude Opus and Sonnet models (not Haiku), enable `enable_extended_context = true` to unlock the 1M token context window. The `auto_budget` feature scales accordingly. Enable with `--extended-context` CLI flag or in the provider entry in config.
 
 ## Gemini
 
@@ -160,7 +160,7 @@ embed = true          # use this provider for embeddings
 [[llm.providers]]
 name = "cloud"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 max_tokens = 4096
 default = true        # use this provider for chat by default
 ```

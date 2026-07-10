@@ -799,12 +799,12 @@ heuristic_promotion_interval_hours = 48
     #[test]
     fn judge_provider_and_judge_model_coexist() {
         let toml = r#"
-judge_model = "claude-sonnet-4-6"
+judge_model = "claude-sonnet-5"
 judge_provider = "quality"
 detector_mode = "judge"
 "#;
         let cfg: LearningConfig = toml::from_str(toml).unwrap();
-        assert_eq!(cfg.judge_model, "claude-sonnet-4-6");
+        assert_eq!(cfg.judge_model, "claude-sonnet-5");
         assert_eq!(cfg.judge_provider, "quality");
         assert_eq!(cfg.detector_mode, DetectorMode::Judge);
     }

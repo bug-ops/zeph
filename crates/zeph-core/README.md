@@ -240,7 +240,7 @@ Key `AgentConfig.learning` fields (TOML section `[agent.learning]`):
 | `correction_recall_limit` | usize | `5` | Max corrections retrieved per context-build turn |
 | `correction_min_similarity` | f64 | `0.75` | Minimum embedding similarity for correction recall |
 | `detector_mode` | `"regex"` / `"judge"` | `"regex"` | Detection strategy: regex-only or LLM-backed judge with adaptive regex fallback |
-| `judge_model` | string | `""` | Model for the judge detector (e.g. `"claude-sonnet-4-6"`); empty = use primary provider |
+| `judge_model` | string | `""` | Model for the judge detector (e.g. `"claude-sonnet-5"`); empty = use primary provider |
 | `judge_adaptive_low` | f32 | `0.5` | Regex confidence below this value skips judge invocation (treated as "not a correction") |
 | `judge_adaptive_high` | f32 | `0.8` | Regex confidence above this value skips judge invocation (high-confidence regex match accepted) |
 

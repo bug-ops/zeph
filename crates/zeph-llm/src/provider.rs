@@ -818,7 +818,7 @@ pub trait LlmProvider: Send + Sync {
     /// Provider name for logging and identification.
     fn name(&self) -> &str;
 
-    /// Model identifier string (e.g. `gpt-4o-mini`, `claude-sonnet-4-6`).
+    /// Model identifier string (e.g. `gpt-4o-mini`, `claude-sonnet-5`).
     /// Used by cost-estimation heuristics. Returns `""` when not applicable.
     #[allow(clippy::unnecessary_literal_bound)]
     fn model_identifier(&self) -> &str {

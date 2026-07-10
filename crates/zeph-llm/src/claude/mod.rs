@@ -7,7 +7,7 @@
 //! - Standard chat and streaming via Server-Sent Events
 //! - Native tool use (function calling)
 //! - Vision (image input in messages)
-//! - Extended and adaptive thinking (`claude-sonnet-4-6`, `claude-opus-4-6`)
+//! - Extended and adaptive thinking (`claude-sonnet-5`, `claude-opus-4-8`)
 //! - Prompt caching (`cache_control` blocks) for cost reduction
 //! - Server-side context compaction (compact-2026-01-12 beta)
 //! - Extended context window (context-1m-2025-08-07 beta)
@@ -18,7 +18,7 @@
 //! [[llm.providers]]
 //! name = "claude"
 //! type = "claude"
-//! model = "claude-sonnet-4-6"
+//! model = "claude-sonnet-5"
 //! max_tokens = 8192
 //! api_key_vault = "ZEPH_CLAUDE_API_KEY"
 //! ```
@@ -32,8 +32,8 @@
 //! use zeph_llm::{ThinkingConfig, ThinkingEffort};
 //!
 //! # fn build() -> Result<ClaudeProvider, zeph_llm::LlmError> {
-//! let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 16_000)
-//!     .with_thinking(ThinkingConfig::Extended { budget_tokens: 10_000 })?;
+//! let provider = ClaudeProvider::new("key".into(), "claude-sonnet-5".into(), 16_000)
+//!     .with_thinking(ThinkingConfig::Adaptive { effort: Some(ThinkingEffort::High) })?;
 //! # Ok(provider)
 //! # }
 //! ```
@@ -201,20 +201,57 @@ impl Clone for ClaudeProvider {
     }
 }
 
+/// Per-family minimum non-stale `(major, minor)` for the modern
+/// `claude-<family>-<major>[-<minor>][-<date>]` scheme, plus the current
+/// recommended replacement ID. Bump the numbers here (a one-line change) when a
+/// family's current release moves up; this never false-positives on a model
+/// NEWER than the floor, so it ages better than a hardcoded prefix literal.
+const MODERN_MODEL_FLOORS: &[(&str, u32, u32, &str)] = &[
+    ("sonnet", 5, 0, "claude-sonnet-5"),
+    ("opus", 4, 8, "claude-opus-4-8"),
+    ("haiku", 4, 5, "claude-haiku-4-5-20251001"),
+    ("fable", 5, 0, "claude-fable-5"),
+];
+
+/// Returns the current recommended replacement when `model` is a recognizably
+/// stale Claude identifier — either a retired `claude-3*` model or a modern
+/// `claude-<family>-<version>` below its family floor. Returns `None` for
+/// current, newer-than-floor, or unrecognized model strings (fail-open).
+///
+/// Limitation: a trailing date suffix on a version-less ID (e.g.
+/// `claude-opus-4-20250514`) is misparsed as the minor version, which can
+/// mask a stale warning for that exact shape. In-scope IDs use the
+/// `major-minor` form and are unaffected.
+fn stale_model_suggestion(model: &str) -> Option<&'static str> {
+    // Legacy retired generation — preserve #1625 coverage exactly.
+    if model.starts_with("claude-3") {
+        return Some("claude-sonnet-5 or claude-haiku-4-5-20251001");
+    }
+    let rest = model.strip_prefix("claude-")?; // non-Claude → fail open
+    let mut parts = rest.split('-');
+    let family = parts.next()?; // "sonnet", "opus", ...
+    let &(_, floor_major, floor_minor, suggestion) =
+        MODERN_MODEL_FLOORS.iter().find(|(f, ..)| *f == family)?; // unknown family → fail open
+    let major: u32 = parts.next()?.parse().ok()?; // non-numeric (alias) → fail open
+    let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    ((major, minor) < (floor_major, floor_minor)).then_some(suggestion)
+}
+
 impl ClaudeProvider {
     const MAX_CACHE_CONTROL_BLOCKS: usize = 4;
 
     /// Create a new provider.
     ///
-    /// Warns at runtime when `model` starts with `"claude-3"` because those identifiers
-    /// refer to retired models that may cause API errors.
+    /// Warns at runtime when `model` is a recognizably stale Claude identifier
+    /// (retired `claude-3*`, or below its family's current-version floor) because
+    /// those identifiers may be retired or superseded by a newer default.
     #[must_use]
     pub fn new(api_key: String, model: String, max_tokens: u32) -> Self {
-        if model.starts_with("claude-3") {
+        if let Some(suggestion) = stale_model_suggestion(&model) {
             tracing::warn!(
                 model = %model,
-                "configured model is a retired Claude 3 identifier and may cause API errors; \
-                consider upgrading to claude-sonnet-4-6 or claude-haiku-4-5-20251001",
+                "configured Claude model is not a current release and may be retired or \
+                superseded; consider upgrading to {suggestion}",
             );
         }
         Self {
@@ -646,7 +683,7 @@ impl ClaudeProvider {
                     model = %self.model,
                     budget_tokens,
                     ?effort,
-                    "budget_tokens is deprecated for Opus 4.6; auto-converting to effort"
+                    "budget_tokens is unsupported for this model; auto-converting to effort"
                 );
                 (
                     Some(types::ThinkingParam {
@@ -856,8 +893,12 @@ impl ClaudeProvider {
         let output_config = effort.map(|e| OutputConfig { effort: e }); // lgtm[rust/cleartext-logging]
 
         let cap = thinking_capability(&self.model);
-        // Opus 4.6 with thinking enabled does not support prefill: strip trailing assistant
-        // messages so the conversation always ends with a user turn.
+        // Models that prefer `effort` over `budget_tokens` also reject assistant
+        // prefill when thinking is enabled: strip trailing assistant messages so
+        // the conversation always ends with a user turn.
+        // TODO: `prefers_effort` conflates two independent capabilities (effort
+        // preference and no-prefill); they happen to align for every model in the
+        // current set but a future model could decouple them.
         let no_prefill = cap.prefers_effort && thinking_param.is_some();
 
         if Self::has_image_parts(messages) {
@@ -1095,7 +1136,7 @@ impl LlmProvider for ClaudeProvider {
             || self.model.contains("sonnet")
             || self.model.contains("haiku")
         {
-            // Only Opus 4.6 and Sonnet 4.6 support the 1M context window.
+            // Only Opus and Sonnet models support the 1M context window.
             // Haiku does not support extended context even when the flag is set.
             let supports_1m = self.enable_extended_context && !self.model.contains("haiku");
             if supports_1m {
@@ -1105,7 +1146,7 @@ impl LlmProvider for ClaudeProvider {
                     tracing::warn!(
                         model = %self.model,
                         "enable_extended_context has no effect for Haiku models; \
-                        extended context (1M) is only supported by Opus 4.6 and Sonnet 4.6"
+                        extended context (1M) is only supported by Claude Opus and Sonnet models"
                     );
                 }
                 Some(200_000)

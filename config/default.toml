@@ -93,11 +93,11 @@ embedding_model = "qwen3-embedding"
 # Cloud provider (Claude)
 # [[llm.providers]]
 # type = "claude"
-# model = "claude-sonnet-4-6"
+# model = "claude-sonnet-5"
 # max_tokens = 4096
 # default = true
 # server_compaction = false             # Claude compact-2026-01-12 beta
-# enable_extended_context = false       # 1M token window (Opus 4.6 / Sonnet 4.6)
+# enable_extended_context = false       # 1M token window (Claude Opus and Sonnet models, not Haiku)
 # prompt_cache_ttl = "1h"              # "1h" = extended TTL beta (writes ~2× cost); omit for default ~5 min
 # thinking = { type = "enabled", budget_tokens = 10000 }
 
@@ -170,7 +170,7 @@ embedding_model = "qwen3-embedding"
 # [[llm.providers]]
 # name = "claude"
 # type = "claude"
-# model = "claude-sonnet-4-6"
+# model = "claude-sonnet-5"
 # max_tokens = 4096
 # default = true
 
@@ -215,7 +215,7 @@ cooldown_minutes = 60
 # Named provider from [[llm.providers]] for the judge detector. Takes precedence over judge_model.
 # Empty = fall back to judge_model, then to primary provider.
 # judge_provider = ""
-# LLM model for judge detector (e.g. "claude-sonnet-4-6"). Empty = use primary provider.
+# LLM model for judge detector (e.g. "claude-sonnet-5"). Empty = use primary provider.
 # judge_model = ""
 # HuggingFace repo ID for ML correction detector (requires detector_mode = "model" and classifiers feature).
 # When empty, falls back to classifiers.ner_model default.
@@ -1378,7 +1378,7 @@ sweep_batch_size = 100
 # [[llm.providers]]
 # name = "quality"
 # type = "claude"
-# model = "claude-opus-4-6"
+# model = "claude-opus-4-8"
 # default = true
 #
 # [llm.complexity_routing]

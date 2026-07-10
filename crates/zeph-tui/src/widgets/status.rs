@@ -961,7 +961,7 @@ mod tests {
         let (_, agent_rx) = mpsc::channel(1);
         let app = App::new(user_tx, agent_rx);
         let metrics = MetricsSnapshot {
-            model_name: "claude-sonnet-4-6".into(),
+            model_name: "claude-sonnet-5".into(),
             context_tokens: 8_000,
             context_max_tokens: 100_000,
             total_tokens: 12_500,

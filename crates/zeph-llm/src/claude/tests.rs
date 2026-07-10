@@ -13,6 +13,7 @@ use super::types::{
 use super::*;
 use crate::CacheTtl;
 use crate::provider::{ImageData, MessageMetadata, Role, ThinkingBlock};
+use crate::testing::TEST_CLAUDE_MODEL;
 use tokio_stream::StreamExt;
 
 #[test]
@@ -20,7 +21,7 @@ fn context_window_known_models() {
     let sonnet = ClaudeProvider::new("k".into(), "claude-sonnet-4-5-20250929".into(), 1024);
     assert_eq!(sonnet.context_window(), Some(200_000));
 
-    let opus = ClaudeProvider::new("k".into(), "claude-opus-4-6".into(), 1024);
+    let opus = ClaudeProvider::new("k".into(), "claude-opus-4-8".into(), 1024);
     assert_eq!(opus.context_window(), Some(200_000));
 
     let haiku = ClaudeProvider::new("k".into(), "claude-haiku-4-5".into(), 1024);
@@ -31,6 +32,54 @@ fn context_window_known_models() {
 fn context_window_unknown_model() {
     let provider = ClaudeProvider::new("k".into(), "unknown-model".into(), 1024);
     assert!(provider.context_window().is_none());
+}
+
+#[test]
+fn stale_model_suggestion_old_gen_below_floor_returns_some() {
+    assert_eq!(
+        stale_model_suggestion("claude-sonnet-4-6"),
+        Some("claude-sonnet-5")
+    );
+    assert_eq!(
+        stale_model_suggestion("claude-opus-4-6"),
+        Some("claude-opus-4-8")
+    );
+    assert_eq!(
+        stale_model_suggestion("claude-opus-4-7"),
+        Some("claude-opus-4-8")
+    );
+}
+
+#[test]
+fn stale_model_suggestion_current_gen_returns_none() {
+    assert_eq!(stale_model_suggestion("claude-sonnet-5"), None);
+    assert_eq!(stale_model_suggestion("claude-opus-4-8"), None);
+    assert_eq!(stale_model_suggestion("claude-haiku-4-5-20251001"), None);
+}
+
+#[test]
+fn stale_model_suggestion_future_version_fails_open() {
+    assert_eq!(stale_model_suggestion("claude-opus-4-9"), None);
+    assert_eq!(stale_model_suggestion("claude-sonnet-6"), None);
+}
+
+#[test]
+fn stale_model_suggestion_legacy_claude_3_returns_some() {
+    assert_eq!(
+        stale_model_suggestion("claude-3-opus"),
+        Some("claude-sonnet-5 or claude-haiku-4-5-20251001")
+    );
+    assert_eq!(
+        stale_model_suggestion("claude-3-5-sonnet"),
+        Some("claude-sonnet-5 or claude-haiku-4-5-20251001")
+    );
+}
+
+#[test]
+fn stale_model_suggestion_non_claude_or_alias_fails_open() {
+    assert_eq!(stale_model_suggestion("gpt-4o"), None);
+    assert_eq!(stale_model_suggestion("claude-opus-latest"), None);
+    assert_eq!(stale_model_suggestion("claude-unknownfamily-9"), None);
 }
 
 #[test]
@@ -413,7 +462,7 @@ fn request_body_serializes_with_stream_false_omits_stream() {
 fn split_system_no_markers_caches_entire_block() {
     // Text must meet the 2048-token threshold for sonnet (≈ 8192 chars).
     let long_text = format!("You are Zeph, an AI assistant. {}", "x".repeat(8200));
-    let blocks = split_system_into_blocks(&long_text, "claude-sonnet-4-6", None);
+    let blocks = split_system_into_blocks(&long_text, TEST_CLAUDE_MODEL, None);
     assert_eq!(blocks.len(), 1);
     assert!(blocks[0].cache_control.is_some());
     assert!(blocks[0].text.contains("Zeph"));
@@ -422,7 +471,7 @@ fn split_system_no_markers_caches_entire_block() {
 #[test]
 fn split_system_no_markers_short_text_skips_cache() {
     let blocks =
-        split_system_into_blocks("You are Zeph, an AI assistant.", "claude-sonnet-4-6", None);
+        split_system_into_blocks("You are Zeph, an AI assistant.", TEST_CLAUDE_MODEL, None);
     assert_eq!(blocks.len(), 1);
     assert!(blocks[0].cache_control.is_none());
 }
@@ -431,7 +480,7 @@ fn split_system_no_markers_short_text_skips_cache() {
 fn split_system_no_markers_exact_threshold_sonnet_caches() {
     // Exactly 8192 chars => 8192 / 4 = 2048 tokens == sonnet threshold: should cache.
     let exact_text = "A".repeat(8192);
-    let blocks = split_system_into_blocks(&exact_text, "claude-sonnet-4-6", None);
+    let blocks = split_system_into_blocks(&exact_text, TEST_CLAUDE_MODEL, None);
     assert_eq!(blocks.len(), 1);
     assert!(blocks[0].cache_control.is_some());
 }
@@ -440,7 +489,7 @@ fn split_system_no_markers_exact_threshold_sonnet_caches() {
 fn split_system_no_markers_opus_skips_short_text() {
     // 8192 chars = 2048 tokens < 4096 opus minimum — no cache.
     let medium_text = "A".repeat(8192);
-    let blocks = split_system_into_blocks(&medium_text, "claude-opus-4-6", None);
+    let blocks = split_system_into_blocks(&medium_text, "claude-opus-4-8", None);
     assert_eq!(blocks.len(), 1);
     assert!(blocks[0].cache_control.is_none());
 }
@@ -449,7 +498,7 @@ fn split_system_no_markers_opus_skips_short_text() {
 fn split_system_no_markers_opus_caches_long_text() {
     // 16384 chars = 4096 tokens >= 4096 opus minimum — should cache.
     let long_text = "A".repeat(16384);
-    let blocks = split_system_into_blocks(&long_text, "claude-opus-4-6", None);
+    let blocks = split_system_into_blocks(&long_text, "claude-opus-4-8", None);
     assert_eq!(blocks.len(), 1);
     assert!(blocks[0].cache_control.is_some());
 }
@@ -463,7 +512,7 @@ fn split_system_with_all_markers() {
          {CACHE_MARKER_TOOLS}\ntool catalog {padding}\n\
          {CACHE_MARKER_VOLATILE}\nvolatile stuff"
     );
-    let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6", None);
+    let blocks = split_system_into_blocks(&system, TEST_CLAUDE_MODEL, None);
     assert_eq!(blocks.len(), 4);
     assert!(blocks[0].cache_control.is_some());
     assert!(blocks[0].text.contains("base prompt"));
@@ -479,7 +528,7 @@ fn split_system_with_all_markers() {
 fn split_system_partial_markers() {
     let padding = "x".repeat(8200);
     let system = format!("base prompt {padding}\n{CACHE_MARKER_VOLATILE}\nvolatile only");
-    let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6", None);
+    let blocks = split_system_into_blocks(&system, TEST_CLAUDE_MODEL, None);
     assert_eq!(blocks.len(), 2);
     assert!(blocks[0].cache_control.is_some());
     assert!(blocks[1].cache_control.is_none());
@@ -490,7 +539,7 @@ fn split_system_block1_padded_when_below_threshold() {
     // Block 1 is below 2048 tokens but gets padded with AGENT_IDENTITY_PREAMBLE,
     // so it must receive cache_control after padding.
     let system = format!("short text\n{CACHE_MARKER_STABLE}\nmore content");
-    let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6", None);
+    let blocks = split_system_into_blocks(&system, TEST_CLAUDE_MODEL, None);
     // Block 1 must be padded and cached
     assert!(blocks[0].cache_control.is_some());
     assert!(blocks[0].text.contains("short text"));
@@ -504,7 +553,7 @@ fn split_system_block2_not_padded_when_below_threshold() {
     let padding = "x".repeat(8200);
     let system =
         format!("base {padding}\n{CACHE_MARKER_STABLE}\nshort\n{CACHE_MARKER_TOOLS}\nmore");
-    let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6", None);
+    let blocks = split_system_into_blocks(&system, TEST_CLAUDE_MODEL, None);
     // Block 2 ("short") is below threshold and must NOT contain identity preamble
     assert!(!blocks[1].text.contains("Agent Identity"));
 }
@@ -1464,7 +1513,7 @@ fn messages_response_deserialization() {
         "id": "msg_test",
         "type": "message",
         "role": "assistant",
-        "model": "claude-sonnet-4-6",
+        "model": TEST_CLAUDE_MODEL,
         "content": [{"type": "text", "text": "hello claude"}],
         "stop_reason": "end_turn",
         "usage": {
@@ -1634,6 +1683,26 @@ fn thinking_capability_sonnet_4_6_no_prefers_effort() {
 }
 
 #[test]
+fn thinking_capability_opus_4_8_prefers_effort() {
+    let cap = thinking_capability("claude-opus-4-8");
+    assert!(cap.prefers_effort);
+    assert!(!cap.needs_interleaved_beta);
+}
+
+#[test]
+fn thinking_capability_opus_4_7_prefers_effort() {
+    let cap = thinking_capability("claude-opus-4-7");
+    assert!(cap.prefers_effort);
+}
+
+#[test]
+fn thinking_capability_sonnet_5_prefers_effort_no_interleaved_beta() {
+    let cap = thinking_capability("claude-sonnet-5");
+    assert!(cap.prefers_effort);
+    assert!(!cap.needs_interleaved_beta);
+}
+
+#[test]
 fn budget_to_effort_boundaries() {
     assert_eq!(budget_to_effort(4_999), ThinkingEffort::Low);
     assert_eq!(budget_to_effort(5_000), ThinkingEffort::Medium);
@@ -1645,7 +1714,7 @@ fn budget_to_effort_boundaries() {
 
 #[test]
 fn build_thinking_param_opus_extended_converts_to_adaptive() {
-    let p = ClaudeProvider::new("k".into(), "claude-opus-4-6".into(), 32_000)
+    let p = ClaudeProvider::new("k".into(), "claude-opus-4-8".into(), 32_000)
         .with_thinking(ThinkingConfig::Extended {
             budget_tokens: 5_000,
         })
@@ -1659,7 +1728,7 @@ fn build_thinking_param_opus_extended_converts_to_adaptive() {
 
 #[test]
 fn build_thinking_param_opus_adaptive_unchanged() {
-    let p = ClaudeProvider::new("k".into(), "claude-opus-4-6".into(), 32_000)
+    let p = ClaudeProvider::new("k".into(), "claude-opus-4-8".into(), 32_000)
         .with_thinking(ThinkingConfig::Adaptive {
             effort: Some(ThinkingEffort::High),
         })
@@ -1741,7 +1810,7 @@ fn with_thinking_rejects_budget_not_less_than_max_tokens() {
 
 #[test]
 fn with_thinking_bumps_max_tokens_when_too_low() {
-    let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024)
+    let provider = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_thinking(ThinkingConfig::Extended {
             budget_tokens: 8000,
         })
@@ -1751,7 +1820,7 @@ fn with_thinking_bumps_max_tokens_when_too_low() {
 
 #[test]
 fn with_thinking_keeps_max_tokens_when_already_high() {
-    let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 32_000)
+    let provider = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 32_000)
         .with_thinking(ThinkingConfig::Extended {
             budget_tokens: 8000,
         })
@@ -1763,7 +1832,7 @@ fn with_thinking_keeps_max_tokens_when_already_high() {
 fn set_thinking_none_restores_base_max_tokens_after_enable() {
     // S1 regression: enable (bumps max_tokens to the 16k floor) → off must restore the
     // originally configured max_tokens, not leave it stuck at the floor.
-    let mut provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+    let mut provider = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024);
     provider
         .set_thinking(Some(ThinkingConfig::Extended {
             budget_tokens: 8000,
@@ -1783,7 +1852,7 @@ fn set_thinking_none_restores_base_max_tokens_after_enable() {
 fn set_thinking_enable_disable_enable_is_idempotent() {
     // S1: repeated enable/disable cycles must never ratchet max_tokens upward permanently —
     // every `Some(_)` step recomputes from the immutable base_max_tokens baseline.
-    let mut provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+    let mut provider = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024);
     for budget in [8000, 12_000, 4000] {
         provider
             .set_thinking(Some(ThinkingConfig::Extended {
@@ -1810,13 +1879,13 @@ fn set_thinking_out_of_range_budget_rejected() {
 fn set_thinking_construction_parity_with_with_thinking() {
     // Construction-time behavior via `with_thinking` must remain byte-for-byte identical to
     // calling `set_thinking` directly after `new` (delegation must not change semantics).
-    let via_with_thinking = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024)
+    let via_with_thinking = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_thinking(ThinkingConfig::Extended {
             budget_tokens: 8000,
         })
         .unwrap();
 
-    let mut via_set_thinking = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+    let mut via_set_thinking = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024);
     via_set_thinking
         .set_thinking(Some(ThinkingConfig::Extended {
             budget_tokens: 8000,
@@ -1924,7 +1993,7 @@ fn build_thinking_param_no_thinking_returns_none() {
 
 #[test]
 fn beta_header_without_thinking_returns_none() {
-    let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+    let provider = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024);
     let beta = provider.beta_header(true);
     assert!(beta.is_none());
 }
@@ -1956,7 +2025,7 @@ fn beta_header_sonnet_4_6_extended_no_tools_excludes_interleaved() {
 
 #[test]
 fn beta_header_adaptive_mode_excludes_interleaved() {
-    let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 16_000)
+    let provider = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 16_000)
         .with_thinking(ThinkingConfig::Adaptive { effort: None })
         .unwrap();
     let beta = provider.beta_header(true);
@@ -1965,15 +2034,15 @@ fn beta_header_adaptive_mode_excludes_interleaved() {
 
 #[test]
 fn extended_context_disabled_no_beta_header() {
-    let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+    let provider = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024);
     let beta = provider.beta_header(true);
     assert!(beta.is_none());
 }
 
 #[test]
 fn extended_context_enabled_includes_beta_header() {
-    let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024)
-        .with_extended_context(true);
+    let provider =
+        ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024).with_extended_context(true);
     let beta = provider.beta_header(true);
     assert!(
         beta.as_deref()
@@ -1999,14 +2068,14 @@ fn extended_context_with_interleaved_thinking_combines_headers() {
 
 #[test]
 fn extended_context_enabled_returns_1m_context_window() {
-    let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024)
-        .with_extended_context(true);
+    let provider =
+        ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024).with_extended_context(true);
     assert_eq!(provider.context_window(), Some(1_000_000));
 }
 
 #[test]
 fn extended_context_disabled_returns_200k_context_window() {
-    let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+    let provider = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024);
     assert_eq!(provider.context_window(), Some(200_000));
 }
 
@@ -2158,7 +2227,7 @@ fn redacted_thinking_content_block_roundtrip() {
 
 #[test]
 fn build_request_does_not_include_anthropic_beta_header() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 256);
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 256);
     let messages = vec![Message {
         role: Role::User,
         content: "hi".into(),
@@ -2176,7 +2245,7 @@ fn build_request_does_not_include_anthropic_beta_header() {
 
 #[test]
 fn build_request_with_extended_context_includes_beta_header() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 256)
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 256)
         .with_extended_context(true);
     let messages = vec![Message {
         role: Role::User,
@@ -2260,13 +2329,13 @@ fn get_or_build_api_tools_single_tool_has_cache_control() {
 
 #[test]
 fn cache_min_tokens_sonnet_returns_2048() {
-    assert_eq!(cache_min_tokens("claude-sonnet-4-6"), 2048);
+    assert_eq!(cache_min_tokens(TEST_CLAUDE_MODEL), 2048);
     assert_eq!(cache_min_tokens("claude-sonnet-4-5-20250929"), 2048);
 }
 
 #[test]
 fn cache_min_tokens_non_sonnet_returns_4096() {
-    assert_eq!(cache_min_tokens("claude-opus-4-6"), 4096);
+    assert_eq!(cache_min_tokens("claude-opus-4-8"), 4096);
     assert_eq!(cache_min_tokens("claude-haiku-4-5"), 4096);
     assert_eq!(cache_min_tokens("unknown-model"), 4096);
 }
@@ -2276,7 +2345,7 @@ fn split_system_opus_block_above_threshold_gets_cache_control() {
     // opus threshold = 4096 tokens = 16384 chars
     let padding = "x".repeat(16400);
     let system = format!("{padding}\n{CACHE_MARKER_STABLE}\nmore");
-    let blocks = split_system_into_blocks(&system, "claude-opus-4-6", None);
+    let blocks = split_system_into_blocks(&system, "claude-opus-4-8", None);
     assert!(
         blocks[0].cache_control.is_some(),
         "block above opus threshold must be cached"
@@ -2287,7 +2356,7 @@ fn split_system_opus_block_above_threshold_gets_cache_control() {
 fn split_system_opus_block_below_threshold_skips_cache_control() {
     // text under 16384 chars is below opus threshold (4096 tokens)
     let system = format!("short\n{CACHE_MARKER_STABLE}\nmore content");
-    let blocks = split_system_into_blocks(&system, "claude-opus-4-6", None);
+    let blocks = split_system_into_blocks(&system, "claude-opus-4-8", None);
     assert!(
         blocks[0].cache_control.is_none(),
         "block below opus threshold must not be cached"
@@ -2298,7 +2367,7 @@ fn split_system_opus_block_below_threshold_skips_cache_control() {
 
 #[test]
 fn build_request_single_message_no_top_level_cache_control() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 256);
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 256);
     let messages = vec![Message {
         role: Role::User,
         content: "hello".into(),
@@ -2316,7 +2385,7 @@ fn build_request_single_message_no_top_level_cache_control() {
 
 #[test]
 fn build_request_multi_turn_no_top_level_cache_control() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 256);
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 256);
     let messages = vec![
         Message {
             role: Role::User,
@@ -2453,7 +2522,7 @@ fn count_cache_control_occurrences(value: &serde_json::Value) -> usize {
 
 #[test]
 fn debug_tool_request_caps_block_cache_controls_at_four() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 256);
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 256);
     let padding = "x".repeat(8200);
     let system = format!(
         "base prompt {padding}\n{CACHE_MARKER_STABLE}\nskills here {padding}\n\
@@ -2530,7 +2599,7 @@ fn debug_tool_request_caps_block_cache_controls_at_four() {
 
 #[test]
 fn debug_vision_request_caps_total_cache_controls_at_four() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 256);
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 256);
     let padding = "x".repeat(8200);
     let system = format!(
         "base prompt {padding}\n{CACHE_MARKER_STABLE}\nskills here {padding}\n\
@@ -2703,11 +2772,11 @@ fn store_cache_usage_updates_last_usage() {
     assert_eq!(provider.last_usage(), Some((42, 17)));
 }
 
-// ── Opus 4.6 no-prefill: trailing assistant messages must be stripped ──────
+// ── Opus no-prefill: trailing assistant messages must be stripped ──────────
 
 #[test]
 fn build_request_opus_thinking_strips_trailing_assistant() {
-    let provider = ClaudeProvider::new("key".into(), "claude-opus-4-6".into(), 32_000)
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-4-8".into(), 32_000)
         .with_thinking(ThinkingConfig::Adaptive { effort: None })
         .unwrap();
     let messages = vec![
@@ -2732,13 +2801,13 @@ fn build_request_opus_thinking_strips_trailing_assistant() {
         msgs.last()
             .and_then(|m| m["role"].as_str())
             .is_none_or(|r| r != "assistant"),
-        "trailing assistant message must be stripped for Opus 4.6 with thinking"
+        "trailing assistant message must be stripped for Opus with thinking"
     );
 }
 
 #[test]
 fn build_request_opus_no_thinking_keeps_trailing_assistant() {
-    let provider = ClaudeProvider::new("key".into(), "claude-opus-4-6".into(), 32_000);
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-4-8".into(), 32_000);
     let messages = vec![
         Message {
             role: Role::User,
@@ -2798,13 +2867,13 @@ fn build_request_sonnet_thinking_keeps_trailing_assistant() {
 
 #[test]
 fn server_compaction_disabled_by_default() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024);
     assert!(!provider.server_compaction_enabled());
 }
 
 #[test]
 fn with_server_compaction_enables_flag() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
     assert!(provider.server_compaction_enabled());
 }
@@ -2819,13 +2888,13 @@ fn with_server_compaction_haiku_stays_disabled() {
 
 #[test]
 fn take_compaction_summary_empty_when_none() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024);
     assert!(provider.take_compaction_summary().is_none());
 }
 
 #[test]
 fn take_compaction_summary_returns_and_clears() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024);
     *provider.last_compaction.lock() = Some("Summary text".to_owned());
     let result = provider.take_compaction_summary();
     assert_eq!(result.as_deref(), Some("Summary text"));
@@ -2835,13 +2904,13 @@ fn take_compaction_summary_returns_and_clears() {
 
 #[test]
 fn context_management_absent_when_disabled() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024);
     assert!(provider.context_management().is_none());
 }
 
 #[test]
 fn context_management_present_when_enabled() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
     let cm = provider.context_management().unwrap();
     // trigger value = context_window * 80 / 100 = 200_000 * 80 / 100 = 160_000
@@ -2870,7 +2939,7 @@ fn context_management_serializes_correctly() {
 
 #[test]
 fn beta_header_includes_compact_when_server_compaction_enabled() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
     let header = provider.beta_header(false).unwrap_or_default();
     assert!(
@@ -2881,7 +2950,7 @@ fn beta_header_includes_compact_when_server_compaction_enabled() {
 
 #[test]
 fn beta_header_excludes_compact_when_disabled() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024);
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024);
     let header = provider.beta_header(false).unwrap_or_default();
     assert!(
         !header.contains("compact-2026-01-12"),
@@ -2902,14 +2971,14 @@ fn compaction_content_block_deserialized() {
 
 #[test]
 fn server_compaction_not_rejected_by_default() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
     assert!(!provider.is_server_compaction_rejected());
 }
 
 #[test]
 fn beta_header_excluded_after_rejection() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
     // Simulate API rejection.
     provider
@@ -2924,7 +2993,7 @@ fn beta_header_excluded_after_rejection() {
 
 #[test]
 fn context_management_absent_after_rejection() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
     provider
         .server_compaction_rejected
@@ -2993,7 +3062,7 @@ fn is_compact_beta_rejection_ignores_unrelated_no_context_management() {
 
 #[test]
 fn clone_shares_rejection_flag() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
     let clone = provider.clone();
     // Set flag on original; clone must see it.
@@ -3008,7 +3077,7 @@ fn clone_shares_rejection_flag() {
 
 #[test]
 fn handle_compact_beta_rejection_sets_flags_and_returns_true_on_first_rejection() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
     let mut retried = false;
     let handled = provider.handle_compact_beta_rejection(
@@ -3027,7 +3096,7 @@ fn handle_compact_beta_rejection_sets_flags_and_returns_true_on_first_rejection(
 
 #[test]
 fn handle_compact_beta_rejection_returns_false_when_already_retried() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
     let mut retried = true;
     let handled = provider.handle_compact_beta_rejection(
@@ -3045,7 +3114,7 @@ fn handle_compact_beta_rejection_returns_false_when_already_retried() {
 
 #[test]
 fn handle_compact_beta_rejection_returns_false_for_non_rejection_error() {
-    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1024)
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
     let mut retried = false;
     let handled = provider.handle_compact_beta_rejection(
@@ -3126,9 +3195,8 @@ fn output_schema_forwarding_enabled_appends_hint() {
         parameters: serde_json::json!({"type": "object"}),
         output_schema: Some(serde_json::json!({"type": "string"})),
     };
-    let provider =
-        crate::claude::ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1000)
-            .with_output_schema_forwarding(true, 512, usize::MAX);
+    let provider = crate::claude::ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1000)
+        .with_output_schema_forwarding(true, 512, usize::MAX);
     let api_tools = provider.get_or_build_api_tools(&[tool]);
     let desc = api_tools[0]["description"].as_str().unwrap();
     assert!(
@@ -3150,8 +3218,7 @@ fn output_schema_forwarding_disabled_no_hint() {
         parameters: serde_json::json!({"type": "object"}),
         output_schema: Some(serde_json::json!({"type": "string"})),
     };
-    let provider =
-        crate::claude::ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1000);
+    let provider = crate::claude::ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1000);
     let api_tools = provider.get_or_build_api_tools(&[tool]);
     let desc = api_tools[0]["description"].as_str().unwrap();
     assert!(
@@ -3170,9 +3237,8 @@ fn output_schema_forwarding_truncates_large_schema() {
         parameters: serde_json::json!({"type": "object"}),
         output_schema: Some(large_schema),
     };
-    let provider =
-        crate::claude::ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1000)
-            .with_output_schema_forwarding(true, 64, usize::MAX);
+    let provider = crate::claude::ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1000)
+        .with_output_schema_forwarding(true, 64, usize::MAX);
     let api_tools = provider.get_or_build_api_tools(&[tool]);
     let desc = api_tools[0]["description"].as_str().unwrap();
     assert!(
@@ -3239,9 +3305,8 @@ fn test_claude_default_output_schema_hint_bytes_is_1024() {
         parameters: serde_json::json!({"type": "object"}),
         output_schema: Some(schema),
     };
-    let provider =
-        crate::claude::ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1000)
-            .with_output_schema_forwarding(true, 1024, usize::MAX);
+    let provider = crate::claude::ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1000)
+        .with_output_schema_forwarding(true, 1024, usize::MAX);
     let api_tools = provider.get_or_build_api_tools(&[tool]);
     let desc = api_tools[0]["description"].as_str().unwrap();
     assert!(
@@ -3264,9 +3329,8 @@ fn test_claude_stub_used_when_schema_exceeds_1024_bytes() {
         parameters: serde_json::json!({"type": "object"}),
         output_schema: Some(large_schema),
     };
-    let provider =
-        crate::claude::ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 1000)
-            .with_output_schema_forwarding(true, 1024, usize::MAX);
+    let provider = crate::claude::ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1000)
+        .with_output_schema_forwarding(true, 1024, usize::MAX);
     let api_tools = provider.get_or_build_api_tools(&[tool]);
     let desc = api_tools[0]["description"].as_str().unwrap();
     assert!(
@@ -3330,7 +3394,7 @@ fn cache_ttl_ephemeral_toml_round_trip() {
 
 #[test]
 fn beta_header_includes_extended_cache_ttl_for_one_hour() {
-    let p = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024)
+    let p = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_prompt_cache_ttl(Some(CacheTtl::OneHour));
     let header = p.beta_header(false).unwrap_or_default();
     assert!(
@@ -3341,7 +3405,7 @@ fn beta_header_includes_extended_cache_ttl_for_one_hour() {
 
 #[test]
 fn beta_header_omits_extended_cache_ttl_for_ephemeral() {
-    let p = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024);
+    let p = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024);
     let header = p.beta_header(false).unwrap_or_default();
     assert!(
         !header.contains("extended-cache-ttl-2025-04-25"),
@@ -3358,7 +3422,7 @@ fn tool_cache_control_uses_typed_path_for_one_hour() {
         parameters: serde_json::json!({"type": "object"}),
         output_schema: None,
     };
-    let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 1024)
+    let provider = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_prompt_cache_ttl(Some(CacheTtl::OneHour));
     let api_tools = provider.get_or_build_api_tools(&[tool]);
     let cc = &api_tools[0]["cache_control"];
@@ -3371,7 +3435,7 @@ fn split_system_into_blocks_propagates_one_hour_ttl() {
     use super::cache::split_system_into_blocks;
     // Use a long enough string to exceed the cache threshold for any model
     let system = "A".repeat(20_000);
-    let blocks = split_system_into_blocks(&system, "claude-sonnet-4-6", Some(CacheTtl::OneHour));
+    let blocks = split_system_into_blocks(&system, TEST_CLAUDE_MODEL, Some(CacheTtl::OneHour));
     let cached = blocks
         .iter()
         .find(|b| b.cache_control.is_some())

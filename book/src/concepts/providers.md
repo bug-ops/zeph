@@ -150,14 +150,14 @@ Change the `type` field in the `[[llm.providers]]` entry. All skills, memory, an
 [llm]
 [[llm.providers]]
 type = "claude"   # ollama, claude, openai, gemini, gonka, candle, compatible
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 ```
 
 At runtime, use the `/provider <name>` command to switch providers:
 
 ```
 > /provider claude
-Switched to Claude (claude-sonnet-4-6)
+Switched to Claude (claude-sonnet-5)
 ```
 
 The chosen provider is now the active provider for this channel. On the next session start, Zeph automatically restores the last-used provider for that channel.

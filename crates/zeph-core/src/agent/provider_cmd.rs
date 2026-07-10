@@ -838,7 +838,7 @@ mod tests {
     async fn provider_switch_shows_reset_notice_when_think_tokens_override_was_active() {
         let mut claude_provider = AnyProvider::Claude(ClaudeProvider::new(
             "key".into(),
-            "claude-sonnet-4-6".into(),
+            "claude-sonnet-5".into(),
             4096,
         ));
         claude_provider.set_thinking_budget(Some(8000)).unwrap();
@@ -867,7 +867,7 @@ mod tests {
     async fn provider_switch_shows_reset_notice_when_reasoning_effort_override_was_active() {
         let mut claude_provider = AnyProvider::Claude(ClaudeProvider::new(
             "key".into(),
-            "claude-sonnet-4-6".into(),
+            "claude-sonnet-5".into(),
             4096,
         ));
         claude_provider

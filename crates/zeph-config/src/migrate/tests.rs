@@ -345,7 +345,7 @@ fn migrate_llm_claude_produces_providers_block() {
 provider = "claude"
 
 [llm.cloud]
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 max_tokens = 8192
 server_compaction = true
 "#;
@@ -361,7 +361,7 @@ server_compaction = true
         result.output
     );
     assert!(
-        result.output.contains("model = \"claude-sonnet-4-6\""),
+        result.output.contains("model = \"claude-sonnet-5\""),
         "{}",
         result.output
     );
@@ -1238,7 +1238,7 @@ fn migrate_claude_prompt_cache_ttl_1h_survives() {
 provider = "claude"
 
 [llm.cloud]
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 prompt_cache_ttl = "1h"
 "#;
     let result = migrate_llm_to_providers(src).expect("migrate");
@@ -1256,7 +1256,7 @@ fn migrate_claude_prompt_cache_ttl_ephemeral_suppressed() {
 provider = "claude"
 
 [llm.cloud]
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 prompt_cache_ttl = "ephemeral"
 "#;
     let result = migrate_llm_to_providers(src).expect("migrate");
@@ -1272,7 +1272,7 @@ fn migrate_claude_prompt_cache_ttl_1h_idempotent() {
     let src = r#"
 [[llm.providers]]
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 prompt_cache_ttl = "1h"
 "#;
     let migrator = ConfigMigrator::new();

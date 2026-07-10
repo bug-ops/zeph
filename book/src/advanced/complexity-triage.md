@@ -61,7 +61,7 @@ model = "claude-haiku-4-5-20251001"
 [[llm.providers]]
 name = "expert"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 ```
 
 Each tier value must match a `name` field in one of the `[[llm.providers]]` entries. Tiers are optional — any omitted tier resolves to the first configured tier provider (simple).

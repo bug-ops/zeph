@@ -70,7 +70,7 @@ See [LLM Providers](../concepts/providers.md) for other Ollama-compatible models
 # For semantic memory, combine with an Ollama embedding model (see recipe #5).
 [[llm.providers]]
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 max_tokens = 8192
 # server_compaction = true  # let Claude API manage context instead of client-side compaction
 
@@ -290,7 +290,7 @@ See [LSP Code Intelligence](../guides/lsp.md) and [Code Indexing](../advanced/co
 [llm]
 [[llm.providers]]
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 max_tokens = 4096
 
 [vault]

@@ -51,7 +51,7 @@ By default, correction detection uses regex patterns only. If you want higher re
 ```toml
 [skills.learning]
 detector_mode = "judge"
-judge_model = "claude-sonnet-4-6"   # leave empty to use the primary provider
+judge_model = "claude-sonnet-5"   # leave empty to use the primary provider
 judge_adaptive_low = 0.5            # regex confidence floor (default: 0.5)
 judge_adaptive_high = 0.8           # regex confidence ceiling (default: 0.8)
 ```

@@ -111,7 +111,7 @@ AnyProvider { Claude, OpenAI, Ollama, Compatible, Candle, Gemini }
 [[llm.providers]]
 name = "quality"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 prompt_cache_ttl = "1h"   # "ephemeral" (default) or "1h"
 ```
 
@@ -158,7 +158,7 @@ embed = true
 [[llm.providers]]
 name = "quality"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 max_tokens = 4096
 default = true
 ```

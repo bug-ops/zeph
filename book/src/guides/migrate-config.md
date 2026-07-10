@@ -24,14 +24,14 @@ Given a minimal config like:
 
 ```toml
 [agent]
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 ```
 
 After migration, missing sections appear as commented-out blocks:
 
 ```toml
 [agent]
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 
 # [llm]
 # # Maximum tokens allowed in a single LLM request.

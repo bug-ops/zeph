@@ -59,7 +59,7 @@ zeph agents delete researcher
 ---
 name: researcher
 description: Performs web research tasks
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 max_turns: 20
 tools: [web_scrape, read_file]
 skills: [research]

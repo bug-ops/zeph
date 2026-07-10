@@ -12,14 +12,25 @@ use zeph_config::ThinkingEffort;
 pub(super) struct ThinkingCapability {
     /// Requires `interleaved-thinking-2025-05-14` beta header when `tool_use` is present.
     pub needs_interleaved_beta: bool,
-    /// Opus 4.6 uses `effort` instead of `budget_tokens`; `Extended` config is auto-converted.
+    /// Opus 4.6 and the 4.7+/5 generation use `effort` instead of `budget_tokens`
+    /// (4.7+/5 reject `budget_tokens` outright); `Extended` config is auto-converted.
     pub prefers_effort: bool,
 }
 
 pub(super) fn thinking_capability(model: &str) -> ThinkingCapability {
-    // Sonnet 4.6 with tools needs `interleaved-thinking-2025-05-14` beta header.
+    // Legacy Sonnet 4.6 with tools needs the interleaved-thinking-2025-05-14 beta
+    // header. Opus 4.7+/4.8 and Sonnet 5 enable interleaved thinking automatically
+    // under adaptive thinking (no header), so they are intentionally NOT listed.
     let needs_interleaved_beta = model.contains("claude-sonnet-4-6");
-    let prefers_effort = model.contains("claude-opus-4-6");
+
+    // Opus 4.6 deprecates budget_tokens in favor of effort; Opus 4.7/4.8 and
+    // Sonnet 5 REMOVE budget_tokens entirely (400 if sent), so `Extended` config
+    // MUST auto-convert to an effort level for these models.
+    let prefers_effort = model.contains("claude-opus-4-6")
+        || model.contains("claude-opus-4-7")
+        || model.contains("claude-opus-4-8")
+        || model.contains("claude-sonnet-5");
+
     ThinkingCapability {
         needs_interleaved_beta,
         prefers_effort,

@@ -19,7 +19,7 @@ embed = true        # use this provider for all embedding operations
 [[llm.providers]]
 name = "claude"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 max_tokens = 4096
 default = true      # default provider for chat
 ```
@@ -105,7 +105,7 @@ model = "qwen3:1.7b"
 [[llm.providers]]
 name = "quality"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 default = true
 
 [orchestration]
@@ -164,7 +164,7 @@ Each Zeph subsystem that calls an LLM exposes a `*_provider` config field. Match
 | Orchestration planning | `[orchestration] planner_provider` | Quality / expert | Multi-step DAG planning requires high-capability models |
 | MCP tool discovery (`Llm` strategy) | `[mcp.tool_discovery]` | Fast / medium | Relevance ranking from a short list |
 
-A typical cost-optimized setup uses a local Ollama model (e.g., `qwen3:1.7b`) for all fast-tier subsystems and a cloud model (e.g., `claude-sonnet-4-6`) for quality-tier tasks:
+A typical cost-optimized setup uses a local Ollama model (e.g., `qwen3:1.7b`) for all fast-tier subsystems and a cloud model (e.g., `claude-sonnet-5`) for quality-tier tasks:
 
 ```toml
 [[llm.providers]]
@@ -176,7 +176,7 @@ embed = true
 [[llm.providers]]
 name = "quality"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 default = true
 
 # Route cheap subsystems to the local model
@@ -213,7 +213,7 @@ embed = true
 [[llm.providers]]
 name = "claude"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 max_tokens = 4096
 default = true
 ```

@@ -433,11 +433,8 @@ mod tests {
         let messages = replayed_tool_call_messages().await;
         let tools = shell_tool_definition();
 
-        let provider = ClaudeProvider::new(
-            "sk-ant-test".to_owned(),
-            "claude-sonnet-4-6".to_owned(),
-            4096,
-        );
+        let provider =
+            ClaudeProvider::new("sk-ant-test".to_owned(), "claude-sonnet-5".to_owned(), 4096);
         let request = provider.debug_request_json(&messages, &tools, false);
 
         let api_messages = request["messages"]

@@ -139,7 +139,7 @@ embedding_model = "qwen3-embedding"
 [llm]
 [[llm.providers]]
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 max_tokens = 4096
 # thinking = { type = "enabled", budget_tokens = 10000 }
 # server_compaction = false
@@ -165,7 +165,7 @@ embed = true          # this provider handles embeddings
 [[llm.providers]]
 name = "cloud"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 max_tokens = 4096
 default = true        # primary provider for chat (overrides position-based default)
 
@@ -213,7 +213,7 @@ max_tokens = 8192
 [[llm.providers]]
 name = "quality"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 max_tokens = 4096
 ```
 
@@ -407,10 +407,10 @@ pub enum RoutingStrategy {
 [llm]
 provider = "orchestrator"
 base_url = "http://localhost:11434"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 
 [llm.cloud]
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 max_tokens = 4096
 
 [llm.orchestrator]
@@ -419,7 +419,7 @@ embed = "ollama"
 
 [llm.orchestrator.providers.claude]
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 
 [llm.orchestrator.providers.ollama]
 type = "ollama"
@@ -443,7 +443,7 @@ chat = ["claude", "ollama"]
 [[llm.providers]]
 name = "claude"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 max_tokens = 4096
 default = true
 
@@ -694,7 +694,7 @@ embed = true
 [[llm.providers]]
 name = "quality"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 ```
 
 ### Bandit State Persistence

@@ -237,7 +237,7 @@ pub(super) fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
             state.detector_mode = Some("judge".into());
             let judge_model: String = Input::new()
                 .with_prompt(
-                    "Judge model name (e.g. claude-sonnet-4-6; leave empty to use primary provider)",
+                    "Judge model name (e.g. claude-sonnet-5; leave empty to use primary provider)",
                 )
                 .default(String::new())
                 .interact_text()?;

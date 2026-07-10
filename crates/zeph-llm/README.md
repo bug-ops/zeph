@@ -201,7 +201,7 @@ expert_providers  = ["claude"]
 
 | Mode | Description |
 |------|-------------|
-| `Extended { budget_tokens }` | Allocates a fixed token budget (1024–128000) for visible reasoning; emits `interleaved-thinking-2025-05-14` beta header on Sonnet 4.6 with tools |
+| `Extended { budget_tokens }` | Allocates a fixed token budget (1024–128000) for visible reasoning; emits `interleaved-thinking-2025-05-14` beta header on legacy Sonnet 4.6 with tools (current models use adaptive thinking and need no beta header) |
 | `Adaptive { effort? }` | Lets the model allocate thinking budget automatically |
 
 ```toml
@@ -223,7 +223,7 @@ CLI: `--thinking extended:16000` or `--thinking adaptive`. When thinking is enab
 ```toml
 [[llm.providers]]
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 prompt_cache_ttl = "1h"   # "ephemeral" (default) or "1h"
 ```
 

@@ -29,7 +29,7 @@ routing = "thompson"
 [[llm.providers]]
 name = "claude"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 
 [[llm.providers]]
 name = "openai"
@@ -102,7 +102,7 @@ router_reorder_interval = 10    # re-order every N requests
 [[llm.providers]]
 name = "claude"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 
 [[llm.providers]]
 name = "openai"
@@ -140,7 +140,7 @@ model = "qwen3:8b"
 [[llm.providers]]
 name = "claude"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 ```
 
 #### `cost_tiers`
@@ -248,7 +248,7 @@ embed = true
 [[llm.providers]]
 name = "quality"
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 ```
 
 ### State Persistence

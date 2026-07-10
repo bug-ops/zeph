@@ -14,8 +14,8 @@ fn set_model_updates_model_name() {
     let executor = MockToolExecutor::no_tools();
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    assert!(agent.set_model("claude-opus-4-6").is_ok());
-    assert_eq!(agent.runtime.config.model_name, "claude-opus-4-6");
+    assert!(agent.set_model("claude-opus-4-8").is_ok());
+    assert_eq!(agent.runtime.config.model_name, "claude-opus-4-8");
 }
 
 #[test]

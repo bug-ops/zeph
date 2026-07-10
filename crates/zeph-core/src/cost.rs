@@ -99,6 +99,9 @@ fn default_pricing() -> HashMap<String, ModelPricing> {
     // Claude 4.6 family
     m.insert("claude-sonnet-4-6".into(), claude_pricing(0.3, 1.5));
     m.insert("claude-opus-4-6".into(), claude_pricing(0.5, 2.5));
+    // Claude 5 / Opus 4.8 family
+    m.insert("claude-sonnet-5".into(), claude_pricing(0.3, 1.5));
+    m.insert("claude-opus-4-8".into(), claude_pricing(0.5, 2.5));
     // OpenAI
     m.insert("gpt-4o".into(), openai_pricing(0.25, 1.0));
     m.insert("gpt-4o-mini".into(), openai_pricing(0.015, 0.06));
@@ -496,6 +499,63 @@ mod tests {
         tracker.record_usage("claude-provider", "cloud", "claude-opus-4-6", 0, 0, 1000, 0);
         let cost = tracker.current_spend();
         assert!((cost - 0.625).abs() < 0.001);
+    }
+
+    #[test]
+    fn claude_5_generation_pricing_matches_retained_4_6_rows() {
+        // The new claude-sonnet-5/claude-opus-4-8 rows must price identically to the
+        // retained claude-sonnet-4-6/claude-opus-4-6 rows (#5889: same rates, new IDs).
+        let sonnet_5 = CostTracker::new(true, 1000.0);
+        sonnet_5.record_usage(
+            "claude-provider",
+            "cloud",
+            "claude-sonnet-5",
+            1000,
+            0,
+            0,
+            1000,
+        );
+        let sonnet_4_6 = CostTracker::new(true, 1000.0);
+        sonnet_4_6.record_usage(
+            "claude-provider",
+            "cloud",
+            "claude-sonnet-4-6",
+            1000,
+            0,
+            0,
+            1000,
+        );
+        assert!((sonnet_5.current_spend() - sonnet_4_6.current_spend()).abs() < f64::EPSILON);
+        assert!(
+            sonnet_5.current_spend() > 0.0,
+            "must not fall back to zero-cost"
+        );
+
+        let opus_4_8 = CostTracker::new(true, 1000.0);
+        opus_4_8.record_usage(
+            "claude-provider",
+            "cloud",
+            "claude-opus-4-8",
+            1000,
+            0,
+            0,
+            1000,
+        );
+        let opus_4_6 = CostTracker::new(true, 1000.0);
+        opus_4_6.record_usage(
+            "claude-provider",
+            "cloud",
+            "claude-opus-4-6",
+            1000,
+            0,
+            0,
+            1000,
+        );
+        assert!((opus_4_8.current_spend() - opus_4_6.current_spend()).abs() < f64::EPSILON);
+        assert!(
+            opus_4_8.current_spend() > 0.0,
+            "must not fall back to zero-cost"
+        );
     }
 
     #[test]

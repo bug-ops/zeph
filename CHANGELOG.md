@@ -24,6 +24,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(llm)`: swept superseded Claude model IDs (`claude-sonnet-4-6`, `claude-opus-4-6`) to the
+  current recommended defaults (`claude-sonnet-5`, `claude-opus-4-8`) across docs, config
+  examples, source comments, and test fixtures. `ClaudeProvider::new()`'s staleness warning
+  (previously a hardcoded `claude-3` prefix check from #1625) is now generalized: a compiled
+  per-family `MODERN_MODEL_FLOORS` table plus `stale_model_suggestion()` warns whenever a
+  configured model falls below its family's current-version floor, so future retirements are a
+  one-line table bump instead of a new hardcoded literal. `ThinkingCapability::prefers_effort`
+  (`crates/zeph-llm/src/claude/types.rs`) now also covers Opus 4.7/4.8 and Sonnet 5, which remove
+  `budget_tokens` entirely (400 if sent) and require `Extended` thinking config to auto-convert
+  to an effort level; `needs_interleaved_beta` is intentionally left scoped to legacy Sonnet 4.6
+  since the new generation enables interleaved thinking automatically with no beta header. The
+  4.6-generation pricing rows in `crates/zeph-core/src/cost.rs` and the legacy capability arms in
+  `crates/zeph-llm/src/claude/types.rs` are intentionally retained alongside the new ones since
+  those models are still Active (#5889).
 - `fix(llm)`: `AnyProvider::Router` and `AnyProvider::Triage` no longer silently reject
   `/think-tokens` and `/reasoning-effort` regardless of the selected inner provider's
   capabilities. The four capability-mutating/-querying methods on `AnyProvider`

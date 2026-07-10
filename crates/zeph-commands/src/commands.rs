@@ -135,7 +135,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "/model",
         args: "[id|refresh]",
-        description: "Show or switch the active model. Examples: `/model claude-sonnet-4-6` to switch, `/model refresh` to re-query the provider model list",
+        description: "Show or switch the active model. Examples: `/model claude-sonnet-5` to switch, `/model refresh` to re-query the provider model list",
         category: SlashCategory::Configuration,
         feature_gate: None,
     },

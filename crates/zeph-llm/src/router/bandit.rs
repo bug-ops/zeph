@@ -1011,7 +1011,7 @@ mod tests {
         assert!(provider_cost_estimate("fast", "gpt-4o-mini") < 0.4);
         assert!(provider_cost_estimate("fast", "claude-haiku-3") < 0.4);
         // Mid tier.
-        assert!(provider_cost_estimate("quality", "claude-sonnet-4-6") >= 0.4);
+        assert!(provider_cost_estimate("quality", "claude-sonnet-5") >= 0.4);
         assert!(provider_cost_estimate("quality", "gpt-4o-2024") >= 0.4);
         // Expensive tier.
         assert!(provider_cost_estimate("best", "claude-opus-4") >= 0.7);

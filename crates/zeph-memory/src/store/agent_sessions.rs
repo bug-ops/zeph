@@ -165,7 +165,7 @@ pub struct AgentSessionRow {
     pub status: SessionStatus,
     /// Channel over which the session runs.
     pub channel: SessionChannel,
-    /// LLM model name (e.g. `claude-sonnet-4-6`).
+    /// LLM model name (e.g. `claude-sonnet-5`).
     pub model: String,
     /// ISO-8601 creation timestamp (UTC).
     pub created_at: String,
@@ -421,7 +421,7 @@ mod tests {
             kind: SessionKind::Interactive,
             status: SessionStatus::Active,
             channel: SessionChannel::Cli,
-            model: "claude-sonnet-4-6".to_owned(),
+            model: "claude-sonnet-5".to_owned(),
             created_at: "2026-01-01T00:00:00".to_owned(),
             last_active_at: "2026-01-01T00:00:00".to_owned(),
             turns: 0,

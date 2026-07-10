@@ -11,6 +11,10 @@
 use std::fmt::Write as _;
 use wiremock::ResponseTemplate;
 
+/// Syntactically-valid current Claude model ID for tests that need *some*
+/// model string but do not assert on model freshness. Update in one place.
+pub const TEST_CLAUDE_MODEL: &str = "claude-sonnet-5";
+
 // ---------------------------------------------------------------------------
 // OpenAI-compatible response shapes
 // ---------------------------------------------------------------------------
@@ -118,7 +122,7 @@ pub fn claude_messages_response(content: &str) -> ResponseTemplate {
         "id": "msg_test",
         "type": "message",
         "role": "assistant",
-        "model": "claude-sonnet-4-6",
+        "model": TEST_CLAUDE_MODEL,
         "content": [{
             "type": "text",
             "text": content
@@ -155,7 +159,7 @@ pub fn claude_sse_stream_response(chunks: &[&str]) -> ResponseTemplate {
     let mut body = String::new();
 
     body.push_str(
-        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-4-6\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-5\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
     );
     body.push_str(
         "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",

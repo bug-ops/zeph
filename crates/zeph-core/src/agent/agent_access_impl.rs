@@ -3302,7 +3302,7 @@ path = "skill-second"
     fn claude_agent() -> Agent<MockChannel> {
         let provider = zeph_llm::any::AnyProvider::Claude(zeph_llm::claude::ClaudeProvider::new(
             "key".into(),
-            "claude-sonnet-4-6".into(),
+            "claude-sonnet-5".into(),
             4096,
         ));
         Agent::new(

@@ -17,7 +17,7 @@ fn claude_entry() -> ProviderEntry {
     ProviderEntry {
         provider_type: ProviderKind::Claude,
         name: Some("claude".into()),
-        model: Some("claude-sonnet-4-6".into()),
+        model: Some("claude-sonnet-5".into()),
         max_tokens: Some(8192),
         ..Default::default()
     }
@@ -137,10 +137,10 @@ fn validate_pool_propagates_entry_error() {
 fn effective_model_returns_explicit_when_set() {
     let entry = ProviderEntry {
         provider_type: ProviderKind::Claude,
-        model: Some("claude-sonnet-4-6".into()),
+        model: Some("claude-sonnet-5".into()),
         ..Default::default()
     };
-    assert_eq!(entry.effective_model(), "claude-sonnet-4-6");
+    assert_eq!(entry.effective_model(), "claude-sonnet-5");
 }
 
 #[test]
@@ -231,7 +231,7 @@ fn effective_provider_reads_from_providers_first() {
 
 [[llm.providers]]
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 "#,
     );
     assert_eq!(cfg.effective_provider(), ProviderKind::Claude);
@@ -853,7 +853,7 @@ model = "qwen3:8b"
 [[llm.providers]]
 type = "claude"
 name = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 "#;
     let cfg = parse_llm(toml);
     assert_eq!(cfg.providers.len(), 2);

@@ -135,7 +135,7 @@ embed = true
 [[llm.providers]]
 name = "quality"         # reserved for planning, code, hard reasoning
 type = "claude"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 default = true
 
 [llm]

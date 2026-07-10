@@ -197,10 +197,10 @@ embedding_model = "qwen3-embedding"    # model for text embeddings
 # [[llm.providers]]
 # name = "cloud"
 # type = "claude"
-# model = "claude-sonnet-4-6"
+# model = "claude-sonnet-5"
 # max_tokens = 4096
 # server_compaction = false            # Enable Claude server-side context compaction (compact-2026-01-12 beta)
-# enable_extended_context = false      # Enable Claude 1M context window (context-1m-2025-08-07 beta, Sonnet/Opus 4.6)
+# enable_extended_context = false      # Enable Claude 1M context window (context-1m-2025-08-07 beta, Opus and Sonnet models, not Haiku)
 # prompt_cache_ttl = "1h"              # "1h" = extended TTL beta (writes ~2× cost); omit or "ephemeral" for default ~5 min
 # default = true
 

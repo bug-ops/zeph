@@ -143,7 +143,7 @@ fn create_provider_claude_without_api_key_errors() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
     config.llm.providers = vec![ProviderEntry {
         provider_type: ProviderKind::Claude,
-        model: Some("claude-sonnet-4-6".into()),
+        model: Some("claude-sonnet-5".into()),
         max_tokens: Some(4096),
         ..ProviderEntry::default()
     }];

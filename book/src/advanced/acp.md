@@ -302,8 +302,8 @@ Response:
       "name": "claude",
       "type": "claude",
       "models": [
-        {"id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6", "context_tokens": 200000},
-        {"id": "claude-opus-4-6", "display_name": "Claude Opus 4.6", "context_tokens": 200000}
+        {"id": "claude-sonnet-5", "display_name": "Claude Sonnet 5", "context_tokens": 200000},
+        {"id": "claude-opus-4-8", "display_name": "Claude Opus 4.8", "context_tokens": 200000}
       ]
     },
     {
