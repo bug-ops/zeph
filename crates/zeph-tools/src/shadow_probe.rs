@@ -388,6 +388,18 @@ impl<T: ToolExecutor> ToolExecutor for ShadowProbeExecutor<T> {
     fn requires_confirmation(&self, call: &ToolCall) -> bool {
         self.inner.requires_confirmation(call)
     }
+
+    fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+        self.inner.checkpoint_undo(n)
+    }
+
+    fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+        self.inner.checkpoint_redo()
+    }
+
+    fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+        self.inner.checkpoint_list()
+    }
 }
 
 #[cfg(test)]
@@ -782,6 +794,52 @@ mod tests {
         let result = exec.execute_tool_call_confirmed(&call).await;
         assert!(matches!(result, Err(ToolError::SafetyDenied { .. })));
         assert_eq!(probe.recorded.lock().unwrap().len(), 1);
+    }
+
+    struct CheckpointingInner;
+    impl ToolExecutor for CheckpointingInner {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+            crate::executor::CheckpointActionResult {
+                supported: true,
+                message: "stub".into(),
+                reverted_commands: n,
+                ..Default::default()
+            }
+        }
+        fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+            crate::executor::CheckpointActionResult {
+                supported: true,
+                message: "stub".into(),
+                ..Default::default()
+            }
+        }
+        fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+            crate::executor::CheckpointListResult {
+                supported: true,
+                ..Default::default()
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_methods_delegated_to_inner() {
+        let exec = ShadowProbeExecutor::new(
+            CheckpointingInner,
+            Arc::new(AllowProbe),
+            Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            Arc::new(parking_lot::RwLock::new("calm".to_owned())),
+        );
+        let undo_result = exec.checkpoint_undo(7);
+        assert!(undo_result.supported);
+        assert_eq!(
+            undo_result.reverted_commands, 7,
+            "n must be forwarded, not hardcoded"
+        );
+        assert!(exec.checkpoint_redo().supported);
+        assert!(exec.checkpoint_list().supported);
     }
 
     #[test]

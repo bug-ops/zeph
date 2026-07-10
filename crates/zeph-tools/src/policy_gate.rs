@@ -380,6 +380,18 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
     fn is_tool_speculatable(&self, tool_id: &str) -> bool {
         self.inner.is_tool_speculatable(tool_id)
     }
+
+    fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+        self.inner.checkpoint_undo(n)
+    }
+
+    fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+        self.inner.checkpoint_redo()
+    }
+
+    fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+        self.inner.checkpoint_list()
+    }
 }
 
 fn truncate_params(params: &serde_json::Map<String, serde_json::Value>) -> String {
@@ -465,6 +477,64 @@ mod tests {
             tool_call_id: String::new(),
             skill_name: None,
         }
+    }
+
+    #[derive(Debug)]
+    struct CheckpointingExecutor;
+
+    impl ToolExecutor for CheckpointingExecutor {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        async fn execute_tool_call(&self, _: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+            crate::executor::CheckpointActionResult {
+                supported: true,
+                message: "stub".into(),
+                reverted_commands: n,
+                ..Default::default()
+            }
+        }
+        fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+            crate::executor::CheckpointActionResult {
+                supported: true,
+                message: "stub".into(),
+                ..Default::default()
+            }
+        }
+        fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+            crate::executor::CheckpointListResult {
+                supported: true,
+                ..Default::default()
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_methods_delegated_to_inner() {
+        let config = PolicyConfig {
+            enabled: false,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![],
+            policy_file: None,
+            policy_provider: ProviderName::default(),
+        };
+        let enforcer = Arc::new(PolicyEnforcer::compile(&config).unwrap());
+        let context = Arc::new(RwLock::new(PolicyContext {
+            trust_level: SkillTrustLevel::Trusted,
+            env: HashMap::new(),
+        }));
+        let gate = PolicyGateExecutor::new(CheckpointingExecutor, enforcer, context);
+        let undo_result = gate.checkpoint_undo(7);
+        assert!(undo_result.supported);
+        assert_eq!(
+            undo_result.reverted_commands, 7,
+            "n must be forwarded, not hardcoded"
+        );
+        assert!(gate.checkpoint_redo().supported);
+        assert!(gate.checkpoint_list().supported);
     }
 
     #[tokio::test]

@@ -243,6 +243,18 @@ impl<T: ToolExecutor> ToolExecutor for AdversarialPolicyGateExecutor<T> {
     fn is_tool_retryable(&self, tool_id: &str) -> bool {
         self.inner.is_tool_retryable(tool_id)
     }
+
+    fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+        self.inner.checkpoint_undo(n)
+    }
+
+    fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+        self.inner.checkpoint_redo()
+    }
+
+    fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+        self.inner.checkpoint_list()
+    }
 }
 
 fn params_summary(params: &serde_json::Map<String, serde_json::Value>) -> String {
@@ -523,6 +535,57 @@ mod tests {
         let gate = AdversarialPolicyGateExecutor::new(inner, make_validator(false), Arc::new(llm));
         let retryable = gate.is_tool_retryable("shell");
         assert!(!retryable, "MockInner returns false for is_tool_retryable");
+    }
+
+    #[derive(Debug)]
+    struct CheckpointingInner;
+
+    impl ToolExecutor for CheckpointingInner {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        async fn execute_tool_call(&self, _: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+            crate::executor::CheckpointActionResult {
+                supported: true,
+                message: "stub".into(),
+                reverted_commands: n,
+                ..Default::default()
+            }
+        }
+        fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+            crate::executor::CheckpointActionResult {
+                supported: true,
+                message: "stub".into(),
+                ..Default::default()
+            }
+        }
+        fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+            crate::executor::CheckpointListResult {
+                supported: true,
+                ..Default::default()
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn delegation_checkpoint_methods() {
+        let (_, llm) = MockLlm::new("ALLOW");
+        let gate = AdversarialPolicyGateExecutor::new(
+            CheckpointingInner,
+            make_validator(false),
+            Arc::new(llm),
+        );
+        let undo_result = gate.checkpoint_undo(7);
+        assert!(undo_result.supported);
+        assert_eq!(
+            undo_result.reverted_commands, 7,
+            "n must be forwarded, not hardcoded"
+        );
+        assert!(gate.checkpoint_redo().supported);
+        assert!(gate.checkpoint_list().supported);
     }
 
     #[tokio::test]

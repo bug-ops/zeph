@@ -291,6 +291,18 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
         self.inner.is_tool_speculatable(tool_id)
     }
 
+    fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+        self.inner.checkpoint_undo(n)
+    }
+
+    fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+        self.inner.checkpoint_redo()
+    }
+
+    fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+        self.inner.checkpoint_list()
+    }
+
     fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
         self.effective_trust
             .store(trust_to_u8(level), Ordering::Relaxed);
@@ -742,6 +754,53 @@ mod tests {
         let gate = TrustGateExecutor::new(RetryableExecutor, PermissionPolicy::default());
         assert!(gate.is_tool_retryable("fetch"));
         assert!(!gate.is_tool_retryable("bash"));
+    }
+
+    #[test]
+    fn checkpoint_methods_delegated_to_inner() {
+        #[derive(Debug)]
+        struct CheckpointingExecutor;
+        impl ToolExecutor for CheckpointingExecutor {
+            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+                Ok(None)
+            }
+            async fn execute_tool_call(
+                &self,
+                _: &ToolCall,
+            ) -> Result<Option<ToolOutput>, ToolError> {
+                Ok(None)
+            }
+            fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+                crate::executor::CheckpointActionResult {
+                    supported: true,
+                    message: "stub".into(),
+                    reverted_commands: n,
+                    ..Default::default()
+                }
+            }
+            fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+                crate::executor::CheckpointActionResult {
+                    supported: true,
+                    message: "stub".into(),
+                    ..Default::default()
+                }
+            }
+            fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+                crate::executor::CheckpointListResult {
+                    supported: true,
+                    ..Default::default()
+                }
+            }
+        }
+        let gate = TrustGateExecutor::new(CheckpointingExecutor, PermissionPolicy::default());
+        let undo_result = gate.checkpoint_undo(7);
+        assert!(undo_result.supported);
+        assert_eq!(
+            undo_result.reverted_commands, 7,
+            "n must be forwarded, not hardcoded"
+        );
+        assert!(gate.checkpoint_redo().supported);
+        assert!(gate.checkpoint_list().supported);
     }
 
     #[test]

@@ -611,6 +611,22 @@ impl<E: ToolExecutor> ToolExecutor for ScopedToolExecutor<E> {
     fn is_tool_speculatable(&self, tool_id: &str) -> bool {
         self.inner.is_tool_speculatable(tool_id)
     }
+
+    fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+        self.inner.checkpoint_undo(n)
+    }
+
+    fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+        self.inner.checkpoint_redo()
+    }
+
+    fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+        self.inner.checkpoint_list()
+    }
+
+    fn requires_confirmation(&self, call: &ToolCall) -> bool {
+        self.inner.requires_confirmation(call)
+    }
 }
 
 // ── Config-driven builder ──────────────────────────────────────────────────────
@@ -721,6 +737,38 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
             }))
+        }
+    }
+
+    struct CheckpointingExecutor;
+
+    impl ToolExecutor for CheckpointingExecutor {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+            crate::executor::CheckpointActionResult {
+                supported: true,
+                message: "stub".into(),
+                reverted_commands: n,
+                ..Default::default()
+            }
+        }
+        fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+            crate::executor::CheckpointActionResult {
+                supported: true,
+                message: "stub".into(),
+                ..Default::default()
+            }
+        }
+        fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+            crate::executor::CheckpointListResult {
+                supported: true,
+                ..Default::default()
+            }
+        }
+        fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+            true
         }
     }
 
@@ -1058,6 +1106,25 @@ mod tests {
         assert!(updated.admits("builtin:read"));
         // "builtin:write" is not in the original pattern, so it remains excluded.
         assert!(!updated.admits("builtin:write"));
+    }
+
+    #[test]
+    fn checkpoint_methods_delegated_to_inner() {
+        let executor = ScopedToolExecutor::new(CheckpointingExecutor, ToolScope::full());
+        let undo_result = executor.checkpoint_undo(7);
+        assert!(undo_result.supported);
+        assert_eq!(
+            undo_result.reverted_commands, 7,
+            "n must be forwarded, not hardcoded"
+        );
+        assert!(executor.checkpoint_redo().supported);
+        assert!(executor.checkpoint_list().supported);
+    }
+
+    #[test]
+    fn requires_confirmation_delegated_to_inner() {
+        let executor = ScopedToolExecutor::new(CheckpointingExecutor, ToolScope::full());
+        assert!(executor.requires_confirmation(&make_call("builtin:shell")));
     }
 
     #[test]

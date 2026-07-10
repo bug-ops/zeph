@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+
+- `fix(tools)`: `checkpoint_undo`/`checkpoint_redo`/`checkpoint_list` are now forwarded to the
+  wrapped inner executor by `TrustGateExecutor`, `PolicyGateExecutor`,
+  `AdversarialPolicyGateExecutor` (#5899), `ScopedToolExecutor`, and `ShadowProbeExecutor`
+  (#5905). Previously none of these `ToolExecutor` wrappers overrode the three checkpoint
+  methods, so calls fell through to the trait's no-op default instead of reaching
+  `ShellExecutor` — `/undo`, `/redo`, and `/undo list` always reported "Checkpoints are not
+  enabled" whenever trust/policy/adversarial gating, `capability_scopes`, or `shadow_sentinel`
+  wrapped the executor chain, even with `[tools.shell] checkpoints_enabled = true` set — the
+  standard, default-recommended production configuration, not an edge case. Also fixes
+  `ScopedToolExecutor::requires_confirmation` (#5906), previously hardcoded to the trait
+  default `false` regardless of the real policy underneath, affecting the (currently dormant)
+  speculative-dispatch engine.
+
 ### Added
 
 - `feat(acp)`: `[[acp.auth_clients]]` — named bearer-token clients for the ACP HTTP/WS
