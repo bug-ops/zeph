@@ -1536,7 +1536,7 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("Col"))
             .expect("Col span not found");
-        assert!(cell_span.style.add_modifier == Modifier::BOLD);
+        assert_eq!(cell_span.style.add_modifier, Modifier::BOLD);
     }
 
     #[test]

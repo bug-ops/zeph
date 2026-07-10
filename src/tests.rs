@@ -397,7 +397,7 @@ fn agent_task_processor_construction() {
         sanitizer,
         drain_timeout: std::time::Duration::from_secs(30),
     };
-    assert!(std::sync::Arc::strong_count(&processor.loopback_handle) == 1);
+    assert_eq!(std::sync::Arc::strong_count(&processor.loopback_handle), 1);
 }
 
 // Fix #2302: stale events left in output_rx after a completed request must be drained

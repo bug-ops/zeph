@@ -564,7 +564,7 @@ mod tests {
             .recommend("Build, test, then deploy the service")
             .await;
         assert_eq!(verdict.class, TaskClass::SequentialPipeline);
-        assert!(advisor.metrics.classify_timeouts.load(Ordering::Relaxed) == 0);
+        assert_eq!(advisor.metrics.classify_timeouts.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]

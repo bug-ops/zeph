@@ -4279,7 +4279,7 @@ async fn run_experiment_report(app: &crate::bootstrap::AppBuilder) -> anyhow::Re
             "{:<8} {:<12} {:<20} {:<8.3} {:<8.3} {:<8.3} {:<8}",
             r.id,
             &r.session_id[..sid_len],
-            &r.parameter,
+            r.parameter,
             r.delta,
             r.baseline_score,
             r.candidate_score,

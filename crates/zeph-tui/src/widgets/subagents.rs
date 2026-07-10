@@ -790,7 +790,7 @@ fn render_detail(defs: &[SubAgentDef], index: usize, theme: &Theme, frame: &mut 
     let except_str = if def.disallowed_tools.is_empty() {
         String::new()
     } else {
-        format!(" except {:?}", &def.disallowed_tools)
+        format!(" except {:?}", def.disallowed_tools)
     };
     let mut text = vec![
         Line::from(vec![
@@ -826,7 +826,7 @@ fn render_detail(defs: &[SubAgentDef], index: usize, theme: &Theme, frame: &mut 
                 "Mode:        ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw(format!("{:?}", &def.permissions.permission_mode)),
+            Span::raw(format!("{:?}", def.permissions.permission_mode)),
         ]),
         Line::from(vec![
             Span::styled(

@@ -104,10 +104,9 @@ fn parse_natural(s: &str, now: chrono::DateTime<Utc>) -> Option<chrono::DateTime
     }
     let (day_offset, rest) = if let Some(r) = s.strip_prefix("tomorrow ") {
         (1i64, r)
-    } else if let Some(r) = s.strip_prefix("today ") {
-        (0i64, r)
     } else {
-        return None;
+        let r = s.strip_prefix("today ")?;
+        (0i64, r)
     };
     let parts: Vec<&str> = rest.split(':').collect();
     if parts.len() != 2 {

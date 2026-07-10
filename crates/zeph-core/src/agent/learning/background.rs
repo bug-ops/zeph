@@ -364,7 +364,7 @@ async fn stem_generate_skill(
         tracing::warn!("STEM: generated body rejected for pattern '{seq}'");
         return;
     }
-    let skill_name = format!("stem-{}", &pattern.sequence_hash[..8].to_lowercase());
+    let skill_name = format!("stem-{}", pattern.sequence_hash[..8].to_lowercase());
     let description = format!("Auto-generated from tool pattern: {seq}");
     let Some(skill_dir) = args.skill_paths.first() else {
         return;

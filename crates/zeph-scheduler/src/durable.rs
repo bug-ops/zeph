@@ -236,7 +236,10 @@ mod tests {
     fn no_adapter_means_no_durable_overhead() {
         // The Scheduler struct's `durable` field defaults to None; this is a structural check only.
         // The property is validated indirectly by the scheduler_init_and_tick test in scheduler.rs.
-        assert!(derive_execution_id("job", 0) != derive_execution_id("other", 0));
+        assert_ne!(
+            derive_execution_id("job", 0),
+            derive_execution_id("other", 0)
+        );
     }
 
     // These tests open a real `LocalBackend` pool via `:memory:`, which is SQLite-specific
