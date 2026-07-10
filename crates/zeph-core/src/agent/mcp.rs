@@ -249,13 +249,47 @@ impl<C: Channel> Agent<C> {
             return self.services.mcp.tools.clone();
         };
         let provider = self.embedding_provider.clone();
-        registry
+        let hits = registry
             .search(query, self.services.skill.max_active_skills, |text| {
                 let owned = text.to_owned();
                 let p = provider.clone();
                 Box::pin(async move { p.embed(&owned).await })
             })
-            .await
+            .await;
+        self.rehydrate_mcp_tools(hits)
+    }
+
+    /// Rehydrate Qdrant-derived tool stubs against the live, in-memory tool list.
+    ///
+    /// `McpToolRegistry::search` returns tools with an empty `input_schema` and default
+    /// `security_meta` — the Qdrant payload only stores description fields, never the full
+    /// schema (#5935). This replaces each hit with its live counterpart from
+    /// `self.services.mcp.tools`, matched by `(server_id, name)`, so the LLM prompt gets the
+    /// real `input_schema` instead of `{}`.
+    ///
+    /// A hit with no live match (server disconnected, tool removed since the last sync) is
+    /// dropped rather than surfaced with an empty schema — that would just reproduce the bug
+    /// this fixes.
+    fn rehydrate_mcp_tools(&self, hits: Vec<zeph_mcp::McpTool>) -> Vec<zeph_mcp::McpTool> {
+        hits.into_iter()
+            .filter_map(|hit| {
+                let live = self
+                    .services
+                    .mcp
+                    .tools
+                    .iter()
+                    .find(|t| t.server_id == hit.server_id && t.name == hit.name)
+                    .cloned();
+                if live.is_none() {
+                    tracing::warn!(
+                        server_id = hit.server_id,
+                        tool = hit.name,
+                        "MCP tool from semantic search has no live match; dropping stale Qdrant hit"
+                    );
+                }
+                live
+            })
+            .collect()
     }
 
     /// Poll the watch receiver for tool list updates from `tools/list_changed` notifications,
@@ -919,6 +953,134 @@ mod tests {
         let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
         assert_eq!(agent.services.mcp.tool_count(), 0);
+    }
+
+    fn test_mcp_tool(
+        server_id: &str,
+        name: &str,
+        input_schema: serde_json::Value,
+    ) -> zeph_mcp::McpTool {
+        zeph_mcp::McpTool {
+            server_id: server_id.to_owned(),
+            name: name.to_owned(),
+            description: format!("{name} description"),
+            input_schema,
+            output_schema: None,
+            security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
+        }
+    }
+
+    /// #5935: `McpToolRegistry::search` returns stubs with an empty `input_schema` — a hit
+    /// whose `(server_id, name)` matches a live tool must be replaced wholesale so the real
+    /// schema (and `output_schema`/`security_meta`) reach the LLM prompt.
+    #[tokio::test]
+    async fn rehydrate_mcp_tools_replaces_stub_with_live_schema() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let real_schema =
+            serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}});
+        agent.services.mcp.tools = vec![test_mcp_tool("fs", "read_file", real_schema.clone())];
+
+        // Shape of what McpToolRegistry::search actually returns: same (server_id, name),
+        // empty schema/default security meta.
+        let stub = test_mcp_tool("fs", "read_file", serde_json::json!({}));
+
+        let rehydrated = agent.rehydrate_mcp_tools(vec![stub]);
+
+        assert_eq!(rehydrated.len(), 1);
+        assert_eq!(rehydrated[0].input_schema, real_schema);
+    }
+
+    /// A search hit with no live counterpart (server disconnected, tool removed since the
+    /// last Qdrant sync) must be dropped — never passed through with an empty schema, which
+    /// would just reproduce the original #5935 symptom silently.
+    #[tokio::test]
+    async fn rehydrate_mcp_tools_drops_hit_with_no_live_match() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        agent.services.mcp.tools = vec![test_mcp_tool("fs", "other_tool", serde_json::json!({}))];
+
+        let stub = test_mcp_tool("fs", "read_file", serde_json::json!({}));
+
+        let rehydrated = agent.rehydrate_mcp_tools(vec![stub]);
+
+        assert!(
+            rehydrated.is_empty(),
+            "stale hit with no live match must be dropped, not passed through with an empty schema"
+        );
+    }
+
+    #[tokio::test]
+    async fn rehydrate_mcp_tools_mixed_batch_keeps_only_matches() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let schema_a =
+            serde_json::json!({"type": "object", "properties": {"a": {"type": "string"}}});
+        let schema_c =
+            serde_json::json!({"type": "object", "properties": {"c": {"type": "number"}}});
+        agent.services.mcp.tools = vec![
+            test_mcp_tool("srv1", "tool_a", schema_a.clone()),
+            test_mcp_tool("srv2", "tool_c", schema_c.clone()),
+        ];
+
+        let hits = vec![
+            test_mcp_tool("srv1", "tool_a", serde_json::json!({})),
+            test_mcp_tool("srv1", "tool_b", serde_json::json!({})), // no live match — dropped
+            test_mcp_tool("srv2", "tool_c", serde_json::json!({})),
+        ];
+
+        let rehydrated = agent.rehydrate_mcp_tools(hits);
+
+        assert_eq!(rehydrated.len(), 2);
+        assert_eq!(rehydrated[0].name, "tool_a");
+        assert_eq!(rehydrated[0].input_schema, schema_a);
+        assert_eq!(rehydrated[1].name, "tool_c");
+        assert_eq!(rehydrated[1].input_schema, schema_c);
+    }
+
+    /// #5935 end-to-end: a tool rehydrated from a Qdrant-derived stub must reach the LLM
+    /// system prompt (`format_mcp_tools_prompt`) with its real `input_schema`, not the empty
+    /// `{}` the stub carried — this is the actual user-visible symptom the fix addresses.
+    #[tokio::test]
+    async fn rehydrated_tool_schema_reaches_llm_prompt() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let real_schema = serde_json::json!({
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"]
+        });
+        agent.services.mcp.tools = vec![test_mcp_tool("search", "web_search", real_schema)];
+
+        let stub = test_mcp_tool("search", "web_search", serde_json::json!({}));
+        let rehydrated = agent.rehydrate_mcp_tools(vec![stub]);
+
+        let prompt = zeph_mcp::format_mcp_tools_prompt(&rehydrated);
+
+        assert!(
+            !prompt.contains("<parameters>{}</parameters>"),
+            "expected real schema in prompt, got empty parameters block: {prompt}"
+        );
+        assert!(
+            prompt.contains("\"query\""),
+            "expected real schema fields in prompt: {prompt}"
+        );
     }
 
     #[tokio::test]

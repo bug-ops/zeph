@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- `fix(mcp)`: Qdrant-backed MCP tool registry now rehydrates real `input_schema` (plus
+  `output_schema`/`security_meta`) for semantically-matched tools instead of surfacing them to
+  the LLM with an empty `{}` schema (#5935). `Agent::match_mcp_tools()` no longer trusts
+  `McpToolRegistry::search()`'s stub schema directly — it now looks up each `(server_id, name)`
+  hit against the live `self.services.mcp.tools` list and substitutes the full tool definition,
+  dropping (with a `WARN` log) any hit that no longer has a live counterpart. This only affected
+  the default/recommended deployment configuration (`memory.semantic.enabled = true` with a
+  Qdrant backend); the in-memory `SemanticToolIndex` fallback path was never affected.
 - `fix(tools)`: `checkpoint_undo`/`checkpoint_redo`/`checkpoint_list` are now forwarded to the
   wrapped inner executor by `TrustGateExecutor`, `PolicyGateExecutor`,
   `AdversarialPolicyGateExecutor` (#5899), `ScopedToolExecutor`, and `ShadowProbeExecutor`
