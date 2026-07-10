@@ -3,8 +3,8 @@
 
 //! TUI visual theme system.
 //!
-//! A [`Theme`] is a flat collection of [`Style`](ratatui::style::Style) and
-//! [`Color`](ratatui::style::Color) values consumed by every widget render function.
+//! A [`Theme`] is a flat collection of [`Style`] and
+//! [`Color`] values consumed by every widget render function.
 //!
 //! The palette-driven workflow:
 //! 1. Load a [`SemanticPalette`] — from a built-in preset, user file, or default.

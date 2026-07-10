@@ -48,7 +48,7 @@ const GOAL_SUMMARY_MAX_CHARS: usize = 100;
 /// Events are appended to [`ShadowMemory`] in monotonic turn order. The fields capture
 /// the most goal-relevant signals without requiring an additional LLM call.
 ///
-/// `goal_summary` is truncated to [`GOAL_SUMMARY_MAX_CHARS`] on ingestion by
+/// `goal_summary` is truncated to `GOAL_SUMMARY_MAX_CHARS` on ingestion by
 /// [`ShadowMemory::record`], so callers do not need to truncate themselves.
 #[derive(Clone)]
 pub struct ShadowEvent {
@@ -64,7 +64,7 @@ pub struct ShadowEvent {
     ///
     /// 0.0 when causal IPI is disabled or probes failed.
     pub deviation_score: f32,
-    /// First [`GOAL_SUMMARY_MAX_CHARS`] characters of the pre-probe response.
+    /// First `GOAL_SUMMARY_MAX_CHARS` characters of the pre-probe response.
     ///
     /// Empty string when no pre-probe was available (causal IPI disabled).
     /// An empty `goal_summary` triggers maximum Jaccard drift penalty.

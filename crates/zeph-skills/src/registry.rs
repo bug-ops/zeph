@@ -23,7 +23,7 @@
 //! cannot be resolved at all (e.g. dangling) is logged at `DEBUG`, since a broken link
 //! is not itself a security signal.
 //!
-//! Traversal is limited to [`MAX_SKILL_DEPTH`] levels to prevent runaway recursion on
+//! Traversal is limited to `MAX_SKILL_DEPTH` levels to prevent runaway recursion on
 //! adversarial directory trees. A directory at exactly that depth is still descended into;
 //! skills deeper than `MAX_SKILL_DEPTH` relative to the base are silently skipped (the
 //! limit should be set generously enough that this is never a surprise in practice).
@@ -154,7 +154,7 @@ impl SkillRegistry {
 
     /// Scan directories recursively for `SKILL.md` files and load metadata only (lazy body).
     ///
-    /// Searches at any depth up to [`MAX_SKILL_DEPTH`] using a depth-first pre-order walk
+    /// Searches at any depth up to `MAX_SKILL_DEPTH` using a depth-first pre-order walk
     /// with siblings sorted lexicographically. Earlier paths have higher priority: if a skill
     /// with the same name appears in multiple paths or multiple depths within the same path,
     /// only the first one encountered in DFS order is kept.

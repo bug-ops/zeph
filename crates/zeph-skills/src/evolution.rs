@@ -339,7 +339,7 @@ pub fn build_evaluation_prompt(
 /// within the domain of the original skill.
 ///
 /// Placeholders: `{description}`, `{name}`, `{body}` — substituted via
-/// [`build_domain_gate_prompt`] using [`render`] (`str::replace` per key, not `format!()`).
+/// [`build_domain_gate_prompt`] using `render` (`str::replace` per key, not `format!()`).
 ///
 /// The JSON example in the template (`{"domain_relevant": bool, "reasoning": string}`) uses
 /// literal curly braces, which is safe here: `render` only replaces the exact substrings
@@ -370,7 +370,7 @@ pub struct DomainGateResult {
 
 /// Build a domain gate prompt by substituting template placeholders.
 ///
-/// Uses [`render`] (per-key `str::replace`) rather than `format!()` to avoid interpreting the
+/// Uses `render` (per-key `str::replace`) rather than `format!()` to avoid interpreting the
 /// JSON example braces in the template as format arguments.
 #[must_use]
 pub fn build_domain_gate_prompt(name: &str, description: &str, body: &str) -> String {

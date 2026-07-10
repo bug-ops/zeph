@@ -130,7 +130,7 @@ impl QdrantSkillMatcher {
     ///
     /// Does **not** populate the vector cache read by [`Self::skill_embedding`] — callers that
     /// need per-skill vectors (RL rerank, `GoSkills` grouping) must call
-    /// [`Self::refresh_vector_cache`] explicitly with the final candidate set once it's known
+    /// `Self::refresh_vector_cache` explicitly with the final candidate set once it's known
     /// (e.g. after BM25 hybrid-search fusion), so the extra `get_points` round-trip is only
     /// paid when one of those features is actually enabled.
     #[cfg_attr(

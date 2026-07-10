@@ -68,7 +68,7 @@ pub enum TurnExitStatus {
 /// Lightweight summary of a completed agent turn used as notification input.
 ///
 /// Built by the agent loop after `channel.flush_chunks()` and passed to
-/// [`Notifier::fire`]. Contains only what is needed for gate decisions and
+/// `Notifier::fire`. Contains only what is needed for gate decisions and
 /// notification body assembly — no LLM payloads or raw tool outputs.
 #[derive(Debug, Clone)]
 pub struct TurnSummary {
@@ -88,9 +88,9 @@ pub struct TurnSummary {
 /// Per-turn completion notifier.
 ///
 /// Holds a shared [`reqwest::Client`] and the resolved config. Construct once at
-/// agent startup via [`Notifier::new`] and call [`Notifier::fire`] after each turn.
+/// agent startup via [`Notifier::new`] and call `Notifier::fire` after each turn.
 ///
-/// All I/O is routed through the agent's [`BackgroundSupervisor`] so it is
+/// All I/O is routed through the agent's `BackgroundSupervisor` so it is
 /// visible in TUI status and bounded by the Telemetry class concurrency limit.
 /// `fire` returns immediately without blocking the agent loop.
 ///

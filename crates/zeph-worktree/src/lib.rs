@@ -9,7 +9,7 @@
 //! - [`WorktreeManager`] — creates, removes, lists, and reconciles git worktrees
 //! - [`WorktreeHandle`] — a live record of one managed worktree
 //! - [`WorktreeError`] — all errors this crate can produce
-//! - [`GitRunner`][git_runner::GitRunner] / [`DefaultGitRunner`][git_runner::DefaultGitRunner]
+//! - [`GitRunner`] / [`DefaultGitRunner`]
 //!   — the git invocation abstraction and its production implementation
 //! - [`manager::probe_capabilities`] — bootstrap git availability probe
 //!

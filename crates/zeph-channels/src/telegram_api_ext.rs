@@ -190,7 +190,7 @@ impl TelegramApiClient {
     /// `post()` call appends only the method name (e.g., `/answerGuestQuery`).
     ///
     /// Creates an independent `reqwest::Client` with its own connection pool and
-    /// a [`REQUEST_TIMEOUT`] per-request timeout. To share a connection pool with
+    /// a `REQUEST_TIMEOUT` per-request timeout. To share a connection pool with
     /// an existing client, use [`TelegramApiClient::with_client`].
     ///
     /// # Panics

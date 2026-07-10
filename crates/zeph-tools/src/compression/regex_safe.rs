@@ -30,7 +30,7 @@ static ACTIVE_COMPILE_TASKS: AtomicUsize = AtomicUsize::new(0);
 /// deadline enforced via `spawn_blocking` + `tokio::time::timeout`.
 ///
 /// Returns [`CompressionError::CompileTimeout`] immediately when
-/// [`MAX_COMPILE_TASKS`] concurrent compilations are already in-flight.
+/// `MAX_COMPILE_TASKS` concurrent compilations are already in-flight.
 ///
 /// On timeout or panic from the blocking task, returns a typed error that allows
 /// the evolver's failure counter to distinguish DoS-risk patterns from syntax errors.

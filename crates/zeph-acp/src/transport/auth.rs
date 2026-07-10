@@ -9,7 +9,7 @@
 //! present in direct byte comparison.
 //!
 //! Supports multiple named clients (#5868): each configured
-//! [`AcpClientToken`](crate::transport::AcpClientToken) authenticates its own token, and on
+//! [`AcpClientToken`] authenticates its own token, and on
 //! match the matched client's `id` is injected as [`TokenIdentity`] into the request's
 //! extensions — downstream handlers read it to derive the connection's `owner_key` for ACP
 //! session-persistence scoping.
@@ -24,7 +24,7 @@ use tower::{Layer, Service};
 
 use crate::transport::AcpClientToken;
 
-/// Authenticated client identity, injected into request extensions by [`BearerAuthLayer`] on
+/// Authenticated client identity, injected into request extensions by `BearerAuthLayer` on
 /// a successful bearer-token match. Absent when no auth layer is applied (empty client list).
 ///
 /// `pub` (not `pub(crate)`) solely so it can appear as an `axum` extractor parameter type on

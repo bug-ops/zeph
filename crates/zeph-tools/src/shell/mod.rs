@@ -629,7 +629,7 @@ impl ShellExecutor {
 
     /// Snapshot all in-flight background runs.
     ///
-    /// Acquires the lock once, maps each [`BackgroundHandle`] to a
+    /// Acquires the lock once, maps each `BackgroundHandle` to a
     /// [`BackgroundRunSnapshot`], then drops the guard before returning.
     /// Safe to call from any thread.
     #[must_use]

@@ -309,7 +309,7 @@ impl ReasoningMemory {
     /// Increment `use_count` and update `last_used_at` for each id in the list.
     ///
     /// Safe to call with an empty slice — no SQL is issued.
-    /// The list is chunked into batches of [`MAX_IDS_PER_QUERY`] to respect `SQLite`'s
+    /// The list is chunked into batches of `MAX_IDS_PER_QUERY` to respect `SQLite`'s
     /// variable limit.
     ///
     /// # Errors

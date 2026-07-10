@@ -84,7 +84,7 @@ const MAX_CACHE_ENTRIES: usize = 512;
 /// - `ttl = None` means entries never expire (useful for batch/scripted sessions).
 /// - `ttl = Some(d)` means entries expire after duration `d`.
 /// - Lazy eviction: expired entries are removed on `get()`.
-/// - LRU eviction: when the entry count reaches [`MAX_CACHE_ENTRIES`], the least-recently-inserted
+/// - LRU eviction: when the entry count reaches `MAX_CACHE_ENTRIES`, the least-recently-inserted
 ///   entry is evicted to bound memory growth in long sessions.
 /// - Not `Send + Sync` by design — accessed only from the agent's single-threaded loop.
 #[derive(Debug)]
@@ -137,7 +137,7 @@ impl ToolResultCache {
 
     /// Store a tool result in the cache.
     ///
-    /// When the cache is at capacity ([`MAX_CACHE_ENTRIES`]), the oldest entry is evicted
+    /// When the cache is at capacity (`MAX_CACHE_ENTRIES`), the oldest entry is evicted
     /// before inserting the new one to prevent unbounded memory growth in long sessions.
     pub fn put(&mut self, key: CacheKey, output: ToolOutput) {
         if !self.enabled {

@@ -74,7 +74,7 @@ impl GraphStore {
     /// Control whether imported (non-conversation) edges appear in recall (spec-067 FR-003).
     ///
     /// When `false`, edges with any non-conversation origin (e.g. `'ingest'`, `'subagent'`)
-    /// are excluded from [`Self::query_batch_edges`] and [`Self::edges_for_entity`].
+    /// are excluded from `Self::query_batch_edges` and [`Self::edges_for_entity`].
     /// Default: `true` (all edges included).
     #[must_use]
     pub fn with_recall_include_imported(mut self, include: bool) -> Self {
@@ -684,7 +684,7 @@ impl GraphStore {
     ///
     /// `SQLite` limits the number of bind parameters to `SQLITE_MAX_VARIABLE_NUMBER` (999 by
     /// default). Each entity ID requires two bind slots (source OR target), so batches are
-    /// chunked at [`SQLITE_BATCH_LIMIT_2X`] to stay safely under the limit regardless of
+    /// chunked at `SQLITE_BATCH_LIMIT_2X` to stay safely under the limit regardless of
     /// compile-time `SQLite` configuration.
     ///
     /// # Errors
@@ -1389,7 +1389,7 @@ impl GraphStore {
     /// Increment `retrieval_count` and set `last_retrieved_at` for a batch of edge IDs.
     ///
     /// Fire-and-forget: errors are logged but not propagated. Caller should log the warning.
-    /// Batched with [`SQLITE_BATCH_LIMIT_2X`] to stay safely under `SQLite` bind variable limit.
+    /// Batched with `SQLITE_BATCH_LIMIT_2X` to stay safely under `SQLite` bind variable limit.
     /// Each chunk's write is bounded by a 500ms timeout (matching
     /// [`Self::qdrant_point_ids_for_entities`]) so a stuck pool surfaces as a typed
     /// [`MemoryError::Timeout`] instead of hanging the `graph_recall_astar` hot path.
@@ -1425,7 +1425,7 @@ impl GraphStore {
 
     /// Increment `weight` on the set of edges traversed during the current recall (HL-F2, #3344).
     ///
-    /// Mirrors [`Self::record_edge_retrieval`] in shape: same [`SQLITE_BATCH_LIMIT_2X`] chunking,
+    /// Mirrors [`Self::record_edge_retrieval`] in shape: same `SQLITE_BATCH_LIMIT_2X` chunking,
     /// same `WHERE id IN (…) AND valid_to IS NULL` filter (defensive — traversed edges should
     /// already be active, but this prevents reinforcing tombstoned edges).
     ///
@@ -1480,7 +1480,7 @@ impl GraphStore {
     /// Return the subset of `ids` that exist in `graph_entities`.
     ///
     /// Useful for cross-referencing Qdrant-side entity IDs against the `SQLite` truth.
-    /// Processes in chunks of [`SQLITE_BATCH_LIMIT_2X`] to stay under the `SQLite` variable
+    /// Processes in chunks of `SQLITE_BATCH_LIMIT_2X` to stay under the `SQLite` variable
     /// limit (~32 k).
     ///
     /// # Errors

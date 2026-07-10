@@ -4,7 +4,7 @@
 //! Background shell execution registry and associated types.
 //!
 //! This module provides the [`RunId`] newtype for tracking individual background
-//! shell runs, and the [`BackgroundHandle`] struct used by `ShellExecutor` to
+//! shell runs, and the `BackgroundHandle` struct used by `ShellExecutor` to
 //! manage in-flight processes.
 //!
 //! Background runs are stored in a `HashMap<RunId, BackgroundHandle>` on the

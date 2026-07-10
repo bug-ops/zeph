@@ -130,7 +130,7 @@ impl SessionActor {
     /// [`TaskSupervisor::spawn_oneshot`] — visible through `supervisor.snapshot()`. The
     /// coordinator never touches the `!Send` `Agent`; it only awaits the dedicated thread's
     /// completion signal and, if the supervisor's own `CancellationToken` fires first (process
-    /// shutdown), forwards cancellation onto the session's own token so [`Self::drive`] observes
+    /// shutdown), forwards cancellation onto the session's own token so `Self::drive` observes
     /// exactly one cancellation source regardless of trigger. Session actors intentionally do not
     /// auto-restart on panic or unexpected exit (`spawn_oneshot`'s `RestartPolicy::RunOnce`):
     /// re-driving a torn turn or replay in place is unsafe. Recovery is a fresh spawn (re-attach)

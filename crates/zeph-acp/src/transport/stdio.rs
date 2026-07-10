@@ -213,7 +213,7 @@ pub async fn serve_stdio(
 /// on a dedicated thread with a `current_thread` runtime and `LocalSet`.
 ///
 /// `owner_key` (#5868) scopes this connection's persisted session list/load/resume — see
-/// [`build_agent_state`].
+/// `build_agent_state`.
 ///
 /// # Errors
 ///

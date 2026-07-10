@@ -646,15 +646,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # `build.warnings` (repo-wide .cargo/config.toml) denies ALL local-package rustdoc
-    # warnings, not just `rustdoc::broken_intra_doc_links` — it independently catches
-    # `rustdoc::private_intra_doc_links` and `rustdoc::redundant_explicit_links` too, which
-    # this job's own RUSTDOCFLAGS never enforced. Pre-existing (unrelated to any single PR)
-    # instances of those two lints exist workspace-wide; overriding to "allow" here keeps
-    # this job's enforcement scoped to exactly what RUSTDOCFLAGS denies, unchanged from
-    # before this migration (#5873) — fixing the pre-existing instances is a separate,
-    # larger doc-cleanup effort, not in scope for a CI-gate-mechanism migration.
+    # warnings, not just what RUSTDOCFLAGS explicitly denies below — overriding to "allow"
+    # here keeps this job's enforcement scoped to exactly the three lints RUSTDOCFLAGS names,
+    # unchanged from before this migration (#5873). `rustdoc::private_intra_doc_links` and
+    # `rustdoc::redundant_explicit_links` are denied explicitly (not just left to
+    # `build.warnings`, which this env var disables) so the 39-site cleanup from #5894 has a
+    # forward regression guardrail in both CI and local dev, not just a one-time sweep.
     env:
-      RUSTDOCFLAGS: "--deny rustdoc::broken_intra_doc_links"
+      RUSTDOCFLAGS: "--deny rustdoc::broken_intra_doc_links --deny rustdoc::private_intra_doc_links --deny rustdoc::redundant_explicit_links"
       CARGO_BUILD_WARNINGS: "allow"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7

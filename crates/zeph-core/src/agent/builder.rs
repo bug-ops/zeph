@@ -89,7 +89,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// # Errors
     ///
-    /// Returns [`BuildError::MissingProviders`] when no provider pool was configured and the
+    /// Returns `BuildError::MissingProviders` when no provider pool was configured and the
     /// model name has not been set via `apply_session_config` (the agent cannot make LLM calls).
     ///
     /// # Examples
@@ -2184,7 +2184,7 @@ impl<C: Channel> Agent<C> {
     /// Stash the P1 (agent-turn) durable adapter's config/db-url/cipher cheaply — no I/O runs
     /// here (#5452). Call only when `config.durable.enabled && config.durable.agent_turns`;
     /// the actual `DurableContext` is opened lazily by
-    /// [`Agent::ensure_session_durable_ctx`](crate::agent::Agent::ensure_session_durable_ctx) on
+    /// `Agent::ensure_session_durable_ctx` on
     /// the first durable-gated call, once the real `TaskSupervisor` is attached
     /// (see [`Self::with_task_supervisor`]).
     ///

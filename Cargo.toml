@@ -187,6 +187,23 @@ zeroize = { version = "1.9.0", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
+# Apple's `ld` linker on macOS/arm64 warns when a binary's `__eh_frame` section
+# exceeds 16MB (compact-unwind-table format limit) — a platform-specific linker
+# artifact of the `zeph` binary's size, not a code defect. `build.warnings = "deny"`
+# (.cargo/config.toml, #5891) denies this via `#[warn(linker_messages)]` like any
+# other lint, unconditionally failing `cargo build --features full` on macOS/arm64.
+# `build.warnings` has no category-granular equivalent (verified against the Cargo
+# 1.97 reference: it is a plain string, not a table) so the lint is allowed here
+# instead. Note `linker_messages` is a single all-or-nothing rustc lint over every
+# warning the linker writes to stderr, not just this eh_frame case — there is no
+# per-message granularity, so this allow is workspace-wide (via each crate's
+# existing `[lints] workspace = true` inheritance) and applies on every platform,
+# including CI's Linux runners, where it is a no-op today only because Linux's
+# linker never emits the eh_frame warning specifically, not because the lint is
+# scoped to it. Accepted tradeoff: linker *errors* still fail the build; only
+# non-fatal linker diagnostics are suppressed. All other rustc/clippy/rustdoc
+# warnings remain denied. See #5895.
+linker_messages = "allow"
 
 [workspace.lints.clippy]
 all = "warn"

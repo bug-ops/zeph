@@ -33,7 +33,7 @@
 //!   `max_payload` guard. The concrete cipher lives in a consuming crate (INV-1).
 //! - [`effect`] — the [`EffectClass`] side-effect contract referenced by journal entries.
 //! - [`config`] — re-exports the pure-data [`DurableConfig`] and [`RetentionPolicy`] (which live in
-//!   `zeph-config`) and owns the [`encryption_gate`](crate::encryption_gate) AEAD enforcement policy.
+//!   `zeph-config`) and owns the [`encryption_gate`] AEAD enforcement policy.
 //! - [`error`] — the crate-wide [`DurableError`].
 //!
 //! Persistence engine:

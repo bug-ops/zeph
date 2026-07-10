@@ -97,7 +97,7 @@ impl QdrantOps {
     /// # Warning
     ///
     /// Calls made directly through the returned client bypass the [`Self::with_timeout`]
-    /// guard (#5484) — they are not wrapped by [`Self::timed`]. Prefer the inherent
+    /// guard (#5484) — they are not wrapped by `Self::timed`. Prefer the inherent
     /// `QdrantOps` methods, which are all timeout-guarded, unless the client exposes an
     /// operation this type does not wrap.
     #[must_use]

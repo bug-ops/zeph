@@ -70,7 +70,7 @@ pub struct ExecutionSummary {
 /// Returned by [`LocalBackend::read_execution_redacted`]. It deliberately excludes the payload bytes
 /// and full idempotency key — only the metadata the spec's INV-5 redaction rule permits in default
 /// output. To see decrypted payloads a caller must opt in via `--reveal`, which reads through the
-/// AEAD cipher with [`Journal::read_execution`](crate::Journal::read_execution) instead.
+/// AEAD cipher with [`Journal::read_execution`] instead.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RedactedEntry {
     /// Global append sequence.

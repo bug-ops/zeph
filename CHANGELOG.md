@@ -78,6 +78,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix`: allowed the `linker_messages` rustc lint via `[workspace.lints.rust]` so plain
+  `cargo build`/`cargo run` succeeds on macOS/arm64, where Apple's `ld` linker warns on binaries
+  whose `__eh_frame` section exceeds 16MB and `build.warnings = "deny"` (#5891) denies that
+  warning unconditionally (#5895). Fixed 39 pre-existing rustdoc `private_intra_doc_links` /
+  `redundant_explicit_links` warnings across 11 crates surfaced by the same `build.warnings`
+  migration, and tightened `.github/workflows/ci.yml`'s `rustdoc` job `RUSTDOCFLAGS` to deny
+  both lint classes explicitly (previously only `rustdoc::broken_intra_doc_links` was denied,
+  relying on `build.warnings` for the other two — which the job's own `CARGO_BUILD_WARNINGS:
+  allow` override disabled) so the cleanup has a standing regression guardrail instead of a
+  one-time sweep (#5894).
 - `fix(llm)`: swept superseded Claude model IDs (`claude-sonnet-4-6`, `claude-opus-4-6`) to the
   current recommended defaults (`claude-sonnet-5`, `claude-opus-4-8`) across docs, config
   examples, source comments, and test fixtures. `ClaudeProvider::new()`'s staleness warning

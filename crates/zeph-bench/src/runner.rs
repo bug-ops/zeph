@@ -49,7 +49,7 @@ use crate::scenario::{DatasetLoader, Evaluator, Scenario};
 
 /// Controls how the runner processes the agent's raw text response.
 ///
-/// Used by [`BenchRunner::run_one_with_executor`] to select the appropriate
+/// Used by `BenchRunner::run_one_with_executor` to select the appropriate
 /// system prompt and post-processing behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -86,7 +86,7 @@ pub enum MemoryMode {
 /// Parameters required to construct a per-scenario `SQLite`-backed `SemanticMemory`.
 ///
 /// Populated by [`BenchRunner::with_memory_params`] and consumed inside
-/// [`BenchRunner::run_one`] when `opts.memory_mode == MemoryMode::On`.
+/// `BenchRunner::run_one` when `opts.memory_mode == MemoryMode::On`.
 ///
 /// # Examples
 ///
@@ -204,7 +204,7 @@ impl BenchRunner {
     /// Attach `SemanticMemory` parameters for memory-on benchmark runs.
     ///
     /// When set, a per-scenario `SQLite`-backed `SemanticMemory` is constructed inside
-    /// [`run_one`][BenchRunner::run_one] whenever `opts.memory_mode == MemoryMode::On`.
+    /// `run_one` whenever `opts.memory_mode == MemoryMode::On`.
     ///
     /// # Examples
     ///

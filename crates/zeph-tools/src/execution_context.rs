@@ -11,7 +11,7 @@
 //! # Trust model
 //!
 //! Contexts are either *untrusted* (the default, built via the public API) or *trusted*
-//! (only constructible inside `zeph-tools` / `zeph-config` via [`ExecutionContext::trusted_from_parts`]).
+//! (only constructible inside `zeph-tools` / `zeph-config` via `ExecutionContext::trusted_from_parts`).
 //!
 //! Untrusted contexts have their env overrides re-filtered through the executor's
 //! `env_blocklist` after every merge step, so LLM-controlled callers cannot reintroduce

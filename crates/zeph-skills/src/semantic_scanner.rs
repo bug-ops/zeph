@@ -145,7 +145,7 @@ impl SkillSemanticScanner {
     /// `skill_name` and `declared_purpose` are trusted metadata from the plugin manifest.
     /// `skill_md_content` is the raw SKILL.md body — untrusted, attacker-controlled.
     ///
-    /// Content longer than [`MAX_SCAN_BYTES`] is sampled (head + tail) rather than silently
+    /// Content longer than `MAX_SCAN_BYTES` is sampled (head + tail) rather than silently
     /// truncated; the returned verdict includes a size warning in that case.
     ///
     /// # Errors
