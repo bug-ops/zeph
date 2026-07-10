@@ -351,7 +351,7 @@ impl GatewayServer {
             tracing::info!("gateway shutting down");
         })
         .await
-        .map_err(|e| GatewayError::Server(format!("{e}")))?;
+        .map_err(GatewayError::Server)?;
 
         Ok(())
     }

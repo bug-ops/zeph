@@ -37,6 +37,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   new `zeph_common::net::is_loopback_host` helper) always bypass TLS/SSRF checks and connect
   over plain HTTP regardless of `[a2a_client]` settings; non-loopback targets still require
   HTTPS and pass DNS-based SSRF validation by default, unchanged from before (#5878).
+- `fix(gateway)`: `GatewayError::Bind` and `GatewayError::Server` (`crates/zeph-gateway/src/error.rs`)
+  now tag their wrapped `std::io::Error` field with `#[source]`, so `std::error::Error::source()`
+  exposes the underlying I/O error instead of returning `None`. `GatewayError::Server` previously
+  flattened the error from `axum::serve(...).await` to a `String` via `format!("{e}")`
+  (`crates/zeph-gateway/src/server.rs`), discarding the original `std::io::Error` entirely — it
+  now carries the typed error through directly, matching the convention already used by sibling
+  crates (`zeph-orchestration`, `zeph-mcp`) (#5863).
 - `fix(skills)`: `skills.group_structured`, `skills.support_similarity_threshold`, and
   `skills.min_injection_score` are now wired into the `Agent` at cold start (`src/runner.rs`,
   `src/daemon.rs`, `src/acp.rs`, `src/serve/agent_factory.rs`), matching how `Agent::reload_config`
