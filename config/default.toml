@@ -302,6 +302,18 @@ injection_patterns = true
 # Check that loaded skills don't declare tools exceeding their trust level
 # capability_escalation_check = false
 
+# External skill/plugin registry discovery (spec-045, #5869). Off by default — no network
+# call is ever made to any registry unless explicitly opted in below. See
+# `zeph skill search --help` / `zeph plugin search --help`. Requires building with
+# `--features registry` (included in `full`); a build without it prints an actionable
+# message instead of erroring.
+# [skills.registry]
+# enabled = false
+# backend_kind = "skills-sh"
+# backend_url = "https://www.skills.sh"
+# auth_vault_key = "ZEPH_SKILL_REGISTRY_TOKEN"  # set via `zeph vault set <key> <token>`
+# registry_timeout_secs = 30
+
 [memory]
 # SQLite database path for conversation history
 # Defaults to the user data dir (for example ~/.local/share/zeph/data/zeph.db on Linux,

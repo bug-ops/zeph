@@ -37,7 +37,8 @@
 //! `[security.pii_filter]` table (#5530);
 //! step 75 adds a commented `qdrant_timeout_secs = 10` advisory under `[memory]`;
 //! step 76 adds a commented `high_gain_tools = []` advisory under `[tools.utility]` (#5659);
-//! step 77 adds a commented `[[acp.auth_clients]]` advisory block (#5868).
+//! step 77 adds a commented `[[acp.auth_clients]]` advisory block (#5868);
+//! step 78 adds a commented `[skills.registry]` advisory block (spec-045, #5869).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -69,11 +70,12 @@ use super::{
     migrate_scheduler_daemon_config, migrate_secret_masking_config, migrate_serve_config,
     migrate_session_persist_provider_overrides, migrate_session_persistence_config,
     migrate_session_provider_persistence, migrate_session_recap_config,
-    migrate_shell_checkpoints_config, migrate_shell_transactional, migrate_stt_to_provider,
-    migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
-    migrate_trace_metadata, migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config,
-    migrate_tui_theme_defaults, migrate_utility_high_gain_tools, migrate_vigil_config,
-    migrate_worktree_config, migrate_worktree_git_timeout,
+    migrate_shell_checkpoints_config, migrate_shell_transactional, migrate_skills_registry,
+    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
+    migrate_tools_compression_config, migrate_trace_metadata, migrate_tui_delights,
+    migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
+    migrate_utility_high_gain_tools, migrate_vigil_config, migrate_worktree_config,
+    migrate_worktree_git_timeout,
 };
 
 // ── Wrapper structs for all 73 sequential migration steps ───────────────────────────────────────
@@ -836,6 +838,18 @@ impl Migration for MigrateOrchestrationAssetSensitivity {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_orchestration_asset_sensitivity(toml_src)
+    }
+}
+
+/// Step 78 — add a commented-out `[skills.registry]` advisory block (spec-045, #5869).
+pub(super) struct MigrateSkillsRegistry;
+impl Migration for MigrateSkillsRegistry {
+    fn name(&self) -> &'static str {
+        "migrate_skills_registry"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_skills_registry(toml_src)
     }
 }
 

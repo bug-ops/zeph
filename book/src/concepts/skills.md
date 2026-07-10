@@ -88,6 +88,44 @@ Installed skills start at the `quarantined` trust level. Use `zeph skill verify`
 
 See [CLI Reference — `zeph skill`](../reference/cli.md#zeph-skill) for the full subcommand list, or use the in-session `/skill install` and `/skill remove` commands for hot-reloaded management without restart.
 
+## Skill & Plugin Registry Discovery
+
+Zeph supports opt-in discovery and installation of skills and plugins from external registries (like [skills.sh](https://www.skills.sh)) without needing to know the exact git URL or file path beforehand.
+
+**Key points:**
+
+- **Opt-in only** — Registry lookups are disabled by default. No network calls are made unless you explicitly enable `[skills.registry] enabled = true` in `config.toml`.
+- **Two-step workflow** — Use `zeph skill search <query>` to find skills by keyword, then install one by its registry ID with `zeph skill get <registry-id>`. The same flow works for plugins: `zeph plugin search` and `zeph plugin get`.
+- **Same security gates** — Fetched packages route through the existing frontmatter validation and injection-pattern scan before install, so no new content-safety bypass is introduced.
+- **Distinct from `install`** — The existing `zeph skill install <url|path>` and `zeph plugin add <path>` commands remain unchanged. Registry-based install uses the separate `get` commands (`zeph skill get`, `zeph plugin get`) to avoid ambiguity.
+
+### Setting up registry access
+
+Edit `config.toml` or run `zeph init` / `zeph --migrate-config` to add:
+
+```toml
+[skills.registry]
+enabled = true
+backend_kind = "skills-sh"              # public skills.sh registry
+# auth_vault_key = "ZEPH_SKILL_REGISTRY_TOKEN"  # optional: vault key for auth token if registry requires it
+```
+
+### Using registry search and install
+
+```bash
+# Search for skills by keyword
+zeph skill search "json"
+
+# Install a skill by registry ID (as printed by search)
+zeph skill get skills-sh/json-formatter
+
+# Same flow for plugins
+zeph plugin search "github"
+zeph plugin get skills-sh/github-integration
+```
+
+If the registry is not enabled, these commands print an actionable message explaining how to opt in.
+
 ## Next Steps
 
 - [Add Custom Skills](../guides/custom-skills.md) — create your own skills

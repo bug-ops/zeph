@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        77,
-        "MIGRATIONS registry must contain all 77 sequential steps"
+        78,
+        "MIGRATIONS registry must contain all 78 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1678,7 +1678,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 77);
+    assert_eq!(MIGRATIONS.len(), 78);
 }
 
 #[test]
@@ -1717,7 +1717,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–77).
+    // Names must follow the documented step order (steps 1–78).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1796,6 +1796,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_qdrant_timeout_secs",
         "migrate_utility_high_gain_tools",
         "migrate_acp_auth_clients_config",
+        "migrate_skills_registry",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -1968,6 +1969,56 @@ fn migrate_utility_high_gain_tools_idempotent_on_commented_output() {
     let second = migrate_utility_high_gain_tools(&first.output).unwrap();
     assert_eq!(second.changed_count, 0, "second run must not double-append");
     assert_eq!(second.output, first.output);
+}
+
+// ── migrate_skills_registry tests (spec-045, #5869) ──────────────────────
+
+#[test]
+fn migrate_skills_registry_adds_commented_block_when_absent() {
+    let src = "[skills]\npaths = []\n";
+    let result = migrate_skills_registry(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert_eq!(result.sections_changed, vec!["skills.registry".to_owned()]);
+    assert!(result.output.contains("# [skills.registry]"));
+    result
+        .output
+        .parse::<toml_edit::DocumentMut>()
+        .expect("migrated output must remain valid TOML");
+}
+
+#[test]
+fn migrate_skills_registry_never_sets_enabled_true() {
+    // A migration must never silently opt a config into a network-calling feature (NFR-001).
+    let src = "[skills]\npaths = []\n";
+    let result = migrate_skills_registry(src).expect("migrate");
+    assert!(result.output.contains("# enabled = false"));
+    assert!(!result.output.contains("enabled = true"));
+}
+
+#[test]
+fn migrate_skills_registry_idempotent_on_commented_output() {
+    let base = "[skills]\npaths = []\n";
+    let first = migrate_skills_registry(base).unwrap();
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_skills_registry(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0, "second run must not double-append");
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_skills_registry_idempotent_on_active_section() {
+    let src = "[skills.registry]\nenabled = true\n";
+    let result = migrate_skills_registry(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn migrate_skills_registry_works_without_skills_section() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_skills_registry(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# [skills.registry]"));
 }
 
 #[test]

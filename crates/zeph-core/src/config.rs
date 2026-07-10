@@ -18,13 +18,14 @@ pub use zeph_config::{
     LoggingConfig, MAX_TOKENS_CAP, McpConfig, McpOAuthConfig, McpServerConfig, McpTrustLevel,
     MemoryConfig, MemoryScope, NoteLinkingConfig, OAuthTokenStorage, OrchestrationConfig,
     PermissionMode, ProviderEntry, ProviderKind, ProviderName, PruningStrategy, RateLimitConfig,
-    ResolvedSecrets, RetrievalConfig, RouterConfig, RouterStrategyConfig, ScheduledTaskConfig,
-    ScheduledTaskKind, SchedulerConfig, SchedulerDaemonConfig, SchedulerSecurityConfig,
-    SecurityConfig, SemanticConfig, SessionsConfig, SidequestConfig, SkillFilter, SkillPromptMode,
-    SkillsConfig, SlackConfig, StoreRoutingConfig, StoreRoutingStrategy, SttConfig, SubAgentConfig,
-    SubAgentLifecycleHooks, SubagentHooks, TaskSupervisorConfig, TelegramConfig, TimeoutConfig,
-    ToolDiscoveryConfig, ToolDiscoveryStrategyConfig, ToolFilterConfig, ToolPolicy, TraceConfig,
-    TrustConfig, TuiConfig, VaultConfig, VectorBackend,
+    RegistryBackendKind, RegistryConfig, ResolvedSecrets, RetrievalConfig, RouterConfig,
+    RouterStrategyConfig, ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig,
+    SchedulerDaemonConfig, SchedulerSecurityConfig, SecurityConfig, SemanticConfig, SessionsConfig,
+    SidequestConfig, SkillFilter, SkillPromptMode, SkillsConfig, SlackConfig, StoreRoutingConfig,
+    StoreRoutingStrategy, SttConfig, SubAgentConfig, SubAgentLifecycleHooks, SubagentHooks,
+    TaskSupervisorConfig, TelegramConfig, TimeoutConfig, ToolDiscoveryConfig,
+    ToolDiscoveryStrategyConfig, ToolFilterConfig, ToolPolicy, TraceConfig, TrustConfig, TuiConfig,
+    VaultConfig, VectorBackend,
 };
 
 pub use zeph_config::{
@@ -162,6 +163,15 @@ impl SecretResolver for Config {
         if let Some(val) = vault.get_secret("ZEPH_COCOON_ACCESS_HASH").await? {
             register_masked_secret(registry, "ZEPH_COCOON_ACCESS_HASH", &val);
             self.secrets.cocoon_access_hash = Some(Secret::new(val));
+        }
+        // Registry lookups are strictly opt-in (NFR-001): only touch the vault when the
+        // registry is enabled AND a key name is configured, never unconditionally.
+        if self.skills.registry.enabled
+            && let Some(key_name) = self.skills.registry.auth_vault_key.clone()
+            && let Some(val) = vault.get_secret(&key_name).await?
+        {
+            register_masked_secret(registry, &key_name, &val);
+            self.secrets.skill_registry_token = Some(Secret::new(val));
         }
         log_gonka_credential_status(
             self.secrets.gonka_private_key.is_some(),

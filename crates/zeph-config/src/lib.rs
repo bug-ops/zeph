@@ -139,9 +139,10 @@ pub use experiment::{
 };
 pub use features::{
     CavemanConfig, CompressionSpectrumConfig, CostConfig, DaemonConfig, DebugConfig, GatewayConfig,
-    IndexConfig, ProactiveExplorationConfig, ScheduledTaskConfig, ScheduledTaskKind,
-    SchedulerConfig, SchedulerDaemonConfig, SchedulerSecurityConfig, SkillEvaluationConfig,
-    SkillMiningConfig, SkillPromptMode, SkillsConfig, TraceConfig, VaultBackend, VaultConfig,
+    IndexConfig, ProactiveExplorationConfig, RegistryBackendKind, RegistryConfig,
+    ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig, SchedulerDaemonConfig,
+    SchedulerSecurityConfig, SkillEvaluationConfig, SkillMiningConfig, SkillPromptMode,
+    SkillsConfig, TraceConfig, VaultBackend, VaultConfig,
 };
 pub use fidelity::FidelityConfig;
 pub use hooks::{FileChangedConfig, HooksConfig};

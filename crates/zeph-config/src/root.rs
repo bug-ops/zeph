@@ -19,8 +19,8 @@ use crate::defaults::{default_skill_paths, default_sqlite_path_field};
 use crate::execution::ExecutionConfig;
 use crate::experiment::{ExperimentConfig, OrchestrationConfig};
 use crate::features::{
-    CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig, SchedulerConfig,
-    SkillPromptMode, SkillsConfig, VaultConfig,
+    CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig, RegistryConfig,
+    SchedulerConfig, SkillPromptMode, SkillsConfig, VaultConfig,
 };
 use crate::hooks::HooksConfig;
 use crate::learning::LearningConfig;
@@ -184,6 +184,10 @@ pub struct ResolvedSecrets {
     pub gonka_address: Option<Secret>,
     /// Cocoon sidecar access hash resolved from the vault key `ZEPH_COCOON_ACCESS_HASH`.
     pub cocoon_access_hash: Option<Secret>,
+    /// Skill/plugin registry bearer credential, resolved from the vault key named by
+    /// `skills.registry.auth_vault_key` when `skills.registry.enabled = true` (spec-045,
+    /// #5869). `None` when the registry is disabled or `auth_vault_key` is unset.
+    pub skill_registry_token: Option<Secret>,
     /// Arbitrary skill secrets resolved from `ZEPH_SECRET_*` vault keys.
     /// Key is the lowercased name after stripping the prefix (e.g. `github_token`).
     pub custom: HashMap<String, Secret>,
@@ -239,6 +243,7 @@ impl Default for Config {
                 bm25_alpha: 0.7,
                 learning: LearningConfig::default(),
                 trust: TrustConfig::default(),
+                registry: RegistryConfig::default(),
                 prompt_mode: SkillPromptMode::Auto,
                 two_stage_matching: false,
                 confusability_threshold: 0.0,

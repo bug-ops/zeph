@@ -418,7 +418,284 @@ pub(crate) async fn handle_skill_command(
                 );
             }
         }
+
+        SkillCommand::Search { query } => {
+            #[cfg(feature = "registry")]
+            {
+                registry_search(&config, &query).await?;
+            }
+            #[cfg(not(feature = "registry"))]
+            {
+                let _ = &query;
+                println!(
+                    "This zeph build was compiled without the `registry` feature; rebuild \
+                     with `--features registry` (or `full`) to use `zeph skill search`."
+                );
+            }
+        }
+
+        SkillCommand::Get { registry_id } => {
+            #[cfg(feature = "registry")]
+            {
+                registry_get(&config, &mgr, &managed_dir, &sqlite_path, &registry_id).await?;
+            }
+            #[cfg(not(feature = "registry"))]
+            {
+                let _ = &registry_id;
+                println!(
+                    "This zeph build was compiled without the `registry` feature; rebuild \
+                     with `--features registry` (or `full`) to use `zeph skill get`."
+                );
+            }
+        }
     }
 
     Ok(())
+}
+
+/// `zeph skill search <query>` (spec-045, #5869, FR-001).
+///
+/// Prints [`crate::commands::registry_client::REGISTRY_NOT_CONFIGURED_MSG`] and makes zero
+/// network calls when `skills.registry.enabled = false` (FR-004, NFR-001). Thin wrapper around
+/// [`registry_search_with`] so the fetch/search logic itself is testable in isolation from the
+/// config-gate and client construction — see that fn's tests for `MockRegistryClient`-driven
+/// coverage.
+#[cfg(feature = "registry")]
+#[tracing::instrument(name = "skill.registry_search", skip(config), fields(query))]
+async fn registry_search(config: &zeph_core::config::Config, query: &str) -> anyhow::Result<()> {
+    use crate::commands::registry_client::{
+        REGISTRY_NOT_CONFIGURED_MSG, build_registry_client, resolve_registry_token,
+    };
+
+    if !config.skills.registry.enabled {
+        println!("{REGISTRY_NOT_CONFIGURED_MSG}");
+        anyhow::bail!("skill registry is not configured");
+    }
+
+    let token = resolve_registry_token(config).await?;
+    let client = build_registry_client(config, token);
+    registry_search_with(client.as_ref(), query).await
+}
+
+/// Search logic parameterized over a [`zeph_plugins::marketplace::RegistryClient`] — split out
+/// of [`registry_search`] so tests can drive it with `MockRegistryClient` without network or a
+/// real `Config`/vault (review fix #4).
+#[cfg(feature = "registry")]
+async fn registry_search_with(
+    client: &dyn zeph_plugins::marketplace::RegistryClient,
+    query: &str,
+) -> anyhow::Result<()> {
+    use crate::commands::registry_client::print_search_results;
+
+    let results = client
+        .search(query)
+        .await
+        .map_err(|e| anyhow::anyhow!("registry search failed: {e}"))?;
+    print_search_results(&results);
+    Ok(())
+}
+
+/// `zeph skill get <registry-id>` (spec-045, #5869, FR-002).
+///
+/// Fetches the package then routes it through the exact same
+/// [`zeph_skills::manager::SkillManager::install_from_path`] + Quarantined-trust-upsert flow
+/// as `zeph skill install <local-path>` — no bypass of frontmatter validation or the
+/// injection-pattern scan (NFR-002). Thin wrapper around [`registry_get_with`] — see that fn's
+/// tests for `MockRegistryClient`-driven coverage.
+#[cfg(feature = "registry")]
+#[tracing::instrument(name = "skill.registry_get", skip(config, mgr), fields(registry_id))]
+async fn registry_get(
+    config: &zeph_core::config::Config,
+    mgr: &zeph_skills::manager::SkillManager,
+    managed_dir: &std::path::Path,
+    sqlite_path: &str,
+    registry_id: &str,
+) -> anyhow::Result<()> {
+    use crate::commands::registry_client::{
+        REGISTRY_NOT_CONFIGURED_MSG, build_registry_client, resolve_registry_token,
+    };
+
+    if !config.skills.registry.enabled {
+        println!("{REGISTRY_NOT_CONFIGURED_MSG}");
+        anyhow::bail!("skill registry is not configured");
+    }
+
+    let token = resolve_registry_token(config).await?;
+    let client = build_registry_client(config, token);
+    registry_get_with(client.as_ref(), mgr, managed_dir, sqlite_path, registry_id).await
+}
+
+/// Fetch-and-install logic parameterized over a [`zeph_plugins::marketplace::RegistryClient`] —
+/// split out of [`registry_get`] so tests can drive it with `MockRegistryClient` (review fix #4).
+#[cfg(feature = "registry")]
+async fn registry_get_with(
+    client: &dyn zeph_plugins::marketplace::RegistryClient,
+    mgr: &zeph_skills::manager::SkillManager,
+    managed_dir: &std::path::Path,
+    sqlite_path: &str,
+    registry_id: &str,
+) -> anyhow::Result<()> {
+    let archive = client
+        .fetch(registry_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("registry fetch failed: {e}"))?;
+
+    if archive.has_plugin_manifest {
+        anyhow::bail!(
+            "package {registry_id:?} is a full plugin bundle (contains plugin.toml); use \
+             `zeph plugin get {registry_id}` instead"
+        );
+    }
+
+    // install_from_path infers `SkillSource::File { path: <tempdir> }` since it only sees a
+    // local directory — that path is meaningless (deleted with the TempDir on drop). Record
+    // the real provenance as Hub{registry_id} instead (FR-008, architect-recommended minimal
+    // scope: reuse the existing Hub source kind rather than adding a dedicated Registry variant).
+    //
+    // Pass `install_dir`, not `extracted_dir.path()` directly: SkillManager::install_from_path
+    // requires its source directory to already be named after the skill's declared name (see
+    // PackageArchive::install_dir docs) — extracted_dir's basename is an OS-assigned random
+    // string.
+    let result = mgr
+        .install_from_path(&archive.install_dir)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let store = zeph_memory::store::SqliteStore::new(sqlite_path)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
+    store
+        .upsert_skill_trust(
+            &result.name,
+            zeph_common::SkillTrustLevel::Quarantined,
+            zeph_memory::store::SourceKind::Hub,
+            Some(registry_id),
+            None,
+            &result.blake3_hash,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("trust upsert failed: {e}"))?;
+
+    println!(
+        "Installed skill \"{}\" from registry {registry_id:?} (hash: {}..., trust: quarantined)",
+        result.name,
+        &result.blake3_hash[..8]
+    );
+
+    let skill_md = managed_dir.join(&result.name).join("SKILL.md");
+    if let Ok(meta) = zeph_skills::loader::load_skill_meta(&skill_md)
+        && !meta.requires_secrets.is_empty()
+    {
+        println!(
+            "  Note: this skill requires secrets: {}",
+            meta.requires_secrets.join(", ")
+        );
+        println!("  Run `zeph vault set ZEPH_SECRET_<NAME> <value>` for each.");
+    }
+
+    Ok(())
+}
+
+#[cfg(all(test, feature = "registry"))]
+mod registry_tests {
+    use super::*;
+    use zeph_plugins::marketplace::RegistryEntry;
+    use zeph_plugins::marketplace::mock::MockRegistryClient;
+
+    fn sample_entry(id: &str, name: &str) -> RegistryEntry {
+        RegistryEntry {
+            registry_id: id.to_owned(),
+            name: name.to_owned(),
+            description: "a test skill".to_owned(),
+            tags: vec![],
+            author: None,
+            security_audit_status: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_search_with_calls_client_and_succeeds() {
+        let mock = MockRegistryClient::new().with_entry(sample_entry("acme/x", "X Tool"));
+        registry_search_with(&mock, "x").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn registry_search_with_propagates_client_error() {
+        let mock = MockRegistryClient::new().failing("boom");
+        let err = registry_search_with(&mock, "x").await.unwrap_err();
+        assert!(err.to_string().contains("registry search failed"));
+    }
+
+    #[tokio::test]
+    async fn registry_get_with_installs_bare_skill_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let managed_dir = dir.path().join("managed");
+        let sqlite_path = dir.path().join("test.db");
+        let mgr = zeph_skills::manager::SkillManager::new(managed_dir.clone());
+
+        let mock = MockRegistryClient::new().with_package(
+            "acme/x",
+            vec![(
+                "SKILL.md".to_owned(),
+                "---\nname: x\ndescription: a test skill\n---\nbody".to_owned(),
+            )],
+        );
+
+        registry_get_with(
+            &mock,
+            &mgr,
+            &managed_dir,
+            sqlite_path.to_str().unwrap(),
+            "acme/x",
+        )
+        .await
+        .unwrap();
+
+        assert!(managed_dir.join("x").join("SKILL.md").is_file());
+    }
+
+    #[tokio::test]
+    async fn registry_get_with_rejects_plugin_bundle_with_pointer_to_plugin_get() {
+        let dir = tempfile::tempdir().unwrap();
+        let managed_dir = dir.path().join("managed");
+        let sqlite_path = dir.path().join("test.db");
+        let mgr = zeph_skills::manager::SkillManager::new(managed_dir.clone());
+
+        let mock = MockRegistryClient::new().with_package(
+            "acme/full-plugin",
+            vec![("plugin.toml".to_owned(), "[plugin]\nname=\"x\"".to_owned())],
+        );
+
+        let err = registry_get_with(
+            &mock,
+            &mgr,
+            &managed_dir,
+            sqlite_path.to_str().unwrap(),
+            "acme/full-plugin",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("zeph plugin get acme/full-plugin"));
+        assert!(!managed_dir.exists() || managed_dir.read_dir().unwrap().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn registry_get_with_propagates_fetch_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let managed_dir = dir.path().join("managed");
+        let sqlite_path = dir.path().join("test.db");
+        let mgr = zeph_skills::manager::SkillManager::new(managed_dir.clone());
+        let mock = MockRegistryClient::new();
+
+        let err = registry_get_with(
+            &mock,
+            &mgr,
+            &managed_dir,
+            sqlite_path.to_str().unwrap(),
+            "missing/id",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("registry fetch failed"));
+    }
 }

@@ -20,6 +20,8 @@ pub(crate) mod memory;
 pub(crate) mod migrate;
 pub(crate) mod plugin;
 pub(crate) mod project;
+#[cfg(feature = "registry")]
+pub(crate) mod registry_client;
 pub(crate) mod router;
 #[cfg(feature = "scheduler")]
 pub(crate) mod schedule;

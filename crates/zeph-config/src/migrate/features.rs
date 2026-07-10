@@ -766,3 +766,47 @@ pub fn migrate_orchestration_asset_sensitivity(
         sections_changed: vec!["orchestration.default_asset_sensitivity".to_owned()],
     })
 }
+
+/// Step 78 — add a commented-out `[skills.registry]` section with defaults if absent
+/// (spec-045, #5869).
+///
+/// All `RegistryConfig` fields have `#[serde(default)]`, so existing configs parse without
+/// changes; this step only surfaces the new opt-in section for users upgrading from older
+/// configs. Always writes `enabled = false` in the commented template — a migration must never
+/// silently opt a config into a network-calling feature.
+///
+/// Idempotent: checks both an active and a previously-injected commented header before doing
+/// anything, mirroring `migrate_worktree_config` (`infra.rs`).
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] if the TOML cannot be parsed.
+pub fn migrate_skills_registry(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let commented_present = toml_src.lines().any(|l| l.trim() == "# [skills.registry]");
+    if toml_src.contains("[skills.registry]") || commented_present {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    let raw = doc.to_string();
+    let comment = "\n# External skill/plugin registry discovery (spec-045, #5869). Off by\n\
+         # default — no network call is made to any registry unless explicitly opted in. See\n\
+         # `zeph skill search --help` / `zeph plugin search --help`.\n\
+         # [skills.registry]\n\
+         # enabled = false\n\
+         # backend_kind = \"skills-sh\"\n\
+         # backend_url = \"https://www.skills.sh\"\n\
+         # auth_vault_key = \"ZEPH_SKILL_REGISTRY_TOKEN\"  # set via `zeph vault set <key> <token>`\n\
+         # registry_timeout_secs = 30\n";
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["skills.registry".to_owned()],
+    })
+}

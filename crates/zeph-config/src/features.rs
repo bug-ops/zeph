@@ -255,6 +255,88 @@ pub enum SkillPromptMode {
     Auto,
 }
 
+/// Identifies which `zeph_plugins::marketplace::RegistryClient` implementation to use for
+/// `[skills.registry]` (FR-005, NFR-003). Not an intra-doc link: `zeph-plugins` is not a
+/// dependency of this crate (layering) and the type is additionally feature-gated there.
+///
+/// Deliberately a plain enum defined here in `zeph-config` (Layer 1), never re-exported from
+/// the feature-gated `zeph-plugins::marketplace` module — config parsing must always compile
+/// regardless of whether the `registry` Cargo feature is enabled.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum RegistryBackendKind {
+    /// The public [skills.sh](https://www.skills.sh) registry.
+    #[default]
+    SkillsSh,
+}
+
+impl std::fmt::Display for RegistryBackendKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SkillsSh => f.write_str("skills-sh"),
+        }
+    }
+}
+
+fn default_registry_timeout_secs() -> u64 {
+    30
+}
+
+/// External skill/plugin registry connection settings, nested under `[skills.registry]` in
+/// TOML (spec-045, #5869).
+///
+/// Registry search/install is strictly opt-in (NFR-001): `enabled` defaults to `false`, and no
+/// field on this type is read — no network call is made — unless `enabled = true`.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [skills.registry]
+/// enabled = true
+/// backend_kind = "skills-sh"
+/// auth_vault_key = "ZEPH_SKILL_REGISTRY_TOKEN"
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RegistryConfig {
+    /// Enable registry search/install. Default: `false`.
+    ///
+    /// When `false`, `zeph skill search`/`add` and `zeph plugin search`/`add` refuse to make
+    /// any network call and print an actionable opt-in message instead (FR-004).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Which registry backend implementation (`zeph_plugins::marketplace::RegistryClient`,
+    /// crate not depended on here — see [`RegistryBackendKind`]) to use.
+    #[serde(default)]
+    pub backend_kind: RegistryBackendKind,
+    /// Registry base URL. `None` uses the backend's built-in default (for
+    /// [`RegistryBackendKind::SkillsSh`], `https://www.skills.sh`).
+    #[serde(default)]
+    pub backend_url: Option<String>,
+    /// Vault key name to resolve the registry's bearer credential from, e.g.
+    /// `"ZEPH_SKILL_REGISTRY_TOKEN"`. `None` means an anonymous (unauthenticated) request is
+    /// attempted; the backend may reject it if it requires a credential.
+    ///
+    /// Always resolved via `VaultProvider` — never stored as a plain config field.
+    #[serde(default)]
+    pub auth_vault_key: Option<String>,
+    /// Per-request timeout in seconds for registry `search`/`fetch` HTTP calls.
+    #[serde(default = "default_registry_timeout_secs")]
+    pub registry_timeout_secs: u64,
+}
+
+impl Default for RegistryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend_kind: RegistryBackendKind::default(),
+            backend_url: None,
+            auth_vault_key: None,
+            registry_timeout_secs: default_registry_timeout_secs(),
+        }
+    }
+}
+
 /// Skill discovery and matching configuration, nested under `[skills]` in TOML.
 ///
 /// Controls where skills are loaded from, how they are ranked during retrieval,
@@ -295,6 +377,13 @@ pub struct SkillsConfig {
     pub learning: LearningConfig,
     #[serde(default)]
     pub trust: TrustConfig,
+    /// External skill/plugin registry discovery (`zeph skill search`/`add`,
+    /// `zeph plugin search`/`add`), nested under `[skills.registry]` in TOML (spec-045, #5869).
+    ///
+    /// Off by default: no network call is ever made to a registry unless `enabled = true`
+    /// (NFR-001).
+    #[serde(default)]
+    pub registry: RegistryConfig,
     #[serde(default)]
     pub prompt_mode: SkillPromptMode,
     /// Enable two-stage category-first skill matching (requires `category` set in SKILL.md).
@@ -1240,6 +1329,54 @@ mod tests {
             !cfg.enabled,
             "scheduler must be opt-in (enabled = false by default)"
         );
+    }
+
+    // ── RegistryConfig tests (spec-045, #5869) ────────────────────────────
+
+    #[test]
+    fn registry_config_default_is_disabled() {
+        // Highest-priority test per the architect handoff: the registry must be strictly
+        // opt-in (NFR-001) — zero network calls unless explicitly enabled.
+        let cfg = RegistryConfig::default();
+        assert!(
+            !cfg.enabled,
+            "skill/plugin registry must be opt-in (enabled = false by default)"
+        );
+        assert_eq!(cfg.backend_kind, RegistryBackendKind::SkillsSh);
+        assert!(cfg.backend_url.is_none());
+        assert!(cfg.auth_vault_key.is_none());
+        assert_eq!(cfg.registry_timeout_secs, 30);
+    }
+
+    #[test]
+    fn registry_config_serde_roundtrip_with_defaults() {
+        let cfg: RegistryConfig = toml::from_str("").unwrap();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.backend_kind, RegistryBackendKind::SkillsSh);
+    }
+
+    #[test]
+    fn registry_config_serde_roundtrip_explicit() {
+        let toml = r#"
+            enabled = true
+            backend_kind = "skills-sh"
+            backend_url = "https://example.internal"
+            auth_vault_key = "ZEPH_SKILL_REGISTRY_TOKEN"
+            registry_timeout_secs = 10
+        "#;
+        let cfg: RegistryConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.backend_url.as_deref(), Some("https://example.internal"));
+        assert_eq!(
+            cfg.auth_vault_key.as_deref(),
+            Some("ZEPH_SKILL_REGISTRY_TOKEN")
+        );
+        assert_eq!(cfg.registry_timeout_secs, 10);
+    }
+
+    #[test]
+    fn registry_backend_kind_display() {
+        assert_eq!(RegistryBackendKind::SkillsSh.to_string(), "skills-sh");
     }
 }
 

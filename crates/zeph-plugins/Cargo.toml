@@ -44,6 +44,16 @@ wiremock.workspace = true
 default = ["sqlite"]
 sqlite = ["zeph-skills/sqlite", "zeph-tools/sqlite"]
 postgres = ["zeph-skills/postgres", "zeph-tools/postgres"]
+# Skill/plugin marketplace discovery (spec-045, #5869). Gates only the `marketplace` module
+# body — `reqwest`/`serde_json` are already unconditional dependencies of this crate. The only
+# additive dependency surface is `reqwest`'s own `query` Cargo feature (a thin wrapper around
+# `serde_urlencoded`, no new crate), needed to build the skills.sh search request.
+registry = ["reqwest/query"]
+# Exposes `marketplace::mock::MockRegistryClient` outside `#[cfg(test)]` so downstream crates
+# (the `zeph` binary) can drive it from their own `dev-dependencies`. Mirrors `zeph-vault`'s
+# `mock` feature. No-op unless `registry` is also enabled (the `marketplace` module itself is
+# gated on `registry`).
+mock = []
 
 [lints]
 workspace = true

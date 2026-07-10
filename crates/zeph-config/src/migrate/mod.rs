@@ -25,7 +25,8 @@ pub use features::{
     migrate_deep_link_config, migrate_five_signal_config, migrate_goals_config,
     migrate_knowledge_config, migrate_magic_docs_config, migrate_microcompact_config,
     migrate_orchestration_asset_sensitivity, migrate_orchestration_persistence,
-    migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
+    migrate_skills_registry, migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config,
+    migrate_tui_theme_defaults,
 };
 pub use infra::*;
 /// Advisory `GonkaGate` migration is crate-internal (registered via the [`MIGRATIONS`] registry).
@@ -617,14 +618,14 @@ use steps::{
     MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
     MigrateSecretMaskingConfig, MigrateServeConfig, MigrateSessionPersistProviderOverrides,
     MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
-    MigrateShellCheckpointsConfig, MigrateShellTransactional, MigrateSttToProvider,
-    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
-    MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig,
-    MigrateTuiThemeDefaults, MigrateUtilityHighGainTools, MigrateVigilConfig,
-    MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
+    MigrateShellCheckpointsConfig, MigrateShellTransactional, MigrateSkillsRegistry,
+    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
+    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
+    MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateUtilityHighGainTools,
+    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–77).
+/// Ordered registry of all sequential migration steps (steps 1–78).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -762,6 +763,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateUtilityHighGainTools),
             // Step 77 — add [[acp.auth_clients]] advisory block (#5868)
             Box::new(MigrateAcpAuthClientsConfig),
+            // Step 78 — add [skills.registry] advisory block (spec-045, #5869)
+            Box::new(MigrateSkillsRegistry),
         ]
     });
 

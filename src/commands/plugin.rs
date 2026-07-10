@@ -49,7 +49,12 @@ fn print_overlay_section(plugins_dir: &std::path::Path) -> anyhow::Result<()> {
 /// # Errors
 ///
 /// Returns an error if the plugin operation fails (invalid manifest, conflicts, etc.).
-pub(crate) fn handle_plugin_command(
+// `async` is unused when compiled without the `registry` feature (the Search/Get arms'
+// `.await` calls are cfg'd out, leaving the fn body synchronous) — the signature must stay
+// `async` regardless, since `runner.rs` always `.await`s this call and the feature is a
+// caller-invisible build-time choice (M1, critic handoff).
+#[allow(clippy::unused_async)]
+pub(crate) async fn handle_plugin_command(
     cmd: PluginCommand,
     config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
@@ -123,7 +128,251 @@ pub(crate) fn handle_plugin_command(
                 );
             }
         }
+
+        PluginCommand::Search { query } => {
+            #[cfg(feature = "registry")]
+            {
+                registry_search(&config, &query).await?;
+            }
+            #[cfg(not(feature = "registry"))]
+            {
+                let _ = &query;
+                println!(
+                    "This zeph build was compiled without the `registry` feature; rebuild \
+                     with `--features registry` (or `full`) to use `zeph plugin search`."
+                );
+            }
+        }
+
+        PluginCommand::Get { registry_id } => {
+            #[cfg(feature = "registry")]
+            {
+                registry_get(&config, &mgr, &registry_id).await?;
+            }
+            #[cfg(not(feature = "registry"))]
+            {
+                let _ = &registry_id;
+                println!(
+                    "This zeph build was compiled without the `registry` feature; rebuild \
+                     with `--features registry` (or `full`) to use `zeph plugin get`."
+                );
+            }
+        }
     }
 
     Ok(())
+}
+
+/// `zeph plugin search <query>` (spec-045, #5869, FR-003 — shares the search implementation
+/// used by `zeph skill search`, NFR-006).
+///
+/// Prints [`crate::commands::registry_client::REGISTRY_NOT_CONFIGURED_MSG`] and makes zero
+/// network calls when `skills.registry.enabled = false` (FR-004, NFR-001). Thin wrapper around
+/// [`registry_search_with`] — see that fn's tests for `MockRegistryClient`-driven coverage.
+#[cfg(feature = "registry")]
+#[tracing::instrument(name = "plugin.registry_search", skip(config), fields(query))]
+async fn registry_search(config: &zeph_core::config::Config, query: &str) -> anyhow::Result<()> {
+    use crate::commands::registry_client::{
+        REGISTRY_NOT_CONFIGURED_MSG, build_registry_client, resolve_registry_token,
+    };
+
+    if !config.skills.registry.enabled {
+        println!("{REGISTRY_NOT_CONFIGURED_MSG}");
+        anyhow::bail!("skill registry is not configured");
+    }
+
+    let token = resolve_registry_token(config).await?;
+    let client = build_registry_client(config, token);
+    registry_search_with(client.as_ref(), query).await
+}
+
+/// Search logic parameterized over a [`zeph_plugins::marketplace::RegistryClient`] — split out
+/// of [`registry_search`] so tests can drive it with `MockRegistryClient` without network or a
+/// real `Config`/vault (review fix #4).
+#[cfg(feature = "registry")]
+async fn registry_search_with(
+    client: &dyn zeph_plugins::marketplace::RegistryClient,
+    query: &str,
+) -> anyhow::Result<()> {
+    use crate::commands::registry_client::print_search_results;
+
+    let results = client
+        .search(query)
+        .await
+        .map_err(|e| anyhow::anyhow!("registry search failed: {e}"))?;
+    print_search_results(&results);
+    Ok(())
+}
+
+/// `zeph plugin get <registry-id>` (spec-045, #5869, FR-003).
+///
+/// Fetches the package and, when it contains a `plugin.toml`, routes it through
+/// [`zeph_plugins::PluginManager::add`] unchanged (NFR-002 — same manifest validation, MCP
+/// allowlist, and injection scan as `zeph plugin add <local-path>`). Fails with a pointer to
+/// `zeph skill get` when the fetched package has no `plugin.toml` (a bare skill package).
+/// Thin wrapper around [`registry_get_with`] — see that fn's tests for `MockRegistryClient`-
+/// driven coverage.
+#[cfg(feature = "registry")]
+#[tracing::instrument(name = "plugin.registry_get", skip(config, mgr), fields(registry_id))]
+async fn registry_get(
+    config: &zeph_core::config::Config,
+    mgr: &zeph_plugins::PluginManager,
+    registry_id: &str,
+) -> anyhow::Result<()> {
+    use crate::commands::registry_client::{
+        REGISTRY_NOT_CONFIGURED_MSG, build_registry_client, resolve_registry_token,
+    };
+
+    if !config.skills.registry.enabled {
+        println!("{REGISTRY_NOT_CONFIGURED_MSG}");
+        anyhow::bail!("skill registry is not configured");
+    }
+
+    let token = resolve_registry_token(config).await?;
+    let client = build_registry_client(config, token);
+    registry_get_with(client.as_ref(), mgr, registry_id).await
+}
+
+/// Fetch-and-install logic parameterized over a [`zeph_plugins::marketplace::RegistryClient`] —
+/// split out of [`registry_get`] so tests can drive it with `MockRegistryClient` (review fix #4).
+#[cfg(feature = "registry")]
+async fn registry_get_with(
+    client: &dyn zeph_plugins::marketplace::RegistryClient,
+    mgr: &zeph_plugins::PluginManager,
+    registry_id: &str,
+) -> anyhow::Result<()> {
+    let archive = client
+        .fetch(registry_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("registry fetch failed: {e}"))?;
+
+    if !archive.has_plugin_manifest {
+        anyhow::bail!(
+            "package {registry_id:?} is a bare skill package (no plugin.toml); use \
+             `zeph skill get {registry_id}` instead"
+        );
+    }
+
+    let source = archive
+        .install_dir
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("registry temp dir path is not valid UTF-8"))?;
+    let result = mgr.add(source)?;
+    println!(
+        "Installed plugin \"{}\" from registry {registry_id:?}.",
+        result.name
+    );
+    if !result.installed_skills.is_empty() {
+        println!("  Skills: {}", result.installed_skills.join(", "));
+    }
+    if !result.mcp_server_ids.is_empty() {
+        println!(
+            "  MCP servers (restart required): {}",
+            result.mcp_server_ids.join(", ")
+        );
+    }
+    for w in &result.warnings {
+        eprintln!("warning: {w}");
+    }
+
+    Ok(())
+}
+
+#[cfg(all(test, feature = "registry"))]
+mod registry_tests {
+    use super::*;
+    use zeph_plugins::marketplace::RegistryEntry;
+    use zeph_plugins::marketplace::mock::MockRegistryClient;
+
+    fn sample_entry(id: &str, name: &str) -> RegistryEntry {
+        RegistryEntry {
+            registry_id: id.to_owned(),
+            name: name.to_owned(),
+            description: "a test plugin".to_owned(),
+            tags: vec![],
+            author: None,
+            security_audit_status: None,
+        }
+    }
+
+    fn test_manager(root: &std::path::Path) -> zeph_plugins::PluginManager {
+        zeph_plugins::PluginManager::new(
+            root.join("plugins"),
+            root.join("managed-skills"),
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn registry_search_with_calls_client_and_succeeds() {
+        let mock = MockRegistryClient::new().with_entry(sample_entry("acme/x", "X Plugin"));
+        registry_search_with(&mock, "x").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn registry_search_with_propagates_client_error() {
+        let mock = MockRegistryClient::new().failing("boom");
+        let err = registry_search_with(&mock, "x").await.unwrap_err();
+        assert!(err.to_string().contains("registry search failed"));
+    }
+
+    #[tokio::test]
+    async fn registry_get_with_installs_plugin_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = test_manager(dir.path());
+
+        let mock = MockRegistryClient::new().with_package(
+            "acme/full-plugin",
+            vec![
+                (
+                    "plugin.toml".to_owned(),
+                    "[plugin]\nname = \"full-plugin\"\nversion = \"0.1.0\"".to_owned(),
+                ),
+                (
+                    "skills/x/SKILL.md".to_owned(),
+                    "---\nname: x\ndescription: a test skill\n---\nbody".to_owned(),
+                ),
+            ],
+        );
+
+        registry_get_with(&mock, &mgr, "acme/full-plugin")
+            .await
+            .unwrap();
+
+        assert!(
+            dir.path()
+                .join("plugins/full-plugin/.plugin.toml")
+                .is_file()
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_get_with_rejects_bare_skill_package_with_pointer_to_skill_get() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = test_manager(dir.path());
+
+        let mock = MockRegistryClient::new().with_package(
+            "acme/x",
+            vec![(
+                "SKILL.md".to_owned(),
+                "---\nname: x\ndescription: a test skill\n---\nbody".to_owned(),
+            )],
+        );
+
+        let err = registry_get_with(&mock, &mgr, "acme/x").await.unwrap_err();
+        assert!(err.to_string().contains("zeph skill get acme/x"));
+    }
+
+    #[tokio::test]
+    async fn registry_get_with_propagates_fetch_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = test_manager(dir.path());
+        let mock = MockRegistryClient::new();
+
+        let err = registry_get_with(&mock, &mgr, "missing/id")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("registry fetch failed"));
+    }
 }

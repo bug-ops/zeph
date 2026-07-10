@@ -26,6 +26,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Note: this closes the isolation gap for genuine multi-token **HTTP/WS** deployments only — the
   literal Zed-over-stdio scenario from the issue is unaffected by this change (stdio has no
   token multiplexing to redesign; use distinct `sqlite_path` values per window instead).
+- `feat(plugins,skills,config,cli)`: added an opt-in skill/plugin discovery-and-install
+  marketplace (spec-045, #5869) — `zeph skill search <query>` / `zeph skill get <registry-id>`
+  and `zeph plugin search <query>` / `zeph plugin get <registry-id>`, closing the "no discovery
+  path, only `--plugin-url`" gap identified against Cline's marketplace and Vercel's
+  `skills.sh` in a competitive parity scan. A new `crates/zeph-plugins/src/marketplace` module
+  defines a dyn-compatible `RegistryClient` trait (mirroring `VaultProvider`'s boxed-future
+  pattern) with a `SkillsShClient` implementation for the public skills.sh registry, gated
+  behind a new `registry` Cargo feature (included in the `full` bundle) that gates only the
+  network-touching client code — CLI arg definitions and `[skills.registry]` config parsing
+  always compile, printing an actionable "rebuild with `--features registry`" message when the
+  feature is off. Registry lookups are strictly opt-in and off by default
+  (`skills.registry.enabled = false`): zero network calls and zero vault access occur unless
+  explicitly enabled. Fetched packages route through the existing, unmodified install
+  pipelines — `SkillManager::install_from_path` (frontmatter validation + Quarantined-trust
+  upsert) for skills, `PluginManager::add` (manifest validation, MCP allowlist, injection scan)
+  for plugins — so no new content-safety bypass is introduced. Auth token resolved exclusively
+  via `VaultProvider` (`skills.registry.auth_vault_key`), never a plain config field. Adds the
+  `--init` wizard step, a `--migrate-config` step (idempotent, always writes `enabled = false`
+  in the advisory template), and `MockRegistryClient` proving the trait boundary is real.
+
 - `feat(llm,commands,core)`: added runtime `/think-tokens [N|Nk|NM|off]` and
   `/reasoning-effort [low|medium|high]` slash commands that mutate the active LLM provider's
   thinking-token budget or reasoning-effort level mid-session, taking effect on the very next

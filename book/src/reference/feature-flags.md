@@ -75,6 +75,7 @@ The following capabilities compile unconditionally into every build. They are **
 | `a2a` | [A2A protocol](https://github.com/a2aproject/A2A) client and server for agent-to-agent communication |
 | `gateway` | HTTP gateway for webhook ingestion with bearer auth and rate limiting ([guide](../advanced/gateway.md)) |
 | `scheduler` | Cron-based periodic task scheduler with SQLite persistence, including the `update_check` handler for automatic version notifications ([guide](../advanced/daemon.md#cron-scheduler)) |
+| `registry` | Skill and plugin discovery-and-install marketplace via external registries (e.g., skills.sh) — provides `zeph skill search`/`get` and `zeph plugin search`/`get` commands; opt-in via config, no network calls by default ([guide](../concepts/skills.md#skill--plugin-registry-discovery)) |
 | `otel` | OpenTelemetry tracing export via OTLP/gRPC ([guide](../advanced/observability.md)) |
 | `pdf` | PDF document loading via [pdf-extract](https://crates.io/crates/pdf-extract) for the document ingestion pipeline |
 | `classifiers` | ML-based content classifiers via local candle inference (implies `candle`) |

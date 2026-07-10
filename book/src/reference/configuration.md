@@ -276,6 +276,16 @@ heuristic_promotion_provider = ""       # Provider name for promotion LLM calls;
 heuristic_promotion_threshold = 5       # Minimum heuristics collected before promotion eligibility (default: 5)
 heuristic_promotion_interval_hours = 24 # Background job interval in hours (default: 24)
 
+# External skill/plugin registry discovery (opt-in).
+# Provides `zeph skill search` / `zeph skill get` and `zeph plugin search` / `zeph plugin get`.
+# Always off by default — zero network calls until explicitly enabled.
+# [skills.registry]
+# enabled = false                        # Enable registry search/install (default: false)
+# backend_kind = "skills-sh"             # Registry backend: "skills-sh" (public registry)
+# backend_url = "https://www.skills.sh"  # Override registry URL (optional; uses backend default if omitted)
+# auth_vault_key = ""                    # Vault key for bearer token (e.g., "ZEPH_SKILL_REGISTRY_TOKEN"); optional for public registries
+# registry_timeout_secs = 30             # Per-request timeout for registry search/fetch calls (default: 30)
+
 [memory]
 # Defaults to the user data dir when omitted
 # (for example ~/.local/share/zeph/data/zeph.db on Linux,

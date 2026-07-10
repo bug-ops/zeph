@@ -892,6 +892,24 @@ pub(crate) enum SkillCommand {
         #[arg(long)]
         skill: Option<String>,
     },
+    /// Search the configured external skill registry by keyword (spec-045, #5869)
+    ///
+    /// Requires `[skills.registry] enabled = true` in config.toml; see `zeph --init` or
+    /// `--migrate-config`. Distinct from `install`, which installs from a git URL/local path.
+    Search {
+        /// Search query (min 2 characters)
+        query: String,
+    },
+    /// Install a skill by registry ID returned by `skill search` (spec-045, #5869)
+    ///
+    /// Named `get` (not `add`) to stay unambiguous with `install`, which installs from a git
+    /// URL/local path. Requires `[skills.registry] enabled = true` in config.toml. Fetched
+    /// packages route through the same frontmatter validation, injection scan, and
+    /// Quarantined-trust upsert as `skill install`.
+    Get {
+        /// Registry-assigned skill ID (as printed by `skill search`)
+        registry_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -913,6 +931,23 @@ pub(crate) enum PluginCommand {
     Remove {
         /// Plugin name
         name: String,
+    },
+    /// Search the configured external skill/plugin registry by keyword (spec-045, #5869)
+    ///
+    /// Requires `[skills.registry] enabled = true` in config.toml; see `zeph --init` or
+    /// `--migrate-config`.
+    Search {
+        /// Search query (min 2 characters)
+        query: String,
+    },
+    /// Install a plugin by registry ID returned by `plugin search` (spec-045, #5869)
+    ///
+    /// Named `get` (not `add`) to stay unambiguous with `plugin add <local-path>` above.
+    /// Requires `[skills.registry] enabled = true`. Fails with a pointer to `skill get` when
+    /// the fetched package has no `plugin.toml` (i.e. it is a bare skill package).
+    Get {
+        /// Registry-assigned plugin ID (as printed by `plugin search`)
+        registry_id: String,
     },
 }
 
@@ -1472,6 +1507,78 @@ mod tests {
             Some(Command::UrlScheme {
                 command: UrlSchemeCommand::Status { check: true }
             })
+        ));
+    }
+
+    // ── skill/plugin registry marketplace CLI parsing (spec-045, #5869) ─────
+
+    #[test]
+    fn cli_parses_skill_search() {
+        use super::{Command, SkillCommand};
+        let cli = Cli::try_parse_from(["zeph", "skill", "search", "pdf tools"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Skill {
+                command: SkillCommand::Search { query }
+            }) if query == "pdf tools"
+        ));
+    }
+
+    #[test]
+    fn cli_parses_skill_get() {
+        use super::{Command, SkillCommand};
+        let cli = Cli::try_parse_from(["zeph", "skill", "get", "acme/pdf-tools"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Skill {
+                command: SkillCommand::Get { registry_id }
+            }) if registry_id == "acme/pdf-tools"
+        ));
+    }
+
+    #[test]
+    fn cli_skill_add_no_longer_exists_as_registry_verb() {
+        // S1 rename: the registry-install verb is `get`, not `add` — `add` is not a valid
+        // `skill` subcommand at all (the local-path installer is `install`).
+        let err = Cli::try_parse_from(["zeph", "skill", "add", "acme/pdf-tools"])
+            .err()
+            .unwrap();
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn cli_parses_plugin_search() {
+        use super::{Command, PluginCommand};
+        let cli = Cli::try_parse_from(["zeph", "plugin", "search", "pdf tools"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Plugin {
+                command: PluginCommand::Search { query }
+            }) if query == "pdf tools"
+        ));
+    }
+
+    #[test]
+    fn cli_parses_plugin_get() {
+        use super::{Command, PluginCommand};
+        let cli = Cli::try_parse_from(["zeph", "plugin", "get", "acme/full-plugin"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Plugin {
+                command: PluginCommand::Get { registry_id }
+            }) if registry_id == "acme/full-plugin"
+        ));
+    }
+
+    #[test]
+    fn cli_parses_plugin_add_as_local_path_install_unaffected_by_rename() {
+        use super::{Command, PluginCommand};
+        let cli = Cli::try_parse_from(["zeph", "plugin", "add", "/tmp/my-plugin"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Plugin {
+                command: PluginCommand::Add { source }
+            }) if source == "/tmp/my-plugin"
         ));
     }
 }

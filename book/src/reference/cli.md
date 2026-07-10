@@ -95,6 +95,8 @@ Manage external skills. Installed skills are stored in `~/.config/zeph/skills/`.
 | `skill block <name>` | Block a skill (deny all tool access) |
 | `skill unblock <name>` | Unblock a skill (revert to `quarantined`) |
 | `skill promote-heuristics [--skill <name>]` | Dry-run: show skills eligible for A6 heuristic → full promotion (requires `[skills.learning.heuristic_promotion_enabled = true]`) |
+| `skill search <query>` | Search the configured external registry by keyword (requires `[skills.registry] enabled = true`) |
+| `skill get <registry-id>` | Install a skill by registry ID returned by `skill search` (requires `[skills.registry] enabled = true`) |
 
 ```bash
 # Install from git
@@ -118,6 +120,15 @@ zeph skill promote-heuristics
 
 # Show eligibility for a specific skill
 zeph skill promote-heuristics --skill my-skill
+
+# Search the external registry for skills (requires registry enabled in config)
+zeph skill search "json parsing"
+
+# Install a skill by registry ID
+zeph skill get skills-sh/json-formatter
+
+# View registry configuration
+zeph init                              # or use --migrate-config to add the [skills.registry] section
 ```
 
 ### `zeph plugin`
@@ -131,6 +142,8 @@ Manage plugin packages (collections of skills, MCP servers, and config overlays)
 | `plugin add <path>` | Install a plugin from a local directory path (must contain `plugin.toml`) |
 | `plugin remove <name>` | Remove an installed plugin by name |
 | `plugin disable <name> [--force]` | Disable a plugin (optional `--force` to skip confirmation and enforcement checks) |
+| `plugin search <query>` | Search the configured external registry by keyword (requires `[skills.registry] enabled = true`) |
+| `plugin get <registry-id>` | Install a plugin by registry ID returned by `plugin search` (requires `[skills.registry] enabled = true`) |
 
 ```bash
 # List installed plugins
@@ -150,6 +163,15 @@ zeph plugin disable my-plugin
 
 # Force-disable a plugin (skip confirmation)
 zeph plugin disable my-plugin --force
+
+# Search the external registry for plugins (requires registry enabled in config)
+zeph plugin search "github-tools"
+
+# Install a plugin by registry ID
+zeph plugin get skills-sh/github-integration
+
+# View registry configuration
+zeph init                              # or use --migrate-config to add the [skills.registry] section
 ```
 
 **Overlay flag note:** `--overlay` shows which plugins contributed to the active config and which were skipped (with reasons like "integrity mismatch", "invalid manifest", etc.). This is evaluated against the default config — use `--config <path>` in the agent to see the live intersection with your active config.

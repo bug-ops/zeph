@@ -22,6 +22,8 @@ pub mod error;
 pub(crate) mod integrity;
 pub mod manager;
 pub mod manifest;
+#[cfg(feature = "registry")]
+pub mod marketplace;
 pub mod overlay;
 pub mod types;
 
@@ -32,5 +34,7 @@ pub use manager::{
     download_and_extract, validate_url_scheme_ephemeral,
 };
 pub use manifest::PluginManifest;
+#[cfg(feature = "registry")]
+pub use marketplace::{PackageArchive, RegistryClient, RegistryEntry, RegistryError};
 pub use overlay::{ResolvedOverlay, apply_plugin_config_overlays};
 pub use types::PluginName;

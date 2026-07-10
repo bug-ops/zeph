@@ -65,6 +65,7 @@ pub(crate) struct WizardState {
     pub(crate) scheduler_enabled: bool,
     pub(crate) scheduler_tick_interval_secs: u64,
     pub(crate) scheduler_max_tasks: usize,
+    pub(crate) skills_registry_enabled: bool,
     pub(crate) daemon_enabled: bool,
     pub(crate) daemon_host: String,
     pub(crate) daemon_port: u16,
@@ -357,6 +358,7 @@ impl Default for WizardState {
             scheduler_enabled: false,
             scheduler_tick_interval_secs: 0,
             scheduler_max_tasks: 0,
+            skills_registry_enabled: false,
             daemon_enabled: false,
             daemon_host: String::new(),
             daemon_port: 0,
@@ -580,6 +582,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_channel(&mut state)?;
     step_update_check(&mut state)?;
     step_scheduler(&mut state)?;
+    step_skills_registry(&mut state)?;
     step_orchestration(&mut state)?;
     step_durable(&mut state)?;
     step_daemon(&mut state)?;
@@ -1015,6 +1018,11 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         security: SchedulerSecurityConfig::default(),
     };
 
+    config.skills.registry = zeph_core::config::RegistryConfig {
+        enabled: state.skills_registry_enabled,
+        ..zeph_core::config::RegistryConfig::default()
+    };
+
     config.agents.default_permission_mode = state.agents_default_permission_mode;
     config
         .agents
@@ -1388,6 +1396,32 @@ fn step_scheduler(state: &mut WizardState) -> anyhow::Result<()> {
     println!();
     Ok(())
 }
+fn step_skills_registry(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Skill/Plugin Registry ==\n");
+
+    state.skills_registry_enabled = Confirm::new()
+        .with_prompt(
+            "Enable external skill/plugin registry search (`zeph skill search`/`add`, \
+             `zeph plugin search`/`get`)? Opt-in only — off by default, no network call is \
+             ever made unless enabled.",
+        )
+        .default(false)
+        .interact()?;
+
+    if state.skills_registry_enabled {
+        println!(
+            "  Registry enabled with the default backend (skills.sh). If the backend \
+             requires an auth token, store it with:\n    \
+             zeph vault set ZEPH_SKILL_REGISTRY_TOKEN <token>\n  \
+             then set skills.registry.auth_vault_key = \"ZEPH_SKILL_REGISTRY_TOKEN\" in \
+             config.toml. This wizard never prompts for the raw token."
+        );
+    }
+
+    println!();
+    Ok(())
+}
+
 fn step_daemon(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 7/10: Daemon / A2A Server ==\n");
 
