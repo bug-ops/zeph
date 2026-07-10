@@ -74,8 +74,11 @@ use crate::agent_setup::AdversarialPolicyLlmAdapter;
 /// Placed in the binary crate to avoid a circular dependency: `zeph-tools` cannot depend on
 /// `zeph-core`, and `zeph-core` cannot depend on `zeph-tools`. The adapter maps
 /// `ProbeVerdict` (zeph-core) to `ProbeOutcome` (zeph-tools) — the types are isomorphic.
-struct ShadowSentinelProbeGateAdapter {
-    sentinel: std::sync::Arc<zeph_core::agent::shadow_sentinel::ShadowSentinel>,
+///
+/// `pub(crate)` (rather than private to this module) so `src/acp.rs`, `src/daemon.rs`, and
+/// `src/serve/agent_factory.rs` can reuse it too (#5913) instead of each defining their own copy.
+pub(crate) struct ShadowSentinelProbeGateAdapter {
+    pub(crate) sentinel: std::sync::Arc<zeph_core::agent::shadow_sentinel::ShadowSentinel>,
 }
 
 impl zeph_tools::ProbeGate for ShadowSentinelProbeGateAdapter {

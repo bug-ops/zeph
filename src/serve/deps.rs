@@ -78,6 +78,15 @@ pub(crate) struct ServeAgentDeps {
     /// as `memory.graph.extract_provider`) can find named providers (#5450).
     pub(crate) provider_pool: Vec<zeph_core::config::ProviderEntry>,
     pub(crate) provider_config_snapshot: zeph_core::ProviderConfigSnapshot,
+    /// Spec 050 Phase 2 (#5913): `[security.shadow_sentinel]` snapshot, paired with
+    /// `shadow_sentinel_probe_provider` below. `build_agent_factory` builds a fresh
+    /// `ShadowSentinel`/`ShadowProbeExecutor` per session (keyed by that session's own
+    /// `conversation_id`) when `enabled = true`.
+    pub(crate) shadow_sentinel_config: zeph_config::ShadowSentinelConfig,
+    /// Provider for `ShadowSentinel`'s `LlmSafetyProbe`, pre-resolved once at deps-assembly time
+    /// (named-provider resolution + secret masking are static config work) — mirrors
+    /// `src/acp.rs`'s `SharedAgentDeps::shadow_sentinel_probe_provider`.
+    pub(crate) shadow_sentinel_probe_provider: AnyProvider,
 }
 
 /// Assemble [`ServeAgentDeps`] once at `zeph serve-sessions` startup, plus the resolved bearer
@@ -121,6 +130,7 @@ pub(crate) async fn build_serve_deps(
 ///
 /// Returns an error if the core tool executor cannot be built (audit logger, sandbox
 /// initialization).
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn assemble_serve_deps(
     app: &crate::bootstrap::AppBuilder,
     core: &crate::acp::SharedCore,
@@ -128,6 +138,56 @@ pub(crate) async fn assemble_serve_deps(
 ) -> anyhow::Result<ServeAgentDeps> {
     let config = app.config();
     let tool_executor = build_tool_executor(config, supervisor).await?;
+
+    // Spec 050 F2 (#5913): wrap with ScopedToolExecutor when capability_scopes are configured —
+    // mirrors src/runner.rs/src/daemon.rs. `tool_executor` here is shared/static across every
+    // `/sessions*` agent (unlike ACP's per-session composite), so the dead-glob outcome
+    // (FR-CG-005/NFR-CG-004) is knowable at startup, before any live session exists — same as
+    // runner.rs's CLI process and daemon.rs's static agent, so this is a fatal startup error
+    // (`?`) rather than a per-session degradation (impl-critic F1: degrading to the unscoped
+    // executor would be fail-OPEN for a security control the operator explicitly enabled, and
+    // `capability_scopes` is process-global — a config typo would silently disable scoping for
+    // every `/sessions*` agent).
+    let tool_executor: Arc<dyn ErasedToolExecutor> = {
+        let scopes_cfg = config.security.capability_scopes.clone();
+        if scopes_cfg.scopes.is_empty() {
+            tool_executor
+        } else {
+            use zeph_tools::scope::build_scoped_executor;
+            let registry_ids: std::collections::HashSet<String> = tool_executor
+                .tool_definitions_erased()
+                .into_iter()
+                .map(|def| {
+                    let id = def.id.to_string();
+                    if id.contains(':') {
+                        id
+                    } else {
+                        format!("builtin:{id}")
+                    }
+                })
+                .collect();
+            match build_scoped_executor(
+                zeph_tools::DynExecutor(tool_executor),
+                &scopes_cfg,
+                &registry_ids,
+            ) {
+                Ok(scoped) => Arc::new(scoped),
+                Err(e) => {
+                    anyhow::bail!("capability_scopes: {e}");
+                }
+            }
+        }
+    };
+
+    // #5914: memory maintenance loops — mirrors src/runner.rs's CLI/TUI wiring so `/sessions*`
+    // agents get the same ongoing eviction/tier-promotion/scene-consolidation/consolidation/
+    // forgetting sweeps instead of an ever-growing, never-maintained memory store. Spawned once
+    // per `supervisor` (shared across all `/sessions*`-created agents); when called from
+    // `crate::acp::build_combined_deps` (`serve-sessions --acp`), `build_acp_deps` spawns the
+    // same named tasks on this same supervisor right after — `TaskSupervisor::spawn` aborts and
+    // replaces a same-named task, so the combined-mode double-registration is a harmless no-op,
+    // not a duplicate background loop.
+    spawn_memory_maintenance_loops(app, core, supervisor);
 
     let session_config = zeph_core::AgentSessionConfig::from_config(config, core.budget_tokens);
     let max_active_skills = config.skills.max_active_skills.get();
@@ -183,6 +243,42 @@ pub(crate) async fn assemble_serve_deps(
             .map(|s| s.expose().to_owned()),
     };
 
+    // Spec 050 Phase 2 (#5913): pre-resolve shadow_sentinel config and its probe provider once
+    // here — provider resolution + secret masking are static config work, mirroring
+    // `src/acp.rs`'s `SharedAgentDeps` build. `build_agent_factory` builds the per-session
+    // `ShadowSentinel` from these, since its persisted event store is keyed by that session's
+    // own `conversation_id`. (`capability_scopes` wrapping already happened above, on
+    // `tool_executor` itself, before any session exists.)
+    let shadow_sentinel_config = config.security.shadow_sentinel.clone();
+    let shadow_sentinel_probe_provider = {
+        let sentinel_cfg = &shadow_sentinel_config;
+        let base = if sentinel_cfg.probe_provider.is_empty() {
+            core.provider.clone()
+        } else {
+            match crate::bootstrap::create_named_provider(
+                sentinel_cfg.probe_provider.as_str(),
+                config,
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %sentinel_cfg.probe_provider,
+                        error = %e,
+                        "shadow_sentinel probe provider resolution failed, using primary"
+                    );
+                    core.provider.clone()
+                }
+            }
+        };
+        // #5437 round-3 style masking: the probe's own prompt embeds already-unmasked tool
+        // args (see runner.rs's identical rationale), so every `.chat()` call this provider
+        // makes must re-mask before the request leaves the process.
+        match app.secret_registry() {
+            Some(registry) => base.masked(registry as Arc<dyn zeph_llm::masking::OutboundMasker>),
+            None => base,
+        }
+    };
+
     Ok(ServeAgentDeps {
         provider: core.provider.clone(),
         embedding_provider: core.embedding_provider.clone(),
@@ -210,7 +306,150 @@ pub(crate) async fn assemble_serve_deps(
         resume_token_counter,
         provider_pool: config.llm.providers.clone(),
         provider_config_snapshot,
+        shadow_sentinel_config,
+        shadow_sentinel_probe_provider,
     })
+}
+
+/// Spawns the five ongoing memory-maintenance sweeps (#5914) shared by every `/sessions*` agent:
+/// eviction, tier-promotion, scene-consolidation, consolidation, and forgetting. Extracted from
+/// [`assemble_serve_deps`] to keep that function under clippy's `too_many_lines`; mirrors the
+/// equivalent block in `src/runner.rs`'s CLI/TUI path, `src/acp.rs`'s `build_acp_deps`, and
+/// `src/daemon.rs`'s `run_daemon`.
+#[allow(clippy::too_many_lines)]
+fn spawn_memory_maintenance_loops(
+    app: &crate::bootstrap::AppBuilder,
+    core: &crate::acp::SharedCore,
+    supervisor: &zeph_common::task_supervisor::TaskSupervisor,
+) {
+    let config = app.config();
+    let memory = &core.memory;
+    let provider = &core.provider;
+
+    {
+        let store = Arc::new(memory.sqlite().clone());
+        let embedding = memory.embedding_store().cloned();
+        let eviction_cfg = config.memory.eviction.clone();
+        let policy = Arc::new(zeph_memory::EbbinghausPolicy::default());
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "mem-eviction",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_eviction_loop(
+                    store.clone(),
+                    embedding.clone(),
+                    eviction_cfg.clone(),
+                    policy.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+    {
+        let store = Arc::new(memory.sqlite().clone());
+        let tier_cfg = zeph_memory::TierPromotionConfig {
+            enabled: config.memory.tiers.enabled,
+            promotion_min_sessions: config.memory.tiers.promotion_min_sessions,
+            similarity_threshold: config.memory.tiers.similarity_threshold,
+            sweep_interval_secs: config.memory.tiers.sweep_interval_secs,
+            sweep_batch_size: config.memory.tiers.sweep_batch_size,
+            embed_timeout_secs: config.memory.semantic.embed_timeout_secs,
+        };
+        let tier_provider = provider.clone();
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "mem-tier-promotion",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_tier_promotion_loop(
+                    store.clone(),
+                    tier_provider.clone(),
+                    tier_cfg.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+    {
+        let store = Arc::new(memory.sqlite().clone());
+        let scene_provider = app
+            .build_scene_provider()
+            .unwrap_or_else(|| provider.clone());
+        let scene_cfg = zeph_memory::SceneConfig {
+            enabled: config.memory.tiers.scene_enabled,
+            similarity_threshold: config.memory.tiers.scene_similarity_threshold,
+            batch_size: config.memory.tiers.scene_batch_size,
+            sweep_interval_secs: config.memory.tiers.scene_sweep_interval_secs,
+        };
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "mem-scene-consolidation",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_scene_consolidation_loop(
+                    store.clone(),
+                    scene_provider.clone(),
+                    scene_cfg.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+    {
+        let store = Arc::new(memory.sqlite().clone());
+        let consolidation_cfg = zeph_memory::ConsolidationConfig {
+            enabled: config.memory.consolidation.enabled,
+            confidence_threshold: config.memory.consolidation.confidence_threshold,
+            sweep_interval_secs: config.memory.consolidation.sweep_interval_secs,
+            sweep_batch_size: config.memory.consolidation.sweep_batch_size,
+            similarity_threshold: config.memory.consolidation.similarity_threshold,
+            llm_timeout_secs: config.memory.consolidation.llm_timeout_secs,
+            embed_timeout_secs: config.memory.semantic.embed_timeout_secs,
+        };
+        let consolidation_provider = app
+            .build_consolidation_provider()
+            .unwrap_or_else(|| provider.clone());
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "mem-consolidation",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_consolidation_loop(
+                    store.clone(),
+                    consolidation_provider.clone(),
+                    consolidation_cfg.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+    {
+        let store = Arc::new(memory.sqlite().clone());
+        let forgetting_cfg = zeph_memory::ForgettingConfig {
+            enabled: config.memory.forgetting.enabled,
+            decay_rate: config.memory.forgetting.decay_rate,
+            forgetting_floor: config.memory.forgetting.forgetting_floor,
+            sweep_interval_secs: config.memory.forgetting.sweep_interval_secs,
+            sweep_batch_size: config.memory.forgetting.sweep_batch_size,
+            replay_window_hours: config.memory.forgetting.replay_window_hours,
+            replay_min_access_count: config.memory.forgetting.replay_min_access_count,
+            protect_recent_hours: config.memory.forgetting.protect_recent_hours,
+            protect_min_access_count: config.memory.forgetting.protect_min_access_count,
+        };
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "mem-forgetting",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_forgetting_loop(
+                    store.clone(),
+                    forgetting_cfg.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
 }
 
 /// Resolves `[serve] auth_token_vault_key` from the vault. `None` when the key is empty
@@ -299,4 +538,146 @@ async fn build_tool_executor(
             zeph_tools::CompositeExecutor::new(scrape_executor, cwd_executor),
         ),
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn make_memory() -> Arc<SemanticMemory> {
+        Arc::new(
+            SemanticMemory::new(
+                ":memory:",
+                "http://127.0.0.1:1",
+                None,
+                AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+                "test-model",
+            )
+            .await
+            .unwrap(),
+        )
+    }
+
+    /// Regression test confirming the five #5914 memory-maintenance loops (eviction,
+    /// tier-promotion, scene-consolidation, consolidation, forgetting) are actually spawned by
+    /// `spawn_memory_maintenance_loops` (called from `assemble_serve_deps` at
+    /// `zeph serve-sessions` startup) on the supplied `TaskSupervisor`. Unlike the sibling
+    /// acp.rs/daemon.rs coverage — which must reconstruct the block inline since it isn't
+    /// extracted there — `spawn_memory_maintenance_loops` is already its own narrowly-scoped
+    /// function, and `AppBuilder::for_test` lets this test call the real, shipped production
+    /// code directly rather than a copy of it.
+    #[tokio::test]
+    async fn spawn_memory_maintenance_loops_registers_all_five_tasks() {
+        let app = crate::bootstrap::AppBuilder::for_test(zeph_core::config::Config::default());
+        let memory = make_memory().await;
+        let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+        let core = crate::acp::SharedCore {
+            provider: provider.clone(),
+            embedding_provider: provider,
+            registry: Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::empty())),
+            matcher: None,
+            memory,
+            budget_tokens: 4096,
+        };
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(cancel);
+
+        spawn_memory_maintenance_loops(&app, &core, &supervisor);
+
+        let names: std::collections::HashSet<String> = supervisor
+            .snapshot()
+            .into_iter()
+            .map(|s| s.name.to_string())
+            .collect();
+        for expected in [
+            "mem-eviction",
+            "mem-tier-promotion",
+            "mem-scene-consolidation",
+            "mem-consolidation",
+            "mem-forgetting",
+        ] {
+            assert!(
+                names.contains(expected),
+                "expected {expected} registered by spawn_memory_maintenance_loops, got {names:?}"
+            );
+        }
+    }
+
+    /// Regression test confirming `ScopedToolExecutor` (Spec 050 F2, #5913) is reachable
+    /// through `assemble_serve_deps` itself — the real, shipped production function, not a
+    /// reconstruction — since `capability_scopes` wrapping now happens once here (fatal on a
+    /// bad config, mirroring `src/daemon.rs`) rather than per-session in
+    /// `agent_factory::build_agent_factory`. Configures a narrow `[security.capability_scopes]`
+    /// scope and asserts the resulting `ServeAgentDeps.tool_executor` rejects a tool outside
+    /// the scope while an in-scope tool still dispatches.
+    #[tokio::test]
+    async fn assemble_serve_deps_wraps_tool_executor_with_capability_scopes() {
+        let mut config = zeph_core::config::Config::default();
+        config.security.capability_scopes = zeph_config::CapabilityScopesConfig {
+            default_scope: "narrow".to_owned(),
+            scopes: std::collections::HashMap::from([(
+                "narrow".to_owned(),
+                zeph_config::ScopeConfig {
+                    patterns: vec!["builtin:read".to_owned()],
+                },
+            )]),
+            ..Default::default()
+        };
+        let app = crate::bootstrap::AppBuilder::for_test(config);
+        let memory = make_memory().await;
+        let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+        let core = crate::acp::SharedCore {
+            provider: provider.clone(),
+            embedding_provider: provider,
+            registry: Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::empty())),
+            matcher: None,
+            memory,
+            budget_tokens: 4096,
+        };
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(cancel);
+
+        let deps = assemble_serve_deps(&app, &core, &supervisor)
+            .await
+            .expect("assemble_serve_deps must succeed with a valid single-pattern scope");
+
+        let denied = deps
+            .tool_executor
+            .execute_tool_call_erased(&zeph_tools::ToolCall {
+                tool_id: "bash".into(),
+                params: serde_json::Map::new(),
+                caller_id: None,
+                context: None,
+                tool_call_id: String::new(),
+                skill_name: None,
+            })
+            .await;
+        assert!(
+            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+            "expected OutOfScope from ScopedToolExecutor for a tool outside the configured \
+             scope, got {denied:?}"
+        );
+
+        // "read" matches the active scope's pattern, so it must reach the underlying
+        // `FileExecutor` instead of being rejected by `ScopedToolExecutor` — asserting on the
+        // absence of `OutOfScope` rather than a bare `is_ok()`, since an empty `params` map
+        // still fails `FileExecutor`'s own param validation (missing `path`), which is a
+        // separate, expected failure mode that proves the call *did* reach past the scope gate.
+        let allowed = deps
+            .tool_executor
+            .execute_tool_call_erased(&zeph_tools::ToolCall {
+                tool_id: "read".into(),
+                params: serde_json::Map::new(),
+                caller_id: None,
+                context: None,
+                tool_call_id: String::new(),
+                skill_name: None,
+            })
+            .await;
+        assert!(
+            !matches!(allowed, Err(zeph_tools::ToolError::OutOfScope { .. })),
+            "expected read to reach past ScopedToolExecutor since it matches the active \
+             scope's pattern, got {allowed:?}"
+        );
+    }
 }

@@ -136,6 +136,33 @@ impl ToolScope {
         }
     }
 
+    /// The deny-all scope: admits no tool at all.
+    ///
+    /// Used as a fail-**closed** fallback when scope compilation fails for a single
+    /// session/connection (spec-050 FR-CG-005/NFR-CG-004: a misconfigured
+    /// `[security.capability_scopes]` entry must never silently degrade to "no scoping at
+    /// all" — that would be fail-**open** for a security control the operator explicitly
+    /// enabled). Prefer this over falling back to the unscoped inner executor.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_tools::scope::ToolScope;
+    ///
+    /// let scope = ToolScope::empty();
+    /// assert!(!scope.admits("builtin:shell"));
+    /// assert!(!scope.admits("mcp:any_server/any_tool"));
+    /// ```
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            task_type: None,
+            admitted: HashSet::new(),
+            is_full: false,
+            patterns: Vec::new(),
+        }
+    }
+
     /// Compile a scope from glob patterns against the materialised registry.
     ///
     /// # Errors

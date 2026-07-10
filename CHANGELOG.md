@@ -19,6 +19,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ScopedToolExecutor::requires_confirmation` (#5906), previously hardcoded to the trait
   default `false` regardless of the real policy underneath, affecting the (currently dormant)
   speculative-dispatch engine.
+- `fix(core,acp,tools)`: the five ongoing memory-maintenance sweeps
+  (eviction/tier-promotion/scene-consolidation/consolidation/forgetting) and the Spec 050
+  `capability_scopes`/`shadow_sentinel` tool-executor wrappers previously ran only under the
+  CLI/TUI (`src/runner.rs`) entry point — ACP sessions (`--acp`, `serve-sessions --acp`), the
+  daemon (A2A server), and `/sessions*` (`serve-sessions`) silently skipped all of it regardless
+  of config (#5914, #5913). Memory now stays maintained (evicted, promoted, consolidated,
+  forgotten) identically across every entry point, gated by the same `[memory.*]` flags; when
+  configured, `[security.capability_scopes]` now narrows the tool surface and
+  `[security.shadow_sentinel]`'s pre-execution LLM safety probe now applies uniformly too,
+  regardless of which entry point built the agent. A misconfigured `capability_scopes` entry
+  (a glob matching zero registered tools) is a fatal startup error in the daemon and
+  `serve-sessions` entry points, same as the CLI — both build one static, process-wide tool
+  registry, so the misconfiguration is knowable before any session/request is served. ACP's
+  per-connection/per-session registry cannot be validated quite that early; a misconfigured
+  scope there now fails **closed** for that one session (denies all tool access) rather than
+  silently falling back to the unscoped executor, which would have granted full tool access on
+  a config typo — the opposite of what `capability_scopes` is for. Added `ToolScope::empty()`
+  (`crates/zeph-tools/src/scope.rs`) as the reusable deny-all primitive backing that fail-closed
+  path.
 
 ### Added
 
