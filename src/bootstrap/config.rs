@@ -71,33 +71,42 @@ fn resolve_config_path_impl(
     xdg
 }
 
-fn parse_backend_str(s: &str) -> VaultBackend {
+/// Parse a vault backend string from a CLI flag or environment variable.
+///
+/// # Errors
+///
+/// Returns an error describing the invalid input when `s` is not one of the recognized
+/// backend names. Unlike the pre-#5954 behavior, an unrecognized value is never silently
+/// downgraded to [`VaultBackend::Env`] — that would defeat the purpose of an explicit
+/// `--vault`/`ZEPH_VAULT_BACKEND` override by falling back to the weakest backend.
+fn parse_backend_str(s: &str) -> Result<VaultBackend, String> {
     match s {
-        "age" => VaultBackend::Age,
-        "keyring" => VaultBackend::Keyring,
-        _ => {
-            tracing::warn!(
-                input = s,
-                "unknown vault backend '{}', falling back to env",
-                s
-            );
-            VaultBackend::Env
-        }
+        "env" => Ok(VaultBackend::Env),
+        "age" => Ok(VaultBackend::Age),
+        "keyring" => Ok(VaultBackend::Keyring),
+        other => Err(format!(
+            "unknown vault backend '{other}': expected one of \"env\", \"age\", \"keyring\""
+        )),
     }
 }
 
 /// Priority: CLI flag > `ZEPH_VAULT_*` env > config.vault.* > defaults
+///
+/// # Errors
+///
+/// Returns an error when `cli_backend` or the `ZEPH_VAULT_BACKEND` environment variable
+/// is set to an unrecognized backend name (see [`parse_backend_str`]).
 pub fn parse_vault_args(
     config: &Config,
     cli_backend: Option<&str>,
     cli_key_path: Option<&Path>,
     cli_vault_path: Option<&Path>,
-) -> VaultArgs {
+) -> Result<VaultArgs, String> {
     let env_backend = std::env::var("ZEPH_VAULT_BACKEND").ok();
-    let backend = cli_backend
-        .map(parse_backend_str)
-        .or_else(|| env_backend.as_deref().map(parse_backend_str))
-        .unwrap_or(config.vault.backend);
+    let backend = match cli_backend.or(env_backend.as_deref()) {
+        Some(s) => parse_backend_str(s)?,
+        None => config.vault.backend,
+    };
 
     let env_key = std::env::var("ZEPH_VAULT_KEY").ok();
     let default_dir = zeph_core::vault::default_vault_dir();
@@ -134,11 +143,11 @@ pub fn parse_vault_args(
             }
         });
 
-    VaultArgs {
+    Ok(VaultArgs {
         backend,
         key_path,
         vault_path,
-    }
+    })
 }
 
 #[cfg(test)]

@@ -358,8 +358,10 @@ max_daily_cents = 500
 
 
 [vault]
-# Secret retrieval backend: "env" reads from environment variables
-backend = "env"
+# Secret retrieval backend: "age" reads from an age-encrypted vault file (default,
+# recommended); "env" reads from environment variables (weaker, not recommended for
+# production — see specs/010-security/spec.md)
+backend = "age"
 
 [a2a]
 # Enable A2A server for agent-to-agent communication

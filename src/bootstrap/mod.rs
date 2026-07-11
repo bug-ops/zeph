@@ -139,10 +139,11 @@ pub struct AppBuilder {
 /// CLI-level vault arguments parsed from flags and config before the vault provider is constructed.
 ///
 /// Collects the three knobs an operator can override: which backend to use, the path to the
-/// age identity key, and the path to the age vault file. All three are optional because sensible
-/// defaults exist (env backend, no key/vault path required).
+/// age identity key, and the path to the age vault file. Falls back to `config.vault.backend`
+/// (default [`VaultBackend::Age`]) when no `--vault`/`ZEPH_VAULT_BACKEND` override is given.
+#[derive(Debug)]
 pub struct VaultArgs {
-    /// Which secret backend to instantiate. Defaults to [`VaultBackend::Env`].
+    /// Which secret backend to instantiate. Defaults to [`VaultBackend::Age`].
     pub backend: VaultBackend,
     /// Path to the age identity key file (`--vault-key`). Required when `backend = age`.
     pub key_path: Option<String>,
@@ -189,8 +190,8 @@ impl AppBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`BootstrapError`] if config loading, validation, vault construction,
-    /// secret resolution, or Qdrant URL parsing fails.
+    /// Returns [`BootstrapError`] if config loading, validation, vault backend parsing,
+    /// vault construction, secret resolution, or Qdrant URL parsing fails.
     pub async fn new(
         config_override: Option<&Path>,
         vault_override: Option<&str>,
@@ -207,7 +208,8 @@ impl AppBuilder {
             vault_override,
             vault_key_override,
             vault_path_override,
-        );
+        )
+        .map_err(BootstrapError::Provider)?;
         let (vault, age_vault): (
             Box<dyn VaultProvider>,
             Option<Arc<RwLock<AgeVaultProvider>>>,

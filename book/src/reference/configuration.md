@@ -663,7 +663,7 @@ embedding_seconds = 30      # Embedding generation timeout
 a2a_seconds = 30            # A2A remote call timeout
 
 [vault]
-backend = "env"  # "env" (default) or "age"; CLI --vault overrides this
+backend = "age"  # "age" (default, recommended) or "env"; CLI --vault overrides this
 
 [observability]
 exporter = "none"           # "none" or "otlp" (requires `otel` feature)

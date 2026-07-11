@@ -37,6 +37,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hosts are all handled correctly. Also now recognizes two non-userinfo libpq credential forms and
   redacts the whole URL for them: query-param URIs (`?password=...`) and key-value DSNs
   (`host=... password=...`), neither of which the old regex covered at all.
+- **BREAKING**: `vault.backend` now defaults to `age` instead of `env` when a config omits the
+  `[vault]` section entirely (#5953). This aligns runtime behavior with the already-documented
+  default in `specs/010-security/spec.md` and `specs/038-vault/spec.md` — a fresh config with no
+  `[vault]` section previously resolved secrets from process environment variables silently;
+  it now requires an age vault identity (`~/.config/zeph/vault-key.txt` and `secrets.age`, or
+  `--vault-key`/`--vault-path`). Existing deployments that relied on the implicit `env` default
+  must either run `zeph vault init` to provision an age vault, or explicitly set
+  `vault.backend = "env"` in `config.toml` (understanding this stores secrets in plaintext
+  environment variables). `config/default.toml` and `crates/zeph-core/config/default.toml` were
+  updated to match; no config migration step was added because the previous `env` default was
+  never a persisted value — only a parse-time fallback applied to configs that omit the key.
+- `parse_backend_str` (the parser for the `--vault` CLI flag and `ZEPH_VAULT_BACKEND` env var)
+  now rejects unrecognized backend names with a hard error instead of silently falling back to
+  the weaker `env` backend with only a `tracing::warn!` log line (#5954). Combined with the
+  #5953 default change, a typo in `--vault`/`ZEPH_VAULT_BACKEND` (e.g. `--vault aeg`) previously
+  downgraded the effective secret-storage backend for the whole process without a startup
+  failure. `parse_vault_args` now returns `Result<VaultArgs, String>`; `AppBuilder::new` and the
+  `bench`/`doctor`/`gonka`/`cocoon` commands that call it propagate the error instead of
+  continuing with a silently-downgraded backend.
+
 - `zeph-config` / `zeph-llm`: removed derived `Debug` from 7 secret-bearing config structs that
   printed their plaintext secret verbatim in any `{:?}` output — logs, panics, error chains
   (#5952, #5963). `GatewayConfig::auth_token`, `ProviderEntry::api_key`/`cocoon_access_hash`,

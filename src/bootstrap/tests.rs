@@ -34,30 +34,58 @@ fn remote_url_not_localhost() {
 
 #[test]
 fn vault_args_defaults_in_test_context() {
+    // #5953: an omitted `[vault] backend` must resolve to the age vault, not env.
     let config = Config::load(Path::new("/nonexistent")).unwrap();
-    let args = parse_vault_args(&config, None, None, None);
-    assert_eq!(args.backend, zeph_config::VaultBackend::Env);
-    assert!(args.key_path.is_none());
-    assert!(args.vault_path.is_none());
+    assert_eq!(config.vault.backend, zeph_config::VaultBackend::Age);
+    let args = parse_vault_args(&config, None, None, None).unwrap();
+    assert_eq!(args.backend, zeph_config::VaultBackend::Age);
+    assert!(args.key_path.is_some());
+    assert!(args.vault_path.is_some());
 }
 
 #[test]
 fn vault_args_uses_config_backend_as_fallback() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.vault.backend = zeph_config::VaultBackend::Age;
-    let args = parse_vault_args(&config, None, None, None);
-    assert_eq!(args.backend, zeph_config::VaultBackend::Age);
+    config.vault.backend = zeph_config::VaultBackend::Env;
+    let args = parse_vault_args(&config, None, None, None).unwrap();
+    assert_eq!(args.backend, zeph_config::VaultBackend::Env);
 }
 
 #[test]
 #[serial_test::serial]
 fn vault_args_env_overrides_config() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
-    config.vault.backend = zeph_config::VaultBackend::Age;
-    unsafe { std::env::set_var("ZEPH_VAULT_BACKEND", "env") };
-    let args = parse_vault_args(&config, None, None, None);
+    config.vault.backend = zeph_config::VaultBackend::Env;
+    unsafe { std::env::set_var("ZEPH_VAULT_BACKEND", "age") };
+    let args = parse_vault_args(&config, None, None, None).unwrap();
     unsafe { std::env::remove_var("ZEPH_VAULT_BACKEND") };
-    assert_eq!(args.backend, zeph_config::VaultBackend::Env);
+    assert_eq!(args.backend, zeph_config::VaultBackend::Age);
+}
+
+#[test]
+#[serial_test::serial]
+fn vault_args_unknown_cli_backend_errors() {
+    // #5954: an unrecognized `--vault` value must fail loudly, never fall back to `env`.
+    let config = Config::load(Path::new("/nonexistent")).unwrap();
+    let result = parse_vault_args(&config, Some("aeg"), None, None);
+    let err = result.expect_err("typo'd backend name must be rejected, not silently downgraded");
+    assert!(
+        err.contains("aeg"),
+        "error must name the invalid input: {err}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn vault_args_unknown_env_backend_errors() {
+    let config = Config::load(Path::new("/nonexistent")).unwrap();
+    unsafe { std::env::set_var("ZEPH_VAULT_BACKEND", "totally-bogus") };
+    let result = parse_vault_args(&config, None, None, None);
+    unsafe { std::env::remove_var("ZEPH_VAULT_BACKEND") };
+    assert!(
+        result.is_err(),
+        "unrecognized ZEPH_VAULT_BACKEND must be rejected, not silently downgraded to env"
+    );
 }
 
 #[test]
@@ -83,7 +111,8 @@ fn vault_args_cli_overrides_env_and_config() {
         Some("age"),
         Some(Path::new("/cli/key")),
         Some(Path::new("/cli/vault")),
-    );
+    )
+    .unwrap();
     unsafe { std::env::remove_var("ZEPH_VAULT_BACKEND") };
     assert_eq!(args.backend, zeph_config::VaultBackend::Age);
     assert_eq!(args.key_path.as_deref(), Some("/cli/key"));
@@ -96,7 +125,7 @@ fn vault_args_env_key_and_path_fallback() {
     let config = Config::load(Path::new("/nonexistent")).unwrap();
     unsafe { std::env::set_var("ZEPH_VAULT_KEY", "/env/key") };
     unsafe { std::env::set_var("ZEPH_VAULT_PATH", "/env/vault") };
-    let args = parse_vault_args(&config, None, None, None);
+    let args = parse_vault_args(&config, None, None, None).unwrap();
     unsafe { std::env::remove_var("ZEPH_VAULT_KEY") };
     unsafe { std::env::remove_var("ZEPH_VAULT_PATH") };
     assert_eq!(args.key_path.as_deref(), Some("/env/key"));

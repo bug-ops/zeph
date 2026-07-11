@@ -733,7 +733,10 @@ fn step_deployment_mode(state: &mut WizardState) -> anyhow::Result<()> {
 fn step_vault(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 1/10: Secrets Backend ==\n");
 
-    let backends = ["env (environment variables)", "age (encrypted file)"];
+    let backends = [
+        "age (encrypted file, recommended)",
+        "env (environment variables)",
+    ];
     let selection = Select::new()
         .with_prompt("Select secrets backend")
         .items(backends)
@@ -741,8 +744,8 @@ fn step_vault(state: &mut WizardState) -> anyhow::Result<()> {
         .interact()?;
 
     state.vault_backend = match selection {
-        0 => "env".into(),
-        1 => "age".into(),
+        0 => "age".into(),
+        1 => "env".into(),
         _ => unreachable!(),
     };
 
@@ -1003,9 +1006,11 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
 
     config.vault = VaultConfig {
         backend: match state.vault_backend.as_str() {
-            "age" => VaultBackend::Age,
+            "env" => VaultBackend::Env,
             "keyring" => VaultBackend::Keyring,
-            _ => VaultBackend::Env,
+            // Defensive fallback (state.vault_backend is always "age" or "env" once
+            // step_vault runs): prefer the stronger, spec-010-recommended backend.
+            _ => VaultBackend::Age,
         },
     };
 

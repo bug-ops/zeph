@@ -100,7 +100,8 @@ async fn handle_run_baseline(
     let path = resolve_config_path(config_path);
     let mut config = load_config_or_default(&path);
 
-    let vault_args = parse_vault_args(&config, None, None, None);
+    let vault_args = parse_vault_args(&config, None, None, None)
+        .map_err(|e| anyhow::anyhow!("invalid vault backend: {e}"))?;
     if let Some(vault) = crate::bootstrap::build_vault_provider(&vault_args)
         && let Err(e) = config.resolve_secrets(vault.as_ref()).await
     {
@@ -382,7 +383,8 @@ async fn handle_run(
     // Resolve vault secrets before building the provider.
     // The bench command is dispatched before AppBuilder runs, so we must
     // initialize the vault here to populate config.secrets.
-    let vault_args = parse_vault_args(&config, None, None, None);
+    let vault_args = parse_vault_args(&config, None, None, None)
+        .map_err(|e| anyhow::anyhow!("invalid vault backend: {e}"))?;
     if let Some(vault) = crate::bootstrap::build_vault_provider(&vault_args)
         && let Err(e) = config.resolve_secrets(vault.as_ref()).await
     {

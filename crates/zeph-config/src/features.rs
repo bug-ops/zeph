@@ -107,7 +107,7 @@ fn default_repo_map_ttl_secs() -> u64 {
 }
 
 fn default_vault_backend() -> VaultBackend {
-    VaultBackend::Env
+    VaultBackend::Age
 }
 
 /// Selects the vault backend used to resolve secrets at startup.
@@ -115,10 +115,11 @@ fn default_vault_backend() -> VaultBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum VaultBackend {
-    /// Resolve secrets from environment variables (default, zero-config).
-    #[default]
+    /// Resolve secrets from environment variables. Zero-config, but weaker than `age` —
+    /// not recommended for production use (see spec-010).
     Env,
-    /// Resolve secrets from an age-encrypted vault file.
+    /// Resolve secrets from an age-encrypted vault file (default, recommended).
+    #[default]
     Age,
     /// Resolve secrets from the OS keyring.
     Keyring,
@@ -836,7 +837,7 @@ impl Default for IndexConfig {
 /// ```
 #[derive(Debug, Deserialize, Serialize)]
 pub struct VaultConfig {
-    /// Which backend resolves secrets. Default: [`VaultBackend::Env`].
+    /// Which backend resolves secrets. Default: [`VaultBackend::Age`].
     #[serde(default = "default_vault_backend")]
     pub backend: VaultBackend,
 }

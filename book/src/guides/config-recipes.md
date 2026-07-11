@@ -62,7 +62,7 @@ See [LLM Providers](../concepts/providers.md) for other Ollama-compatible models
 
 <details>
 <summary>Best response quality. Uses Anthropic's API for chat and context compaction.<br>
-<strong>Prerequisites:</strong> <code>ZEPH_CLAUDE_API_KEY</code> environment variable set.</summary>
+<strong>Prerequisites:</strong> Age vault configured (<code>zeph vault init</code>) with <code>ZEPH_CLAUDE_API_KEY</code> stored (<code>zeph vault set ZEPH_CLAUDE_API_KEY sk-ant-...</code>).</summary>
 
 ```toml
 [llm]
@@ -75,7 +75,7 @@ max_tokens = 8192
 # server_compaction = true  # let Claude API manage context instead of client-side compaction
 
 [vault]
-backend = "env"  # reads ZEPH_CLAUDE_API_KEY from environment
+backend = "age"  # reads ZEPH_CLAUDE_API_KEY from the age vault (default, recommended)
 
 [memory]
 history_limit = 50
@@ -94,7 +94,7 @@ See [Use a Cloud Provider](cloud-provider.md) and [Model Orchestrator](../advanc
 
 <details>
 <summary>Uses OpenAI for both chat and embeddings — no Ollama required.<br>
-<strong>Prerequisites:</strong> <code>ZEPH_OPENAI_API_KEY</code> environment variable set.</summary>
+<strong>Prerequisites:</strong> Age vault configured (<code>zeph vault init</code>) with <code>ZEPH_OPENAI_API_KEY</code> stored (<code>zeph vault set ZEPH_OPENAI_API_KEY sk-...</code>).</summary>
 
 ```toml
 [llm]
@@ -106,7 +106,7 @@ max_tokens = 4096
 embedding_model = "text-embedding-3-small"  # used for skill matching and semantic memory
 
 [vault]
-backend = "env"  # reads ZEPH_OPENAI_API_KEY from environment
+backend = "age"  # reads ZEPH_OPENAI_API_KEY from the age vault (default, recommended)
 
 [memory]
 history_limit = 50
@@ -123,7 +123,7 @@ history_limit = 50
 
 <details>
 <summary>Any OpenAI-compatible API: Groq, Together, Mistral, Fireworks, local vLLM, etc.<br>
-<strong>Prerequisites:</strong> Provider API key — set <code>ZEPH_COMPATIBLE_&lt;NAME&gt;_API_KEY</code> in your environment.</summary>
+<strong>Prerequisites:</strong> Provider API key stored in the age vault (<code>zeph vault init</code> then <code>zeph vault set ZEPH_COMPATIBLE_&lt;NAME&gt;_API_KEY ...</code>).</summary>
 
 ```toml
 [llm]
@@ -133,10 +133,10 @@ type = "compatible"
 base_url = "https://api.groq.com/openai/v1"
 model = "llama-3.3-70b-versatile"
 max_tokens = 4096
-# API key: set ZEPH_COMPATIBLE_GROQ_API_KEY in your environment
+# API key: zeph vault set ZEPH_COMPATIBLE_GROQ_API_KEY <your-key>
 
 [vault]
-backend = "env"
+backend = "age"  # default, recommended
 ```
 
 To switch providers, change `name`, `base_url`, and `model`. Common base URLs:
@@ -148,7 +148,7 @@ To switch providers, change `name`, `base_url`, and `model`. Common base URLs:
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Local vLLM | `http://localhost:8000/v1` |
 
-> **Note:** The env var name is `ZEPH_COMPATIBLE_<NAME>_API_KEY` where `<NAME>` is the `name`
+> **Note:** The vault key name is `ZEPH_COMPATIBLE_<NAME>_API_KEY` where `<NAME>` is the `name`
 > field uppercased. For the example above: `ZEPH_COMPATIBLE_GROQ_API_KEY`.
 
 </details>
@@ -159,7 +159,7 @@ To switch providers, change `name`, `base_url`, and `model`. Common base URLs:
 
 <details>
 <summary>Ollama runs locally for free; Claude handles requests when Ollama fails or is unavailable.<br>
-<strong>Prerequisites:</strong> Ollama running locally + <code>ZEPH_CLAUDE_API_KEY</code> set.</summary>
+<strong>Prerequisites:</strong> Ollama running locally + age vault configured with <code>ZEPH_CLAUDE_API_KEY</code> stored.</summary>
 
 ```toml
 [llm]
@@ -181,7 +181,7 @@ max_tokens = 4096
 default = true
 
 [vault]
-backend = "env"
+backend = "age"  # default, recommended
 ```
 
 > **Tip:** This setup keeps embeddings local (free, private) while giving you a cloud fallback
@@ -222,7 +222,7 @@ max_parallel = 2          # conservative for local inference
 confirm_before_execute = true
 
 [vault]
-backend = "env"
+backend = "env"  # dev-only: no secrets needed, both providers are local Ollama
 ```
 
 > **Note:** `[orchestration]` (lowercase) enables `/plan` CLI commands. `routing = "task"` was removed as unimplemented — see [Model Orchestrator](../advanced/orchestrator.md) for current multi-provider setup options.
@@ -248,7 +248,7 @@ model = "qwen3:8b"
 embedding_model = "qwen3-embedding"
 
 [vault]
-backend = "env"
+backend = "env"  # dev-only: no secrets needed for local Ollama
 
 # AST-based code indexing: builds a semantic map of the repository.
 # Uses SQLite vector backend by default; add recipe #10 for Qdrant.
@@ -284,7 +284,7 @@ See [LSP Code Intelligence](../guides/lsp.md) and [Code Indexing](../advanced/co
 
 <details>
 <summary>Persistent Telegram bot. Suitable for a server or always-on machine.<br>
-<strong>Prerequisites:</strong> Telegram bot token (from <a href="https://t.me/BotFather">@BotFather</a>) + <code>ZEPH_CLAUDE_API_KEY</code> set.</summary>
+<strong>Prerequisites:</strong> Telegram bot token (from <a href="https://t.me/BotFather">@BotFather</a>) + age vault configured with <code>ZEPH_CLAUDE_API_KEY</code> and <code>ZEPH_TELEGRAM_BOT_TOKEN</code> stored.</summary>
 
 ```toml
 [llm]
@@ -294,10 +294,10 @@ model = "claude-sonnet-5"
 max_tokens = 4096
 
 [vault]
-backend = "env"  # reads ZEPH_CLAUDE_API_KEY and ZEPH_TELEGRAM_BOT_TOKEN
+backend = "age"  # reads ZEPH_CLAUDE_API_KEY and ZEPH_TELEGRAM_BOT_TOKEN from the age vault
 
 [telegram]
-# token = "your-bot-token"  # or set ZEPH_TELEGRAM_BOT_TOKEN env var
+# token = "your-bot-token"  # or store via `zeph vault set ZEPH_TELEGRAM_BOT_TOKEN ...`
 allowed_users = ["yourusername"]  # restrict access — do not leave empty on a public server
 
 [memory]

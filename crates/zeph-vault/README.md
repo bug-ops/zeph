@@ -60,10 +60,10 @@ zeph vault delete ZEPH_CLAUDE_API_KEY
 
 ```toml
 [vault]
-backend = "age"   # "env" or "age"; default is "env"
+backend = "age"   # "env" or "age"; default is "age"
 ```
 
-The `env` backend resolves `ZEPH_SECRET_`-prefixed secrets directly from environment variables — no file needed. Use `age` for production deployments where secrets must be stored on disk. The age backend keeps its identity and encrypted store under `~/.config/zeph/` (`vault-key.txt` and `secrets.age`).
+The `age` backend resolves secrets from an age-encrypted file on disk and is the default, recommended for all deployments. The `env` backend resolves `ZEPH_SECRET_`-prefixed secrets directly from environment variables — no file needed, but weaker (see `specs/010-security/spec.md`). The age backend keeps its identity and encrypted store under `~/.config/zeph/` (`vault-key.txt` and `secrets.age`).
 
 > [!IMPORTANT]
 > The age identity key file (`~/.config/zeph/vault-key.txt`) is created with Unix `0o600` permissions (owner read/write only). Vault writes are atomic — a temporary file is written and renamed, so a crash during write never corrupts `secrets.age`. Keep the key file secure: losing it makes the vault unrecoverable.

@@ -796,14 +796,21 @@ pub(crate) async fn run_doctor(
 
     // 2 + 3 + 4. Vault checks
     {
-        let vault_args = crate::bootstrap::parse_vault_args(&config, None, None, None);
-        if vault_args.backend == zeph_config::VaultBackend::Age {
-            if let Some(ref vault_path) = vault_args.vault_path {
-                results.push(check_vault_file_exists(vault_path));
-                results.push(check_vault_file_mode(vault_path, "vault.file_mode"));
+        let start = Instant::now();
+        match crate::bootstrap::parse_vault_args(&config, None, None, None) {
+            Ok(vault_args) => {
+                if vault_args.backend == zeph_config::VaultBackend::Age {
+                    if let Some(ref vault_path) = vault_args.vault_path {
+                        results.push(check_vault_file_exists(vault_path));
+                        results.push(check_vault_file_mode(vault_path, "vault.file_mode"));
+                    }
+                    if let Some(ref key_path) = vault_args.key_path {
+                        results.push(check_vault_key_mode(key_path));
+                    }
+                }
             }
-            if let Some(ref key_path) = vault_args.key_path {
-                results.push(check_vault_key_mode(key_path));
+            Err(e) => {
+                results.push(CheckResult::fail("vault.backend", e, elapsed_ms(start)));
             }
         }
     }

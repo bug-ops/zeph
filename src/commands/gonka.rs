@@ -46,7 +46,15 @@ async fn resolve_vault_secrets(
     config: &zeph_core::config::Config,
 ) -> (CheckResult, Option<String>, CheckResult, Option<String>) {
     let _span = tracing::info_span!("cli.gonka.doctor.vault").entered();
-    let vault_args = crate::bootstrap::parse_vault_args(config, None, None, None);
+    let vault_args = match crate::bootstrap::parse_vault_args(config, None, None, None) {
+        Ok(args) => args,
+        Err(e) => {
+            let start = Instant::now();
+            let r = CheckResult::fail("gonka.vault.private_key", e, elapsed_ms(start));
+            let addr_r = CheckResult::fail("gonka.vault.address", "skipped (vault unavailable)", 0);
+            return (r, None, addr_r, None);
+        }
+    };
 
     let vault: Box<dyn VaultProvider> = match vault_args.backend {
         VaultBackend::Age => {
