@@ -29,6 +29,10 @@ impl CommandHandler<CommandContext<'_>> for PluginsCommand {
         SlashCategory::Integration
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -49,6 +53,9 @@ impl CommandHandler<CommandContext<'_>> for PluginsCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CommandRegistry;
+    use crate::handlers::test_helpers::{MockDebug, MockMessages, MockSession, make_ctx};
+    use crate::sink::NullSink;
 
     #[test]
     fn name_matches_slash_plugins() {
@@ -68,5 +75,40 @@ mod tests {
     #[test]
     fn args_hint_is_non_empty() {
         assert!(!PluginsCommand.args_hint().is_empty());
+    }
+
+    #[tokio::test]
+    async fn plugins_dispatch_allowed_when_trusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(PluginsCommand);
+
+        let result = reg.dispatch(&mut ctx, "/plugins list", true).await;
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn plugins_dispatch_rejected_when_untrusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(PluginsCommand);
+
+        let result = reg
+            .dispatch(&mut ctx, "/plugins add /etc/passwd", false)
+            .await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
     }
 }

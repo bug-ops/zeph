@@ -19,6 +19,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(commands)`: `/mcp` and `/plugins` now require a trusted (local) session, closing an
+  unauthenticated remote code execution path (#5997, CWE-284). `McpCommand` and `PluginsCommand`
+  previously left `requires_auth()` at its default `false`, so Telegram/Discord/Slack/gateway
+  callers could invoke `/mcp add <id> <command> [args...]` to spawn an arbitrary local subprocess
+  (with the shipped default `mcp.allowed_commands = ["npx", "uvx", "node", "python", "python3"]`,
+  e.g. `python3 -c "..."`) or `/plugins add <path>` to install a plugin from an arbitrary local
+  path — both without any authentication. Both handlers now override `requires_auth()` to return
+  `true`, matching the same defect class fixed for `/image` in #5967; the commands remain
+  available from local CLI/TUI/ACP-stdio sessions.
 - `fix(commands)`: `/image` now requires a trusted (local) session, closing a remote arbitrary
   file read (#5967, CWE-284). `ImageCommand` previously left `requires_auth()` at its default
   `false`, so Telegram/Discord/Slack/gateway callers — none of which are trusted by
