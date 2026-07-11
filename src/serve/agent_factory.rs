@@ -111,6 +111,16 @@ pub(crate) async fn build_agent_factory(
         None
     };
 
+    // #5958: shared trajectory risk slot — written by begin_turn(), read by PolicyGateExecutor —
+    // and pending risk signal queue — executor layers push signal codes; begin_turn() drains.
+    // Built fresh per session (like the ShadowSentinel below), mirroring src/runner.rs/
+    // src/acp.rs/src/daemon.rs; previously serve-sessions never created these, so
+    // TrajectorySentinel was never wired into any `/sessions*` agent.
+    let trajectory_risk_slot: zeph_tools::TrajectoryRiskSlot =
+        Arc::new(parking_lot::RwLock::new(0u8));
+    let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
+        Arc::new(parking_lot::Mutex::new(Vec::new()));
+
     // SEC-H1 / R1: each session gets its own gate stack, wrapping the shared base composite —
     // see `gate_serve_session_executor`'s doc comment for the full rationale and the INVARIANT
     // that binds future serve tool-executor changes.
@@ -119,6 +129,7 @@ pub(crate) async fn build_agent_factory(
         &deps.permission_policy,
         &deps.policy_gate_pieces,
         deps.audit_logger.as_ref(),
+        Some((&trajectory_risk_slot, &trajectory_signal_queue)),
     );
 
     move |channel| {
@@ -214,7 +225,10 @@ pub(crate) async fn build_agent_factory(
         )
         .with_session_sink(session_sink)
         .with_session_persistence_config(Some(deps.session_persistence_config))
-        .with_provider_pool(deps.provider_pool, deps.provider_config_snapshot);
+        .with_provider_pool(deps.provider_pool, deps.provider_config_snapshot)
+        // #5951: wire the self-check quality pipeline, matching src/runner.rs/src/acp.rs/
+        // src/daemon.rs.
+        .with_quality_pipeline(deps.quality_pipeline);
         if !preloaded_messages.is_empty() {
             agent = agent.with_preloaded_messages(preloaded_messages);
         }
@@ -223,6 +237,14 @@ pub(crate) async fn build_agent_factory(
         if let Some(sentinel) = shadow_sentinel_arc {
             agent = agent.with_shadow_sentinel(sentinel);
         }
+        // #5958: wire the trajectory risk slot/signal queue built above (spec 050 Invariant 2)
+        // plus the TrajectorySentinel state machine itself into the agent, matching
+        // src/runner.rs/src/acp.rs/src/daemon.rs.
+        agent = agent
+            .with_trajectory_risk_slot(trajectory_risk_slot)
+            .with_signal_queue(trajectory_signal_queue)
+            .with_trajectory_config(deps.trajectory_sentinel_config)
+            .0;
         if let Some(head) = rl_head {
             agent = agent.with_rl_head(head);
         }
@@ -255,11 +277,25 @@ pub(crate) async fn build_agent_factory(
 /// file/shell/scrape/cwd chain only — see `deps.rs::build_tool_executor`'s doc comment) — any
 /// tool executor added to `ServeAgentDeps` outside that base, or composed onto the result of
 /// this wrap, bypasses trust/policy/adversarial enforcement entirely. See #5977/#5611/#5748.
+///
+/// `trajectory`, when `Some`, wires `PolicyGateExecutor`'s trajectory-risk reporting (#5958) —
+/// see `apply_policy_gate_chain`'s doc comment. Note this does NOT cover `ScopedToolExecutor`
+/// (`[security.capability_scopes]`) `OutOfScope` denials feeding the same signal queue, unlike
+/// runner.rs/acp.rs/daemon.rs: serve wraps `ScopedToolExecutor` once, eagerly, in
+/// `deps.rs::assemble_serve_deps`, shared across every `/sessions*` agent (SEC-H1 rationale on
+/// `ServeAgentDeps::tool_executor`), before any per-session signal queue exists — attaching one
+/// session's queue there would leak its signals into every other session sharing the same
+/// executor. `PolicyGateExecutor`'s own declarative/adversarial-policy denials still reach
+/// `TrajectorySentinel` correctly since that gate IS per-session.
 fn gate_serve_session_executor(
     tool_executor: Arc<dyn zeph_tools::ErasedToolExecutor>,
     permission_policy: &zeph_tools::PermissionPolicy,
     policy_gate_pieces: &crate::agent_setup::PolicyGatePieces,
     audit_logger: Option<&Arc<zeph_tools::AuditLogger>>,
+    trajectory: Option<(
+        &zeph_tools::TrajectoryRiskSlot,
+        &zeph_tools::RiskSignalQueue,
+    )>,
 ) -> zeph_tools::DynExecutor {
     let (trust_gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
         zeph_tools::DynExecutor(tool_executor),
@@ -272,7 +308,7 @@ fn gate_serve_session_executor(
         trust_gated,
         policy_gate_pieces,
         audit_logger,
-        None, // R8: serve has no TrajectorySentinel wiring yet; #5958 seam, mirrors daemon/acp.
+        trajectory,
     )
 }
 
@@ -668,6 +704,8 @@ mod tests {
             shadow_sentinel_probe_provider: AnyProvider::Mock(
                 zeph_llm::mock::MockProvider::default(),
             ),
+            trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
+            quality_pipeline: None,
         };
 
         let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
@@ -756,6 +794,8 @@ mod tests {
             shadow_sentinel_probe_provider: AnyProvider::Mock(
                 zeph_llm::mock::MockProvider::default(),
             ),
+            trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
+            quality_pipeline: None,
         };
 
         let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
@@ -863,6 +903,8 @@ mod tests {
             shadow_sentinel_probe_provider: AnyProvider::Mock(
                 zeph_llm::mock::MockProvider::default(),
             ),
+            trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
+            quality_pipeline: None,
         };
 
         let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
@@ -959,6 +1001,8 @@ mod tests {
             shadow_sentinel_probe_provider: AnyProvider::Mock(
                 zeph_llm::mock::MockProvider::default(),
             ),
+            trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
+            quality_pipeline: None,
         };
 
         let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
@@ -1054,6 +1098,8 @@ mod tests {
             shadow_sentinel_probe_provider: AnyProvider::Mock(
                 zeph_llm::mock::MockProvider::default(),
             ),
+            trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
+            quality_pipeline: None,
         };
 
         let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
@@ -1147,6 +1193,8 @@ mod tests {
             shadow_sentinel_probe_provider: AnyProvider::Mock(
                 zeph_llm::mock::MockProvider::default(),
             ),
+            trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
+            quality_pipeline: None,
         };
 
         let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
@@ -1222,6 +1270,8 @@ mod tests {
             shadow_sentinel_probe_provider: AnyProvider::Mock(
                 zeph_llm::mock::MockProvider::default(),
             ),
+            trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
+            quality_pipeline: None,
         }
     }
 
@@ -1348,6 +1398,74 @@ mod tests {
             matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
             "a [tools.policy] deny rule for \"shell\" must block the call through a \
              /sessions-built agent's executor, got {result:?}"
+        );
+    }
+
+    /// #5958 regression: `gate_serve_session_executor`'s `trajectory` parameter must actually
+    /// reach `PolicyGateExecutor::with_signal_queue` when `Some` — before this PR,
+    /// `build_agent_factory` always passed `None` here (the `R8` seam comment this test's
+    /// doc-referenced production code used to carry), so a declarative-policy denial never
+    /// reached `TrajectorySentinel` for any `/sessions*`-dispatched call. Calls the private
+    /// `gate_serve_session_executor` directly (same module) with a `[tools.policy]` deny rule
+    /// and `Some((&trajectory_risk_slot, &trajectory_signal_queue))` exactly as
+    /// `build_agent_factory` now does, and asserts the signal queue receives the `PolicyDeny`
+    /// code (`1`) after a denied call. Note this deliberately does NOT cover capability-scope
+    /// (`ScopedToolExecutor`) `OutOfScope` denials — per `gate_serve_session_executor`'s doc
+    /// comment, serve's `ScopedToolExecutor` is built once, eagerly, in
+    /// `deps.rs::assemble_serve_deps`, shared across every session, before any per-session
+    /// queue exists (SEC-H1); that gap is a documented, intentional deviation from ACP/daemon,
+    /// not something this PR closes.
+    #[tokio::test]
+    async fn gate_serve_session_executor_wires_trajectory_signal_queue_on_policy_denial() {
+        let policy_config = zeph_tools::PolicyConfig {
+            enabled: true,
+            default_effect: zeph_tools::DefaultEffect::Allow,
+            rules: vec![zeph_tools::PolicyRuleConfig {
+                effect: zeph_tools::PolicyEffect::Deny,
+                tool: "shell".into(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+                capabilities: vec![],
+            }],
+            ..Default::default()
+        };
+        let enforcer = Arc::new(zeph_tools::PolicyEnforcer::compile(&policy_config).unwrap());
+        let policy_gate_pieces = crate::agent_setup::PolicyGatePieces {
+            policy_enforcer: Some(enforcer),
+            adversarial_validator: None,
+            adversarial_llm_client: None,
+            adv_policy_info: None,
+        };
+
+        let trajectory_risk_slot: zeph_tools::TrajectoryRiskSlot =
+            Arc::new(parking_lot::RwLock::new(0u8));
+        let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
+            Arc::new(parking_lot::Mutex::new(Vec::new()));
+
+        let gated = gate_serve_session_executor(
+            Arc::new(zeph_tools::SetCwdExecutor),
+            &zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full),
+            &policy_gate_pieces,
+            None,
+            Some((&trajectory_risk_slot, &trajectory_signal_queue)),
+        );
+
+        let denied = gated
+            .execute_tool_call_erased(&make_tool_call("shell"))
+            .await;
+        assert!(
+            matches!(denied, Err(zeph_tools::ToolError::Blocked { .. })),
+            "expected Blocked from PolicyGateExecutor's deny rule, got {denied:?}"
+        );
+        assert_eq!(
+            *trajectory_signal_queue.lock(),
+            vec![1u8],
+            "expected the PolicyDeny signal code (1) to be pushed into the shared trajectory \
+             signal queue after a denied tool call, proving gate_serve_session_executor's \
+             trajectory parameter is actually wired through to PolicyGateExecutor instead of \
+             the old hardcoded None"
         );
     }
 

@@ -1218,6 +1218,43 @@ pub(crate) fn apply_secret_masking<C: Channel>(
     }
 }
 
+/// Builds a `SelfCheckPipeline` from `config.quality.self_check` (#5951), shared by every agent
+/// entry point (CLI's `runner.rs`, `acp.rs`'s `spawn_acp_agent`, `daemon.rs`'s `run_daemon`,
+/// `serve/agent_factory.rs`) so the Proposer -> Checker MARCH quality-verification pass runs
+/// uniformly regardless of transport instead of being CLI-only.
+///
+/// `SelfCheckPipeline` clones `provider` for its own Proposer/Checker roles rather than reading
+/// it off the (already-masked) `Agent`, so it is not covered by `Agent::with_secret_registry`'s
+/// retroactive wrap (#5437 round-3) and needs this explicit mask here.
+///
+/// Returns `None` when `self_check` is disabled or pipeline construction fails (logged as a
+/// warning — a construction failure degrades to "no self-check" rather than aborting startup).
+pub(crate) fn build_quality_pipeline(
+    config: &Config,
+    provider: &zeph_llm::any::AnyProvider,
+    secret_registry: Option<&Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
+) -> Option<Arc<zeph_core::quality::SelfCheckPipeline>> {
+    if !config.quality.self_check {
+        return None;
+    }
+    let quality_provider = match secret_registry {
+        Some(registry) => provider
+            .clone()
+            .masked(Arc::clone(registry) as Arc<dyn zeph_llm::masking::OutboundMasker>),
+        None => provider.clone(),
+    };
+    match zeph_core::quality::SelfCheckPipeline::build(
+        &zeph_core::quality::QualityConfig::from(&config.quality),
+        &quality_provider,
+    ) {
+        Ok(pipeline) => Some(pipeline),
+        Err(e) => {
+            tracing::warn!(error = %e, "self-check pipeline init failed");
+            None
+        }
+    }
+}
+
 /// Wires a [`zeph_core::debug_dump::DebugDumper`] into `agent` for `dir`/`format`, shared by
 /// every agent entry point that honors `[debug] enabled = true` (CLI, ACP, daemon, serve-sessions).
 ///
@@ -2380,6 +2417,35 @@ mod tests {
             config.skills.max_active_skills.get(),
             NoopExec,
         )
+    }
+
+    /// #5951 regression: `build_quality_pipeline` is the single shared helper every entry point
+    /// (`runner.rs`, `acp.rs`, `daemon.rs`, `serve/agent_factory.rs`) now calls to construct the
+    /// `SelfCheckPipeline` before wiring it via `Agent::with_quality_pipeline` — asserts the two
+    /// branches those call sites depend on: disabled config returns `None` (no pipeline built,
+    /// no cost) and enabled config with a valid provider returns `Some`.
+    #[test]
+    fn build_quality_pipeline_disabled_returns_none() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.quality.self_check = false;
+        let pipeline = build_quality_pipeline(&config, &offline_provider(), None);
+        assert!(
+            pipeline.is_none(),
+            "expected None when config.quality.self_check is false"
+        );
+    }
+
+    #[test]
+    fn build_quality_pipeline_enabled_returns_some() {
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.quality.self_check = true;
+        let pipeline = build_quality_pipeline(&config, &offline_provider(), None);
+        assert!(
+            pipeline.is_some(),
+            "expected Some(pipeline) when config.quality.self_check is true and \
+             QualityConfig::validate() passes with the default per_call_timeout_ms/ \
+             latency_budget_ms/min_evidence values"
+        );
     }
 
     #[tokio::test]

@@ -147,6 +147,8 @@ impl ServeTestHarness {
             shadow_sentinel_probe_provider: AnyProvider::Mock(
                 zeph_llm::mock::MockProvider::default(),
             ),
+            trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
+            quality_pipeline: None,
         };
 
         let state = AppState {

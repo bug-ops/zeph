@@ -3607,26 +3607,11 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     };
 
     let agent = {
-        // #5437 round-3: SelfCheckPipeline clones `provider` for its own Proposer/Checker
-        // roles rather than reading it off the (already-masked) Agent, so it needs its own
-        // explicit wrap here — it is not covered by `with_secret_registry`'s retroactive
-        // wrap of the Agent's own provider fields.
-        let quality_provider = match app.secret_registry() {
-            Some(registry) => provider
-                .clone()
-                .masked(registry as std::sync::Arc<dyn zeph_llm::masking::OutboundMasker>),
-            None => provider.clone(),
-        };
-        let pipeline = if config.quality.self_check {
-            zeph_core::quality::SelfCheckPipeline::build(
-                &zeph_core::quality::QualityConfig::from(&config.quality),
-                &quality_provider,
-            )
-            .map_err(|e| anyhow::anyhow!("self-check pipeline init failed: {e}"))
-            .ok()
-        } else {
-            None
-        };
+        let pipeline = crate::agent_setup::build_quality_pipeline(
+            config,
+            &provider,
+            app.secret_registry().as_ref(),
+        );
         agent.with_quality_pipeline(pipeline)
     };
 

@@ -296,6 +296,12 @@ where
     mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
     mcp_shared_tools: std::sync::Arc<RwLock<Vec<zeph_mcp::McpTool>>>,
     provider_config_snapshot: zeph_core::ProviderConfigSnapshot,
+    /// #5975: shared with `SkillInvokeExecutor` — see `run_daemon`'s construction site.
+    trust_snapshot: std::sync::Arc<
+        parking_lot::RwLock<
+            std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>,
+        >,
+    >,
 }
 
 /// Build the `Agent` from the `AgentBuilder` construction chain used by the daemon (A2A)
@@ -344,6 +350,7 @@ where
     .with_plugin_dirs_supplier(deps.plugin_dirs_supplier)
     .with_managed_skills_dir(crate::bootstrap::managed_skills_dir())
     .with_trust_config(config.skills.trust.clone())
+    .with_trust_snapshot(deps.trust_snapshot)
     .with_memory(
         deps.memory,
         deps.conversation_id,
@@ -759,6 +766,19 @@ pub(crate) async fn run_daemon(
     .with_conversation(conversation_id.0);
     let skill_loader_executor =
         zeph_core::SkillLoaderExecutor::new(std::sync::Arc::clone(&registry));
+    // #5975: pre-allocate trust snapshot Arc shared between the agent's SkillState and
+    // SkillInvokeExecutor — written once per turn by prepare_context, read by the executor.
+    // Mirrors src/runner.rs; previously the daemon never constructed SkillInvokeExecutor at all,
+    // so `invoke_skill` was effectively CLI-only.
+    let trust_snapshot: std::sync::Arc<
+        parking_lot::RwLock<
+            std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>,
+        >,
+    > = std::sync::Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
+    let skill_invoke_executor = zeph_core::SkillInvokeExecutor::new(
+        std::sync::Arc::clone(&registry),
+        std::sync::Arc::clone(&trust_snapshot),
+    );
     let base_tool: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = {
         let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
             zeph_tools::CompositeExecutor::new(base_executor, mcp_executor),
@@ -784,20 +804,31 @@ pub(crate) async fn run_daemon(
         zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::CompositeExecutor::new(
             skill_loader_executor,
             zeph_tools::CompositeExecutor::new(
-                memory_executor,
+                skill_invoke_executor,
                 zeph_tools::CompositeExecutor::new(
-                    overflow_executor,
-                    zeph_tools::DynExecutor(base_tool),
+                    memory_executor,
+                    zeph_tools::CompositeExecutor::new(
+                        overflow_executor,
+                        zeph_tools::DynExecutor(base_tool),
+                    ),
                 ),
             ),
         )));
-    // Gate the FULLY composed tree (base chain + mcp + search + skill loader + memory +
-    // overflow) behind one outermost TrustGateExecutor, matching runner.rs and ACP
+    // Gate the FULLY composed tree (base chain + mcp + search + skill loader + skill invoke +
+    // memory + overflow) behind one outermost TrustGateExecutor, matching runner.rs and ACP
     // (`src/acp.rs`). Previously only the base chain was gated here, so a Quarantined skill
     // could still reach `memory_save` and any MCP-sourced tool.
     let (trust_gated, mcp_ids_handle) =
         agent_setup::apply_common_tool_gating(inner_executor, &permission_policy);
     agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &mcp_tools);
+    // #5958: shared trajectory risk slot — written by begin_turn(), read by PolicyGateExecutor —
+    // and pending risk signal queue — executor layers push signal codes; begin_turn() drains.
+    // Mirrors src/runner.rs; previously the daemon never created these, so TrajectorySentinel
+    // was never wired into the daemon's tool-gate chain or the Agent itself (see below).
+    let trajectory_risk_slot: zeph_tools::TrajectoryRiskSlot =
+        std::sync::Arc::new(parking_lot::RwLock::new(0u8));
+    let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
+        std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
     // Wire the same PolicyGateExecutor / AdversarialPolicyGateExecutor stack the CLI
     // path (src/runner.rs) applies around its full tool composite, so declarative
     // (`[tools.policy]`/`[tools.authorization]`) and LLM-based (`[tools.adversarial_policy]`)
@@ -810,7 +841,7 @@ pub(crate) async fn run_daemon(
         trust_gated,
         &policy_gate_pieces,
         daemon_audit_logger.as_ref(),
-        None,
+        Some((&trajectory_risk_slot, &trajectory_signal_queue)),
     );
 
     // Spec 050 F2 (#5913): wrap with ScopedToolExecutor when capability_scopes are configured —
@@ -842,7 +873,14 @@ pub(crate) async fn run_daemon(
                 })
                 .collect();
             match build_scoped_executor(tool_executor, &scopes_cfg, &registry_ids) {
-                Ok(scoped) => zeph_tools::DynExecutor(std::sync::Arc::new(scoped)),
+                Ok(scoped) => {
+                    // #5958: OutOfScope denials feed the trajectory signal queue too, matching
+                    // src/runner.rs — otherwise capability-scope violations would be invisible
+                    // to TrajectorySentinel's risk escalation.
+                    let scoped =
+                        scoped.with_signal_queue(std::sync::Arc::clone(&trajectory_signal_queue));
+                    zeph_tools::DynExecutor(std::sync::Arc::new(scoped))
+                }
                 Err(e) => {
                     return Err(anyhow::anyhow!("capability_scopes: {e}"));
                 }
@@ -1011,6 +1049,7 @@ pub(crate) async fn run_daemon(
         mcp_manager,
         mcp_shared_tools,
         provider_config_snapshot,
+        trust_snapshot,
     };
     let agent = Box::pin(build_daemon_agent(deps, loopback_channel)).await;
 
@@ -1150,6 +1189,21 @@ pub(crate) async fn run_daemon(
     if let Some(sentinel) = shadow_sentinel_arc {
         agent = agent.with_shadow_sentinel(sentinel);
     }
+
+    // #5958: wire the trajectory risk slot/signal queue built above (spec 050 Invariant 2) plus
+    // the TrajectorySentinel state machine itself into the agent, matching src/runner.rs.
+    agent = agent
+        .with_trajectory_risk_slot(trajectory_risk_slot)
+        .with_signal_queue(trajectory_signal_queue)
+        .with_trajectory_config(config.security.trajectory.clone())
+        .0;
+
+    // #5951: wire the self-check quality pipeline, matching src/runner.rs.
+    agent = agent.with_quality_pipeline(agent_setup::build_quality_pipeline(
+        config,
+        &provider,
+        app.secret_registry().as_ref(),
+    ));
 
     // #5566: daemon mode (the process that actually serves `[gateway]` long-lived, since
     // `spawn_gateway_server` only forwards webhooks into an already-built agent) never wired
@@ -1392,6 +1446,9 @@ mod tests {
             mcp_manager,
             mcp_shared_tools: std::sync::Arc::new(RwLock::new(Vec::new())),
             provider_config_snapshot,
+            trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
         };
 
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
@@ -1478,6 +1535,9 @@ mod tests {
             mcp_manager,
             mcp_shared_tools: std::sync::Arc::new(RwLock::new(Vec::new())),
             provider_config_snapshot,
+            trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
         };
 
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
@@ -1553,6 +1613,9 @@ mod tests {
             mcp_manager,
             mcp_shared_tools: std::sync::Arc::new(RwLock::new(Vec::new())),
             provider_config_snapshot,
+            trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
         };
 
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
@@ -2107,6 +2170,227 @@ mod tests {
             !matches!(allowed, Err(zeph_tools::ToolError::OutOfScope { .. })),
             "expected read to reach past ScopedToolExecutor since it matches the active \
              scope's pattern, got {allowed:?}"
+        );
+    }
+
+    /// Regression test confirming `PolicyGateExecutor`'s trajectory-risk signal queue (#5958,
+    /// spec 050) is wired through `agent_setup::apply_policy_gate_chain` when called from
+    /// `run_daemon`: previously `None` was passed for the `trajectory` parameter, so a
+    /// declarative-policy denial never reached `TrajectorySentinel` for daemon-dispatched
+    /// calls. Reconstructs the same trust-gated base chain the sibling
+    /// `policy_gate_denies_tool_in_daemon_composite_chain` test uses, wraps it via
+    /// `apply_policy_gate_chain` with a deny rule and
+    /// `Some((&trajectory_risk_slot, &trajectory_signal_queue))` exactly as `run_daemon` now
+    /// does, and asserts the signal queue receives the `PolicyDeny` code (`1`) after a denied
+    /// call. This is the observable wiring surface reachable from this crate — the downstream
+    /// `trajectory_risk_slot` mutation happens inside `Agent::begin_turn` (private to
+    /// `zeph-core`, already covered by that crate's own `agent/trajectory.rs` unit tests).
+    #[tokio::test]
+    async fn trajectory_signal_queue_receives_policy_denial_in_daemon_composite_chain() {
+        use zeph_tools::executor::ToolExecutor;
+
+        let config = Config::default();
+        let file_executor = zeph_tools::FileExecutor::new(vec![]);
+        let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let diagnostics_executor = agent_setup::build_diagnostics_executor(&config);
+        let base_executor = agent_setup::build_base_executor_chain(
+            file_executor,
+            shell_executor,
+            scrape_executor,
+            diagnostics_executor,
+        );
+        let (trust_gated, _mcp_ids_handle) = agent_setup::apply_common_tool_gating(
+            zeph_tools::DynExecutor(std::sync::Arc::new(base_executor)),
+            &zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full),
+        );
+
+        let policy_config = zeph_tools::PolicyConfig {
+            enabled: true,
+            default_effect: zeph_tools::DefaultEffect::Allow,
+            rules: vec![zeph_tools::PolicyRuleConfig {
+                effect: zeph_tools::PolicyEffect::Deny,
+                tool: "diagnostics".into(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+                capabilities: vec![],
+            }],
+            ..Default::default()
+        };
+        let enforcer = zeph_tools::PolicyEnforcer::compile(&policy_config).unwrap();
+        let pieces = agent_setup::PolicyGatePieces {
+            policy_enforcer: Some(std::sync::Arc::new(enforcer)),
+            adversarial_validator: None,
+            adversarial_llm_client: None,
+            adv_policy_info: None,
+        };
+
+        let trajectory_risk_slot: zeph_tools::TrajectoryRiskSlot =
+            std::sync::Arc::new(parking_lot::RwLock::new(0u8));
+        let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
+            std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+
+        let gated = agent_setup::apply_policy_gate_chain(
+            trust_gated,
+            &pieces,
+            None,
+            Some((&trajectory_risk_slot, &trajectory_signal_queue)),
+        );
+
+        let denied = gated
+            .execute_tool_call(&daemon_test_call("diagnostics"))
+            .await;
+        assert!(
+            matches!(denied, Err(zeph_tools::ToolError::Blocked { .. })),
+            "expected Blocked from PolicyGateExecutor's deny rule, got {denied:?}"
+        );
+        assert_eq!(
+            *trajectory_signal_queue.lock(),
+            vec![1u8],
+            "expected the PolicyDeny signal code (1) to be pushed into the shared trajectory \
+             signal queue after a denied tool call, proving apply_policy_gate_chain's daemon \
+             call site actually wires PolicyGateExecutor::with_signal_queue instead of passing \
+             None"
+        );
+    }
+
+    /// Companion to `trajectory_signal_queue_receives_policy_denial_in_daemon_composite_chain`
+    /// covering the other #5958 signal source `run_daemon` wires: `ScopedToolExecutor`
+    /// (`[security.capability_scopes]`) `OutOfScope` denials. Before this PR, the daemon's
+    /// `ScopedToolExecutor` was never given a signal queue, so capability-scope violations
+    /// were invisible to `TrajectorySentinel`'s risk escalation. Reconstructs the same scope
+    /// wrap the sibling `capability_scopes_denies_tool_outside_scope_in_daemon_composite_chain`
+    /// test uses, adding `.with_signal_queue(...)` exactly as `run_daemon` now does, and
+    /// asserts the queue receives the `OutOfScope` signal code (`3`).
+    #[tokio::test]
+    async fn trajectory_signal_queue_receives_scope_denial_in_daemon_composite_chain() {
+        use std::collections::HashSet;
+        use zeph_tools::executor::ToolExecutor;
+        use zeph_tools::scope::build_scoped_executor;
+
+        let config = Config::default();
+        let file_executor = zeph_tools::FileExecutor::new(vec![]);
+        let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let diagnostics_executor = agent_setup::build_diagnostics_executor(&config);
+        let base_executor = agent_setup::build_base_executor_chain(
+            file_executor,
+            shell_executor,
+            scrape_executor,
+            diagnostics_executor,
+        );
+        let policy =
+            zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
+        let base_executor = zeph_tools::TrustGateExecutor::new(base_executor, policy);
+
+        let registry_ids: HashSet<String> = base_executor
+            .tool_definitions()
+            .into_iter()
+            .map(|def| {
+                let id = def.id.to_string();
+                if id.contains(':') {
+                    id
+                } else {
+                    format!("builtin:{id}")
+                }
+            })
+            .collect();
+
+        let scopes_cfg = zeph_config::CapabilityScopesConfig {
+            default_scope: "narrow".to_owned(),
+            scopes: std::collections::HashMap::from([(
+                "narrow".to_owned(),
+                zeph_config::ScopeConfig {
+                    patterns: vec!["builtin:read".to_owned()],
+                },
+            )]),
+            ..Default::default()
+        };
+        let scoped = build_scoped_executor(base_executor, &scopes_cfg, &registry_ids)
+            .expect("build_scoped_executor must compile a valid single-pattern scope");
+
+        let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
+            std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let scoped = scoped.with_signal_queue(std::sync::Arc::clone(&trajectory_signal_queue));
+
+        let denied = scoped
+            .execute_tool_call(&daemon_test_call("diagnostics"))
+            .await;
+        assert!(
+            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+            "expected OutOfScope from ScopedToolExecutor for a tool outside the configured \
+             scope, got {denied:?}"
+        );
+        assert_eq!(
+            *trajectory_signal_queue.lock(),
+            vec![3u8],
+            "expected the OutOfScope signal code (3) to be pushed into the shared trajectory \
+             signal queue after a scope-denied tool call, proving run_daemon's new \
+             `.with_signal_queue(...)` call on the ScopedToolExecutor branch is reachable"
+        );
+    }
+
+    /// Regression test confirming `SkillInvokeExecutor` (#5975) is reachable through the
+    /// daemon composite chain: before this PR, `run_daemon` never constructed
+    /// `SkillInvokeExecutor` at all, so `invoke_skill` calls fell through to
+    /// memory/overflow/base (none of which handle that tool id) and would have surfaced as
+    /// `ToolError::NotFound` instead of a skill body/summary. Reconstructs `run_daemon`'s
+    /// `skill_loader -> skill_invoke -> ...` nesting order with the real production executor
+    /// types (a lightweight `DaemonTaggedMock` stands in for memory, since only ordering and
+    /// `SkillInvokeExecutor`'s own reachability are under test) and calls `invoke_skill` for a
+    /// name absent from the (empty) registry — only `SkillInvokeExecutor` produces the
+    /// `"skill not found: {name}"` summary text.
+    #[tokio::test]
+    async fn skill_invoke_executor_reachable_in_daemon_composite_chain() {
+        use zeph_tools::executor::ToolExecutor;
+
+        let registry =
+            std::sync::Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::empty()));
+        let skill_loader_executor =
+            zeph_core::SkillLoaderExecutor::new(std::sync::Arc::clone(&registry));
+        let trust_snapshot: std::sync::Arc<
+            RwLock<std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>>,
+        > = std::sync::Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let skill_invoke_executor = zeph_core::SkillInvokeExecutor::new(
+            std::sync::Arc::clone(&registry),
+            std::sync::Arc::clone(&trust_snapshot),
+        );
+
+        let composite = zeph_tools::CompositeExecutor::new(
+            skill_loader_executor,
+            zeph_tools::CompositeExecutor::new(
+                skill_invoke_executor,
+                DaemonTaggedMock("memory_save"),
+            ),
+        );
+
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "skill_name".to_owned(),
+            serde_json::Value::String("nonexistent-skill".to_owned()),
+        );
+        let call = zeph_tools::ToolCall {
+            tool_id: "invoke_skill".into(),
+            params,
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let output = composite
+            .execute_tool_call(&call)
+            .await
+            .expect("invoke_skill must dispatch successfully through SkillInvokeExecutor")
+            .expect("SkillInvokeExecutor must always return Some(ToolOutput) for invoke_skill");
+        assert!(
+            output
+                .summary
+                .contains("skill not found: nonexistent-skill"),
+            "expected the \"skill not found: ...\" summary that only SkillInvokeExecutor \
+             produces, proving invoke_skill reaches it in the daemon composite chain instead \
+             of falling through to memory/overflow/base, got: {output:?}"
         );
     }
 

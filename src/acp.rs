@@ -334,6 +334,15 @@ pub(crate) struct SharedAgentDeps {
     /// (named-provider resolution + secret masking are static config work) — mirrors the
     /// `adversarial_policy_validator`/`adversarial_policy_llm_client` resolution above.
     shadow_sentinel_probe_provider: zeph_llm::any::AnyProvider,
+    /// Spec 050 (#5958): `[security.trajectory]` snapshot. `spawn_acp_agent` builds a fresh
+    /// per-session `TrajectorySentinel` risk slot/signal queue from this when wiring
+    /// `Agent::with_trajectory_config`, mirroring `src/runner.rs`/`src/daemon.rs`.
+    trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig,
+    /// #5951: pre-built `SelfCheckPipeline` (`config.quality.self_check`), shared across every
+    /// session from this connection — provider masking is static config work, so it does not
+    /// need to be rebuilt per session. `spawn_acp_agent` attaches it via
+    /// `Agent::with_quality_pipeline`, mirroring `src/runner.rs`.
+    quality_pipeline: Option<std::sync::Arc<zeph_core::quality::SelfCheckPipeline>>,
     skill_paths: Vec<PathBuf>,
     /// `pub(crate)` (unlike its sibling fields) solely so the `build_combined_deps` test harness
     /// (`crate::serve::test_support::build_shared_pair`, #5420 N5) can assert `Arc::ptr_eq`
@@ -883,6 +892,17 @@ async fn build_acp_deps(
         }
     };
 
+    // Spec 050 (#5958): `[security.trajectory]` snapshot — `spawn_acp_agent` builds the
+    // per-session risk slot/signal queue from this, mirroring `src/runner.rs`/`src/daemon.rs`.
+    let trajectory_sentinel_config = config.security.trajectory.clone();
+    // #5951: built once per connection — provider masking is static config work, mirrors
+    // `shadow_sentinel_probe_provider` above.
+    let quality_pipeline = crate::agent_setup::build_quality_pipeline(
+        config,
+        &provider,
+        app.secret_registry().as_ref(),
+    );
+
     let mcp_registry = create_mcp_registry(
         config,
         &provider,
@@ -1076,6 +1096,8 @@ async fn build_acp_deps(
         capability_scopes_config,
         shadow_sentinel_config,
         shadow_sentinel_probe_provider,
+        trajectory_sentinel_config,
+        quality_pipeline,
         skill_paths,
         skill_reload_tx,
         config_reload_tx,
@@ -1411,6 +1433,17 @@ async fn spawn_acp_agent(
         ex
     };
     let skill_loader_executor = zeph_core::SkillLoaderExecutor::new(Arc::clone(&registry));
+    // #5975: pre-allocate trust snapshot Arc shared between the agent's SkillState and
+    // SkillInvokeExecutor — written once per turn by prepare_context, read by the executor.
+    // Mirrors src/runner.rs; previously ACP never constructed SkillInvokeExecutor at all, so
+    // `invoke_skill` was effectively CLI-only.
+    let trust_snapshot: Arc<
+        parking_lot::RwLock<
+            std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>,
+        >,
+    > = Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
+    let skill_invoke_executor =
+        zeph_core::SkillInvokeExecutor::new(Arc::clone(&registry), Arc::clone(&trust_snapshot));
     let (base_composite, cancel_signal, provider_override, parent_tool_use_id): (
         Arc<dyn ErasedToolExecutor>,
         _,
@@ -1448,10 +1481,13 @@ async fn spawn_acp_agent(
         base = Arc::new(zeph_tools::CompositeExecutor::new(
             skill_loader_executor,
             zeph_tools::CompositeExecutor::new(
-                memory_executor,
+                skill_invoke_executor,
                 zeph_tools::CompositeExecutor::new(
-                    overflow_executor,
-                    zeph_tools::DynExecutor(base),
+                    memory_executor,
+                    zeph_tools::CompositeExecutor::new(
+                        overflow_executor,
+                        zeph_tools::DynExecutor(base),
+                    ),
                 ),
             ),
         ));
@@ -1468,10 +1504,13 @@ async fn spawn_acp_agent(
         let base: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
             skill_loader_executor,
             zeph_tools::CompositeExecutor::new(
-                memory_executor,
+                skill_invoke_executor,
                 zeph_tools::CompositeExecutor::new(
-                    overflow_executor,
-                    zeph_tools::DynExecutor(Arc::clone(&tool_executor) as Arc<_>),
+                    memory_executor,
+                    zeph_tools::CompositeExecutor::new(
+                        overflow_executor,
+                        zeph_tools::DynExecutor(Arc::clone(&tool_executor) as Arc<_>),
+                    ),
                 ),
             ),
         ));
@@ -1488,6 +1527,15 @@ async fn spawn_acp_agent(
     );
     crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &mcp_tools);
 
+    // #5958: shared trajectory risk slot — written by begin_turn(), read by PolicyGateExecutor —
+    // and pending risk signal queue — executor layers push signal codes; begin_turn() drains.
+    // Built fresh per session (like ShadowSentinel below), mirroring src/runner.rs; previously
+    // ACP never created these, so TrajectorySentinel was never wired into any ACP session.
+    let trajectory_risk_slot: zeph_tools::TrajectoryRiskSlot =
+        Arc::new(parking_lot::RwLock::new(0u8));
+    let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
+        Arc::new(parking_lot::Mutex::new(Vec::new()));
+
     // Wire AdversarialPolicyGateExecutor / PolicyGateExecutor around the trust-gated
     // per-session composite, using the pieces pre-built once per connection in
     // `build_acp_deps` — previously these gates wrapped only the connection-scoped
@@ -1498,7 +1546,7 @@ async fn spawn_acp_agent(
         trust_gated,
         &d.policy_gate_pieces,
         d.audit_logger.as_ref(),
-        None,
+        Some((&trajectory_risk_slot, &trajectory_signal_queue)),
     );
 
     // Spec 050 F2 (#5913): wrap with ScopedToolExecutor when capability_scopes are configured —
@@ -1529,7 +1577,13 @@ async fn spawn_acp_agent(
             // takes `tool_executor` by value.
             let fallback = zeph_tools::DynExecutor(Arc::clone(&tool_executor.0));
             match build_scoped_executor(tool_executor, scopes_cfg, &registry_ids) {
-                Ok(scoped) => zeph_tools::DynExecutor(Arc::new(scoped)),
+                Ok(scoped) => {
+                    // #5958: OutOfScope denials feed the trajectory signal queue too, matching
+                    // src/runner.rs/src/daemon.rs — otherwise capability-scope violations would
+                    // be invisible to TrajectorySentinel's risk escalation.
+                    let scoped = scoped.with_signal_queue(Arc::clone(&trajectory_signal_queue));
+                    zeph_tools::DynExecutor(Arc::new(scoped))
+                }
                 Err(e) => {
                     // Misconfiguration (FR-CG-005) is fatal for the single-process CLI run
                     // (runner.rs aborts startup); ACP serves many concurrent IDE clients on one
@@ -1715,6 +1769,8 @@ async fn spawn_acp_agent(
         .with_skill_provider_names(skill_generation_provider, skill_disambiguate_provider)
         .with_semantic_scan(semantic_scan, semantic_scan_provider)
         .with_trust_config(d.trust_config.clone())
+        .with_trust_snapshot(Arc::clone(&trust_snapshot))
+        .with_quality_pipeline(d.quality_pipeline.clone())
         .with_rl_routing(
             d.rl_routing_enabled,
             d.rl_learning_rate,
@@ -1749,6 +1805,15 @@ async fn spawn_acp_agent(
     .await;
 
     agent = agent.with_acp_session(true);
+
+    // #5958: wire the trajectory risk slot/signal queue built above (spec 050 Invariant 2) plus
+    // the TrajectorySentinel state machine itself into the agent, matching src/runner.rs and
+    // src/daemon.rs.
+    agent = agent
+        .with_trajectory_risk_slot(trajectory_risk_slot)
+        .with_signal_queue(trajectory_signal_queue)
+        .with_trajectory_config(d.trajectory_sentinel_config.clone())
+        .0;
 
     // SkillOrchestra: load persisted RL routing head weights, if enabled (#5921) — mirrors
     // `src/runner.rs`/`src/daemon.rs`'s cold-start/load pattern. `d.rl_embed_dim_resolved` is
@@ -3532,6 +3597,204 @@ mod tests {
         );
     }
 
+    /// Regression test confirming `PolicyGateExecutor`'s trajectory-risk signal queue (#5958,
+    /// spec 050) is wired through `agent_setup::apply_policy_gate_chain` when called from ACP:
+    /// `spawn_acp_agent` previously passed `None` for the `trajectory` parameter, so a
+    /// declarative-policy denial never reached `TrajectorySentinel` for ACP-dispatched calls.
+    /// Reconstructs the same trust-gated base chain the sibling `policy_gate_denies_tool_in_acp_composite_chain`
+    /// test uses, wraps it via `apply_policy_gate_chain` with a deny rule and
+    /// `Some((&trajectory_risk_slot, &trajectory_signal_queue))` exactly as `spawn_acp_agent`
+    /// now does, and asserts the signal queue receives the `PolicyDeny` code (`1`) after a
+    /// denied call. This is the observable wiring surface reachable from this crate — the
+    /// downstream `trajectory_risk_slot` mutation happens inside `Agent::begin_turn` (private to
+    /// `zeph-core`, already covered by that crate's own `agent/trajectory.rs` unit tests).
+    #[tokio::test]
+    async fn trajectory_signal_queue_receives_policy_denial_in_acp_composite_chain() {
+        let config = zeph_core::config::Config::default();
+        let file_executor = zeph_tools::FileExecutor::new(vec![]);
+        let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let diagnostics_executor = crate::agent_setup::build_diagnostics_executor(&config);
+        let base_executor = crate::agent_setup::build_base_executor_chain(
+            file_executor,
+            shell_executor,
+            scrape_executor,
+            diagnostics_executor,
+        );
+        let (trust_gated, _mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
+            zeph_tools::DynExecutor(Arc::new(base_executor)),
+            &zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full),
+        );
+
+        let policy_config = zeph_tools::PolicyConfig {
+            enabled: true,
+            default_effect: zeph_tools::DefaultEffect::Allow,
+            rules: vec![zeph_tools::PolicyRuleConfig {
+                effect: zeph_tools::PolicyEffect::Deny,
+                tool: "overflow_flush".into(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+                capabilities: vec![],
+            }],
+            ..Default::default()
+        };
+        let enforcer = zeph_tools::PolicyEnforcer::compile(&policy_config).unwrap();
+        let pieces = crate::agent_setup::PolicyGatePieces {
+            policy_enforcer: Some(Arc::new(enforcer)),
+            adversarial_validator: None,
+            adversarial_llm_client: None,
+            adv_policy_info: None,
+        };
+
+        let trajectory_risk_slot: zeph_tools::TrajectoryRiskSlot =
+            Arc::new(parking_lot::RwLock::new(0u8));
+        let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
+            Arc::new(parking_lot::Mutex::new(Vec::new()));
+
+        let gated = crate::agent_setup::apply_policy_gate_chain(
+            trust_gated,
+            &pieces,
+            None,
+            Some((&trajectory_risk_slot, &trajectory_signal_queue)),
+        );
+
+        let denied = gated
+            .execute_tool_call(&acp_test_call("overflow_flush"))
+            .await;
+        assert!(
+            matches!(denied, Err(zeph_tools::ToolError::Blocked { .. })),
+            "expected Blocked from PolicyGateExecutor's deny rule, got {denied:?}"
+        );
+        assert_eq!(
+            *trajectory_signal_queue.lock(),
+            vec![1u8],
+            "expected the PolicyDeny signal code (1) to be pushed into the shared trajectory \
+             signal queue after a denied tool call, proving apply_policy_gate_chain's ACP call \
+             site actually wires PolicyGateExecutor::with_signal_queue instead of passing None"
+        );
+    }
+
+    /// Companion to `trajectory_signal_queue_receives_policy_denial_in_acp_composite_chain`
+    /// covering the other #5958 signal source `spawn_acp_agent` wires: `ScopedToolExecutor`
+    /// (`[security.capability_scopes]`) `OutOfScope` denials. Before this PR, ACP's
+    /// `ScopedToolExecutor` was never given a signal queue at all, so capability-scope
+    /// violations were invisible to `TrajectorySentinel`'s risk escalation. Reconstructs the
+    /// same scope wrap the sibling `capability_scopes_denies_tool_outside_scope_in_acp_composite_chain`
+    /// test uses, adding `.with_signal_queue(...)` exactly as `spawn_acp_agent` now does, and
+    /// asserts the queue receives the `OutOfScope` signal code (`3`).
+    #[tokio::test]
+    async fn trajectory_signal_queue_receives_scope_denial_in_acp_composite_chain() {
+        use std::collections::HashSet;
+        use zeph_tools::scope::build_scoped_executor;
+
+        let config = zeph_core::config::Config::default();
+        let file_executor = zeph_tools::FileExecutor::new(vec![]);
+        let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let diagnostics_executor = crate::agent_setup::build_diagnostics_executor(&config);
+        let base_executor = crate::agent_setup::build_base_executor_chain(
+            file_executor,
+            shell_executor,
+            scrape_executor,
+            diagnostics_executor,
+        );
+        let policy =
+            zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
+        let base_executor = zeph_tools::TrustGateExecutor::new(base_executor, policy);
+
+        let registry_ids: HashSet<String> = base_executor
+            .tool_definitions()
+            .into_iter()
+            .map(|def| {
+                let id = def.id.to_string();
+                if id.contains(':') {
+                    id
+                } else {
+                    format!("builtin:{id}")
+                }
+            })
+            .collect();
+
+        let scopes_cfg = zeph_config::CapabilityScopesConfig {
+            default_scope: "narrow".to_owned(),
+            scopes: std::collections::HashMap::from([(
+                "narrow".to_owned(),
+                zeph_config::ScopeConfig {
+                    patterns: vec!["builtin:read".to_owned()],
+                },
+            )]),
+            ..Default::default()
+        };
+        let scoped = build_scoped_executor(base_executor, &scopes_cfg, &registry_ids)
+            .expect("build_scoped_executor must compile a valid single-pattern scope");
+
+        let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
+            Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let scoped = scoped.with_signal_queue(Arc::clone(&trajectory_signal_queue));
+
+        let denied = scoped
+            .execute_tool_call(&acp_test_call("diagnostics"))
+            .await;
+        assert!(
+            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+            "expected OutOfScope from ScopedToolExecutor for a tool outside the configured \
+             scope, got {denied:?}"
+        );
+        assert_eq!(
+            *trajectory_signal_queue.lock(),
+            vec![3u8],
+            "expected the OutOfScope signal code (3) to be pushed into the shared trajectory \
+             signal queue after a scope-denied tool call, proving spawn_acp_agent's new \
+             `.with_signal_queue(...)` call on the ScopedToolExecutor branch is reachable"
+        );
+    }
+
+    /// Regression test confirming `SkillInvokeExecutor` (#5975) is reachable through ACP's full
+    /// per-session composite: before this PR, `spawn_acp_agent` never constructed
+    /// `SkillInvokeExecutor` at all, so `invoke_skill` tool calls fell through to
+    /// `memory`/`overflow`/`base` (none of which handle that tool id) and would have surfaced
+    /// as `ToolError::NotFound` instead of a skill body/summary. Reuses
+    /// `build_full_acp_session_composite_with_native_fs_shell`, now updated to insert
+    /// `skill_invoke` between `skill_loader` and `memory` matching `spawn_acp_agent`'s current
+    /// nesting order, and calls `invoke_skill` for a name absent from the (empty) registry —
+    /// only `SkillInvokeExecutor` produces the `"skill not found: {name}"` summary text; the
+    /// default (missing trust-snapshot entry) trust level resolves to
+    /// `SkillTrustLevel::MISSING_ENTRY_FALLBACK` (`Trusted`), which is not `Blocked`, so the
+    /// call reaches the body lookup instead of being short-circuited.
+    #[tokio::test]
+    async fn invoke_skill_reaches_skill_invoke_executor_in_full_acp_session_composite() {
+        let (session_composite, _trust_snapshot) =
+            build_full_acp_session_composite_with_native_fs_shell().await;
+
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "skill_name".to_owned(),
+            serde_json::Value::String("nonexistent-skill".to_owned()),
+        );
+        let call = zeph_tools::ToolCall {
+            tool_id: "invoke_skill".into(),
+            params,
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = session_composite.execute_tool_call_erased(&call).await;
+        let output = result
+            .expect("invoke_skill must dispatch successfully through SkillInvokeExecutor")
+            .expect("SkillInvokeExecutor must always return Some(ToolOutput) for invoke_skill");
+        assert!(
+            output
+                .summary
+                .contains("skill not found: nonexistent-skill"),
+            "expected the \"skill not found: ...\" summary that only SkillInvokeExecutor \
+             produces, proving invoke_skill actually reaches it in the full ACP session \
+             composite instead of falling through to memory/overflow/base, got: {output:?}"
+        );
+    }
+
     /// Regression test confirming the five #5914 memory-maintenance loops (eviction,
     /// tier-promotion, scene-consolidation, consolidation, forgetting) are actually
     /// registered on the ACP connection's own `TaskSupervisor`: `build_acp_deps` previously
@@ -3737,12 +4000,23 @@ mod tests {
     /// Builds the full per-session composite `spawn_acp_agent` assembles when the IDE supplies
     /// an `AcpContext` (the primary ACP embedding case) — `ToolFilter`-wrapped base composed
     /// with `AcpNativeStandIn` fs/shell stand-ins (occupying the same slot as
-    /// `AcpFileExecutor`/`AcpShellExecutor`), then `skill_loader`/`memory`/`overflow` layered
-    /// outside, matching `spawn_acp_agent`'s exact nesting order.
-    async fn build_full_acp_session_composite_with_native_fs_shell() -> Arc<dyn ErasedToolExecutor>
-    {
+    /// `AcpFileExecutor`/`AcpShellExecutor`), then `skill_loader`/`skill_invoke`/`memory`/
+    /// `overflow` layered outside, matching `spawn_acp_agent`'s exact nesting order (#5975 added
+    /// `skill_invoke` between `skill_loader` and `memory`). Returns the `trust_snapshot` Arc
+    /// alongside the composite so callers can pre-populate trust rows for `invoke_skill` tests.
+    async fn build_full_acp_session_composite_with_native_fs_shell() -> (
+        Arc<dyn ErasedToolExecutor>,
+        Arc<
+            RwLock<std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>>,
+        >,
+    ) {
         let registry = Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::empty()));
         let skill_loader_executor = zeph_core::SkillLoaderExecutor::new(Arc::clone(&registry));
+        let trust_snapshot: Arc<
+            RwLock<std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>>,
+        > = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let skill_invoke_executor =
+            zeph_core::SkillInvokeExecutor::new(Arc::clone(&registry), Arc::clone(&trust_snapshot));
 
         let mock_provider =
             zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
@@ -3772,7 +4046,7 @@ mod tests {
 
         // Mirrors spawn_acp_agent's `Some(ctx)` branch: base -> ToolFilter (suppress
         // read/write/glob) -> composite with the fs stand-in -> composite with the shell
-        // stand-in -> skill_loader/memory/overflow layered outside.
+        // stand-in -> skill_loader/skill_invoke/memory/overflow layered outside.
         let mut base: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::FileExecutor::new(vec![]));
         let filtered =
             zeph_tools::ToolFilter::new(zeph_tools::DynExecutor(base), &["read", "write", "glob"]);
@@ -3789,14 +4063,17 @@ mod tests {
         base = Arc::new(zeph_tools::CompositeExecutor::new(
             skill_loader_executor,
             zeph_tools::CompositeExecutor::new(
-                memory_executor,
+                skill_invoke_executor,
                 zeph_tools::CompositeExecutor::new(
-                    overflow_executor,
-                    zeph_tools::DynExecutor(base),
+                    memory_executor,
+                    zeph_tools::CompositeExecutor::new(
+                        overflow_executor,
+                        zeph_tools::DynExecutor(base),
+                    ),
                 ),
             ),
         ));
-        base
+        (base, trust_snapshot)
     }
 
     /// Regression test closing the gap found in review: the sibling `policy_gate_denies_tool_in_acp_composite_chain`
@@ -3813,7 +4090,8 @@ mod tests {
     /// not just calls into the `base` chain.
     #[tokio::test]
     async fn policy_gate_denies_skill_and_memory_tools_in_full_acp_session_composite() {
-        let session_composite = build_full_acp_session_composite_with_native_fs_shell().await;
+        let (session_composite, _trust_snapshot) =
+            build_full_acp_session_composite_with_native_fs_shell().await;
 
         let policy_config = zeph_tools::PolicyConfig {
             enabled: true,
@@ -3880,7 +4158,8 @@ mod tests {
             }
         }
 
-        let session_composite = build_full_acp_session_composite_with_native_fs_shell().await;
+        let (session_composite, _trust_snapshot) =
+            build_full_acp_session_composite_with_native_fs_shell().await;
 
         let validator = Arc::new(zeph_tools::PolicyValidator::new(
             vec!["never allow load_skill, memory_search, write_file, or bash".to_owned()],

@@ -88,6 +88,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(core,acp,tools)`: three more per-turn behavioral pipelines/executors that were
+  constructed and wired into the `Agent` only in `src/runner.rs` (CLI/TUI) now reach ACP,
+  daemon (A2A), and `serve-sessions` too — same "wire-X-into-ACP/daemon/serve" defect class as
+  #5913/#5914/#5978. `zeph_core::quality::SelfCheckPipeline` (Proposer -> Checker MARCH
+  response-quality verification, `config.quality.self_check`) is now built and attached via
+  `Agent::with_quality_pipeline` in all four entry points, extracted into a shared
+  `agent_setup::build_quality_pipeline` helper so the four call sites cannot diverge (#5951).
+  `TrajectorySentinel` (spec-050 risk-escalation state machine, `[security.trajectory]`) is now
+  wired via `Agent::with_trajectory_config`/`with_trajectory_risk_slot`/`with_signal_queue` in
+  ACP (per session), daemon, and serve (per session); the paired
+  `PolicyGateExecutor::with_trajectory_risk`/`with_signal_queue` and
+  `ScopedToolExecutor::with_signal_queue` plumbing (already threaded through
+  `agent_setup::apply_policy_gate_chain`'s `trajectory` parameter, added by #5978's PR in
+  anticipation of this fix) is now populated in all three entry points — serve's globally-shared
+  `ScopedToolExecutor` (built once in `assemble_serve_deps`, before any per-session queue
+  exists) is a documented exception: its `OutOfScope` denials do not feed the trajectory signal
+  queue, since doing so would leak one session's signals into every other session sharing that
+  executor (#5958). `SkillInvokeExecutor` (the `invoke_skill` tool — per-invocation trust check
+  including a blake3 integrity re-check and fail-closed refusal on `Blocked`/quarantine-denied
+  classification) is now constructed and registered as a tool executor, with its trust-snapshot
+  `Arc` also threaded onto the `Agent` via `with_trust_snapshot`, in ACP and daemon — previously
+  `invoke_skill` was effectively CLI-only (#5975).
 - `fix(tools)`: `CompressedExecutor`, `ToolFilter`, and `Arc<ShellExecutor>` now forward the
   remaining cross-cutting `ToolExecutor` methods to their inner/wrapped executor instead of
   silently falling through to the trait's no-op defaults (#6012). `CompressedExecutor` now

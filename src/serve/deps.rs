@@ -129,6 +129,16 @@ pub(crate) struct ServeAgentDeps {
     /// (named-provider resolution + secret masking are static config work) — mirrors
     /// `src/acp.rs`'s `SharedAgentDeps::shadow_sentinel_probe_provider`.
     pub(crate) shadow_sentinel_probe_provider: AnyProvider,
+    /// Spec 050 (#5958): `[security.trajectory]` snapshot. `agent_factory::build_agent_factory`
+    /// builds a fresh per-session `TrajectorySentinel` risk slot/signal queue from this when
+    /// wiring `Agent::with_trajectory_config`, mirroring `src/runner.rs`/`src/daemon.rs`/
+    /// `src/acp.rs`.
+    pub(crate) trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig,
+    /// #5951: pre-built `SelfCheckPipeline` (`config.quality.self_check`), shared across every
+    /// `/sessions*` agent built from this `ServeAgentDeps` — provider masking is static config
+    /// work, so it does not need to be rebuilt per session. `agent_factory::build_agent_factory`
+    /// attaches it via `Agent::with_quality_pipeline`, mirroring `src/runner.rs`.
+    pub(crate) quality_pipeline: Option<Arc<zeph_core::quality::SelfCheckPipeline>>,
 }
 
 /// Assemble [`ServeAgentDeps`] once at `zeph serve-sessions` startup, plus the resolved bearer
@@ -344,6 +354,18 @@ pub(crate) async fn assemble_serve_deps(
         }
     };
 
+    // Spec 050 (#5958): `[security.trajectory]` snapshot — `build_agent_factory` builds the
+    // per-session risk slot/signal queue from this, mirroring `src/runner.rs`/`src/daemon.rs`/
+    // `src/acp.rs`.
+    let trajectory_sentinel_config = config.security.trajectory.clone();
+    // #5951: built once here — provider masking is static config work, mirrors
+    // `shadow_sentinel_probe_provider` above.
+    let quality_pipeline = crate::agent_setup::build_quality_pipeline(
+        config,
+        &core.provider,
+        app.secret_registry().as_ref(),
+    );
+
     Ok(ServeAgentDeps {
         provider: core.provider.clone(),
         embedding_provider: core.embedding_provider.clone(),
@@ -383,6 +405,8 @@ pub(crate) async fn assemble_serve_deps(
         provider_config_snapshot,
         shadow_sentinel_config,
         shadow_sentinel_probe_provider,
+        trajectory_sentinel_config,
+        quality_pipeline,
     })
 }
 
