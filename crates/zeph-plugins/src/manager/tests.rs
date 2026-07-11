@@ -998,6 +998,35 @@ async fn add_remote_wrong_hash_returns_integrity_error() {
     );
 }
 
+#[tokio::test]
+async fn add_remote_rejects_oversized_content_length() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let mock_server = MockServer::start().await;
+    // The body is genuinely larger than MAX_ARCHIVE_BYTES so the server's real Content-Length
+    // header matches what it sends (a lying header causes hyper to reset the connection before
+    // the client ever sees a response) — the cap must still be enforced from the header alone,
+    // before the multi-megabyte body is ever read into memory.
+    let oversized_body = vec![0u8; usize::try_from(MAX_ARCHIVE_BYTES + 1).unwrap()];
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(oversized_body))
+        .mount(&mock_server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let managed_dir = tmp.path().join("managed");
+    let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+
+    let url = format!("{}/huge-plugin.tar.gz", mock_server.uri());
+    let err = mgr.add_remote(&url, None).await.unwrap_err();
+    assert!(
+        matches!(err, PluginError::DownloadFailed { ref reason, .. } if reason.contains("archive too large")),
+        "oversized Content-Length must be rejected with DownloadFailed, got {err:?}"
+    );
+}
+
 // --- auto_update and PluginSource tests ---
 
 #[tokio::test]
@@ -1327,6 +1356,64 @@ path = "skills/my-skill"
     );
 
     // Plugin must still be installed at the old version.
+    let installed = mgr.list_installed().unwrap();
+    assert_eq!(installed[0].version, "0.1.0");
+}
+
+#[tokio::test]
+async fn check_auto_updates_rejects_oversized_content_length() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let manifest = r#"[plugin]
+name = "huge-update"
+version = "0.1.0"
+description = "test"
+auto_update = true
+
+[[skills]]
+path = "skills/my-skill"
+"#;
+    write_plugin(&source, "huge-update", manifest, &[("my-skill", "body")]);
+    let archive = build_tar_gz(&source);
+    let hash = crate::integrity::sha256_hex(&archive);
+
+    let mock_server = MockServer::start().await;
+    // Install succeeds (declared Content-Length matches the real, small body).
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(archive)
+                .append_header("Content-Type", "application/octet-stream"),
+        )
+        .up_to_n_times(1)
+        .mount(&mock_server)
+        .await;
+    // Auto-update check serves a genuinely oversized body; the cap must be enforced from the
+    // real Content-Length header before the multi-megabyte body is read into memory.
+    let oversized_body = vec![0u8; usize::try_from(MAX_ARCHIVE_BYTES + 1).unwrap()];
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(oversized_body))
+        .mount(&mock_server)
+        .await;
+
+    let plugins_dir = tmp.path().join("plugins");
+    let managed_dir = tmp.path().join("managed");
+    let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+    let url = format!("{}/huge-update.tar.gz", mock_server.uri());
+    mgr.add_remote(&url, Some(&hash)).await.unwrap();
+
+    let results = mgr.check_auto_updates().await;
+    assert_eq!(results.len(), 1);
+    assert!(
+        matches!(&results[0].status, AutoUpdateStatus::Failed(reason) if reason.contains("archive too large")),
+        "oversized Content-Length must yield Failed, got {:?}",
+        results[0].status
+    );
+
+    // Plugin must still be installed at the old version — the oversized download never applied.
     let installed = mgr.list_installed().unwrap();
     assert_eq!(installed[0].version, "0.1.0");
 }

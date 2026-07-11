@@ -73,6 +73,61 @@ async fn get_https_safe(
         })
 }
 
+/// Maximum archive size accepted by `fetch_archive_bytes`: 50 MiB.
+///
+/// Checked against `Content-Length` before reading the body. Prevents memory exhaustion
+/// from oversized or gzip-bombed archives served by a malicious host.
+pub const MAX_ARCHIVE_BYTES: u64 = 52 * 1024 * 1024;
+
+/// Fetch the archive body at `url` through [`get_https_safe`], rejecting responses whose
+/// declared `Content-Length` exceeds [`MAX_ARCHIVE_BYTES`] before the body is read.
+///
+/// Shared by every archive-download call site ([`PluginManager::add_remote`],
+/// [`PluginManager::download_archive`], and [`download_and_extract`]) so there is exactly one
+/// place enforcing the size cap.
+///
+/// # Errors
+///
+/// - [`PluginError::InsecureUrl`] — a redirect tried to downgrade from `https://` to `http://`.
+/// - [`PluginError::DownloadFailed`] — HTTP request failed, returned a non-2xx status, the
+///   declared `Content-Length` exceeded [`MAX_ARCHIVE_BYTES`], or the download timed out.
+async fn fetch_archive_bytes(
+    url: &str,
+    timeout: std::time::Duration,
+) -> Result<Vec<u8>, PluginError> {
+    let response = get_https_safe(url, timeout).await?;
+
+    if !response.status().is_success() {
+        return Err(PluginError::DownloadFailed {
+            url: url.to_owned(),
+            reason: format!("HTTP {}", response.status()),
+        });
+    }
+
+    // Reject oversized archives before reading the body.
+    if let Some(content_length) = response.content_length()
+        && content_length > MAX_ARCHIVE_BYTES
+    {
+        return Err(PluginError::DownloadFailed {
+            url: url.to_owned(),
+            reason: format!("archive too large: {content_length} bytes (max {MAX_ARCHIVE_BYTES})"),
+        });
+    }
+
+    let bytes = tokio::time::timeout(timeout, response.bytes())
+        .await
+        .map_err(|_| PluginError::DownloadFailed {
+            url: url.to_owned(),
+            reason: format!("download timed out after {}s", timeout.as_secs()),
+        })?
+        .map_err(|e| PluginError::DownloadFailed {
+            url: url.to_owned(),
+            reason: format!("failed to read response body: {e}"),
+        })?;
+
+    Ok(bytes.to_vec())
+}
+
 impl PluginManager {
     /// Download and install a plugin from a remote URL with optional SHA-256 integrity pinning.
     ///
@@ -131,25 +186,7 @@ impl PluginManager {
 
         let timeout = std::time::Duration::from_secs(self.download_timeout_secs);
 
-        let response = get_https_safe(url, timeout).await?;
-
-        if !response.status().is_success() {
-            return Err(PluginError::DownloadFailed {
-                url: url.to_owned(),
-                reason: format!("HTTP {}", response.status()),
-            });
-        }
-
-        let bytes = tokio::time::timeout(timeout, response.bytes())
-            .await
-            .map_err(|_| PluginError::DownloadFailed {
-                url: url.to_owned(),
-                reason: format!("download timed out after {}s", self.download_timeout_secs),
-            })?
-            .map_err(|e| PluginError::DownloadFailed {
-                url: url.to_owned(),
-                reason: format!("failed to read response body: {e}"),
-            })?;
+        let bytes = fetch_archive_bytes(url, timeout).await?;
 
         // Verify SHA-256 before extracting anything.
         if let Some(expected) = expected_sha256 {
@@ -415,20 +452,9 @@ impl PluginManager {
         url: &str,
         timeout: std::time::Duration,
     ) -> Result<Vec<u8>, String> {
-        let response = get_https_safe(url, timeout)
+        fetch_archive_bytes(url, timeout)
             .await
-            .map_err(|e| e.to_string())?;
-
-        if !response.status().is_success() {
-            return Err(format!("HTTP {}", response.status()));
-        }
-
-        let raw = tokio::time::timeout(timeout, response.bytes())
-            .await
-            .map_err(|_| format!("body read timed out after {}s", timeout.as_secs()))?
-            .map_err(|e| format!("failed to read body: {e}"))?;
-
-        Ok(raw.to_vec())
+            .map_err(|e| e.to_string())
     }
 
     /// Download a plugin archive and load it as a session-scoped ephemeral plugin.
@@ -541,12 +567,6 @@ async fn read_plugin_source(path: &std::path::Path) -> Option<PluginSource> {
     }
 }
 
-/// Maximum archive size accepted by [`download_and_extract`]: 50 MiB.
-///
-/// Checked against `Content-Length` before reading the body. Prevents memory exhaustion
-/// from oversized or gzip-bombed archives served by a malicious host.
-pub const MAX_ARCHIVE_BYTES: u64 = 52 * 1024 * 1024;
-
 /// Download the archive at `url`, verify its SHA-256 digest (when provided), and extract it
 /// into `dest`.
 ///
@@ -574,36 +594,9 @@ pub async fn download_and_extract(
 ) -> Result<(), PluginError> {
     let timeout = std::time::Duration::from_secs(timeout_secs);
 
-    // Refuses to follow any redirect that downgrades from https (B1).
-    let response = get_https_safe(url, timeout).await?;
-
-    if !response.status().is_success() {
-        return Err(PluginError::DownloadFailed {
-            url: url.to_owned(),
-            reason: format!("HTTP {}", response.status()),
-        });
-    }
-
-    // Reject oversized archives before reading the body (B3).
-    if let Some(content_length) = response.content_length()
-        && content_length > MAX_ARCHIVE_BYTES
-    {
-        return Err(PluginError::DownloadFailed {
-            url: url.to_owned(),
-            reason: format!("archive too large: {content_length} bytes (max {MAX_ARCHIVE_BYTES})"),
-        });
-    }
-
-    let bytes = tokio::time::timeout(timeout, response.bytes())
-        .await
-        .map_err(|_| PluginError::DownloadFailed {
-            url: url.to_owned(),
-            reason: format!("download timed out after {timeout_secs}s"),
-        })?
-        .map_err(|e| PluginError::DownloadFailed {
-            url: url.to_owned(),
-            reason: format!("failed to read response body: {e}"),
-        })?;
+    // Refuses to follow any redirect that downgrades from https (B1), and rejects oversized
+    // archives before reading the body (B3).
+    let bytes = fetch_archive_bytes(url, timeout).await?;
 
     if let Some(expected) = sha256 {
         let actual = crate::integrity::sha256_hex(&bytes);

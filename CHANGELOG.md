@@ -52,6 +52,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `reqwest::get(url)` global client instead, following up to 10 redirects with no
   scheme-downgrade restriction (#6099). The anti-downgrade client construction is now a
   shared `https_safe_client()` helper used by all three archive-download call sites.
+- `zeph-plugins`: `PluginManager::add_remote` and `download_archive` called `response.bytes()`
+  unconditionally with no upper bound on body size, allowing a malicious or compromised host to
+  exhaust process memory (#6108). Unlike `download_and_extract`, which already rejected an
+  oversized `Content-Length` before reading the body, these two call sites had no such check —
+  and `download_archive` backs the unattended `check_auto_updates` path that runs on every
+  process startup for any plugin with `auto_update = true`. All three call sites now share a
+  single `fetch_archive_bytes` helper that rejects a declared `Content-Length` above
+  `MAX_ARCHIVE_BYTES` (52 MiB) before reading the body, removing the duplicated inline check
+  that previously lived only in `download_and_extract`.
 - `zeph-mcp`: `PinningOAuthHttpClient` (#6074) resolved, SSRF-validated, and DNS-pinned
   the target host of every OAuth HTTP request, but its underlying `reqwest::Client`
   only disabled auto-following redirects for `OAuthHttpRedirectPolicy::Stop` requests
