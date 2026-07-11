@@ -1,2 +1,13 @@
 [build]
 warnings = "deny"
+
+# Local dev: disable sccache and use incremental compilation for fast rebuilds.
+# Safe for CI: every workflow already sets RUSTC_WRAPPER and CARGO_INCREMENTAL as
+# explicit job/step-level environment variables (see .github/workflows/*.yml), and
+# environment variables always take precedence over this config file. CI's own
+# `[profile.ci]` in Cargo.toml also pins `incremental = false` for `--profile ci`
+# builds, independent of this file. Do not add `rustflags` or `[profile.*.build-override]`
+# here — that combination previously leaked into CI and slowed it down (see commit
+# af1be7ba / reverted by cf75b63f). Applies to cargo build/test/nextest/clippy alike.
+rustc-wrapper = ""
+incremental = true
