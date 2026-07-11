@@ -86,13 +86,22 @@ pub enum IbctError {
 ///
 /// Multiple entries allow key rotation: old keys are kept until all in-flight tokens
 /// signed with them expire.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct IbctKey {
     /// Unique key identifier. Embedded in the token so the verifier can look it up.
     pub key_id: String,
     /// HMAC-SHA256 signing key (raw bytes, hex-encoded in config).
     #[serde(with = "hex_bytes")]
     pub key_bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for IbctKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IbctKey")
+            .field("key_id", &self.key_id)
+            .field("key_bytes", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// An Invocation-Bound Capability Token.
@@ -519,5 +528,15 @@ mod tests {
                 .verify(&[old_key, new_key], "https://agent.example.com", "task-1")
                 .is_ok()
         );
+    }
+
+    #[cfg(feature = "ibct")]
+    #[test]
+    fn ibct_key_debug_redacts_key_bytes() {
+        let key = test_key();
+        let debug = format!("{key:?}");
+        assert!(!debug.contains("super-secret-key-for-testing-only"));
+        assert!(debug.contains("k1"));
+        assert!(debug.contains("REDACTED"));
     }
 }

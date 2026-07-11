@@ -856,7 +856,10 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             max_history: state.sessions_max_history,
             title_max_chars: state.sessions_title_max_chars,
         },
-        database_url: state.database_url.clone(),
+        database_url: state
+            .database_url
+            .clone()
+            .map(zeph_common::secret::Secret::new),
         // Never write the Qdrant API key to config — it lives in the vault only.
         // The vault key ZEPH_QDRANT_API_KEY is resolved at runtime by resolve_secrets().
         qdrant_api_key: None,
@@ -2938,7 +2941,11 @@ mod tests {
         };
         let config = build_config(&state);
         assert_eq!(
-            config.memory.database_url.as_deref(),
+            config
+                .memory
+                .database_url
+                .as_ref()
+                .map(zeph_common::secret::Secret::expose),
             Some("postgres://localhost:5432/zeph"),
         );
         assert_eq!(

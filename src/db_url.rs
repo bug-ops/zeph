@@ -9,7 +9,8 @@ pub(crate) fn resolve_db_url(config: &zeph_core::config::Config) -> &str {
     config
         .memory
         .database_url
-        .as_deref()
+        .as_ref()
+        .map(zeph_common::secret::Secret::expose)
         .filter(|s| !s.is_empty())
         .unwrap_or(&config.memory.sqlite_path)
 }

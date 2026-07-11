@@ -218,7 +218,7 @@ impl SecretResolver for Config {
         }
         if let Some(val) = vault.get_secret("ZEPH_DATABASE_URL").await? {
             register_masked_secret(registry, "ZEPH_DATABASE_URL", &val);
-            self.memory.database_url = Some(val);
+            self.memory.database_url = Some(Secret::new(val));
         }
         if let Some(val) = vault.get_secret("ZEPH_QDRANT_API_KEY").await? {
             register_masked_secret(registry, "ZEPH_QDRANT_API_KEY", &val);

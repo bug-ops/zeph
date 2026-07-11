@@ -332,6 +332,18 @@ max_bot_chain_depth = 5
         assert_eq!(server.require_tls, client.require_tls);
         assert_eq!(server.ssrf_protection, client.ssrf_protection);
     }
+
+    #[test]
+    fn ibct_key_config_debug_redacts_key_hex() {
+        let key = IbctKeyConfig {
+            key_id: "primary".into(),
+            key_hex: "deadbeefdeadbeefdeadbeefdeadbeef".into(),
+        };
+        let debug = format!("{key:?}");
+        assert!(!debug.contains("deadbeefdeadbeefdeadbeefdeadbeef"));
+        assert!(debug.contains("primary"));
+        assert!(debug.contains("REDACTED"));
+    }
 }
 
 fn default_slack_port() -> u16 {
@@ -547,12 +559,21 @@ impl std::fmt::Debug for SlackConfig {
 /// An IBCT signing key entry in the A2A server configuration.
 ///
 /// Multiple entries allow key rotation: keep old keys until all tokens signed with them expire.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct IbctKeyConfig {
     /// Unique key identifier. Must match the `key_id` field in issued IBCT tokens.
     pub key_id: String,
     /// Hex-encoded HMAC-SHA256 signing key.
     pub key_hex: String,
+}
+
+impl std::fmt::Debug for IbctKeyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IbctKeyConfig")
+            .field("key_id", &self.key_id)
+            .field("key_hex", &"[REDACTED]")
+            .finish()
+    }
 }
 
 fn default_ibct_ttl() -> u64 {

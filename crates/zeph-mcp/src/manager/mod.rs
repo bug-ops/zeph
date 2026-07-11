@@ -45,7 +45,7 @@ const MAX_INJECTION_PENALTIES_PER_REGISTRATION: usize = 3;
 
 /// Transport type for MCP server connections.
 #[non_exhaustive]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub enum McpTransport {
     /// Stdio: spawn child process with command + args.
     Stdio {
@@ -67,6 +67,46 @@ pub enum McpTransport {
         callback_port: u16,
         client_name: String,
     },
+}
+
+impl std::fmt::Debug for McpTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stdio { command, args, env } => {
+                // Env values commonly carry secrets (e.g. `GITHUB_PERSONAL_ACCESS_TOKEN`) —
+                // keep var names for diagnostics, redact values.
+                let redacted: HashMap<&str, &str> =
+                    env.keys().map(|k| (k.as_str(), "[REDACTED]")).collect();
+                f.debug_struct("Stdio")
+                    .field("command", command)
+                    .field("args", args)
+                    .field("env", &redacted)
+                    .finish()
+            }
+            Self::Http { url, headers } => {
+                // Header values may carry vault-resolved secrets (e.g. `Authorization`)
+                // resolved by `build_transport` — keep keys for diagnostics, redact values.
+                let redacted: HashMap<&str, &str> =
+                    headers.keys().map(|k| (k.as_str(), "[REDACTED]")).collect();
+                f.debug_struct("Http")
+                    .field("url", url)
+                    .field("headers", &redacted)
+                    .finish()
+            }
+            Self::OAuth {
+                url,
+                scopes,
+                callback_port,
+                client_name,
+            } => f
+                .debug_struct("OAuth")
+                .field("url", url)
+                .field("scopes", scopes)
+                .field("callback_port", callback_port)
+                .field("client_name", client_name)
+                .finish(),
+        }
+    }
 }
 
 /// Connection parameters for a single MCP server consumed by [`McpManager`].

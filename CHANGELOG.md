@@ -28,6 +28,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   path — both without any authentication. Both handlers now override `requires_auth()` to return
   `true`, matching the same defect class fixed for `/image` in #5967; the commands remain
   available from local CLI/TUI/ACP-stdio sessions.
+- `fix(config,mcp,a2a)`: three more secret-bearing config/runtime structs no longer leak
+  vault-resolved credentials through plain `Debug`/`Serialize` derives (#5968, #5965, #5964).
+  `MemoryConfig::database_url` (the resolved Postgres connection string, including embedded
+  username/password) is now wrapped in `zeph_common::secret::Secret` and skipped on
+  serialization, mirroring the existing `qdrant_api_key` field; `IbctKeyConfig::key_hex`
+  (`zeph-config`) and `IbctKey::key_bytes` (`zeph-a2a`) — the A2A HMAC signing key material —
+  now hand-write a redacting `Debug` impl that prints only `key_id`; and `McpTransport`'s
+  `Http.headers` and `Stdio.env` values (which commonly carry resolved MCP server bearer
+  tokens / API keys) are now redacted in `Debug` output while keeping header/env-var names
+  visible for diagnostics — `ServerEntry`'s derived `Debug` picks up the fix automatically via
+  per-field delegation. `Serialize` was intentionally left unchanged for all three (needed for
+  TOML config round-tripping); resolved secrets can still appear in a JSON serialization of
+  these structs, tracked as a follow-up (#6006).
 - `fix(commands)`: `/image` now requires a trusted (local) session, closing a remote arbitrary
   file read (#5967, CWE-284). `ImageCommand` previously left `requires_auth()` at its default
   `false`, so Telegram/Discord/Slack/gateway callers — none of which are trusted by

@@ -318,8 +318,12 @@ pub struct MemoryConfig {
     /// Can be overridden by the vault key `ZEPH_DATABASE_URL`.
     /// Example: `postgres://user:pass@localhost:5432/zeph`
     /// Default: `None` (uses `sqlite_path` instead).
-    #[serde(default)]
-    pub database_url: Option<String>,
+    ///
+    /// The value is wrapped in [`Secret`] to prevent accidental logging — it commonly
+    /// embeds a username and password. `skip_serializing` prevents it from being written
+    /// back to TOML on config save, matching [`qdrant_api_key`](Self::qdrant_api_key).
+    #[serde(default, skip_serializing)]
+    pub database_url: Option<Secret>,
     /// Cost-sensitive store routing (#2444).
     ///
     /// When `store_routing.enabled = true`, query intent is classified and routed to

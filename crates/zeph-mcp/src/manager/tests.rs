@@ -227,6 +227,24 @@ fn transport_stdio_debug() {
 }
 
 #[test]
+fn transport_stdio_debug_redacts_env_values() {
+    let mut env = HashMap::new();
+    env.insert(
+        "GITHUB_PERSONAL_ACCESS_TOKEN".to_string(),
+        "ghp_super_secret_token".to_string(),
+    );
+    let transport = McpTransport::Stdio {
+        command: "npx".into(),
+        args: vec![],
+        env,
+    };
+    let dbg = format!("{transport:?}");
+    assert!(!dbg.contains("ghp_super_secret_token"));
+    assert!(dbg.contains("GITHUB_PERSONAL_ACCESS_TOKEN"));
+    assert!(dbg.contains("REDACTED"));
+}
+
+#[test]
 fn transport_http_debug() {
     let transport = McpTransport::Http {
         url: "http://example.com".into(),
@@ -235,6 +253,60 @@ fn transport_http_debug() {
     let dbg = format!("{transport:?}");
     assert!(dbg.contains("Http"));
     assert!(dbg.contains("http://example.com"));
+}
+
+#[test]
+fn transport_http_debug_redacts_header_values() {
+    let mut headers = HashMap::new();
+    headers.insert(
+        "Authorization".to_string(),
+        "Bearer sk-super-secret-token".to_string(),
+    );
+    let transport = McpTransport::Http {
+        url: "http://example.com".into(),
+        headers,
+    };
+    let dbg = format!("{transport:?}");
+    assert!(!dbg.contains("sk-super-secret-token"));
+    assert!(dbg.contains("Authorization"));
+    assert!(dbg.contains("REDACTED"));
+}
+
+#[test]
+fn server_entry_debug_redacts_http_header_values() {
+    let mut entry = make_http_entry("secret-header-test");
+    let mut headers = HashMap::new();
+    headers.insert(
+        "Authorization".to_string(),
+        "Bearer sk-super-secret-token".to_string(),
+    );
+    entry.transport = McpTransport::Http {
+        url: "http://127.0.0.1:1/nonexistent".into(),
+        headers,
+    };
+    let dbg = format!("{entry:?}");
+    assert!(!dbg.contains("sk-super-secret-token"));
+    assert!(dbg.contains("Authorization"));
+    assert!(dbg.contains("REDACTED"));
+}
+
+#[test]
+fn server_entry_debug_redacts_stdio_env_values() {
+    let mut entry = make_entry("secret-env-test");
+    let mut env = HashMap::new();
+    env.insert(
+        "GITHUB_PERSONAL_ACCESS_TOKEN".to_string(),
+        "ghp_super_secret_token".to_string(),
+    );
+    entry.transport = McpTransport::Stdio {
+        command: "nonexistent-mcp-binary".into(),
+        args: Vec::new(),
+        env,
+    };
+    let dbg = format!("{entry:?}");
+    assert!(!dbg.contains("ghp_super_secret_token"));
+    assert!(dbg.contains("GITHUB_PERSONAL_ACCESS_TOKEN"));
+    assert!(dbg.contains("REDACTED"));
 }
 
 fn make_http_entry(id: &str) -> ServerEntry {

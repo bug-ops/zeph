@@ -339,11 +339,10 @@ fn check_fs_writable(name: &str, dir: &Path) -> CheckResult {
 }
 
 fn sqlite_parent_path(config: &zeph_core::config::Config) -> PathBuf {
-    let db_path = config
-        .memory
-        .database_url
-        .as_deref()
-        .unwrap_or(&config.memory.sqlite_path);
+    let db_path = config.memory.database_url.as_ref().map_or(
+        config.memory.sqlite_path.as_str(),
+        zeph_common::secret::Secret::expose,
+    );
     Path::new(db_path)
         .parent()
         .unwrap_or(Path::new("."))
@@ -352,11 +351,10 @@ fn sqlite_parent_path(config: &zeph_core::config::Config) -> PathBuf {
 
 async fn check_sqlite(config: &zeph_core::config::Config, timeout_secs: u64) -> CheckResult {
     let start = Instant::now();
-    let db_path = config
-        .memory
-        .database_url
-        .as_deref()
-        .unwrap_or(&config.memory.sqlite_path);
+    let db_path = config.memory.database_url.as_ref().map_or(
+        config.memory.sqlite_path.as_str(),
+        zeph_common::secret::Secret::expose,
+    );
 
     // Strip the sqlite:// or sqlite:/// prefix to get the raw file path.
     let file_path = db_path

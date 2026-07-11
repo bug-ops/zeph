@@ -400,12 +400,10 @@ impl AppBuilder {
     ) -> Result<SemanticMemory, BootstrapError> {
         let embed_model = self.embedding_model();
         // Resolve the database path: prefer database_url (PostgreSQL) over sqlite_path.
-        let db_path: &str = self
-            .config
-            .memory
-            .database_url
-            .as_deref()
-            .unwrap_or(&self.config.memory.sqlite_path);
+        let db_path: &str = self.config.memory.database_url.as_ref().map_or(
+            self.config.memory.sqlite_path.as_str(),
+            zeph_common::secret::Secret::expose,
+        );
 
         if zeph_db::is_postgres_url(db_path) {
             return Err(BootstrapError::Memory(
