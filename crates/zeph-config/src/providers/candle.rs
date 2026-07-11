@@ -75,7 +75,7 @@ pub enum CandleDevice {
 /// agent runs inference locally via `HuggingFace` Candle rather than a remote API.
 /// For inline provider definitions inside `[[llm.providers]]`, use
 /// [`CandleInlineConfig`] instead.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CandleConfig {
     #[serde(default)]
     pub source: CandleSource,
@@ -110,6 +110,22 @@ pub struct CandleConfig {
 
 fn default_inference_timeout_secs() -> u64 {
     120
+}
+
+impl std::fmt::Debug for CandleConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CandleConfig")
+            .field("source", &self.source)
+            .field("local_path", &self.local_path)
+            .field("filename", &self.filename)
+            .field("chat_template", &self.chat_template)
+            .field("device", &self.device)
+            .field("embedding_repo", &self.embedding_repo)
+            .field("hf_token", &self.hf_token.as_ref().map(|_| "[REDACTED]"))
+            .field("generation", &self.generation)
+            .field("inference_timeout_secs", &self.inference_timeout_secs)
+            .finish()
+    }
 }
 
 /// Sampling / generation parameters for Candle local inference.
@@ -178,7 +194,7 @@ impl Default for GenerationParams {
 }
 /// Inline candle config for use inside `ProviderEntry`.
 /// Re-uses the generation params from `CandleConfig`.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct CandleInlineConfig {
     #[serde(default)]
     pub source: CandleSource,
@@ -231,5 +247,83 @@ impl Default for CandleInlineConfig {
             generation: GenerationParams::default(),
             inference_timeout_secs: default_inference_timeout_secs(),
         }
+    }
+}
+
+impl std::fmt::Debug for CandleInlineConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CandleInlineConfig")
+            .field("source", &self.source)
+            .field("local_path", &self.local_path)
+            .field("filename", &self.filename)
+            .field("chat_model_sha256", &self.chat_model_sha256)
+            .field("chat_template", &self.chat_template)
+            .field("device", &self.device)
+            .field("embedding_repo", &self.embedding_repo)
+            .field("embedding_model_sha256", &self.embedding_model_sha256)
+            .field("hf_token", &self.hf_token.as_ref().map(|_| "[REDACTED]"))
+            .field("generation", &self.generation)
+            .field("inference_timeout_secs", &self.inference_timeout_secs)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candle_config_debug_redacts_hf_token() {
+        let cfg = CandleConfig {
+            source: CandleSource::default(),
+            local_path: String::new(),
+            filename: None,
+            chat_template: default_chat_template(),
+            device: CandleDevice::default(),
+            embedding_repo: None,
+            hf_token: Some("hf_SUPERSECRET".to_owned()),
+            generation: GenerationParams::default(),
+            inference_timeout_secs: default_inference_timeout_secs(),
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("hf_SUPERSECRET"));
+        assert!(dbg.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn candle_config_debug_none_hf_token() {
+        let cfg = CandleConfig {
+            source: CandleSource::default(),
+            local_path: String::new(),
+            filename: None,
+            chat_template: default_chat_template(),
+            device: CandleDevice::default(),
+            embedding_repo: None,
+            hf_token: None,
+            generation: GenerationParams::default(),
+            inference_timeout_secs: default_inference_timeout_secs(),
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("[REDACTED]"));
+        assert!(dbg.contains("hf_token: None"));
+    }
+
+    #[test]
+    fn candle_inline_config_debug_redacts_hf_token() {
+        let cfg = CandleInlineConfig {
+            hf_token: Some("hf_SUPERSECRET".to_owned()),
+            ..CandleInlineConfig::default()
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("hf_SUPERSECRET"));
+        assert!(dbg.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn candle_inline_config_debug_none_hf_token() {
+        let cfg = CandleInlineConfig::default();
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("[REDACTED]"));
+        assert!(dbg.contains("hf_token: None"));
     }
 }

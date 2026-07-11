@@ -2287,3 +2287,20 @@ fn set_reasoning_effort_rejects_invalid_value() {
         "invalid value must be rejected and field must remain None"
     );
 }
+
+#[test]
+fn openai_config_debug_redacts_api_key() {
+    let cfg = OpenAiConfig {
+        api_key: "sk-SUPERSECRET".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-4o".into(),
+        max_tokens: 4096,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+    };
+    let dbg = format!("{cfg:?}");
+    assert!(!dbg.contains("sk-SUPERSECRET"));
+    assert!(dbg.contains("<redacted>"));
+}

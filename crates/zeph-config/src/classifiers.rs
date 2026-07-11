@@ -78,7 +78,7 @@ pub enum InjectionEnforcementMode {
 ///
 /// When `enabled = false` (the default), all classifier code is bypassed and the existing
 /// regex-based detection runs unchanged.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Deserialize, Serialize)]
 pub struct ClassifiersConfig {
     /// Master switch. When `false`, classifiers are never loaded or invoked.
     #[serde(default)]
@@ -250,6 +250,32 @@ impl Default for ClassifiersConfig {
             pii_ner_allowlist: default_pii_ner_allowlist(),
             pii_ner_circuit_breaker: default_pii_ner_circuit_breaker(),
         }
+    }
+}
+
+impl std::fmt::Debug for ClassifiersConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClassifiersConfig")
+            .field("enabled", &self.enabled)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("hf_token", &self.hf_token.as_ref().map(|_| "[REDACTED]"))
+            .field("scan_user_input", &self.scan_user_input)
+            .field("injection_model", &self.injection_model)
+            .field("enforcement_mode", &self.enforcement_mode)
+            .field("injection_threshold_soft", &self.injection_threshold_soft)
+            .field("injection_threshold", &self.injection_threshold)
+            .field("injection_model_sha256", &self.injection_model_sha256)
+            .field("three_class_model", &self.three_class_model)
+            .field("three_class_threshold", &self.three_class_threshold)
+            .field("three_class_model_sha256", &self.three_class_model_sha256)
+            .field("pii_enabled", &self.pii_enabled)
+            .field("pii_model", &self.pii_model)
+            .field("pii_threshold", &self.pii_threshold)
+            .field("pii_model_sha256", &self.pii_model_sha256)
+            .field("pii_ner_max_chars", &self.pii_ner_max_chars)
+            .field("pii_ner_allowlist", &self.pii_ner_allowlist)
+            .field("pii_ner_circuit_breaker", &self.pii_ner_circuit_breaker)
+            .finish()
     }
 }
 
@@ -511,5 +537,24 @@ mod tests {
     fn pii_ner_circuit_breaker_missing_uses_default() {
         let cfg: ClassifiersConfig = toml::from_str("").unwrap();
         assert_eq!(cfg.pii_ner_circuit_breaker, 2);
+    }
+
+    #[test]
+    fn classifiers_config_debug_redacts_hf_token() {
+        let cfg = ClassifiersConfig {
+            hf_token: Some("hf_SUPERSECRET".to_owned()),
+            ..ClassifiersConfig::default()
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("hf_SUPERSECRET"));
+        assert!(dbg.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn classifiers_config_debug_none_hf_token() {
+        let cfg = ClassifiersConfig::default();
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("[REDACTED]"));
+        assert!(dbg.contains("hf_token: None"));
     }
 }

@@ -91,7 +91,7 @@ pub enum CompletionTokensParam {
 /// };
 /// let provider = OpenAiProvider::new(cfg);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAiConfig {
     /// Secret API key sent in the `Authorization: Bearer` header.
     pub api_key: String,
@@ -119,6 +119,21 @@ pub struct OpenAiConfig {
     /// prefix table. Set explicitly for models the table does not recognise (e.g. fine-tuned
     /// reasoning models whose names do not start with `o` + digit).
     pub completion_tokens_param: Option<CompletionTokensParam>,
+}
+
+impl fmt::Debug for OpenAiConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenAiConfig")
+            .field("api_key", &"<redacted>")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .field("embedding_model", &self.embedding_model)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .field("context_window", &self.context_window)
+            .field("completion_tokens_param", &self.completion_tokens_param)
+            .finish()
+    }
 }
 
 use crate::provider::{

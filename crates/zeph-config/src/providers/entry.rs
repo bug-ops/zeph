@@ -56,7 +56,7 @@ pub struct CocoonPricing {
 ///
 /// Provider-specific fields use `#[serde(default)]` and are ignored by backends
 /// that do not use them (flat-union pattern).
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct ProviderEntry {
     /// Required: provider backend type.
@@ -231,6 +231,45 @@ impl Default for ProviderEntry {
             instruction_file: None,
             max_concurrent: None,
         }
+    }
+}
+
+impl std::fmt::Debug for ProviderEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderEntry")
+            .field("provider_type", &self.provider_type)
+            .field("name", &self.name)
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("max_tokens", &self.max_tokens)
+            .field("embedding_model", &self.embedding_model)
+            .field("stt_model", &self.stt_model)
+            .field("stt_model_sha256", &self.stt_model_sha256)
+            .field("embed", &self.embed)
+            .field("default", &self.default)
+            .field("thinking", &self.thinking)
+            .field("server_compaction", &self.server_compaction)
+            .field("enable_extended_context", &self.enable_extended_context)
+            .field("prompt_cache_ttl", &self.prompt_cache_ttl)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .field("thinking_level", &self.thinking_level)
+            .field("thinking_budget", &self.thinking_budget)
+            .field("include_thoughts", &self.include_thoughts)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("candle", &self.candle)
+            .field("vision_model", &self.vision_model)
+            .field("gonka_nodes", &self.gonka_nodes)
+            .field("gonka_chain_prefix", &self.gonka_chain_prefix)
+            .field("cocoon_client_url", &self.cocoon_client_url)
+            .field(
+                "cocoon_access_hash",
+                &self.cocoon_access_hash.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("cocoon_health_check", &self.cocoon_health_check)
+            .field("cocoon_pricing", &self.cocoon_pricing)
+            .field("instruction_file", &self.instruction_file)
+            .field("max_concurrent", &self.max_concurrent)
+            .finish()
     }
 }
 
@@ -586,4 +625,44 @@ pub fn validate_pool(entries: &[ProviderEntry]) -> Result<(), crate::error::Conf
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ProviderKind;
+
+    #[test]
+    fn provider_entry_debug_redacts_api_key() {
+        let entry = ProviderEntry {
+            api_key: Some("sk-SUPERSECRET".to_owned()),
+            ..ProviderEntry::default()
+        };
+        let dbg = format!("{entry:?}");
+        assert!(!dbg.contains("sk-SUPERSECRET"));
+        assert!(dbg.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn provider_entry_debug_none_api_key() {
+        let entry = ProviderEntry::default();
+        let dbg = format!("{entry:?}");
+        assert!(!dbg.contains("[REDACTED]"));
+        assert!(dbg.contains("api_key: None"));
+    }
+
+    #[test]
+    fn provider_entry_debug_redacts_nested_candle_hf_token() {
+        let entry = ProviderEntry {
+            provider_type: ProviderKind::Candle,
+            candle: Some(super::super::CandleInlineConfig {
+                hf_token: Some("hf_SUPERSECRET".to_owned()),
+                ..super::super::CandleInlineConfig::default()
+            }),
+            ..ProviderEntry::default()
+        };
+        let dbg = format!("{entry:?}");
+        assert!(!dbg.contains("hf_SUPERSECRET"));
+        assert!(dbg.contains("[REDACTED]"));
+    }
 }

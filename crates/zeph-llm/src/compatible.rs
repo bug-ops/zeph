@@ -50,7 +50,7 @@ use crate::provider::{
 /// };
 /// let provider = CompatibleProvider::new(cfg);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CompatibleConfig {
     /// Human-readable provider name used in logs and [`LlmProvider::name`].
     pub provider_name: String,
@@ -70,6 +70,20 @@ pub struct CompatibleConfig {
     /// prefix table. Set explicitly for models the table does not recognise (e.g. fine-tuned
     /// reasoning models whose names do not start with `o` + digit).
     pub completion_tokens_param: Option<CompletionTokensParam>,
+}
+
+impl fmt::Debug for CompatibleConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CompatibleConfig")
+            .field("provider_name", &self.provider_name)
+            .field("api_key", &"<redacted>")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .field("embedding_model", &self.embedding_model)
+            .field("completion_tokens_param", &self.completion_tokens_param)
+            .finish()
+    }
 }
 
 /// [`LlmProvider`] adapter for OpenAI-compatible REST endpoints.
@@ -498,5 +512,21 @@ mod tests {
     #[test]
     fn last_reasoning_tokens_initially_none() {
         assert!(test_provider().last_reasoning_tokens().is_none());
+    }
+
+    #[test]
+    fn compatible_config_debug_redacts_api_key() {
+        let cfg = CompatibleConfig {
+            provider_name: "together-ai".into(),
+            api_key: "sk-SUPERSECRET".into(),
+            base_url: "https://api.together.xyz/v1".into(),
+            model: "meta-llama/Llama-3.3-70B-Instruct-Turbo".into(),
+            max_tokens: 4096,
+            embedding_model: None,
+            completion_tokens_param: None,
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("sk-SUPERSECRET"));
+        assert!(dbg.contains("<redacted>"));
     }
 }

@@ -898,7 +898,7 @@ impl Default for CostConfig {
 /// max_body_size = 1048576
 /// webhook_send_timeout_secs = 5
 /// ```
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct GatewayConfig {
     /// Enable the HTTP gateway. Default: `false`.
     #[serde(default)]
@@ -952,6 +952,24 @@ impl Default for GatewayConfig {
             webhook_send_timeout_secs: default_gateway_webhook_send_timeout_secs(),
             trusted_proxy_cidrs: Vec::new(),
         }
+    }
+}
+
+impl std::fmt::Debug for GatewayConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GatewayConfig")
+            .field("enabled", &self.enabled)
+            .field("bind", &self.bind)
+            .field("port", &self.port)
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("rate_limit", &self.rate_limit)
+            .field("max_body_size", &self.max_body_size)
+            .field("webhook_send_timeout_secs", &self.webhook_send_timeout_secs)
+            .field("trusted_proxy_cidrs", &self.trusted_proxy_cidrs)
+            .finish()
     }
 }
 
@@ -1320,6 +1338,25 @@ mod tests {
             ..GatewayConfig::default()
         };
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn gateway_config_debug_redacts_auth_token() {
+        let cfg = GatewayConfig {
+            auth_token: Some("sk-SUPERSECRET".to_owned()),
+            ..GatewayConfig::default()
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("sk-SUPERSECRET"));
+        assert!(dbg.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn gateway_config_debug_none_auth_token() {
+        let cfg = GatewayConfig::default();
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("[REDACTED]"));
+        assert!(dbg.contains("auth_token: None"));
     }
 
     #[test]

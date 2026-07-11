@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Security
+
+- `zeph-config` / `zeph-llm`: removed derived `Debug` from 7 secret-bearing config structs that
+  printed their plaintext secret verbatim in any `{:?}` output — logs, panics, error chains
+  (#5952, #5963). `GatewayConfig::auth_token`, `ProviderEntry::api_key`/`cocoon_access_hash`,
+  `ClassifiersConfig::hf_token`, `CandleConfig::hf_token`, `CandleInlineConfig::hf_token`,
+  `OpenAiConfig::api_key`, and `CompatibleConfig::api_key` are now redacted (`"[REDACTED]"` in
+  `zeph-config`, `"<redacted>"` in `zeph-llm`, matching each crate's existing manual-`Debug`
+  precedent) by a hand-written `impl Debug` that still lists every other field. `Option<String>`
+  secrets preserve the `None`-vs-`Some` distinction. `CandleInlineConfig` is embedded inside
+  `ProviderEntry`, so both were fixed together to avoid a transitive leak through nested `Debug`.
+
 ### Fixed
 
 - `fix(commands)`: `/image` now requires a trusted (local) session, closing a remote arbitrary
