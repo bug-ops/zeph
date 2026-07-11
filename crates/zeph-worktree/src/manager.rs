@@ -13,7 +13,7 @@ use zeph_config::{WorktreeBaseRef, WorktreeConfig};
 use crate::{
     error::WorktreeError,
     git_runner::GitRunner,
-    handle::{DETACHED_BRANCH_SENTINEL, WorktreeHandle},
+    handle::{BARE_WORKTREE_SENTINEL, DETACHED_BRANCH_SENTINEL, StaleWorktree, WorktreeHandle},
     sanitize::{canonicalize_root, validate_branch_component},
 };
 
@@ -190,6 +190,16 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// path that no longer exists on disk, even if the branch prune step
     /// fails below.
     ///
+    /// This issues a single `git worktree remove --force`, which bypasses
+    /// git's "refuse to remove a dirty working tree" guard but — deliberately
+    /// — does *not* override an explicit `git worktree lock`; git demands a
+    /// second `-f` (`remove -f -f`) for that. Callers deciding *whether* to
+    /// call `remove` on a worktree not created by this session (e.g.
+    /// `zeph worktree clean`) MUST gate on
+    /// [`StaleWorktree::is_safe_to_force_remove`][crate::StaleWorktree::is_safe_to_force_remove]
+    /// or an explicit operator override first — `remove` itself performs no
+    /// such check (#6055).
+    ///
     /// # Errors
     ///
     /// Returns [`WorktreeError::GitCommand`] if either git command fails. If
@@ -272,11 +282,17 @@ impl<R: GitRunner> WorktreeManager<R> {
             .clone()
     }
 
-    /// Reads the git worktree registry and returns handles for worktrees that
-    /// exist on disk but are not in the current session's in-memory list.
+    /// Reads the git worktree registry and returns [`StaleWorktree`] entries for
+    /// worktrees that exist on disk but are not in the current session's
+    /// in-memory list.
     ///
     /// This is used at startup (and via `worktree clean`) to recover from a
-    /// previous crash that left stale worktrees behind.
+    /// previous crash that left stale worktrees behind. Each entry carries
+    /// git's own `prunable` verdict (see [`StaleWorktree::is_safe_to_force_remove`])
+    /// so callers can distinguish a worktree whose directory is already gone
+    /// from one that is merely untracked by *this* process — the latter may
+    /// belong to another, concurrently running session and MUST NOT be
+    /// force-removed without an explicit operator override (#6055).
     ///
     /// # Errors
     ///
@@ -287,14 +303,14 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// ```no_run
     /// # async fn example(mgr: &zeph_worktree::DefaultWorktreeManager) -> Result<(), zeph_worktree::WorktreeError> {
     /// let stale = mgr.reconcile().await?;
-    /// for h in &stale {
-    ///     println!("stale worktree: {:?}", h.path);
+    /// for s in &stale {
+    ///     println!("stale worktree: {:?} (safe to force-remove: {})", s.handle.path, s.is_safe_to_force_remove());
     /// }
     /// # Ok(())
     /// # }
     /// ```
     #[instrument(name = "worktree.reconcile", skip(self))]
-    pub async fn reconcile(&self) -> Result<Vec<WorktreeHandle>, WorktreeError> {
+    pub async fn reconcile(&self) -> Result<Vec<StaleWorktree>, WorktreeError> {
         let out = self
             .runner
             .run(&["worktree", "list", "--porcelain"], &self.repo_root)
@@ -302,7 +318,7 @@ impl<R: GitRunner> WorktreeManager<R> {
         check_git_status(&out, "worktree list")?;
 
         let output_str = String::from_utf8_lossy(&out.stdout);
-        let git_worktrees = parse_worktree_list_porcelain(&output_str);
+        let raw_entries = parse_worktree_list_porcelain(&output_str);
 
         let session_paths: std::collections::HashSet<PathBuf> = self
             .handles
@@ -312,11 +328,28 @@ impl<R: GitRunner> WorktreeManager<R> {
             .map(|h| h.path.clone())
             .collect();
 
-        let stale = git_worktrees
+        let stale = raw_entries
             .into_iter()
-            .filter(|h| !session_paths.contains(&h.path))
+            .filter(|e| !session_paths.contains(&e.path))
             // Skip the main worktree (repo_root itself).
-            .filter(|h| h.path != self.repo_root)
+            .filter(|e| e.path != self.repo_root)
+            .map(|e| {
+                let branch_name = match (e.branch, e.is_bare) {
+                    (Some(branch), _) => branch,
+                    (None, true) => BARE_WORKTREE_SENTINEL.to_string(),
+                    (None, false) => DETACHED_BRANCH_SENTINEL.to_string(),
+                };
+                StaleWorktree {
+                    handle: WorktreeHandle {
+                        path: e.path,
+                        branch_name,
+                        base_ref_resolved: String::new(),
+                        subagent_id: String::new(),
+                        created_at: SystemTime::UNIX_EPOCH,
+                    },
+                    prunable_reason: e.prunable_reason,
+                }
+            })
             .collect();
 
         Ok(stale)
@@ -353,60 +386,109 @@ impl<R: GitRunner> WorktreeManager<R> {
     }
 }
 
-/// Parses the output of `git worktree list --porcelain` into [`WorktreeHandle`]s.
+/// Intermediate result of parsing one `git worktree list --porcelain` block,
+/// before [`reconcile`][WorktreeManager::reconcile] resolves it into a
+/// [`StaleWorktree`].
 ///
-/// Each worktree block in the porcelain output looks like either:
+/// Kept private to this module: it exists only so the parser doesn't have to
+/// build a full [`WorktreeHandle`] (with placeholder `base_ref_resolved` /
+/// `subagent_id` / `created_at`) before the `branch_name` fallback (detached
+/// vs. bare vs. real branch) and the `prunable` verdict are both known.
+struct RawWorktreeEntry {
+    /// Absolute path from the `worktree <path>` line.
+    path: PathBuf,
+    /// `Some(name)` from a `branch refs/heads/<name>` line; `None` for a
+    /// `detached` or `bare` block.
+    branch: Option<String>,
+    /// `true` if this block's line was `bare` (the main worktree of a bare
+    /// repository) rather than `branch`/`detached`.
+    is_bare: bool,
+    /// `Some(reason)` from a `prunable <reason>` line — git's own signal that
+    /// this worktree's directory or `.git` gitdir-link is gone/broken.
+    prunable_reason: Option<String>,
+}
+
+/// Parses the output of `git worktree list --porcelain` into [`RawWorktreeEntry`]s.
+///
+/// Each worktree block in the porcelain output looks like one of:
 /// ```text
 /// worktree /path/to/worktree
 /// HEAD deadbeef...
 /// branch refs/heads/branch-name
 ///
 /// ```
-/// or, for a worktree on a detached `HEAD`:
+/// for a worktree on a detached `HEAD`:
 /// ```text
 /// worktree /path/to/worktree
 /// HEAD deadbeef...
 /// detached
 ///
 /// ```
+/// for the main worktree of a bare repository (#6052 — no `HEAD` line at all):
+/// ```text
+/// worktree /path/to/bare.git
+/// bare
+///
+/// ```
+/// or, when the directory/gitdir-link is gone or broken, with an extra line
+/// regardless of the block's other contents:
+/// ```text
+/// prunable gitdir file points to non-existent location
+/// ```
 /// A block is flushed as soon as its `worktree <path>` line is seen (i.e. when
 /// the *next* block starts, or at end of output) — regardless of whether a
-/// `branch` line was present. Detached-HEAD blocks get
-/// [`DETACHED_BRANCH_SENTINEL`] as their `branch_name` so they are not silently
-/// dropped (#5936).
-fn parse_worktree_list_porcelain(output: &str) -> Vec<WorktreeHandle> {
+/// `branch` line was present. Detached-HEAD and bare blocks are never silently
+/// dropped (#5936, #6052).
+fn parse_worktree_list_porcelain(output: &str) -> Vec<RawWorktreeEntry> {
     let mut result = Vec::new();
     let mut path: Option<PathBuf> = None;
     let mut branch: Option<String> = None;
+    let mut is_bare = false;
+    let mut prunable_reason: Option<String> = None;
 
     for line in output.lines() {
         if let Some(p) = line.strip_prefix("worktree ") {
-            if let Some(handle) = flush_worktree_block(path.take(), branch.take()) {
-                result.push(handle);
+            if let Some(entry) =
+                flush_worktree_block(path.take(), branch.take(), is_bare, prunable_reason.take())
+            {
+                result.push(entry);
             }
+            is_bare = false;
             path = Some(PathBuf::from(p));
         } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
             branch = Some(b.to_string());
+        } else if let Some(reason) = line.strip_prefix("prunable ") {
+            prunable_reason = Some(reason.to_string());
+        } else if line == "bare" {
+            is_bare = true;
         }
+        // "locked ..." lines need no new handling here — a locked worktree is
+        // already protected by git's own single-`--force` refusal to remove
+        // it (see `WorktreeManager::remove`'s doc comment); "detached" lines
+        // need no explicit match either, since the `branch = None, is_bare =
+        // false` fallback already resolves to `DETACHED_BRANCH_SENTINEL`.
     }
 
-    if let Some(handle) = flush_worktree_block(path, branch) {
-        result.push(handle);
+    if let Some(entry) = flush_worktree_block(path, branch, is_bare, prunable_reason) {
+        result.push(entry);
     }
 
     result
 }
 
-/// Builds a [`WorktreeHandle`] from one parsed porcelain block, if a
-/// `worktree <path>` line was seen. `branch` is `None` for detached-`HEAD`
-/// worktrees and resolves to [`DETACHED_BRANCH_SENTINEL`].
-fn flush_worktree_block(path: Option<PathBuf>, branch: Option<String>) -> Option<WorktreeHandle> {
-    path.map(|wt_path| WorktreeHandle {
+/// Builds a [`RawWorktreeEntry`] from one parsed porcelain block, if a
+/// `worktree <path>` line was seen.
+fn flush_worktree_block(
+    path: Option<PathBuf>,
+    branch: Option<String>,
+    is_bare: bool,
+    prunable_reason: Option<String>,
+) -> Option<RawWorktreeEntry> {
+    path.map(|wt_path| RawWorktreeEntry {
         path: wt_path,
-        branch_name: branch.unwrap_or_else(|| DETACHED_BRANCH_SENTINEL.to_string()),
-        base_ref_resolved: String::new(),
-        subagent_id: String::new(),
-        created_at: SystemTime::UNIX_EPOCH,
+        branch,
+        is_bare,
+        prunable_reason,
     })
 }
 
@@ -916,7 +998,7 @@ mod tests {
         let stale = mgr.reconcile().await.unwrap();
         // The main worktree (repo_root) is filtered out; only agent worktrees remain.
         assert_eq!(stale.len(), 1);
-        assert_eq!(stale[0].branch_name, "agent/agent-1");
+        assert_eq!(stale[0].handle.branch_name, "agent/agent-1");
     }
 
     /// Regression test for #5936: a `detached` line (instead of `branch
@@ -934,8 +1016,11 @@ mod tests {
         let mgr = make_manager(&dir, runner).await;
         let stale = mgr.reconcile().await.unwrap();
         assert_eq!(stale.len(), 1);
-        assert_eq!(stale[0].branch_name, DETACHED_BRANCH_SENTINEL);
-        assert_eq!(stale[0].path, dir.path().join("worktrees/detached-1"));
+        assert_eq!(stale[0].handle.branch_name, DETACHED_BRANCH_SENTINEL);
+        assert_eq!(
+            stale[0].handle.path,
+            dir.path().join("worktrees/detached-1")
+        );
     }
 
     /// A detached-HEAD block that is also the *last* block in the porcelain
@@ -947,7 +1032,8 @@ mod tests {
         let result = parse_worktree_list_porcelain(output);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].path, PathBuf::from("/repo"));
-        assert_eq!(result[0].branch_name, DETACHED_BRANCH_SENTINEL);
+        assert_eq!(result[0].branch, None);
+        assert!(!result[0].is_bare);
     }
 
     /// Two secondary detached-HEAD worktrees back to back (no `branch` line
@@ -960,9 +1046,9 @@ mod tests {
         let result = parse_worktree_list_porcelain(output);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].path, PathBuf::from("/repo/wt-a"));
-        assert_eq!(result[0].branch_name, DETACHED_BRANCH_SENTINEL);
+        assert_eq!(result[0].branch, None);
         assert_eq!(result[1].path, PathBuf::from("/repo/wt-b"));
-        assert_eq!(result[1].branch_name, DETACHED_BRANCH_SENTINEL);
+        assert_eq!(result[1].branch, None);
     }
 
     /// Regression test for #5936: a repo where *every* worktree — including
@@ -984,11 +1070,14 @@ mod tests {
         let mgr = make_manager(&dir, runner).await;
         let stale = mgr.reconcile().await.unwrap();
         assert_eq!(stale.len(), 1, "main worktree filtered out by path only");
-        assert_eq!(stale[0].branch_name, DETACHED_BRANCH_SENTINEL);
-        assert_eq!(stale[0].path, dir.path().join("worktrees/detached-2"));
+        assert_eq!(stale[0].handle.branch_name, DETACHED_BRANCH_SENTINEL);
+        assert_eq!(
+            stale[0].handle.path,
+            dir.path().join("worktrees/detached-2")
+        );
     }
 
-    /// **Finding for reviewer**: `git worktree list --porcelain` emits a
+    /// Regression test for #6052: `git worktree list --porcelain` emits a
     /// `bare` line (not `branch` or `detached`) for the main worktree of a
     /// bare repository:
     /// ```text
@@ -997,25 +1086,89 @@ mod tests {
     ///
     /// ```
     /// (confirmed against real `git worktree list --porcelain` output, git
-    /// 2.50.1 — no `HEAD` line is emitted for bare worktrees at all).
-    ///
-    /// Since #5936's fix flushes a block on *any* `worktree <path>` line
-    /// regardless of what follows, a `bare` block is now also flushed and
-    /// mislabeled with [`DETACHED_BRANCH_SENTINEL`] — even though a bare
-    /// worktree is semantically distinct from a detached-`HEAD` worktree.
-    /// This test documents *current* behavior; it is not a statement that
-    /// the behavior is correct. Neither `spec.md` nor `srs.md` for spec-063
-    /// mentions bare-repo worktrees at all, so this is an unspecified gap,
-    /// not a spec violation — but see the tester handoff for why it can
-    /// still cause a misleading `remove()` outcome downstream.
+    /// 2.50.1 — no `HEAD` line is emitted for bare worktrees at all). The
+    /// parser must capture this as `is_bare = true` rather than falling
+    /// through to the detached-HEAD fallback.
     #[test]
-    fn parse_worktree_list_porcelain_mislabels_bare_worktree_as_detached() {
+    fn parse_worktree_list_porcelain_marks_bare_worktree_as_bare() {
         let output = "worktree /path/to/bare.git\nbare\n\n";
         let result = parse_worktree_list_porcelain(output);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].path, PathBuf::from("/path/to/bare.git"));
-        // Documents the mislabeling: a bare worktree is reported as detached.
-        assert_eq!(result[0].branch_name, DETACHED_BRANCH_SENTINEL);
+        assert_eq!(result[0].branch, None);
+        assert!(result[0].is_bare);
+    }
+
+    /// End-to-end regression test for #6052: `reconcile()` must label a bare
+    /// worktree with [`BARE_WORKTREE_SENTINEL`], not
+    /// [`DETACHED_BRANCH_SENTINEL`] — the two are semantically distinct and
+    /// must not collide.
+    #[tokio::test]
+    async fn reconcile_distinguishes_bare_from_detached_worktree() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\nworktree {0}/worktrees/bare-1\nbare\n\nworktree {0}/worktrees/detached-1\nHEAD def456\ndetached\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain.into_bytes());
+
+        let mgr = make_manager(&dir, runner).await;
+        let stale = mgr.reconcile().await.unwrap();
+        assert_eq!(stale.len(), 2);
+        assert_eq!(stale[0].handle.branch_name, BARE_WORKTREE_SENTINEL);
+        assert_eq!(stale[1].handle.branch_name, DETACHED_BRANCH_SENTINEL);
+        assert_ne!(
+            BARE_WORKTREE_SENTINEL, DETACHED_BRANCH_SENTINEL,
+            "bare and detached sentinels must be distinct markers"
+        );
+    }
+
+    /// Regression test for #6055: a worktree whose directory is intact (no
+    /// `prunable` line in the porcelain output) must report
+    /// `prunable_reason == None` and `is_safe_to_force_remove() == false` —
+    /// this is the condition under which `clean` must skip-and-warn instead
+    /// of force-removing, since the worktree may belong to another,
+    /// concurrently running session.
+    #[tokio::test]
+    async fn reconcile_marks_directory_intact_worktree_as_not_prunable() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\nworktree {0}/worktrees/agent-1\nHEAD def456\nbranch refs/heads/agent/agent-1\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain.into_bytes());
+
+        let mgr = make_manager(&dir, runner).await;
+        let stale = mgr.reconcile().await.unwrap();
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].prunable_reason, None);
+        assert!(!stale[0].is_safe_to_force_remove());
+    }
+
+    /// Regression test for #6055: when git's porcelain output includes a
+    /// `prunable <reason>` line for a worktree, `reconcile()` must surface the
+    /// exact reason text and `is_safe_to_force_remove()` must be `true` — this
+    /// is the one condition under which `clean` may force-remove by default.
+    #[tokio::test]
+    async fn reconcile_captures_prunable_reason_text() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\nworktree {0}/worktrees/gone\nHEAD def456\nbranch refs/heads/agent/gone\nprunable gitdir file points to non-existent location\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain.into_bytes());
+
+        let mgr = make_manager(&dir, runner).await;
+        let stale = mgr.reconcile().await.unwrap();
+        assert_eq!(stale.len(), 1);
+        assert_eq!(
+            stale[0].prunable_reason,
+            Some("gitdir file points to non-existent location".to_string())
+        );
+        assert!(stale[0].is_safe_to_force_remove());
     }
 
     // --- prune ---

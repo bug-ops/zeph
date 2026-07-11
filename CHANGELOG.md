@@ -257,6 +257,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   zero-timeout runner where every `git` invocation failed instantly. Both call-site `.max(1)`
   duplications were removed now that the crate enforces the invariant internally; the
   `git_timeout_secs` doc comment on `WorktreeConfig` was corrected to say so.
+- `fix(worktree)`: `zeph worktree clean` no longer force-removes another, concurrently running
+  zeph session's worktree (#6055). `WorktreeManager::reconcile()` classified "stale" as simply
+  "not in this process's own in-memory `handles`", which is unconditionally empty for the
+  fresh, one-shot `WorktreeManager` that `zeph worktree clean` constructs per CLI invocation —
+  so every other git-registered worktree, including one with live uncommitted work belonging to
+  a separate session, was force-removed via `git worktree remove --force` with no dirty-tree
+  check. `reconcile()` now returns `Vec<StaleWorktree>` (**breaking**: was
+  `Vec<WorktreeHandle>`) — each entry carries git's own `prunable <reason>` porcelain-output
+  verdict, captured by a rewritten `parse_worktree_list_porcelain`, alongside the resolved
+  `WorktreeHandle`. `StaleWorktree::is_safe_to_force_remove()` is `true` only when git itself
+  reports the worktree's directory or `.git` gitdir-link as gone/broken — the one condition
+  under which force-removal cannot discard live work, regardless of which process created the
+  worktree. `zeph worktree clean` now skips (with a warning) any stale entry that is not
+  `prunable`, unless the new `--force` flag is passed; it prints a `Removed N, skipped M`
+  summary. `zeph worktree list` now surfaces each stale entry's prunable reason, or an
+  "in use — not marked prunable" note, so operators can decide before running `clean --force`.
+  `WorktreeManager::remove()` itself is unchanged — it still issues a single `--force`, which
+  correctly does not override an explicit `git worktree lock`.
+- `fix(worktree)`: `parse_worktree_list_porcelain` no longer mislabels a bare repository's main
+  worktree as detached-`HEAD` (#6052, found during #6051 review). `git worktree list --porcelain`
+  emits a `bare` line (no `HEAD`/`branch`/`detached` line at all) for these entries; they now get
+  the new, distinct `zeph_worktree::BARE_WORKTREE_SENTINEL` (`"(bare repository)"`) instead of
+  `DETACHED_BRANCH_SENTINEL`.
 - `fix(tools)`: `CompressedExecutor`, `ToolFilter`, and `Arc<ShellExecutor>` now forward the
   remaining cross-cutting `ToolExecutor` methods to their inner/wrapped executor instead of
   silently falling through to the trait's no-op defaults (#6012). `CompressedExecutor` now

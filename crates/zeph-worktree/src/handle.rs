@@ -25,6 +25,19 @@ use std::{path::PathBuf, time::SystemTime};
 /// skip pruning it (#5936 review finding).
 pub const DETACHED_BRANCH_SENTINEL: &str = "(detached HEAD)";
 
+/// Sentinel used for [`WorktreeHandle::branch_name`] when a worktree discovered
+/// via [`WorktreeManager::reconcile`][crate::WorktreeManager::reconcile] is the
+/// main worktree of a bare repository (`git worktree list --porcelain` emits a
+/// `bare` line, with no `HEAD` or `branch`/`detached` line at all, for these
+/// entries).
+///
+/// Distinct from [`DETACHED_BRANCH_SENTINEL`] so operators and logs can tell
+/// "no branch because this is a bare repo" apart from "no branch because HEAD
+/// is detached" (#6052). Like [`DETACHED_BRANCH_SENTINEL`], the embedded space
+/// makes this an invalid git ref name, so it can never collide with a real
+/// branch.
+pub const BARE_WORKTREE_SENTINEL: &str = "(bare repository)";
+
 /// A live record of a git worktree that [`WorktreeManager`][crate::WorktreeManager]
 /// has created for a subagent.
 ///
@@ -50,4 +63,40 @@ pub struct WorktreeHandle {
     pub subagent_id: String,
     /// Wall-clock time when the worktree was created.
     pub created_at: SystemTime,
+}
+
+/// A worktree discovered by [`WorktreeManager::reconcile`][crate::WorktreeManager::reconcile]
+/// that is not present in the current process's own in-memory session state.
+///
+/// `prunable_reason` is git's own verdict from `git worktree list --porcelain`,
+/// which git derives by checking whether the worktree's directory and `.git`
+/// gitdir-link still exist and are valid — not by asking whether *this*
+/// process happens to recognise the path. This is the only staleness signal
+/// safe to force-remove on: a worktree created by a *different*, concurrently
+/// running zeph session updates the same on-disk git worktree registry that
+/// `reconcile` reads, so it is invisible to this process's `self.handles`
+/// (documented as session-local, in-RAM-only) yet fully intact on disk, and
+/// git will never mark it `prunable` while that's true.
+#[derive(Debug, Clone)]
+pub struct StaleWorktree {
+    /// The discovered worktree. `branch_name` is [`DETACHED_BRANCH_SENTINEL`]
+    /// for detached-HEAD worktrees and [`BARE_WORKTREE_SENTINEL`] for a bare
+    /// repository's main worktree, matching `reconcile`'s existing behavior.
+    pub handle: WorktreeHandle,
+    /// `Some(reason)` when git's own porcelain output includes a `prunable`
+    /// line for this worktree (directory or gitdir-link gone) — `None` means
+    /// the directory is intact and this worktree MUST NOT be force-removed
+    /// without an explicit operator override.
+    pub prunable_reason: Option<String>,
+}
+
+impl StaleWorktree {
+    /// True only when git itself has determined this worktree's directory or
+    /// `.git` link is gone/broken — the one condition under which
+    /// force-removal cannot discard live, uncommitted work, regardless of
+    /// which process created the worktree.
+    #[must_use]
+    pub fn is_safe_to_force_remove(&self) -> bool {
+        self.prunable_reason.is_some()
+    }
 }

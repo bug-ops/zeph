@@ -8,6 +8,8 @@
 //!
 //! - [`WorktreeManager`] — creates, removes, lists, and reconciles git worktrees
 //! - [`WorktreeHandle`] — a live record of one managed worktree
+//! - [`StaleWorktree`] — a worktree discovered by `reconcile` outside session state,
+//!   annotated with git's own `prunable` verdict
 //! - [`WorktreeError`] — all errors this crate can produce
 //! - [`GitRunner`] / [`DefaultGitRunner`]
 //!   — the git invocation abstraction and its production implementation
@@ -50,7 +52,7 @@ pub mod sanitize;
 
 pub use error::WorktreeError;
 pub use git_runner::{DefaultGitRunner, GitRunner};
-pub use handle::{DETACHED_BRANCH_SENTINEL, WorktreeHandle};
+pub use handle::{BARE_WORKTREE_SENTINEL, DETACHED_BRANCH_SENTINEL, StaleWorktree, WorktreeHandle};
 pub use manager::{WorktreeManager, probe_capabilities};
 
 /// A [`WorktreeManager`] using the production [`DefaultGitRunner`].

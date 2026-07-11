@@ -102,7 +102,12 @@ async fn prune_clears_manually_deleted_worktree_administrative_entry() {
         1,
         "expected exactly the deleted worktree to be discovered as stale"
     );
-    assert_eq!(stale[0].path, handle.path);
+    assert_eq!(stale[0].handle.path, handle.path);
+    assert!(
+        stale[0].is_safe_to_force_remove(),
+        "a worktree whose directory was deleted directly must be reported as \
+         prunable by git, and therefore safe to force-remove"
+    );
 
     // Deliberately skip `remove()` — see doc comment above.
     cleaner.prune().await.expect("prune");
@@ -150,10 +155,14 @@ async fn clean_pipeline_end_to_end_clears_manually_deleted_worktree() {
         1,
         "expected exactly the deleted worktree to be discovered as stale"
     );
-    for h in &stale {
-        if let Err(e) = cleaner.remove(h, false).await {
+    for s in &stale {
+        assert!(
+            s.is_safe_to_force_remove(),
+            "deleted worktree must be prunable"
+        );
+        if let Err(e) = cleaner.remove(&s.handle, false).await {
             // Mirrors `handle_worktree_command`'s non-fatal per-entry handling.
-            eprintln!("warning: failed to remove {}: {e}", h.path.display());
+            eprintln!("warning: failed to remove {}: {e}", s.handle.path.display());
         }
     }
     cleaner.prune().await.expect("prune");
@@ -211,5 +220,81 @@ fn detached_branch_sentinel_is_not_a_valid_git_ref_name() {
         "DETACHED_BRANCH_SENTINEL ({DETACHED_BRANCH_SENTINEL:?}) must be REJECTED by \
          `git check-ref-format --branch` — otherwise a real branch could be given this exact \
          name and collide with the sentinel (see #5936 review finding)"
+    );
+}
+
+/// End-to-end regression test for #6055: `zeph worktree clean` must not
+/// force-remove a worktree whose directory is intact and not reported as
+/// `prunable` by git — such a worktree may belong to another, concurrently
+/// running zeph session. Mirrors the issue's own repro: one `WorktreeManager`
+/// creates a worktree and leaves it with uncommitted changes (simulating a
+/// live session); the `clean` gating logic then runs via a second, freshly
+/// constructed manager — matching the real cross-process `zeph worktree
+/// clean` invocation, whose in-memory `handles` always starts empty.
+#[tokio::test]
+async fn clean_without_force_preserves_intact_worktree_with_uncommitted_changes() {
+    let repo = init_repo();
+    let repo_root = repo.path().canonicalize().unwrap();
+
+    let live_session = WorktreeManager::new(repo_root.clone(), config(), DefaultGitRunner::new())
+        .await
+        .unwrap();
+    let handle = live_session
+        .create("live-session-agent")
+        .await
+        .expect("create worktree");
+
+    // Simulate uncommitted work belonging to the "other" live session.
+    let dirty_file = handle.path.join("dirty.txt");
+    std::fs::write(&dirty_file, "uncommitted work\n").unwrap();
+
+    let cleaner = WorktreeManager::new(repo_root.clone(), config(), DefaultGitRunner::new())
+        .await
+        .unwrap();
+
+    let stale = cleaner.reconcile().await.expect("reconcile");
+    assert_eq!(
+        stale.len(),
+        1,
+        "the live session's worktree is untracked by this process's handles"
+    );
+    assert!(
+        !stale[0].is_safe_to_force_remove(),
+        "an intact, non-prunable worktree must never be force-removable by default"
+    );
+
+    // Mirror `handle_worktree_command`'s `Clean` handler: skip unless the
+    // operator passed `--force` or git itself reports the entry as prunable.
+    let force = false;
+    for s in &stale {
+        if !force && !s.is_safe_to_force_remove() {
+            continue;
+        }
+        cleaner.remove(&s.handle, false).await.expect("remove");
+    }
+
+    assert!(
+        handle.path.exists(),
+        "worktree directory must survive a non-force clean"
+    );
+    assert!(
+        dirty_file.exists(),
+        "uncommitted work must survive a non-force clean"
+    );
+
+    // Re-run with the operator's explicit `--force` override.
+    let stale = cleaner.reconcile().await.expect("reconcile");
+    assert_eq!(stale.len(), 1);
+    let force = true;
+    for s in &stale {
+        if !force && !s.is_safe_to_force_remove() {
+            continue;
+        }
+        cleaner.remove(&s.handle, false).await.expect("remove");
+    }
+
+    assert!(
+        !handle.path.exists(),
+        "worktree directory must be removed once the operator passes --force"
     );
 }

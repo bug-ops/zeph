@@ -547,8 +547,15 @@ pub(crate) enum Command {
 pub(crate) enum WorktreeCommand {
     /// List active and stale worktrees for the current repository
     List,
-    /// Remove all stale worktrees that exist on disk but are not tracked in-session
-    Clean,
+    /// Remove stale worktrees that exist on disk but are not tracked in-session
+    Clean {
+        /// Also remove worktrees whose directory still exists and is not
+        /// marked `prunable` by git — i.e. worktrees that may belong to
+        /// another, currently running zeph session. Requires this explicit
+        /// flag; never applied automatically.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Project-knowledge ingest subcommands (spec-067).

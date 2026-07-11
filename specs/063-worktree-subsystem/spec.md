@@ -78,6 +78,18 @@ If worktree creation fails, the agent spawn MUST fail with a `SubAgentError` wra
 means the worktree is required. Best-effort fallback is forbidden because it would silently run the
 agent in the wrong repository tree.
 
+**INV-5 — `clean` MUST NOT force-remove a worktree whose directory is intact unless git's own
+`prunable` marker is present or the operator passes `--force`.**  
+`WorktreeManager::reconcile()`'s "stale" classification (git-registered but absent from *this*
+process's own in-memory `handles`) can never distinguish a genuinely orphaned worktree from one that
+belongs to a different, concurrently running zeph session — `handles` is documented as
+session-local, in-RAM-only (see `list()` above), so it is always empty for a freshly constructed
+`WorktreeManager` such as the one `zeph worktree clean` builds per one-shot CLI invocation. `git
+worktree list --porcelain`'s own `prunable <reason>` line is git's independent, filesystem-derived
+verdict (the worktree's directory or `.git` gitdir-link is gone/broken) and is the only signal safe
+to force-remove on by default. `zeph worktree clean` MUST skip and warn on any stale entry that is
+not `prunable`, unless the operator explicitly passes `--force` (#6055).
+
 ---
 
 ## NEVER
@@ -91,6 +103,7 @@ agent in the wrong repository tree.
 - **NEVER** add the `set_working_directory` tool to the allowed list for a worktree-opted agent, even if the caller explicitly requests it.
 - **NEVER** skip the capability probe when `worktree.enabled = true`; a missing `git` must be caught at bootstrap, not at first spawn.
 - **NEVER** allow `git_timeout_secs = 0`; the value is clamped to `max(1, configured_value)` in `DefaultGitRunner`.
+- **NEVER** force-remove a `reconcile()`-discovered worktree whose directory is intact and not reported `prunable` by git without an explicit operator `--force` (INV-5, #6055).
 
 ---
 
@@ -127,6 +140,7 @@ Dependency direction: `zeph-subagent → zeph-worktree → (zeph-config, tokio, 
 ```
 WorktreeManager          // owns base repo path + config; create/remove/list/reconcile
 WorktreeHandle           // path, branch_name, base_ref_resolved, subagent_id, created_at (UTC)
+StaleWorktree            // handle + git's own `prunable` verdict (#6055)
 WorktreeError            // thiserror enum — see variants below
 GitRunner (trait)        // abstraction for git invocations (testability seam)
 DefaultGitRunner         // impl: tokio::process::Command, timeout applied inside run()
@@ -140,7 +154,7 @@ impl WorktreeManager {
     pub async fn create(&self, subagent_id: &str) -> Result<WorktreeHandle, WorktreeError>;
     pub async fn remove(&self, handle: &WorktreeHandle, prune_branch: bool) -> Result<(), WorktreeError>;
     pub fn list(&self) -> &[WorktreeHandle];           // live-session in-RAM only
-    pub async fn reconcile(&self) -> Result<Vec<WorktreeHandle>, WorktreeError>; // reads git registry
+    pub async fn reconcile(&self) -> Result<Vec<StaleWorktree>, WorktreeError>; // reads git registry
 }
 ```
 

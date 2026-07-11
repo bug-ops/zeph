@@ -54,21 +54,48 @@ pub(crate) async fn handle_worktree_command(
                 }
                 if !stale.is_empty() {
                     println!("\nStale (on disk but not tracked):");
-                    for handle in &stale {
-                        println!("  {}", handle.path.display());
+                    for stale_wt in &stale {
+                        match &stale_wt.prunable_reason {
+                            Some(reason) => {
+                                println!(
+                                    "  {}  [prunable: {reason}]",
+                                    stale_wt.handle.path.display()
+                                );
+                            }
+                            None => println!(
+                                "  {}  [in use — not marked prunable by git; may belong to another session]",
+                                stale_wt.handle.path.display()
+                            ),
+                        }
                     }
                 }
             }
         }
-        WorktreeCommand::Clean => {
+        WorktreeCommand::Clean { force } => {
             let stale = wm.reconcile().await?;
-            let count = stale.len();
-            for handle in stale {
+            let mut removed = 0usize;
+            let mut skipped = 0usize;
+            for stale_wt in stale {
+                if !force && !stale_wt.is_safe_to_force_remove() {
+                    eprintln!(
+                        "warning: skipping {} — directory exists and git does not report it as \
+                         prunable; it may be in active use by another zeph session. \
+                         Re-run with `zeph worktree clean --force` if you are certain it is abandoned.",
+                        stale_wt.handle.path.display()
+                    );
+                    skipped += 1;
+                    continue;
+                }
                 if let Err(e) = wm
-                    .remove(&handle, config.worktree.prune_branch_on_remove)
+                    .remove(&stale_wt.handle, config.worktree.prune_branch_on_remove)
                     .await
                 {
-                    eprintln!("warning: failed to remove {}: {e}", handle.path.display());
+                    eprintln!(
+                        "warning: failed to remove {}: {e}",
+                        stale_wt.handle.path.display()
+                    );
+                } else {
+                    removed += 1;
                 }
             }
             // FR-CLEANUP-04: clear any remaining stale administrative entries
@@ -76,7 +103,7 @@ pub(crate) async fn handle_worktree_command(
             if let Err(e) = wm.prune().await {
                 eprintln!("warning: failed to prune worktree registry: {e}");
             }
-            println!("Removed {count} stale worktree(s).");
+            println!("Removed {removed} stale worktree(s), skipped {skipped} in-use candidate(s).");
         }
     }
 
@@ -86,6 +113,10 @@ pub(crate) async fn handle_worktree_command(
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
+
+    use clap::Parser as _;
+
+    use crate::cli::{Cli, Command, WorktreeCommand};
 
     /// Regression test for #4701: `handle_worktree_command` must propagate a config parse
     /// error instead of silently falling back to `Config::default()`.
@@ -106,6 +137,37 @@ mod tests {
         assert!(
             msg.contains("failed to load config"),
             "error must mention config load failure, got: {msg}"
+        );
+    }
+
+    /// Regression test for #6055: `zeph worktree clean --force` must parse
+    /// with `force == true`; plain `zeph worktree clean` must default to
+    /// `force == false` so `clean` never force-removes an in-use worktree
+    /// without an explicit operator opt-in.
+    #[test]
+    fn worktree_clean_force_flag_parses() {
+        let cli = Cli::try_parse_from(["zeph", "worktree", "clean", "--force"]).unwrap();
+        let Some(Command::Worktree {
+            command: WorktreeCommand::Clean { force },
+        }) = cli.command
+        else {
+            panic!("expected Worktree(Clean) command");
+        };
+        assert!(force, "--force must set force = true");
+    }
+
+    #[test]
+    fn worktree_clean_defaults_to_no_force() {
+        let cli = Cli::try_parse_from(["zeph", "worktree", "clean"]).unwrap();
+        let Some(Command::Worktree {
+            command: WorktreeCommand::Clean { force },
+        }) = cli.command
+        else {
+            panic!("expected Worktree(Clean) command");
+        };
+        assert!(
+            !force,
+            "clean without --force must default to force = false"
         );
     }
 }
