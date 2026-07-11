@@ -1152,6 +1152,7 @@ fn zero_injections() -> SanitizeResult {
         flagged_patterns: vec![],
         cross_references: vec![],
         output_schemas_dropped: 0,
+        input_schemas_dropped: 0,
     }
 }
 
@@ -1162,6 +1163,7 @@ fn n_injections(n: usize) -> SanitizeResult {
         flagged_patterns: vec![("tool".to_owned(), "pattern".to_owned()); n.min(3)],
         cross_references: vec![],
         output_schemas_dropped: 0,
+        input_schemas_dropped: 0,
     }
 }
 

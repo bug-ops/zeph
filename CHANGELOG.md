@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Security
 
+- `zeph-mcp`: `sanitize_tools` walks `input_schema` and `output_schema` with the same
+  recursive walker, which enforces `MAX_SCHEMA_DEPTH` (10) by returning without sanitizing
+  the subtree at all once the cap is hit — no injection-pattern check, no truncation.
+  `output_schema` correctly dropped the whole field on a depth-cap hit, but `input_schema`
+  did not: `input_depth_cap` was computed and then never read, so an untrusted/compromised
+  MCP server could nest an injection payload 11+ levels deep and have it pass through
+  completely unsanitized straight into the LLM system prompt (`input_schema` is always
+  present, unlike the optional `output_schema`, and is always rendered verbatim by
+  `zeph-tools::registry::format_schema_params`) (#6068). `input_schema` is now dropped to
+  an empty object on a depth-cap hit, mirroring the existing `output_schema` handling
+  exactly, and the drop is tracked via a new `SanitizeResult::input_schemas_dropped`
+  counter. A related pre-existing gap — depth-cap drops on either schema field never
+  increment `injection_count`, so `apply_injection_penalties` never fires a trust-score
+  penalty or audit log for depth-cap evasion specifically — is tracked separately in #6071.
 - `zeph-core`: `load_skill` (`SkillLoaderExecutor`) had no trust check at all — it read the raw
   `SKILL.md` body straight from `SkillRegistry::body` and returned it verbatim, bypassing the
   entire skill-trust defense-in-depth pipeline that `invoke_skill` already enforced: `Blocked`
