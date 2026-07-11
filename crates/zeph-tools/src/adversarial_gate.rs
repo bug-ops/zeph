@@ -244,6 +244,14 @@ impl<T: ToolExecutor> ToolExecutor for AdversarialPolicyGateExecutor<T> {
         self.inner.is_tool_retryable(tool_id)
     }
 
+    fn is_tool_speculatable(&self, tool_id: &str) -> bool {
+        self.inner.is_tool_speculatable(tool_id)
+    }
+
+    fn requires_confirmation(&self, call: &ToolCall) -> bool {
+        self.inner.requires_confirmation(call)
+    }
+
     fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
         self.inner.checkpoint_undo(n)
     }
@@ -535,6 +543,62 @@ mod tests {
         let gate = AdversarialPolicyGateExecutor::new(inner, make_validator(false), Arc::new(llm));
         let retryable = gate.is_tool_retryable("shell");
         assert!(!retryable, "MockInner returns false for is_tool_retryable");
+    }
+
+    /// Regression test for #5900: `is_tool_speculatable` must be forwarded to `self.inner`.
+    /// Before the fix it fell through to the base `ToolExecutor` default (`false`) regardless
+    /// of the inner executor's actual value.
+    #[derive(Debug)]
+    struct SpeculatableInner;
+    impl ToolExecutor for SpeculatableInner {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn delegation_is_tool_speculatable() {
+        let (_, llm) = MockLlm::new("ALLOW");
+        let gate = AdversarialPolicyGateExecutor::new(
+            SpeculatableInner,
+            make_validator(false),
+            Arc::new(llm),
+        );
+        assert!(
+            gate.is_tool_speculatable("fetch"),
+            "is_tool_speculatable must be forwarded to the inner executor's non-default value"
+        );
+    }
+
+    /// Regression test for #5931: `requires_confirmation` must be forwarded to `self.inner`.
+    /// Before the fix it fell through to the base `ToolExecutor` default (`false`) regardless
+    /// of the inner executor's actual policy.
+    #[derive(Debug)]
+    struct ConfirmationRequiredInner;
+    impl ToolExecutor for ConfirmationRequiredInner {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn delegation_requires_confirmation() {
+        let (_, llm) = MockLlm::new("ALLOW");
+        let gate = AdversarialPolicyGateExecutor::new(
+            ConfirmationRequiredInner,
+            make_validator(false),
+            Arc::new(llm),
+        );
+        assert!(
+            gate.requires_confirmation(&make_call("shell")),
+            "requires_confirmation must be forwarded to the inner executor's non-default value"
+        );
     }
 
     #[derive(Debug)]

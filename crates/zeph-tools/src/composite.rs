@@ -78,12 +78,32 @@ impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> 
         self.second.execute_tool_call(call).await
     }
 
+    async fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        if let Some(output) = self.first.execute_tool_call_confirmed(call).await? {
+            return Ok(Some(output));
+        }
+        self.second.execute_tool_call_confirmed(call).await
+    }
+
     fn is_tool_retryable(&self, tool_id: &str) -> bool {
         self.first.is_tool_retryable(tool_id) || self.second.is_tool_retryable(tool_id)
     }
 
     fn is_tool_speculatable(&self, tool_id: &str) -> bool {
         self.first.is_tool_speculatable(tool_id) || self.second.is_tool_speculatable(tool_id)
+    }
+
+    /// Return `true` when either inner executor requires confirmation for `call`.
+    ///
+    /// Mirrors the OR-forwarding used by [`Self::is_tool_retryable`] and
+    /// [`Self::is_tool_speculatable`] — without this override the base
+    /// [`ToolExecutor::requires_confirmation`] default (`false`) silently bypasses
+    /// confirmation gating for any executor composed under `CompositeExecutor`. See #5900.
+    fn requires_confirmation(&self, call: &ToolCall) -> bool {
+        self.first.requires_confirmation(call) || self.second.requires_confirmation(call)
     }
 
     /// Forward the active skill's env injection to BOTH inner executors.
@@ -254,6 +274,105 @@ mod tests {
         assert!(debug.contains("CompositeExecutor"));
     }
 
+    /// Regression test for #5938: `execute_tool_call_confirmed` must reach the inner
+    /// executor's own `execute_tool_call_confirmed` override, not fall through to the
+    /// trait default (which re-dispatches via `execute_tool_call` and re-runs checks
+    /// the confirmed path is meant to bypass).
+    #[derive(Debug, Default)]
+    struct ConfirmedSpy {
+        confirmed_called: std::sync::Mutex<bool>,
+        unconfirmed_called: std::sync::Mutex<bool>,
+    }
+    impl ToolExecutor for ConfirmedSpy {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        async fn execute_tool_call(
+            &self,
+            call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            *self.unconfirmed_called.lock().unwrap() = true;
+            Ok(Some(ToolOutput {
+                tool_name: call.tool_id.clone(),
+                summary: "unconfirmed".to_owned(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+            }))
+        }
+        async fn execute_tool_call_confirmed(
+            &self,
+            call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            *self.confirmed_called.lock().unwrap() = true;
+            Ok(Some(ToolOutput {
+                tool_name: call.tool_id.clone(),
+                summary: "confirmed".to_owned(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_tool_call_confirmed_bypasses_unconfirmed_dispatch() {
+        let spy = ConfirmedSpy::default();
+        let composite = CompositeExecutor::new(spy, NoMatchExecutor);
+        let call = ToolCall {
+            tool_id: ToolName::new("read"),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = composite
+            .execute_tool_call_confirmed(&call)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.summary, "confirmed");
+        assert!(
+            *composite.first.confirmed_called.lock().unwrap(),
+            "execute_tool_call_confirmed must reach the inner executor's confirmed override"
+        );
+        assert!(
+            !*composite.first.unconfirmed_called.lock().unwrap(),
+            "execute_tool_call_confirmed must NOT re-dispatch through execute_tool_call"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_tool_call_confirmed_falls_through_to_second() {
+        let composite = CompositeExecutor::new(NoMatchExecutor, ConfirmedSpy::default());
+        let call = ToolCall {
+            tool_id: ToolName::new("read"),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = composite
+            .execute_tool_call_confirmed(&call)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.summary, "confirmed");
+        assert!(*composite.second.confirmed_called.lock().unwrap());
+    }
+
     #[derive(Debug)]
     struct FileToolExecutor;
     impl ToolExecutor for FileToolExecutor {
@@ -385,6 +504,64 @@ mod tests {
             fn set_effective_trust(&self, level: SkillTrustLevel) {
                 *self.last_trust.lock().unwrap() = Some(level);
             }
+        }
+
+        /// Regression test for #5900: `CompositeExecutor::requires_confirmation` must
+        /// OR-forward to both inner executors, mirroring `is_tool_retryable` and
+        /// `is_tool_speculatable`. Before the fix it fell through to the base
+        /// `ToolExecutor::requires_confirmation` default (`false`), silently dropping
+        /// any confirmation requirement declared by either leaf.
+        #[derive(Debug)]
+        struct FixedConfirmation(bool);
+        impl ToolExecutor for FixedConfirmation {
+            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+                Ok(None)
+            }
+            fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+                self.0
+            }
+        }
+
+        fn confirmation_call() -> ToolCall {
+            ToolCall {
+                tool_id: ToolName::new("shell"),
+                params: serde_json::Map::new(),
+                caller_id: None,
+                context: None,
+                tool_call_id: String::new(),
+                skill_name: None,
+            }
+        }
+
+        #[test]
+        fn requires_confirmation_false_when_both_leaves_false() {
+            let composite =
+                CompositeExecutor::new(FixedConfirmation(false), FixedConfirmation(false));
+            assert!(!composite.requires_confirmation(&confirmation_call()));
+        }
+
+        #[test]
+        fn requires_confirmation_true_when_first_leaf_true() {
+            let composite =
+                CompositeExecutor::new(FixedConfirmation(true), FixedConfirmation(false));
+            assert!(composite.requires_confirmation(&confirmation_call()));
+        }
+
+        #[test]
+        fn requires_confirmation_true_when_second_leaf_true() {
+            let composite =
+                CompositeExecutor::new(FixedConfirmation(false), FixedConfirmation(true));
+            assert!(composite.requires_confirmation(&confirmation_call()));
+        }
+
+        #[test]
+        fn requires_confirmation_or_forwards_across_nested_composition() {
+            let nested = CompositeExecutor::new(FixedConfirmation(false), FixedConfirmation(true));
+            let outer = CompositeExecutor::new(nested, FixedConfirmation(false));
+            assert!(
+                outer.requires_confirmation(&confirmation_call()),
+                "a confirmation requirement on a nested leaf must reach the outer composite"
+            );
         }
 
         #[test]

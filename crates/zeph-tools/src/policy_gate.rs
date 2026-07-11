@@ -381,6 +381,10 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
         self.inner.is_tool_speculatable(tool_id)
     }
 
+    fn requires_confirmation(&self, call: &ToolCall) -> bool {
+        self.inner.requires_confirmation(call)
+    }
+
     fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
         self.inner.checkpoint_undo(n)
     }
@@ -510,6 +514,45 @@ mod tests {
                 ..Default::default()
             }
         }
+    }
+
+    /// Regression test for #5931: `requires_confirmation` must be forwarded to `self.inner`.
+    /// Before the fix it fell through to the base `ToolExecutor` default (`false`) regardless
+    /// of the inner executor's actual policy.
+    #[derive(Debug)]
+    struct ConfirmationRequiredExecutor;
+
+    impl ToolExecutor for ConfirmationRequiredExecutor {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        async fn execute_tool_call(&self, _: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn requires_confirmation_delegated_to_inner() {
+        let config = PolicyConfig {
+            enabled: false,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![],
+            policy_file: None,
+            policy_provider: ProviderName::default(),
+        };
+        let enforcer = Arc::new(PolicyEnforcer::compile(&config).unwrap());
+        let context = Arc::new(RwLock::new(PolicyContext {
+            trust_level: SkillTrustLevel::Trusted,
+            env: HashMap::new(),
+        }));
+        let gate = PolicyGateExecutor::new(ConfirmationRequiredExecutor, enforcer, context);
+        assert!(
+            gate.requires_confirmation(&make_call("shell")),
+            "requires_confirmation must be forwarded to the inner executor's non-default value"
+        );
     }
 
     #[test]

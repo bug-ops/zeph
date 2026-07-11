@@ -19,6 +19,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tools)`: `CompositeExecutor`, `AdversarialPolicyGateExecutor`, and `PolicyGateExecutor`
+  now forward `requires_confirmation`/`is_tool_speculatable`/`execute_tool_call_confirmed` to
+  their inner executors instead of silently falling through to the `ToolExecutor` trait's
+  no-op defaults (#5900, #5938, #5931). `CompositeExecutor::requires_confirmation` now
+  OR-forwards to both `first`/`second` leaves, mirroring the existing `is_tool_retryable`/
+  `is_tool_speculatable` pattern; `CompositeExecutor::execute_tool_call_confirmed` now
+  first-match-wins forwards, mirroring the existing `execute_confirmed` override — without it,
+  a confirmation-gating executor composed inside a `CompositeExecutor` would have its
+  confirm-bypass silently re-run the full (still-gating) `execute_tool_call` path after the
+  user approved. `AdversarialPolicyGateExecutor` and `PolicyGateExecutor` now plain-delegate
+  `requires_confirmation` (and `AdversarialPolicyGateExecutor` also `is_tool_speculatable`) to
+  `self.inner`. Same defect class as #5899/#5905/#5906 (fixed by #5930) — these three wrapper
+  layers were explicitly scoped out of that PR to keep it minimal.
 - `fix(commands)`: `/mcp` and `/plugins` now require a trusted (local) session, closing an
   unauthenticated remote code execution path (#5997, CWE-284). `McpCommand` and `PluginsCommand`
   previously left `requires_auth()` at its default `false`, so Telegram/Discord/Slack/gateway
