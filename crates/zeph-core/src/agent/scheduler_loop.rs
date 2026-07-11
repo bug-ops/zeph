@@ -161,9 +161,8 @@ impl<C: crate::channel::Channel> Agent<C> {
         {
             Ok(handle_id) => {
                 *spawn_counter += 1;
-                let _ = self
-                    .channel
-                    .send_status(&format!(
+                self.channel
+                    .send_status_best_effort(&format!(
                         "Executing task {spawn_counter}/{task_count}: {task_title}..."
                     ))
                     .await;
@@ -199,9 +198,8 @@ impl<C: crate::channel::Channel> Agent<C> {
             .tasks
             .get(task_id.index())
             .map_or("unknown", |t| t.title.as_str());
-        let _ = self
-            .channel
-            .send_status(&format!(
+        self.channel
+            .send_status_best_effort(&format!(
                 "Executing task {spawn_counter}/{task_count} (inline): {task_title}..."
             ))
             .await;
@@ -532,7 +530,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                 } => {
                     if let Ok(Some(msg)) = result {
                         if msg.text.trim().eq_ignore_ascii_case("/plan cancel") {
-                            let _ = self.channel.send_status("Canceling plan...").await;
+                            self.channel.send_status_best_effort("Canceling plan...").await;
                             let cancel_actions = scheduler.cancel_all();
                             if let Some(s) = self.cancel_agents_from_actions(cancel_actions) {
                                 break 'tick s;

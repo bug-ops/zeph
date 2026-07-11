@@ -44,7 +44,7 @@ impl<C: Channel> Agent<C> {
         // Forward collected statuses to the channel AND the TUI status sender.
         let collected = status.take();
         for msg in &collected {
-            let _ = self.channel.send_status(msg).await;
+            self.channel.send_status_best_effort(msg).await;
         }
         if let Some(ref tx) = self.services.session.status_tx {
             for msg in &collected {
@@ -150,9 +150,8 @@ impl<C: Channel> Agent<C> {
                 saved = tokens_before.saturating_sub(tokens_after),
                 "context compaction complete"
             );
-            let _ = self
-                .channel
-                .send_status(&format!(
+            self.channel
+                .send_status_best_effort(&format!(
                     "Compacting: {tokens_before}→{tokens_after} tokens"
                 ))
                 .await;

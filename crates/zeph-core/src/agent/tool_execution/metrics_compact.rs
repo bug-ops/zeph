@@ -91,9 +91,8 @@ impl<C: Channel> Agent<C> {
 
         // C2: server-side compaction — prune old messages and insert synthetic compaction message.
         if let Some(raw_summary) = self.provider.take_compaction_summary() {
-            let _ = self
-                .channel
-                .send_status("Compacting context (server-side)...")
+            self.channel
+                .send_status_best_effort("Compacting context (server-side)...")
                 .await;
             tracing::info!(
                 summary_len = raw_summary.len(),
@@ -126,7 +125,7 @@ impl<C: Channel> Agent<C> {
             });
             self.msg.messages.extend(tail);
             self.update_metrics(|m| m.server_compaction_events += 1);
-            let _ = self.channel.send_status("").await;
+            self.channel.send_status_best_effort("").await;
         }
 
         Ok(())

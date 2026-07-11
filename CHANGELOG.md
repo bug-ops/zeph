@@ -7,6 +7,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- `zeph-channels`/`zeph-core`: hardened the channel send/retry/status path (#6094, #6106, #6095).
+  - `Channel::send_status` was awaited inline on the agent turn hot path at ~45 call sites via
+    `let _ = self.channel.send_status(...).await;`, with no outer timeout. Under sustained
+    HTTP 429s, Slack/Discord's retry-with-backoff loop (`http_retry::send_with_retry`) could take
+    up to several minutes, stalling the turn for that long (#6094). Added
+    `Channel::send_status_best_effort` — a default trait method that wraps `send_status` in a
+    10s `tokio::time::timeout` and logs the outcome (`tracing::debug!` on success,
+    `tracing::warn!` on error or timeout) instead of returning a `Result`. All discard call
+    sites now use this method, which also closes #6106's "failures are silently discarded with
+    no logging" gap in one place rather than touching every call site individually.
+  - `TelegramChannel::send`/`send_status`/`send_or_edit` (backing `flush_chunks`) called
+    `self.bot.send_message`/`edit_message_text` directly via plain `teloxide::Bot`, bypassing the
+    429 retry-with-backoff resilience that Discord, Slack, and `TelegramApiClient` already have
+    (#6106). Added `common::teloxide_retry::send_teloxide_with_retry`, mirroring
+    `http_retry::send_with_retry`'s backoff semantics for `teloxide::RequestError::RetryAfter`,
+    and routed all three call sites through it.
+  - Discord's `RestClient` had no test-injectable base URL, unlike `SlackApi`/`TelegramApiClient`
+    (#6095). Added a `base_url` field defaulting to Discord's real API base plus a
+    `#[cfg(test)]` `with_base_url` constructor, and added wiremock tests confirming
+    `send_message`, `edit_message`, and `trigger_typing` each retry transparently on a 429.
 - `zeph-core`: removed two blocking-I/O sites from the async agent turn loop (#6020, #6029).
   - `rebuild_system_prompt` called `project::discover_project_configs`/`load_project_context`
     directly on every turn — a filesystem walk from cwd to the root plus a `read_to_string`

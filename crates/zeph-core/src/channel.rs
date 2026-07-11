@@ -205,6 +205,21 @@ pub struct ChannelMessage {
     pub is_from_bot: bool,
 }
 
+/// Upper bound on [`Channel::send_status_best_effort`]. Status sends are a UX nicety, not a
+/// value the agent turn depends on, so a slow or rate-limited channel (see issue #6094 — Discord
+/// and Slack's 429 retry loop can otherwise take minutes) must never stall the turn loop past
+/// this bound.
+///
+/// Deliberately much shorter than the full retry-loop worst case (~180-255s — see
+/// `common::http_retry`/`common::teloxide_retry`'s `# Timing` docs): a single status ping (e.g.
+/// "thinking...") is stale within seconds of being superseded by the next one, so there is no UX
+/// value in waiting anywhere near the full retry budget for it. 10s is long enough for one
+/// `Retry-After` backoff sleep to complete (typical values are 1-5s) but short enough that even a
+/// turn with several status transitions cannot accumulate more than a few tens of seconds of
+/// aggregate stall. `send`/`flush_chunks` (the actual response content) are NOT wrapped in this
+/// timeout — those are worth retrying to completion, unlike an ephemeral status label.
+const STATUS_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Bidirectional communication channel for the agent.
 ///
 /// # TODO (A3 — deferred: split monolithic Channel into focused sub-traits)
@@ -300,6 +315,28 @@ pub trait Channel: Send {
         _text: &str,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
+    }
+
+    /// Best-effort variant of [`send_status`](Channel::send_status) for the many call sites
+    /// where a status update is a UX nicety, not a value the turn depends on.
+    ///
+    /// Bounds the send to `STATUS_SEND_TIMEOUT` and logs the outcome (`tracing::debug!` on
+    /// success, `tracing::warn!` on error or timeout) instead of returning a `Result`. Callers
+    /// that used to write `let _ = channel.send_status(...).await;` should call this instead:
+    /// failures become visible in logs, and a slow/rate-limited channel (see #6094) can no
+    /// longer stall the agent turn loop.
+    fn send_status_best_effort(&mut self, text: &str) -> impl Future<Output = ()> + Send {
+        async move {
+            match tokio::time::timeout(STATUS_SEND_TIMEOUT, self.send_status(text)).await {
+                Ok(Ok(())) => tracing::debug!(text, "channel status sent"),
+                Ok(Err(error)) => tracing::warn!(%error, text, "channel status send failed"),
+                Err(_) => tracing::warn!(
+                    text,
+                    timeout_secs = STATUS_SEND_TIMEOUT.as_secs(),
+                    "channel status send timed out"
+                ),
+            }
+        }
     }
 
     /// Send a thinking/reasoning token chunk. No-op by default.
@@ -863,6 +900,134 @@ mod tests {
     async fn stub_channel_send_ok() {
         let mut ch = StubChannel;
         ch.send("hello").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_status_best_effort_succeeds_silently() {
+        let mut ch = StubChannel;
+        // Must not panic even though the return type carries no `Result`.
+        ch.send_status_best_effort("hello").await;
+    }
+
+    struct ErroringStatusChannel;
+
+    impl Channel for ErroringStatusChannel {
+        async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
+            Ok(None)
+        }
+
+        async fn send(&mut self, _text: &str) -> Result<(), ChannelError> {
+            Ok(())
+        }
+
+        async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
+            Ok(())
+        }
+
+        async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
+            Ok(())
+        }
+
+        async fn send_status(&mut self, _text: &str) -> Result<(), ChannelError> {
+            Err(ChannelError::ChannelClosed)
+        }
+    }
+
+    #[tokio::test]
+    async fn send_status_best_effort_swallows_errors() {
+        let mut ch = ErroringStatusChannel;
+        // Must not propagate or panic — errors are logged, not surfaced.
+        ch.send_status_best_effort("hello").await;
+    }
+
+    // The two tests below use `tracing_test::traced_test` to assert on the actual log
+    // output of `send_status_best_effort`, not just its return type — closing the gap
+    // flagged in the #6106 handoff where only "doesn't panic" was verified.
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn send_status_best_effort_warns_on_error() {
+        let mut ch = ErroringStatusChannel;
+        ch.send_status_best_effort("hello").await;
+        assert!(
+            logs_contain("channel status send failed"),
+            "expected a tracing::warn! logging the send_status error"
+        );
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn send_status_best_effort_debug_logs_on_success() {
+        let mut ch = StubChannel;
+        ch.send_status_best_effort("hello").await;
+        assert!(
+            logs_contain("channel status sent"),
+            "expected a tracing::debug! logging the successful send_status"
+        );
+    }
+
+    struct HangingStatusChannel;
+
+    impl Channel for HangingStatusChannel {
+        async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
+            Ok(None)
+        }
+
+        async fn send(&mut self, _text: &str) -> Result<(), ChannelError> {
+            Ok(())
+        }
+
+        async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
+            Ok(())
+        }
+
+        async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
+            Ok(())
+        }
+
+        async fn send_status(&mut self, _text: &str) -> Result<(), ChannelError> {
+            std::future::pending().await
+        }
+    }
+
+    // Regression test for #6094: a channel whose `send_status` never resolves (e.g. stuck in
+    // a retry-with-backoff loop under sustained 429s) must not stall the caller past
+    // `STATUS_SEND_TIMEOUT`. Uses paused tokio time so the test itself completes instantly.
+    #[tokio::test(start_paused = true)]
+    async fn send_status_best_effort_times_out_instead_of_hanging() {
+        let mut ch = HangingStatusChannel;
+        let call = ch.send_status_best_effort("hello");
+        tokio::pin!(call);
+
+        // Not ready before the timeout elapses.
+        assert!(
+            futures::poll!(&mut call).is_pending(),
+            "expected send_status_best_effort to still be pending immediately"
+        );
+
+        tokio::time::advance(STATUS_SEND_TIMEOUT + std::time::Duration::from_secs(1)).await;
+
+        // Now the timeout has elapsed and the future must resolve (returns `()`, not stuck).
+        tokio::time::timeout(std::time::Duration::from_secs(1), call)
+            .await
+            .expect("send_status_best_effort must resolve once STATUS_SEND_TIMEOUT elapses");
+    }
+
+    #[tokio::test(start_paused = true)]
+    #[tracing_test::traced_test]
+    async fn send_status_best_effort_warns_on_timeout() {
+        let mut ch = HangingStatusChannel;
+        let call = ch.send_status_best_effort("hello");
+        tokio::pin!(call);
+        let _ = futures::poll!(&mut call);
+
+        tokio::time::advance(STATUS_SEND_TIMEOUT + std::time::Duration::from_secs(1)).await;
+        call.await;
+
+        assert!(
+            logs_contain("channel status send timed out"),
+            "expected a tracing::warn! logging the send_status timeout"
+        );
     }
 
     #[test]

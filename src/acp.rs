@@ -1300,7 +1300,9 @@ async fn notify_lock_degraded(
     if let Some(notifier) = status_notifier {
         notifier.notify_status_nowait(SESSION_LOCK_DEGRADED_MESSAGE);
     } else {
-        let _ = channel.send_status(SESSION_LOCK_DEGRADED_MESSAGE).await;
+        channel
+            .send_status_best_effort(SESSION_LOCK_DEGRADED_MESSAGE)
+            .await;
     }
 }
 

@@ -10656,6 +10656,7 @@ dependencies = [
  "toml_edit",
  "tracing",
  "tracing-subscriber",
+ "tracing-test",
  "tree-sitter",
  "uuid",
  "zeph-agent-context",

@@ -553,9 +553,8 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        let _ = self
-            .channel
-            .send_status("MCP server requesting input…")
+        self.channel
+            .send_status_best_effort("MCP server requesting input…")
             .await;
         let response = match self.channel.elicit(channel_request).await {
             Ok(r) => r,
@@ -564,12 +563,12 @@ impl<C: Channel> Agent<C> {
                     server_id = event.server_id,
                     "elicitation channel error: {e:#}"
                 );
-                let _ = self.channel.send_status("").await;
+                self.channel.send_status_best_effort("").await;
                 let _ = event.response_tx.send(decline);
                 return;
             }
         };
-        let _ = self.channel.send_status("").await;
+        self.channel.send_status_best_effort("").await;
 
         let result = match response {
             ElicitationResponse::Accepted(value) => {

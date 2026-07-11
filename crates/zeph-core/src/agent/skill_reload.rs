@@ -138,7 +138,9 @@ impl<C: Channel> Agent<C> {
                 .await
                 .map(SkillMatcherBackend::InMemory);
         } else if let Some(ref mut backend) = self.services.skill.matcher {
-            let _ = self.channel.send_status("syncing skill index...").await;
+            self.channel
+                .send_status_best_effort("syncing skill index...")
+                .await;
             let on_progress: Option<Box<dyn Fn(usize, usize) + Send>> =
                 self.services.session.status_tx.clone().map(
                     |tx| -> Box<dyn Fn(usize, usize) + Send> {
@@ -163,7 +165,9 @@ impl<C: Channel> Agent<C> {
 
         if self.services.skill.hybrid_search {
             let descs: Vec<&str> = all_meta.iter().map(|m| m.description.as_str()).collect();
-            let _ = self.channel.send_status("rebuilding search index...").await;
+            self.channel
+                .send_status_best_effort("rebuilding search index...")
+                .await;
             self.services.skill.rebuild_bm25(&descs);
         }
     }
@@ -210,7 +214,9 @@ impl<C: Channel> Agent<C> {
         if self.services.skill.fingerprint() == old_fp {
             return;
         }
-        let _ = self.channel.send_status("reloading skills...").await;
+        self.channel
+            .send_status_best_effort("reloading skills...")
+            .await;
 
         let all_meta = self
             .services
@@ -257,7 +263,7 @@ impl<C: Channel> Agent<C> {
             msg.content = system_prompt;
         }
 
-        let _ = self.channel.send_status("").await;
+        self.channel.send_status_best_effort("").await;
         tracing::info!(
             "reloaded {} skill(s)",
             self.services.skill.registry.read().all_meta().len()

@@ -487,6 +487,40 @@ impl TelegramChannel {
         }
     }
 
+    /// Sends `text` as a new message (retrying on Telegram rate-limiting) and records the
+    /// resulting message id in `self.message_id` so later chunks edit it in place.
+    async fn send_new_chunk(&mut self, chat_id: ChatId, text: &str) -> Result<(), ChannelError> {
+        let req = self
+            .bot
+            .send_message(chat_id, text)
+            .parse_mode(ParseMode::MarkdownV2);
+        let msg = crate::common::teloxide_retry::send_teloxide_with_retry("telegram", &req)
+            .await
+            .map_err(ChannelError::telegram)?;
+        self.message_id = Some(msg.id);
+        tracing::debug!("message sent with id: {:?}", msg.id);
+        Ok(())
+    }
+
+    /// Edits `msg_id` to `text`, retrying on Telegram rate-limiting.
+    ///
+    /// Returns the raw teloxide error rather than [`ChannelError`] so callers can inspect
+    /// specific failure strings (e.g. "message is not modified") before deciding how to react.
+    async fn edit_chunk(
+        &self,
+        chat_id: ChatId,
+        msg_id: MessageId,
+        text: &str,
+    ) -> Result<(), teloxide::RequestError> {
+        let req = self
+            .bot
+            .edit_message_text(chat_id, msg_id, text)
+            .parse_mode(ParseMode::MarkdownV2);
+        crate::common::teloxide_retry::send_teloxide_with_retry("telegram", &req)
+            .await
+            .map(|_| ())
+    }
+
     #[tracing::instrument(name = "channels.telegram.send_or_edit", skip_all)]
     async fn send_or_edit(&mut self) -> Result<(), ChannelError> {
         let Some(chat_id) = self.chat_id else {
@@ -515,14 +549,7 @@ impl TelegramChannel {
                 tracing::debug!("sending new message (length: {})", formatted_text.len());
                 let chunks = crate::markdown::utf8_chunks(&formatted_text, MAX_MESSAGE_LEN);
                 for chunk in chunks {
-                    let msg = self
-                        .bot
-                        .send_message(chat_id, chunk)
-                        .parse_mode(ParseMode::MarkdownV2)
-                        .await
-                        .map_err(ChannelError::telegram)?;
-                    self.message_id = Some(msg.id);
-                    tracing::debug!("new message sent with id: {:?}", msg.id);
+                    self.send_new_chunk(chat_id, chunk).await?;
                 }
             }
             Some(msg_id) => {
@@ -532,13 +559,7 @@ impl TelegramChannel {
                     formatted_text.len()
                 );
                 if formatted_text.len() <= MAX_MESSAGE_LEN {
-                    let edit_result = self
-                        .bot
-                        .edit_message_text(chat_id, msg_id, &formatted_text)
-                        .parse_mode(ParseMode::MarkdownV2)
-                        .await;
-
-                    if let Err(e) = edit_result {
+                    if let Err(e) = self.edit_chunk(chat_id, msg_id, &formatted_text).await {
                         let error_msg = e.to_string();
 
                         if error_msg.contains("message is not modified") {
@@ -550,14 +571,7 @@ impl TelegramChannel {
                                 "Telegram edit failed (message_id stale?): {e}, sending new message"
                             );
                             self.message_id = None;
-
-                            let msg = self
-                                .bot
-                                .send_message(chat_id, &formatted_text)
-                                .parse_mode(ParseMode::MarkdownV2)
-                                .await
-                                .map_err(ChannelError::telegram)?;
-                            self.message_id = Some(msg.id);
+                            self.send_new_chunk(chat_id, &formatted_text).await?;
                         } else {
                             return Err(ChannelError::telegram(e));
                         }
@@ -569,28 +583,17 @@ impl TelegramChannel {
                     // send remaining chunks as new messages.
                     let chunks = crate::markdown::utf8_chunks(&formatted_text, MAX_MESSAGE_LEN);
                     let mut iter = chunks.into_iter();
-                    if let Some(first) = iter.next() {
-                        let edit_result = self
-                            .bot
-                            .edit_message_text(chat_id, msg_id, first)
-                            .parse_mode(ParseMode::MarkdownV2)
-                            .await;
-                        if let Err(e) = edit_result {
-                            let error_msg = e.to_string();
-                            if !error_msg.contains("message is not modified") {
-                                tracing::warn!("Telegram edit failed during split: {e}");
-                            }
+                    if let Some(first) = iter.next()
+                        && let Err(e) = self.edit_chunk(chat_id, msg_id, first).await
+                    {
+                        let error_msg = e.to_string();
+                        if !error_msg.contains("message is not modified") {
+                            tracing::warn!("Telegram edit failed during split: {e}");
                         }
                     }
                     for chunk in iter {
-                        let msg = self
-                            .bot
-                            .send_message(chat_id, chunk)
-                            .parse_mode(ParseMode::MarkdownV2)
-                            .await
-                            .map_err(ChannelError::telegram)?;
-                        self.message_id = Some(msg.id);
-                        tracing::debug!("overflow chunk sent with id: {:?}", msg.id);
+                        self.send_new_chunk(chat_id, chunk).await?;
+                        tracing::debug!("overflow chunk sent");
                     }
                 }
             }
@@ -1204,17 +1207,21 @@ impl Channel for TelegramChannel {
         }
 
         if formatted_text.len() <= MAX_MESSAGE_LEN {
-            self.bot
+            let req = self
+                .bot
                 .send_message(chat_id, &formatted_text)
-                .parse_mode(ParseMode::MarkdownV2)
+                .parse_mode(ParseMode::MarkdownV2);
+            crate::common::teloxide_retry::send_teloxide_with_retry("telegram", &req)
                 .await
                 .map_err(ChannelError::telegram)?;
         } else {
             let chunks = crate::markdown::utf8_chunks(&formatted_text, MAX_MESSAGE_LEN);
             for chunk in chunks {
-                self.bot
+                let req = self
+                    .bot
                     .send_message(chat_id, chunk)
-                    .parse_mode(ParseMode::MarkdownV2)
+                    .parse_mode(ParseMode::MarkdownV2);
+                crate::common::teloxide_retry::send_teloxide_with_retry("telegram", &req)
                     .await
                     .map_err(ChannelError::telegram)?;
             }
@@ -1357,8 +1364,8 @@ impl Channel for TelegramChannel {
         let Some(chat_id) = self.chat_id else {
             return Ok(());
         };
-        self.bot
-            .send_message(chat_id, text)
+        let req = self.bot.send_message(chat_id, text);
+        crate::common::teloxide_retry::send_teloxide_with_retry("telegram", &req)
             .await
             .map_err(ChannelError::telegram)?;
         Ok(())
@@ -2097,6 +2104,57 @@ mod tests {
             requests.len() >= 2,
             "expected edit + at least 1 overflow send, got {}",
             requests.len()
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // send_teloxide_with_retry wiring — 429 (RetryAfter) retry-then-succeed,
+    // exercised through the real TelegramChannel send paths (issue #6106).
+    // ---------------------------------------------------------------------------
+
+    /// Regression test for #6106: `TelegramChannel::send` must retry (rather than
+    /// immediately fail) when the Bot API responds with `RetryAfter`, mirroring
+    /// `telegram_api_ext.rs`'s `post_retries_on_429_then_succeeds`. The scoped mock is
+    /// registered *before* `make_mocked_channel` mounts its catch-all `any()` 200 mock:
+    /// wiremock breaks priority ties (all mocks default to priority 5) by insertion
+    /// order, so this mock is tried first for the first `sendMessage` call, exhausts
+    /// after one match (`up_to_n_times(1)`), and the retried second call falls through
+    /// to the catch-all 200 response.
+    #[tokio::test]
+    async fn send_retries_on_telegram_429_then_succeeds() {
+        use wiremock::matchers::{method, path_regex};
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            // teloxide sends the payload struct's type name ("SendMessage", PascalCase) as the
+            // method segment, not the Bot API docs' camelCase "sendMessage" — Telegram's method
+            // names are case-insensitive, so `(?i)` matches what the wire actually carries.
+            .and(path_regex("(?i).*/sendmessage$"))
+            .respond_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({
+                "ok": false,
+                "description": "Too Many Requests: retry after 0",
+                "parameters": {"retry_after": 0}
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+
+        channel
+            .send("hello")
+            .await
+            .expect("send must succeed after retrying past the 429");
+
+        let requests = server.received_requests().await.unwrap();
+        let send_message_calls = requests
+            .iter()
+            .filter(|r| r.url.path().to_lowercase().ends_with("/sendmessage"))
+            .count();
+        assert_eq!(
+            send_message_calls, 2,
+            "expected sendMessage to be called twice: 429 then success, got requests: {requests:?}"
         );
     }
 

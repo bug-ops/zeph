@@ -201,9 +201,8 @@ impl<C: Channel> Agent<C> {
                     break (format!("{label} was cancelled."), false);
                 }
                 _ => {
-                    let _ = self
-                        .channel
-                        .send_status(&format!(
+                    self.channel
+                        .send_status_best_effort(&format!(
                             "{label}: turn {}/{}",
                             status.turns_used,
                             self.services

@@ -32,12 +32,11 @@ impl<C: Channel> Agent<C> {
                         attempt,
                         "chat_with_tools context length exceeded, compacting and retrying"
                     );
-                    let _ = self
-                        .channel
-                        .send_status("context too long, compacting...")
+                    self.channel
+                        .send_status_best_effort("context too long, compacting...")
                         .await;
                     let _ = self.compact_context().await?;
-                    let _ = self.channel.send_status("").await;
+                    self.channel.send_status_best_effort("").await;
                 }
                 Err(e) if e.is_beta_header_rejected() && attempt + 1 < max_attempts => {
                     // SEC-COMPACT-03: the compact-2026-01-12 beta header was rejected by the API.
@@ -49,13 +48,12 @@ impl<C: Channel> Agent<C> {
                         falling back to client-side compaction and retrying"
                     );
                     self.runtime.providers.server_compaction_active = false;
-                    let _ = self
-                        .channel
-                        .send_status(
+                    self.channel
+                        .send_status_best_effort(
                             "server compaction unavailable, falling back to client-side...",
                         )
                         .await;
-                    let _ = self.channel.send_status("").await;
+                    self.channel.send_status_best_effort("").await;
                 }
                 Err(e) => return Err(e),
             }
@@ -538,12 +536,11 @@ impl<C: Channel> Agent<C> {
                         attempt,
                         "LLM context length exceeded, compacting and retrying"
                     );
-                    let _ = self
-                        .channel
-                        .send_status("context too long, compacting...")
+                    self.channel
+                        .send_status_best_effort("context too long, compacting...")
                         .await;
                     let _ = self.compact_context().await?;
-                    let _ = self.channel.send_status("").await;
+                    self.channel.send_status_best_effort("").await;
                 }
                 Err(e) => return Err(e),
             }

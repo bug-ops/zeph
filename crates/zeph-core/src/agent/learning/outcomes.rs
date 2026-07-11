@@ -63,13 +63,13 @@ impl<C: Channel> Agent<C> {
         });
 
         let messages_before = self.msg.messages.len();
-        let _ = self.channel.send_status("reflecting...").await;
+        self.channel.send_status_best_effort("reflecting...").await;
         // Box::pin to break async recursion cycle (process_response -> attempt_self_reflection -> process_response)
         if let Err(e) = Box::pin(self.process_response()).await {
-            let _ = self.channel.send_status("").await;
+            self.channel.send_status_best_effort("").await;
             return Err(e);
         }
-        let _ = self.channel.send_status("").await;
+        self.channel.send_status_best_effort("").await;
         let retry_succeeded = self.msg.messages.len() > messages_before;
 
         // D2Skill: record whether injected corrections led to success.

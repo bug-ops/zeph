@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::http_retry::send_with_retry;
 
+/// Default base URL for the Discord REST API. Overridden only in tests via [`RestClient::with_base_url`].
 const BASE_URL: &str = "https://discord.com/api/v10";
 /// Per-request HTTP timeout applied to every Discord REST call.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -49,6 +50,8 @@ const SLASH_COMMANDS: &[SlashCommand] = &[
 pub struct RestClient {
     client: reqwest::Client,
     token: String,
+    /// Base URL for the Discord REST API. Always [`BASE_URL`] outside of tests.
+    base_url: String,
 }
 
 impl std::fmt::Debug for RestClient {
@@ -78,7 +81,21 @@ impl RestClient {
     #[must_use]
     pub fn new(token: String) -> Self {
         let client = zeph_core::http::default_client();
-        Self { client, token }
+        Self {
+            client,
+            token,
+            base_url: BASE_URL.to_string(),
+        }
+    }
+
+    /// Test-only constructor pointing at a custom base URL (e.g. a mock server).
+    #[cfg(test)]
+    fn with_base_url(base_url: String, token: String) -> Self {
+        Self {
+            client: zeph_core::http::default_client(),
+            token,
+            base_url,
+        }
     }
 
     fn auth_header(&self) -> String {
@@ -97,7 +114,7 @@ impl RestClient {
         channel_id: &str,
         content: &str,
     ) -> Result<DiscordMessage, reqwest::Error> {
-        let url = format!("{BASE_URL}/channels/{channel_id}/messages");
+        let url = format!("{}/channels/{channel_id}/messages", self.base_url);
         let auth = self.auth_header();
         let resp = send_with_retry("discord", || {
             self.client
@@ -123,7 +140,10 @@ impl RestClient {
         message_id: &str,
         content: &str,
     ) -> Result<(), reqwest::Error> {
-        let url = format!("{BASE_URL}/channels/{channel_id}/messages/{message_id}");
+        let url = format!(
+            "{}/channels/{channel_id}/messages/{message_id}",
+            self.base_url
+        );
         let auth = self.auth_header();
         send_with_retry("discord", || {
             self.client
@@ -189,7 +209,7 @@ impl RestClient {
         tracing::instrument(name = "channels.discord.rest.trigger_typing", skip_all)
     )]
     pub async fn trigger_typing(&self, channel_id: &str) -> Result<(), reqwest::Error> {
-        let url = format!("{BASE_URL}/channels/{channel_id}/typing");
+        let url = format!("{}/channels/{channel_id}/typing", self.base_url);
         let auth = self.auth_header();
         send_with_retry("discord", || {
             self.client
@@ -204,6 +224,9 @@ impl RestClient {
 
 #[cfg(test)]
 mod tests {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
     use super::*;
 
     // Generic 429 retry-with-backoff behavior is covered by
@@ -215,9 +238,88 @@ mod tests {
         let rc = RestClient {
             client: reqwest::Client::new(),
             token: "secret-token".into(),
+            base_url: BASE_URL.to_string(),
         };
         let debug = format!("{rc:?}");
         assert!(!debug.contains("secret-token"));
         assert!(debug.contains("REDACTED"));
+    }
+
+    #[tokio::test]
+    async fn send_message_retries_on_429_then_succeeds() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/channels/123/messages"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .append_header("Retry-After", "0")
+                    .set_body_json(serde_json::json!({"retry_after": 0.0})),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/channels/123/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "msg-1"})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = RestClient::with_base_url(server.uri(), "test-token".into());
+        let msg = client.send_message("123", "hello").await.unwrap();
+        assert_eq!(msg.id, "msg-1");
+    }
+
+    #[tokio::test]
+    async fn edit_message_retries_on_429_then_succeeds() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PATCH"))
+            .and(path("/channels/123/messages/456"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .append_header("Retry-After", "0")
+                    .set_body_json(serde_json::json!({"retry_after": 0.0})),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("PATCH"))
+            .and(path("/channels/123/messages/456"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+
+        let client = RestClient::with_base_url(server.uri(), "test-token".into());
+        client.edit_message("123", "456", "updated").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn trigger_typing_retries_on_429_then_succeeds() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/channels/123/typing"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .append_header("Retry-After", "0")
+                    .set_body_json(serde_json::json!({"retry_after": 0.0})),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/channels/123/typing"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+
+        let client = RestClient::with_base_url(server.uri(), "test-token".into());
+        client.trigger_typing("123").await.unwrap();
     }
 }

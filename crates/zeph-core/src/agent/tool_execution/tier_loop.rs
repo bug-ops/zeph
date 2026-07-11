@@ -238,9 +238,8 @@ impl<C: Channel> Agent<C> {
                             tool = %tc.name, attempt, delay_ms, error = %e,
                             "transient tool error, retrying with backoff"
                         );
-                        let _ = self
-                            .channel
-                            .send_status(&format!("Retrying {}...", tc.name))
+                        self.channel
+                            .send_status_best_effort(&format!("Retrying {}...", tc.name))
                             .await;
                         // Interruptible backoff sleep: cancelled if agent shuts down.
                         tokio::select! {
@@ -254,7 +253,7 @@ impl<C: Channel> Agent<C> {
                                 return Ok(true);
                             }
                         }
-                        let _ = self.channel.send_status("").await;
+                        self.channel.send_status_best_effort("").await;
                         // NOTE: retry re-executions are NOT recorded in repeat-detection (CRIT-3).
                     }
                     result => break result,
@@ -314,14 +313,13 @@ impl<C: Channel> Agent<C> {
                 .map(std::string::ToString::to_string)
                 .unwrap_or_default();
 
-            let _ = self
-                .channel
-                .send_status(&format!("Reformatting parameters for {}...", tc.name))
+            self.channel
+                .send_status_best_effort(&format!("Reformatting parameters for {}...", tc.name))
                 .await;
             let new_result = self
                 .reformat_tool_call(&calls[idx], tc, &error_message, cancel)
                 .await;
-            let _ = self.channel.send_status("").await;
+            self.channel.send_status_best_effort("").await;
 
             if cancel.is_cancelled() {
                 self.cancel_tool_batch(tool_calls, "parameter reformat phase cancelled by user")
@@ -1244,9 +1242,8 @@ impl<C: Channel> Agent<C> {
             }
 
             if tier_count > 1 {
-                let _ = self
-                    .channel
-                    .send_status(&format!(
+                self.channel
+                    .send_status_best_effort(&format!(
                         "Executing tools (tier {}/{})\u{2026}",
                         tier_idx + 1,
                         tier_count
@@ -1328,7 +1325,7 @@ impl<C: Channel> Agent<C> {
             .await;
 
             if tier_count > 1 {
-                let _ = self.channel.send_status("").await;
+                self.channel.send_status_best_effort("").await;
             }
 
             // Check hook block cap after each tier (RF-1: counter is per-turn, not per-tier).
@@ -1531,9 +1528,8 @@ impl<C: Channel> Agent<C> {
         pending_system_hints: &mut Vec<String>,
     ) -> Result<Option<(usize, ToolExecFut)>, crate::agent::error::AgentError> {
         if self.tool_orchestrator.has_blocked_retrieval_this_turn() {
-            let _ = self
-                .channel
-                .send_status(&format!(
+            self.channel
+                .send_status_best_effort(&format!(
                     "Utility action: Retrieve skipped, context unavailable ({})",
                     tc.name
                 ))
@@ -1552,9 +1548,8 @@ impl<C: Channel> Agent<C> {
                 mandates = self.tool_orchestrator.retrieve_mandate_count,
                 "utility gate: Retrieve mandate limit reached this turn, proceeding directly"
             );
-            let _ = self
-                .channel
-                .send_status(&format!(
+            self.channel
+                .send_status_best_effort(&format!(
                     "Utility action: Retrieve loop detected, proceeding directly ({})",
                     tc.name
                 ))
@@ -1567,9 +1562,8 @@ impl<C: Channel> Agent<C> {
             ));
             return Ok(None);
         }
-        let _ = self
-            .channel
-            .send_status(&format!("Utility action: Retrieve ({})", tc.name))
+        self.channel
+            .send_status_best_effort(&format!("Utility action: Retrieve ({})", tc.name))
             .await;
         // Inject a system message directing the LLM to retrieve context first (#2620).
         pending_system_hints.push(format!(
@@ -1608,9 +1602,8 @@ impl<C: Channel> Agent<C> {
     ) -> Result<Option<(usize, ToolExecFut)>, crate::agent::error::AgentError> {
         match utility_actions[idx] {
             zeph_tools::UtilityAction::Respond => {
-                let _ = self
-                    .channel
-                    .send_status(&format!("Utility action: Respond ({})", tc.name))
+                self.channel
+                    .send_status_best_effort(&format!("Utility action: Respond ({})", tc.name))
                     .await;
                 Ok(Some(ready_fut(
                     idx,
@@ -1629,9 +1622,8 @@ impl<C: Channel> Agent<C> {
                     .await
             }
             zeph_tools::UtilityAction::Verify => {
-                let _ = self
-                    .channel
-                    .send_status(&format!("Utility action: Verify ({})", tc.name))
+                self.channel
+                    .send_status_best_effort(&format!("Utility action: Verify ({})", tc.name))
                     .await;
                 pending_system_hints.push(format!(
                     "[utility:verify] Before executing the '{}' tool again, verify \
@@ -1652,9 +1644,8 @@ impl<C: Channel> Agent<C> {
                 )))
             }
             zeph_tools::UtilityAction::Stop => {
-                let _ = self
-                    .channel
-                    .send_status(&format!("Utility action: Stop ({})", tc.name))
+                self.channel
+                    .send_status_best_effort(&format!("Utility action: Stop ({})", tc.name))
                     .await;
                 let threshold = self.tool_orchestrator.utility_scorer.threshold();
                 Ok(Some(ready_fut(
@@ -2516,7 +2507,9 @@ impl<C: Channel> Agent<C> {
         if self.services.session.lsp_hooks.is_some() {
             let tc_arc = std::sync::Arc::clone(&self.runtime.metrics.token_counter);
             let sanitizer = self.services.security.sanitizer.clone();
-            let _ = self.channel.send_status("Analyzing changes...").await;
+            self.channel
+                .send_status_best_effort("Analyzing changes...")
+                .await;
             // TODO: cooperative MCP cancellation — dropped futures here may leave
             // in-flight MCP JSON-RPC requests pending until the server-side timeout.
             let lsp_result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
@@ -2535,7 +2528,7 @@ impl<C: Channel> Agent<C> {
                 }
             })
             .await;
-            let _ = self.channel.send_status("").await;
+            self.channel.send_status_best_effort("").await;
             if lsp_result.is_err() {
                 tracing::warn!("LSP after_tool batch timed out (30s)");
             }
@@ -3013,14 +3006,16 @@ impl<C: Channel> Agent<C> {
 
         // Show triage status indicator before inference when triage routing is active.
         if matches!(self.provider, zeph_llm::any::AnyProvider::Triage(_)) {
-            let _ = self.channel.send_status("Evaluating complexity...").await;
+            self.channel
+                .send_status_best_effort("Evaluating complexity...")
+                .await;
         } else {
-            let _ = self.channel.send_status("thinking...").await;
+            self.channel.send_status_best_effort("thinking...").await;
         }
 
         let chat_result = self.call_llm_durable(tool_defs, iteration).await?;
 
-        let _ = self.channel.send_status("").await;
+        self.channel.send_status_best_effort("").await;
 
         let Some(chat_result) = chat_result else {
             tracing::debug!("chat_with_tools returned None (timeout)");

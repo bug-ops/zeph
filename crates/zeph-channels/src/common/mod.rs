@@ -4,3 +4,4 @@
 //! Internal helpers shared across channel REST/Web API clients.
 
 pub(crate) mod http_retry;
+pub(crate) mod teloxide_retry;

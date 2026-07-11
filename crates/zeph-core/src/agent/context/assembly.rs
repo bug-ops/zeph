@@ -676,9 +676,11 @@ impl<C: Channel> Agent<C> {
             status_tx: self.services.session.status_tx.clone(),
             task_supervisor: Arc::clone(&self.runtime.lifecycle.task_supervisor),
         };
-        let _ = self.channel.send_status("recalling context...").await;
+        self.channel
+            .send_status_best_effort("recalling context...")
+            .await;
         let result = svc.prepare_context(query, &mut window, &mut view).await;
-        let _ = self.channel.send_status("").await;
+        self.channel.send_status_best_effort("").await;
 
         let delta =
             result.map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))?;
@@ -1068,7 +1070,9 @@ impl<C: Channel> Agent<C> {
         {
             let provider = self.embedding_provider.clone();
             let embed_timeout_secs = self.runtime.config.timeouts.embedding_seconds;
-            let _ = self.channel.send_status("matching skills...").await;
+            self.channel
+                .send_status_best_effort("matching skills...")
+                .await;
             let match_result = matcher
                 .match_skills(
                     all_meta,
@@ -1349,7 +1353,7 @@ impl<C: Channel> Agent<C> {
                     (scored.iter().map(|s| s.index).collect(), false)
                 }
             };
-            let _ = self.channel.send_status("").await;
+            self.channel.send_status_best_effort("").await;
             (indices, fallback)
         } else {
             tracing::warn!(
@@ -1654,7 +1658,9 @@ impl<C: Channel> Agent<C> {
                             .discovery_provider
                             .clone()
                             .unwrap_or_else(|| self.embedding_provider.clone());
-                        let _ = self.channel.send_status("selecting tools...").await;
+                        self.channel
+                            .send_status_best_effort("selecting tools...")
+                            .await;
                         let embed_timeout = std::time::Duration::from_secs(
                             self.runtime.config.timeouts.embedding_seconds,
                         );
@@ -1696,7 +1702,7 @@ impl<C: Channel> Agent<C> {
                                 // MCP tools rather than silently degrading to the full unfiltered set.
                             }
                         }
-                        let _ = self.channel.send_status("").await;
+                        self.channel.send_status_best_effort("").await;
                     } else {
                         // Index not built (build failed at connect time).
                         tracing::warn!(
@@ -1767,7 +1773,9 @@ impl<C: Channel> Agent<C> {
                 .map(|d| (d.id.as_ref(), d.description.as_ref()))
                 .collect();
 
-            let _ = self.channel.send_status("filtering tools...").await;
+            self.channel
+                .send_status_best_effort("filtering tools...")
+                .await;
             let schema_embed_timeout =
                 std::time::Duration::from_secs(self.runtime.config.timeouts.embedding_seconds);
             match tokio::time::timeout(schema_embed_timeout, self.embedding_provider.embed(query))
@@ -1825,7 +1833,7 @@ impl<C: Channel> Agent<C> {
                     tracing::warn!("tool filter: query embed failed, using all tools: {e:#}");
                 }
             }
-            let _ = self.channel.send_status("").await;
+            self.channel.send_status_best_effort("").await;
         }
     }
 

@@ -199,27 +199,23 @@ impl<C: Channel> Agent<C> {
             .skip(1)
             .filter(|m| m.role == Role::User)
             .count();
-        if user_count
-            < self
-                .services
-                .memory
-                .compaction
-                .shutdown_summary_min_messages
-        {
+        let min_messages = self
+            .services
+            .memory
+            .compaction
+            .shutdown_summary_min_messages;
+        if user_count < min_messages {
             tracing::debug!(
                 user_count,
-                min = self
-                    .services
-                    .memory
-                    .compaction
-                    .shutdown_summary_min_messages,
+                min = min_messages,
                 "shutdown summary: too few user messages, skipping"
             );
             return;
         }
 
-        // TUI status — send errors silently ignored (TUI may already be gone at shutdown).
-        let _ = self.channel.send_status("Saving session summary...").await;
+        self.channel
+            .send_status_best_effort("Saving session summary...")
+            .await;
 
         // Collect last N messages (skip system prompt at index 0).
         let max = self
@@ -259,7 +255,7 @@ impl<C: Channel> Agent<C> {
         }];
 
         let Some(structured) = self.call_llm_for_session_summary(&chat_messages).await else {
-            let _ = self.channel.send_status("").await;
+            self.channel.send_status_best_effort("").await;
             return;
         };
 
@@ -275,8 +271,7 @@ impl<C: Channel> Agent<C> {
             );
         }
 
-        // Clear TUI status.
-        let _ = self.channel.send_status("").await;
+        self.channel.send_status_best_effort("").await;
     }
     /// Gracefully shut down the agent and persist state.
     ///
@@ -295,7 +290,9 @@ impl<C: Channel> Agent<C> {
     /// Call this before dropping the agent to ensure no data loss.
     #[tracing::instrument(name = "core.agent.shutdown", skip_all, level = "debug")]
     pub async fn shutdown(&mut self) {
-        let _ = self.channel.send_status("Shutting down...").await;
+        self.channel
+            .send_status_best_effort("Shutting down...")
+            .await;
 
         // CRIT-1: persist Thompson state accumulated during this session.
         self.provider.save_router_state().await;

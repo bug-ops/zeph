@@ -60,9 +60,8 @@ impl<C: Channel> Agent<C> {
             "working directory changed"
         );
 
-        let _ = self
-            .channel
-            .send_status("Working directory changed\u{2026}")
+        self.channel
+            .send_status_best_effort("Working directory changed\u{2026}")
             .await;
 
         let hooks = self.services.session.hooks_config.cwd_changed.clone();
@@ -91,7 +90,7 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        let _ = self.channel.send_status("").await;
+        self.channel.send_status_best_effort("").await;
     }
     /// Handle a `FileChangedEvent` from the file watcher.
     #[tracing::instrument(name = "core.agent.handle_file_changed", skip_all, level = "debug")]
@@ -101,9 +100,8 @@ impl<C: Channel> Agent<C> {
     ) {
         tracing::info!(path = %event.path.display(), "file changed");
 
-        let _ = self
-            .channel
-            .send_status("Running file-change hook\u{2026}")
+        self.channel
+            .send_status_best_effort("Running file-change hook\u{2026}")
             .await;
 
         let hooks = self
@@ -139,7 +137,7 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        let _ = self.channel.send_status("").await;
+        self.channel.send_status_best_effort("").await;
     }
 }
 

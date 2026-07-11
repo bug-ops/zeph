@@ -288,9 +288,8 @@ impl<C: Channel> Agent<C> {
             &non_system[..]
         };
 
-        let _ = self
-            .channel
-            .send_status("Generating session digest...")
+        self.channel
+            .send_status_best_effort("Generating session digest...")
             .await;
 
         // PAAC secret masking (#5437) is structural at the provider boundary — `self.provider`
@@ -309,7 +308,7 @@ impl<C: Channel> Agent<C> {
         )
         .await;
 
-        let _ = self.channel.send_status("").await;
+        self.channel.send_status_best_effort("").await;
 
         // Update the cached digest so it is available in the same session if re-used.
         if let Some((final_text, token_count)) = result {
@@ -467,13 +466,15 @@ impl<C: Channel> Agent<C> {
         let provider =
             self.resolve_background_provider(self.runtime.config.recap_config.provider.as_str());
 
-        let _ = self.channel.send_status("Generating recap...").await;
+        self.channel
+            .send_status_best_effort("Generating recap...")
+            .await;
 
         let timeout = Duration::from_secs(30);
         let recap_text = tokio::select! {
             () = tokio::time::sleep(timeout) => {
                 tracing::warn!("session recap: LLM call timed out after {timeout:?}");
-                let _ = self.channel.send_status("").await;
+                self.channel.send_status_best_effort("").await;
                 return Err(zeph_commands::CommandError("recap LLM timed out".into()));
             }
             result = provider.chat(&chat_messages) => {
@@ -481,7 +482,7 @@ impl<C: Channel> Agent<C> {
                     Ok(text) => text,
                     Err(e) => {
                         tracing::warn!("session recap: LLM call failed: {e:#}");
-                        let _ = self.channel.send_status("").await;
+                        self.channel.send_status_best_effort("").await;
                         return Err(zeph_commands::CommandError(
                             format!("recap LLM error: {e}"),
                         ));
@@ -490,7 +491,7 @@ impl<C: Channel> Agent<C> {
             }
         };
 
-        let _ = self.channel.send_status("").await;
+        self.channel.send_status_best_effort("").await;
 
         let sanitized = sanitize_digest(&recap_text);
         let tc = &self.runtime.metrics.token_counter;
