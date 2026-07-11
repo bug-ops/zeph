@@ -748,6 +748,80 @@ async fn execute_confirmed_skips_confirmation() {
     assert!(output.summary.contains("confirmed"));
 }
 
+/// Calls `execute_confirmed` through the `ToolExecutor` trait bound (not as an inherent
+/// method on a concrete `ShellExecutor`), forcing dynamic-style dispatch identical to how
+/// `Arc<ShellExecutor>` is invoked when composed under other wrapper executors.
+async fn call_execute_confirmed_via_trait<T: ToolExecutor>(
+    executor: &T,
+    response: &str,
+) -> Result<Option<ToolOutput>, ToolError> {
+    executor.execute_confirmed(response).await
+}
+
+/// Regression test for #6012: `Arc<ShellExecutor>`'s `ToolExecutor` impl did not override
+/// `execute_confirmed`, so dispatch through the trait fell through to the base default
+/// (`self.execute(..)`, i.e. `skip_confirm = false`) instead of forwarding to
+/// `ShellExecutor::execute_confirmed`'s bypass logic — silently reintroducing the
+/// confirmation prompt for any caller that only holds a generic `T: ToolExecutor` handle.
+#[tokio::test]
+async fn arc_shell_executor_execute_confirmed_bypasses_confirmation() {
+    let config = ShellConfig {
+        confirm_patterns: vec!["echo".into()],
+        ..default_config()
+    };
+    let executor = std::sync::Arc::new(ShellExecutor::new(&config));
+    let response = "```bash\necho confirmed\n```";
+
+    let result = call_execute_confirmed_via_trait(&executor, response).await;
+    assert!(
+        result.is_ok(),
+        "execute_confirmed via Arc<ShellExecutor>'s ToolExecutor impl must bypass confirmation"
+    );
+    let output = result.unwrap().unwrap();
+    assert!(output.summary.contains("confirmed"));
+}
+
+/// Calls the trio of boolean cross-cutting methods through the `ToolExecutor` trait bound,
+/// used to compare `Arc<ShellExecutor>`'s trait dispatch against calling the same methods
+/// directly on the wrapped `ShellExecutor`.
+fn call_cross_cutting_bools<T: ToolExecutor>(executor: &T, call: &ToolCall) -> (bool, bool, bool) {
+    (
+        executor.requires_confirmation(call),
+        executor.is_tool_speculatable("bash"),
+        executor.is_tool_retryable("bash"),
+    )
+}
+
+/// Forward-looking consistency guard for #6012, not a regression test that can currently
+/// distinguish fixed-vs-broken: `ShellExecutor` itself never overrides `requires_confirmation`,
+/// `is_tool_speculatable`, or `is_tool_retryable` (both sides always equal the trait's default),
+/// so this passes identically whether or not `Arc<ShellExecutor>` forwards them. Its value is
+/// pinning that dispatching these methods through `Arc<ShellExecutor>`'s `ToolExecutor` impl
+/// stays behaviorally identical to calling them directly on the wrapped `ShellExecutor` — if
+/// `ShellExecutor` ever gains a real override for one of these methods without the `Arc` impl
+/// being updated to forward it, this test will start failing.
+#[tokio::test]
+async fn arc_shell_executor_forwards_remaining_cross_cutting_methods() {
+    let executor = std::sync::Arc::new(ShellExecutor::new(&default_config()));
+    let call = ToolCall {
+        tool_id: ToolName::new("bash"),
+        params: serde_json::Map::new(),
+        caller_id: None,
+        context: None,
+        tool_call_id: String::new(),
+        skill_name: None,
+    };
+
+    let (via_arc_confirm, via_arc_speculatable, via_arc_retryable) =
+        call_cross_cutting_bools(&executor, &call);
+    let (via_inner_confirm, via_inner_speculatable, via_inner_retryable) =
+        call_cross_cutting_bools(executor.as_ref(), &call);
+
+    assert_eq!(via_arc_confirm, via_inner_confirm);
+    assert_eq!(via_arc_speculatable, via_inner_speculatable);
+    assert_eq!(via_arc_retryable, via_inner_retryable);
+}
+
 // --- default confirm patterns test ---
 
 #[test]
@@ -3442,4 +3516,201 @@ async fn arc_wrapped_executor_forwards_checkpoint_methods() {
         "Arc<ShellExecutor>::checkpoint_redo must forward to the real impl, not the trait default"
     );
     assert!(file_path.exists());
+}
+
+// --- Checkpoint stack coverage gaps (#6001) ---
+
+/// Regression test for #6001: `checkpoint_redo` called with no prior `checkpoint_undo`
+/// must be a no-op "nothing to redo" result, not a panic or corrupted stack state.
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn checkpoint_redo_without_prior_undo_is_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir_path = dir.path().canonicalize().unwrap();
+    let file_path = dir_path.join("target.txt");
+
+    let config = ShellConfig {
+        checkpoints_enabled: true,
+        allowed_paths: vec![dir_path.to_string_lossy().into_owned()],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&config);
+
+    // Redo on a completely empty stack (no checkpoints recorded at all).
+    let redo = executor.checkpoint_redo();
+    assert!(redo.supported);
+    assert_eq!(redo.reverted_commands, 0);
+    assert_eq!(redo.message, "Nothing to redo.");
+
+    // Record a checkpoint but never undo it — redo stack stays empty.
+    let command = format!("echo hello > {}", file_path.display());
+    let response = format!("```bash\n{command}\n```");
+    executor.execute(&response).await.unwrap();
+    assert_eq!(executor.checkpoint_list().entries.len(), 1);
+
+    let redo_after_record = executor.checkpoint_redo();
+    assert!(redo_after_record.supported);
+    assert_eq!(redo_after_record.reverted_commands, 0);
+    assert_eq!(redo_after_record.message, "Nothing to redo.");
+    // Stack must be untouched by the no-op redo.
+    assert_eq!(executor.checkpoint_list().entries.len(), 1);
+    assert!(file_path.exists());
+}
+
+/// Regression test for #6001: `checkpoint_list` must report the undo stack most-recent
+/// first when 2+ checkpoints exist — pinning the actual (implementation) ordering rather
+/// than leaving it implied. This is user-visible via `/undo list`.
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn checkpoint_list_orders_most_recent_first_with_multiple_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir_path = dir.path().canonicalize().unwrap();
+    let file_a = dir_path.join("a.txt");
+    let file_b = dir_path.join("b.txt");
+    let file_c = dir_path.join("c.txt");
+
+    let config = ShellConfig {
+        checkpoints_enabled: true,
+        allowed_paths: vec![dir_path.to_string_lossy().into_owned()],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&config);
+
+    for file in [&file_a, &file_b, &file_c] {
+        let command = format!("echo hello > {}", file.display());
+        let response = format!("```bash\n{command}\n```");
+        executor.execute(&response).await.unwrap();
+    }
+
+    let list = executor.checkpoint_list();
+    assert!(list.supported);
+    assert_eq!(list.entries.len(), 3);
+    // Most-recent-first: the last-recorded checkpoint (file_c's command) is entries[0].
+    assert!(list.entries[0].command.contains("c.txt"));
+    assert!(list.entries[1].command.contains("b.txt"));
+    assert!(list.entries[2].command.contains("a.txt"));
+    // index field is 0-based with 0 = most recent, matching display order.
+    assert_eq!(list.entries[0].index, 0);
+    assert_eq!(list.entries[1].index, 1);
+    assert_eq!(list.entries[2].index, 2);
+}
+
+/// Regression test for #6001: multi-checkpoint undo-stack depth under a sequence of
+/// undo/redo/undo operations. Pins bookkeeping across: record x2, undo x2 (one at a time),
+/// redo x1, undo x1 again.
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn checkpoint_undo_redo_undo_sequence_tracks_depth() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir_path = dir.path().canonicalize().unwrap();
+    let file_a = dir_path.join("a.txt");
+    let file_b = dir_path.join("b.txt");
+
+    let config = ShellConfig {
+        checkpoints_enabled: true,
+        allowed_paths: vec![dir_path.to_string_lossy().into_owned()],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&config);
+
+    for file in [&file_a, &file_b] {
+        let command = format!("echo hello > {}", file.display());
+        let response = format!("```bash\n{command}\n```");
+        executor.execute(&response).await.unwrap();
+    }
+    assert_eq!(executor.checkpoint_list().entries.len(), 2);
+    assert!(file_a.exists());
+    assert!(file_b.exists());
+
+    // Undo once: reverts the most recent checkpoint (b.txt creation).
+    let undo1 = executor.checkpoint_undo(1);
+    assert_eq!(undo1.reverted_commands, 1);
+    assert!(!file_b.exists(), "first undo must revert b.txt creation");
+    assert!(file_a.exists(), "a.txt must be untouched by the first undo");
+    assert_eq!(executor.checkpoint_list().entries.len(), 1);
+
+    // Undo again: reverts the remaining checkpoint (a.txt creation).
+    let undo2 = executor.checkpoint_undo(1);
+    assert_eq!(undo2.reverted_commands, 1);
+    assert!(!file_a.exists(), "second undo must revert a.txt creation");
+    assert_eq!(executor.checkpoint_list().entries.len(), 0);
+
+    // Redo once: re-applies the a.txt creation (LIFO — the most recently undone entry).
+    let redo1 = executor.checkpoint_redo();
+    assert_eq!(redo1.reverted_commands, 1);
+    assert!(file_a.exists(), "first redo must re-apply a.txt creation");
+    assert_eq!(executor.checkpoint_list().entries.len(), 1);
+
+    // Undo again: the redo we just applied moves back onto the undo stack and is undone.
+    let undo3 = executor.checkpoint_undo(1);
+    assert_eq!(undo3.reverted_commands, 1);
+    assert!(
+        !file_a.exists(),
+        "third undo must revert the re-applied a.txt creation"
+    );
+    assert_eq!(executor.checkpoint_list().entries.len(), 0);
+}
+
+// --- capture_snapshot_for symlinked-allowed_paths regression (#5999) ---
+
+/// Regression test for #5999: a checkpoint for a *newly-created* file must still be
+/// captured when `allowed_paths` is configured with a raw (non-canonicalized) prefix that
+/// is itself a symlink on this platform (e.g. macOS's `/tmp` -> `/private/tmp`).
+///
+/// Before the fix, `capture_snapshot_for` canonicalized the file's own path to check
+/// sandbox containment; for a file that does not exist yet `canonicalize()` fails, and
+/// the code fell back to `std::path::absolute`, which does NOT resolve symlinks. The
+/// file's path then stayed under the raw `/tmp/...` prefix while `allowed_paths_canonical`
+/// (canonicalized at construction time, when the directory already existed) held the
+/// resolved `/private/tmp/...` prefix — the `starts_with` containment check failed and
+/// the checkpoint was silently dropped.
+///
+/// Uses a raw, non-canonicalized `/tmp`-rooted directory as the `allowed_paths` entry
+/// (not a pre-canonicalized tempdir, unlike the sibling test above) so the symlink
+/// resolution path is actually exercised.
+#[tokio::test]
+#[cfg(target_os = "macos")]
+async fn checkpoint_captures_new_file_under_symlinked_allowed_path() {
+    let raw_dir = tempfile::Builder::new()
+        .prefix("zeph_5999_")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let dir_raw = raw_dir.path().to_path_buf();
+    // Sanity: this host must actually exhibit the /tmp -> /private/tmp symlink for the
+    // regression to be exercised; otherwise the raw and canonical prefixes are identical
+    // and the test would pass trivially even with the bug present.
+    let dir_canonical = dir_raw.canonicalize().unwrap();
+    assert_ne!(
+        dir_raw, dir_canonical,
+        "test requires a symlinked /tmp on this host to exercise the regression"
+    );
+
+    let file_path = dir_raw.join("new_file.txt"); // does not exist until the command runs
+
+    let config = ShellConfig {
+        checkpoints_enabled: true,
+        allowed_paths: vec![dir_raw.to_string_lossy().into_owned()],
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&config);
+
+    let command = format!("echo hello > {}", file_path.display());
+    let response = format!("```bash\n{command}\n```");
+    executor.execute(&response).await.unwrap();
+
+    assert!(file_path.exists());
+    let list = executor.checkpoint_list();
+    assert_eq!(
+        list.entries.len(),
+        1,
+        "checkpoint must be captured for a new file under a symlinked allowed_paths prefix"
+    );
+
+    // The checkpoint must also be usable: undo should remove the newly-created file.
+    let undo = executor.checkpoint_undo(1);
+    assert_eq!(undo.reverted_commands, 1);
+    assert!(
+        !file_path.exists(),
+        "undo must delete the newly-created file"
+    );
 }

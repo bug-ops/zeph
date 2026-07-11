@@ -150,6 +150,22 @@ impl<E: ToolExecutor> ToolExecutor for CompressedExecutor<E> {
     fn is_tool_speculatable(&self, tool_id: &str) -> bool {
         self.inner.is_tool_speculatable(tool_id)
     }
+
+    fn requires_confirmation(&self, call: &ToolCall) -> bool {
+        self.inner.requires_confirmation(call)
+    }
+
+    fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+        self.inner.checkpoint_undo(n)
+    }
+
+    fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+        self.inner.checkpoint_redo()
+    }
+
+    fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+        self.inner.checkpoint_list()
+    }
 }
 
 #[cfg(test)]
@@ -343,5 +359,81 @@ mod tests {
         let out = executor.execute_tool_call(&call).await.unwrap().unwrap();
         // Error compressor → raw output preserved (T4 safety invariant).
         assert_eq!(out.summary, raw);
+    }
+
+    /// Inner executor whose cross-cutting methods return distinguishable non-default
+    /// values, used to prove `CompressedExecutor` forwards rather than falling through
+    /// to the base `ToolExecutor` defaults.
+    #[derive(Debug)]
+    struct CheckpointStubExecutor;
+
+    impl ToolExecutor for CheckpointStubExecutor {
+        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        async fn execute_tool_call(&self, _: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+        fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+            true
+        }
+        fn checkpoint_undo(&self, _n: usize) -> crate::executor::CheckpointActionResult {
+            crate::executor::CheckpointActionResult {
+                reverted_commands: 1,
+                restored: 2,
+                deleted: 3,
+                supported: true,
+                message: "stub-undo".to_owned(),
+            }
+        }
+        fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+            crate::executor::CheckpointActionResult {
+                reverted_commands: 4,
+                restored: 5,
+                deleted: 6,
+                supported: true,
+                message: "stub-redo".to_owned(),
+            }
+        }
+        fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+            crate::executor::CheckpointListResult {
+                entries: vec![],
+                redo_depth: 7,
+                supported: true,
+            }
+        }
+    }
+
+    /// Regression test for #6012: `requires_confirmation` and the checkpoint trio must be
+    /// forwarded to `self.inner`. Before the fix they fell through to the base
+    /// `ToolExecutor` defaults (`false` / `unsupported()`) regardless of the inner
+    /// executor's actual policy or checkpoint state.
+    #[test]
+    fn requires_confirmation_and_checkpoints_delegated_to_inner() {
+        let executor =
+            CompressedExecutor::new(CheckpointStubExecutor, Arc::new(StubCompressor), 10);
+
+        let call = ToolCall {
+            tool_id: ToolName::new("spy"),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        assert!(executor.requires_confirmation(&call));
+
+        let undo = executor.checkpoint_undo(1);
+        assert!(undo.supported);
+        assert_eq!(undo.message, "stub-undo");
+
+        let redo = executor.checkpoint_redo();
+        assert!(redo.supported);
+        assert_eq!(redo.message, "stub-redo");
+
+        let list = executor.checkpoint_list();
+        assert!(list.supported);
+        assert_eq!(list.redo_depth, 7);
     }
 }

@@ -69,6 +69,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tools)`: `CompressedExecutor`, `ToolFilter`, and `Arc<ShellExecutor>` now forward the
+  remaining cross-cutting `ToolExecutor` methods to their inner/wrapped executor instead of
+  silently falling through to the trait's no-op defaults (#6012). `CompressedExecutor` now
+  forwards `requires_confirmation` and the `checkpoint_undo`/`checkpoint_redo`/`checkpoint_list`
+  trio. `ToolFilter` (wrapping the ACP `FileExecutor`) previously forwarded none of the
+  cross-cutting methods — it now forwards `execute_tool_call_confirmed` (respecting tool
+  suppression), `set_skill_env`, `set_effective_trust`, `is_tool_retryable`,
+  `is_tool_speculatable`, `requires_confirmation`, and the checkpoint trio. `Arc<ShellExecutor>`
+  now also forwards `execute_confirmed`, `execute_tool_call_confirmed`, `set_effective_trust`,
+  `is_tool_retryable`, `is_tool_speculatable`, and `requires_confirmation` — the
+  `execute_confirmed` forward closes a currently-dormant gap (its only caller today,
+  `handle_confirmation_required` in `tool_result.rs`, is `#[cfg(test)]`-gated; production
+  confirmation dispatch goes through `execute_tool_call_confirmed` via `tier_loop.rs` instead)
+  but is worth fixing now as defense-in-depth, matching the pattern of every other wrapper, in
+  case that path is ever re-enabled. Same defect class as #5899/#5905/#5906 (fixed by #5930) and
+  #5900/#5938/#5931 (fixed by #6011).
+- `fix(tools)`: `capture_snapshot_for` no longer silently drops a checkpoint for a
+  newly-created file whose path lives under a symlinked `allowed_paths` prefix on macOS (e.g.
+  `/tmp` -> `/private/tmp`, `/var` -> `/private/var`) (#5999). For a file that does not exist
+  yet, `canonicalize()` fails, and the previous fallback (`std::path::absolute`) does not
+  resolve symlinks, so the file's path stayed under the raw prefix while `allowed_paths`
+  (canonicalized at construction time) held the resolved prefix — the containment check failed
+  and the checkpoint was dropped with only a `tracing::warn!`. Both `capture_snapshot_for` and
+  `validate_sandbox_with_cwd` now share a new `canonicalize_or_nearest_ancestor` helper that
+  walks up to the nearest existing ancestor, canonicalizes it, and reattaches the non-existent
+  suffix.
+
+### Testing
+
+- `test(tools)`: added regression coverage for the `ShellExecutor` checkpoint stack (#6001):
+  `checkpoint_redo` with no prior `checkpoint_undo` (no-op "Nothing to redo.", not a panic),
+  `checkpoint_list` ordering with 3 recorded checkpoints (most-recent-first, matching the
+  `index` field), and a multi-step undo/redo/undo sequence pinning undo-stack depth
+  bookkeeping.
+
 - `fix(tools)`: `CompositeExecutor`, `AdversarialPolicyGateExecutor`, and `PolicyGateExecutor`
   now forward `requires_confirmation`/`is_tool_speculatable`/`execute_tool_call_confirmed` to
   their inner executors instead of silently falling through to the `ToolExecutor` trait's

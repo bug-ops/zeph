@@ -1010,10 +1010,7 @@ impl ShellExecutor {
                     return false;
                 }
                 if !self.allowed_paths_canonical.is_empty() {
-                    let canonical = p
-                        .canonicalize()
-                        .or_else(|_| std::path::absolute(p))
-                        .unwrap_or_else(|_| p.clone());
+                    let canonical = canonicalize_or_nearest_ancestor(p);
                     if !self
                         .allowed_paths_canonical
                         .iter()
@@ -1509,27 +1506,7 @@ impl ShellExecutor {
             // For non-existent paths, canonicalize the nearest existing ancestor and
             // reattach the suffix: this rejects `allowed/../../etc/shadow` while
             // allowing references to not-yet-created files within allowed dirs.
-            let canonical = if let Ok(c) = path.canonicalize() {
-                c
-            } else {
-                // Collect path components so we can walk up from the full path.
-                let components: Vec<_> = path.components().collect();
-                let mut base_len = components.len();
-                let canonical_base = loop {
-                    if base_len == 0 {
-                        break PathBuf::new();
-                    }
-                    let candidate: PathBuf = components[..base_len].iter().collect();
-                    if let Ok(c) = candidate.canonicalize() {
-                        break c;
-                    }
-                    base_len -= 1;
-                };
-                // Reattach the non-existent suffix (components after base_len).
-                components[base_len..]
-                    .iter()
-                    .fold(canonical_base, |acc, c| acc.join(c))
-            };
+            let canonical = canonicalize_or_nearest_ancestor(&path);
             if !self
                 .allowed_paths_canonical
                 .iter()
@@ -1734,6 +1711,10 @@ impl ToolExecutor for std::sync::Arc<ShellExecutor> {
         self.as_ref().execute(response).await
     }
 
+    async fn execute_confirmed(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        self.as_ref().execute_confirmed(response).await
+    }
+
     fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
         self.as_ref().tool_definitions()
     }
@@ -1742,8 +1723,31 @@ impl ToolExecutor for std::sync::Arc<ShellExecutor> {
         self.as_ref().execute_tool_call(call).await
     }
 
+    async fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        self.as_ref().execute_tool_call_confirmed(call).await
+    }
+
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
         self.as_ref().set_skill_env(env);
+    }
+
+    fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
+        self.as_ref().set_effective_trust(level);
+    }
+
+    fn is_tool_retryable(&self, tool_id: &str) -> bool {
+        self.as_ref().is_tool_retryable(tool_id)
+    }
+
+    fn is_tool_speculatable(&self, tool_id: &str) -> bool {
+        self.as_ref().is_tool_speculatable(tool_id)
+    }
+
+    fn requires_confirmation(&self, call: &ToolCall) -> bool {
+        self.as_ref().requires_confirmation(call)
     }
 
     fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
@@ -2743,6 +2747,41 @@ fn classify_shell_exit(
 
 fn has_traversal(path: &str) -> bool {
     path.split(['/', '\\']).any(|seg| seg == "..")
+}
+
+/// Canonicalize `path`, resolving symlinks even when `path` itself does not exist yet.
+///
+/// `Path::canonicalize` requires the full path to exist, which fails for a file that is
+/// about to be created (e.g. a checkpoint capture taken before a write). Falling back to
+/// `std::path::absolute` in that case does not resolve symlinks, so on macOS a path under
+/// `/tmp`/`/var` never becomes `/private/tmp`/`/private/var` — silently breaking any
+/// subsequent `starts_with(allowed_paths_canonical)` containment check (#5999).
+///
+/// This walks up from `path` to the nearest existing ancestor, canonicalizes that
+/// ancestor (resolving its symlinks), and reattaches the non-existent suffix. Falls back
+/// to `std::path::absolute` (or `path` itself) only when no ancestor can be canonicalized.
+fn canonicalize_or_nearest_ancestor(path: &std::path::Path) -> std::path::PathBuf {
+    if let Ok(c) = path.canonicalize() {
+        return c;
+    }
+    let components: Vec<_> = path.components().collect();
+    let mut base_len = components.len();
+    let canonical_base = loop {
+        if base_len == 0 {
+            break None;
+        }
+        let candidate: std::path::PathBuf = components[..base_len].iter().collect();
+        if let Ok(c) = candidate.canonicalize() {
+            break Some(c);
+        }
+        base_len -= 1;
+    };
+    match canonical_base {
+        Some(base) => components[base_len..]
+            .iter()
+            .fold(base, |acc, c| acc.join(c)),
+        None => std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()),
+    }
 }
 
 fn extract_bash_blocks(text: &str) -> Vec<&str> {
