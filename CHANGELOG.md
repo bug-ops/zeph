@@ -119,6 +119,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   static-config) servers also stop auto-following redirects — previously they inherited
   `reqwest`'s default of following up to 10 — a deliberate pre-1.0 hardening, not a
   regression.
+- `zeph-mcp`: closed the residual cross-origin discovered-issuer OAuth SSRF/DNS-rebinding
+  TOCTOU that #6069's single-host `resolve_to_addrs` pinning could not cover — per SEP-985,
+  `token_endpoint`, `authorization_endpoint`, `jwks_uri`, and `registration_endpoint` can
+  legitimately live on a different host than the MCP server itself, so `AuthorizationManager`
+  fell back to its own independent, unpinned DNS resolution for them. `connect_url_oauth` now
+  routes OAuth HTTP traffic through a new `PinningOAuthHttpClient`
+  (`rmcp::transport::auth::OAuthHttpClient` impl) that resolves, SSRF-validates, and DNS-pins
+  each request individually by its own target host at execution time, rather than reusing a
+  client pinned to the original server's host (#6074).
 - `zeph-mcp`: `McpClient::connect_url_oauth`'s cached-token fast path and
   `complete_oauth`'s post-callback path now wrap `handler.serve(transport)` in
   `tokio::time::timeout`, matching every other connect entry point

@@ -9,9 +9,179 @@
 
 use std::time::Duration;
 
+use futures::StreamExt;
+use rmcp::transport::auth::{
+    OAuthHttpClient, OAuthHttpClientError, OAuthHttpClientFuture, OAuthHttpRedirectPolicy,
+    OAuthHttpRequest,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use zeph_common::net::resolve_and_validate;
+
 use crate::error::McpError;
+
+/// Timeout applied to an OAuth HTTP request when rmcp does not specify one.
+const DEFAULT_OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Response body cap mirroring rmcp's internal `ReqwestOAuthHttpClient` limit (not
+/// exported by rmcp, so re-declared here to match).
+const MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
+
+/// [`OAuthHttpClient`] that validates and DNS-pins every outbound OAuth HTTP request
+/// at the moment it is executed, rather than once up front.
+///
+/// `AuthorizationManager` may issue requests to hosts that differ from the MCP
+/// server's own host — the discovered `token_endpoint`, `authorization_endpoint`,
+/// `jwks_uri`, and `registration_endpoint` can legitimately live on a separate OAuth
+/// issuer per SEP-985. A single `reqwest::Client` pinned via `resolve_to_addrs` to the
+/// MCP server's host (as used for the MCP transport itself) cannot pin those other
+/// hosts, so rmcp would fall back to its own independent, unpinned DNS resolution for
+/// them — reopening the DNS-rebinding TOCTOU window that pinning closes for the MCP
+/// transport. Implementing [`OAuthHttpClient`] lets every OAuth HTTP call — regardless
+/// of which host it targets — be resolved, SSRF-validated, and pinned individually,
+/// immediately before it is sent. See #6074.
+pub(crate) struct PinningOAuthHttpClient {
+    server_id: String,
+    trusted: bool,
+}
+
+impl PinningOAuthHttpClient {
+    /// Create a client that validates and pins every OAuth HTTP request by host,
+    /// unless `trusted` is `true` — matching the bypass semantics already applied to
+    /// the MCP transport connection for operator-controlled static config.
+    pub(crate) fn new(server_id: impl Into<String>, trusted: bool) -> Self {
+        Self {
+            server_id: server_id.into(),
+            trusted,
+        }
+    }
+
+    /// Resolve and SSRF-validate `host:port` (skipped when `trusted`), then build a
+    /// `reqwest::Client` pinned to the result via `resolve_to_addrs`, honoring the
+    /// request's redirect policy and timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OAuthHttpClientError`] if `host` resolves to a private, loopback, or
+    /// link-local address, or if the client cannot be built.
+    // TODO(critic): `OAuthHttpRedirectPolicy::Follow` requests (e.g. dynamic client
+    // registration) only pin the originally-resolved host; if the response is itself a
+    // redirect to a *different* host, reqwest re-resolves that hop unpinned. Tracked in
+    // #6089.
+    async fn build_client(
+        &self,
+        host: &str,
+        port: u16,
+        redirect_policy: OAuthHttpRedirectPolicy,
+        timeout: Option<Duration>,
+    ) -> Result<reqwest::Client, OAuthHttpClientError> {
+        let mut builder =
+            reqwest::Client::builder().timeout(timeout.unwrap_or(DEFAULT_OAUTH_HTTP_TIMEOUT));
+        if redirect_policy == OAuthHttpRedirectPolicy::Stop {
+            builder = builder.redirect(reqwest::redirect::Policy::none());
+        }
+
+        if self.trusted {
+            tracing::debug!(
+                server_id = %self.server_id,
+                host,
+                "oauth http client: trusted connection, skipping SSRF validation"
+            );
+        } else {
+            let addrs = resolve_and_validate(host, port).await.map_err(|e| {
+                tracing::warn!(
+                    server_id = %self.server_id,
+                    host,
+                    error = %e,
+                    "oauth http client: blocked SSRF-unsafe request target"
+                );
+                OAuthHttpClientError::new(e.to_string())
+            })?;
+            tracing::debug!(
+                server_id = %self.server_id,
+                host,
+                addr_count = addrs.len(),
+                "oauth http client: pinning request to validated addresses"
+            );
+            builder = builder.resolve_to_addrs(host, &addrs);
+        }
+
+        builder.build().map_err(|e| {
+            OAuthHttpClientError::new(format!("failed to build OAuth HTTP client: {e}"))
+        })
+    }
+}
+
+impl OAuthHttpClient for PinningOAuthHttpClient {
+    fn execute(&self, request: OAuthHttpRequest) -> OAuthHttpClientFuture<'_> {
+        Box::pin(async move {
+            let OAuthHttpRequest {
+                request,
+                redirect_policy,
+                timeout,
+                ..
+            } = request;
+
+            let uri = request.uri();
+            let host = uri
+                .host()
+                .ok_or_else(|| OAuthHttpClientError::new("OAuth request URI missing host"))?
+                .to_owned();
+            let port = uri
+                .port_u16()
+                .unwrap_or(if uri.scheme_str() == Some("http") {
+                    80
+                } else {
+                    443
+                });
+
+            let client = self
+                .build_client(&host, port, redirect_policy, timeout)
+                .await?;
+
+            let reqwest_request = reqwest::Request::try_from(request)
+                .map_err(|e| OAuthHttpClientError::new(e.to_string()))?;
+
+            let response = client
+                .execute(reqwest_request)
+                .await
+                .map_err(|e| OAuthHttpClientError::new(e.to_string()))?;
+
+            let mut builder = http::Response::builder()
+                .status(response.status())
+                .version(response.version());
+            for (name, value) in response.headers() {
+                builder = builder.header(name, value);
+            }
+
+            let mut body = Vec::new();
+            let mut body_stream = response.bytes_stream();
+            while let Some(chunk) = body_stream.next().await {
+                let chunk = chunk.map_err(|e| OAuthHttpClientError::new(e.to_string()))?;
+                if chunk.len() > MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES.saturating_sub(body.len()) {
+                    return Err(OAuthHttpClientError::new(format!(
+                        "OAuth HTTP response body exceeds {MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES} bytes"
+                    )));
+                }
+                body.extend_from_slice(&chunk);
+            }
+
+            builder
+                .body(body)
+                .map_err(|e| OAuthHttpClientError::new(e.to_string()))
+        })
+    }
+}
+
+/// Build an [`OAuthHttpClient`] that per-request validates and pins the target host,
+/// for use with `OAuthState::new_with_oauth_http_client` / `AuthorizationManager::
+/// new_with_oauth_http_client`.
+pub(crate) fn pinning_oauth_http_client(
+    server_id: &str,
+    trusted: bool,
+) -> std::sync::Arc<dyn OAuthHttpClient> {
+    std::sync::Arc::new(PinningOAuthHttpClient::new(server_id, trusted))
+}
 
 /// Await an OAuth callback on the given pre-bound listener.
 ///
@@ -147,16 +317,22 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
-/// Validate that OAuth metadata endpoints don't resolve to private IPs.
+/// Fail-fast pre-check: validate that OAuth metadata endpoints don't resolve to
+/// private IPs before starting the (user-interactive) authorization flow.
 ///
 /// Called after `discover_metadata()`, before using any of the discovered URLs.
+///
+/// This is no longer the security boundary for SSRF on these endpoints — every
+/// actual OAuth HTTP request (token exchange, refresh, dynamic client registration)
+/// is independently resolved, validated, and DNS-pinned at execution time by
+/// `PinningOAuthHttpClient`, which closes the cross-origin TOCTOU that a
+/// validate-then-discard pre-check like this one cannot (see #6074). This function is
+/// kept purely so a misconfigured/malicious endpoint is rejected before opening a
+/// browser tab for the user, rather than after they complete the authorization dance.
 ///
 /// # Errors
 ///
 /// Returns `McpError::OAuthError` if any endpoint resolves to a private/reserved IP.
-// TODO(critic): cross-origin discovered-issuer OAuth metadata TOCTOU — resolve_to_addrs
-// cannot pin a different host; needs per-request validate+pin via custom OAuthHttpClient
-// (SEP-985). Tracked in #6074.
 #[cfg_attr(
     feature = "profiling",
     tracing::instrument(
@@ -302,5 +478,55 @@ mod tests {
             .unwrap_err();
         assert_matches!(err, McpError::OAuthError { .. });
         assert!(err.to_string().contains("jwks_uri"));
+    }
+
+    // #6074: PinningOAuthHttpClient validates and pins each OAuth HTTP request by its
+    // own target host at execution time, not just once up front against the MCP
+    // server's host. `build_client` is the per-request validate+pin step `execute()`
+    // calls for every outbound request — exercising it directly proves the request-time
+    // enforcement without needing rmcp's private `OAuthHttpRequest` constructor.
+
+    #[tokio::test]
+    async fn pinning_oauth_http_client_blocks_private_cross_origin_host() {
+        // Simulates a discovered `token_endpoint` on a different (private) host than
+        // the already-validated MCP server — exactly the SEP-985 cross-origin case a
+        // single MCP-transport-pinned client cannot catch.
+        let client = PinningOAuthHttpClient::new("srv", false);
+        let err = client
+            .build_client("10.0.0.1", 80, OAuthHttpRedirectPolicy::Stop, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("SSRF protection"));
+    }
+
+    #[tokio::test]
+    async fn pinning_oauth_http_client_blocks_private_loopback_host() {
+        let client = PinningOAuthHttpClient::new("srv", false);
+        let err = client
+            .build_client("127.0.0.1", 443, OAuthHttpRedirectPolicy::Follow, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("SSRF protection"));
+    }
+
+    #[tokio::test]
+    async fn pinning_oauth_http_client_allows_public_ip_literal() {
+        let client = PinningOAuthHttpClient::new("srv", false);
+        client
+            .build_client("8.8.8.8", 443, OAuthHttpRedirectPolicy::Stop, None)
+            .await
+            .expect("public IP literal must not be blocked");
+    }
+
+    #[tokio::test]
+    async fn pinning_oauth_http_client_trusted_mode_skips_validation() {
+        // Trusted connections bypass SSRF validation entirely, matching the same
+        // bypass already applied to the MCP transport's own pinning for
+        // operator-controlled static config.
+        let client = PinningOAuthHttpClient::new("srv", true);
+        client
+            .build_client("127.0.0.1", 443, OAuthHttpRedirectPolicy::Stop, None)
+            .await
+            .expect("trusted client must skip SSRF validation");
     }
 }

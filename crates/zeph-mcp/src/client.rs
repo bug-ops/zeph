@@ -653,12 +653,18 @@ impl McpClient {
         let hardened_client = build_hardened_client(server_id, pinned.as_ref())?;
 
         // Step 1: create OAuthState, routing all OAuth HTTP traffic (metadata discovery,
-        // token exchange, refresh) through the same SSRF-pinned client used for the MCP
-        // transport below — otherwise `AuthorizationManager` would build its own default
-        // `reqwest::Client` internally and re-resolve the (already-validated) server host
-        // independently, reopening the DNS-rebinding window for OAuth requests even though
-        // the transport connection itself is pinned (#6069, sibling of #6057).
-        let mut state = OAuthState::new(url, Some(hardened_client.clone()))
+        // token exchange, refresh, dynamic client registration) through a client that
+        // validates and DNS-pins each request individually, by its own target host, at
+        // the moment it fires. A single client pinned to the MCP server's host (like
+        // `hardened_client` below) cannot protect requests to a discovered issuer on a
+        // different host — SEP-985 explicitly allows `token_endpoint`,
+        // `authorization_endpoint`, `jwks_uri`, and `registration_endpoint` to live on a
+        // separate origin, and `AuthorizationManager` would otherwise fall back to its
+        // own independent, unpinned DNS resolution for that host — reopening the
+        // DNS-rebinding TOCTOU window pinning closes for the MCP transport (#6074,
+        // cross-origin sibling of #6069/#6057).
+        let oauth_http_client = crate::oauth::pinning_oauth_http_client(server_id, trusted);
+        let mut state = OAuthState::new_with_oauth_http_client(url, oauth_http_client)
             .await
             .map_err(|e| McpError::OAuthError {
                 server_id: server_id.into(),
