@@ -732,7 +732,7 @@ fn default_mining_generation_timeout_ms() -> u64 {
 /// max_chunks = 12
 /// score_threshold = 0.25
 /// ```
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct IndexConfig {
     /// Enable code indexing. Default: `false`.

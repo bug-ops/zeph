@@ -84,6 +84,7 @@ pub mod transport;
 
 pub use agent::{
     AcpContext, AgentSpawner, ProviderFactory, SessionContext, SessionStatusNotifier, run_agent,
+    warm_model_caches,
 };
 pub use client::{
     AcpClientError, RunOutcome, SubagentConfig, SubagentHandle, run_session, spawn_subagent,

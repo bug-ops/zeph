@@ -29,6 +29,16 @@ impl<C: Channel> Agent<C> {
     /// When the provider name restore succeeds, provider overrides (e.g. `reasoning_effort`) are
     /// loaded from `pref_key = "provider_overrides"` and applied if the active provider supports
     /// them. Failures are logged as warnings and never block startup.
+    ///
+    /// Skips entirely when `provider_override` is already primed with a pending value (#5959
+    /// critic finding C1): a caller may have set that slot before `run()` was ever called — e.g.
+    /// ACP's per-session `AcpSessionConfigSnapshot` restore (#5373), which writes the session's
+    /// own remembered provider into the slot prior to spawning the `Agent`. `channel_type`/`""`
+    /// scoping here is channel-wide, not per-session, so restoring on top of an already-primed
+    /// override would silently overwrite that explicit, session-specific choice the next time
+    /// [`Agent::apply_provider_override`] runs (it would find the slot already cleared by this
+    /// function's own call to [`Agent::provider_switch_as_string`]). An explicit prior override
+    /// always wins over channel-level "last used" stickiness.
     #[tracing::instrument(name = "core.agent.restore_provider", skip_all)]
     pub(super) async fn restore_channel_provider(&mut self) {
         if !self.runtime.config.provider_persistence_enabled {
@@ -36,6 +46,19 @@ impl<C: Channel> Agent<C> {
         }
         let channel_type = self.runtime.config.channel_type.clone();
         if channel_type.is_empty() {
+            return;
+        }
+        if self
+            .runtime
+            .providers
+            .provider_override
+            .as_ref()
+            .is_some_and(|slot| slot.read().is_some())
+        {
+            tracing::debug!(
+                channel_type,
+                "skipping channel-preference provider restore: an explicit provider override is already primed"
+            );
             return;
         }
         let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
@@ -1005,5 +1028,54 @@ mod tests {
         } else {
             panic!("inapplicable override should have been detected");
         }
+    }
+
+    /// #5959 critic finding C1 regression: `restore_channel_provider` must be a no-op when
+    /// `provider_override` is already primed (e.g. ACP's per-session `AcpSessionConfigSnapshot`
+    /// restore, #5373, which writes the session's own remembered provider into the slot before
+    /// `Agent::run` — and therefore this function — ever executes). Before the fix, this
+    /// function ran unconditionally and, given a stored channel-wide preference, would call
+    /// `provider_switch_as_string` which explicitly clears the override slot
+    /// (`*override_slot.write() = None;`), silently overwriting the session-specific choice with
+    /// a stale channel-wide "last used" preference shared across every session on that channel
+    /// (`channel_id` is hardcoded `""`, not scoped per session). No memory backend is configured
+    /// here at all — proving the check-before-clobber guard fires before the `SQLite` lookup is
+    /// even attempted, not just before a switch would occur.
+    #[tokio::test]
+    async fn restore_channel_provider_is_noop_when_override_already_primed() {
+        let mut qa = QuickTestAgent::minimal("ok");
+        qa.agent.runtime.config.channel_type = "acp".to_owned();
+        qa.agent.runtime.config.provider_persistence_enabled = true;
+
+        let primed_provider = mock_provider(vec!["primed".to_owned()]);
+        let override_slot = std::sync::Arc::new(parking_lot::RwLock::new(Some(primed_provider)));
+        qa.agent.runtime.providers.provider_override = Some(std::sync::Arc::clone(&override_slot));
+
+        qa.agent.restore_channel_provider().await;
+
+        assert!(
+            override_slot.read().is_some(),
+            "restore_channel_provider must not clear an already-primed provider_override slot"
+        );
+    }
+
+    /// Companion to the C1 regression above: when `provider_override` is primed but empty
+    /// (`Some(RwLock::new(None))` — the slot exists but nothing is pending, matching a fresh
+    /// `Agent::new()`/non-ACP channel that never primes it), `restore_channel_provider` must
+    /// still proceed past the guard (only `Some(Some(_))` short-circuits). With no memory
+    /// backend configured, it falls through to the very next guard and returns — verified only
+    /// via "does not panic", since there is no observable side effect to assert without a real
+    /// `SemanticMemory`.
+    #[tokio::test]
+    async fn restore_channel_provider_proceeds_when_override_slot_is_empty() {
+        let mut qa = QuickTestAgent::minimal("ok");
+        qa.agent.runtime.config.channel_type = "acp".to_owned();
+        qa.agent.runtime.config.provider_persistence_enabled = true;
+        qa.agent.runtime.providers.provider_override =
+            Some(std::sync::Arc::new(parking_lot::RwLock::new(None)));
+
+        // Must not panic: falls through the C1 guard (slot is Some(None), not Some(Some(_))),
+        // then returns at the next guard since no memory backend is configured.
+        qa.agent.restore_channel_provider().await;
     }
 }

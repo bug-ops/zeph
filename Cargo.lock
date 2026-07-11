@@ -10386,6 +10386,7 @@ dependencies = [
  "tower-http 0.7.0",
  "tracing",
  "uuid",
+ "zeph-commands",
  "zeph-common",
  "zeph-config",
  "zeph-core",

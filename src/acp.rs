@@ -352,6 +352,31 @@ pub(crate) struct SharedAgentDeps {
     history_limit: u32,
     recall_limit: usize,
     summarization_threshold: usize,
+    /// `config.memory.shutdown_summary*`, wired into `Agent::with_shutdown_summary_config`/
+    /// `with_shutdown_summary_provider` per session — mirrors `src/runner.rs` (#5959: previously
+    /// left on `MemoryCompactionState::default()` for ACP sessions, silently ignoring the
+    /// operator's configured shutdown-summary settings).
+    shutdown_summary: bool,
+    shutdown_summary_min_messages: usize,
+    shutdown_summary_max_messages: usize,
+    shutdown_summary_timeout_secs: u64,
+    shutdown_summary_provider: String,
+    /// `config.session.provider_persistence`/`persist_provider_overrides`, wired into
+    /// `Agent::with_channel_identity("acp", ...)` per session — mirrors `src/runner.rs`'s
+    /// active-channel wiring (#5959: previously never wired for ACP, so ACP sessions never
+    /// persisted/restored the last-used provider).
+    channel_provider_persistence: bool,
+    channel_persist_provider_overrides: bool,
+    /// `config.index`, wired into `agent_setup::apply_code_retrieval`/`apply_code_rag_retriever`
+    /// per session — mirrors `src/runner.rs` (#6022: previously never wired for ACP, so ACP
+    /// sessions got no static repo-map injection, `IndexMcpServer` registration, or automatic
+    /// code-RAG context retrieval).
+    index_config: zeph_core::config::IndexConfig,
+    /// Dedicated embedding provider for code retrieval, resolved once per connection via
+    /// `resolve_index_embed_provider` — passed to `apply_code_rag_retriever` per session.
+    code_index_provider: zeph_llm::any::AnyProvider,
+    /// Qdrant ops handle for code RAG retrieval; `None` when no vector backend is configured.
+    code_qdrant_ops: Option<zeph_memory::QdrantOps>,
     /// Broadcast sender for skill reload events. Each session subscribes independently.
     skill_reload_tx: tokio::sync::broadcast::Sender<zeph_skills::watcher::SkillEvent>,
     /// Broadcast sender for config reload events. Each session subscribes independently.
@@ -831,7 +856,7 @@ async fn build_acp_deps(
         if let Some(search_executor) = crate::agent_setup::build_search_code_executor(
             config,
             app.qdrant_ops().cloned(),
-            index_provider,
+            index_provider.clone(),
             memory.sqlite().pool().clone(),
             Some(std::sync::Arc::clone(&mcp_manager)),
         ) {
@@ -1105,6 +1130,16 @@ async fn build_acp_deps(
         history_limit: config.memory.history_limit,
         recall_limit: config.memory.semantic.recall_limit,
         summarization_threshold: config.memory.summarization_threshold,
+        shutdown_summary: config.memory.shutdown_summary,
+        shutdown_summary_min_messages: config.memory.shutdown_summary_min_messages,
+        shutdown_summary_max_messages: config.memory.shutdown_summary_max_messages,
+        shutdown_summary_timeout_secs: config.memory.shutdown_summary_timeout_secs,
+        shutdown_summary_provider: config.memory.shutdown_summary_provider.as_str().to_owned(),
+        channel_provider_persistence: config.session.provider_persistence,
+        channel_persist_provider_overrides: config.session.persist_provider_overrides,
+        index_config: config.index.clone(),
+        code_index_provider: index_provider,
+        code_qdrant_ops: app.qdrant_ops().cloned(),
         shutdown_rx,
         config_path: config_path_owned,
         mcp_tools,
@@ -1342,6 +1377,16 @@ async fn spawn_acp_agent(
     let history_limit = d.history_limit;
     let recall_limit = d.recall_limit;
     let summarization_threshold = d.summarization_threshold;
+    let shutdown_summary = d.shutdown_summary;
+    let shutdown_summary_min_messages = d.shutdown_summary_min_messages;
+    let shutdown_summary_max_messages = d.shutdown_summary_max_messages;
+    let shutdown_summary_timeout_secs = d.shutdown_summary_timeout_secs;
+    let shutdown_summary_provider = d.shutdown_summary_provider.clone();
+    let channel_provider_persistence = d.channel_provider_persistence;
+    let channel_persist_provider_overrides = d.channel_persist_provider_overrides;
+    let index_config = d.index_config.clone();
+    let code_index_provider = d.code_index_provider.clone();
+    let code_qdrant_ops = d.code_qdrant_ops.clone();
     let shutdown_rx = d.shutdown_rx.clone();
     let config_path = d.config_path.clone();
     let mcp_tools = d.mcp_tools.clone();
@@ -1790,11 +1835,35 @@ async fn spawn_acp_agent(
         .with_trajectory_and_category_config(d.trajectory_config.clone(), d.category_config.clone())
         .with_provider_pool(provider_pool, provider_config_snapshot)
         .with_embedding_provider(d.embedding_provider.clone())
+        .with_shutdown_summary_config(
+            shutdown_summary,
+            shutdown_summary_min_messages,
+            shutdown_summary_max_messages,
+            shutdown_summary_timeout_secs,
+        )
+        .with_shutdown_summary_provider(shutdown_summary_provider)
+        .with_channel_identity(
+            "acp",
+            channel_provider_persistence,
+            channel_persist_provider_overrides,
+        )
         .maybe_init_tool_schema_filter(tool_filter_config, provider.clone()),
     )
     .await;
 
     agent = agent.with_acp_session(true);
+
+    // #6022: wire code-RAG retrieval (static repo-map/IndexMcpServer injection plus automatic
+    // per-turn code-context retrieval) — mirrors src/runner.rs and src/daemon.rs. Previously ACP
+    // sessions got neither, since these calls only existed in the CLI/TUI bootstrap path.
+    agent = agent_setup::apply_code_retrieval(agent, &index_config);
+    agent = agent_setup::apply_code_rag_retriever(
+        agent,
+        &index_config,
+        code_qdrant_ops,
+        code_index_provider,
+        memory.sqlite().pool().clone(),
+    );
 
     // #5958: wire the trajectory risk slot/signal queue built above (spec 050 Invariant 2) plus
     // the TrajectorySentinel state machine itself into the agent, matching src/runner.rs and
@@ -2019,84 +2088,6 @@ async fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<
 
     models.dedup();
     models
-}
-
-/// Populate model caches for all providers before the ACP server starts.
-///
-/// Uses a 5-second timeout so that a slow or unavailable provider does not block startup.
-/// After a successful fetch, each unique provider slug present in `acp_available_models`
-/// is expanded from its on-disk cache, replacing the single config-time fallback entry.
-#[cfg(feature = "acp")]
-async fn warm_model_caches(
-    provider: zeph_llm::any::AnyProvider,
-    available_models: std::sync::Arc<RwLock<Vec<String>>>,
-) {
-    use zeph_llm::model_cache::ModelCache;
-
-    let provider_count = {
-        let models = available_models.read();
-        models
-            .iter()
-            .filter_map(|k| k.split_once(':').map(|(slug, _)| slug))
-            .collect::<std::collections::HashSet<_>>()
-            .len()
-    };
-    tracing::info!(
-        providers = provider_count,
-        "warming model caches in background"
-    );
-
-    let fetch = async move {
-        match provider.list_models_remote().await {
-            Ok(models) => tracing::info!(models = models.len(), "model cache fetch completed"),
-            Err(e) => {
-                tracing::info!(error = %e, "model cache warm-up failed; keeping fallback list");
-            }
-        }
-    };
-
-    if tokio::time::timeout(std::time::Duration::from_secs(5), fetch)
-        .await
-        .is_err()
-    {
-        tracing::info!("model cache warm-up timed out; keeping fallback list");
-        return;
-    }
-
-    // Collect unique provider slugs from the current available_models list.
-    let slugs: Vec<String> = {
-        let models = available_models.read();
-        models
-            .iter()
-            .filter_map(|k| k.split_once(':').map(|(s, _)| s.to_owned()))
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect()
-    };
-
-    for slug in slugs {
-        let cache = ModelCache::for_slug(&slug);
-        if cache.is_stale_async().await {
-            tracing::info!(provider = %slug, "model cache still stale after warm-up");
-            continue;
-        }
-        if let Ok(Some(entries)) = cache.load_async().await
-            && !entries.is_empty()
-        {
-            let new_keys: Vec<String> = entries
-                .into_iter()
-                .map(|m| format!("{slug}:{}", m.id))
-                .collect();
-            let count = new_keys.len();
-            let mut models = available_models.write();
-            models.retain(|k| !k.starts_with(&format!("{slug}:")));
-            models.extend(new_keys);
-            models.dedup();
-            tracing::info!(provider = %slug, models = count, "model cache ready");
-        }
-    }
-    let total_models = available_models.read().len();
-    tracing::info!(models = total_models, "model cache warming finished");
 }
 
 /// Build a `ProviderFactory` from the known named providers in config.
@@ -2367,7 +2358,7 @@ pub(crate) async fn run_acp_server(
     let (mut deps, _keepalive) = Box::pin(build_acp_deps(&app, None, None)).await?;
     let available_models = std::sync::Arc::clone(&deps.acp_available_models);
     let provider = deps.provider.clone();
-    warm_model_caches(provider, available_models).await;
+    zeph_acp::warm_model_caches(provider, available_models).await;
 
     // Apply CLI overrides to config-derived values.
     let effective_additional_dirs = if cli_additional_dirs.is_empty() {
@@ -2573,7 +2564,7 @@ pub(crate) async fn run_acp_http_server(
 
     let available_models = std::sync::Arc::clone(&deps.acp_available_models);
     let provider = deps.provider.clone();
-    warm_model_caches(provider, available_models).await;
+    zeph_acp::warm_model_caches(provider, available_models).await;
     *shared_deps.write().await = Some(Arc::new(deps));
     state.mark_ready();
     state.start_reaper();
@@ -2666,7 +2657,7 @@ pub(crate) async fn acp_http_ready_spawner(
 ) -> zeph_acp::SendAgentSpawner {
     let available_models = std::sync::Arc::clone(&deps.acp_available_models);
     let provider = deps.provider.clone();
-    warm_model_caches(provider, available_models).await;
+    zeph_acp::warm_model_caches(provider, available_models).await;
     std::sync::Arc::new(move |channel, acp_ctx, session_ctx| {
         let shared = std::sync::Arc::clone(&deps);
         Box::pin(spawn_acp_agent(shared, channel, acp_ctx, session_ctx))
@@ -4563,6 +4554,85 @@ mod tests {
             "the resolved RL embed dim (SharedCore::rl_embed_dim_resolved) must flow into \
              SharedAgentDeps, proving build_shared_core's pre-computation reaches both deps \
              structs from one shared value"
+        );
+    }
+
+    /// #5959/#6022 regression: before this PR, `SharedAgentDeps` had no
+    /// `shutdown_summary*`/`channel_provider_persistence`/`channel_persist_provider_overrides`/
+    /// `index_config` fields at all, so `spawn_acp_agent` had no way to call
+    /// `Agent::with_shutdown_summary_config`/`with_shutdown_summary_provider`/
+    /// `with_channel_identity("acp", ...)`/`agent_setup::apply_code_retrieval`/
+    /// `apply_code_rag_retriever` for ACP sessions — every ACP agent silently ran on builder
+    /// defaults (no shutdown summary, no provider-override persistence, no code-RAG retrieval)
+    /// regardless of what the operator configured in `config.memory.shutdown_summary*`,
+    /// `config.session.*`, and `config.index`. Drives the real `build_acp_deps` against a
+    /// mock-provider `AppBuilder::for_test` (same pattern as
+    /// `build_combined_deps_wires_skill_matching_config_from_config`) rather than hand-
+    /// constructing a `SharedAgentDeps` literal, so a regression in the config-to-deps mapping
+    /// is caught. Stops at the deps struct for the same reason documented on that sibling test:
+    /// `spawn_acp_agent`'s internal `Agent`-level wiring has no test seam yet (#5887).
+    #[cfg(feature = "acp")]
+    #[tokio::test]
+    async fn build_acp_deps_wires_shutdown_summary_channel_identity_and_index_config_from_config() {
+        let mut config =
+            zeph_core::config::Config::load(std::path::Path::new("/nonexistent")).unwrap();
+        config.llm.providers = vec![zeph_core::config::ProviderEntry {
+            provider_type: zeph_core::config::ProviderKind::Ollama,
+            base_url: Some("http://127.0.0.1:1".to_owned()),
+            model: Some("test-model".to_owned()),
+            ..Default::default()
+        }];
+        config.memory.sqlite_path = ":memory:".to_owned();
+        config.memory.shutdown_summary = true;
+        config.memory.shutdown_summary_min_messages = 7;
+        config.memory.shutdown_summary_max_messages = 42;
+        config.memory.shutdown_summary_timeout_secs = 9;
+        config.memory.shutdown_summary_provider = zeph_common::ProviderName::new("summary-test");
+        config.session.provider_persistence = true;
+        config.session.persist_provider_overrides = true;
+        config.index.enabled = true;
+        config.index.mcp_enabled = true;
+
+        let app = crate::bootstrap::AppBuilder::for_test(config);
+        let (deps, _keepalive) = Box::pin(build_acp_deps(&app, None, None))
+            .await
+            .expect("build_acp_deps must succeed against a mock-provider AppBuilder");
+
+        assert!(
+            deps.shutdown_summary,
+            "config.memory.shutdown_summary must flow into SharedAgentDeps"
+        );
+        assert_eq!(
+            deps.shutdown_summary_min_messages, 7,
+            "config.memory.shutdown_summary_min_messages must flow into SharedAgentDeps"
+        );
+        assert_eq!(
+            deps.shutdown_summary_max_messages, 42,
+            "config.memory.shutdown_summary_max_messages must flow into SharedAgentDeps"
+        );
+        assert_eq!(
+            deps.shutdown_summary_timeout_secs, 9,
+            "config.memory.shutdown_summary_timeout_secs must flow into SharedAgentDeps"
+        );
+        assert_eq!(
+            deps.shutdown_summary_provider, "summary-test",
+            "config.memory.shutdown_summary_provider must flow into SharedAgentDeps"
+        );
+        assert!(
+            deps.channel_provider_persistence,
+            "config.session.provider_persistence must flow into SharedAgentDeps"
+        );
+        assert!(
+            deps.channel_persist_provider_overrides,
+            "config.session.persist_provider_overrides must flow into SharedAgentDeps"
+        );
+        assert!(
+            deps.index_config.enabled,
+            "config.index.enabled must flow into SharedAgentDeps"
+        );
+        assert!(
+            deps.index_config.mcp_enabled,
+            "config.index.mcp_enabled must flow into SharedAgentDeps"
         );
     }
 

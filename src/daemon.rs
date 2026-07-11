@@ -766,16 +766,18 @@ pub(crate) async fn run_daemon(
     .with_conversation(conversation_id.0);
     let (skill_loader_executor, skill_invoke_executor, trust_snapshot) =
         agent_setup::build_skill_executors(&registry);
+    // Hoisted out of the composite-executor block below (rather than resolved twice) so it can
+    // also be passed to `apply_code_rag_retriever` once the agent exists (#6022: previously the
+    // daemon never wired code-RAG retrieval, only the on-demand `search_code` tool).
+    let index_provider = crate::bootstrap::resolve_index_embed_provider(config, provider.clone());
     let base_tool: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = {
         let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
             zeph_tools::CompositeExecutor::new(base_executor, mcp_executor),
         );
-        let index_provider =
-            crate::bootstrap::resolve_index_embed_provider(config, provider.clone());
         if let Some(search_executor) = agent_setup::build_search_code_executor(
             config,
             app.qdrant_ops().cloned(),
-            index_provider,
+            index_provider.clone(),
             memory.sqlite().pool().clone(),
             Some(std::sync::Arc::clone(&mcp_manager)),
         ) {
@@ -1039,6 +1041,18 @@ pub(crate) async fn run_daemon(
         trust_snapshot,
     };
     let agent = Box::pin(build_daemon_agent(deps, loopback_channel)).await;
+
+    // #6022: wire code-RAG retrieval (static repo-map/IndexMcpServer injection plus automatic
+    // per-turn code-context retrieval) — mirrors src/runner.rs. Previously the daemon only
+    // wired the on-demand `search_code` tool (above), never the automatic injection path.
+    let agent = agent_setup::apply_code_retrieval(agent, &config.index);
+    let agent = agent_setup::apply_code_rag_retriever(
+        agent,
+        &config.index,
+        app.qdrant_ops().cloned(),
+        index_provider,
+        memory.sqlite().pool().clone(),
+    );
 
     let agent = if let Some(logger) = daemon_audit_logger {
         agent.with_audit_logger(logger)

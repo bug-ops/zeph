@@ -21,6 +21,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     (`dump_anchored_summary`, `dump_compaction_probe`, `dump_sidequest_eviction`, and the two
     test-only pruning dumps) keep the original synchronous write and are tracked as a
     follow-up.
+- `zeph-acp`: closed three ACP wiring gaps that only reached the CLI/TUI entry point (#5959,
+  #5986, #6022).
+  - Shutdown-summary config (`[memory] shutdown_summary*`) and channel-scoped provider
+    persistence (`[session] provider_persistence`/`persist_provider_overrides`) were wired only
+    in `src/runner.rs`; ACP sessions never produced a shutdown summary and never
+    persisted/restored a "last-used provider" preference (#5959). Fixing the latter uncovered a
+    critical collision: naively wiring channel-scoped persistence into ACP would have silently
+    overwritten a resumed session's own remembered provider (`AcpSessionConfigSnapshot`, #5373)
+    with another session's channel-wide preference. `Agent::restore_channel_provider` now skips
+    the channel-wide restore whenever a caller has already primed an explicit provider override,
+    so a session-specific choice always takes priority.
+  - ACP's native `/help` rendered a hardcoded 5-command string instead of the real 49-command
+    registry, and `/model refresh` errored instead of refreshing the model cache (#5986). `/help`
+    now renders from the same command registry the CLI/TUI use; `/model refresh` refreshes the
+    session's active provider's model cache instead of failing.
+  - Automatic code-RAG context retrieval and repo-map/`IndexMcpServer` injection
+    (`[index] enabled`) were wired only in `src/runner.rs`; ACP and the daemon (A2A server) never
+    received repo context regardless of configuration (#6022). Both entry points now wire it the
+    same way the CLI does.
 
 ### Security
 

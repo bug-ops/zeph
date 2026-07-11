@@ -31,6 +31,7 @@ pub mod sink;
 pub mod traits;
 
 pub use commands::{COMMANDS, is_recognized_command};
+pub use handlers::help::render_help_text;
 
 pub use context::CommandContext;
 pub use sink::{ChannelSink, NullSink};

@@ -2490,14 +2490,11 @@ impl ZephAcpAgentState {
         let arg = parts.next().unwrap_or("").trim();
 
         let reply = match cmd {
-            "/help" => "Available commands:\n\
-                 /help — show this message\n\
-                 /model <id> — switch the active model\n\
-                 /mode <code|architect|ask> — switch session mode\n\
-                 /clear — clear session history\n\
-                 /review [path] — review recent changes (read-only)"
-                .to_owned(),
-            "/model" => self.handle_model_command(session_id, arg)?,
+            // #5986: render from the same `zeph_commands::COMMANDS` registry the CLI/TUI
+            // `CommandRegistry` uses, instead of a hand-rolled 5-command literal that drifted
+            // out of sync with the real command set (49 commands).
+            "/help" => zeph_commands::render_help_text(),
+            "/model" => self.handle_model_command(session_id, arg).await?,
             "/review" => {
                 return self.handle_review_command(session_id, arg);
             }
@@ -2663,7 +2660,35 @@ impl ZephAcpAgentState {
         }
     }
 
-    fn handle_model_command(
+    /// Refresh the remote model cache for the session's currently active provider, then update
+    /// the advertised `available_models` list.
+    ///
+    /// Mirrors `Agent::model_refresh_as_string` (`crates/zeph-core/src/agent/model_commands.rs`,
+    /// the CLI/TUI `/model refresh` handler), which likewise refreshes only the single active
+    /// provider, not every configured one. Reuses the shared [`warm_model_caches`] helper
+    /// (`src/acp.rs`'s ACP-startup cache warm-up) instead of a bespoke per-provider network loop
+    /// — a prior version of this method looped sequentially over every configured provider with
+    /// an independent 5-second timeout each, which could block this session's `do_prompt` handler
+    /// for up to 5s × N providers (#5986 critic finding M1).
+    async fn model_refresh_as_string(&self, session_id: &acp::schema::v1::SessionId) -> String {
+        let Some(ref factory) = self.provider_factory else {
+            return "model switching not configured".to_owned();
+        };
+        let current_model = {
+            let sessions = self.sessions.lock();
+            let Some(entry) = sessions.get(session_id) else {
+                return "session not found".to_owned();
+            };
+            entry.current_model.lock().clone()
+        };
+        let Some(provider) = factory(&current_model) else {
+            return format!("unknown model: {current_model}");
+        };
+        let fetched = warm_model_caches(provider, self.available_models.clone()).await;
+        format!("Fetched {fetched} models.")
+    }
+
+    async fn handle_model_command(
         &self,
         session_id: &acp::schema::v1::SessionId,
         arg: &str,
@@ -2672,6 +2697,12 @@ impl ZephAcpAgentState {
         if arg.is_empty() {
             let models = available_models.join(", ");
             return Ok(format!("Available models: {models}"));
+        }
+        // #5986: previously fell through to `resolve_model_fuzzy("refresh")`, which failed with
+        // an "no matching model found" error instead of refreshing the model list — unlike the
+        // CLI/TUI's documented `/model refresh` behavior.
+        if arg == "refresh" {
+            return Ok(self.model_refresh_as_string(session_id).await);
         }
         let Some(ref factory) = self.provider_factory else {
             return Err(acp::Error::internal_error().data("model switching not configured"));
@@ -3393,6 +3424,94 @@ fn is_acp_native_slash_command(trimmed_text: &str) -> bool {
         || trimmed_text.starts_with("/model ")
 }
 
+/// Populate model caches for a single provider, then expand every other unique provider slug
+/// present in `available_models` from its on-disk cache only (no extra network calls).
+///
+/// Used both at ACP startup (`src/acp.rs`, to warm every configured provider's cache before the
+/// server starts accepting connections — one call per provider there) and by `/model refresh`
+/// (`ZephAcpAgentState::model_refresh_as_string`, #5986) for the session's single currently
+/// active provider — mirroring `Agent::model_refresh_as_string`
+/// (`crates/zeph-core/src/agent/model_commands.rs`), which likewise refreshes only the active
+/// provider rather than looping over every configured one.
+///
+/// Uses a 5-second timeout so that a slow or unavailable provider does not block the caller.
+/// Returns the number of models fetched from the live network call (`0` on error or timeout);
+/// the on-disk cache expansion for other slugs always runs regardless of that outcome.
+pub async fn warm_model_caches(
+    provider: zeph_llm::any::AnyProvider,
+    available_models: SharedAvailableModels,
+) -> usize {
+    use zeph_llm::model_cache::ModelCache;
+
+    let provider_count = {
+        let models = available_models.read();
+        models
+            .iter()
+            .filter_map(|k| k.split_once(':').map(|(slug, _)| slug))
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    };
+    tracing::info!(
+        providers = provider_count,
+        "warming model caches in background"
+    );
+
+    let fetch = async move {
+        match provider.list_models_remote().await {
+            Ok(models) => {
+                let count = models.len();
+                tracing::info!(models = count, "model cache fetch completed");
+                count
+            }
+            Err(e) => {
+                tracing::info!(error = %e, "model cache warm-up failed; keeping fallback list");
+                0
+            }
+        }
+    };
+
+    let Ok(fetched) = tokio::time::timeout(std::time::Duration::from_secs(5), fetch).await else {
+        tracing::info!("model cache warm-up timed out; keeping fallback list");
+        return 0;
+    };
+
+    // Collect unique provider slugs from the current available_models list.
+    let slugs: Vec<String> = {
+        let models = available_models.read();
+        models
+            .iter()
+            .filter_map(|k| k.split_once(':').map(|(s, _)| s.to_owned()))
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect()
+    };
+
+    for slug in slugs {
+        let cache = ModelCache::for_slug(&slug);
+        if cache.is_stale_async().await {
+            tracing::info!(provider = %slug, "model cache still stale after warm-up");
+            continue;
+        }
+        if let Ok(Some(entries)) = cache.load_async().await
+            && !entries.is_empty()
+        {
+            let new_keys: Vec<String> = entries
+                .into_iter()
+                .map(|m| format!("{slug}:{}", m.id))
+                .collect();
+            let count = new_keys.len();
+            let mut models = available_models.write();
+            models.retain(|k| !k.starts_with(&format!("{slug}:")));
+            models.extend(new_keys);
+            models.dedup();
+            tracing::info!(provider = %slug, models = count, "model cache ready");
+        }
+    }
+    let total_models = available_models.read().len();
+    tracing::info!(models = total_models, "model cache warming finished");
+    fetched
+}
+
 /// Map `(cancelled, stop_hint)` to the ACP `StopReason` wire value.
 fn compute_stop_reason(
     cancelled: bool,
@@ -3971,6 +4090,220 @@ mod session_event_replay_tests {
                 reason: "user_quit".to_owned(),
             })
             .is_empty()
+        );
+    }
+}
+
+/// Regression tests for #5986: ACP's `/help` and `/model refresh` slash commands.
+#[cfg(test)]
+mod slash_command_wiring_tests {
+    use std::sync::Arc;
+
+    use parking_lot::RwLock;
+    use zeph_core::channel::LoopbackChannel;
+    use zeph_llm::any::AnyProvider;
+
+    use super::*;
+
+    /// Builds a bare agent (no registered session), optionally with a provider factory.
+    fn make_agent(
+        provider_factory: Option<ProviderFactory>,
+        available_models: Vec<String>,
+    ) -> (ZephAcpAgent, acp::schema::v1::SessionId) {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        let mut agent = ZephAcpAgent::new(spawner, 4, 1800, None);
+        if let Some(factory) = provider_factory {
+            agent = agent.with_provider_factory(factory, Arc::new(RwLock::new(available_models)));
+        }
+        let session_id = acp::schema::v1::SessionId::new("slash-cmd-test".to_owned());
+        (agent, session_id)
+    }
+
+    /// Builds an agent with one registered session, returning a receiver that yields the next
+    /// `SessionNotification` `send_notification` pushes for that session — draining and acking
+    /// it immediately, mirroring `spawn_notify_drainer`'s ack contract without a real ACP
+    /// connection.
+    fn make_agent_with_captured_session(
+        provider_factory: Option<ProviderFactory>,
+        available_models: Vec<String>,
+    ) -> (
+        ZephAcpAgent,
+        acp::schema::v1::SessionId,
+        tokio::sync::oneshot::Receiver<acp::schema::v1::SessionNotification>,
+    ) {
+        let (agent, session_id) = make_agent(provider_factory, available_models);
+
+        let (_, handle) = LoopbackChannel::pair(4);
+        let provider_override = Arc::new(RwLock::new(None::<AnyProvider>));
+        let (notify_tx, notify_rx) = mpsc::channel(4);
+        let entry = ZephAcpAgent::make_session_entry(
+            handle,
+            "test-model".to_owned(),
+            std::path::PathBuf::from("."),
+            None,
+            provider_override,
+            SessionConfigSeed {
+                thinking_enabled: false,
+                auto_approve_level: "suggest".to_owned(),
+                temperature_preset: zeph_config::AcpTemperaturePreset::default(),
+            },
+            notify_tx,
+            notify_rx,
+        );
+        agent.sessions.lock().insert(session_id.clone(), entry);
+
+        let mut taken_rx = agent
+            .sessions
+            .lock()
+            .get(&session_id)
+            .expect("session was just inserted")
+            .notify_rx
+            .lock()
+            .take()
+            .expect("notify_rx must not yet be consumed");
+
+        let (captured_tx, captured_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            if let Some((notif, ack)) = taken_rx.recv().await {
+                ack.send(()).ok();
+                captured_tx.send(notif).ok();
+            }
+        });
+
+        (agent, session_id, captured_rx)
+    }
+
+    /// #5986: before this PR, ACP's `/help` returned a hand-rolled 5-command literal
+    /// (`/help`, `/model`, `/mode`, `/clear`, `/review`) that had drifted out of sync with the
+    /// real `zeph_commands::COMMANDS` registry the CLI/TUI `/help` renders from. Confirms
+    /// `handle_slash_command` now renders exactly what `zeph_commands::render_help_text()`
+    /// produces, and that commands absent from the old hardcoded list are present.
+    #[tokio::test]
+    async fn help_command_renders_full_command_registry_not_hardcoded_five() {
+        let (agent, session_id, captured_rx) = make_agent_with_captured_session(None, vec![]);
+
+        let response = agent
+            .handle_slash_command(&session_id, "/help")
+            .await
+            .expect("/help must succeed");
+        assert_eq!(response.stop_reason, acp::schema::v1::StopReason::EndTurn);
+
+        let notification = captured_rx
+            .await
+            .expect("handle_slash_command must push a notification carrying the /help reply");
+        let acp::schema::v1::SessionUpdate::AgentMessageChunk(chunk) = notification.update else {
+            panic!("expected AgentMessageChunk carrying the /help reply");
+        };
+        let acp::schema::v1::ContentBlock::Text(text) = chunk.content else {
+            panic!("expected ContentBlock::Text");
+        };
+
+        assert_eq!(
+            text.text,
+            zeph_commands::render_help_text(),
+            "ACP's /help reply must match zeph_commands::render_help_text() verbatim"
+        );
+        for cmd in ["/skills", "/memory", "/compact"] {
+            assert!(
+                text.text.contains(cmd),
+                "/help must list {cmd}, which is absent from the old hardcoded 5-command string"
+            );
+        }
+        assert!(
+            !text.text.contains("Available commands:"),
+            "/help must no longer render the old hardcoded heading"
+        );
+    }
+
+    /// #5986: `/model refresh` previously fell through to `resolve_model_fuzzy("refresh")`,
+    /// which failed with "no matching model found" since `"refresh"` never matches a real model
+    /// key. With no provider factory configured at all, the new refresh path must short-circuit
+    /// before touching session state or any network call and return an informational message,
+    /// not an error.
+    #[tokio::test]
+    async fn model_refresh_with_no_provider_factory_returns_ok_not_fuzzy_match_error() {
+        let (agent, session_id) = make_agent(None, vec![]);
+
+        let reply = agent
+            .handle_model_command(&session_id, "refresh")
+            .await
+            .expect("/model refresh must succeed, not error via resolve_model_fuzzy");
+        assert_eq!(reply, "model switching not configured");
+    }
+
+    /// #5986 M1 (critic finding): a prior implementation looped sequentially over every
+    /// configured provider slug with an independent 5s timeout each, which could block a
+    /// session's `do_prompt` handler for up to 5s * N providers. The fix refreshes only the
+    /// session's currently active provider — mirroring `Agent::model_refresh_as_string`'s
+    /// single-active-provider semantics — via the shared `warm_model_caches` helper. When the
+    /// session's active model key does not resolve through the provider factory, the reply must
+    /// still be `Ok`, naming the unresolved model, without ever reaching `list_models_remote`.
+    #[tokio::test]
+    async fn model_refresh_unresolvable_active_model_returns_ok_with_model_name() {
+        let factory: ProviderFactory = Arc::new(|_key: &str| None);
+        let (agent, session_id, _captured_rx) =
+            make_agent_with_captured_session(Some(factory), vec!["testslug:model-a".to_owned()]);
+
+        let reply = agent
+            .handle_model_command(&session_id, "refresh")
+            .await
+            .expect("/model refresh must succeed");
+        assert_eq!(reply, "unknown model: test-model");
+    }
+
+    /// #5986 M1 companion: an unregistered/stale session id must not panic or reach the
+    /// provider factory — `model_refresh_as_string` looks up the session before resolving any
+    /// provider.
+    #[tokio::test]
+    async fn model_refresh_missing_session_returns_ok_session_not_found() {
+        let factory: ProviderFactory = Arc::new(|_key: &str| None);
+        let (agent, session_id) = make_agent(Some(factory), vec![]);
+
+        let reply = agent
+            .handle_model_command(&session_id, "refresh")
+            .await
+            .expect("/model refresh must succeed");
+        assert_eq!(reply, "session not found");
+    }
+
+    /// #5986 success-path companion: when the session's active model *does* resolve through the
+    /// provider factory, `/model refresh` must reach `warm_model_caches` and report the live
+    /// fetch count. Uses `AnyProvider::Mock` (`zeph_llm::mock::MockProvider`) rather than a real
+    /// network-backed provider — `list_models_remote()` on the `Mock` variant returns
+    /// `Ok(p.models.clone())` synchronously (`zeph_llm::any`'s `AnyProvider::list_models_remote`
+    /// match arm), so this exercises the real success branch with zero network I/O, closing the
+    /// gap the developer's handoff flagged as needing a `wiremock`-backed provider.
+    #[tokio::test]
+    async fn model_refresh_active_provider_success_reports_fetched_count() {
+        let mock_provider = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::with_responses(vec![]).with_models(vec![
+                zeph_llm::model_cache::RemoteModelInfo {
+                    id: "model-a".to_owned(),
+                    display_name: "Model A".to_owned(),
+                    context_window: None,
+                    created_at: None,
+                },
+                zeph_llm::model_cache::RemoteModelInfo {
+                    id: "model-b".to_owned(),
+                    display_name: "Model B".to_owned(),
+                    context_window: None,
+                    created_at: None,
+                },
+            ]),
+        );
+        let factory: ProviderFactory = Arc::new(move |_key: &str| Some(mock_provider.clone()));
+        let (agent, session_id, _captured_rx) = make_agent_with_captured_session(
+            Some(factory),
+            vec!["acp-test-refresh-mock-slug:model-a".to_owned()],
+        );
+
+        let reply = agent
+            .handle_model_command(&session_id, "refresh")
+            .await
+            .expect("/model refresh must succeed");
+        assert_eq!(
+            reply, "Fetched 2 models.",
+            "must report the live list_models_remote() count from the resolved active provider"
         );
     }
 }
