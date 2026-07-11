@@ -7,6 +7,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Security
 
+- `zeph-mcp`: `PinningOAuthHttpClient` (#6074) resolved, SSRF-validated, and DNS-pinned
+  the target host of every OAuth HTTP request, but its underlying `reqwest::Client`
+  only disabled auto-following redirects for `OAuthHttpRedirectPolicy::Stop` requests
+  — for `Follow` (dynamic client registration is rmcp's only current caller), reqwest's
+  own redirect-following stayed active, so a `3xx` response pointing at a *different*
+  host had that hop resolved independently and unpinned by reqwest itself, reopening a
+  redirect-scoped DNS-rebinding TOCTOU (#6089). `build_client` now disables redirects
+  unconditionally, and `execute()` follows `Follow`-policy redirects manually via a new
+  bounded loop (`MAX_OAUTH_REDIRECT_HOPS = 10`) that re-runs the identical
+  validate-and-pin step for every hop, mirroring standard redirect semantics (`303`
+  always downgrades to `GET`; `301`/`302` downgrade a `POST` to `GET`; `307`/`308`
+  preserve method and body). The manual reimplementation also now mirrors reqwest's
+  cross-origin header handling: `Authorization`, `Cookie`, `Proxy-Authorization`, and
+  `WWW-Authenticate` are dropped when a redirect hop's scheme, host, or port differs
+  from the previous hop's (a validated, SSRF-safe redirect target only proves it isn't
+  a private address — it can still be attacker-controlled, so credentials must not
+  follow it cross-origin), and `Content-Length`/`Content-Type`/`Content-Encoding` are
+  dropped whenever the body is emptied by a method downgrade.
 - `zeph-mcp`: closed three gaps in the MCP tool trust pipeline (#6071, #6072, #6073).
   - `sanitize_tools`'s depth-cap drop path (see #6068 below) dropped unsanitizable
     `input_schema`/`output_schema` content beyond `MAX_SCHEMA_DEPTH` but never incremented

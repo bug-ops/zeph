@@ -15,6 +15,7 @@ use rmcp::transport::auth::{
     OAuthHttpRequest,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use url::Url;
 
 use zeph_common::net::resolve_and_validate;
 
@@ -26,6 +27,14 @@ const DEFAULT_OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Response body cap mirroring rmcp's internal `ReqwestOAuthHttpClient` limit (not
 /// exported by rmcp, so re-declared here to match).
 const MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
+
+/// Maximum redirect hops [`PinningOAuthHttpClient::execute`] follows for a single
+/// `OAuthHttpRedirectPolicy::Follow` request before giving up.
+///
+/// OAuth flows have no legitimate reason to redirect more than a handful of times;
+/// this bounds the manual redirect loop against a malicious or misconfigured server
+/// that redirects indefinitely.
+const MAX_OAUTH_REDIRECT_HOPS: usize = 10;
 
 /// [`OAuthHttpClient`] that validates and DNS-pins every outbound OAuth HTTP request
 /// at the moment it is executed, rather than once up front.
@@ -40,9 +49,37 @@ const MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
 /// transport. Implementing [`OAuthHttpClient`] lets every OAuth HTTP call — regardless
 /// of which host it targets — be resolved, SSRF-validated, and pinned individually,
 /// immediately before it is sent. See #6074.
+///
+/// The same reasoning applies to redirects: a `3xx` response to an
+/// `OAuthHttpRedirectPolicy::Follow` request (dynamic client registration is rmcp's
+/// only current caller) can point at yet another host. [`Self::build_client`] always
+/// disables reqwest's own redirect-following, and [`Self::execute_with_policy`]
+/// follows `Follow`-policy redirects manually, re-running the same validate-and-pin
+/// step for each hop via [`Self::execute_single`], bounded by
+/// [`MAX_OAUTH_REDIRECT_HOPS`]. See #6089.
 pub(crate) struct PinningOAuthHttpClient {
     server_id: String,
     trusted: bool,
+}
+
+/// Headers that describe a request body — must not be forwarded once
+/// [`PinningOAuthHttpClient::next_hop_request`] empties the body on a redirect
+/// downgrade, or the next hop would advertise content that isn't there.
+fn is_body_describing_header(name: &http::HeaderName) -> bool {
+    *name == http::header::CONTENT_LENGTH
+        || *name == http::header::CONTENT_TYPE
+        || *name == http::header::CONTENT_ENCODING
+}
+
+/// Headers that must never be forwarded to a redirect target on a different origin —
+/// matches reqwest's own `redirect::remove_sensitive_headers` set. A redirect target
+/// passing SSRF validation only proves it isn't a private address; it says nothing
+/// about who controls it, so credentials must not follow a cross-origin hop.
+fn is_cross_origin_sensitive_header(name: &http::HeaderName) -> bool {
+    *name == http::header::AUTHORIZATION
+        || *name == http::header::COOKIE
+        || *name == http::header::PROXY_AUTHORIZATION
+        || *name == http::header::WWW_AUTHENTICATE
 }
 
 impl PinningOAuthHttpClient {
@@ -58,28 +95,30 @@ impl PinningOAuthHttpClient {
 
     /// Resolve and SSRF-validate `host:port` (skipped when `trusted`), then build a
     /// `reqwest::Client` pinned to the result via `resolve_to_addrs`, honoring the
-    /// request's redirect policy and timeout.
+    /// request's timeout.
+    ///
+    /// Redirects are always disabled on the returned client (`Policy::none()`),
+    /// regardless of the request's [`OAuthHttpRedirectPolicy`] — a client that followed
+    /// redirects itself would re-resolve the target host independently and unpinned,
+    /// reopening the exact DNS-rebinding TOCTOU this type exists to close. Every hop of
+    /// an `OAuthHttpRedirectPolicy::Follow` request is instead executed by a fresh call
+    /// to this method (see [`PinningOAuthHttpClient::execute_single`] and the redirect
+    /// loop in [`OAuthHttpClient::execute`]), so a redirect target gets the same
+    /// independent validate-and-pin treatment as the original request (#6089).
     ///
     /// # Errors
     ///
     /// Returns [`OAuthHttpClientError`] if `host` resolves to a private, loopback, or
     /// link-local address, or if the client cannot be built.
-    // TODO(critic): `OAuthHttpRedirectPolicy::Follow` requests (e.g. dynamic client
-    // registration) only pin the originally-resolved host; if the response is itself a
-    // redirect to a *different* host, reqwest re-resolves that hop unpinned. Tracked in
-    // #6089.
     async fn build_client(
         &self,
         host: &str,
         port: u16,
-        redirect_policy: OAuthHttpRedirectPolicy,
         timeout: Option<Duration>,
     ) -> Result<reqwest::Client, OAuthHttpClientError> {
-        let mut builder =
-            reqwest::Client::builder().timeout(timeout.unwrap_or(DEFAULT_OAUTH_HTTP_TIMEOUT));
-        if redirect_policy == OAuthHttpRedirectPolicy::Stop {
-            builder = builder.redirect(reqwest::redirect::Policy::none());
-        }
+        let mut builder = reqwest::Client::builder()
+            .timeout(timeout.unwrap_or(DEFAULT_OAUTH_HTTP_TIMEOUT))
+            .redirect(reqwest::redirect::Policy::none());
 
         if self.trusted {
             tracing::debug!(
@@ -110,6 +149,159 @@ impl PinningOAuthHttpClient {
             OAuthHttpClientError::new(format!("failed to build OAuth HTTP client: {e}"))
         })
     }
+
+    /// Validate, DNS-pin, and execute a single HTTP hop — the original request, or one
+    /// redirect target reached via [`Self::next_hop_request`]. Called fresh for every
+    /// hop so each one gets its own [`Self::build_client`] validate-and-pin cycle.
+    async fn execute_single(
+        &self,
+        request: &http::Request<Vec<u8>>,
+        timeout: Option<Duration>,
+    ) -> Result<http::Response<Vec<u8>>, OAuthHttpClientError> {
+        let uri = request.uri();
+        let host = uri
+            .host()
+            .ok_or_else(|| OAuthHttpClientError::new("OAuth request URI missing host"))?
+            .to_owned();
+        let port = uri
+            .port_u16()
+            .unwrap_or(if uri.scheme_str() == Some("http") {
+                80
+            } else {
+                443
+            });
+
+        let client = self.build_client(&host, port, timeout).await?;
+
+        let mut builder = client.request(request.method().clone(), uri.to_string());
+        for (name, value) in request.headers() {
+            builder = builder.header(name, value);
+        }
+        builder = builder.body(request.body().clone());
+
+        let response = builder
+            .send()
+            .await
+            .map_err(|e| OAuthHttpClientError::new(e.to_string()))?;
+
+        let mut resp_builder = http::Response::builder()
+            .status(response.status())
+            .version(response.version());
+        for (name, value) in response.headers() {
+            resp_builder = resp_builder.header(name, value);
+        }
+
+        let mut body = Vec::new();
+        let mut body_stream = response.bytes_stream();
+        while let Some(chunk) = body_stream.next().await {
+            let chunk = chunk.map_err(|e| OAuthHttpClientError::new(e.to_string()))?;
+            if chunk.len() > MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES.saturating_sub(body.len()) {
+                return Err(OAuthHttpClientError::new(format!(
+                    "OAuth HTTP response body exceeds {MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES} bytes"
+                )));
+            }
+            body.extend_from_slice(&chunk);
+        }
+
+        resp_builder
+            .body(body)
+            .map_err(|e| OAuthHttpClientError::new(e.to_string()))
+    }
+
+    /// Build the request for the next redirect hop from the previous request/response
+    /// pair.
+    ///
+    /// Mirrors reqwest's own default redirect semantics (the behavior a `Follow`-policy
+    /// request had before redirects were disabled at the client level): `303` always
+    /// downgrades to `GET` with no body; `301`/`302` downgrade a `POST` to `GET`; every
+    /// other redirect status (notably `307`/`308`) preserves the original method and
+    /// body. Content-describing headers (`Content-Length`/`Content-Type`/
+    /// `Content-Encoding`) are dropped when the body is emptied, and sensitive headers
+    /// (`Authorization`/`Cookie`/`Proxy-Authorization`/`WWW-Authenticate`) are dropped
+    /// whenever the redirect target's origin (scheme, host, or port) differs from the
+    /// original request's — a validated, SSRF-safe *public* redirect target can still be
+    /// attacker-controlled, so credentials must never follow it across origins.
+    fn next_hop_request(
+        prev: &http::Request<Vec<u8>>,
+        response: &http::Response<Vec<u8>>,
+    ) -> Result<http::Request<Vec<u8>>, OAuthHttpClientError> {
+        let location = response
+            .headers()
+            .get(http::header::LOCATION)
+            .ok_or_else(|| OAuthHttpClientError::new("redirect response missing Location header"))?
+            .to_str()
+            .map_err(|e| OAuthHttpClientError::new(format!("invalid Location header: {e}")))?;
+
+        let base = Url::parse(&prev.uri().to_string())
+            .map_err(|e| OAuthHttpClientError::new(format!("invalid request URI: {e}")))?;
+        let next_url = base.join(location).map_err(|e| {
+            OAuthHttpClientError::new(format!("invalid redirect target '{location}': {e}"))
+        })?;
+
+        let downgrade_to_get = response.status() == http::StatusCode::SEE_OTHER
+            || ((response.status() == http::StatusCode::MOVED_PERMANENTLY
+                || response.status() == http::StatusCode::FOUND)
+                && prev.method() == http::Method::POST);
+        let (method, body) = if downgrade_to_get {
+            (http::Method::GET, Vec::new())
+        } else {
+            (prev.method().clone(), prev.body().clone())
+        };
+
+        let cross_origin = (base.scheme(), base.host_str(), base.port_or_known_default())
+            != (
+                next_url.scheme(),
+                next_url.host_str(),
+                next_url.port_or_known_default(),
+            );
+        let body_dropped = body.is_empty();
+
+        let mut builder = http::Request::builder()
+            .method(method)
+            .uri(next_url.as_str());
+        for (name, value) in prev.headers() {
+            if body_dropped && is_body_describing_header(name) {
+                continue;
+            }
+            if cross_origin && is_cross_origin_sensitive_header(name) {
+                continue;
+            }
+            builder = builder.header(name, value);
+        }
+        builder
+            .body(body)
+            .map_err(|e| OAuthHttpClientError::new(e.to_string()))
+    }
+
+    /// Redirect-following loop shared by [`OAuthHttpClient::execute`] and tests.
+    ///
+    /// Decoupled from rmcp's `OAuthHttpRequest` wrapper (which has no public
+    /// constructor, so it cannot be built outside rmcp) so the redirect-pinning
+    /// behavior can be exercised directly with plain `http::Request` values.
+    async fn execute_with_policy(
+        &self,
+        mut request: http::Request<Vec<u8>>,
+        redirect_policy: OAuthHttpRedirectPolicy,
+        timeout: Option<Duration>,
+    ) -> Result<http::Response<Vec<u8>>, OAuthHttpClientError> {
+        let mut hops = 0usize;
+        loop {
+            let response = self.execute_single(&request, timeout).await?;
+            if redirect_policy != OAuthHttpRedirectPolicy::Follow
+                || !response.status().is_redirection()
+            {
+                return Ok(response);
+            }
+
+            hops += 1;
+            if hops > MAX_OAUTH_REDIRECT_HOPS {
+                return Err(OAuthHttpClientError::new(format!(
+                    "OAuth request exceeded max redirect hops ({MAX_OAUTH_REDIRECT_HOPS})"
+                )));
+            }
+            request = Self::next_hop_request(&request, &response)?;
+        }
+    }
 }
 
 impl OAuthHttpClient for PinningOAuthHttpClient {
@@ -121,54 +313,8 @@ impl OAuthHttpClient for PinningOAuthHttpClient {
                 timeout,
                 ..
             } = request;
-
-            let uri = request.uri();
-            let host = uri
-                .host()
-                .ok_or_else(|| OAuthHttpClientError::new("OAuth request URI missing host"))?
-                .to_owned();
-            let port = uri
-                .port_u16()
-                .unwrap_or(if uri.scheme_str() == Some("http") {
-                    80
-                } else {
-                    443
-                });
-
-            let client = self
-                .build_client(&host, port, redirect_policy, timeout)
-                .await?;
-
-            let reqwest_request = reqwest::Request::try_from(request)
-                .map_err(|e| OAuthHttpClientError::new(e.to_string()))?;
-
-            let response = client
-                .execute(reqwest_request)
+            self.execute_with_policy(request, redirect_policy, timeout)
                 .await
-                .map_err(|e| OAuthHttpClientError::new(e.to_string()))?;
-
-            let mut builder = http::Response::builder()
-                .status(response.status())
-                .version(response.version());
-            for (name, value) in response.headers() {
-                builder = builder.header(name, value);
-            }
-
-            let mut body = Vec::new();
-            let mut body_stream = response.bytes_stream();
-            while let Some(chunk) = body_stream.next().await {
-                let chunk = chunk.map_err(|e| OAuthHttpClientError::new(e.to_string()))?;
-                if chunk.len() > MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES.saturating_sub(body.len()) {
-                    return Err(OAuthHttpClientError::new(format!(
-                        "OAuth HTTP response body exceeds {MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES} bytes"
-                    )));
-                }
-                body.extend_from_slice(&chunk);
-            }
-
-            builder
-                .body(body)
-                .map_err(|e| OAuthHttpClientError::new(e.to_string()))
         })
     }
 }
@@ -492,10 +638,7 @@ mod tests {
         // the already-validated MCP server — exactly the SEP-985 cross-origin case a
         // single MCP-transport-pinned client cannot catch.
         let client = PinningOAuthHttpClient::new("srv", false);
-        let err = client
-            .build_client("10.0.0.1", 80, OAuthHttpRedirectPolicy::Stop, None)
-            .await
-            .unwrap_err();
+        let err = client.build_client("10.0.0.1", 80, None).await.unwrap_err();
         assert!(err.to_string().contains("SSRF protection"));
     }
 
@@ -503,7 +646,7 @@ mod tests {
     async fn pinning_oauth_http_client_blocks_private_loopback_host() {
         let client = PinningOAuthHttpClient::new("srv", false);
         let err = client
-            .build_client("127.0.0.1", 443, OAuthHttpRedirectPolicy::Follow, None)
+            .build_client("127.0.0.1", 443, None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("SSRF protection"));
@@ -513,7 +656,7 @@ mod tests {
     async fn pinning_oauth_http_client_allows_public_ip_literal() {
         let client = PinningOAuthHttpClient::new("srv", false);
         client
-            .build_client("8.8.8.8", 443, OAuthHttpRedirectPolicy::Stop, None)
+            .build_client("8.8.8.8", 443, None)
             .await
             .expect("public IP literal must not be blocked");
     }
@@ -525,8 +668,332 @@ mod tests {
         // operator-controlled static config.
         let client = PinningOAuthHttpClient::new("srv", true);
         client
-            .build_client("127.0.0.1", 443, OAuthHttpRedirectPolicy::Stop, None)
+            .build_client("127.0.0.1", 443, None)
             .await
             .expect("trusted client must skip SSRF validation");
+    }
+
+    // #6089: a `Follow`-policy request that hits a redirect must have the redirect
+    // target independently validated and DNS-pinned too, not just the original host.
+    // `build_client` now always disables reqwest's own redirect-following
+    // (`Policy::none()` unconditionally), so these tests double as a regression check:
+    // if the manual redirect loop below were missing or broken, a `Follow` request
+    // would come back with the raw, unfollowed 3xx instead of the final response.
+
+    // --- next_hop_request (pure logic, no network) ---
+
+    #[test]
+    fn next_hop_request_resolves_relative_location_against_request_uri() {
+        let prev = http::Request::builder()
+            .method("GET")
+            .uri("http://origin.example/start")
+            .body(Vec::new())
+            .unwrap();
+        let response = http::Response::builder()
+            .status(302)
+            .header("Location", "/next")
+            .body(Vec::new())
+            .unwrap();
+
+        let next = PinningOAuthHttpClient::next_hop_request(&prev, &response).unwrap();
+        assert_eq!(next.uri(), "http://origin.example/next");
+        assert_eq!(next.method(), http::Method::GET);
+    }
+
+    #[test]
+    fn next_hop_request_downgrades_post_to_get_on_302() {
+        let prev = http::Request::builder()
+            .method("POST")
+            .uri("http://origin.example/register")
+            .body(b"{}".to_vec())
+            .unwrap();
+        let response = http::Response::builder()
+            .status(302)
+            .header("Location", "http://other.example/next")
+            .body(Vec::new())
+            .unwrap();
+
+        let next = PinningOAuthHttpClient::next_hop_request(&prev, &response).unwrap();
+        assert_eq!(next.method(), http::Method::GET);
+        assert!(next.body().is_empty());
+        assert_eq!(next.uri(), "http://other.example/next");
+    }
+
+    #[test]
+    fn next_hop_request_preserves_method_and_body_on_307() {
+        let prev = http::Request::builder()
+            .method("POST")
+            .uri("http://origin.example/register")
+            .body(br#"{"x":1}"#.to_vec())
+            .unwrap();
+        let response = http::Response::builder()
+            .status(307)
+            .header("Location", "http://other.example/next")
+            .body(Vec::new())
+            .unwrap();
+
+        let next = PinningOAuthHttpClient::next_hop_request(&prev, &response).unwrap();
+        assert_eq!(next.method(), http::Method::POST);
+        assert_eq!(next.body(), br#"{"x":1}"#);
+    }
+
+    #[test]
+    fn next_hop_request_rejects_missing_location_header() {
+        let prev = http::Request::builder()
+            .method("GET")
+            .uri("http://origin.example/start")
+            .body(Vec::new())
+            .unwrap();
+        let response = http::Response::builder()
+            .status(302)
+            .body(Vec::new())
+            .unwrap();
+
+        let err = PinningOAuthHttpClient::next_hop_request(&prev, &response).unwrap_err();
+        assert!(err.to_string().contains("Location"));
+    }
+
+    #[test]
+    fn next_hop_request_strips_sensitive_headers_on_cross_origin_redirect() {
+        let prev = http::Request::builder()
+            .method("GET")
+            .uri("http://origin.example/start")
+            .header(http::header::AUTHORIZATION, "Bearer secret")
+            .header(http::header::COOKIE, "session=abc")
+            .body(Vec::new())
+            .unwrap();
+        let response = http::Response::builder()
+            .status(302)
+            .header("Location", "http://other.example/next")
+            .body(Vec::new())
+            .unwrap();
+
+        let next = PinningOAuthHttpClient::next_hop_request(&prev, &response).unwrap();
+        assert!(next.headers().get(http::header::AUTHORIZATION).is_none());
+        assert!(next.headers().get(http::header::COOKIE).is_none());
+    }
+
+    #[test]
+    fn next_hop_request_preserves_sensitive_headers_on_same_origin_redirect() {
+        let prev = http::Request::builder()
+            .method("GET")
+            .uri("http://origin.example/start")
+            .header(http::header::AUTHORIZATION, "Bearer secret")
+            .body(Vec::new())
+            .unwrap();
+        let response = http::Response::builder()
+            .status(307)
+            .header("Location", "/next")
+            .body(Vec::new())
+            .unwrap();
+
+        let next = PinningOAuthHttpClient::next_hop_request(&prev, &response).unwrap();
+        assert_eq!(
+            next.headers().get(http::header::AUTHORIZATION).unwrap(),
+            "Bearer secret"
+        );
+    }
+
+    #[test]
+    fn next_hop_request_strips_sensitive_headers_on_scheme_change_same_host() {
+        // Same host, but http -> https is still a different origin per the fetch spec
+        // and reqwest's own redirect handling — must be treated as cross-origin.
+        let prev = http::Request::builder()
+            .method("GET")
+            .uri("http://origin.example/start")
+            .header(http::header::AUTHORIZATION, "Bearer secret")
+            .body(Vec::new())
+            .unwrap();
+        let response = http::Response::builder()
+            .status(302)
+            .header("Location", "https://origin.example/next")
+            .body(Vec::new())
+            .unwrap();
+
+        let next = PinningOAuthHttpClient::next_hop_request(&prev, &response).unwrap();
+        assert!(next.headers().get(http::header::AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    fn next_hop_request_drops_content_headers_when_body_downgraded() {
+        let prev = http::Request::builder()
+            .method("POST")
+            .uri("http://origin.example/register")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::CONTENT_ENCODING, "gzip")
+            .body(b"{}".to_vec())
+            .unwrap();
+        let response = http::Response::builder()
+            .status(302)
+            .header("Location", "http://other.example/next")
+            .body(Vec::new())
+            .unwrap();
+
+        let next = PinningOAuthHttpClient::next_hop_request(&prev, &response).unwrap();
+        assert!(next.headers().get(http::header::CONTENT_TYPE).is_none());
+        assert!(next.headers().get(http::header::CONTENT_ENCODING).is_none());
+        assert!(next.body().is_empty());
+    }
+
+    // --- execute_with_policy / execute_single (network, wiremock) ---
+
+    /// `Stop` policy behavior is unchanged by this fix: the raw redirect response is
+    /// returned unfollowed. Metadata discovery, token exchange, and token refresh all
+    /// use `Stop`, so this is the regression check for those existing flows.
+    #[tokio::test]
+    async fn pinning_oauth_http_client_stop_policy_returns_redirect_unfollowed() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(302)
+                    .insert_header("Location", "http://redirect-target.invalid/next"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = PinningOAuthHttpClient::new("srv", true);
+        let request = http::Request::builder()
+            .method("GET")
+            .uri(format!("{}/start", server.uri()))
+            .body(Vec::new())
+            .unwrap();
+
+        let response = client
+            .execute_with_policy(request, OAuthHttpRedirectPolicy::Stop, None)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), http::StatusCode::FOUND);
+    }
+
+    /// A `Follow`-policy redirect to a different host is actually followed by the
+    /// manual loop — not by reqwest's own redirect-following, which `build_client` now
+    /// disables unconditionally. Reaching the second, distinct mock server proves the
+    /// loop re-invokes `build_client`/`execute_single` for the new target rather than
+    /// silently returning the unfollowed 3xx (which is what would happen if the manual
+    /// loop were missing).
+    ///
+    /// This uses `trusted: true`, so it does *not* by itself prove the redirect target
+    /// gets SSRF-revalidated — both hosts here are loopback, which strict validation
+    /// would reject regardless of whether the redirect target is handled correctly, so
+    /// there is no way to drive this end-to-end under `trusted: false` with a local
+    /// mock server. That the identical `execute_single` validate-and-pin step used for
+    /// the initial hop also runs for every redirect hop is proven separately by
+    /// `pinning_oauth_http_client_execute_single_blocks_ssrf_unsafe_target`; composing
+    /// the two properties (this test's "different host is reached" +
+    /// that test's "this exact function rejects an unsafe target") establishes the
+    /// #6089 guarantee.
+    #[tokio::test]
+    async fn pinning_oauth_http_client_follows_redirect_to_different_host() {
+        let target = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("final"))
+            .mount(&target)
+            .await;
+
+        let origin = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(302)
+                    .insert_header("Location", format!("{}/next", target.uri())),
+            )
+            .mount(&origin)
+            .await;
+
+        let client = PinningOAuthHttpClient::new("srv", true);
+        let request = http::Request::builder()
+            .method("GET")
+            .uri(format!("{}/start", origin.uri()))
+            .body(Vec::new())
+            .unwrap();
+
+        let response = client
+            .execute_with_policy(request, OAuthHttpRedirectPolicy::Follow, None)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(response.body(), b"final");
+    }
+
+    /// End-to-end version of the 302 POST->GET downgrade for dynamic client
+    /// registration (the one current `Follow`-policy caller): if the redirected
+    /// request incorrectly kept POST, the target mock (which only matches GET) would
+    /// not fire and the response would be wiremock's default 404 instead of 200.
+    #[tokio::test]
+    async fn pinning_oauth_http_client_post_redirect_downgrades_to_get() {
+        let target = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("got-get"))
+            .mount(&target)
+            .await;
+
+        let origin = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(302)
+                    .insert_header("Location", format!("{}/next", target.uri())),
+            )
+            .mount(&origin)
+            .await;
+
+        let client = PinningOAuthHttpClient::new("srv", true);
+        let request = http::Request::builder()
+            .method("POST")
+            .uri(format!("{}/register", origin.uri()))
+            .body(b"{}".to_vec())
+            .unwrap();
+
+        let response = client
+            .execute_with_policy(request, OAuthHttpRedirectPolicy::Follow, None)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(response.body(), b"got-get");
+    }
+
+    /// A server that redirects forever must not hang the caller — bounded by
+    /// `MAX_OAUTH_REDIRECT_HOPS`.
+    #[tokio::test]
+    async fn pinning_oauth_http_client_bounds_redirect_hops() {
+        let server = wiremock::MockServer::start().await;
+        let loop_url = format!("{}/loop", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(302).insert_header("Location", loop_url.as_str()),
+            )
+            .mount(&server)
+            .await;
+
+        let client = PinningOAuthHttpClient::new("srv", true);
+        let request = http::Request::builder()
+            .method("GET")
+            .uri(loop_url)
+            .body(Vec::new())
+            .unwrap();
+
+        let err = client
+            .execute_with_policy(request, OAuthHttpRedirectPolicy::Follow, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("max redirect hops"));
+    }
+
+    /// `execute_single` is the exact function the redirect loop calls for *every* hop,
+    /// including redirect targets (see `execute_with_policy`). Proving it rejects a
+    /// private-IP target with `trusted: false` shows a malicious redirect to an
+    /// internal address would be rejected exactly like a private initial host would —
+    /// the core #6089 security property — without needing an actually-reachable public
+    /// first hop to drive a full end-to-end redirect chain under strict SSRF
+    /// validation.
+    #[tokio::test]
+    async fn pinning_oauth_http_client_execute_single_blocks_ssrf_unsafe_target() {
+        let client = PinningOAuthHttpClient::new("srv", false);
+        let request = http::Request::builder()
+            .method("GET")
+            .uri("http://127.0.0.1:9/register")
+            .body(Vec::new())
+            .unwrap();
+
+        let err = client.execute_single(&request, None).await.unwrap_err();
+        assert!(err.to_string().contains("SSRF protection"));
     }
 }
