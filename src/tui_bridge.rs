@@ -709,6 +709,45 @@ mod tests {
             received[0]
         );
     }
+
+    /// Regression for #6041: an `encryption_gate` (INV-8) rejection must produce a
+    /// `DurableStatus::GateRejected` snapshot, not the same `Unavailable` status used for an
+    /// ordinary failed-to-open journal — the two failure modes must stay distinguishable in the
+    /// TUI. Uses a `postgres://`-scheme URL with `encrypt_payload = false` (default `true`) so
+    /// `enforce_encryption_gate` rejects deterministically without needing a real Postgres server;
+    /// the gate check runs before any backend connection is attempted.
+    #[tokio::test]
+    async fn durable_poll_task_sends_gate_rejected_on_encryption_gate_failure() {
+        use zeph_tui::widgets::durable::DurableStatus;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(4);
+        let cfg = zeph_config::DurableConfig {
+            encrypt_payload: false,
+            ..zeph_config::DurableConfig::default()
+        };
+
+        durable_poll_task("postgres://user@host/db".to_owned(), cfg, tx).await;
+
+        let event = rx
+            .recv()
+            .await
+            .expect("expected a DurableSnapshot event on gate rejection");
+        match event {
+            zeph_tui::AgentEvent::DurableSnapshot(snapshot) => {
+                assert_eq!(
+                    snapshot.status,
+                    DurableStatus::GateRejected,
+                    "gate rejection must be distinguishable from a plain Unavailable snapshot"
+                );
+                assert!(snapshot.executions.is_empty());
+            }
+            other => panic!("expected DurableSnapshot event, got {other:?}"),
+        }
+        assert!(
+            rx.recv().await.is_none(),
+            "durable_poll_task must return immediately after a gate rejection, not loop"
+        );
+    }
 }
 
 #[cfg(feature = "tui")]
@@ -825,25 +864,26 @@ const DURABLE_REFRESH_SECS: u64 = 5;
 /// `encrypt_payload = false` must be rejected here too, or the TUI panel would happily render a
 /// journal the CLI refuses to open — a cross-mode divergence (#5996). Unlike the CLI, this is a
 /// best-effort background poller with no user waiting on an error message, so a gate rejection
-/// degrades gracefully to the same "non-durable mode" snapshot as a failed backend open, rather
-/// than panicking or looping forever.
+/// degrades gracefully to a `GateRejected` snapshot (distinct from a failed backend open, #6041)
+/// rather than panicking or looping forever.
 #[cfg(feature = "tui")]
 pub(crate) async fn durable_poll_task(
     db_url: String,
     cfg: zeph_config::DurableConfig,
     tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
 ) {
-    use zeph_tui::widgets::durable::{DurableRow, DurableSnapshot};
+    use zeph_tui::widgets::durable::{DurableRow, DurableSnapshot, DurableStatus};
 
     if let Err(e) = crate::commands::durable::enforce_encryption_gate(&cfg, &db_url) {
         tracing::warn!(
             error = %e,
-            "durable poll: encryption policy rejected this deployment; panel shows non-durable mode"
+            "durable poll: encryption policy rejected this deployment; panel shows gate-rejected status"
         );
         let _ = tx
-            .send(zeph_tui::AgentEvent::DurableSnapshot(
-                DurableSnapshot::default(),
-            ))
+            .send(zeph_tui::AgentEvent::DurableSnapshot(DurableSnapshot {
+                status: DurableStatus::GateRejected,
+                executions: Vec::new(),
+            }))
             .await;
         return;
     }
@@ -853,9 +893,10 @@ pub(crate) async fn durable_poll_task(
         Err(e) => {
             tracing::warn!(error = %e, "durable poll: failed to open journal; panel shows non-durable mode");
             let _ = tx
-                .send(zeph_tui::AgentEvent::DurableSnapshot(
-                    DurableSnapshot::default(),
-                ))
+                .send(zeph_tui::AgentEvent::DurableSnapshot(DurableSnapshot {
+                    status: DurableStatus::Unavailable,
+                    executions: Vec::new(),
+                }))
                 .await;
             return;
         }
@@ -910,7 +951,7 @@ pub(crate) async fn durable_poll_task(
             .collect();
 
         let snapshot = DurableSnapshot {
-            available: true,
+            status: DurableStatus::Available,
             executions,
         };
         if tx

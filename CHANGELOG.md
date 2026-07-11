@@ -24,8 +24,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   journal URL is also treated as shared automatically, as defense in depth. The TUI durable panel
   poller (`durable_poll_task`, feature `tui`) now evaluates the same policy before opening the
   journal — previously it bypassed the gate entirely, so the TUI panel could render a journal the
-  `zeph durable` CLI refused to open; a rejection now degrades gracefully to the panel's existing
-  "non-durable mode" state instead of erroring.
+  `zeph durable` CLI refused to open; a rejection now degrades gracefully to a distinct
+  `GateRejected` panel status instead of erroring (see #6041 below for why it no longer reuses
+  the plain "non-durable mode" state).
 - `zeph-commands`: 19 privileged slash-command handlers now override `requires_auth()` to
   return `true`, closing a trust-gate gap where they ran the default `false` and were therefore
   reachable from untrusted remote channels (Telegram/Discord/Slack) as well as trusted local
@@ -88,6 +89,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tui)`: the durable executions overlay panel (`D` key) no longer bleeds stray glyphs from
+  whatever widget last drew into the same sidebar `Rect` earlier in the frame (e.g. a trailing
+  `e> t` fragment left over from the subagents/plan/security view rendered underneath) — `Clear`
+  was missing before the panel's own draw calls, unlike the other 8 overlay widgets in this
+  crate that already blank their area first (#6048). Also, `encryption_gate` (INV-8) rejecting
+  the deployment's configuration is now visually distinguishable from a plain "journal
+  unavailable" state: the panel previously collapsed both into the identical
+  `STATUS_UNAVAILABLE` message, so an operator had no way to tell a security-policy rejection
+  from durable execution simply being unconfigured; `DurableSnapshot.available: bool` is
+  replaced with a `DurableStatus` enum (`Unavailable` / `GateRejected` / `Available`) and gate
+  rejections now render the distinct `STATUS_GATE_REJECTED` message (#6041).
 - `fix(core,acp,tools)`: three more per-turn behavioral pipelines/executors that were
   constructed and wired into the `Agent` only in `src/runner.rs` (CLI/TUI) now reach ACP,
   daemon (A2A), and `serve-sessions` too — same "wire-X-into-ACP/daemon/serve" defect class as
