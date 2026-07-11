@@ -241,7 +241,10 @@ pub struct CrossToolReference {
 /// Returned to the caller for logging, trust score updates, and forensic audit.
 /// A non-zero `injection_count` should reduce the server's trust score.
 pub struct SanitizeResult {
-    /// Number of individual fields (description, schema strings) replaced with `"[sanitized]"`.
+    /// Number of individual fields (description, schema strings) replaced with `"[sanitized]"`,
+    /// plus one per schema dropped for exceeding `MAX_SCHEMA_DEPTH` (unsanitizable content
+    /// beyond the recursion cap is treated as a detected injection so it still incurs a
+    /// trust-score penalty via `apply_injection_penalties`, not just a silent drop).
     pub injection_count: usize,
     /// Names of tools that had at least one injected field.
     pub flagged_tools: Vec<String>,
@@ -368,6 +371,9 @@ fn sanitize_schema_value_tracked(
 /// If a server reconnects or refreshes its tool list at runtime (e.g. via
 /// `tools/list_changed`), the new tools MUST also be passed through this function
 /// with the same `max_description_bytes` that was used at startup.
+// complex algorithm function coordinating description/schema sanitization, depth-cap
+// drop bookkeeping, and cross-tool-reference detection; not in scope to decompose here.
+#[allow(clippy::too_many_lines)]
 pub fn sanitize_tools(
     tools: &mut [McpTool],
     server_id: &str,
@@ -424,8 +430,14 @@ pub fn sanitize_tools(
         // Drop-on-depth-cap: content beyond MAX_SCHEMA_DEPTH is unsanitized and must be
         // dropped, mirroring the output_schema handling below. `input_schema` is not
         // `Option<>` like `output_schema`, so an empty object stands in for "dropped".
+        //
+        // Counted as an injection: burying a payload beyond MAX_SCHEMA_DEPTH to dodge
+        // pattern matching must still cost trust score via `apply_injection_penalties` —
+        // otherwise a server could evade both sanitization AND the trust penalty simply
+        // by nesting the payload deep enough.
         if input_depth_cap {
             tool_injected = true;
+            injection_count += 1;
             tracing::warn!(
                 server_id = %clean_server_id,
                 tool_name = %tool.name,
@@ -460,6 +472,12 @@ pub fn sanitize_tools(
             let injected = injection_count > output_injections_before;
             if injected || output_depth_cap {
                 tool_injected = true;
+                // Depth-cap drops count as an injection independently of pattern matches
+                // found before the cap was hit — see the matching comment on the
+                // input_schema depth-cap branch above.
+                if output_depth_cap {
+                    injection_count += 1;
+                }
                 let reason = if injected {
                     "injection pattern"
                 } else {
@@ -1797,6 +1815,38 @@ mod tests {
             result.flagged_tools.contains(&"deep_tool".to_owned()),
             "tool with a depth-cap-dropped input_schema must be flagged"
         );
+        // Regression for #6071: a depth-cap drop must bump injection_count so
+        // apply_injection_penalties() actually applies a trust-score penalty — otherwise a
+        // server can dodge both sanitization AND the penalty by nesting the payload deep enough.
+        assert_eq!(
+            result.injection_count, 1,
+            "depth-cap drop of input_schema must count as an injection"
+        );
+    }
+
+    /// Regression for #6071: an `output_schema` dropped purely because it exceeds
+    /// `MAX_SCHEMA_DEPTH` (no separate pattern match) must also bump `injection_count`.
+    #[test]
+    fn sanitize_tools_output_schema_depth_cap_bumps_injection_count() {
+        let mut nested = serde_json::json!({"type": "string"});
+        for _ in 0..12 {
+            nested = serde_json::json!({"properties": {"child": nested}});
+        }
+        let mut tools = vec![McpTool {
+            server_id: "srv".into(),
+            name: "deep_tool".into(),
+            description: "Normal description".into(),
+            input_schema: serde_json::json!({}),
+            output_schema: Some(nested),
+            security_meta: crate::tool::ToolSecurityMeta::default(),
+        }];
+        let result = sanitize_tools(&mut tools, "srv", MAX_TOOL_DESCRIPTION_BYTES);
+        assert_eq!(result.output_schemas_dropped, 1);
+        assert_eq!(
+            result.injection_count, 1,
+            "depth-cap drop of output_schema must count as an injection"
+        );
+        assert!(tools[0].output_schema.is_none());
     }
 
     #[test]

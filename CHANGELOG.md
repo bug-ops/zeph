@@ -7,6 +7,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Security
 
+- `zeph-mcp`: closed three gaps in the MCP tool trust pipeline (#6071, #6072, #6073).
+  - `sanitize_tools`'s depth-cap drop path (see #6068 below) dropped unsanitizable
+    `input_schema`/`output_schema` content beyond `MAX_SCHEMA_DEPTH` but never incremented
+    `SanitizeResult::injection_count`, so `apply_injection_penalties` early-returned and a
+    server nesting an injection payload 11+ levels deep evaded both sanitization *and* the
+    trust-score penalty / `registration_injection` audit warning (#6071). Both depth-cap
+    drop sites now count as an injection. `SanitizeResult::input_schemas_dropped` and
+    `output_schemas_dropped` were also write-only — added to `ServerConnectOutcome` /
+    `zeph-core`'s `McpServerStatus` and surfaced in the TUI's MCP server status line
+    (`schema-drop:N`) alongside the existing connected/tool-count indicator.
+  - MCP tool schema-drift detection (the "rug-pull" mitigation documented in
+    `attestation.rs`) never fired: `apply_attestation()` hardcoded `previous_fingerprints`
+    to `None` on every call, so the reconnect-comparison branch in `attest_tools()` was
+    dead code outside its own unit test (#6072). `McpManager` now caches each server's
+    tool fingerprints (`server_fingerprints`, populated only when `expected_tools` is
+    configured — attestation must be enabled for drift detection to run) and threads them
+    into `attest_tools()` on every reconnect and `tools/list_changed` refresh, so a tool
+    description/schema that silently changes between sessions now logs a
+    `tracing::warn!`. Trust/filtering decisions are unchanged — this is detection only.
+  - `TrustScoreStore::load_and_apply_delta` — the only write path used in production,
+    gating `Trusted`/`Untrusted`/`Sandboxed` classification — was a non-atomic
+    read-then-write: it called `load()` (decay-aware) and then issued an unconditional
+    `UPDATE SET score = excluded.score`, so two concurrent callers for the same
+    `server_id` could both read the same pre-update score and the second writer's
+    unconditional overwrite would silently clobber the first's delta (#6073). It's now a
+    single atomic `INSERT ... ON CONFLICT DO UPDATE` that recomputes the asymmetric
+    time-decay from the stored `updated_at_secs` entirely inside the SQL expression
+    (`CASE WHEN` + dialect `LEAST`/`GREATEST`), so the whole
+    read-decay-delta-clamp-write sequence is one atomic row-level operation. The former
+    `apply_delta()` (atomic but decay-blind, unused in production) is removed — both
+    properties now live in one method, eliminating the two-divergent-write-paths root
+    cause.
 - `zeph-mcp`: `sanitize_tools` walks `input_schema` and `output_schema` with the same
   recursive walker, which enforces `MAX_SCHEMA_DEPTH` (10) by returning without sanitizing
   the subtree at all once the cap is hit — no injection-pattern check, no truncation.

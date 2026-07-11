@@ -194,6 +194,10 @@ struct ConnectOutput {
     outcome: ServerConnectOutcome,
     /// `Some((server_id, truncated_instructions))` when the server sent instructions.
     instructions: Option<(String, String)>,
+    /// `Some((server_id, fingerprints))` when attestation computed fingerprints for this
+    /// connection (i.e. `expected_tools` is configured for the server). `None` on failure
+    /// or when attestation is unconfigured.
+    fingerprints: Option<(String, HashMap<String, crate::attestation::ToolFingerprint>)>,
 }
 
 /// Outcome of a single server connection attempt from [`McpManager::connect_all`].
@@ -210,6 +214,12 @@ pub struct ServerConnectOutcome {
     pub tool_count: usize,
     /// Human-readable failure reason. Empty when `connected` is `true`.
     pub error: String,
+    /// Number of `input_schema`s dropped for exceeding `MAX_SCHEMA_DEPTH` (`0` on failure).
+    /// See [`crate::sanitize::SanitizeResult::input_schemas_dropped`].
+    pub input_schemas_dropped: usize,
+    /// Number of `output_schema`s dropped for injection or exceeding `MAX_SCHEMA_DEPTH`
+    /// (`0` on failure). See [`crate::sanitize::SanitizeResult::output_schemas_dropped`].
+    pub output_schemas_dropped: usize,
 }
 
 /// Multi-server MCP lifecycle manager.
@@ -263,6 +273,13 @@ pub struct McpManager {
     /// Behind `Arc<RwLock>` because refresh tasks read it from spawned closures
     /// and `add_server()` writes to it.
     server_trust: ServerTrust,
+    /// Tool fingerprints from each server's most recent successful connection, used to
+    /// detect schema drift (the "MCP rug-pull" mitigation) on the next reconnect or
+    /// `tools/list_changed` refresh. Keyed by server ID. Only populated for servers with
+    /// `expected_tools` configured (attestation must be configured for drift detection
+    /// to run — see [`crate::attestation::attest_tools`]).
+    server_fingerprints:
+        Arc<RwLock<HashMap<String, HashMap<String, crate::attestation::ToolFingerprint>>>>,
     /// Optional pre-connect prober. When set, called on every new server connection.
     prober: Option<DefaultMcpProber>,
     /// Optional persistent trust score store. When set, probe results are persisted.
@@ -359,6 +376,10 @@ struct IngestConfig<'a> {
     max_description_bytes: usize,
     /// Per-tool security metadata overrides keyed by tool name.
     tool_metadata: &'a HashMap<String, ToolSecurityMeta>,
+    /// Tool fingerprints from the previous connection for this server, used for
+    /// schema-drift detection on reconnect. `None` when this is the first connection
+    /// or no prior fingerprints are cached.
+    previous_fingerprints: Option<&'a HashMap<String, crate::attestation::ToolFingerprint>>,
 }
 
 mod builder;

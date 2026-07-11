@@ -3,6 +3,7 @@
 
 //! Dynamic add/remove of servers, server queries, instructions, and shutdown.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -100,7 +101,13 @@ impl McpManager {
 
         self.store_server_instructions(entry, &client).await;
 
-        let (tools, sanitize_result) = ingest_tools(
+        let prev_fingerprints = self
+            .server_fingerprints
+            .read()
+            .await
+            .get(&entry.id)
+            .cloned();
+        let (tools, sanitize_result, new_fingerprints) = ingest_tools(
             raw_tools,
             &IngestConfig {
                 server_id: &entry.id,
@@ -110,6 +117,7 @@ impl McpManager {
                 status_tx: self.status_tx.as_ref(),
                 max_description_bytes: self.max_description_bytes,
                 tool_metadata: &entry.tool_metadata,
+                previous_fingerprints: prev_fingerprints.as_ref(),
             },
         );
         apply_injection_penalties(
@@ -120,7 +128,7 @@ impl McpManager {
         )
         .await;
 
-        self.commit_added_server(entry, client, tools.clone())
+        self.commit_added_server(entry, client, tools.clone(), new_fingerprints)
             .await?;
 
         // Detect collisions against the full current tool list (SF-1: add_server path).
@@ -226,6 +234,7 @@ impl McpManager {
         entry: &ServerEntry,
         client: McpClient,
         tools: Vec<McpTool>,
+        fingerprints: Option<HashMap<String, crate::attestation::ToolFingerprint>>,
     ) -> Result<(), McpError> {
         // Serialize add/remove operations to prevent the TOCTOU race where
         // remove_server removes the client between the clients write and the
@@ -266,6 +275,12 @@ impl McpManager {
             .write()
             .await
             .insert(entry.id.clone(), tools);
+        if let Some(fp) = fingerprints {
+            self.server_fingerprints
+                .write()
+                .await
+                .insert(entry.id.clone(), fp);
+        }
 
         Ok(())
     }
@@ -305,6 +320,7 @@ impl McpManager {
         // Clean up per-server state.
         self.server_tools.write().await.remove(server_id);
         self.server_trust.write().await.remove(server_id);
+        self.server_fingerprints.write().await.remove(server_id);
         self.last_refresh.remove(server_id);
         // Release the serialization lock before the potentially slow shutdown call.
         drop(add_remove_guard);
@@ -382,6 +398,7 @@ impl McpManager {
         let drained: Vec<(String, McpClient)> = clients.drain().collect();
         self.connected_server_ids.write().clear();
         self.server_tools.write().await.clear();
+        self.server_fingerprints.write().await.clear();
         self.last_refresh.clear();
         for (id, client) in drained {
             tracing::info!(server_id = id, "shutting down MCP client");

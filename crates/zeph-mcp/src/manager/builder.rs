@@ -102,6 +102,7 @@ impl McpManager {
             oauth_credentials: HashMap::new(),
             status_tx: None,
             server_trust: Arc::new(tokio::sync::RwLock::new(server_trust)),
+            server_fingerprints: Arc::new(RwLock::new(HashMap::new())),
             prober: None,
             trust_store: None,
             embedding_guard: None,

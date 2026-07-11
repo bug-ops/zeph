@@ -123,6 +123,10 @@ pub struct McpServerStatus {
     pub tool_count: usize,
     /// Human-readable failure reason. Empty when connected.
     pub error: String,
+    /// Number of `input_schema`s dropped for exceeding the sanitizer's recursion depth cap.
+    pub input_schemas_dropped: usize,
+    /// Number of `output_schema`s dropped for injection or exceeding the depth cap.
+    pub output_schemas_dropped: usize,
 }
 
 /// Bayesian confidence data for a single skill, used by TUI confidence bar.

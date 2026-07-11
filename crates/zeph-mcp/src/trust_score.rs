@@ -142,8 +142,8 @@ impl TrustScoreStore {
     /// Load the trust score for a server, applying asymmetric decay at read time.
     ///
     /// Decay is applied and, when non-zero, written back to the database so that
-    /// subsequent `apply_delta()` calls operate on the true current (decayed) value
-    /// rather than the stale stored score. Without this write-back, a success delta
+    /// subsequent `load_and_apply_delta()` calls operate on the true current (decayed)
+    /// value rather than the stale stored score. Without this write-back, a success delta
     /// would be added to the pre-decay score, effectively reversing the decay.
     ///
     /// Concurrent loads for the same server are safe: linear decay is idempotent
@@ -203,63 +203,35 @@ impl TrustScoreStore {
         Ok(Some(entry))
     }
 
-    /// Atomically apply a score delta and update counters.
+    /// Atomically apply a decay-adjusted score delta and update counters.
     ///
-    /// Uses `INSERT ... ON CONFLICT DO UPDATE SET score = score + ?` to prevent
-    /// lost-update races from concurrent tool completions for the same server.
+    /// Replaces the former `apply_delta()` (decay-blind but atomic) and the former
+    /// `load_and_apply_delta()` (decay-aware but a non-atomic read-then-write, vulnerable to
+    /// a lost-update race between two concurrent callers for the same `server_id`). This
+    /// method folds both properties into a single `INSERT ... ON CONFLICT DO UPDATE`
+    /// statement: the asymmetric time-decay (see [`ServerTrustScore::apply_decay`]) is
+    /// recomputed from the stored `score`/`updated_at_secs` entirely inside the SQL
+    /// expression, so the whole read-decay-delta-clamp-write sequence is one atomic
+    /// row-level operation — no other writer can observe or clobber an intermediate state.
+    ///
+    /// Behavior mirrors the old two-step version exactly: decay is applied first (only to
+    /// scores above [`ServerTrustScore::INITIAL_SCORE`], floored at `INITIAL_SCORE`), then
+    /// `score_delta` is added, then the result is clamped to `[0.0, 1.0]`. Elapsed time is
+    /// floored at zero to guard against a clock going backward inflating the score.
+    ///
+    /// This equivalence holds for `|score_delta| <= 0.5`: the delta is recovered inside the
+    /// SQL as `excluded.score - INITIAL_SCORE`, where `excluded.score` is bound as
+    /// `(INITIAL_SCORE + score_delta).clamp(0.0, 1.0)`. If `score_delta` pushed
+    /// `INITIAL_SCORE + score_delta` outside `[0.0, 1.0]`, the bound value — and therefore
+    /// the recovered delta — would be clamped before decay/delta application, silently
+    /// applying a smaller-magnitude delta than requested. All current callers stay well
+    /// within this bound (`INJECTION_PENALTY` = 0.25, `FAILURE_PENALTY` = 0.10,
+    /// `SUCCESS_BOOST` = 0.02), so this is not reachable in practice, but a future caller
+    /// passing a larger delta must keep `|score_delta| <= 0.5`.
     ///
     /// # Errors
     ///
     /// Returns an error if the SQL execution fails.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "mcp.trust_score.apply_delta", skip(self), fields(server_id))
-    )]
-    pub async fn apply_delta(
-        &self,
-        server_id: &str,
-        score_delta: f64,
-        success_increment: u64,
-        failure_increment: u64,
-    ) -> Result<(), zeph_db::SqlxError> {
-        let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
-        // `MIN`/`MAX` are scalar multi-argument functions on SQLite but aggregate-only on
-        // Postgres (no `max(numeric, double precision)` overload exists there); the
-        // dialect-specific `LEAST`/`GREATEST` scalar equivalents are required instead.
-        let least_fn = <zeph_db::ActiveDialect as zeph_db::Dialect>::LEAST_FN;
-        let greatest_fn = <zeph_db::ActiveDialect as zeph_db::Dialect>::GREATEST_FN;
-        let raw = format!(
-            "INSERT INTO mcp_trust_scores
-                (server_id, score, success_count, failure_count, updated_at_secs)
-             VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(server_id) DO UPDATE SET
-                score          = {least_fn}(1.0, {greatest_fn}(0.0, mcp_trust_scores.score + excluded.score - 0.5)),
-                success_count  = mcp_trust_scores.success_count + excluded.success_count,
-                failure_count  = mcp_trust_scores.failure_count + excluded.failure_count,
-                updated_at_secs = excluded.updated_at_secs"
-        );
-        let query_sql = zeph_db::rewrite_placeholders(&raw);
-        zeph_db::query(zeph_db::sqlx::AssertSqlSafe(query_sql))
-            .bind(server_id)
-            // Initial insert: 0.5 + delta
-            .bind(ServerTrustScore::INITIAL_SCORE + score_delta)
-            .bind(i64::try_from(success_increment).unwrap_or(i64::MAX))
-            .bind(i64::try_from(failure_increment).unwrap_or(i64::MAX))
-            .bind(now)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    /// Load the current score with decay applied, then write back the decayed-plus-delta value.
-    ///
-    /// Unlike `apply_delta`, this method reads the stored score first, applies time-based
-    /// decay in-memory, and then upserts the corrected value. This prevents delta application
-    /// on a stale (pre-decay) score when a server has not been probed for an extended period.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the SQL query or execution fails.
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(
@@ -275,27 +247,52 @@ impl TrustScoreStore {
         success_increment: u64,
         failure_increment: u64,
     ) -> Result<(), zeph_db::SqlxError> {
-        let current = self.load(server_id).await?;
-        let base_score = current.map_or(ServerTrustScore::INITIAL_SCORE, |s| s.score);
-        let new_score = (base_score + score_delta).clamp(0.0, 1.0);
         let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
-        zeph_db::query(sql!(
+        // `MIN`/`MAX` are scalar multi-argument functions on SQLite but aggregate-only on
+        // Postgres (no `max(numeric, double precision)` overload exists there); the
+        // dialect-specific `LEAST`/`GREATEST` scalar equivalents are required instead.
+        let least_fn = <zeph_db::ActiveDialect as zeph_db::Dialect>::LEAST_FN;
+        let greatest_fn = <zeph_db::ActiveDialect as zeph_db::Dialect>::GREATEST_FN;
+        let initial = ServerTrustScore::INITIAL_SCORE;
+        let decay_rate = ServerTrustScore::DECAY_RATE;
+        // `excluded.score` carries `INITIAL_SCORE + score_delta` (bound below), so
+        // `excluded.score - {initial}` recovers the pure delta — same trick `apply_delta`
+        // used to reuse a single bound "score" column for both the fresh-insert value and
+        // the delta applied on conflict.
+        //
+        // Decay is computed from the pre-update row (`mcp_trust_scores.score` /
+        // `.updated_at_secs`, unqualified references to the existing row inside an
+        // `ON CONFLICT DO UPDATE` clause) against `excluded.updated_at_secs` (`now`, bound
+        // below). `{greatest_fn}(0, ...)` floors elapsed seconds at zero so a backward clock
+        // cannot produce negative "elapsed days" and inflate the score.
+        let raw = format!(
             "INSERT INTO mcp_trust_scores
                 (server_id, score, success_count, failure_count, updated_at_secs)
              VALUES (?, ?, ?, ?, ?)
              ON CONFLICT(server_id) DO UPDATE SET
-                score           = excluded.score,
+                score = {least_fn}(1.0, {greatest_fn}(0.0,
+                    (CASE WHEN mcp_trust_scores.score > {initial}
+                          THEN {greatest_fn}({initial}, mcp_trust_scores.score - {decay_rate} * (
+                              CAST({greatest_fn}(0, excluded.updated_at_secs - mcp_trust_scores.updated_at_secs) AS REAL)
+                              / 86400
+                          ))
+                          ELSE mcp_trust_scores.score
+                     END) + (excluded.score - {initial})
+                )),
                 success_count   = mcp_trust_scores.success_count + excluded.success_count,
                 failure_count   = mcp_trust_scores.failure_count + excluded.failure_count,
                 updated_at_secs = excluded.updated_at_secs"
-        ))
-        .bind(server_id)
-        .bind(new_score)
-        .bind(i64::try_from(success_increment).unwrap_or(i64::MAX))
-        .bind(i64::try_from(failure_increment).unwrap_or(i64::MAX))
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        zeph_db::query(zeph_db::sqlx::AssertSqlSafe(query_sql))
+            .bind(server_id)
+            // Fresh-insert value AND the carrier for the delta on conflict (see comment above).
+            .bind((ServerTrustScore::INITIAL_SCORE + score_delta).clamp(0.0, 1.0))
+            .bind(i64::try_from(success_increment).unwrap_or(i64::MAX))
+            .bind(i64::try_from(failure_increment).unwrap_or(i64::MAX))
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -304,7 +301,8 @@ impl TrustScoreStore {
     /// Decay is applied in-memory but NOT persisted. This is intentional: persisting
     /// decay for every row in a bulk read would generate N writes, degrading performance
     /// on large deployments. Decision-path code must always go through `load()`, which
-    /// persists the decayed score so `apply_delta()` operates on the correct base value.
+    /// persists the decayed score so `load_and_apply_delta()` operates on the correct
+    /// base value.
     ///
     /// # Errors
     ///
@@ -352,6 +350,7 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use zeph_db::DbPool;
 
     async fn test_pool() -> DbPool {
@@ -467,7 +466,10 @@ mod tests {
         assert!(store.load("srv1").await.unwrap().is_none());
 
         // Apply a success delta.
-        store.apply_delta("srv1", 0.02, 1, 0).await.unwrap();
+        store
+            .load_and_apply_delta("srv1", 0.02, 1, 0)
+            .await
+            .unwrap();
 
         let loaded = store.load("srv1").await.unwrap().unwrap();
         assert_eq!(loaded.server_id, "srv1");
@@ -477,13 +479,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn store_apply_delta_failure() {
+    async fn store_load_and_apply_delta_failure() {
         let pool = test_pool().await;
         let store = TrustScoreStore::new(pool);
         store.init().await.unwrap();
 
         store
-            .apply_delta("srv1", -ServerTrustScore::FAILURE_PENALTY, 0, 1)
+            .load_and_apply_delta("srv1", -ServerTrustScore::FAILURE_PENALTY, 0, 1)
             .await
             .unwrap();
 
@@ -498,8 +500,8 @@ mod tests {
         let store = TrustScoreStore::new(pool);
         store.init().await.unwrap();
 
-        store.apply_delta("srv1", 0.0, 1, 0).await.unwrap();
-        store.apply_delta("srv2", 0.0, 0, 1).await.unwrap();
+        store.load_and_apply_delta("srv1", 0.0, 1, 0).await.unwrap();
+        store.load_and_apply_delta("srv2", 0.0, 0, 1).await.unwrap();
 
         let all = store.load_all().await.unwrap();
         assert_eq!(all.len(), 2);
@@ -512,8 +514,14 @@ mod tests {
         store.init().await.unwrap();
 
         // Two consecutive success deltas.
-        store.apply_delta("srv1", 0.02, 1, 0).await.unwrap();
-        store.apply_delta("srv1", 0.02, 1, 0).await.unwrap();
+        store
+            .load_and_apply_delta("srv1", 0.02, 1, 0)
+            .await
+            .unwrap();
+        store
+            .load_and_apply_delta("srv1", 0.02, 1, 0)
+            .await
+            .unwrap();
 
         let loaded = store.load("srv1").await.unwrap().unwrap();
         assert_eq!(loaded.success_count, 2);
@@ -527,7 +535,7 @@ mod tests {
 
         // Many large positive deltas — score must not exceed 1.0
         for _ in 0..50 {
-            store.apply_delta("srv1", 0.5, 1, 0).await.unwrap();
+            store.load_and_apply_delta("srv1", 0.5, 1, 0).await.unwrap();
         }
         let high = store.load("srv1").await.unwrap().unwrap();
         assert!(
@@ -538,7 +546,10 @@ mod tests {
 
         // Many large negative deltas — score must not go below 0.0
         for _ in 0..50 {
-            store.apply_delta("srv2", -0.5, 0, 1).await.unwrap();
+            store
+                .load_and_apply_delta("srv2", -0.5, 0, 1)
+                .await
+                .unwrap();
         }
         let low = store.load("srv2").await.unwrap().unwrap();
         assert!(
@@ -653,7 +664,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn store_load_then_delta_operates_on_decayed() {
+    async fn store_load_then_load_and_apply_delta_operates_on_decayed() {
         let pool = test_pool().await;
         let store = TrustScoreStore::new(pool.clone());
         store.init().await.unwrap();
@@ -671,13 +682,14 @@ mod tests {
         .await
         .unwrap();
 
-        // Trigger decay persistence via load().
+        // Trigger decay persistence via load(), which also refreshes updated_at_secs to now.
         let decayed = store.load("srv1").await.unwrap().unwrap();
         assert!(decayed.score < 0.8, "score must have decayed");
 
-        // apply_delta now operates on the persisted decayed score, not 0.8.
+        // load_and_apply_delta() now sees a fresh updated_at_secs from the load() above, so
+        // it must add the delta to the already-decayed score without re-decaying it again.
         store
-            .apply_delta("srv1", ServerTrustScore::SUCCESS_BOOST, 1, 0)
+            .load_and_apply_delta("srv1", ServerTrustScore::SUCCESS_BOOST, 1, 0)
             .await
             .unwrap();
 
@@ -685,8 +697,54 @@ mod tests {
         let expected = (decayed.score + ServerTrustScore::SUCCESS_BOOST).min(1.0);
         assert!(
             (final_score.score - expected).abs() < 1e-6,
-            "delta must be applied to decayed score: expected={expected}, got={}",
+            "delta must be applied to decayed score without double-decaying: expected={expected}, got={}",
             final_score.score
+        );
+    }
+
+    /// Regression for #6073: `load_and_apply_delta` must be atomic — two concurrent callers
+    /// updating the same `server_id` must not lose either update. The former implementation
+    /// did `load()` then an unconditional `UPDATE SET score = excluded.score`; if both callers
+    /// read the same pre-update base score before either wrote back, the second write would
+    /// clobber the first caller's delta. This is now impossible because the whole
+    /// read-decay-delta-clamp-write sequence happens inside one `INSERT ... ON CONFLICT DO
+    /// UPDATE` statement.
+    const CONCURRENT_WRITERS: usize = 10;
+
+    #[tokio::test]
+    async fn load_and_apply_delta_concurrent_writers_no_lost_update() {
+        let pool = test_pool().await;
+        let store = Arc::new(TrustScoreStore::new(pool));
+        store.init().await.unwrap();
+
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..CONCURRENT_WRITERS {
+            let store = Arc::clone(&store);
+            set.spawn(async move {
+                store
+                    .load_and_apply_delta("srv1", ServerTrustScore::SUCCESS_BOOST, 1, 0)
+                    .await
+            });
+        }
+        while let Some(res) = set.join_next().await {
+            res.expect("task panicked").expect("write failed");
+        }
+
+        let loaded = store.load("srv1").await.unwrap().unwrap();
+        assert_eq!(
+            loaded.success_count,
+            u64::try_from(CONCURRENT_WRITERS).unwrap(),
+            "every concurrent writer's success_count increment must be recorded"
+        );
+        // Deltas run near-instantly (no meaningful elapsed time), so decay is negligible —
+        // the final score must reflect the sum of all deltas, clamped at 1.0.
+        let writers = f64::from(u32::try_from(CONCURRENT_WRITERS).unwrap());
+        let expected =
+            (ServerTrustScore::INITIAL_SCORE + ServerTrustScore::SUCCESS_BOOST * writers).min(1.0);
+        assert!(
+            (loaded.score - expected).abs() < 1e-6,
+            "lost update: expected score {expected} after {CONCURRENT_WRITERS} concurrent deltas, got {}",
+            loaded.score
         );
     }
 
@@ -742,6 +800,73 @@ mod tests {
             loaded.score >= ServerTrustScore::INITIAL_SCORE,
             "score should not decay below INITIAL_SCORE, got {}",
             loaded.score
+        );
+    }
+
+    /// Regression for #6073 (critic follow-up): the sibling test above only asserts loose
+    /// bounds (`< 0.9`, `>= INITIAL_SCORE`) on the decayed score, which would not catch a
+    /// subtly wrong decay-rate constant, an off-by-one in the elapsed-time expression, or a
+    /// wrong divisor in the in-SQL `CASE WHEN` / `CAST(... AS REAL)` expression — any of
+    /// those could still land within those loose bounds. This test pins the *exact* decayed
+    /// value the atomic SQL statement must produce, computed independently in Rust from
+    /// `ServerTrustScore::DECAY_RATE` and the row's actual persisted `updated_at_secs`
+    /// (read back directly, bypassing `load()`, so this observes exactly what the atomic
+    /// `INSERT ... ON CONFLICT DO UPDATE` wrote — not `load()`'s own separate decay pass).
+    /// Runs unconditionally (not `#[ignore]`d) against the default in-memory `SQLite` pool.
+    #[tokio::test]
+    async fn load_and_apply_delta_decay_magnitude_is_exact() {
+        let pool = test_pool().await;
+        let store = TrustScoreStore::new(pool.clone());
+        store.init().await.unwrap();
+
+        // Insert a score above INITIAL_SCORE with a timestamp exactly 5 days in the past.
+        let old_ts = i64::try_from(unix_now().saturating_sub(5 * 86_400)).unwrap();
+        zeph_db::query(
+            sql!("INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+             VALUES (?, 0.8, 0, 0, ?)"),
+        )
+        .bind("srv1")
+        .bind(old_ts)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Delta = 0.0 isolates the in-SQL decay computation from delta application
+        // (`excluded.score - INITIAL_SCORE` recovers to exactly 0.0).
+        store.load_and_apply_delta("srv1", 0.0, 0, 0).await.unwrap();
+
+        // Read the raw row back directly — NOT via `load()`, which would apply its own
+        // separate Rust-side decay pass on top and defeat the purpose of this test.
+        let (db_score, db_ts): (f64, i64) = zeph_db::query_as(sql!(
+            "SELECT score, updated_at_secs FROM mcp_trust_scores WHERE server_id = ?"
+        ))
+        .bind("srv1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        // Replicate the SQL expression bit-for-bit using the row's *actual* persisted
+        // `updated_at_secs` (the exact `now` the atomic statement bound), not a
+        // separately-sampled clock reading — eliminates any timing-window flakiness.
+        // Elapsed seconds fit comfortably in i32 (test uses a 5-day-old row) — narrow
+        // before widening to f64 to keep the conversion exact and lint-clean.
+        let elapsed_secs = i32::try_from(db_ts - old_ts).unwrap();
+        let elapsed_days = f64::from(elapsed_secs) / 86_400.0;
+        let expected = (0.8_f64 - ServerTrustScore::DECAY_RATE * elapsed_days)
+            .max(ServerTrustScore::INITIAL_SCORE);
+
+        assert!(
+            (db_score - expected).abs() < 1e-9,
+            "in-SQL decay magnitude mismatch: expected {expected}, got {db_score} \
+             (elapsed_days={elapsed_days}, decay_rate={})",
+            ServerTrustScore::DECAY_RATE
+        );
+        // Sanity: pin the test to actually exercising the mid-decay branch (not the
+        // INITIAL_SCORE floor or a no-op), so a decay formula that always returns the
+        // floor or always returns the input unchanged would still fail this test.
+        assert!(
+            db_score < 0.8 && db_score > ServerTrustScore::INITIAL_SCORE,
+            "expected partial decay strictly between INITIAL_SCORE and 0.8, got {db_score}"
         );
     }
 }

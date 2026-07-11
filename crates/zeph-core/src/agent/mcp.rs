@@ -63,6 +63,11 @@ impl<C: Channel> Agent<C> {
                         connected: true,
                         tool_count: count,
                         error: String::new(),
+                        // `McpManager::add_server` doesn't surface sanitizer schema-drop
+                        // counts to its caller today — dynamic add is a pre-existing gap in
+                        // this metric, not a regression from this fix.
+                        input_schemas_dropped: 0,
+                        output_schemas_dropped: 0,
                     });
                 self.services.mcp.tools.extend(tools);
                 self.services.mcp.sync_executor_tools();
@@ -606,6 +611,8 @@ impl<C: Channel> Agent<C> {
                 },
                 tool_count: o.tool_count,
                 error: o.error.clone(),
+                input_schemas_dropped: o.input_schemas_dropped,
+                output_schemas_dropped: o.output_schemas_dropped,
             })
             .collect();
         self.update_metrics(|m| {

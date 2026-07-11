@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::attestation::ToolFingerprint;
 use crate::policy::check_data_flow;
 use crate::sanitize::{SanitizeResult, sanitize_tools};
 use crate::tool::{McpTool, ToolSecurityMeta, infer_security_meta};
@@ -106,12 +107,22 @@ pub(super) async fn apply_injection_penalties(
 pub(super) fn ingest_tools(
     mut tools: Vec<McpTool>,
     cfg: &IngestConfig<'_>,
-) -> (Vec<McpTool>, SanitizeResult) {
+) -> (
+    Vec<McpTool>,
+    SanitizeResult,
+    Option<HashMap<String, ToolFingerprint>>,
+) {
     // SECURITY INVARIANT: sanitize BEFORE any filtering or storage.
     let sanitize_result = sanitize_tools(&mut tools, cfg.server_id, cfg.max_description_bytes);
     assign_security_metadata(&mut tools, cfg.tool_metadata);
     filter_data_flow_violations(&mut tools, cfg.server_id, cfg.trust_level);
-    tools = apply_attestation(tools, cfg.server_id, cfg.trust_level, cfg.expected_tools);
+    let (tools, fingerprints) = apply_attestation(
+        tools,
+        cfg.server_id,
+        cfg.trust_level,
+        cfg.expected_tools,
+        cfg.previous_fingerprints,
+    );
     let filtered = apply_allowlist(
         tools,
         cfg.server_id,
@@ -119,7 +130,7 @@ pub(super) fn ingest_tools(
         cfg.allowlist,
         cfg.status_tx,
     );
-    (filtered, sanitize_result)
+    (filtered, sanitize_result, fingerprints)
 }
 
 /// Assign per-tool security metadata from operator config or heuristic inference.
@@ -157,28 +168,41 @@ fn filter_data_flow_violations(
 
 /// Compare tools against operator-declared expectations and filter unexpected
 /// tools from Untrusted/Sandboxed servers.
+///
+/// `previous_fingerprints` — when `Some`, carries the tool fingerprints computed on this
+/// server's previous connection so [`attest_tools`] can detect schema drift (a tool
+/// description/schema that silently changed between sessions, aka an "MCP rug-pull").
+///
+/// Returns the (possibly filtered) tools plus the fingerprints computed for *this*
+/// connection, which the caller must cache for the next reconnect/refresh. `None` when
+/// attestation is unconfigured (no `expected_tools` declared for this server) — fingerprints
+/// are only computed as part of attestation, so drift detection requires `expected_tools`.
 fn apply_attestation(
     tools: Vec<McpTool>,
     server_id: &str,
     trust_level: McpTrustLevel,
     expected_tools: &[String],
-) -> Vec<McpTool> {
+    previous_fingerprints: Option<&HashMap<String, ToolFingerprint>>,
+) -> (Vec<McpTool>, Option<HashMap<String, ToolFingerprint>>) {
     use crate::attestation::{AttestationResult, attest_tools};
 
-    let attestation =
-        attest_tools::<std::collections::hash_map::RandomState>(&tools, expected_tools, None);
+    let attestation = attest_tools::<std::collections::hash_map::RandomState>(
+        &tools,
+        expected_tools,
+        previous_fingerprints,
+    );
     match attestation {
-        AttestationResult::Unconfigured => tools,
-        AttestationResult::Verified { .. } => {
+        AttestationResult::Unconfigured => (tools, None),
+        AttestationResult::Verified { fingerprints } => {
             tracing::debug!(server_id, "attestation: all tools in expected set");
-            tools
+            (tools, Some(fingerprints))
         }
         AttestationResult::Unexpected {
-            ref unexpected_tools,
-            ..
+            unexpected_tools,
+            fingerprints,
         } => {
             let unexpected_names = unexpected_tools.join(", ");
-            match trust_level {
+            let tools = match trust_level {
                 McpTrustLevel::Trusted => {
                     tracing::warn!(
                         server_id,
@@ -199,7 +223,8 @@ fn apply_attestation(
                         .collect()
                 }
                 _ => tools,
-            }
+            };
+            (tools, Some(fingerprints))
         }
     }
 }

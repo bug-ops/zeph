@@ -2027,6 +2027,8 @@ impl<C: Channel> Agent<C> {
                 },
                 tool_count: o.tool_count,
                 error: o.error.clone(),
+                input_schemas_dropped: o.input_schemas_dropped,
+                output_schemas_dropped: o.output_schemas_dropped,
             })
             .collect();
         let extended_context = self.runtime.metrics.extended_context;

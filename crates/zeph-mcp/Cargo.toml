@@ -57,6 +57,7 @@ zeph-tools.workspace = true
 rmcp = { workspace = true, features = ["server"] }
 testcontainers = { workspace = true, features = ["watchdog"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tracing-test.workspace = true
 wiremock.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }
 

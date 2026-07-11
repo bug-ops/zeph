@@ -104,6 +104,7 @@ impl McpManager {
         let server_tools = Arc::clone(&self.server_tools);
         let tools_watch_tx = self.tools_watch_tx.clone();
         let server_trust = Arc::clone(&self.server_trust);
+        let server_fingerprints = Arc::clone(&self.server_fingerprints);
         let status_tx = self.status_tx.clone();
         let max_description_bytes = self.max_description_bytes;
         let trust_store = self.trust_store.clone();
@@ -122,7 +123,12 @@ impl McpManager {
                     );
                     continue;
                 }
-                let (filtered, sanitize_result) = {
+                let prev_fingerprints = server_fingerprints
+                    .read()
+                    .await
+                    .get(&event.server_id)
+                    .cloned();
+                let (filtered, sanitize_result, new_fingerprints) = {
                     let trust_guard = server_trust.read().await;
                     let (trust_level, allowlist, expected_tools) =
                         trust_guard.get(&event.server_id).map_or(
@@ -142,9 +148,16 @@ impl McpManager {
                             status_tx: status_tx.as_ref(),
                             max_description_bytes,
                             tool_metadata,
+                            previous_fingerprints: prev_fingerprints.as_ref(),
                         },
                     )
                 };
+                if let Some(fp) = new_fingerprints {
+                    server_fingerprints
+                        .write()
+                        .await
+                        .insert(event.server_id.clone(), fp);
+                }
                 apply_injection_penalties(
                     trust_store.as_ref(),
                     &event.server_id,
@@ -288,6 +301,7 @@ impl McpManager {
         let mut pending_instructions: Vec<(String, String)> = Vec::new();
         let mut pending_clients: Vec<(String, _)> = Vec::new();
         let mut pending_tools: Vec<(String, _)> = Vec::new();
+        let mut pending_fingerprints: Vec<(String, _)> = Vec::new();
         let mut all_tools = Vec::new();
         let mut outcomes: Vec<ServerConnectOutcome> = Vec::new();
         for output in outputs {
@@ -299,6 +313,9 @@ impl McpManager {
             }
             if let Some((sid, tools)) = output.tools_entry {
                 pending_tools.push((sid, tools));
+            }
+            if let Some((sid, fp)) = output.fingerprints {
+                pending_fingerprints.push((sid, fp));
             }
             all_tools.extend(output.tools);
             outcomes.push(output.outcome);
@@ -319,6 +336,12 @@ impl McpManager {
             let mut g = self.server_tools.write().await;
             for (sid, tools) in pending_tools {
                 g.insert(sid, tools);
+            }
+        }
+        {
+            let mut g = self.server_fingerprints.write().await;
+            for (sid, fp) in pending_fingerprints {
+                g.insert(sid, fp);
             }
         }
         (all_tools, outcomes)
@@ -458,8 +481,11 @@ impl McpManager {
                             connected: false,
                             tool_count: 0,
                             error,
+                            input_schemas_dropped: 0,
+                            output_schemas_dropped: 0,
                         },
                         instructions: None,
+                        fingerprints: None,
                     });
                 }
             }
@@ -474,6 +500,10 @@ impl McpManager {
         let mut pending_instructions: Vec<(String, String)> = Vec::new();
         let mut pending_clients: Vec<(String, McpClient)> = Vec::new();
         let mut pending_tools: Vec<(String, Vec<McpTool>)> = Vec::new();
+        let mut pending_fingerprints: Vec<(
+            String,
+            HashMap<String, crate::attestation::ToolFingerprint>,
+        )> = Vec::new();
         for output in outputs {
             if let Some((sid, instr)) = output.instructions {
                 pending_instructions.push((sid, instr));
@@ -483,6 +513,9 @@ impl McpManager {
             }
             if let Some((sid, tools)) = output.tools_entry {
                 pending_tools.push((sid, tools));
+            }
+            if let Some((sid, fp)) = output.fingerprints {
+                pending_fingerprints.push((sid, fp));
             }
         }
         {
@@ -495,6 +528,12 @@ impl McpManager {
             let mut g = self.clients.write().await;
             for (sid, client) in pending_clients {
                 g.insert(sid, client);
+            }
+        }
+        {
+            let mut g = self.server_fingerprints.write().await;
+            for (sid, fp) in pending_fingerprints {
+                g.insert(sid, fp);
             }
         }
         let updated = {
@@ -558,11 +597,14 @@ impl McpManager {
             tools_entry: None,
             tools: Vec::new(),
             instructions: None,
+            fingerprints: None,
             outcome: ServerConnectOutcome {
                 id: server_id.clone(),
                 connected: false,
                 tool_count: 0,
                 error,
+                input_schemas_dropped: 0,
+                output_schemas_dropped: 0,
             },
         };
 
@@ -592,7 +634,13 @@ impl McpManager {
                         );
                     let empty = HashMap::new();
                     let tool_metadata = self.server_tool_metadata.get(&server_id).unwrap_or(&empty);
-                    let (tools, sanitize_result) = ingest_tools(
+                    let prev_fingerprints = self
+                        .server_fingerprints
+                        .read()
+                        .await
+                        .get(&server_id)
+                        .cloned();
+                    let (tools, sanitize_result, new_fingerprints) = ingest_tools(
                         raw_tools,
                         &IngestConfig {
                             server_id: &server_id,
@@ -602,6 +650,7 @@ impl McpManager {
                             status_tx: self.status_tx.as_ref(),
                             max_description_bytes: limits.description_bytes,
                             tool_metadata,
+                            previous_fingerprints: prev_fingerprints.as_ref(),
                         },
                     );
                     apply_injection_penalties(
@@ -619,11 +668,14 @@ impl McpManager {
                         tools_entry: Some((server_id.clone(), tools.clone())),
                         tools,
                         instructions,
+                        fingerprints: new_fingerprints.map(|fp| (server_id.clone(), fp)),
                         outcome: ServerConnectOutcome {
                             id: server_id,
                             connected: true,
                             tool_count,
                             error: String::new(),
+                            input_schemas_dropped: sanitize_result.input_schemas_dropped,
+                            output_schemas_dropped: sanitize_result.output_schemas_dropped,
                         },
                     }
                 }

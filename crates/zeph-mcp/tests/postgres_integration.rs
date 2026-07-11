@@ -9,22 +9,28 @@
 //!     --features test-utils --test postgres_integration --run-ignored ignored-only
 //! ```
 //!
-//! Regression coverage for issue #5803: `TrustScoreStore::apply_delta` and
-//! `load_and_apply_delta` build `INSERT ... ON CONFLICT(server_id) DO UPDATE SET` statements
-//! with unqualified self-references (e.g. `success_count = success_count + excluded.success_count`).
-//! Postgres's `ON CONFLICT DO UPDATE` always exposes an implicit `excluded` pseudo-table
-//! alongside the target table, so an unqualified self-reference is rejected as ambiguous
-//! (`column reference "success_count" is ambiguous`). `SQLite` accepts the same statement,
-//! so the existing `store_*` unit tests (`trust_score.rs`, in-memory `SqliteStore`) never
-//! caught it. These tests exercise both methods' upsert branch against a real Postgres
-//! instance.
+//! Regression coverage for issue #5803: `TrustScoreStore::load_and_apply_delta` builds an
+//! `INSERT ... ON CONFLICT(server_id) DO UPDATE SET` statement with self-references (e.g.
+//! `success_count = success_count + excluded.success_count`). Postgres's `ON CONFLICT DO
+//! UPDATE` always exposes an implicit `excluded` pseudo-table alongside the target table, so
+//! an unqualified self-reference is rejected as ambiguous (`column reference "success_count"
+//! is ambiguous`) — every self-reference in the generated SQL must be table-qualified
+//! (`mcp_trust_scores.score`, not bare `score`). `SQLite` accepts the unqualified form, so the
+//! existing `store_*` unit tests (`trust_score.rs`, in-memory `SqliteStore`) never caught it.
+//! These tests exercise the upsert branch against a real Postgres instance.
+//!
+//! Also covers issue #6073: `load_and_apply_delta` was rewritten to compute asymmetric time
+//! decay (see `ServerTrustScore::apply_decay`) directly inside the same atomic SQL statement,
+//! using a `CASE WHEN` expression with a `CAST(... AS REAL)` division. `decay_atomic_on_postgres`
+//! exercises that expression against real Postgres to catch any dialect-specific arithmetic or
+//! cast mismatch that an in-memory `SQLite` test would not surface.
 //!
 //! Also covers a co-located defect found while adding this coverage: `load()`/`load_all()`
 //! decoded `success_count`/`failure_count` as `i64`, but both columns are `INTEGER` (INT4)
 //! in the Postgres schema (migration `052_mcp_trust_scores.sql`), which `sqlx-postgres`
 //! rejects as `ColumnDecode`. `load_all_decodes_int4_counts_on_postgres` closes the gap for
-//! `load_all()` specifically (the other tests already exercise `load()` via `apply_delta`
-//! and `load_and_apply_delta`'s round trips).
+//! `load_all()` specifically (the other tests already exercise `load()` via
+//! `load_and_apply_delta`'s round trips).
 
 #![cfg(feature = "test-utils")]
 
@@ -34,6 +40,7 @@ use testcontainers::ImageExt as _;
 use testcontainers::runners::AsyncRunner as _;
 use testcontainers_modules::postgres::Postgres;
 use zeph_db::DbConfig;
+use zeph_db::sql;
 use zeph_mcp::{ServerTrustScore, TrustScoreStore};
 
 // Generous startup timeout, matching the zeph-memory pattern: under concurrent CI load the
@@ -51,29 +58,6 @@ async fn start_pg() -> (zeph_db::DbPool, impl Drop) {
     };
     let pool = config.connect().await.expect("failed to connect to PG");
     (pool, container)
-}
-
-#[tokio::test]
-#[ignore = "requires Docker"]
-async fn apply_delta_upsert_increments_counters_on_postgres() {
-    let (pool, _container) = start_pg().await;
-    let store = TrustScoreStore::new(pool);
-    store.init().await.unwrap();
-
-    // First call is a plain INSERT; the second hits the ON CONFLICT DO UPDATE branch —
-    // the exact path that previously errored on Postgres with an ambiguous column reference.
-    store.apply_delta("srv1", 0.02, 1, 0).await.unwrap();
-    store.apply_delta("srv1", 0.02, 1, 0).await.unwrap();
-
-    let loaded = store.load("srv1").await.unwrap().unwrap();
-    assert_eq!(
-        loaded.success_count, 2,
-        "success_count must accumulate across two apply_delta upserts"
-    );
-    assert!(
-        loaded.score > ServerTrustScore::INITIAL_SCORE,
-        "score must reflect both positive deltas"
-    );
 }
 
 #[tokio::test]
@@ -103,13 +87,64 @@ async fn load_and_apply_delta_upsert_increments_counters_on_postgres() {
 
 #[tokio::test]
 #[ignore = "requires Docker"]
+async fn decay_atomic_on_postgres() {
+    let (pool, _container) = start_pg().await;
+    let store = TrustScoreStore::new(pool.clone());
+    store.init().await.unwrap();
+
+    // Insert a high score with an old timestamp (simulate 30 days ago) directly, bypassing
+    // the store API — this is the state `load_and_apply_delta`'s decay expression must read.
+    let old_ts = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_sub(30 * 86_400),
+    )
+    .unwrap();
+    zeph_db::query(sql!(
+        "INSERT INTO mcp_trust_scores (server_id, score, success_count, failure_count, updated_at_secs)
+         VALUES (?, 0.9, 0, 0, ?)"
+    ))
+    .bind("srv1")
+    .bind(old_ts)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Delta = 0.0 — exercises decay-only through the CASE WHEN / CAST(... AS REAL) expression
+    // on real Postgres, where the `updated_at_secs` column is BIGINT (not SQLite's flexible
+    // INTEGER affinity) — a dialect-specific arithmetic mismatch would surface here.
+    store.load_and_apply_delta("srv1", 0.0, 0, 0).await.unwrap();
+
+    let loaded = store.load("srv1").await.unwrap().unwrap();
+    assert!(
+        loaded.score < 0.9,
+        "score should have decayed from 0.9, got {}",
+        loaded.score
+    );
+    assert!(
+        loaded.score >= ServerTrustScore::INITIAL_SCORE,
+        "score should not decay below INITIAL_SCORE, got {}",
+        loaded.score
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker"]
 async fn load_all_decodes_int4_counts_on_postgres() {
     let (pool, _container) = start_pg().await;
     let store = TrustScoreStore::new(pool);
     store.init().await.unwrap();
 
-    store.apply_delta("srv1", 0.02, 3, 1).await.unwrap();
-    store.apply_delta("srv2", -0.10, 0, 2).await.unwrap();
+    store
+        .load_and_apply_delta("srv1", 0.02, 3, 1)
+        .await
+        .unwrap();
+    store
+        .load_and_apply_delta("srv2", -0.10, 0, 2)
+        .await
+        .unwrap();
 
     let all = store.load_all().await.unwrap();
     assert_eq!(all.len(), 2, "load_all must return both servers");

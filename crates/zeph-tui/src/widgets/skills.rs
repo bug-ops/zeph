@@ -74,11 +74,19 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
                 McpServerConnectionStatus::Failed => ("fail", Color::Red),
                 _ => ("?", Color::DarkGray),
             };
-            mcp_lines.push(Line::from(vec![
+            let mut spans = vec![
                 Span::raw(format!("  {} ", srv.id)),
                 Span::styled(indicator, Style::default().fg(color)),
                 Span::raw(format!(" ({})", srv.tool_count)),
-            ]));
+            ];
+            let schemas_dropped = srv.input_schemas_dropped + srv.output_schemas_dropped;
+            if schemas_dropped > 0 {
+                spans.push(Span::styled(
+                    format!(" schema-drop:{schemas_dropped}"),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            mcp_lines.push(Line::from(spans));
         }
         for t in &metrics.active_mcp_tools {
             mcp_lines.push(Line::from(format!("  - {t}")));
