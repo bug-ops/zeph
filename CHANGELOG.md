@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Security
 
+- `zeph-db`: `redact_url` no longer leaks the tail of a Postgres password containing `@` (#5969).
+  The previous regex (`://[^:]+:[^@]+@`) stopped at the first `@`, so
+  `postgres://user:p@ss@host/db` only redacted up to `p`, leaking `ss@host` verbatim into
+  `DbError::Connection` and CLI error output (`src/commands/db.rs`). Replaced with
+  `url::Url`-based userinfo parsing, which splits on the *last* `@` before the authority ends —
+  matching real client behavior — so passwords/usernames containing `@`, multiple `@`, and IPv6
+  hosts are all handled correctly. Also now recognizes two non-userinfo libpq credential forms and
+  redacts the whole URL for them: query-param URIs (`?password=...`) and key-value DSNs
+  (`host=... password=...`), neither of which the old regex covered at all.
 - `zeph-config` / `zeph-llm`: removed derived `Debug` from 7 secret-bearing config structs that
   printed their plaintext secret verbatim in any `{:?}` output — logs, panics, error chains
   (#5952, #5963). `GatewayConfig::auth_token`, `ProviderEntry::api_key`/`cocoon_access_hash`,
