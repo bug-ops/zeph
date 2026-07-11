@@ -819,6 +819,14 @@ const DURABLE_REFRESH_SECS: u64 = 5;
 /// Read-only: it never mutates the journal. Runs until the `tx` channel closes (agent exited). Spawned
 /// only when `[durable] enabled = true`; otherwise the panel keeps its default state and renders the
 /// "non-durable mode" message.
+///
+/// First evaluates the INV-8 `encryption_gate` security policy (same as the `zeph durable` CLI's
+/// `open_backend`, `src/commands/durable.rs`): a declared/detected shared database combined with
+/// `encrypt_payload = false` must be rejected here too, or the TUI panel would happily render a
+/// journal the CLI refuses to open — a cross-mode divergence (#5996). Unlike the CLI, this is a
+/// best-effort background poller with no user waiting on an error message, so a gate rejection
+/// degrades gracefully to the same "non-durable mode" snapshot as a failed backend open, rather
+/// than panicking or looping forever.
 #[cfg(feature = "tui")]
 pub(crate) async fn durable_poll_task(
     db_url: String,
@@ -826,6 +834,19 @@ pub(crate) async fn durable_poll_task(
     tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
 ) {
     use zeph_tui::widgets::durable::{DurableRow, DurableSnapshot};
+
+    if let Err(e) = crate::commands::durable::enforce_encryption_gate(&cfg, &db_url) {
+        tracing::warn!(
+            error = %e,
+            "durable poll: encryption policy rejected this deployment; panel shows non-durable mode"
+        );
+        let _ = tx
+            .send(zeph_tui::AgentEvent::DurableSnapshot(
+                DurableSnapshot::default(),
+            ))
+            .await;
+        return;
+    }
 
     let backend = match zeph_durable::LocalBackend::open(&db_url, cfg.max_payload_bytes).await {
         Ok(b) => b,

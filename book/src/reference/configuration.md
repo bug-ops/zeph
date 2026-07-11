@@ -843,6 +843,7 @@ max_iterations = 1000                      # Max repetitions before loop auto-st
 enabled = false                            # Master opt-in (default: false — current behavior)
 backend = "local"                          # "local" (durable.db) or "restate" (server feature)
 encrypt_payload = true                     # AEAD-encrypt payloads (dev-only override; see security docs)
+shared_db = false                          # Declare the journal DB as multi-process/client (INV-8 gate)
 agent_turns = true                         # Wrap agent-loop steps when enabled
 orchestration = true                       # Journal /plan resume replan budget when enabled
 scheduler = true                           # Exactly-once scheduler job fire when enabled

@@ -65,6 +65,13 @@ The rationale is the trust boundary: a single-user SQLite file inherits the
 operating-system file permissions, but a shared or networked database does not,
 so the journal must protect its own payloads there.
 
+"Shared database" is determined by `[durable].shared_db`: set it `true` whenever
+the journal database is reachable by more than one process or client (a
+network-shared volume, or any future Postgres-backed deployment). It defaults to
+`false` for an ordinary single-user local setup. A `postgres://`/`postgresql://`
+journal URL is also treated as shared automatically, even if `shared_db` was left
+unset, as defense in depth.
+
 ## Key rotation
 
 The `key_id` byte makes rotation possible without rewriting the journal:

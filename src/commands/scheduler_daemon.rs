@@ -191,6 +191,10 @@ async fn build_durable_adapter(
     if !(config.durable.enabled && config.durable.scheduler) {
         return Ok(None);
     }
+    // Resolve the write-path cipher (which evaluates the INV-8 encryption_gate, #5996) before
+    // opening the backend, so a forbidden config fails closed without creating a stray empty
+    // journal file on disk first.
+    let cipher = crate::commands::durable::load_write_cipher(config)?;
     let durable_url = crate::commands::durable::resolve_durable_db_url(config);
     let local = zeph_durable::LocalBackend::open(&durable_url, config.durable.max_payload_bytes)
         .await
@@ -199,7 +203,6 @@ async fn build_durable_adapter(
         .init()
         .await
         .context("failed to init scheduler durable schema")?;
-    let cipher = crate::commands::durable::load_write_cipher(config)?;
     let local = if let Some(cipher) = cipher {
         local.with_cipher(cipher)
     } else {

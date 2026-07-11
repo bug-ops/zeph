@@ -38,7 +38,9 @@
 //! step 75 adds a commented `qdrant_timeout_secs = 10` advisory under `[memory]`;
 //! step 76 adds a commented `high_gain_tools = []` advisory under `[tools.utility]` (#5659);
 //! step 77 adds a commented `[[acp.auth_clients]]` advisory block (#5868);
-//! step 78 adds a commented `[skills.registry]` advisory block (spec-045, #5869).
+//! step 78 adds a commented `[skills.registry]` advisory block (spec-045, #5869);
+//! step 79 adds a commented `shared_db = false` advisory to an existing active `[durable]`
+//! table (INV-8 `encryption_gate`, #5996).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -49,8 +51,8 @@ use super::{
     migrate_acp_subagents_config, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
     migrate_autodream_config, migrate_caveman_config, migrate_cocoon_provider_notice,
     migrate_cocoon_show_balance, migrate_compression_predictor_config, migrate_database_url,
-    migrate_deep_link_config, migrate_durable_config, migrate_egress_config,
-    migrate_embed_provider_rename, migrate_eval_model_to_provider,
+    migrate_deep_link_config, migrate_durable_config, migrate_durable_shared_db,
+    migrate_egress_config, migrate_embed_provider_rename, migrate_eval_model_to_provider,
     migrate_fidelity_timeout_defaults, migrate_five_signal_config,
     migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_config,
     migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
@@ -951,5 +953,18 @@ impl Migration for MigrateAcpAuthClientsConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_acp_auth_clients_config(toml_src)
+    }
+}
+
+/// Step 79 — adds a commented `shared_db = false` advisory to an existing active `[durable]`
+/// table (INV-8 `encryption_gate`, #5996).
+pub(super) struct MigrateDurableSharedDb;
+impl Migration for MigrateDurableSharedDb {
+    fn name(&self) -> &'static str {
+        "migrate_durable_shared_db"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_durable_shared_db(toml_src)
     }
 }

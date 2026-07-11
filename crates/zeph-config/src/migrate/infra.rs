@@ -596,6 +596,7 @@ pub fn migrate_durable_config(toml_src: &str) -> Result<MigrationResult, Migrate
          # enabled = false\n\
          # backend = \"local\"\n\
          # encrypt_payload = true\n\
+         # shared_db = false\n\
          # agent_turns = true\n\
          # orchestration = true\n\
          # scheduler = true\n\
@@ -619,6 +620,67 @@ pub fn migrate_durable_config(toml_src: &str) -> Result<MigrationResult, Migrate
         output,
         changed_count: 1,
         sections_changed: vec!["durable".to_owned()],
+    })
+}
+
+/// Adds a commented `# shared_db = false` advisory line to an existing active `[durable]` table
+/// that lacks the field: the operator-declared flag the INV-8 `encryption_gate` uses to forbid
+/// `encrypt_payload = false` on a multi-process/client journal database (#5996).
+///
+/// Purely additive with a safe default (`false`, matching current unflagged behavior) — no-op
+/// when `[durable]` is absent (covered by [`migrate_durable_config`] instead) or `shared_db`
+/// (active or commented) is already present.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the source is not valid TOML.
+pub fn migrate_durable_shared_db(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Anchored multiline pattern: matches `[durable]` with optional inline comment, followed by
+    // LF or CRLF. Does NOT match `[durable.retention]` so the replacement target stays aligned.
+    static DURABLE_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?m)^[ \t]*\[durable\][ \t]*(?:#[^\r\n]*)?\r?\n").expect("static pattern")
+    });
+
+    if !section_header_present(toml_src, "durable") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let already_present = toml_src.lines().any(|l| {
+        l.trim()
+            .trim_start_matches('#')
+            .trim()
+            .starts_with("shared_db")
+    });
+    if already_present || !DURABLE_HEADER_RE.is_match(toml_src) {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "# shared_db = false  # journal DB reachable by more than one process/client \
+        (INV-8 encryption_gate, #5996)\n";
+    let output = DURABLE_HEADER_RE
+        .replacen(toml_src, 1, |caps: &regex::Captures| {
+            format!("{}{comment}", &caps[0])
+        })
+        .into_owned();
+
+    let changed = output != toml_src;
+    let changed_count = usize::from(changed);
+    Ok(MigrationResult {
+        output,
+        changed_count,
+        sections_changed: if changed {
+            vec!["durable.shared_db".to_owned()]
+        } else {
+            Vec::new()
+        },
     })
 }
 

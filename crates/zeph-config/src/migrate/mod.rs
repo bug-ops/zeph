@@ -600,14 +600,14 @@ use steps::{
     MigrateAcpAuthClientsConfig, MigrateAcpSubagentsConfig, MigrateAgentBudgetHint,
     MigrateAgentRetryToToolsRetry, MigrateAutodreamConfig, MigrateCavemanConfig,
     MigrateCocoonProviderNotice, MigrateCocoonShowBalance, MigrateCompressionPredictorConfig,
-    MigrateDatabaseUrl, MigrateDeepLinkConfig, MigrateDurableConfig, MigrateEgressConfig,
-    MigrateEmbedProviderRename, MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults,
-    MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
-    MigrateGoalsConfig, MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig,
-    MigrateHooksTurnComplete, MigrateKnowledgeConfig, MigrateLlmStreamLimits,
-    MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
-    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryGraph,
-    MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
+    MigrateDatabaseUrl, MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableSharedDb,
+    MigrateEgressConfig, MigrateEmbedProviderRename, MigrateEvalModelToProvider,
+    MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow,
+    MigrateForgettingConfig, MigrateGoalsConfig, MigrateGonkagateToGonka,
+    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateKnowledgeConfig,
+    MigrateLlmStreamLimits, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
+    MigrateMcpMaxConnectAttempts, MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels,
+    MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
     MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
     MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
     MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateNliConfig,
@@ -765,6 +765,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateAcpAuthClientsConfig),
             // Step 78 — add [skills.registry] advisory block (spec-045, #5869)
             Box::new(MigrateSkillsRegistry),
+            // Step 79 — add shared_db = false advisory to an existing active [durable] table (#5996)
+            Box::new(MigrateDurableSharedDb),
         ]
     });
 

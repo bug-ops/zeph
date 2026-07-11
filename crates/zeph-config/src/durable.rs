@@ -57,6 +57,12 @@ pub struct DurableConfig {
     /// Encrypt payloads with AEAD. A `false` value is a development-only override (it emits a
     /// startup warning) and is forbidden for non-local backends (INV-8).
     pub encrypt_payload: bool,
+    /// Operator-declared flag: the durable journal database is reachable by more than one
+    /// process/client (a network-shared volume, or any future Postgres-backed durable
+    /// deployment). Required `true` for such deployments — enforced by `encryption_gate`
+    /// (INV-8), which forbids `encrypt_payload = false` when this is `true`. Default `false`
+    /// (an ordinary single-user local deployment).
+    pub shared_db: bool,
     /// P1 adapter: wrap agent-loop steps in durable steps.
     ///
     /// When `true` (with `enabled = true`), every ordinary agent turn's LLM call is journaled
@@ -99,6 +105,7 @@ impl Default for DurableConfig {
             enabled: false,
             backend: DurableBackend::Local,
             encrypt_payload: true,
+            shared_db: false,
             agent_turns: true,
             orchestration: true,
             scheduler: true,
@@ -167,6 +174,7 @@ mod tests {
         assert!(!cfg.enabled);
         assert_eq!(cfg.backend, DurableBackend::Local);
         assert!(cfg.encrypt_payload);
+        assert!(!cfg.shared_db);
         assert!(cfg.agent_turns);
         assert!(cfg.orchestration);
         assert!(cfg.scheduler);
@@ -214,5 +222,22 @@ mod tests {
         assert_eq!(cfg.journal_ack_timeout_ms, 5000);
         assert_eq!(cfg.retention.prune_batch_size, 999);
         assert_eq!(cfg.retention.ttl_completed_secs, 604_800);
+    }
+
+    /// Round-trips the INV-8 forbidden combination this issue's fix must reject at the
+    /// `encryption_gate` call site: `encrypt_payload = false` declared alongside `shared_db =
+    /// true`. This module only owns the pure data — the gate itself lives in `zeph-durable` — but
+    /// the config layer must still deserialize both fields correctly for the gate to see them.
+    #[test]
+    fn shared_db_and_disabled_encryption_round_trip_together() {
+        let cfg: DurableConfig = toml::from_str(
+            r"
+            encrypt_payload = false
+            shared_db = true
+            ",
+        )
+        .unwrap();
+        assert!(!cfg.encrypt_payload);
+        assert!(cfg.shared_db);
     }
 }

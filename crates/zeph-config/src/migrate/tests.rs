@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        78,
-        "MIGRATIONS registry must contain all 78 sequential steps"
+        79,
+        "MIGRATIONS registry must contain all 79 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1678,7 +1678,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 78);
+    assert_eq!(MIGRATIONS.len(), 79);
 }
 
 #[test]
@@ -1716,7 +1716,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–78).
+    // Names must follow the documented step order (steps 1–79).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1796,6 +1796,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_utility_high_gain_tools",
         "migrate_acp_auth_clients_config",
         "migrate_skills_registry",
+        "migrate_durable_shared_db",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -3759,5 +3760,77 @@ fn magic_docs_idempotent_on_own_output() {
         third.output.matches("# [magic_docs]").count(),
         1,
         "block must not accumulate across repeated runs"
+    );
+}
+
+// ── migrate_durable_shared_db tests (step 79, #5996) ─────────────────────
+
+#[test]
+fn step_79_adds_commented_advisory_when_durable_active_and_missing_field() {
+    let src = "[durable]\nenabled = true\nencrypt_payload = true\n";
+    let result = migrate_durable_shared_db(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# shared_db = false"));
+    assert!(!result.output.contains("\nshared_db ="));
+    assert!(result.output.contains("enabled = true"));
+    assert!(result.output.contains("encrypt_payload = true"));
+    assert_eq!(
+        result.sections_changed,
+        vec!["durable.shared_db".to_owned()]
+    );
+}
+
+#[test]
+fn step_79_noop_when_shared_db_already_present() {
+    let src = "[durable]\nenabled = true\nshared_db = true\n";
+    let result = migrate_durable_shared_db(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_79_noop_when_shared_db_comment_already_present() {
+    let src = "[durable]\nenabled = true\n# shared_db = false\n";
+    let result = migrate_durable_shared_db(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_79_noop_when_durable_section_absent() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_durable_shared_db(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_79_noop_when_durable_only_commented_advisory() {
+    let src = "# [durable]\n# enabled = false\n";
+    let result = migrate_durable_shared_db(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_79_does_not_match_durable_retention_subtable() {
+    let src = "[durable.retention]\nttl_completed_secs = 604800\n";
+    let result = migrate_durable_shared_db(src).expect("migrate");
+    assert_eq!(
+        result.changed_count, 0,
+        "[durable.retention] alone must not count as an active [durable] table"
+    );
+}
+
+#[test]
+fn step_79_idempotent_on_own_output() {
+    let src = "[durable]\nenabled = true\n";
+    let first = migrate_durable_shared_db(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_durable_shared_db(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
     );
 }

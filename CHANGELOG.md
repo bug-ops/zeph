@@ -7,6 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Security
 
+- `zeph-durable`/`zeph`: `zeph_durable::encryption_gate` (the documented INV-8 AEAD enforcement
+  policy) is now actually invoked at runtime — previously it was a unit-tested pure function that
+  no call site ever reached, so `src/commands/durable.rs::load_write_cipher` (the durable journal
+  write path) and `open_backend` (the `zeph durable` CLI read path, including `--reveal`) each
+  made their own cipher decision by checking only `[durable] encrypt_payload`, ignoring backend
+  and shared-database status entirely. A deployment with `encrypt_payload = false` on a durable
+  journal database reachable by more than one process/client (e.g. a shared volume, or a future
+  Postgres-backed deployment) would silently persist tool outputs and agent-turn state in
+  plaintext with zero warning and zero error (#5996). Both call sites now evaluate
+  `encryption_gate` before making the cipher decision: `encrypt_payload = false` combined with a
+  non-local backend or a shared database now fails closed with a hard error at startup / on the
+  CLI command, and the permitted single-user local override now emits the documented startup
+  `tracing::warn!`. Added a new `[durable] shared_db` config field (default `false`) so operators
+  can declare a shared-database deployment explicitly; a `postgres://`/`postgresql://` resolved
+  journal URL is also treated as shared automatically, as defense in depth. The TUI durable panel
+  poller (`durable_poll_task`, feature `tui`) now evaluates the same policy before opening the
+  journal — previously it bypassed the gate entirely, so the TUI panel could render a journal the
+  `zeph durable` CLI refused to open; a rejection now degrades gracefully to the panel's existing
+  "non-durable mode" state instead of erroring.
 - `zeph-commands`: 19 privileged slash-command handlers now override `requires_auth()` to
   return `true`, closing a trust-gate gap where they ran the default `false` and were therefore
   reachable from untrusted remote channels (Telegram/Discord/Slack) as well as trusted local

@@ -57,6 +57,16 @@ pub(super) fn step_durable(state: &mut WizardState) -> anyhow::Result<()> {
         DurableBackend::Local
     };
 
+    // INV-8 (encryption_gate, #5996): the gate forbids encrypt_payload = false whenever this
+    // deployment's journal database is reachable by more than one process/client.
+    state.durable.shared_db = Confirm::new()
+        .with_prompt(
+            "Is this durable journal database shared across multiple processes/containers \
+             (e.g. a network-shared volume, or a shared Postgres server)?",
+        )
+        .default(false)
+        .interact()?;
+
     let customize = Confirm::new()
         .with_prompt("Customize retention (TTL and size caps)?")
         .default(false)

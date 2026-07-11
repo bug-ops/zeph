@@ -1677,6 +1677,11 @@ backend = "local"
 # Encrypt payloads with AEAD. Disabling is a dev-only override (forbidden for
 # non-local backends and shared databases).
 encrypt_payload = true
+# Declare the durable journal database as reachable by more than one process/client
+# (a network-shared volume, or any future Postgres-backed durable deployment). Set
+# true for such deployments — the INV-8 encryption_gate forbids encrypt_payload =
+# false whenever this is true. Leave false for an ordinary single-user local setup.
+shared_db = false
 # Per-adapter opt-in (only take effect when enabled = true).
 agent_turns = true
 orchestration = true

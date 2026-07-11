@@ -73,6 +73,49 @@ fn fmt_ts(ms: i64) -> String {
     )
 }
 
+/// Whether the durable journal at `url` must be treated as a shared, multi-client database for
+/// the INV-8 AEAD gate (`zeph_durable::encryption_gate`).
+///
+/// Trusts the operator-declared `config.durable.shared_db` flag, but also recognizes a
+/// `postgres://`/`postgresql://` URL scheme as shared-by-construction — defense in depth so a
+/// future Postgres-backed `resolve_durable_db_url` is caught by the gate even before the flag is
+/// set for that deployment.
+fn is_shared_db(config: &zeph_core::config::DurableConfig, url: &str) -> bool {
+    config.shared_db || url.starts_with("postgres://") || url.starts_with("postgresql://")
+}
+
+/// Evaluate the INV-8 AEAD enforcement policy for the resolved durable journal `url` and emit the
+/// documented startup warning for the permitted `encrypt_payload = false` override.
+///
+/// Shared by every durable-journal entry point that opens a `LocalBackend` — the CLI write path
+/// ([`load_write_cipher`]), the CLI read path ([`open_backend`]), and the TUI durable panel poller
+/// (`durable_poll_task` in `tui_bridge.rs`) — so a misconfigured shared-DB deployment is rejected
+/// consistently regardless of which surface touches the journal first (#5996).
+///
+/// # Errors
+///
+/// Returns an error when [`zeph_durable::encryption_gate`] rejects the configuration (a
+/// non-local backend or a declared/detected shared database combined with `encrypt_payload =
+/// false`).
+pub(crate) fn enforce_encryption_gate(
+    config: &zeph_core::config::DurableConfig,
+    url: &str,
+) -> anyhow::Result<()> {
+    let shared_db = is_shared_db(config, url);
+    match zeph_durable::encryption_gate(config, shared_db) {
+        Ok(zeph_durable::EncryptionGate::Enabled) => Ok(()),
+        Ok(zeph_durable::EncryptionGate::DisabledLocalWarn) => {
+            tracing::warn!(
+                "durable: AEAD payload encryption is disabled (encrypt_payload = false); \
+                 journal payloads are stored in plaintext. This is a development-only override, \
+                 permitted only for a single-user local, non-shared database (INV-8)."
+            );
+            Ok(())
+        }
+        Err(e) => Err(anyhow::Error::new(e).context("durable execution security policy")),
+    }
+}
+
 /// Load the AEAD cipher from the vault-stored `ZEPH_DURABLE_KEY` for `--reveal`.
 fn load_durable_cipher() -> anyhow::Result<XChaCha20Poly1305Cipher> {
     let dir = zeph_core::vault::default_vault_dir();
@@ -88,6 +131,10 @@ fn load_durable_cipher() -> anyhow::Result<XChaCha20Poly1305Cipher> {
 /// Resolve the AEAD payload cipher to attach on a durable *write* path when
 /// `config.durable.encrypt_payload` is enabled (INV-5).
 ///
+/// First evaluates the INV-8 `encryption_gate` security policy: `encrypt_payload = false` is
+/// rejected outright on a non-local backend or a declared/detected shared database (#5996), and
+/// emits a startup `WARN` for the permitted single-user local override.
+///
 /// Returns `Ok(None)` when encryption is disabled — the documented dev-only override where
 /// payloads are stored as plaintext, so no cipher is attached and writes stay unchanged.
 /// Returns `Ok(Some(cipher))` when encryption is enabled and `ZEPH_DURABLE_KEY` resolves from
@@ -96,6 +143,9 @@ fn load_durable_cipher() -> anyhow::Result<XChaCha20Poly1305Cipher> {
 pub(crate) fn load_write_cipher(
     config: &Config,
 ) -> anyhow::Result<Option<Arc<dyn zeph_durable::PayloadCipher>>> {
+    let url = resolve_durable_db_url(config);
+    enforce_encryption_gate(&config.durable, &url)?;
+
     if !config.durable.encrypt_payload {
         return Ok(None);
     }
@@ -108,10 +158,17 @@ pub(crate) fn load_write_cipher(
 /// documented dev-only override), stored payloads are already plaintext, so `--reveal` must not
 /// require `ZEPH_DURABLE_KEY` to be present in the vault.
 ///
+/// First evaluates the INV-8 `encryption_gate` security policy (see [`enforce_encryption_gate`]):
+/// a declared/detected shared database with `encrypt_payload = false` is rejected on this read
+/// path too — reading a plaintext journal on a shared database is still the forbidden state the
+/// gate exists to reject, regardless of whether the read is via a write path or `--reveal`
+/// (#5996). The permitted single-user local override still emits a startup `WARN` and proceeds.
+///
 /// Returns `Ok(None)` when no journal file exists yet (a friendly signal that durable execution has
 /// not run on this deployment), so the caller can print guidance instead of creating an empty file.
 async fn open_backend(config: &Config, reveal: bool) -> anyhow::Result<Option<LocalBackend>> {
     let url = resolve_durable_db_url(config);
+    enforce_encryption_gate(&config.durable, &url)?;
     if url != ":memory:" && !Path::new(&url).exists() {
         println!(
             "No durable journal at {url}.\n\
@@ -534,6 +591,37 @@ mod tests {
         assert!(backend.is_some());
     }
 
+    /// Regression for #5996 (critic finding S2): `open_backend` — the `zeph durable`
+    /// CLI read path shared by `list`/`show`/`inspect`/`prune`/`resume`/`--reveal` — must reject
+    /// `encrypt_payload = false` combined with a declared `shared_db = true`, the same INV-8
+    /// forbidden combination `load_write_cipher` rejects on the write path. Without this test the
+    /// `enforce_encryption_gate(&config.durable, &url)?` line in `open_backend` could be silently
+    /// deleted with the rest of the suite still green.
+    #[tokio::test]
+    async fn open_backend_rejects_disabled_encryption_when_shared_db_declared() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.memory.sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+        config.durable.encrypt_payload = false;
+        config.durable.shared_db = true;
+
+        let url = resolve_durable_db_url(&config);
+        std::fs::write(&url, []).unwrap();
+
+        let result = open_backend(&config, false).await;
+        assert!(
+            result.is_err(),
+            "open_backend must fail closed for encrypt_payload=false on a declared shared_db (INV-8)"
+        );
+
+        // Also rejected on the --reveal path, before any decryption is even attempted.
+        let reveal_result = open_backend(&config, true).await;
+        assert!(
+            reveal_result.is_err(),
+            "open_backend --reveal must fail closed for the same forbidden combination"
+        );
+    }
+
     /// Regression for #5404: `--reveal` must still require `ZEPH_DURABLE_KEY` when
     /// `encrypt_payload = true` (the default, encrypted-at-rest posture).
     #[allow(unsafe_code)]
@@ -680,5 +768,57 @@ mod tests {
             EntryKind::StepResult { payload, .. } => assert_eq!(payload.as_ref(), plaintext),
             other => panic!("unexpected entry kind: {other:?}"),
         }
+    }
+
+    /// Regression for #5996: `encrypt_payload = false` combined with a declared `shared_db =
+    /// true` must fail closed via the INV-8 `encryption_gate`, instead of silently persisting
+    /// plaintext journal payloads to a multi-client database.
+    #[tokio::test]
+    async fn load_write_cipher_rejects_disabled_encryption_when_shared_db_declared() {
+        let mut config = Config::default();
+        config.durable.encrypt_payload = false;
+        config.durable.shared_db = true;
+        assert!(
+            load_write_cipher(&config).is_err(),
+            "encrypt_payload=false on a declared shared_db must fail closed (INV-8)"
+        );
+    }
+
+    /// Regression for #5996: the documented dev-only override (`encrypt_payload = false` on an
+    /// ordinary single-user local, non-shared database) must still succeed — the gate only warns.
+    #[tokio::test]
+    async fn load_write_cipher_warns_but_succeeds_for_undeclared_local_override() {
+        let mut config = Config::default();
+        config.durable.encrypt_payload = false;
+        // shared_db left at its default (false) - the permitted dev-only override.
+        assert!(load_write_cipher(&config).unwrap().is_none());
+    }
+
+    /// Regression for #5996: `is_shared_db` recognizes a `postgres://`/`postgresql://` URL scheme
+    /// as shared-by-construction even when the operator has not (yet) set `shared_db = true` —
+    /// defense in depth for a future Postgres-backed `resolve_durable_db_url`.
+    #[test]
+    fn is_shared_db_detects_postgres_url_scheme_even_when_flag_unset() {
+        let config = zeph_core::config::DurableConfig::default();
+        assert!(!config.shared_db);
+        assert!(is_shared_db(&config, "postgres://user@host/db"));
+        assert!(is_shared_db(&config, "postgresql://user@host/db"));
+        assert!(!is_shared_db(&config, "/local/path/durable.db"));
+    }
+
+    /// Regression for #5996: a `postgres://`-scheme URL combined with `encrypt_payload = false`
+    /// must fail closed via `load_write_cipher` even though `shared_db` was never explicitly set
+    /// — the URL-scheme detection in [`is_shared_db`] is defense in depth, not the primary signal.
+    #[tokio::test]
+    async fn load_write_cipher_rejects_disabled_encryption_for_postgres_url_scheme() {
+        let mut config = Config::default();
+        config.durable.encrypt_payload = false;
+        // memory.sqlite_path drives resolve_durable_db_url; a `postgres://`-looking value
+        // exercises the URL-scheme branch of `is_shared_db` without needing a real Postgres build.
+        config.memory.sqlite_path = "postgres://user@host/db".to_owned();
+        assert!(
+            load_write_cipher(&config).is_err(),
+            "a postgres:// resolved URL must be treated as shared even without shared_db=true"
+        );
     }
 }
