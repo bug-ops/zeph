@@ -39,7 +39,13 @@ use crate::scheduler_executor::SchedulerExecutor;
 #[cfg(feature = "scheduler")]
 struct ExperimentTaskHandler {
     config: zeph_core::config::ExperimentConfig,
+    /// Subject provider under test.
     provider: Arc<AnyProvider>,
+    /// Judge provider used to score the subject's outputs. Resolved from
+    /// `[experiments] eval_provider` (falling back to the subject provider when unset) so the
+    /// judge is independent from the subject, matching the interactive `/experiment` command
+    /// and `--experiment-run` CLI flag — see #5947.
+    eval_provider: Arc<AnyProvider>,
     memory: Option<Arc<SemanticMemory>>,
     /// Clone of the scheduler's shutdown watch receiver for shutdown propagation.
     shutdown_rx: watch::Receiver<bool>,
@@ -77,6 +83,7 @@ impl TaskHandler for ExperimentTaskHandler {
             run_config.max_wall_time_secs = self.config.schedule.max_wall_time_secs;
 
             let provider = Arc::clone(&self.provider);
+            let eval_provider = Arc::clone(&self.eval_provider);
             let memory = self.memory.clone();
             let running = Arc::clone(&self.running);
             let mut shutdown_watcher = self.shutdown_rx.clone();
@@ -107,9 +114,8 @@ impl TaskHandler for ExperimentTaskHandler {
                     return;
                 };
 
-                let judge = Arc::clone(&provider);
                 let evaluator =
-                    match Evaluator::new(judge, benchmark, run_config.eval_budget_tokens) {
+                    match Evaluator::new(eval_provider, benchmark, run_config.eval_budget_tokens) {
                         Ok(e) => e,
                         Err(e) => {
                             tracing::warn!("experiment task: evaluator init failed: {e}");
@@ -258,6 +264,15 @@ pub(crate) fn load_config_tasks(
     }
 }
 
+/// Dependencies needed to register the scheduled experiment task: the subject provider under
+/// test, the judge (eval) provider used to score it, and optional memory for persisting results.
+#[cfg(feature = "scheduler")]
+pub(crate) type ExperimentDeps = (
+    Arc<AnyProvider>,
+    Arc<AnyProvider>,
+    Option<Arc<SemanticMemory>>,
+);
+
 /// Scheduler init result: executor plus optional channel receivers for agent wiring.
 #[cfg(feature = "scheduler")]
 pub(crate) struct SchedulerInitResult {
@@ -276,7 +291,7 @@ pub(crate) struct SchedulerInitResult {
 pub(crate) async fn init_scheduler(
     config: &Config,
     shutdown_rx: watch::Receiver<bool>,
-    experiment_deps: Option<(Arc<AnyProvider>, Option<Arc<SemanticMemory>>)>,
+    experiment_deps: Option<ExperimentDeps>,
     five_signal: Option<Arc<FiveSignalRuntime>>,
     supervisor: Option<&zeph_common::TaskSupervisor>,
 ) -> Option<SchedulerInitResult> {
@@ -324,11 +339,12 @@ pub(crate) async fn init_scheduler(
     // Register experiment handler when both features are enabled and schedule is configured.
     if config.experiments.enabled
         && config.experiments.schedule.enabled
-        && let Some((exp_provider, exp_memory)) = experiment_deps
+        && let Some((exp_provider, exp_eval_provider, exp_memory)) = experiment_deps
     {
         let handler = ExperimentTaskHandler {
             config: config.experiments.clone(),
             provider: exp_provider,
+            eval_provider: exp_eval_provider,
             memory: exp_memory,
             shutdown_rx: shutdown_rx_for_experiments,
             running: Arc::new(AtomicBool::new(false)),
@@ -463,7 +479,7 @@ pub(crate) async fn bootstrap_scheduler<C>(
     agent: zeph_core::agent::Agent<C>,
     config: &Config,
     shutdown_rx: watch::Receiver<bool>,
-    experiment_deps: Option<(Arc<AnyProvider>, Option<Arc<SemanticMemory>>)>,
+    experiment_deps: Option<ExperimentDeps>,
     five_signal: Option<Arc<FiveSignalRuntime>>,
     supervisor: Option<&zeph_common::TaskSupervisor>,
 ) -> (zeph_core::agent::Agent<C>, Option<SchedulerExecutor>)
@@ -525,7 +541,7 @@ where
     (agent, Some(result.executor))
 }
 
-#[cfg(all(test, feature = "scheduler", feature = "testing"))]
+#[cfg(all(test, feature = "scheduler"))]
 mod tests {
     use tokio::sync::mpsc;
     use zeph_core::config::{ScheduledTaskConfig, ScheduledTaskKind};
@@ -585,6 +601,79 @@ mod tests {
         assert!(
             executor_opt.is_some(),
             "expected Some(SchedulerExecutor) when scheduler is enabled"
+        );
+    }
+
+    /// Regression test for #5947: the judge (`eval_provider`) and subject (`provider`) must be
+    /// distinct provider instances that both actually get invoked during a scheduled experiment
+    /// run. Pre-fix, `ExperimentTaskHandler` only held one `provider` field used for both roles,
+    /// so a second, distinct eval provider would never see any calls — exactly what this test
+    /// guards against by asserting both mock recorders captured traffic.
+    #[tokio::test]
+    async fn experiment_task_handler_uses_distinct_eval_provider() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use tokio::sync::watch;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_scheduler::TaskHandler;
+
+        use super::ExperimentTaskHandler;
+
+        // Minimal 1-case benchmark so `execute()` doesn't bail out early on a missing file.
+        let benchmark_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            benchmark_file.path(),
+            "[[cases]]\nprompt = \"What is 6x7?\"\nreference = \"42\"\n",
+        )
+        .unwrap();
+
+        let (subject_provider, subject_recorder) =
+            MockProvider::with_responses(vec!["42".into()]).with_recording();
+        let (judge_provider, judge_recorder) =
+            MockProvider::with_responses(vec![r#"{"score": 8.0, "reason": "correct"}"#.into()])
+                .with_recording();
+
+        let mut config = zeph_core::config::ExperimentConfig {
+            benchmark_file: Some(benchmark_file.path().to_path_buf()),
+            ..Default::default()
+        };
+        config.schedule.max_experiments_per_run = 1;
+
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handler = ExperimentTaskHandler {
+            config,
+            provider: Arc::new(AnyProvider::Mock(subject_provider)),
+            eval_provider: Arc::new(AnyProvider::Mock(judge_provider)),
+            memory: None,
+            shutdown_rx,
+            running: Arc::new(AtomicBool::new(false)),
+        };
+
+        handler
+            .execute(&serde_json::Value::Null)
+            .await
+            .expect("execute() itself only spawns the run; it must not error synchronously");
+
+        // The actual run happens in a background tokio::spawn; poll for completion.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while handler.running.load(Ordering::Acquire) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "experiment run did not complete within 5s"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        assert!(
+            !subject_recorder.lock().unwrap().is_empty(),
+            "subject provider must have been called for generation"
+        );
+        assert!(
+            !judge_recorder.lock().unwrap().is_empty(),
+            "eval_provider (judge) must have been called for scoring — if this is empty, \
+             the judge and subject collapsed back to the same provider (the #5947 regression)"
         );
     }
 

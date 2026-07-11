@@ -270,8 +270,12 @@ pub async fn daemon_status(
     let store = crate::store::JobStore::open(store_url).await?;
     store.init().await?;
 
-    let jobs = store.list_jobs_full().await?;
+    let mut jobs = store.list_jobs_full().await?;
     let task_count = jobs.len();
+
+    // Sort by last_run descending (never-run jobs sort last) so `recent_runs` actually
+    // reflects recency rather than the alphabetical order returned by list_jobs_full.
+    jobs.sort_by(|a, b| b.last_run.cmp(&a.last_run));
 
     let recent_runs: Vec<TaskRunSummary> = jobs
         .into_iter()
@@ -279,7 +283,7 @@ pub async fn daemon_status(
         .map(|j| TaskRunSummary {
             name: j.name,
             mode: j.task_mode,
-            last_run: String::new(), // store does not expose last_run yet; extend in follow-up
+            last_run: j.last_run.unwrap_or_default(),
             next_run: j.next_run,
             status: j.status,
         })
@@ -375,5 +379,64 @@ mod tests {
         let cfg = test_cfg();
         assert!(cfg.tick_secs >= 5);
         assert!(cfg.shutdown_grace_secs >= 1);
+    }
+
+    /// `daemon_status` must order `recent_runs` by `last_run` descending (most recent first),
+    /// with never-run tasks sorted last, and must populate `last_run` from the DB instead of
+    /// leaving it empty (issue #6096).
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn daemon_status_orders_recent_runs_by_last_run_desc() {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let db_path = db_file.path().to_str().unwrap().to_owned();
+
+        let store = crate::store::JobStore::open(&db_path).await.unwrap();
+        store.init().await.unwrap();
+
+        // Use real Utc::now()-derived RFC3339 timestamps (with `+00:00` offset, matching
+        // production `record_run` callers) rather than hand-written `Z`-suffixed literals, so
+        // the test exercises the actual runtime timestamp format.
+        let now = chrono::Utc::now();
+        let older_ts = (now - chrono::Duration::days(200)).to_rfc3339();
+        let newer_ts = (now - chrono::Duration::days(10)).to_rfc3339();
+
+        store
+            .upsert_job("older", "0 * * * * *", "health_check")
+            .await
+            .unwrap();
+        store
+            .record_run("older", &older_ts, "2026-01-02T00:00:00Z")
+            .await
+            .unwrap();
+
+        store
+            .upsert_job("newer", "0 * * * * *", "health_check")
+            .await
+            .unwrap();
+        store
+            .record_run("newer", &newer_ts, "2026-06-02T00:00:00Z")
+            .await
+            .unwrap();
+
+        store
+            .upsert_job("never_run", "0 * * * * *", "health_check")
+            .await
+            .unwrap();
+
+        let cfg = test_cfg();
+        let status = super::daemon_status(&cfg, &db_path, 10).await.unwrap();
+
+        let names: Vec<&str> = status.recent_runs.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["newer", "older", "never_run"],
+            "recent_runs must be ordered by last_run descending, never-run last"
+        );
+        assert_eq!(status.recent_runs[0].last_run, newer_ts);
+        assert_eq!(status.recent_runs[1].last_run, older_ts);
+        assert_eq!(
+            status.recent_runs[2].last_run, "",
+            "never-run task must report empty last_run"
+        );
     }
 }

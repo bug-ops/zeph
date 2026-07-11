@@ -2612,7 +2612,16 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "scheduler")]
     let provider_for_experiments =
         if config.experiments.enabled && config.experiments.schedule.enabled {
-            Some(std::sync::Arc::new(provider.clone()))
+            // Resolve a dedicated eval (judge) provider so scheduled runs are not self-judged
+            // by the subject model — mirrors the interactive `/experiment` command and
+            // `--experiment-run` CLI flag, both of which call `app.build_eval_provider()` (#5947).
+            let eval_provider = app
+                .build_eval_provider()
+                .unwrap_or_else(|| provider.clone());
+            Some((
+                std::sync::Arc::new(provider.clone()),
+                std::sync::Arc::new(eval_provider),
+            ))
         } else {
             None
         };
@@ -3269,7 +3278,8 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let agent = if exec_mode.bare {
         agent
     } else {
-        let exp_deps = provider_for_experiments.map(|p| (p, Some(std::sync::Arc::clone(&memory))));
+        let exp_deps = provider_for_experiments
+            .map(|(subject, eval)| (subject, eval, Some(std::sync::Arc::clone(&memory))));
         let five_signal = memory.five_signal_runtime();
         let (agent, sched_executor) = Box::pin(bootstrap_scheduler(
             agent,

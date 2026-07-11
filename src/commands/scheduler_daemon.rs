@@ -254,7 +254,15 @@ fn print_status_human(status: &zeph_scheduler::DaemonStatus) {
     if !status.recent_runs.is_empty() {
         println!("last runs:");
         for run in &status.recent_runs {
-            println!("  {:<24} next: {}", run.name, run.next_run);
+            let last_run = if run.last_run.is_empty() {
+                "never"
+            } else {
+                run.last_run.as_str()
+            };
+            println!(
+                "  {:<24} last: {:<25} next: {}",
+                run.name, last_run, run.next_run
+            );
         }
     }
 }

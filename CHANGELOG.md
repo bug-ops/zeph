@@ -27,6 +27,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     (#6095). Added a `base_url` field defaulting to Discord's real API base plus a
     `#[cfg(test)]` `with_base_url` constructor, and added wiremock tests confirming
     `send_message`, `edit_message`, and `trigger_typing` each retry transparently on a 429.
+- `zeph-scheduler`: fixed three independent bugs surfaced by live-testing (#6096, #5950, #5947).
+  - `daemon_status()`'s `recent_runs` was alphabetically ordered (`ORDER BY name`) instead of
+    recency-ordered, and `last_run` was hardcoded to an empty string despite the database
+    tracking it — `zeph status --json` and the TUI `/daemon status` command presented a "recent
+    runs" list that was neither recent nor informative. `ScheduledTaskInfo` now carries
+    `last_run`, `list_jobs_full` selects it, and `daemon_status` sorts by `last_run` descending
+    (never-run jobs last) before truncating to `recent_n`; the CLI printer renders `last:`
+    alongside `next:` (#6096).
+  - `TaskProvenance::is_external()` was dead code — every RTW-A reentry-defense mechanism gated
+    on `!= TaskProvenance::Static`, collapsing the documented three-tier trust model
+    (`Static`/`UserAdded`/`External`) into a binary one. The injection-pattern-check mechanism
+    now applies unconditionally to `External`-provenance tasks regardless of the
+    `injection_pattern_check` config toggle, while `UserAdded` still respects the toggle,
+    giving `External` genuinely stricter handling without weakening the existing baseline for
+    either tier (#5950).
+  - Scheduled/cron experiment runs used the primary agent provider as both judge and subject,
+    silently defeating the self-judge-bias mitigation that `[experiments] eval_provider` exists
+    to provide — the interactive `/experiment` command and `--experiment-run` CLI flag already
+    resolved a distinct judge via `build_eval_provider()`, but the scheduler path never did.
+    `ExperimentTaskHandler` now resolves `eval_provider` the same way, falling back to the
+    primary provider only when unset (#5947).
 - `zeph-core`: removed two blocking-I/O sites from the async agent turn loop (#6020, #6029).
   - `rebuild_system_prompt` called `project::discover_project_configs`/`load_project_context`
     directly on every turn — a filesystem walk from cwd to the root plus a `read_to_string`

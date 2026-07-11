@@ -68,6 +68,8 @@ pub struct ScheduledTaskInfo {
     pub status: String,
     /// RTW-A provenance tag: `"static"`, `"user_added"`, or `"external"`.
     pub provenance: String,
+    /// Last recorded run time (RFC 3339), or `None` if the task has never run.
+    pub last_run: Option<String>,
 }
 
 /// Persistent storage layer for scheduled jobs.
@@ -417,17 +419,36 @@ impl JobStore {
     #[tracing::instrument(name = "sched.store.list_jobs_full", skip_all, err)]
     pub async fn list_jobs_full(&self) -> Result<Vec<ScheduledTaskInfo>, SchedulerError> {
         #[allow(clippy::type_complexity)]
-        let rows: Vec<(String, String, String, String, Option<String>, String, String, String)> =
-            zeph_db::query_as(sql!(
-                "SELECT name, kind, task_mode, cron_expr, COALESCE(next_run, run_at), task_data, status, provenance \
-                 FROM scheduled_jobs WHERE status != 'done' ORDER BY name"
-            ))
-            .fetch_all(&self.pool)
-            .await?;
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            String,
+            Option<String>,
+        )> = zeph_db::query_as(sql!(
+            "SELECT name, kind, task_mode, cron_expr, COALESCE(next_run, run_at), task_data, status, provenance, last_run \
+             FROM scheduled_jobs WHERE status != 'done' ORDER BY name"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows
             .into_iter()
             .map(
-                |(name, kind, task_mode, raw_cron, next_run, task_data, status, provenance)| {
+                |(
+                    name,
+                    kind,
+                    task_mode,
+                    raw_cron,
+                    next_run,
+                    task_data,
+                    status,
+                    provenance,
+                    last_run,
+                )| {
                     // Empty string = oneshot task (no cron). Non-empty = validate eagerly.
                     let cron_expr = if raw_cron.is_empty() {
                         None
@@ -453,6 +474,7 @@ impl JobStore {
                         task_data,
                         status,
                         provenance,
+                        last_run,
                     }
                 },
             )
@@ -668,6 +690,15 @@ mod tests {
             .await
             .unwrap();
 
+        store
+            .record_run(
+                "periodic_job",
+                "2026-01-01T00:00:00Z",
+                "2026-01-02T00:00:00Z",
+            )
+            .await
+            .unwrap();
+
         let jobs = store.list_jobs_full().await.unwrap();
         assert_eq!(jobs.len(), 2);
 
@@ -678,12 +709,21 @@ mod tests {
             periodic.cron_expr.as_ref().map(CronExpr::as_str),
             Some("0 0 3 * * *")
         );
+        assert_eq!(
+            periodic.last_run.as_deref(),
+            Some("2026-01-01T00:00:00Z"),
+            "last_run must reflect the timestamp recorded by record_run"
+        );
 
         let oneshot = jobs.iter().find(|j| j.name == "oneshot_job").unwrap();
         assert_eq!(oneshot.kind, "custom");
         assert_eq!(oneshot.task_mode, "oneshot");
         assert!(oneshot.cron_expr.is_none());
         assert_eq!(oneshot.next_run, "2030-01-01T10:00:00Z");
+        assert_eq!(
+            oneshot.last_run, None,
+            "a task that has never run must report last_run = None"
+        );
     }
 
     #[tokio::test]

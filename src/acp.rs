@@ -1007,7 +1007,14 @@ async fn build_acp_deps(
             use std::sync::Arc;
             if config.experiments.enabled && config.experiments.schedule.enabled {
                 let p = provider.clone();
-                Some((Arc::new(p), Some(Arc::clone(&memory))))
+                // Resolve a dedicated eval (judge) provider so scheduled runs are not
+                // self-judged by the subject model — see #5947.
+                let eval_provider = app.build_eval_provider().unwrap_or_else(|| p.clone());
+                Some((
+                    Arc::new(p),
+                    Arc::new(eval_provider),
+                    Some(Arc::clone(&memory)),
+                ))
             } else {
                 None
             }
