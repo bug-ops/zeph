@@ -9,7 +9,7 @@
 
 use regex::Regex;
 
-use super::{MigrateError, MigrationResult};
+use super::{MigrateError, MigrationResult, insert_after_section};
 
 /// Regex matching the `[tui]` section header line (used by step 67).
 static TUI_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
@@ -298,6 +298,11 @@ pub fn migrate_autodream_config(toml_src: &str) -> Result<MigrationResult, Migra
 
 /// Add a commented-out `[magic_docs]` block if absent (#2702).
 ///
+/// Idempotent: skipped when an active `magic_docs` key is present, or when this step's own
+/// prior commented output (`# [magic_docs]`) is already present — `doc.contains_key` alone only
+/// recognizes an active key, so without the second check this step re-appended the block on
+/// every subsequent run (#5945).
+///
 /// # Errors
 ///
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
@@ -306,7 +311,8 @@ pub fn migrate_magic_docs_config(toml_src: &str) -> Result<MigrationResult, Migr
 
     let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
 
-    if doc.contains_key("magic_docs") {
+    let commented_present = toml_src.lines().any(|l| l.trim() == "# [magic_docs]");
+    if doc.contains_key("magic_docs") || commented_present {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -339,12 +345,20 @@ pub fn migrate_magic_docs_config(toml_src: &str) -> Result<MigrationResult, Migr
 /// Existing configs that omit this key pick up `true` via `#[serde(default)]`, so this
 /// migration is informational — it surfaces the new option without changing behaviour.
 ///
+/// Uses `insert_after_section` rather than an exact `"[orchestration]\n"` substring match, so
+/// insertion still succeeds when the header line carries trailing content (e.g. an inline
+/// comment from another step) instead of being followed immediately by a newline. The report
+/// only claims success when `output` actually differs from `toml_src` — `String::replacen`
+/// silently returns the input unchanged when its pattern isn't found, and blindly trusting it
+/// produced a false "added" report on every run without ever writing anything (#5945).
+///
 /// # Errors
 ///
 /// Returns [`MigrateError`] if the TOML document cannot be parsed.
 pub fn migrate_orchestration_persistence(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    // Skip if the key is already present (active or commented).
-    if toml_src.contains("persistence_enabled") || toml_src.contains("# persistence_enabled") {
+    // Skip if the key is already present — `contains` is a substring search, so this already
+    // matches both the active key and this step's own commented output (`# persistence_enabled`).
+    if toml_src.contains("persistence_enabled") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -361,14 +375,21 @@ pub fn migrate_orchestration_persistence(toml_src: &str) -> Result<MigrationResu
         });
     }
 
-    // Insert the commented key right after the `[orchestration]` header line.
-    let comment = "# persistence_enabled = true  \
+    let comment = "\n# persistence_enabled = true  \
         # persist task graphs to SQLite after each tick; enables `/plan resume <id>` (#3107)\n";
-    let output = toml_src.replacen(
-        "[orchestration]\n",
-        &format!("[orchestration]\n{comment}"),
-        1,
-    );
+    let output = insert_after_section(toml_src, "orchestration", comment);
+    // Defensive: the guards above already guarantee `[orchestration]` is present and
+    // `insert_after_section` always inserts non-empty content when reached, so this is
+    // currently unreachable — kept so a future change to either guard can't silently
+    // regress into reporting a change that didn't happen (the original defect, #5945).
+    if output == toml_src {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
     Ok(MigrationResult {
         output,
         changed_count: 1,
@@ -729,15 +750,22 @@ pub fn migrate_tui_theme_config(toml_src: &str) -> Result<MigrationResult, Migra
 /// Advisory only: the migration is informational — it surfaces the new option without
 /// changing behaviour. Skipped when the key is already present or `[orchestration]` is absent.
 ///
+/// Uses `insert_after_section` rather than an exact `"[orchestration]\n"` substring match, so
+/// insertion still succeeds when the header line carries trailing content (e.g. an inline
+/// comment from another step) instead of being followed immediately by a newline. The report
+/// only claims success when `output` actually differs from `toml_src` — `String::replacen`
+/// silently returns the input unchanged when its pattern isn't found, and blindly trusting it
+/// produced a false "added" report on every run without ever writing anything (#5945).
+///
 /// # Errors
 ///
 /// Returns [`MigrateError`] if the TOML document cannot be parsed.
 pub fn migrate_orchestration_asset_sensitivity(
     toml_src: &str,
 ) -> Result<MigrationResult, MigrateError> {
-    if toml_src.contains("default_asset_sensitivity")
-        || toml_src.contains("# default_asset_sensitivity")
-    {
+    // `contains` is a substring search, so this already matches both the active key and this
+    // step's own commented output (`# default_asset_sensitivity`).
+    if toml_src.contains("default_asset_sensitivity") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -753,13 +781,21 @@ pub fn migrate_orchestration_asset_sensitivity(
         });
     }
 
-    let comment = "# default_asset_sensitivity = \"public\"  \
+    let comment = "\n# default_asset_sensitivity = \"public\"  \
         # advisory asset sensitivity: public | internal | confidential (spec-068, #3934)\n";
-    let output = toml_src.replacen(
-        "[orchestration]\n",
-        &format!("[orchestration]\n{comment}"),
-        1,
-    );
+    let output = insert_after_section(toml_src, "orchestration", comment);
+    // Defensive: the guards above already guarantee `[orchestration]` is present and
+    // `insert_after_section` always inserts non-empty content when reached, so this is
+    // currently unreachable — kept so a future change to either guard can't silently
+    // regress into reporting a change that didn't happen (the original defect, #5945).
+    if output == toml_src {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
     Ok(MigrationResult {
         output,
         changed_count: 1,

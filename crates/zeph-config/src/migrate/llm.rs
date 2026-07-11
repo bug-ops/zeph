@@ -1147,12 +1147,23 @@ pub fn migrate_cocoon_show_balance(toml_src: &str) -> Result<MigrationResult, Mi
 /// All three fields carry compile-time defaults that reproduce pre-existing behavior, so
 /// existing deployments that skip the section are unaffected.
 ///
+/// Idempotent: `section_header_present` only recognizes an *active* header, so it never
+/// matches this step's own prior output (a commented `# [llm.stream_limits]` header) — an
+/// explicit line check for the commented form is required to avoid re-appending the block
+/// on every subsequent run (#5945).
+///
 /// # Errors
 ///
 /// This function is infallible in practice; the `Result` return type matches the
 /// migration function convention for use in chained pipelines.
 pub fn migrate_llm_stream_limits(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if section_header_present(toml_src, "llm.stream_limits") || !toml_src.contains("[llm]") {
+    let commented_present = toml_src
+        .lines()
+        .any(|l| l.trim() == "# [llm.stream_limits]");
+    if section_header_present(toml_src, "llm.stream_limits")
+        || commented_present
+        || !toml_src.contains("[llm]")
+    {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,

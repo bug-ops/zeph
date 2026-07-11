@@ -57,6 +57,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   matching the documented v1 scope boundary in `zeph-subagent/src/durable.rs`, and now logs a
   `tracing::warn!` at that fallback so the residual duplicate-spawn window is observable rather
   than silent (tracked as a known v1 limitation in #6010).
+- `fix(config)`: `--migrate-config --in-place` no longer duplicates advisory comment blocks or
+  falsely reports changes on repeated runs (#5945). `migrate_llm_stream_limits` (#4750) and the
+  two `[memory.hebbian]` splice steps (HL-F3/F4 #3345, HL-F5 #3346) guarded their idempotency by
+  checking for an *uncommented* field, but each step only ever writes a *commented* advisory
+  block — so the guard never matched the step's own prior output and re-appended the identical
+  block on every run. Guards now recognize the commented form they themselves write.
+  Separately, `migrate_orchestration_persistence` (#3107) and
+  `migrate_orchestration_asset_sensitivity` (spec-068, #3934) matched an exact
+  `"[orchestration]\n"` substring via `String::replacen` and unconditionally reported
+  `changed_count: 1` regardless of whether the replacement actually happened — `replacen`
+  silently no-ops when the pattern isn't found, so a header not immediately followed by a bare
+  newline caused a false "added" report on every run without ever writing anything. Both now
+  insert via the existing `insert_after_section` helper and only report a change when the output
+  actually differs from the input. Two same-defect-class siblings found during review are fixed
+  alongside these: `migrate_memory_hebbian_config` (HL-F1/F2, #3344) required an exact
+  `[memory.hebbian]` line match that fails against the header actually shipped in
+  `config/default.toml` (which carries a trailing inline comment), so it wrongly concluded the
+  section was absent and appended a duplicate block on the first run — this also blocked
+  `migrate_memory_hebbian_consolidation_config`/`migrate_memory_hebbian_spread_config` from ever
+  engaging against the real shipped config, since they shared the same exact-match precondition;
+  and `migrate_magic_docs_config` (#2702), which had the identical "guard checks for an
+  uncommented key the step never writes" defect as bug 1 above.
 - `fix(commands)`: `/mcp` and `/plugins` now require a trusted (local) session, closing an
   unauthenticated remote code execution path (#5997, CWE-284). `McpCommand` and `PluginsCommand`
   previously left `requires_auth()` at its default `false`, so Telegram/Discord/Slack/gateway

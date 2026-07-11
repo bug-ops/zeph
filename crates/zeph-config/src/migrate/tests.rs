@@ -1695,19 +1695,18 @@ fn registry_names_are_unique_and_non_empty() {
 
 #[test]
 fn registry_is_idempotent_on_empty_input() {
-    // Migrations that append comment blocks cannot be idempotent by design:
-    // comment text is not parsed as TOML keys, so presence checks always fail.
-    const COMMENT_ONLY: &[&str] = &["migrate_magic_docs_config"];
-
+    // `migrate_magic_docs_config` used to be excluded here under the assumption that a step
+    // which only ever appends a commented block cannot be idempotent (comment text is not
+    // parsed as TOML keys, so a presence check against parsed keys always fails). That
+    // assumption was wrong: the fix is to additionally check for the step's own commented
+    // output as plain text, the same pattern `migrate_skills_registry` and the other steps
+    // fixed for #5945 use — no exclusion needed once that's in place.
     let mut toml = String::new();
     for m in MIGRATIONS.iter() {
         let result = m.apply(&toml).expect("registry migration must not fail");
         toml = result.output;
     }
     for m in MIGRATIONS.iter() {
-        if COMMENT_ONLY.contains(&m.name()) {
-            continue;
-        }
         let result = m
             .apply(&toml)
             .expect("registry migration must not fail on second pass");
@@ -3444,5 +3443,321 @@ fn step_74_idempotent_on_own_output() {
     assert_eq!(
         second.output, first.output,
         "output unchanged on second run"
+    );
+}
+
+// ── migrate_llm_stream_limits idempotency regression (#4750, #5945) ──
+//
+// The guard previously used `section_header_present`, which by design returns `false` for a
+// *commented* header — so the step never recognized its own prior output and re-appended the
+// block on every subsequent run.
+
+#[test]
+fn stream_limits_injects_commented_block_when_llm_section_present() {
+    let src = "[llm]\nprovider = \"ollama\"\n";
+    let result = migrate_llm_stream_limits(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# [llm.stream_limits]"));
+    assert_eq!(result.sections_changed, vec!["llm.stream_limits"]);
+}
+
+#[test]
+fn stream_limits_noop_when_llm_section_absent() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_llm_stream_limits(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn stream_limits_idempotent_on_own_output() {
+    let src = "[llm]\nprovider = \"ollama\"\n";
+    let first = migrate_llm_stream_limits(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_llm_stream_limits(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
+    );
+    let third = migrate_llm_stream_limits(&second.output).expect("third migrate");
+    assert_eq!(third.changed_count, 0, "third run must also be a no-op");
+    assert_eq!(
+        third.output.matches("[llm.stream_limits]").count(),
+        1,
+        "block must not accumulate across repeated runs"
+    );
+}
+
+// ── migrate_memory_hebbian_consolidation_config idempotency regression (HL-F3/F4, #3345, #5945) ──
+//
+// The guard checked `l.trim().starts_with("consolidation_interval_secs")`, but the step's own
+// prior output is commented (`# consolidation_interval_secs = ...`), so the check never matched
+// and the block re-accumulated on every subsequent run.
+
+#[test]
+fn hebbian_consolidation_injects_fields_when_section_present() {
+    let src = "[memory.hebbian]\nenabled = true\n";
+    let result = migrate_memory_hebbian_consolidation_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("HL-F3/F4 consolidation fields"));
+}
+
+#[test]
+fn hebbian_consolidation_noop_when_section_absent() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_memory_hebbian_consolidation_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn hebbian_consolidation_idempotent_on_own_output() {
+    let src = "[memory.hebbian]\nenabled = true\n";
+    let first = migrate_memory_hebbian_consolidation_config(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second =
+        migrate_memory_hebbian_consolidation_config(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    let third = migrate_memory_hebbian_consolidation_config(&second.output).expect("third migrate");
+    assert_eq!(third.changed_count, 0, "third run must also be a no-op");
+    assert_eq!(
+        third
+            .output
+            .matches("HL-F3/F4 consolidation fields")
+            .count(),
+        1,
+        "block must not accumulate across repeated runs"
+    );
+}
+
+// ── migrate_memory_hebbian_spread_config idempotency regression (HL-F5, #3346, #5945) ──
+//
+// Same defect shape as the consolidation step above: the guard checked
+// `l.trim().starts_with("spreading_activation")`, which never matches the step's own commented
+// output.
+
+#[test]
+fn hebbian_spread_injects_fields_when_section_present() {
+    let src = "[memory.hebbian]\nenabled = true\n";
+    let result = migrate_memory_hebbian_spread_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("HL-F5 spreading-activation fields"));
+}
+
+#[test]
+fn hebbian_spread_noop_when_section_absent() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_memory_hebbian_spread_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn hebbian_spread_idempotent_on_own_output() {
+    let src = "[memory.hebbian]\nenabled = true\n";
+    let first = migrate_memory_hebbian_spread_config(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_memory_hebbian_spread_config(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    let third = migrate_memory_hebbian_spread_config(&second.output).expect("third migrate");
+    assert_eq!(third.changed_count, 0, "third run must also be a no-op");
+    assert_eq!(
+        third
+            .output
+            .matches("HL-F5 spreading-activation fields")
+            .count(),
+        1,
+        "block must not accumulate across repeated runs"
+    );
+}
+
+// ── migrate_orchestration_persistence idempotency regression (#3107, #5945) ──
+//
+// The step used `toml_src.replacen("[orchestration]\n", ..., 1)`, an exact-substring match that
+// silently no-ops when the header line is followed by anything other than a bare newline, while
+// `changed_count` was unconditionally reported as 1 regardless of whether the replacement
+// actually happened.
+
+#[test]
+fn orchestration_persistence_injects_key_when_section_present() {
+    let src = "[orchestration]\nenabled = true\n";
+    let result = migrate_orchestration_persistence(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("persistence_enabled"));
+    assert_eq!(
+        result.sections_changed,
+        vec!["orchestration.persistence_enabled"]
+    );
+}
+
+#[test]
+fn orchestration_persistence_noop_when_no_orchestration_section() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_orchestration_persistence(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn orchestration_persistence_noop_when_key_already_present() {
+    let src = "[orchestration]\npersistence_enabled = true\n";
+    let result = migrate_orchestration_persistence(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn orchestration_persistence_idempotent_on_own_output() {
+    let src = "[orchestration]\nenabled = true\n";
+    let first = migrate_orchestration_persistence(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_orchestration_persistence(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
+    );
+}
+
+#[test]
+fn orchestration_persistence_detects_and_skips_header_without_trailing_newline() {
+    // Simulates the header being immediately followed by other inserted content instead of a
+    // bare newline (e.g. another step's inline comment glued onto the header line). The old
+    // exact-match `replacen` would silently no-op here while still reporting `changed_count: 1`.
+    let src = "[orchestration]# some other advisory comment\nenabled = true\n";
+    let result = migrate_orchestration_persistence(src).expect("migrate");
+    assert_ne!(
+        result.output, src,
+        "output must actually change when changed_count is reported as 1"
+    );
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("persistence_enabled"));
+
+    // Running again over the actually-mutated output must be a true no-op.
+    let second = migrate_orchestration_persistence(&result.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0);
+    assert_eq!(second.output, result.output);
+}
+
+// ── migrate_orchestration_asset_sensitivity idempotency regression (spec-068, #3934, #5945) ──
+//
+// Same defect shape as `migrate_orchestration_persistence` above.
+
+#[test]
+fn orchestration_asset_sensitivity_detects_and_skips_header_without_trailing_newline() {
+    let src = "[orchestration]# some other advisory comment\nenabled = true\n";
+    let result = migrate_orchestration_asset_sensitivity(src).expect("migrate");
+    assert_ne!(
+        result.output, src,
+        "output must actually change when changed_count is reported as 1"
+    );
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("default_asset_sensitivity"));
+
+    // Running again over the actually-mutated output must be a true no-op.
+    let second = migrate_orchestration_asset_sensitivity(&result.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0);
+    assert_eq!(second.output, result.output);
+}
+
+// ── migrate_memory_hebbian_config idempotency regression (HL-F1/F2, #3344, #5945) ──
+//
+// The no-op guard required an exact `l.trim() == "[memory.hebbian]"` line match, but the header
+// in the shipped `config/default.toml` carries a trailing inline comment
+// (`[memory.hebbian]  # HL-F1/F2 (#3344) ...`), so the guard never recognized it as present and
+// appended a duplicate commented block on the first run. This also gated
+// `migrate_memory_hebbian_consolidation_config` / `migrate_memory_hebbian_spread_config`, whose
+// own `has_section` precondition used the identical exact-line match — both never engaged
+// against the real shipped config.
+
+#[test]
+fn hebbian_base_injects_block_when_section_absent() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_memory_hebbian_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("[memory.hebbian]"));
+    assert_eq!(result.sections_changed, vec!["memory.hebbian"]);
+}
+
+#[test]
+fn hebbian_base_noop_when_active_header_has_trailing_inline_comment() {
+    // Mirrors the real config/default.toml header shape.
+    let src = "[memory.hebbian]                       # HL-F1/F2 (#3344) Hebbian edge reinforcement\nenabled = true\n";
+    let result = migrate_memory_hebbian_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn hebbian_base_idempotent_on_own_output() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let first = migrate_memory_hebbian_config(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_memory_hebbian_config(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    let third = migrate_memory_hebbian_config(&second.output).expect("third migrate");
+    assert_eq!(third.changed_count, 0, "third run must also be a no-op");
+    assert_eq!(
+        third.output.matches("HL-F1/F2").count(),
+        1,
+        "block must not accumulate across repeated runs"
+    );
+}
+
+#[test]
+fn hebbian_consolidation_and_spread_engage_against_real_default_toml_header_shape() {
+    // Regression for the precondition bug: both steps used to require an exact
+    // `l.trim() == "[memory.hebbian]"` match, which fails against a header carrying a trailing
+    // inline comment — the shape actually shipped in config/default.toml.
+    let src = "[memory.hebbian]                       # HL-F1/F2 (#3344) Hebbian edge reinforcement\nenabled = true\n";
+    let consolidation = migrate_memory_hebbian_consolidation_config(src).expect("migrate");
+    assert_eq!(
+        consolidation.changed_count, 1,
+        "consolidation step must engage when the header carries a trailing inline comment"
+    );
+    let spread = migrate_memory_hebbian_spread_config(src).expect("migrate");
+    assert_eq!(
+        spread.changed_count, 1,
+        "spread step must engage when the header carries a trailing inline comment"
+    );
+}
+
+// ── migrate_magic_docs_config idempotency regression (#2702, #5945) ──
+//
+// The guard checked `doc.contains_key("magic_docs")` on the re-parsed document, but the step
+// only ever writes a *commented* `# [magic_docs]` block, which is never a parsed table key — so
+// the guard was always false on the next run and the block duplicated on every subsequent run.
+
+#[test]
+fn magic_docs_injects_block_when_absent() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_magic_docs_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# [magic_docs]"));
+    assert_eq!(result.sections_changed, vec!["magic_docs"]);
+}
+
+#[test]
+fn magic_docs_noop_when_active_key_present() {
+    let src = "[magic_docs]\nenabled = true\n";
+    let result = migrate_magic_docs_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn magic_docs_idempotent_on_own_output() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let first = migrate_magic_docs_config(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_magic_docs_config(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    let third = migrate_magic_docs_config(&second.output).expect("third migrate");
+    assert_eq!(third.changed_count, 0, "third run must also be a no-op");
+    assert_eq!(
+        third.output.matches("# [magic_docs]").count(),
+        1,
+        "block must not accumulate across repeated runs"
     );
 }

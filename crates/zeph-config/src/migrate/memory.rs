@@ -7,7 +7,7 @@
 //! the [`Migration`](super::Migration) trait, and the [`MIGRATIONS`](super::MIGRATIONS)
 //! registry remain in the parent module.
 
-use super::{MigrateError, MigrationResult, insert_after_section};
+use super::{MigrateError, MigrationResult, insert_after_section, section_header_present};
 
 /// Add a commented-out `[memory.forgetting]` section if absent (#2397).
 ///
@@ -281,18 +281,19 @@ pub fn migrate_memory_reasoning_judge_config(
 
 /// Append a commented-out `[memory.hebbian]` block to `toml_src` when it is absent (HL-F1/F2, #3344).
 ///
-/// Idempotent: if a `[memory.hebbian]` or `# [memory.hebbian]` line already exists,
-/// the input is returned unchanged with `changed_count = 0`.
+/// Idempotent: skipped when an active `[memory.hebbian]` header is present — via
+/// `section_header_present`, which tolerates a trailing inline comment (the shipped
+/// `config/default.toml` header reads `[memory.hebbian]  # HL-F1/F2 (#3344) ...`, which an exact
+/// `l.trim() == "[memory.hebbian]"` line match fails to recognize, #5945) — or when this step's
+/// own prior commented output (`# [memory.hebbian]`) is already present.
 ///
 /// # Errors
 ///
 /// This function is infallible in practice; the `Result` return type matches the migration
 /// function convention for use in chained pipelines.
 pub fn migrate_memory_hebbian_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src
-        .lines()
-        .any(|l| l.trim() == "[memory.hebbian]" || l.trim() == "# [memory.hebbian]")
-    {
+    let commented_present = toml_src.lines().any(|l| l.trim() == "# [memory.hebbian]");
+    if section_header_present(toml_src, "memory.hebbian") || commented_present {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -327,7 +328,11 @@ pub fn migrate_memory_hebbian_config(toml_src: &str) -> Result<MigrationResult, 
 pub fn migrate_memory_hebbian_consolidation_config(
     toml_src: &str,
 ) -> Result<MigrationResult, MigrateError> {
-    let has_section = toml_src.lines().any(|l| l.trim() == "[memory.hebbian]");
+    // `section_header_present` tolerates a trailing inline comment on the header line — an
+    // exact `l.trim() == "[memory.hebbian]"` match fails against the shipped
+    // `config/default.toml` header (`[memory.hebbian]  # HL-F1/F2 (#3344) ...`), which meant
+    // this step never engaged against the project's own real config (#5945).
+    let has_section = section_header_present(toml_src, "memory.hebbian");
 
     if !has_section {
         return Ok(MigrationResult {
@@ -337,16 +342,22 @@ pub fn migrate_memory_hebbian_consolidation_config(
         });
     }
 
-    // Check if all consolidation fields already present (active or commented).
-    let has_interval = toml_src
-        .lines()
-        .any(|l| l.trim().starts_with("consolidation_interval_secs"));
-    let has_threshold = toml_src
-        .lines()
-        .any(|l| l.trim().starts_with("consolidation_threshold"));
-    let has_provider = toml_src
-        .lines()
-        .any(|l| l.trim().starts_with("consolidate_provider"));
+    // Check if all consolidation fields already present (active or commented). The step's
+    // own prior output is always commented (`# consolidation_interval_secs = ...`), so the
+    // leading `#` must be stripped before the prefix check — otherwise this guard never
+    // matches its own output and the block duplicates on every subsequent run (#5945).
+    let has_field = |field: &str| {
+        toml_src.lines().any(|l| {
+            let trimmed = l.trim();
+            trimmed
+                .strip_prefix('#')
+                .map_or(trimmed, str::trim_start)
+                .starts_with(field)
+        })
+    };
+    let has_interval = has_field("consolidation_interval_secs");
+    let has_threshold = has_field("consolidation_threshold");
+    let has_provider = has_field("consolidate_provider");
 
     if has_interval && has_threshold && has_provider {
         return Ok(MigrationResult {
@@ -387,7 +398,11 @@ pub fn migrate_memory_hebbian_consolidation_config(
 pub fn migrate_memory_hebbian_spread_config(
     toml_src: &str,
 ) -> Result<MigrationResult, MigrateError> {
-    let has_section = toml_src.lines().any(|l| l.trim() == "[memory.hebbian]");
+    // `section_header_present` tolerates a trailing inline comment on the header line — an
+    // exact `l.trim() == "[memory.hebbian]"` match fails against the shipped
+    // `config/default.toml` header (`[memory.hebbian]  # HL-F1/F2 (#3344) ...`), which meant
+    // this step never engaged against the project's own real config (#5945).
+    let has_section = section_header_present(toml_src, "memory.hebbian");
 
     if !has_section {
         return Ok(MigrationResult {
@@ -397,19 +412,23 @@ pub fn migrate_memory_hebbian_spread_config(
         });
     }
 
-    // Check if all HL-F5 fields are already present (active or commented).
-    let has_spreading = toml_src
-        .lines()
-        .any(|l| l.trim().starts_with("spreading_activation"));
-    let has_depth = toml_src
-        .lines()
-        .any(|l| l.trim().starts_with("spread_depth"));
-    let has_budget = toml_src
-        .lines()
-        .any(|l| l.trim().starts_with("step_budget_ms"));
-    let has_embed_timeout = toml_src
-        .lines()
-        .any(|l| l.trim().starts_with("embed_timeout_secs"));
+    // Check if all HL-F5 fields are already present (active or commented). The step's own
+    // prior output is always commented (`# spreading_activation = ...`), so the leading `#`
+    // must be stripped before the prefix check — otherwise this guard never matches its own
+    // output and the block duplicates on every subsequent run (#5945).
+    let has_field = |field: &str| {
+        toml_src.lines().any(|l| {
+            let trimmed = l.trim();
+            trimmed
+                .strip_prefix('#')
+                .map_or(trimmed, str::trim_start)
+                .starts_with(field)
+        })
+    };
+    let has_spreading = has_field("spreading_activation");
+    let has_depth = has_field("spread_depth");
+    let has_budget = has_field("step_budget_ms");
+    let has_embed_timeout = has_field("embed_timeout_secs");
 
     if has_spreading && has_depth && has_budget && has_embed_timeout {
         return Ok(MigrationResult {
