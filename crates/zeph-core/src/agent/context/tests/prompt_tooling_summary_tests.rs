@@ -275,6 +275,36 @@ async fn rebuild_system_prompt_volatile_marker_at_block3_boundary() {
     );
 }
 
+/// Regression test for #6020: project config discovery/loading was moved to
+/// `spawn_blocking`. Verify the feature still works end-to-end — a `ZEPH.md` in the
+/// working directory must still be injected into the assembled system prompt.
+#[tokio::test]
+async fn rebuild_system_prompt_includes_project_config_from_working_dir() {
+    use zeph_skills::registry::SkillRegistry;
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = SkillRegistry::default();
+    let executor = MockToolExecutor::no_tools();
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("ZEPH.md"), "# Project rules\nUse tabs.")
+        .expect("write ZEPH.md");
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    agent.services.session.env_context.working_dir = dir.path().display().to_string();
+    agent.rebuild_system_prompt("test query").await;
+
+    let prompt = &agent.msg.messages[0].content;
+    assert!(
+        prompt.contains("<project_context>"),
+        "project context block must be present when ZEPH.md exists in cwd"
+    );
+    assert!(
+        prompt.contains("Use tabs."),
+        "ZEPH.md content must be included in the system prompt"
+    );
+}
+
 // --- build_metadata_summary robustness ---
 
 #[test]

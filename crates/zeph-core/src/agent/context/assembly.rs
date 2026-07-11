@@ -868,8 +868,16 @@ impl<C: Channel> Agent<C> {
             "" | "unknown" => std::env::current_dir().unwrap_or_default(),
             dir => PathBuf::from(dir),
         };
-        let project_configs = crate::project::discover_project_configs(&cwd);
-        let project_context = crate::project::load_project_context(&project_configs);
+        let cwd_for_project = cwd.clone();
+        let project_context = tokio::task::spawn_blocking(move || {
+            let project_configs = crate::project::discover_project_configs(&cwd_for_project);
+            crate::project::load_project_context(&project_configs)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "project config discovery task panicked");
+            String::new()
+        });
         if !project_context.is_empty() {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&project_context);

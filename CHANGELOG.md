@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+
+- `zeph-core`: removed two blocking-I/O sites from the async agent turn loop (#6020, #6029).
+  - `rebuild_system_prompt` called `project::discover_project_configs`/`load_project_context`
+    directly on every turn — a filesystem walk from cwd to the root plus a `read_to_string`
+    per discovered config, executed synchronously on the async worker thread. Now offloaded
+    via `tokio::task::spawn_blocking`, mirroring the existing `generate_repo_map` pattern in
+    the same function (#6020).
+  - `DebugDumper::write` (backing `dump_request`/`dump_response`/`dump_tool_output`/
+    `dump_tool_error`/`dump_focus_knowledge`) called `fs_secure::write_private` synchronously
+    from the LLM dispatch and tool-execution hot paths. It's now fire-and-forget via
+    `spawn_blocking` — callers never waited on the write result, so no signature changes
+    were needed at any call site. Dump methods reachable only from synchronous contexts
+    (`dump_anchored_summary`, `dump_compaction_probe`, `dump_sidequest_eviction`, and the two
+    test-only pruning dumps) keep the original synchronous write and are tracked as a
+    follow-up.
+
 ### Security
 
 - `zeph-mcp`: `PinningOAuthHttpClient` (#6074) resolved, SSRF-validated, and DNS-pinned

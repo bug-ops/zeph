@@ -1075,8 +1075,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn json_and_raw_formats_still_write_files() {
+    #[tokio::test]
+    async fn json_and_raw_formats_still_write_files() {
         use crate::debug_dump::{DebugDumper, DumpFormat, RequestDebugDump};
 
         let tmp = tempdir().unwrap();
@@ -1096,10 +1096,18 @@ mod tests {
                 .find(|e| e.file_type().is_ok_and(|t| t.is_dir()))
                 .unwrap()
                 .path();
-            assert!(
-                session_dir.join("0000-request.json").exists(),
-                "request file must exist for format {fmt:?}"
-            );
+            // write() now offloads to spawn_blocking and is fire-and-forget (#6029), so poll
+            // rather than asserting the file exists immediately.
+            let request_path = session_dir.join("0000-request.json");
+            let mut written = false;
+            for _ in 0..200 {
+                if request_path.exists() {
+                    written = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert!(written, "request file must exist for format {fmt:?}");
         }
     }
 }

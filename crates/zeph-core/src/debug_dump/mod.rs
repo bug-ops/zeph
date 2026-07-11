@@ -79,7 +79,39 @@ impl DebugDumper {
         self.counter.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// Offload the write to the blocking thread pool. Fire-and-forget: the returned
+    /// `JoinHandle` is intentionally dropped — callers never wait on debug dump I/O, and a
+    /// failed write is only logged, never propagated (this is an opt-in debugging aid, not a
+    /// correctness-critical path). Dropping the handle does not cancel the task; it still runs
+    /// to completion on the blocking pool.
+    ///
+    /// Requires an active Tokio runtime. Used only by dump methods reachable from the async
+    /// per-turn hot path (#6029); call sites reachable from synchronous contexts (e.g. a plain
+    /// `Fn` callback) must use [`Self::write_sync`] instead.
     fn write(&self, filename: &str, content: &[u8]) {
+        let path = self.dir.join(filename);
+        let content = content.to_vec();
+        // Ask-First exception to rust-code.md's Await Discipline rule #2 ("fire-and-forget
+        // tasks MUST be tracked, never drop a JoinHandle"): this handle is deliberately
+        // dropped, untracked. Rationale: this is a debug-only diagnostic path (opt-in,
+        // disabled by default), write failures are already logged via `tracing::warn!` below
+        // and never need to surface to a caller, and routing it through `BackgroundSupervisor`
+        // would require threading a `&mut BackgroundSupervisor` through 5 otherwise-unrelated
+        // hot-path call sites (llm_dispatch.rs, tool_result.rs, tier_loop.rs, focus.rs,
+        // state/mod.rs) for a debug feature most users never enable — judged disproportionate
+        // for this fix. Recorded here per the exception clause in
+        // .claude/rules/continuous-improvement.md rather than left as a silent deviation.
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = zeph_common::fs_secure::write_private(&path, &content) {
+                tracing::warn!(path = %path.display(), error = %e, "debug dump write failed");
+            }
+        });
+    }
+
+    /// Synchronous write, used by dump methods invoked from non-async call sites (a plain
+    /// `Fn` callback, or test-only code paths not reachable from the agent turn loop). These are
+    /// out of scope for the #6029 hot-path fix — see the issue for the tracked follow-up.
+    fn write_sync(&self, filename: &str, content: &[u8]) {
         let path = self.dir.join(filename);
         if let Err(e) = zeph_common::fs_secure::write_private(&path, content) {
             tracing::warn!(path = %path.display(), error = %e, "debug dump write failed");
@@ -146,7 +178,7 @@ impl DebugDumper {
             })
             .collect();
         match serde_json::to_string_pretty(&serde_json::json!({ "scores": payload })) {
-            Ok(json) => self.write(&format!("{id:04}-pruning-scores.json"), json.as_bytes()),
+            Ok(json) => self.write_sync(&format!("{id:04}-pruning-scores.json"), json.as_bytes()),
             Err(e) => tracing::warn!("dump_pruning_scores: serialize failed: {e}"),
         }
     }
@@ -186,7 +218,7 @@ impl DebugDumper {
             "fallback": fallback,
         });
         match serde_json::to_string_pretty(&payload) {
-            Ok(json) => self.write(&format!("{id:04}-anchored-summary.json"), json.as_bytes()),
+            Ok(json) => self.write_sync(&format!("{id:04}-anchored-summary.json"), json.as_bytes()),
             Err(e) => tracing::warn!("dump_anchored_summary: serialize failed: {e}"),
         }
     }
@@ -246,7 +278,7 @@ impl DebugDumper {
         });
         match serde_json::to_string_pretty(&payload) {
             Ok(json) => {
-                self.write(&format!("{id:04}-compaction-probe.json"), json.as_bytes());
+                self.write_sync(&format!("{id:04}-compaction-probe.json"), json.as_bytes());
             }
             Err(e) => tracing::warn!("dump_compaction_probe: serialize failed: {e}"),
         }
@@ -297,7 +329,9 @@ impl DebugDumper {
             "freed_tokens": freed_tokens,
         });
         match serde_json::to_string_pretty(&payload) {
-            Ok(json) => self.write(&format!("{id:04}-sidequest-eviction.json"), json.as_bytes()),
+            Ok(json) => {
+                self.write_sync(&format!("{id:04}-sidequest-eviction.json"), json.as_bytes());
+            }
             Err(e) => tracing::warn!("dump_sidequest_eviction: serialize failed: {e}"),
         }
     }
@@ -331,7 +365,7 @@ impl DebugDumper {
                 );
             }
         }
-        self.write(&format!("{id:04}-subgoal-registry.txt"), output.as_bytes());
+        self.write_sync(&format!("{id:04}-subgoal-registry.txt"), output.as_bytes());
     }
 
     /// Dump a tool error with error classification for debugging transient/permanent failures.
@@ -637,19 +671,31 @@ mod tests {
         }]
     }
 
-    fn read_request_dump(dir: &Path) -> serde_json::Value {
+    /// Polls for the dump file rather than reading it immediately: `write()` now offloads to
+    /// `spawn_blocking` and is fire-and-forget (#6029), so the file may not exist yet the
+    /// instant `dump_request` returns.
+    async fn read_request_dump(dir: &Path) -> serde_json::Value {
         let session = std::fs::read_dir(dir)
             .unwrap()
             .next()
             .unwrap()
             .unwrap()
             .path();
-        serde_json::from_str(&std::fs::read_to_string(session.join("0000-request.json")).unwrap())
-            .unwrap()
+        let path = session.join("0000-request.json");
+        for _ in 0..200 {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                return serde_json::from_str(&content).unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!(
+            "debug dump file not written within timeout: {}",
+            path.display()
+        );
     }
 
-    #[test]
-    fn json_dump_request_includes_request_metadata() {
+    #[tokio::test]
+    async fn json_dump_request_includes_request_metadata() {
         let dir = tempdir().unwrap();
         let dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
         let messages = sample_messages();
@@ -669,7 +715,7 @@ mod tests {
             memcot_state: None,
         });
 
-        let payload = read_request_dump(dir.path());
+        let payload = read_request_dump(dir.path()).await;
         assert_eq!(payload["model"], "claude-sonnet-test");
         assert_eq!(payload["max_tokens"], 4096);
         assert_eq!(payload["tools"][0]["name"], "read_file");
@@ -678,8 +724,8 @@ mod tests {
         assert_eq!(payload["messages"][1]["content"], "hello");
     }
 
-    #[test]
-    fn raw_dump_request_includes_request_metadata() {
+    #[tokio::test]
+    async fn raw_dump_request_includes_request_metadata() {
         let dir = tempdir().unwrap();
         let dumper = DebugDumper::new(dir.path(), DumpFormat::Raw).unwrap();
         let messages = sample_messages();
@@ -700,7 +746,7 @@ mod tests {
             memcot_state: None,
         });
 
-        let payload = read_request_dump(dir.path());
+        let payload = read_request_dump(dir.path()).await;
         assert_eq!(payload["model"], "gpt-5-mini");
         assert_eq!(payload["max_tokens"], 2048);
         assert_eq!(payload["tools"][0]["function"]["name"], "read_file");
@@ -708,8 +754,8 @@ mod tests {
         assert_eq!(payload["messages"][0]["content"], "hello");
     }
 
-    #[test]
-    fn memcot_state_written_to_dump_when_present() {
+    #[tokio::test]
+    async fn memcot_state_written_to_dump_when_present() {
         for fmt in [DumpFormat::Json, DumpFormat::Raw] {
             let dir = tempdir().unwrap();
             let dumper = DebugDumper::new(dir.path(), fmt).unwrap();
@@ -724,7 +770,7 @@ mod tests {
                 memcot_state: Some("Rust uses LLVM; user is refactoring the parser"),
             });
 
-            let payload = read_request_dump(dir.path());
+            let payload = read_request_dump(dir.path()).await;
             assert_eq!(
                 payload["memcot_state"], "Rust uses LLVM; user is refactoring the parser",
                 "memcot_state must appear in {fmt:?} dump"
@@ -732,8 +778,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn memcot_state_null_when_absent() {
+    #[tokio::test]
+    async fn memcot_state_null_when_absent() {
         let dir = tempdir().unwrap();
         let dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
         let messages = sample_messages();
@@ -747,10 +793,43 @@ mod tests {
             memcot_state: None,
         });
 
-        let payload = read_request_dump(dir.path());
+        let payload = read_request_dump(dir.path()).await;
         assert!(
             payload["memcot_state"].is_null(),
             "memcot_state must be null when None"
         );
+    }
+
+    /// Smoke test for #6029: `dump_request` returns promptly and the write still lands
+    /// afterward. NOT a strict regression guard — a revert to a synchronous single-file write
+    /// would typically also complete in 1-3ms on a tmpfs-backed tempdir and would still pass
+    /// the 50ms budget below. The write path isn't injectable/mockable here, so a tighter
+    /// assertion (e.g. proving the write is dispatched to a *different* thread than the
+    /// caller) isn't practical without adding test-only instrumentation to `DebugDumper`. Keep
+    /// this as a coarse sanity check plus the file-existence check below, not proof of
+    /// non-blocking behavior.
+    #[tokio::test]
+    async fn dump_request_smoke_returns_promptly_and_write_still_lands() {
+        let dir = tempdir().unwrap();
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
+        let messages = sample_messages();
+        let tools = sample_tools();
+
+        let start = std::time::Instant::now();
+        let _ = dumper.dump_request(&RequestDebugDump {
+            model_name: "test-model",
+            messages: &messages,
+            tools: &tools,
+            provider_request: serde_json::json!({ "model": "test-model", "max_tokens": 1024 }),
+            memcot_state: None,
+        });
+        // Coarse budget only (see doc comment above) — not a strict non-blocking proof.
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(50),
+            "dump_request must return without waiting on the blocking write"
+        );
+
+        // The write still completes shortly afterward (fire-and-forget, not dropped).
+        let _ = read_request_dump(dir.path()).await;
     }
 }
