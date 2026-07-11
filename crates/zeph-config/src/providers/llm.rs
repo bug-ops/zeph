@@ -449,6 +449,7 @@ impl LlmConfig {
     /// # Errors
     ///
     /// Returns `ConfigError::Validation` when the referenced STT provider does not exist.
+    #[must_use = "validation result must be checked"]
     pub fn validate_stt(&self) -> Result<(), crate::error::ConfigError> {
         use crate::error::ConfigError;
 

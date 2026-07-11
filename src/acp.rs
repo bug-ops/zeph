@@ -4280,7 +4280,11 @@ mod tests {
 
     #[test]
     fn acp_provider_names_empty_providers_returns_empty_vec() {
-        let config = zeph_core::config::Config::default();
+        // `Config::default()` now seeds one provider so `--dump-config-defaults` output
+        // stays self-consistent with `validate_pool` (#5932 critic follow-up) — clear it
+        // explicitly to exercise the empty-providers branch.
+        let mut config = zeph_core::config::Config::default();
+        config.llm.providers.clear();
         assert!(acp_provider_names(&config).is_empty());
     }
 

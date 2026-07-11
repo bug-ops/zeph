@@ -7,7 +7,7 @@
 //! the [`Migration`](super::Migration) trait, and the [`MIGRATIONS`](super::MIGRATIONS)
 //! registry remain in the parent module.
 
-use super::{MigrateError, MigrationResult};
+use super::{MigrateError, MigrationResult, section_header_present};
 
 /// Migrate `[[mcp.servers]]` entries to add `trust_level = "trusted"` for any entry
 /// that lacks an explicit `trust_level`.
@@ -79,12 +79,20 @@ pub fn migrate_mcp_trust_levels(toml_src: &str) -> Result<MigrationResult, Migra
 ///
 /// All elicitation fields have `#[serde(default)]` so existing configs parse without changes.
 ///
+/// Idempotent: the guard for the anchor section checks for an *active* `[mcp]` header via
+/// [`section_header_present`], not a naive substring match on `"[mcp]\n"` — the latter also
+/// matches inside a commented `# [mcp]` header (e.g. the stub the `ConfigMigrator` catch-all
+/// pass writes when the whole section is absent), which would splice this step's advisory
+/// comment into the middle of that commented block on a later run instead of staying a no-op
+/// (#6018).
+///
 /// # Errors
 ///
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
 pub fn migrate_mcp_elicitation_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    // Idempotency: check for any elicitation key presence.
-    if toml_src.contains("elicitation_enabled") || toml_src.contains("# elicitation_enabled") {
+    // Idempotency: the written form is always commented, so a plain substring check catches
+    // both the active and commented form of the key.
+    if toml_src.contains("elicitation_enabled") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -92,17 +100,10 @@ pub fn migrate_mcp_elicitation_config(toml_src: &str) -> Result<MigrationResult,
         });
     }
 
-    // Only inject under an existing [mcp] section.
-    if !toml_src.contains("[mcp]") {
-        return Ok(MigrationResult {
-            output: toml_src.to_owned(),
-            changed_count: 0,
-            sections_changed: Vec::new(),
-        });
-    }
-
-    // Guard against configs that have `[mcp]` but with Windows line endings or at EOF.
-    if !toml_src.contains("[mcp]\n") {
+    // Only inject under an active [mcp] section. Also guards against Windows line endings
+    // or `[mcp]` at EOF, where the literal `"[mcp]\n"` anchor used by `replacen` below
+    // would not match.
+    if !section_header_present(toml_src, "mcp") || !toml_src.contains("[mcp]\n") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -130,6 +131,11 @@ pub fn migrate_mcp_elicitation_config(toml_src: &str) -> Result<MigrationResult,
 /// configs omit it and get the default value of `3`. This migration surfaces the key
 /// as a comment so users can discover and tune it.
 ///
+/// Idempotent: the anchor guard requires an *active* `[mcp]` header via
+/// [`section_header_present`] rather than a naive substring match on `"[mcp]\n"`, which
+/// would also match inside a commented `# [mcp]` header (#6018, same defect shape as
+/// [`migrate_mcp_elicitation_config`]).
+///
 /// # Errors
 ///
 /// Returns `Ok` with unchanged output when the key is already present or `[mcp]` is absent.
@@ -142,7 +148,7 @@ pub fn migrate_mcp_max_connect_attempts(toml_src: &str) -> Result<MigrationResul
         });
     }
 
-    if !toml_src.contains("[mcp]\n") {
+    if !section_header_present(toml_src, "mcp") || !toml_src.contains("[mcp]\n") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -167,6 +173,11 @@ pub fn migrate_mcp_max_connect_attempts(toml_src: &str) -> Result<MigrationResul
 /// Both keys have `#[serde(default)]` and require no user action; this migration surfaces them
 /// so operators can discover and tune the new retry and per-call timeout settings.
 ///
+/// Idempotent: the anchor guard requires an *active* `[mcp]` header via
+/// [`section_header_present`] rather than a naive substring match on `"[mcp]\n"`, which
+/// would also match inside a commented `# [mcp]` header (#6018, same defect shape as
+/// [`migrate_mcp_elicitation_config`]).
+///
 /// # Errors
 ///
 /// Returns `Ok` with unchanged output when either key is already present or `[mcp]` is absent.
@@ -174,7 +185,10 @@ pub fn migrate_mcp_retry_and_tool_timeout(toml_src: &str) -> Result<MigrationRes
     let has_backoff = toml_src.contains("startup_retry_backoff_ms");
     let has_timeout = toml_src.contains("tool_timeout_secs");
 
-    if (has_backoff && has_timeout) || !toml_src.contains("[mcp]\n") {
+    if (has_backoff && has_timeout)
+        || !section_header_present(toml_src, "mcp")
+        || !toml_src.contains("[mcp]\n")
+    {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,

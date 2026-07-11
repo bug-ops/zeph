@@ -1357,6 +1357,28 @@ fn migrate_mcp_elicitation_skips_without_trailing_newline() {
     assert_eq!(result.output, src);
 }
 
+#[test]
+fn migrate_mcp_elicitation_skips_on_commented_mcp_header() {
+    // A commented `# [mcp]` header (e.g. written by the ConfigMigrator catch-all pass
+    // when the whole section was absent) must not be treated as an active section —
+    // a naive substring check on "[mcp]\n" would match inside it and splice the
+    // advisory comment into the middle of the commented block (#6018).
+    let src = "# [mcp]\n# allowed_commands = []\n";
+    let result = migrate_mcp_elicitation_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn migrate_mcp_elicitation_run_twice_is_idempotent() {
+    let src = "[mcp]\nallowed_commands = []\n";
+    let first = migrate_mcp_elicitation_config(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_mcp_elicitation_config(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(second.output, first.output);
+}
+
 // ── migrate_quality_config ────────────────────────────────────────────────
 
 #[test]
@@ -1549,6 +1571,59 @@ fn migrate_memory_retrieval_idempotent_on_commented_section() {
     let result = migrate_memory_retrieval_config(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
     assert_eq!(result.output, src);
+}
+
+// ── migrate_memory_retrieval_query_bias ───────────────────────────────────
+
+#[test]
+fn migrate_memory_retrieval_query_bias_adds_comment_when_absent() {
+    let src = "[memory.retrieval]\ndepth = 40\n";
+    let result = migrate_memory_retrieval_query_bias(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result
+            .sections_changed
+            .contains(&"memory.retrieval.query_bias_correction".to_owned())
+    );
+    assert!(result.output.contains("# query_bias_correction = true"));
+}
+
+#[test]
+fn migrate_memory_retrieval_query_bias_skips_when_section_absent() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_memory_retrieval_query_bias(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn migrate_memory_retrieval_query_bias_idempotent_when_key_active() {
+    let src = "[memory.retrieval]\ndepth = 40\nquery_bias_correction = true\n";
+    let result = migrate_memory_retrieval_query_bias(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+/// Regression test for #6018: the guard previously used `starts_with` on trimmed lines,
+/// which never matches the `#`-prefixed line this step actually writes, so the block was
+/// re-appended on every run (same defect shape as the `[memory.hebbian]` steps fixed in
+/// #5945).
+#[test]
+fn migrate_memory_retrieval_query_bias_run_twice_is_idempotent() {
+    let src = "[memory.retrieval]\ndepth = 40\n";
+    let first = migrate_memory_retrieval_query_bias(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_memory_retrieval_query_bias(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output must not accumulate duplicate advisory blocks"
+    );
+    assert_eq!(
+        second.output.matches("query_bias_correction").count(),
+        1,
+        "the key must appear exactly once"
+    );
 }
 
 // ── acp PR4 migration ─────────────────────────────────────────────────────
@@ -2051,6 +2126,26 @@ fn migrate_mcp_max_connect_attempts_skips_when_no_mcp_section() {
     assert_eq!(result.output, src);
 }
 
+#[test]
+fn migrate_mcp_max_connect_attempts_skips_on_commented_mcp_header() {
+    // Same anchor defect class as migrate_mcp_elicitation_config (#6018): a commented
+    // `# [mcp]` header must not be treated as an active section.
+    let src = "# [mcp]\n# allowed_commands = []\n";
+    let result = migrate_mcp_max_connect_attempts(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn migrate_mcp_max_connect_attempts_run_twice_is_idempotent() {
+    let src = "[mcp]\nallowed_commands = []\n";
+    let first = migrate_mcp_max_connect_attempts(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_mcp_max_connect_attempts(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(second.output, first.output);
+}
+
 // ── Step 50 — mcp startup_retry_backoff_ms and tool_timeout_secs ──────────────────────────────
 
 #[test]
@@ -2082,6 +2177,77 @@ fn migrate_mcp_retry_and_tool_timeout_skips_when_no_mcp_section() {
     let result = migrate_mcp_retry_and_tool_timeout(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
     assert_eq!(result.output, src);
+}
+
+#[test]
+fn migrate_mcp_retry_and_tool_timeout_skips_on_commented_mcp_header() {
+    // Same anchor defect class as migrate_mcp_elicitation_config (#6018): a commented
+    // `# [mcp]` header must not be treated as an active section.
+    let src = "# [mcp]\n# allowed_commands = []\n";
+    let result = migrate_mcp_retry_and_tool_timeout(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn migrate_mcp_retry_and_tool_timeout_run_twice_is_idempotent() {
+    let src = "[mcp]\nallowed_commands = []\n";
+    let first = migrate_mcp_retry_and_tool_timeout(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_mcp_retry_and_tool_timeout(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(second.output, first.output);
+}
+
+/// Regression test for #6018: a config that starts with no `[mcp]` section, run three
+/// consecutive times through the full step registry, must stabilize by run 2 and never
+/// re-append the elicitation/retry/timeout advisory keys.
+#[test]
+fn migrate_mcp_steps_full_pipeline_stabilizes_across_runs() {
+    let mut out = "[agent]\nname = \"Zeph\"\n".to_owned();
+    for _ in 0..3 {
+        out = migrate_mcp_elicitation_config(&out)
+            .expect("migrate")
+            .output;
+        out = migrate_mcp_max_connect_attempts(&out)
+            .expect("migrate")
+            .output;
+        out = migrate_mcp_retry_and_tool_timeout(&out)
+            .expect("migrate")
+            .output;
+    }
+    assert_eq!(
+        out.matches("elicitation_enabled").count(),
+        0,
+        "no active [mcp] section ever appears, so elicitation must never be injected"
+    );
+    assert_eq!(out.matches("max_connect_attempts").count(), 0);
+    assert_eq!(out.matches("startup_retry_backoff_ms").count(), 0);
+
+    // Now seed an active [mcp] section (as ConfigMigrator's catch-all pass would leave
+    // behind before named steps run in the next `--migrate-config` invocation) and
+    // confirm three more runs converge without duplicating any advisory block.
+    out.push_str("\n[mcp]\nallowed_commands = []\n");
+    let mut prev = String::new();
+    for _ in 0..3 {
+        out = migrate_mcp_elicitation_config(&out)
+            .expect("migrate")
+            .output;
+        out = migrate_mcp_max_connect_attempts(&out)
+            .expect("migrate")
+            .output;
+        out = migrate_mcp_retry_and_tool_timeout(&out)
+            .expect("migrate")
+            .output;
+        if !prev.is_empty() {
+            assert_eq!(out, prev, "pipeline must stabilize after the first pass");
+        }
+        prev = out.clone();
+    }
+    assert_eq!(out.matches("elicitation_enabled").count(), 1);
+    assert_eq!(out.matches("max_connect_attempts").count(), 1);
+    assert_eq!(out.matches("startup_retry_backoff_ms").count(), 1);
+    assert_eq!(out.matches("tool_timeout_secs").count(), 1);
 }
 
 // ── Step 43 — orchestrator_provider ──────────────────────────────────────────────────────────

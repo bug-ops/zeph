@@ -85,6 +85,29 @@ impl Config {
         self.acp
             .validate_auth_clients()
             .map_err(ConfigError::Validation)?;
+        // Provider pool: empty pool, duplicate names, and multiple `default = true`
+        // entries. Load-bearing guarantee relied on (verbatim) by
+        // `Agent::resolve_pool_entry_provider` (tier_loop.rs) and `arise.rs` — both assume
+        // a genuinely empty pool never occurs for a fully constructed production `Agent`.
+        crate::providers::validate_pool(&self.llm.providers)?;
+        self.llm.validate_stt()?;
+        self.security
+            .trajectory
+            .validate()
+            .map_err(ConfigError::Validation)?;
+        self.gateway.validate().map_err(ConfigError::Validation)?;
+        self.tools
+            .utility
+            .validate()
+            .map_err(ConfigError::Validation)?;
+        if let Some(fidelity) = &self.memory.fidelity {
+            fidelity.validate().map_err(ConfigError::Validation)?;
+        }
+        self.memory
+            .compression
+            .acon
+            .validate()
+            .map_err(ConfigError::Validation)?;
         Ok(())
     }
 
@@ -1090,5 +1113,168 @@ weight = 0.3
             err.contains("only one of `cron` or `run_at` may be set"),
             "unexpected error: {err}"
         );
+    }
+
+    // ── #5932: 7 previously-dead validate() functions now wired into Config::validate() ──────
+
+    #[test]
+    fn validate_rejects_empty_provider_pool() {
+        // This is the most severe gap from #5932: `validate_pool` was documented (verbatim)
+        // as a load-bearing guarantee by tier_loop.rs/arise.rs but was never actually wired
+        // in. `Config::default()` itself now seeds one provider (critic S1 follow-up, so
+        // `--dump-config-defaults` output stays self-consistent) — clear it explicitly to
+        // exercise the empty-pool branch.
+        let mut cfg = Config::default();
+        cfg.llm.providers.clear();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("at least one LLM provider"),
+            "expected empty-pool error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_provider_names() {
+        let mut cfg = Config::default();
+        cfg.llm.providers.push(crate::providers::ProviderEntry {
+            provider_type: crate::providers::ProviderKind::Ollama,
+            ..Default::default()
+        });
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("duplicate provider name"),
+            "expected duplicate-name error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_multiple_default_providers() {
+        let mut cfg = Config::default();
+        cfg.llm.providers[0].default = true;
+        cfg.llm.providers.push(crate::providers::ProviderEntry {
+            provider_type: crate::providers::ProviderKind::Ollama,
+            name: Some("second".into()),
+            default: true,
+            ..Default::default()
+        });
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("default = true"),
+            "expected multiple-default error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_stt_provider_pointing_at_nonexistent_provider() {
+        let mut cfg = Config::default();
+        cfg.llm.stt = Some(crate::providers::SttConfig {
+            provider: crate::providers::ProviderName::new("ghost"),
+            language: crate::providers::default_stt_language(),
+        });
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("[llm.stt].provider") && err.contains("ghost"),
+            "expected stt-provider-mismatch error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_stt_provider_matching_existing_provider() {
+        let mut cfg = Config::default();
+        cfg.llm.stt = Some(crate::providers::SttConfig {
+            provider: crate::providers::ProviderName::new("ollama"),
+            language: crate::providers::default_stt_language(),
+        });
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_trajectory_sentinel_inverted_thresholds() {
+        let mut cfg = Config::default();
+        cfg.security.trajectory.elevated_at = 0.9;
+        cfg.security.trajectory.high_at = 0.5;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("elevated_at") && err.contains("high_at"),
+            "expected trajectory threshold-ordering error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_gateway_invalid_webhook_timeout() {
+        // `rate_limit` and `max_body_size` are already covered by `validate_scalar_bounds`
+        // (runs earlier in the pipeline), so testing those wouldn't prove
+        // `GatewayConfig::validate()` is actually wired in — it would pass identically on
+        // pre-#5932 code (critic-flagged shadowing, S2). `webhook_send_timeout_secs` is the
+        // one field uniquely reachable only through the new call.
+        let mut cfg = Config::default();
+        cfg.gateway.webhook_send_timeout_secs = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("webhook_send_timeout_secs"),
+            "expected gateway webhook_send_timeout_secs error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_negative_utility_scoring_weight() {
+        let mut cfg = Config::default();
+        cfg.tools.utility.gain_weight = -1.0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("gain_weight"),
+            "expected utility-scoring weight error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_fidelity_threshold_ordering() {
+        let mut cfg = Config::default();
+        cfg.memory.fidelity = Some(crate::fidelity::FidelityConfig {
+            full_threshold: 0.2,
+            compressed_threshold: 0.5,
+            ..Default::default()
+        });
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("full_threshold") && err.contains("compressed_threshold"),
+            "expected fidelity threshold-ordering error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_absent_fidelity_config() {
+        let cfg = Config::default();
+        assert!(cfg.memory.fidelity.is_none());
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_acon_inverted_thresholds() {
+        let mut cfg = Config::default();
+        cfg.memory.compression.acon.passthrough_threshold = 5000;
+        cfg.memory.compression.acon.summarize_threshold = 1000;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("passthrough_threshold") && err.contains("summarize_threshold"),
+            "expected acon threshold-ordering error, got: {err}"
+        );
+    }
+
+    /// Regression test (critic S1): `Config::default()` must itself satisfy `validate_pool`
+    /// so `--dump-config-defaults` (which serializes `Config::default()` verbatim,
+    /// `src/runner.rs`) emits a config that `zeph --config <dump>` can actually load and
+    /// validate, rather than a self-inconsistent onboarding trap.
+    #[test]
+    fn dump_defaults_output_is_self_consistent_and_validates() {
+        assert!(Config::default().validate().is_ok());
+
+        let dumped = Config::dump_defaults().expect("dump defaults");
+        assert!(
+            dumped.contains("[[llm.providers]]"),
+            "dumped defaults must include an active provider entry, got:\n{dumped}"
+        );
+        let reparsed: Config = toml::from_str(&dumped).expect("reparse dumped defaults");
+        assert!(reparsed.validate().is_ok());
     }
 }

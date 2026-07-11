@@ -32,7 +32,7 @@ use crate::memory::{
 use crate::metrics::MetricsConfig;
 use crate::notifications::NotificationsConfig;
 use crate::providers::{
-    LlmConfig, get_default_embedding_model, get_default_response_cache_ttl_secs,
+    LlmConfig, ProviderEntry, get_default_embedding_model, get_default_response_cache_ttl_secs,
     get_default_router_ema_alpha, get_default_router_reorder_interval,
 };
 use crate::security::TrustConfig;
@@ -216,7 +216,12 @@ impl Default for Config {
                 supervisor: crate::agent::TaskSupervisorConfig::default(),
             },
             llm: LlmConfig {
-                providers: Vec::new(),
+                // #5932/#6018-followup (critic S1): `Config::default()` must itself satisfy
+                // `validate_pool` (non-empty pool), since it is what `--dump-config-defaults`
+                // serializes and what `Config::load()`/`run_tui_remote` fall back to when no
+                // config file exists — mirrors the single active `[[llm.providers]]` entry the
+                // shipped `config/default.toml` reference ships.
+                providers: vec![ProviderEntry::default()],
                 routing: crate::providers::LlmRoutingStrategy::None,
                 embedding_model: get_default_embedding_model(),
                 candle: None,

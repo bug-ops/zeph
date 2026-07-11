@@ -507,7 +507,11 @@ pub fn migrate_focus_auto_consolidate_min_window(
 /// (MM-F3, #3341) and is verified working in CI-604/CI-605. It is a no-op when the persona
 /// table is empty, so enabling it by default is safe.
 ///
-/// Idempotent: the section header (live or commented) suppresses re-injection.
+/// Idempotent: the step only ever writes `query_bias_correction` as a commented advisory
+/// line, so the guard checks for the key as a raw substring (matching both the active and
+/// commented form) rather than `starts_with` on trimmed lines, which never matches a
+/// `#`-prefixed line and would re-append the block on every run (#6018, same defect shape
+/// fixed for the `[memory.hebbian]` steps in #5945).
 ///
 /// # Errors
 ///
@@ -516,8 +520,11 @@ pub fn migrate_memory_retrieval_query_bias(
     toml_src: &str,
 ) -> Result<MigrationResult, MigrateError> {
     // Already handled by migrate_memory_retrieval_config if the whole section is absent.
-    // This step only splices the key into an existing [memory.retrieval] section.
-    if !toml_src.lines().any(|l| l.trim() == "[memory.retrieval]") {
+    // This step only splices the key into an existing [memory.retrieval] section. Uses
+    // `section_header_present` (not a bare exact-line match) so an inline-commented header
+    // (`[memory.retrieval]  # note`) is still recognized as active, matching the pattern
+    // used by the sibling `[memory.hebbian]` steps (critic M3, #5945 lesson).
+    if !section_header_present(toml_src, "memory.retrieval") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -525,11 +532,9 @@ pub fn migrate_memory_retrieval_query_bias(
         });
     }
 
-    // Idempotent: key already present (active or as comment).
-    if toml_src
-        .lines()
-        .any(|l| l.trim().starts_with("query_bias_correction"))
-    {
+    // Idempotent: key already present, active or commented — the step only ever writes
+    // the commented form, so a plain substring check catches both.
+    if toml_src.contains("query_bias_correction") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,

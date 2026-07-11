@@ -89,6 +89,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(config)`: `Config::validate()` now calls 7 subsystem `validate()` functions that existed
+  with real invariant checks but were unreachable from the production config-load path — only
+  their own unit tests exercised them (#5932). `validate_pool()` was the most severe gap: two
+  code comments elsewhere in the codebase state, verbatim, that it "rejects an empty
+  `[[llm.providers]]` list at config-validation time" and treat that as a load-bearing guarantee,
+  but it was never actually invoked outside its own test module — a config with zero providers,
+  duplicate provider names, or multiple `default = true` entries previously loaded and validated
+  without error. The other six wired checks: `LlmConfig::validate_stt()` (dangling
+  `[llm.stt].provider` reference), `TrajectorySentinelConfig::validate()` (inverted risk
+  thresholds), `GatewayConfig::validate()`, `UtilityScoringConfig::validate()`,
+  `FidelityConfig::validate()`, and `AconConfig::validate()`. Also added `#[must_use]` to
+  `LlmConfig::validate_stt()` (missed by the earlier #4943/#4963 sweep since added afterward).
+  Because `Config::default()` had an empty provider pool, wiring `validate_pool()` made
+  `Config::default().validate()` fail, which in turn broke `--dump-config-defaults` and the
+  no-config-file fallback in `zeph --tui --connect`; fixed by seeding `Config::default()` with one
+  `ProviderEntry::default()` (`type = "ollama"`), matching the shipped `config/default.toml`
+  reference, which was already self-consistent.
+- `fix(config)`: two more `--migrate-config --in-place` steps re-appended their advisory block on
+  every run instead of converging after one, same defect class as #5945 (#6018). The
+  `mcp`/`mcp.elicitation`/`mcp` max-connect-attempts/retry-and-tool-timeout steps anchored on a
+  raw `toml_src.contains("[mcp]\n")` substring, which also matches inside a *commented* `# [mcp]`
+  stub left by the top-level migrator's catch-all pass when `[mcp]` was absent on a prior run —
+  now gated by `section_header_present(toml_src, "mcp")`, which correctly excludes commented
+  headers. `migrate_memory_retrieval_query_bias`'s idempotency guard checked for an *uncommented*
+  `query_bias_correction` field while the step only ever writes a *commented* advisory line, so
+  the guard never matched its own prior output; changed to a `contains` check on the raw source
+  (and switched to `section_header_present` for its section-presence check, for consistency with
+  the sibling `[memory.hebbian]` steps fixed in #5945).
 - `fix(tui)`: the durable executions overlay panel (`D` key) no longer bleeds stray glyphs from
   whatever widget last drew into the same sidebar `Rect` earlier in the frame (e.g. a trailing
   `e> t` fragment left over from the subagents/plan/security view rendered underneath) — `Clear`
