@@ -60,7 +60,10 @@ mod tests {
     use super::*;
     use crate::server::AppState;
 
-    fn test_state() -> (AppState, tokio::sync::mpsc::Receiver<String>) {
+    fn test_state() -> (
+        AppState,
+        tokio::sync::mpsc::Receiver<crate::handlers::WebhookMessage>,
+    ) {
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let state = AppState {
             webhook_tx: tx,
@@ -73,7 +76,10 @@ mod tests {
     fn make_router(
         auth: Option<&str>,
         rate_limit: u32,
-    ) -> (Router, tokio::sync::mpsc::Receiver<String>) {
+    ) -> (
+        Router,
+        tokio::sync::mpsc::Receiver<crate::handlers::WebhookMessage>,
+    ) {
         let (state, rx) = test_state();
         (build_router(state, auth, rate_limit, 1_048_576, &[]), rx)
     }
@@ -117,7 +123,9 @@ mod tests {
         assert_eq!(resp.status(), 200);
 
         let msg = rx.try_recv().unwrap();
-        assert!(msg.contains("user1"));
+        assert_eq!(msg.sender, "user1");
+        assert_eq!(msg.channel, "discord");
+        assert_eq!(msg.body, "hello");
     }
 
     #[tokio::test]
@@ -275,7 +283,7 @@ mod tests {
     async fn webhook_503_returns_json_error() {
         // Build a state whose channel is already closed (rx dropped) so that
         // the send in webhook_handler will fail immediately.
-        let (tx, rx) = tokio::sync::mpsc::channel::<String>(1);
+        let (tx, rx) = tokio::sync::mpsc::channel::<crate::handlers::WebhookMessage>(1);
         drop(rx);
         let state = AppState {
             webhook_tx: tx,

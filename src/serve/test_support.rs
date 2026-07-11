@@ -435,6 +435,34 @@ mod tests {
         assert!(text.contains("hello there"));
     }
 
+    /// #5898 end-to-end: a recognized command posted over HTTP reaches the session mailbox
+    /// raw, not wrapped in the sanitizer's `<external-data>` delimiter, so the agent's turn
+    /// loop can dispatch it locally instead of silently falling through to a full chat turn.
+    #[tokio::test]
+    async fn prompt_session_forwards_recognized_command_raw() {
+        let harness = ServeTestHarness::new_no_persistence().await;
+        let (mut rx, _tx_out) = harness.insert_live_session("s1");
+
+        let response = harness
+            .router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/sessions/s1/prompt")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"text":"/status"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let SessionCommand::Prompt { text } = rx.recv().await.unwrap() else {
+            panic!("expected SessionCommand::Prompt");
+        };
+        assert_eq!(text, "/status");
+    }
+
     #[tokio::test]
     async fn prompt_session_unknown_id_returns_404() {
         let harness = ServeTestHarness::new_no_persistence().await;

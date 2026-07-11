@@ -245,9 +245,17 @@ pub(super) struct PromptRequest {
 /// mailbox. Fire-and-forget — the response streams separately via `GET /sessions/:id/events`.
 ///
 /// A valid bearer token proves the caller knows the shared secret, not that the prompt content is
-/// safe — the request body is sanitized as `ContentSourceKind::ChannelMessage` before it reaches
-/// the agent loopback queue, the same `ExternalUntrusted` tier as gateway webhooks
-/// (`ChannelMessage`, `src/gateway_spawn.rs::forward_webhooks`) and A2A messages (`A2aMessage`,
+/// safe. Text recognized as a known slash command (per
+/// [`zeph_commands::is_recognized_command`], evaluated on the raw, pre-sanitization body) is
+/// forwarded unwrapped so the agent's dispatch registries can match it — mirroring how
+/// Telegram/Discord/Slack forward command text unsanitized (`Channel::requires_input_sanitization`
+/// only wraps *residual* text that no dispatch layer matched). Command authorization for
+/// untrusted/remote callers is still enforced downstream by
+/// [`zeph_commands::CommandHandler::requires_auth`] (`LoopbackChannel::supports_exit` is `false`,
+/// so `trusted = false` for this channel, identical to the other remote channels). Everything else
+/// is sanitized as `ContentSourceKind::ChannelMessage` before it reaches the agent loopback queue,
+/// the same `ExternalUntrusted` tier as gateway webhooks (`ChannelMessage`,
+/// `src/gateway_spawn.rs::forward_webhooks`) and A2A messages (`A2aMessage`,
 /// `src/daemon.rs::AgentTaskProcessor::process`) (#5474).
 ///
 /// Returns `202 Accepted` once queued, `404` if the session is neither live nor durably known
@@ -269,13 +277,18 @@ pub(super) async fn prompt_session_handler(
     else {
         return StatusCode::NOT_FOUND;
     };
-    let text = state
-        .sanitizer
-        .sanitize(
-            &body.text,
-            zeph_core::ContentSource::new(zeph_core::ContentSourceKind::ChannelMessage),
-        )
-        .body;
+    let trimmed = body.text.trim();
+    let text = if zeph_commands::is_recognized_command(trimmed) {
+        trimmed.to_string()
+    } else {
+        state
+            .sanitizer
+            .sanitize(
+                &body.text,
+                zeph_core::ContentSource::new(zeph_core::ContentSourceKind::ChannelMessage),
+            )
+            .body
+    };
     if handle
         .tx
         .send(SessionCommand::Prompt { text })
@@ -635,6 +648,61 @@ mod tests {
             panic!("expected SessionCommand::Prompt");
         };
         assert!(text.contains("<external-data"));
+    }
+
+    /// A recognized slash command (#5898) must be forwarded raw, unwrapped, so the agent's
+    /// dispatch registries can match it — mirrors Telegram/Discord/Slack, which never sanitize
+    /// text a dispatch layer will match. Trust boundary for untrusted/remote callers still comes
+    /// from `requires_auth`/`trusted` downstream in `zeph_commands::CommandRegistry::dispatch`.
+    #[tokio::test]
+    async fn prompt_session_handler_forwards_recognized_command_unsanitized() {
+        let state = make_state().await;
+        let mut rx = insert_live_session(&state, "s1");
+
+        let status = Box::pin(prompt_session_handler(
+            State(state),
+            Path("s1".to_owned()),
+            Json(PromptRequest {
+                text: "/status".to_owned(),
+            }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+
+        let SessionCommand::Prompt { text } = rx.recv().await.unwrap() else {
+            panic!("expected SessionCommand::Prompt");
+        };
+        assert_eq!(
+            text, "/status",
+            "recognized command must reach the mailbox raw"
+        );
+    }
+
+    /// `/`-prefixed text that does not match any registered command name is not a command —
+    /// it must still be sanitized exactly as before this fix (FR-002: no regression for
+    /// non-command chat, even when it happens to start with `/`).
+    #[tokio::test]
+    async fn prompt_session_handler_sanitizes_unrecognized_slash_text() {
+        let state = make_state().await;
+        let mut rx = insert_live_session(&state, "s1");
+
+        let status = Box::pin(prompt_session_handler(
+            State(state),
+            Path("s1".to_owned()),
+            Json(PromptRequest {
+                text: "/not-a-real-command please help".to_owned(),
+            }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+
+        let SessionCommand::Prompt { text } = rx.recv().await.unwrap() else {
+            panic!("expected SessionCommand::Prompt");
+        };
+        assert!(
+            text.contains("<external-data"),
+            "unrecognized slash-prefixed text must still be sanitized: {text}"
+        );
     }
 
     /// `POST /sessions/:id/prompt` against an id with no live actor and no durable record (a

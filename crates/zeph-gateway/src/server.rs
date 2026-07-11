@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 
 use crate::error::GatewayError;
+use crate::handlers::WebhookMessage;
 use crate::router::build_router;
 
 /// Shared state threaded through every axum handler.
@@ -15,8 +16,8 @@ use crate::router::build_router;
 /// wrapped in `Arc`-backed primitives.
 #[derive(Clone)]
 pub(crate) struct AppState {
-    /// Channel used to forward sanitised webhook messages to the agent.
-    pub webhook_tx: mpsc::Sender<String>,
+    /// Channel used to forward validated webhook messages to the agent.
+    pub webhook_tx: mpsc::Sender<WebhookMessage>,
     /// Monotonic timestamp recorded when the server started, used by `/health`.
     pub started_at: Instant,
     /// Maximum time to wait for [`webhook_tx`] to accept a message before the
@@ -45,7 +46,7 @@ pub(crate) struct AppState {
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let (tx, _rx) = mpsc::channel::<String>(64);
+///     let (tx, _rx) = mpsc::channel::<zeph_gateway::WebhookMessage>(64);
 ///     let (_stx, srx) = watch::channel(false);
 ///
 ///     GatewayServer::new("127.0.0.1", 9000, tx, srx)
@@ -64,7 +65,7 @@ pub struct GatewayServer {
     rate_limit: u32,
     max_body_size: usize,
     webhook_send_timeout: Duration,
-    webhook_tx: mpsc::Sender<String>,
+    webhook_tx: mpsc::Sender<WebhookMessage>,
     shutdown_rx: watch::Receiver<bool>,
     trusted_proxy_cidrs: Vec<String>,
     /// Prometheus metrics registry and endpoint path (feature-gated).
@@ -81,8 +82,9 @@ impl GatewayServer {
     /// `bind` is parsed as an IP address string (e.g. `"127.0.0.1"` or `"0.0.0.0"`).
     /// If parsing fails, the server falls back to `127.0.0.1:<port>` and emits a warning.
     ///
-    /// `webhook_tx` receives every valid, sanitised webhook message as a formatted
-    /// `"[sender@channel] body"` string.
+    /// `webhook_tx` receives every valid, control-character-stripped webhook message as a
+    /// [`WebhookMessage`] (display-prefix formatting, slash-command detection, and content
+    /// sanitization all happen downstream, in the forwarder consuming this channel).
     ///
     /// `shutdown_rx` is a [`watch::Receiver<bool>`] that signals graceful shutdown
     /// when its value transitions to `true`.  Sending `true` causes the server to
@@ -95,7 +97,7 @@ impl GatewayServer {
     pub fn new(
         bind: &str,
         port: u16,
-        webhook_tx: mpsc::Sender<String>,
+        webhook_tx: mpsc::Sender<WebhookMessage>,
         shutdown_rx: watch::Receiver<bool>,
     ) -> Self {
         let addr: SocketAddr = format!("{bind}:{port}").parse().unwrap_or_else(|e| {
@@ -137,7 +139,7 @@ impl GatewayServer {
     /// use tokio::sync::{mpsc, watch};
     /// use zeph_gateway::GatewayServer;
     ///
-    /// let (tx, _rx) = mpsc::channel::<String>(1);
+    /// let (tx, _rx) = mpsc::channel::<zeph_gateway::WebhookMessage>(1);
     /// let (_stx, srx) = watch::channel(false);
     ///
     /// let server = GatewayServer::new("127.0.0.1", 8080, tx, srx)
@@ -160,7 +162,7 @@ impl GatewayServer {
     /// use tokio::sync::{mpsc, watch};
     /// use zeph_gateway::GatewayServer;
     ///
-    /// let (tx, _rx) = mpsc::channel::<String>(1);
+    /// let (tx, _rx) = mpsc::channel::<zeph_gateway::WebhookMessage>(1);
     /// let (_stx, srx) = watch::channel(false);
     ///
     /// // Allow at most 30 webhook posts per minute per IP.
@@ -184,7 +186,7 @@ impl GatewayServer {
     /// use tokio::sync::{mpsc, watch};
     /// use zeph_gateway::GatewayServer;
     ///
-    /// let (tx, _rx) = mpsc::channel::<String>(1);
+    /// let (tx, _rx) = mpsc::channel::<zeph_gateway::WebhookMessage>(1);
     /// let (_stx, srx) = watch::channel(false);
     ///
     /// // Restrict bodies to 64 KiB.
@@ -210,7 +212,7 @@ impl GatewayServer {
     /// use tokio::sync::{mpsc, watch};
     /// use zeph_gateway::GatewayServer;
     ///
-    /// let (tx, _rx) = mpsc::channel::<String>(1);
+    /// let (tx, _rx) = mpsc::channel::<zeph_gateway::WebhookMessage>(1);
     /// let (_stx, srx) = watch::channel(false);
     ///
     /// let server = GatewayServer::new("127.0.0.1", 8080, tx, srx)
@@ -237,7 +239,7 @@ impl GatewayServer {
     /// use tokio::sync::{mpsc, watch};
     /// use zeph_gateway::GatewayServer;
     ///
-    /// let (tx, _rx) = mpsc::channel::<String>(1);
+    /// let (tx, _rx) = mpsc::channel::<zeph_gateway::WebhookMessage>(1);
     /// let (_stx, srx) = watch::channel(false);
     ///
     /// let server = GatewayServer::new("127.0.0.1", 8080, tx, srx)
@@ -267,7 +269,7 @@ impl GatewayServer {
     /// use tokio::sync::{mpsc, watch};
     /// use zeph_gateway::GatewayServer;
     ///
-    /// let (tx, _rx) = mpsc::channel::<String>(1);
+    /// let (tx, _rx) = mpsc::channel::<zeph_gateway::WebhookMessage>(1);
     /// let (_stx, srx) = watch::channel(false);
     /// let registry = Arc::new(Registry::default());
     ///

@@ -30,7 +30,7 @@ pub mod handlers;
 pub mod sink;
 pub mod traits;
 
-pub use commands::COMMANDS;
+pub use commands::{COMMANDS, is_recognized_command};
 
 pub use context::CommandContext;
 pub use sink::{ChannelSink, NullSink};

@@ -829,6 +829,24 @@ fn append_graph_recall_section(out: &mut String, gc: &zeph_config::memory::Graph
 mod tests {
     use super::*;
 
+    /// #5904 SIGNIFICANT-1: `dispatch_slash_command` is the only slash-command dispatch path
+    /// with no `trusted`/`requires_auth` check at all — it runs `/subagent spawn <cmd>`
+    /// (external ACP process spawn) unconditionally regardless of channel trust. HTTP entry
+    /// points (serve-sessions, gateway) rely on `zeph_commands::is_recognized_command`
+    /// excluding every command dispatched here, so they never forward such a command raw
+    /// expecting the registry's trust gate to catch it. If this function ever starts handling
+    /// another command besides `/subagent` (`@mention` is not `/`-prefixed and is exempt),
+    /// `zeph_commands::UNGATED_DISPATCH_COMMANDS` must be updated to exclude it too — this test
+    /// pins the current, single exception so that omission is caught here, at the source of the
+    /// trust-blind path, not only in `zeph-commands`.
+    #[test]
+    fn subagent_is_excluded_from_is_recognized_command() {
+        assert!(!zeph_commands::is_recognized_command("/subagent"));
+        assert!(!zeph_commands::is_recognized_command(
+            "/subagent spawn zeph --acp"
+        ));
+    }
+
     #[test]
     fn format_overlay_section_empty_dir() {
         let tmp = tempfile::tempdir().unwrap();

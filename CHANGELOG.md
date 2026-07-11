@@ -104,6 +104,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `index` field), and a multi-step undo/redo/undo sequence pinning undo-stack depth
   bookkeeping.
 
+- `fix(serve,gateway)`: `POST /sessions/:id/prompt` and the gateway `POST /webhook` path now
+  dispatch recognized slash commands (e.g. `/status`) locally instead of silently forwarding
+  them as a full, billed chat turn (#5898, #5904). Both endpoints previously ran
+  `ContentSanitizer::sanitize` unconditionally before queueing the message, wrapping the text
+  in an `<external-data>` delimiter that hid the leading `/` from the agent's dispatch
+  registries. Text now checked against `zeph_commands::is_recognized_command` (backed by the
+  crate's own `COMMANDS` registry) before sanitization; a match is forwarded raw so the
+  existing dispatch/authorization path (`CommandHandler::requires_auth` + `trusted`, already
+  used identically for Telegram/Discord/Slack) decides whether it may run. Non-command text is
+  sanitized exactly as before — no change to that path. The gateway handler
+  (`crates/zeph-gateway/src/handlers.rs`) now forwards a `WebhookMessage { sender, channel,
+  body }` instead of a pre-formatted `"[sender@channel] body"` string, so the
+  `"[sender@channel]"` display prefix is applied only to non-command chat text in
+  `forward_webhooks` (`src/gateway_spawn.rs`), which is where the command-detection decision
+  and sanitization both now happen.
+  - Security-critical follow-up caught in review before merge: `GatewayChannel` (used to merge
+    webhook input into the main agent when `[gateway] enabled = true` alongside a CLI/TUI
+    primary channel) previously delegated `supports_exit()` — the signal `zeph-core`'s turn loop
+    reads as `trusted` for command-dispatch authorization — unconditionally to the primary
+    channel. A CLI/TUI host reports `supports_exit() == true`, so once recognized commands could
+    dispatch at all, a bearer-token holder could run every `requires_auth` command (`/policy`,
+    `/mcp`, `/plugins`, ...) at the *host's* trust level. `GatewayChannel` now forces
+    `supports_exit() == false` for the exact turn processing a webhook-sourced message
+    (`recv()`-only delivery for webhook input — never opportunistically drained via `try_recv()`,
+    since `zeph-core`'s queue has no way to carry a per-message trust distinction across turns).
+  - Also caught in review: `/subagent spawn <cmd>` (external ACP process spawn) is dispatched by
+    `dispatch_slash_command` with no `trusted`/`requires_auth` check at all, independent of the
+    trust-boundary issue above — a webhook `/subagent spawn <cmd>` would have been unconditional
+    remote code execution on any build with `acp_subagent_spawn_fn` installed (`full`/`ide` +
+    `gateway`). `zeph_commands::is_recognized_command` now excludes `/subagent`
+    (`UNGATED_DISPATCH_COMMANDS`), so it falls back to the pre-fix sanitized/wrapped behavior —
+    inert, as before this PR.
 - `fix(tools)`: `CompositeExecutor`, `AdversarialPolicyGateExecutor`, and `PolicyGateExecutor`
   now forward `requires_confirmation`/`is_tool_speculatable`/`execute_tool_call_confirmed` to
   their inner executors instead of silently falling through to the `ToolExecutor` trait's

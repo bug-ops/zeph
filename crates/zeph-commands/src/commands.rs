@@ -370,3 +370,129 @@ pub const COMMANDS: &[CommandInfo] = &[
         feature_gate: None,
     },
 ];
+
+/// Commands dispatched by `zeph-core`'s `dispatch_slash_command`
+/// (`crates/zeph-core/src/agent/slash_commands.rs`) rather than through
+/// [`crate::CommandRegistry::dispatch`], and therefore never subject to the registry's
+/// `trusted`/`requires_auth` gate at all — `dispatch_slash_command` runs them unconditionally,
+/// regardless of channel trust. [`is_recognized_command`] must never recognize these: HTTP
+/// entry points forward recognized text raw specifically so the registry's trust gate can
+/// decide whether to run it, and a command with no gate to defer to would run unconditionally
+/// on any caller, trusted or not. Currently: `/subagent` (`spawn <cmd>` spawns an external ACP
+/// process — remote code execution if reachable from an untrusted caller, #5904 CRITICAL-2).
+const UNGATED_DISPATCH_COMMANDS: &[&str] = &["/subagent"];
+
+fn matches_command_name(trimmed: &str, name: &str) -> bool {
+    trimmed == name
+        || trimmed
+            .strip_prefix(name)
+            .is_some_and(|rest| rest.starts_with(' '))
+}
+
+/// Returns `true` when `trimmed` is an exact match for a command name in [`COMMANDS`],
+/// or a command name followed by a space-separated argument — excluding
+/// `UNGATED_DISPATCH_COMMANDS` (commands dispatched outside the trust-gated registry).
+///
+/// Mirrors the matching rule used by [`crate::CommandRegistry::find_handler`] (exact
+/// name, or name + `' '` + args — never a fuzzy/substring match), but does not require
+/// constructing a live registry or context. Intended for entry points that must decide,
+/// on raw untrusted text and *before* any content sanitization, whether a message is a
+/// recognized command — e.g. HTTP prompt/webhook endpoints that would otherwise wrap the
+/// text in a sanitizer delimiter and hide the leading `/` from the agent's dispatch
+/// registries. The actual authorization decision (whether the command may run for an
+/// untrusted caller) still happens downstream in [`crate::CommandRegistry::dispatch`] via
+/// [`crate::CommandHandler::requires_auth`]; this function only answers "is this text
+/// shaped like a known command that defers to that gate", not "is it allowed to run".
+///
+/// # Examples
+///
+/// ```
+/// use zeph_commands::is_recognized_command;
+///
+/// assert!(is_recognized_command("/status"));
+/// assert!(is_recognized_command("/skill create a new skill"));
+/// assert!(!is_recognized_command("/not-a-real-command"));
+/// assert!(!is_recognized_command("hello, how are you?"));
+/// // Dispatched outside the trust-gated registry — never treated as recognized.
+/// assert!(!is_recognized_command("/subagent spawn zeph --acp"));
+/// ```
+#[must_use]
+pub fn is_recognized_command(trimmed: &str) -> bool {
+    if UNGATED_DISPATCH_COMMANDS
+        .iter()
+        .any(|name| matches_command_name(trimmed, name))
+    {
+        return false;
+    }
+    COMMANDS
+        .iter()
+        .any(|c| matches_command_name(trimmed, c.name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{COMMANDS, UNGATED_DISPATCH_COMMANDS, is_recognized_command};
+
+    #[test]
+    fn recognizes_exact_and_arged_commands() {
+        assert!(is_recognized_command("/status"));
+        assert!(is_recognized_command("/skill create a widget"));
+        assert!(is_recognized_command("/plan confirm"));
+    }
+
+    #[test]
+    fn rejects_unknown_and_chat_text() {
+        assert!(!is_recognized_command("/not-a-real-command"));
+        assert!(!is_recognized_command("hello, how are you?"));
+        assert!(!is_recognized_command("/statusfoo"));
+    }
+
+    #[test]
+    fn does_not_fuzzy_match_a_prefix_without_boundary() {
+        // "/status" is a real command; "/statuses" must not match it.
+        assert!(!is_recognized_command("/statuses"));
+    }
+
+    /// #5904 CRITICAL-2 regression: `/subagent` is dispatched by `dispatch_slash_command`
+    /// with no `trusted`/`requires_auth` check at all, so it must never be recognized here —
+    /// otherwise an HTTP entry point would forward it raw and it would spawn an external
+    /// process unconditionally, regardless of caller trust.
+    #[test]
+    fn excludes_ungated_dispatch_commands() {
+        assert!(!is_recognized_command("/subagent"));
+        assert!(!is_recognized_command("/subagent spawn zeph --acp"));
+        assert!(!is_recognized_command("/subagent spawn evil-command"));
+    }
+
+    /// Every name in [`UNGATED_DISPATCH_COMMANDS`] must itself be a real, listed command —
+    /// otherwise the exclusion is dead code silently guarding nothing (or, worse, a typo'd
+    /// entry gives false confidence while the real ungated command slips through unexcluded).
+    #[test]
+    fn ungated_dispatch_commands_are_real_listed_commands() {
+        for name in UNGATED_DISPATCH_COMMANDS {
+            assert!(
+                COMMANDS.iter().any(|c| c.name == *name),
+                "{name} is in UNGATED_DISPATCH_COMMANDS but not in COMMANDS — stale entry?"
+            );
+        }
+    }
+
+    /// #5904 SIGNIFICANT-1: every `COMMANDS` entry not deliberately excluded via
+    /// [`UNGATED_DISPATCH_COMMANDS`] must be recognized — this is a completeness guard so a
+    /// future accidental over-broad addition to `UNGATED_DISPATCH_COMMANDS` (or a typo that
+    /// silently fails to match any real command name) is caught immediately, rather than
+    /// quietly regressing the #5898/#5904 fix for that command back to always-sanitized.
+    #[test]
+    fn every_non_excluded_command_is_recognized() {
+        for c in COMMANDS {
+            if UNGATED_DISPATCH_COMMANDS.contains(&c.name) {
+                continue;
+            }
+            assert!(
+                is_recognized_command(c.name),
+                "{} is in COMMANDS but not recognized by is_recognized_command",
+                c.name
+            );
+        }
+    }
+}

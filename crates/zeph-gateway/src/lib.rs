@@ -28,16 +28,16 @@
 //!
 //! ```no_run
 //! use tokio::sync::{mpsc, watch};
-//! use zeph_gateway::GatewayServer;
+//! use zeph_gateway::{GatewayServer, WebhookMessage};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let (webhook_tx, mut webhook_rx) = mpsc::channel::<String>(64);
+//!     let (webhook_tx, mut webhook_rx) = mpsc::channel::<WebhookMessage>(64);
 //!     let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 //!
 //!     tokio::spawn(async move { // EXEMPT: doc-example only
 //!         while let Some(msg) = webhook_rx.recv().await {
-//!             println!("received: {msg}");
+//!             println!("received: {msg:?}");
 //!         }
 //!     });
 //!
@@ -57,4 +57,5 @@ mod router;
 mod server;
 
 pub use error::GatewayError;
+pub use handlers::WebhookMessage;
 pub use server::GatewayServer;

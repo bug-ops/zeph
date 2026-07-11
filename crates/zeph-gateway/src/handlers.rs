@@ -62,6 +62,25 @@ struct WebhookResponse {
     status: &'static str,
 }
 
+/// A validated, control-character-stripped webhook payload forwarded to the agent-input
+/// forwarder (`forward_webhooks` in the `zeph` binary).
+///
+/// Deliberately carries `sender`/`channel`/`body` as separate fields rather than a
+/// pre-formatted `"[sender@channel] body"` string: deciding whether `body` is a recognized
+/// slash command (and, if so, skipping both the display prefix and the `ExternalUntrusted`
+/// sanitizer wrap so the agent's dispatch registries see the raw command) requires
+/// `zeph-commands`/`zeph-core`, neither of which this crate depends on. That decision is made
+/// downstream by the forwarder, which already depends on both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebhookMessage {
+    /// Display name or identifier of the message sender, control-character-stripped.
+    pub sender: String,
+    /// Logical channel name (e.g. `"discord"`, `"slack"`), control-character-stripped.
+    pub channel: String,
+    /// Raw message body, control-character-stripped.
+    pub body: String,
+}
+
 /// JSON body returned by `GET /health`.
 #[derive(serde::Serialize)]
 struct HealthResponse {
@@ -74,8 +93,10 @@ struct HealthResponse {
 /// Handler for `POST /webhook`.
 ///
 /// Validates the payload, sanitises `sender`, `channel`, and `body` by stripping
-/// control characters, then forwards the message as `"[sender@channel] body"` on the
-/// internal webhook channel.
+/// control characters, then forwards a [`WebhookMessage`] on the internal webhook
+/// channel. Display-prefix formatting, slash-command detection, and
+/// `ExternalUntrusted` sanitization all happen downstream in the forwarder (see
+/// [`WebhookMessage`]'s doc comment for why).
 ///
 /// The send is wrapped in a timeout (`AppState::webhook_send_timeout`).  If the
 /// agent cannot consume the message within that window, the handler returns
@@ -119,7 +140,11 @@ pub(crate) async fn webhook_handler(
     let sender = zeph_common::sanitize::strip_control_chars_preserve_whitespace(&payload.sender);
     let channel = zeph_common::sanitize::strip_control_chars_preserve_whitespace(&payload.channel);
     let body = zeph_common::sanitize::strip_control_chars_preserve_whitespace(&payload.body);
-    let msg = format!("[{sender}@{channel}] {body}");
+    let msg = WebhookMessage {
+        sender,
+        channel,
+        body,
+    };
     match tokio::time::timeout(state.webhook_send_timeout, state.webhook_tx.send(msg)).await {
         Ok(Ok(())) => Json(WebhookResponse { status: "accepted" }).into_response(),
         Ok(Err(_)) => (
@@ -293,9 +318,15 @@ mod tests {
         use axum::extract::State;
         use axum::response::IntoResponse as _;
 
-        let (tx, _rx) = tokio::sync::mpsc::channel::<String>(1);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<WebhookMessage>(1);
         // Fill the channel so the next send() will block.
-        tx.send("fill".to_string()).await.unwrap();
+        tx.send(WebhookMessage {
+            sender: "fill".into(),
+            channel: "fill".into(),
+            body: "fill".into(),
+        })
+        .await
+        .unwrap();
 
         let state = AppState {
             webhook_tx: tx,
@@ -350,7 +381,7 @@ mod tests {
         use axum::extract::State;
         use axum::response::IntoResponse as _;
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(4);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<WebhookMessage>(4);
         let state = AppState {
             webhook_tx: tx,
             started_at: Instant::now(),
@@ -368,6 +399,13 @@ mod tests {
             .into_response();
         assert_eq!(response.status(), StatusCode::OK);
         let msg = rx.try_recv().expect("message must be forwarded");
-        assert_eq!(msg, "[user@ch] helloworld");
+        assert_eq!(
+            msg,
+            WebhookMessage {
+                sender: "user".into(),
+                channel: "ch".into(),
+                body: "helloworld".into(),
+            }
+        );
     }
 }
