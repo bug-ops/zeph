@@ -199,7 +199,11 @@ pub(crate) async fn handle_skill_command(
             }
         }
 
-        SkillCommand::Trust { name, level } => {
+        SkillCommand::Trust {
+            name,
+            level,
+            require_check,
+        } => {
             let trust_level = level.parse::<zeph_common::SkillTrustLevel>().map_err(|_| {
                 anyhow::anyhow!(
                     "invalid trust level: {level}. Use: trusted, verified, quarantined, blocked"
@@ -207,7 +211,7 @@ pub(crate) async fn handle_skill_command(
             })?;
 
             // REV-003: re-verify hash before promoting to trusted/verified.
-            if matches!(
+            let store = if matches!(
                 trust_level,
                 zeph_common::SkillTrustLevel::Trusted | zeph_common::SkillTrustLevel::Verified
             ) {
@@ -234,29 +238,31 @@ pub(crate) async fn handle_skill_command(
                     }
                     Some(_) => {}
                 }
-
-                let updated = store
-                    .set_skill_trust_level(&name, trust_level)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
-                if updated {
-                    println!("Trust level for \"{name}\" set to {trust_level}.");
-                } else {
-                    anyhow::bail!("skill \"{name}\" not found in trust database");
-                }
+                store
             } else {
-                let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
+                zeph_memory::store::SqliteStore::new(&sqlite_path)
                     .await
-                    .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
-                let updated = store
-                    .set_skill_trust_level(&name, trust_level)
+                    .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?
+            };
+
+            let updated = store
+                .set_skill_trust_level(&name, trust_level)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            if !updated {
+                anyhow::bail!("skill \"{name}\" not found in trust database");
+            }
+            println!("Trust level for \"{name}\" set to {trust_level}.");
+
+            // #6080: expose the previously unreachable `requires_trust_check` setter so the
+            // per-invocation blake3 re-check (`SkillTrustGate::resolve_body`) can actually be
+            // armed for a skill.
+            if require_check {
+                store
+                    .set_requires_trust_check(&name, true)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
-                if updated {
-                    println!("Trust level for \"{name}\" set to {trust_level}.");
-                } else {
-                    anyhow::bail!("skill \"{name}\" not found in trust database");
-                }
+                println!("Per-invocation integrity re-check enabled for \"{name}\".");
             }
         }
 
@@ -291,43 +297,52 @@ pub(crate) async fn handle_skill_command(
         }
 
         SkillCommand::Invoke { name, args } => {
-            use zeph_common::SkillTrustLevel;
-            use zeph_skills::prompt::{sanitize_skill_text, wrap_quarantined};
+            use std::collections::HashMap;
+            use std::sync::Arc;
 
-            let registry = zeph_skills::registry::SkillRegistry::load(&[managed_dir]);
+            use parking_lot::RwLock;
+            use zeph_core::{SkillBodyResolution, SkillTrustGate, SkillTrustSnapshot};
+            use zeph_skills::prompt::sanitize_skill_text;
 
-            // Resolve persisted trust from SQLite. No trust row → Quarantined (fail-closed,
-            // matches `SkillTrustLevel::default`).
-            let trust = {
+            let registry = Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::load(&[
+                managed_dir,
+            ])));
+
+            // Load the full trust map so the CLI preview observes the exact same trust state
+            // (including `requires_trust_check`) as the agent's `load_skill`/`invoke_skill`
+            // tools — see `SkillTrustGate` (#6079).
+            let trust_snapshot: HashMap<String, SkillTrustSnapshot> = {
                 let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
                     .await
                     .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
                 store
-                    .load_skill_trust(&name)
+                    .load_all_skill_trust()
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?
-                    .map(|r| r.trust_level)
-                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| {
+                        (
+                            r.skill_name,
+                            SkillTrustSnapshot {
+                                trust_level: r.trust_level,
+                                requires_trust_check: r.requires_trust_check,
+                                blake3_hash: r.blake3_hash,
+                            },
+                        )
+                    })
+                    .collect()
             };
 
-            if trust == SkillTrustLevel::Blocked {
-                anyhow::bail!("skill is blocked by policy: {name}");
-            }
-
-            let raw = registry
-                .body(&name)
+            let gate = SkillTrustGate::new(registry, Arc::new(RwLock::new(trust_snapshot)));
+            let body = match gate
+                .resolve_body(&name)
+                .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?
-                .to_owned();
-
-            let sanitized = if trust == SkillTrustLevel::Trusted {
-                raw
-            } else {
-                sanitize_skill_text(&raw)
-            };
-            let body = if trust == SkillTrustLevel::Quarantined {
-                wrap_quarantined(&name, &sanitized)
-            } else {
-                sanitized
+            {
+                SkillBodyResolution::Refused(message) | SkillBodyResolution::NotFound(message) => {
+                    anyhow::bail!("{message}");
+                }
+                SkillBodyResolution::Body(body) => body,
             };
 
             match args {

@@ -874,6 +874,10 @@ pub(crate) enum SkillCommand {
         name: String,
         /// Trust level: trusted, verified, quarantined, blocked
         level: String,
+        /// Enable per-invocation blake3 integrity re-check: re-hash SKILL.md before every
+        /// dispatch and demote to quarantined on mismatch (#4293, #6080)
+        #[arg(long)]
+        require_check: bool,
     },
     /// Block a skill
     Block {

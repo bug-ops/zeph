@@ -182,6 +182,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   precedent) by a hand-written `impl Debug` that still lists every other field. `Option<String>`
   secrets preserve the `None`-vs-`Some` distinction. `CandleInlineConfig` is embedded inside
   `ProviderEntry`, so both were fixed together to avoid a transitive leak through nested `Debug`.
+- `zeph-memory`/`zeph-core`/`zeph`: `SqliteStore::set_requires_trust_check` (the setter for the
+  per-invocation blake3 integrity re-check gated by `SkillTrustSnapshot::requires_trust_check`,
+  `crates/zeph-core/src/skill_trust_gate.rs`) had zero production callers anywhere in the
+  codebase — the column defaulted to `0` for every skill in every deployment and could never be
+  set to `1` by any CLI flag, config knob, or in-session command, making the entire defense
+  unreachable in practice despite being fully implemented and unit-tested on the consumption side
+  since #4306/#6062 (#6080). `zeph skill trust <name> <level> --require-check` and the in-session
+  `/skill trust <name> <level> --require-check` now call the setter after updating the trust
+  level. Separately, the CLI's `zeph skill invoke <name>` preview command (`src/commands/skill.rs`)
+  was a hand-rolled reimplementation of the trust-gating pipeline that predated #6062's
+  consolidation onto the shared `SkillTrustGate`: it never checked `requires_trust_check` at all,
+  and echoed the raw unsanitized skill name into its not-found error instead of the sanitized form
+  every other trust-gated path uses (#6079). `SkillTrustGate` and `SkillBodyResolution` are now
+  `pub` at the `zeph-core` crate root, and `SkillCommand::Invoke` calls
+  `SkillTrustGate::resolve_body` directly — the same pipeline `load_skill`/`invoke_skill` use —
+  so the CLI preview can no longer drift from the agent-facing tools.
 
 ### Fixed
 

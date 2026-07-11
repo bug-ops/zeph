@@ -49,17 +49,33 @@ impl<C: Channel> Agent<C> {
                         );
                     };
                     let updated = memory.sqlite().set_skill_trust_level(name, level).await?;
-                    if updated {
-                        Ok(format!("Trust level for \"{name}\" set to {level}."))
-                    } else {
-                        Ok(format!("Skill \"{name}\" not found in trust database."))
+                    if !updated {
+                        return Ok(format!("Skill \"{name}\" not found in trust database."));
                     }
+                    let mut output = format!("Trust level for \"{name}\" set to {level}.");
+                    // #6080: `--require-check` arms the per-invocation blake3 integrity
+                    // re-check (`SkillTrustGate::resolve_body`), previously unreachable from
+                    // any production entry point. Scan the whole remaining slice rather than
+                    // indexing a fixed position — a security toggle must not silently fail to
+                    // arm just because the flag isn't the 3rd token (review finding, #6080).
+                    if args[2..].contains(&"--require-check") {
+                        memory.sqlite().set_requires_trust_check(name, true).await?;
+                        let _ = write!(
+                            output,
+                            "\nPer-invocation integrity re-check enabled for \"{name}\"."
+                        );
+                    }
+                    Ok(output)
                 } else {
                     let row = memory.sqlite().load_skill_trust(name).await?;
                     match row {
                         Some(r) => Ok(format!(
-                            "{}: level={}, source={}, hash={}",
-                            r.skill_name, r.trust_level, r.source_kind, r.blake3_hash
+                            "{}: level={}, source={}, hash={}, requires_trust_check={}",
+                            r.skill_name,
+                            r.trust_level,
+                            r.source_kind,
+                            r.blake3_hash,
+                            r.requires_trust_check
                         )),
                         None => Ok(format!("No trust data for \"{name}\".")),
                     }
@@ -172,5 +188,186 @@ impl<C: Channel> Agent<C> {
                 )
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use zeph_memory::semantic::SemanticMemory;
+    use zeph_memory::store::SourceKind;
+
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use super::*;
+
+    async fn test_memory() -> Arc<SemanticMemory> {
+        let provider = zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+        Arc::new(
+            SemanticMemory::new(
+                ":memory:",
+                "http://127.0.0.1:1",
+                None,
+                provider,
+                "test-model",
+            )
+            .await
+            .unwrap(),
+        )
+    }
+
+    fn agent_with_memory(memory: Arc<SemanticMemory>) -> Agent<MockChannel> {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            memory,
+            zeph_memory::ConversationId(1),
+            50,
+            5,
+            50,
+        )
+    }
+
+    #[tokio::test]
+    async fn trust_require_check_flag_arms_per_invocation_check() {
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Quarantined,
+                SourceKind::Local,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+        let mut agent = agent_with_memory(memory.clone());
+
+        let out = agent
+            .handle_skill_trust_command_as_string(&["git", "trusted", "--require-check"])
+            .await
+            .unwrap();
+        assert!(out.contains("Trust level for \"git\" set to trusted"));
+        assert!(out.contains("Per-invocation integrity re-check enabled"));
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("git")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.trust_level, SkillTrustLevel::Trusted);
+        assert!(
+            row.requires_trust_check,
+            "--require-check must persist requires_trust_check=true"
+        );
+    }
+
+    #[tokio::test]
+    async fn trust_require_check_flag_arms_even_when_not_the_third_token() {
+        // Regression test (review finding): the flag must be found by scanning the whole
+        // remaining slice, not by indexing a fixed position — otherwise a security toggle
+        // silently fails to arm on any extra/reordered trailing token while still reporting
+        // success.
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Quarantined,
+                SourceKind::Local,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+        let mut agent = agent_with_memory(memory.clone());
+
+        let out = agent
+            .handle_skill_trust_command_as_string(&["git", "trusted", "extra", "--require-check"])
+            .await
+            .unwrap();
+        assert!(out.contains("Trust level for \"git\" set to trusted"));
+        assert!(
+            out.contains("Per-invocation integrity re-check enabled"),
+            "flag must arm even when it isn't the 3rd token: {out}"
+        );
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("git")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(row.requires_trust_check);
+    }
+
+    #[tokio::test]
+    async fn trust_without_flag_leaves_requires_trust_check_false() {
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Quarantined,
+                SourceKind::Local,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+        let mut agent = agent_with_memory(memory.clone());
+
+        let out = agent
+            .handle_skill_trust_command_as_string(&["git", "trusted"])
+            .await
+            .unwrap();
+        assert!(out.contains("Trust level for \"git\" set to trusted"));
+        assert!(!out.contains("Per-invocation integrity re-check enabled"));
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("git")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!row.requires_trust_check);
+    }
+
+    #[tokio::test]
+    async fn trust_info_display_includes_requires_trust_check() {
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Trusted,
+                SourceKind::Local,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .set_requires_trust_check("git", true)
+            .await
+            .unwrap();
+        let mut agent = agent_with_memory(memory);
+
+        let out = agent
+            .handle_skill_trust_command_as_string(&["git"])
+            .await
+            .unwrap();
+        assert!(out.contains("requires_trust_check=true"));
     }
 }

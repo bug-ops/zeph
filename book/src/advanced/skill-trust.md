@@ -55,6 +55,41 @@ When promoting a skill's trust level via `zeph skill trust <name> trusted` or `z
 
 Run `zeph skill verify <name>` to check integrity without changing trust level.
 
+## Per-Invocation Integrity Re-Check
+
+The promotion-time hash check above runs once, when you set a skill to `trusted`/`verified`. It
+does not protect against `SKILL.md` being modified on disk *after* promotion — a tampered file
+stays `trusted` until someone happens to run `zeph skill verify` again.
+
+Setting the `requires_trust_check` flag on a skill closes that gap: with the flag armed, the
+BLAKE3 hash is recomputed and compared against the stored hash on *every* dispatch (`load_skill`,
+`invoke_skill`, and `zeph skill invoke`), not just at promotion time. A mismatch aborts the
+invocation and demotes the skill to `quarantined` immediately, before its body is ever returned.
+
+Arm it with `--require-check` on the trust-setting commands:
+
+```bash
+# CLI
+zeph skill trust my-skill trusted --require-check
+```
+
+```text
+# In-session
+/skill trust my-skill trusted --require-check
+```
+
+`/skill trust <name>` (no level argument) shows the flag's current state as
+`requires_trust_check=true|false`. There is no command to clear it yet — the only way is to
+manually update the `requires_trust_check` column in the `skill_trust` SQLite table directly.
+This is a known usability gap, not a security one (the flag only ever makes enforcement
+stricter).
+
+> **Note:** `zeph skill invoke <name>` shares its trust pipeline with `load_skill`/`invoke_skill`.
+> A skill with no trust record at all resolves to `trusted` ("never classified", not "known
+> untrusted") across all three, not `quarantined` — this differs from the "newly discovered skill"
+> default in [Trust Tiers](#trust-tiers) above, which applies once a skill *has* been installed
+> and given a trust row.
+
 ## Managed Skills Directory
 
 External skills installed via `zeph skill install` are stored in `~/.config/zeph/skills/`. This directory is automatically appended to `skills.paths` at startup — no manual configuration required. Skills in this directory follow the same structure as local skills (`<name>/SKILL.md`).
@@ -65,7 +100,7 @@ External skills installed via `zeph skill install` are stored in `~/.config/zeph
 |---------|-------------|
 | `/skill trust` | List all skills with their trust level, source, and hash |
 | `/skill trust <name>` | Show trust details for a specific skill |
-| `/skill trust <name> <level>` | Set trust level (`trusted`, `verified`, `quarantined`, `blocked`) |
+| `/skill trust <name> <level>` | Set trust level (`trusted`, `verified`, `quarantined`, `blocked`); append `--require-check` to also arm the [per-invocation integrity re-check](#per-invocation-integrity-re-check) |
 | `/skill block <name>` | Block a skill (all tool access denied) |
 | `/skill unblock <name>` | Unblock a skill (reverts to `quarantined`) |
 | `/skill install <url\|path>` | Install an external skill (git URL or local path) with hot reload |

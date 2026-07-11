@@ -11,6 +11,10 @@
 //! the *same* `trust_snapshot` `Arc` (see `agent_setup::build_skill_executors` in the binary
 //! crate), so the two tools cannot drift apart and observe identical trust state within a turn
 //! (#6049, #6050).
+//!
+//! [`SkillTrustGate`] and [`resolve_body`](SkillTrustGate::resolve_body) are also `pub` at the
+//! crate root so the binary crate's `zeph skill invoke` CLI preview command can route through
+//! the exact same pipeline instead of maintaining its own copy (#6079).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,7 +32,8 @@ use crate::skill_invoker::SkillTrustSnapshot;
 ///
 /// Callers match on this to apply their own tool-specific output framing (e.g. `invoke_skill`
 /// appends an `<args>` block to `Body`) before truncating for the LLM.
-pub(crate) enum SkillBodyResolution {
+#[derive(Debug)]
+pub enum SkillBodyResolution {
     /// Refused by policy (blocked) or a failed integrity check — ready-to-return tool summary.
     Refused(String),
     /// `skill_name` has no entry in the registry — ready-to-return tool summary.
@@ -45,13 +50,33 @@ pub(crate) enum SkillBodyResolution {
 /// `trust_snapshot` `Arc` so `load_skill` and `invoke_skill` see identical trust state within a
 /// turn.
 #[derive(Clone, Debug)]
-pub(crate) struct SkillTrustGate {
+pub struct SkillTrustGate {
     registry: Arc<RwLock<SkillRegistry>>,
     trust_snapshot: Arc<RwLock<HashMap<String, SkillTrustSnapshot>>>,
 }
 
 impl SkillTrustGate {
-    pub(crate) fn new(
+    /// Build a gate over `registry` and `trust_snapshot`.
+    ///
+    /// `trust_snapshot` should be the same `Arc` shared with any other trust-aware skill-body
+    /// consumer (see `agent_setup::build_skill_executors` in the binary crate) so they all
+    /// observe identical trust state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use std::sync::Arc;
+    ///
+    /// use parking_lot::RwLock;
+    /// use zeph_core::SkillTrustGate;
+    /// use zeph_skills::registry::SkillRegistry;
+    ///
+    /// let registry = Arc::new(RwLock::new(SkillRegistry::empty()));
+    /// let trust_snapshot = Arc::new(RwLock::new(HashMap::new()));
+    /// let _gate = SkillTrustGate::new(registry, trust_snapshot);
+    /// ```
+    pub fn new(
         registry: Arc<RwLock<SkillRegistry>>,
         trust_snapshot: Arc<RwLock<HashMap<String, SkillTrustSnapshot>>>,
     ) -> Self {
@@ -145,10 +170,33 @@ impl SkillTrustGate {
     /// A missing trust-snapshot row resolves to `SkillTrustLevel::MISSING_ENTRY_FALLBACK`
     /// (Trusted) — "never classified", not "known untrusted". `skill_name` is sanitized before
     /// it appears in any returned message, including the not-found path.
-    pub(crate) async fn resolve_body(
-        &self,
-        skill_name: &str,
-    ) -> Result<SkillBodyResolution, ToolError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when the `requires_trust_check` integrity re-check's
+    /// `spawn_blocking` task panics or is cancelled — a hash mismatch, missing skill directory,
+    /// or unreadable `SKILL.md` are reported as `Ok(SkillBodyResolution::Refused(_))`, not `Err`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::collections::HashMap;
+    /// # use std::sync::Arc;
+    /// # use parking_lot::RwLock;
+    /// # use zeph_core::{SkillBodyResolution, SkillTrustGate};
+    /// # use zeph_skills::registry::SkillRegistry;
+    /// # #[tokio::main] async fn main() {
+    /// let registry = Arc::new(RwLock::new(SkillRegistry::empty()));
+    /// let trust_snapshot = Arc::new(RwLock::new(HashMap::new()));
+    /// let gate = SkillTrustGate::new(registry, trust_snapshot);
+    ///
+    /// match gate.resolve_body("nonexistent").await.unwrap() {
+    ///     SkillBodyResolution::NotFound(message) => assert!(message.contains("nonexistent")),
+    ///     _ => panic!("expected NotFound for an empty registry"),
+    /// }
+    /// # }
+    /// ```
+    pub async fn resolve_body(&self, skill_name: &str) -> Result<SkillBodyResolution, ToolError> {
         let snapshot = self.resolve_snapshot(skill_name);
         let trust = snapshot
             .as_ref()
@@ -198,6 +246,151 @@ impl SkillTrustGate {
             Err(_) => Ok(SkillBodyResolution::NotFound(format!(
                 "skill not found: {skill_name_safe}"
             ))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use zeph_skills::trust::compute_skill_hash;
+
+    use super::*;
+
+    fn make_registry_with_skill(dir: &Path, name: &str, body: &str) -> SkillRegistry {
+        let skill_dir = dir.join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: test skill\n---\n{body}"),
+        )
+        .unwrap();
+        SkillRegistry::load(&[dir.to_path_buf()])
+    }
+
+    fn make_gate(
+        registry: SkillRegistry,
+        snapshots: HashMap<String, SkillTrustSnapshot>,
+    ) -> SkillTrustGate {
+        SkillTrustGate::new(
+            Arc::new(RwLock::new(registry)),
+            Arc::new(RwLock::new(snapshots)),
+        )
+    }
+
+    // Exercises the gate directly (bypassing `SkillLoaderExecutor`/`SkillInvokeExecutor`) to
+    // guard the pipeline the CLI's `zeph skill invoke` now shares with the agent tools (#6079).
+
+    #[tokio::test]
+    async fn blocked_skill_refused_without_body_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "secret body that must not leak";
+        let registry = make_registry_with_skill(dir.path(), "blocked-skill", body);
+        let snapshots = HashMap::from([(
+            "blocked-skill".to_owned(),
+            SkillTrustSnapshot {
+                trust_level: SkillTrustLevel::Blocked,
+                requires_trust_check: false,
+                blake3_hash: String::new(),
+            },
+        )]);
+        let gate = make_gate(registry, snapshots);
+        match gate.resolve_body("blocked-skill").await.unwrap() {
+            SkillBodyResolution::Refused(message) => {
+                assert!(message.contains("blocked by policy"));
+                assert!(!message.contains("secret body"));
+            }
+            other => panic!("expected Refused, got a different variant: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn not_found_sanitizes_skill_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+        let gate = make_gate(registry, HashMap::new());
+        match gate.resolve_body("<|im_start|>nonexistent").await.unwrap() {
+            SkillBodyResolution::NotFound(message) => {
+                assert!(message.contains("skill not found"));
+                assert!(message.contains("[BLOCKED:<|im_start|>]"));
+                assert!(
+                    !message
+                        .replace("[BLOCKED:<|im_start|>]", "")
+                        .contains("<|im_start|>")
+                );
+            }
+            other => panic!("expected NotFound, got a different variant: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn requires_trust_check_hash_match_returns_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "trusted content";
+        let registry = make_registry_with_skill(dir.path(), "checked-skill", body);
+        let hash = compute_skill_hash(&dir.path().join("checked-skill")).unwrap();
+        let snapshots = HashMap::from([(
+            "checked-skill".to_owned(),
+            SkillTrustSnapshot {
+                trust_level: SkillTrustLevel::Trusted,
+                requires_trust_check: true,
+                blake3_hash: hash,
+            },
+        )]);
+        let gate = make_gate(registry, snapshots);
+        match gate.resolve_body("checked-skill").await.unwrap() {
+            SkillBodyResolution::Body(returned) => assert!(returned.contains(body)),
+            other => panic!("expected Body, got a different variant: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn requires_trust_check_hash_mismatch_demotes_and_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "content that changed after install";
+        let registry = make_registry_with_skill(dir.path(), "tampered-skill", body);
+        let snapshots = HashMap::from([(
+            "tampered-skill".to_owned(),
+            SkillTrustSnapshot {
+                trust_level: SkillTrustLevel::Trusted,
+                requires_trust_check: true,
+                blake3_hash: "0".repeat(64),
+            },
+        )]);
+        let trust_snapshot = Arc::new(RwLock::new(snapshots));
+        let gate =
+            SkillTrustGate::new(Arc::new(RwLock::new(registry)), Arc::clone(&trust_snapshot));
+        match gate.resolve_body("tampered-skill").await.unwrap() {
+            SkillBodyResolution::Refused(message) => {
+                assert!(message.contains("demoted to Quarantined"));
+                assert!(!message.contains(body));
+            }
+            other => panic!("expected Refused, got a different variant: {other:?}"),
+        }
+        assert_eq!(
+            trust_snapshot
+                .read()
+                .get("tampered-skill")
+                .unwrap()
+                .trust_level,
+            SkillTrustLevel::Quarantined,
+            "in-memory snapshot must reflect the demotion for subsequent calls this turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_snapshot_defaults_to_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "unclassified skill body";
+        let registry = make_registry_with_skill(dir.path(), "unknown-skill", body);
+        let gate = make_gate(registry, HashMap::new());
+        match gate.resolve_body("unknown-skill").await.unwrap() {
+            SkillBodyResolution::Body(returned) => {
+                assert!(!returned.contains("QUARANTINED"));
+                assert!(returned.contains(body));
+            }
+            other => panic!("expected Body, got a different variant: {other:?}"),
         }
     }
 }

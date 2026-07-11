@@ -474,6 +474,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_requires_trust_check_flag() {
+        let store = test_store().await;
+
+        store
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Trusted,
+                SourceKind::Local,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+
+        let row = store.load_skill_trust("git").await.unwrap().unwrap();
+        assert!(
+            !row.requires_trust_check,
+            "requires_trust_check must default to false on insert"
+        );
+
+        let updated = store.set_requires_trust_check("git", true).await.unwrap();
+        assert!(updated);
+        let row = store.load_skill_trust("git").await.unwrap().unwrap();
+        assert!(row.requires_trust_check);
+
+        let updated = store.set_requires_trust_check("git", false).await.unwrap();
+        assert!(updated);
+        let row = store.load_skill_trust("git").await.unwrap().unwrap();
+        assert!(!row.requires_trust_check);
+    }
+
+    #[tokio::test]
+    async fn set_requires_trust_check_nonexistent() {
+        let store = test_store().await;
+        let updated = store.set_requires_trust_check("nope", true).await.unwrap();
+        assert!(!updated);
+    }
+
+    #[tokio::test]
     async fn update_hash() {
         let store = test_store().await;
 
