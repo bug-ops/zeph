@@ -12,6 +12,67 @@ use super::{
     validate_url_scheme, validate_url_scheme_ephemeral,
 };
 
+/// Build an HTTP client that refuses to follow any redirect leaving the `https` scheme.
+///
+/// Shared by every archive-download call site ([`PluginManager::add_remote`],
+/// [`PluginManager::download_archive`], and [`download_and_extract`]) so a malicious or
+/// compromised host cannot downgrade a redirect chain from `https://` to plaintext `http://`
+/// mid-download (an MITM-enabling protocol downgrade).
+fn https_safe_client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.url().scheme() == "https" {
+                attempt.follow()
+            } else {
+                let redirect_url = attempt.url().to_string();
+                attempt.error(format!(
+                    "redirect to non-HTTPS URL is not permitted: {redirect_url}"
+                ))
+            }
+        }))
+        .build()
+}
+
+/// Send a `GET` request to `url` through [`https_safe_client`], bounded by `timeout`.
+///
+/// reqwest surfaces the redirect policy's rejection as a generic transport error; this
+/// re-classifies it into [`PluginError::InsecureUrl`] so callers can distinguish a
+/// downgrade-redirect rejection from an ordinary connection failure.
+async fn get_https_safe(
+    url: &str,
+    timeout: std::time::Duration,
+) -> Result<reqwest::Response, PluginError> {
+    let client = https_safe_client().map_err(|e| PluginError::DownloadFailed {
+        url: url.to_owned(),
+        reason: format!("failed to build HTTP client: {e}"),
+    })?;
+
+    tokio::time::timeout(timeout, client.get(url).send())
+        .await
+        .map_err(|_| PluginError::DownloadFailed {
+            url: url.to_owned(),
+            reason: format!("download timed out after {}s", timeout.as_secs()),
+        })?
+        .map_err(|e| {
+            // reqwest's top-level Display omits the redirect policy's rejection text (it only
+            // says "error following redirect for url (...)") — the message lives in the
+            // deepest `source()` in the error chain, so walk to it before matching.
+            let mut cause: &dyn std::error::Error = &e;
+            while let Some(source) = cause.source() {
+                cause = source;
+            }
+            let cause_msg = cause.to_string();
+            if cause_msg.contains("redirect to non-HTTPS") {
+                PluginError::InsecureUrl(cause_msg)
+            } else {
+                PluginError::DownloadFailed {
+                    url: url.to_owned(),
+                    reason: e.to_string(),
+                }
+            }
+        })
+}
+
 impl PluginManager {
     /// Download and install a plugin from a remote URL with optional SHA-256 integrity pinning.
     ///
@@ -28,9 +89,14 @@ impl PluginManager {
     /// are encouraged to always supply the expected hash; unverified installs are permitted by
     /// default for backward compatibility but should be avoided in production.
     ///
+    /// The underlying HTTP client refuses to follow any redirect that leaves `https://`, so a
+    /// compromised or malicious host cannot downgrade the connection to plaintext `http://`
+    /// mid-download.
+    ///
     /// # Errors
     ///
     /// - [`PluginError::DownloadFailed`] — HTTP request failed or returned a non-2xx status.
+    /// - [`PluginError::InsecureUrl`] — a redirect tried to downgrade from `https://` to `http://`.
     /// - [`PluginError::IntegrityCheckFailed`] — SHA-256 digest mismatch.
     /// - [`PluginError::InvalidSource`] — archive cannot be extracted.
     /// - Any error that [`Self::add`] can return.
@@ -65,16 +131,7 @@ impl PluginManager {
 
         let timeout = std::time::Duration::from_secs(self.download_timeout_secs);
 
-        let response = tokio::time::timeout(timeout, reqwest::get(url))
-            .await
-            .map_err(|_| PluginError::DownloadFailed {
-                url: url.to_owned(),
-                reason: format!("download timed out after {}s", self.download_timeout_secs),
-            })?
-            .map_err(|e| PluginError::DownloadFailed {
-                url: url.to_owned(),
-                reason: e.to_string(),
-            })?;
+        let response = get_https_safe(url, timeout).await?;
 
         if !response.status().is_success() {
             return Err(PluginError::DownloadFailed {
@@ -358,9 +415,8 @@ impl PluginManager {
         url: &str,
         timeout: std::time::Duration,
     ) -> Result<Vec<u8>, String> {
-        let response = tokio::time::timeout(timeout, reqwest::get(url))
+        let response = get_https_safe(url, timeout)
             .await
-            .map_err(|_| format!("download timed out after {}s", timeout.as_secs()))?
             .map_err(|e| e.to_string())?;
 
         if !response.status().is_success() {
@@ -518,42 +574,8 @@ pub async fn download_and_extract(
 ) -> Result<(), PluginError> {
     let timeout = std::time::Duration::from_secs(timeout_secs);
 
-    // Build a client that refuses to follow any redirect that downgrades from https (B1).
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.url().scheme() == "https" {
-                attempt.follow()
-            } else {
-                let redirect_url = attempt.url().to_string();
-                attempt.error(format!(
-                    "redirect to non-HTTPS URL is not permitted: {redirect_url}"
-                ))
-            }
-        }))
-        .build()
-        .map_err(|e| PluginError::DownloadFailed {
-            url: url.to_owned(),
-            reason: format!("failed to build HTTP client: {e}"),
-        })?;
-
-    let response = tokio::time::timeout(timeout, client.get(url).send())
-        .await
-        .map_err(|_| PluginError::DownloadFailed {
-            url: url.to_owned(),
-            reason: format!("download timed out after {timeout_secs}s"),
-        })?
-        .map_err(|e| {
-            // reqwest surfaces our custom redirect error as a generic error; re-classify it.
-            let msg = e.to_string();
-            if msg.contains("redirect to non-HTTPS") {
-                PluginError::InsecureUrl(msg)
-            } else {
-                PluginError::DownloadFailed {
-                    url: url.to_owned(),
-                    reason: msg,
-                }
-            }
-        })?;
+    // Refuses to follow any redirect that downgrades from https (B1).
+    let response = get_https_safe(url, timeout).await?;
 
     if !response.status().is_success() {
         return Err(PluginError::DownloadFailed {

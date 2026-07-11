@@ -43,6 +43,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- `zeph-plugins`: the HTTPS-downgrade-redirect protection in `registry.rs`
+  (a `reqwest::redirect::Policy::custom` that rejects any redirect leaving the `https`
+  scheme) previously guarded only `add_remote_ephemeral`'s session-scoped install path.
+  `PluginManager::add_remote` (permanent plugin install) and `download_archive` (used by
+  the unattended `check_auto_updates`/`update_one_plugin` auto-update path, which runs on
+  every process startup for any plugin with `auto_update = true`) both used the bare
+  `reqwest::get(url)` global client instead, following up to 10 redirects with no
+  scheme-downgrade restriction (#6099). The anti-downgrade client construction is now a
+  shared `https_safe_client()` helper used by all three archive-download call sites.
 - `zeph-mcp`: `PinningOAuthHttpClient` (#6074) resolved, SSRF-validated, and DNS-pinned
   the target host of every OAuth HTTP request, but its underlying `reqwest::Client`
   only disabled auto-following redirects for `OAuthHttpRedirectPolicy::Stop` requests

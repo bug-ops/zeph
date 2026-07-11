@@ -2270,3 +2270,101 @@ path = "../outside-skill"
         "dest must not be touched when the staged manifest fails validation"
     );
 }
+
+// --- regression: #6099 HTTPS downgrade redirect protection ---
+
+#[tokio::test]
+async fn add_remote_rejects_https_downgrade_redirect() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let mock_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", "http://evil.example.com/payload.tar.gz"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = PluginManager::new(
+        tmp.path().join("plugins"),
+        tmp.path().join("managed"),
+        vec![],
+        vec![],
+    );
+    let url = format!("{}/redirect.tar.gz", mock_server.uri());
+    let err = mgr.add_remote(&url, None).await.unwrap_err();
+    assert!(
+        matches!(err, PluginError::InsecureUrl(ref reason) if reason.contains("non-HTTPS")),
+        "add_remote must reject a redirect leaving https, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn check_auto_updates_rejects_https_downgrade_redirect() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let manifest = r#"[plugin]
+name = "downgrade-update"
+version = "0.1.0"
+description = "test"
+auto_update = true
+
+[[skills]]
+path = "skills/my-skill"
+"#;
+    write_plugin(
+        &source,
+        "downgrade-update",
+        manifest,
+        &[("my-skill", "body")],
+    );
+    let archive = build_tar_gz(&source);
+    let hash = crate::integrity::sha256_hex(&archive);
+
+    let mock_server = MockServer::start().await;
+    // Install succeeds.
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(archive)
+                .append_header("Content-Type", "application/octet-stream"),
+        )
+        .up_to_n_times(1)
+        .mount(&mock_server)
+        .await;
+    // Auto-update check redirects to a non-HTTPS URL — must be rejected, not followed.
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", "http://evil.example.com/payload.tar.gz"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let plugins_dir = tmp.path().join("plugins");
+    let managed_dir = tmp.path().join("managed");
+    let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+    let url = format!("{}/downgrade-update.tar.gz", mock_server.uri());
+    mgr.add_remote(&url, Some(&hash)).await.unwrap();
+
+    let results = mgr.check_auto_updates().await;
+    assert_eq!(results.len(), 1);
+    assert!(
+        matches!(
+            &results[0].status,
+            AutoUpdateStatus::Failed(reason) if reason.contains("non-HTTPS")
+        ),
+        "auto-update must reject a redirect leaving https, got {:?}",
+        results[0].status
+    );
+
+    // Plugin must still be installed at the old version — the downgraded update never applied.
+    let installed = mgr.list_installed().unwrap();
+    assert_eq!(installed[0].version, "0.1.0");
+}
