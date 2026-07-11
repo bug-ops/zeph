@@ -79,7 +79,9 @@ pub struct WorktreeConfig {
     /// Applied to every `git` call issued by the worktree subsystem (e.g.
     /// `git worktree add`, `git fetch`, `git rev-parse`).  Increase this value
     /// on repositories that are slow to clone or when running over high-latency
-    /// network links.  A value of `0` is treated as `1` at the call site.
+    /// network links.  A value of `0` is clamped to `1` second by
+    /// [`DefaultGitRunner`](https://docs.rs/zeph-worktree/latest/zeph_worktree/git_runner/struct.DefaultGitRunner.html),
+    /// not by any call site.
     pub git_timeout_secs: u64,
 }
 

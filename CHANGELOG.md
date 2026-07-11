@@ -110,6 +110,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   classification) is now constructed and registered as a tool executor, with its trust-snapshot
   `Arc` also threaded onto the `Agent` via `with_trust_snapshot`, in ACP and daemon — previously
   `invoke_skill` was effectively CLI-only (#5975).
+- `fix(worktree)`: `WorktreeManager::reconcile()` no longer silently drops detached-`HEAD`
+  worktrees (#5936). `git worktree list --porcelain` emits a `detached` line instead of
+  `branch refs/heads/<name>` for these worktrees; the porcelain parser previously only flushed a
+  parsed block when both a `worktree <path>` line and a `branch` line were seen, so detached
+  entries were discarded and became permanently invisible to `zeph worktree list`/`zeph worktree
+  clean`. A block is now flushed whenever its `worktree <path>` line is seen, and detached
+  entries get the new `zeph_worktree::DETACHED_BRANCH_SENTINEL` (`"(detached HEAD)"` — the
+  embedded space makes it an invalid git ref name, so it can never collide with a real branch,
+  including one on a worktree foreign to zeph) as their `branch_name`; `WorktreeManager::remove`
+  skips the `git branch -D` step for this sentinel since there is no real branch to prune, while
+  the `git worktree remove --force` path is unaffected (it operates on `path`, not
+  `branch_name`).
+- `fix(worktree)`: `zeph worktree clean` now runs `git worktree prune` after removing stale
+  entries, per spec-063 FR-CLEANUP-04 (#5937). Previously it only issued `git worktree remove
+  --force` for entries discovered by `reconcile()`, leaving any stale administrative files (e.g.
+  from a worktree directory deleted outside Zeph) in the git registry. Added
+  `WorktreeManager::prune()`.
+- `fix(worktree)`: `DefaultGitRunner` now clamps `git_timeout_secs = 0` (and any sub-second
+  timeout) to a 1-second floor inside `new()`/`with_timeout()` itself, per spec-063's NEVER
+  invariant (#5939). Previously the clamp was duplicated ad hoc at two call sites
+  (`src/runner.rs`, `src/commands/worktree.rs`) and the crate's own `Default` impl bypassed both,
+  so `DefaultGitRunner::default()` (and any other future call site) could still construct a
+  zero-timeout runner where every `git` invocation failed instantly. Both call-site `.max(1)`
+  duplications were removed now that the crate enforces the invariant internally; the
+  `git_timeout_secs` doc comment on `WorktreeConfig` was corrected to say so.
 - `fix(tools)`: `CompressedExecutor`, `ToolFilter`, and `Arc<ShellExecutor>` now forward the
   remaining cross-cutting `ToolExecutor` methods to their inner/wrapped executor instead of
   silently falling through to the trait's no-op defaults (#6012). `CompressedExecutor` now

@@ -52,24 +52,39 @@ pub trait GitRunner: Send + Sync {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct DefaultGitRunner {
     timeout: Duration,
 }
+
+/// Floor applied to every configured timeout so a `git_timeout_secs = 0`
+/// misconfiguration cannot produce an instantly-expiring command timeout
+/// (spec-063 NEVER: `git_timeout_secs = 0` is disallowed).
+const MIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 impl DefaultGitRunner {
     /// Creates a runner with the default 30-second command timeout.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            timeout: Duration::from_secs(30),
-        }
+        Self::with_timeout(Duration::from_secs(30))
     }
 
     /// Creates a runner with a custom command timeout.
+    ///
+    /// `timeout` is clamped to a minimum of one second — a zero (or
+    /// sub-second) timeout would make every `git` invocation fail
+    /// immediately, which is never the caller's intent.
     #[must_use]
     pub fn with_timeout(timeout: Duration) -> Self {
-        Self { timeout }
+        Self {
+            timeout: timeout.max(MIN_TIMEOUT),
+        }
+    }
+}
+
+impl Default for DefaultGitRunner {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -221,5 +236,31 @@ impl GitRunner for FakeGitRunner {
             stdout: response.stdout,
             stderr: response.stderr,
         })
+    }
+}
+
+#[cfg(test)]
+mod runner_tests {
+    use super::*;
+
+    /// Regression test for #5939: `git_timeout_secs = 0` (surfaced as
+    /// `Duration::ZERO`) must not produce a runner whose every `git`
+    /// invocation times out instantly.
+    #[test]
+    fn with_timeout_clamps_zero_to_one_second() {
+        let runner = DefaultGitRunner::with_timeout(Duration::ZERO);
+        assert_eq!(runner.timeout, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn with_timeout_preserves_values_above_the_floor() {
+        let runner = DefaultGitRunner::with_timeout(Duration::from_mins(1));
+        assert_eq!(runner.timeout, Duration::from_mins(1));
+    }
+
+    #[test]
+    fn default_and_new_are_never_zero() {
+        assert_eq!(DefaultGitRunner::default().timeout, Duration::from_secs(30));
+        assert_eq!(DefaultGitRunner::new().timeout, Duration::from_secs(30));
     }
 }

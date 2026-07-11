@@ -33,8 +33,9 @@ pub(crate) async fn handle_worktree_command(
         anyhow::anyhow!("Not inside a git repository. Worktree commands require a git repo.")
     })?;
 
-    let timeout_secs = config.worktree.git_timeout_secs.max(1);
-    let runner = DefaultGitRunner::with_timeout(std::time::Duration::from_secs(timeout_secs));
+    let runner = DefaultGitRunner::with_timeout(std::time::Duration::from_secs(
+        config.worktree.git_timeout_secs,
+    ));
     probe_capabilities(&runner, &repo_root).await?;
     let wm = DefaultWorktreeManager::new(repo_root, config.worktree.clone(), runner).await?;
 
@@ -69,6 +70,11 @@ pub(crate) async fn handle_worktree_command(
                 {
                     eprintln!("warning: failed to remove {}: {e}", handle.path.display());
                 }
+            }
+            // FR-CLEANUP-04: clear any remaining stale administrative entries
+            // (e.g. worktrees deleted outside Zeph) from the git registry.
+            if let Err(e) = wm.prune().await {
+                eprintln!("warning: failed to prune worktree registry: {e}");
             }
             println!("Removed {count} stale worktree(s).");
         }

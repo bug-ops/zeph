@@ -50,7 +50,7 @@ pub mod sanitize;
 
 pub use error::WorktreeError;
 pub use git_runner::{DefaultGitRunner, GitRunner};
-pub use handle::WorktreeHandle;
+pub use handle::{DETACHED_BRANCH_SENTINEL, WorktreeHandle};
 pub use manager::{WorktreeManager, probe_capabilities};
 
 /// A [`WorktreeManager`] using the production [`DefaultGitRunner`].

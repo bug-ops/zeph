@@ -13,7 +13,7 @@ use zeph_config::{WorktreeBaseRef, WorktreeConfig};
 use crate::{
     error::WorktreeError,
     git_runner::GitRunner,
-    handle::WorktreeHandle,
+    handle::{DETACHED_BRANCH_SENTINEL, WorktreeHandle},
     sanitize::{canonicalize_root, validate_branch_component},
 };
 
@@ -231,12 +231,21 @@ impl<R: GitRunner> WorktreeManager<R> {
             .retain(|h| h.path != handle.path);
 
         if prune_branch {
-            let branch = &handle.branch_name;
-            let out = self
-                .runner
-                .run(&["branch", "-D", "--", branch], &self.repo_root)
-                .await?;
-            check_git_status(&out, "branch -D")?;
+            if handle.branch_name == DETACHED_BRANCH_SENTINEL {
+                // A detached-HEAD worktree (see `reconcile`) has no branch to
+                // prune; `git branch -D` would just fail against the sentinel.
+                tracing::debug!(
+                    path = %handle.path.display(),
+                    "skipping branch prune for detached-HEAD worktree"
+                );
+            } else {
+                let branch = &handle.branch_name;
+                let out = self
+                    .runner
+                    .run(&["branch", "-D", "--", branch], &self.repo_root)
+                    .await?;
+                check_git_status(&out, "branch -D")?;
+            }
         }
 
         Ok(())
@@ -312,17 +321,59 @@ impl<R: GitRunner> WorktreeManager<R> {
 
         Ok(stale)
     }
+
+    /// Runs `git worktree prune` to clear stale administrative entries from
+    /// the git worktree registry (e.g. left behind when a worktree directory
+    /// was deleted directly instead of via [`remove`][Self::remove]).
+    ///
+    /// Per FR-CLEANUP-04, this SHALL be called by `zeph worktree clean` after
+    /// [`reconcile`][Self::reconcile]'s stale entries have been removed via
+    /// `git worktree remove --force`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorktreeError::GitCommand`] if `git worktree prune` fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(mgr: &zeph_worktree::DefaultWorktreeManager) -> Result<(), zeph_worktree::WorktreeError> {
+    /// mgr.prune().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[instrument(name = "worktree.prune", skip(self), err)]
+    pub async fn prune(&self) -> Result<(), WorktreeError> {
+        let out = self
+            .runner
+            .run(&["worktree", "prune"], &self.repo_root)
+            .await?;
+        check_git_status(&out, "worktree prune")?;
+        Ok(())
+    }
 }
 
 /// Parses the output of `git worktree list --porcelain` into [`WorktreeHandle`]s.
 ///
-/// Each worktree block in the porcelain output looks like:
+/// Each worktree block in the porcelain output looks like either:
 /// ```text
 /// worktree /path/to/worktree
 /// HEAD deadbeef...
 /// branch refs/heads/branch-name
 ///
 /// ```
+/// or, for a worktree on a detached `HEAD`:
+/// ```text
+/// worktree /path/to/worktree
+/// HEAD deadbeef...
+/// detached
+///
+/// ```
+/// A block is flushed as soon as its `worktree <path>` line is seen (i.e. when
+/// the *next* block starts, or at end of output) — regardless of whether a
+/// `branch` line was present. Detached-HEAD blocks get
+/// [`DETACHED_BRANCH_SENTINEL`] as their `branch_name` so they are not silently
+/// dropped (#5936).
 fn parse_worktree_list_porcelain(output: &str) -> Vec<WorktreeHandle> {
     let mut result = Vec::new();
     let mut path: Option<PathBuf> = None;
@@ -330,15 +381,8 @@ fn parse_worktree_list_porcelain(output: &str) -> Vec<WorktreeHandle> {
 
     for line in output.lines() {
         if let Some(p) = line.strip_prefix("worktree ") {
-            // Flush previous block if any.
-            if let (Some(wt_path), Some(br)) = (path.take(), branch.take()) {
-                result.push(WorktreeHandle {
-                    path: wt_path,
-                    branch_name: br,
-                    base_ref_resolved: String::new(),
-                    subagent_id: String::new(),
-                    created_at: SystemTime::UNIX_EPOCH,
-                });
+            if let Some(handle) = flush_worktree_block(path.take(), branch.take()) {
+                result.push(handle);
             }
             path = Some(PathBuf::from(p));
         } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
@@ -346,18 +390,24 @@ fn parse_worktree_list_porcelain(output: &str) -> Vec<WorktreeHandle> {
         }
     }
 
-    // Flush the last block.
-    if let (Some(wt_path), Some(br)) = (path, branch) {
-        result.push(WorktreeHandle {
-            path: wt_path,
-            branch_name: br,
-            base_ref_resolved: String::new(),
-            subagent_id: String::new(),
-            created_at: SystemTime::UNIX_EPOCH,
-        });
+    if let Some(handle) = flush_worktree_block(path, branch) {
+        result.push(handle);
     }
 
     result
+}
+
+/// Builds a [`WorktreeHandle`] from one parsed porcelain block, if a
+/// `worktree <path>` line was seen. `branch` is `None` for detached-`HEAD`
+/// worktrees and resolves to [`DETACHED_BRANCH_SENTINEL`].
+fn flush_worktree_block(path: Option<PathBuf>, branch: Option<String>) -> Option<WorktreeHandle> {
+    path.map(|wt_path| WorktreeHandle {
+        path: wt_path,
+        branch_name: branch.unwrap_or_else(|| DETACHED_BRANCH_SENTINEL.to_string()),
+        base_ref_resolved: String::new(),
+        subagent_id: String::new(),
+        created_at: SystemTime::UNIX_EPOCH,
+    })
 }
 
 // --- Internal helpers -------------------------------------------------------
@@ -762,6 +812,30 @@ mod tests {
         mgr.remove(&handle, false).await.unwrap();
     }
 
+    /// Regression test for #5936: a detached-HEAD handle (`branch_name` ==
+    /// [`DETACHED_BRANCH_SENTINEL`]) has no real branch to prune. `remove` must
+    /// not issue a `git branch -D` call for it even when `prune_branch = true` —
+    /// only the single `worktree remove` response is queued, so an unwanted
+    /// second git call would panic the `FakeGitRunner` on an empty queue.
+    #[tokio::test]
+    async fn remove_skips_branch_prune_for_detached_head() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        // worktree remove → success (only response queued)
+        runner.push_ok(b"" as &[u8]);
+
+        let mgr = make_manager(&dir, runner).await;
+        let handle = WorktreeHandle {
+            path: dir.path().join("worktrees/detached-1"),
+            branch_name: DETACHED_BRANCH_SENTINEL.to_string(),
+            base_ref_resolved: String::new(),
+            subagent_id: String::new(),
+            created_at: SystemTime::now(),
+        };
+
+        mgr.remove(&handle, true).await.unwrap();
+    }
+
     #[tokio::test]
     async fn remove_with_branch_prune_issues_two_git_calls() {
         let dir = make_repo();
@@ -843,6 +917,142 @@ mod tests {
         // The main worktree (repo_root) is filtered out; only agent worktrees remain.
         assert_eq!(stale.len(), 1);
         assert_eq!(stale[0].branch_name, "agent/agent-1");
+    }
+
+    /// Regression test for #5936: a `detached` line (instead of `branch
+    /// refs/heads/<name>`) must not cause the block to be silently dropped.
+    #[tokio::test]
+    async fn reconcile_includes_detached_head_worktree() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\nworktree {0}/worktrees/detached-1\nHEAD def456\ndetached\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain.into_bytes());
+
+        let mgr = make_manager(&dir, runner).await;
+        let stale = mgr.reconcile().await.unwrap();
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].branch_name, DETACHED_BRANCH_SENTINEL);
+        assert_eq!(stale[0].path, dir.path().join("worktrees/detached-1"));
+    }
+
+    /// A detached-HEAD block that is also the *last* block in the porcelain
+    /// output (no trailing `worktree` line to trigger the flush) must still be
+    /// included — exercises the end-of-output flush path specifically.
+    #[test]
+    fn parse_worktree_list_porcelain_flushes_trailing_detached_block() {
+        let output = "worktree /repo\nHEAD abc123\ndetached\n";
+        let result = parse_worktree_list_porcelain(output);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path, PathBuf::from("/repo"));
+        assert_eq!(result[0].branch_name, DETACHED_BRANCH_SENTINEL);
+    }
+
+    /// Two secondary detached-HEAD worktrees back to back (no `branch` line
+    /// anywhere between them) must both be flushed independently, not merged
+    /// into one block or have the first one dropped when the second
+    /// `worktree` line triggers its flush.
+    #[test]
+    fn parse_worktree_list_porcelain_flushes_consecutive_detached_blocks() {
+        let output = "worktree /repo/wt-a\nHEAD aaa111\ndetached\n\nworktree /repo/wt-b\nHEAD bbb222\ndetached\n\n";
+        let result = parse_worktree_list_porcelain(output);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].path, PathBuf::from("/repo/wt-a"));
+        assert_eq!(result[0].branch_name, DETACHED_BRANCH_SENTINEL);
+        assert_eq!(result[1].path, PathBuf::from("/repo/wt-b"));
+        assert_eq!(result[1].branch_name, DETACHED_BRANCH_SENTINEL);
+    }
+
+    /// Regression test for #5936: a repo where *every* worktree — including
+    /// the main one — is on a detached `HEAD` (e.g. a shallow CI checkout)
+    /// has no `branch refs/heads/` line anywhere in the porcelain output.
+    /// `reconcile` must still parse without panicking; the main worktree is
+    /// filtered out by path (not by branch), so the only surviving entry is
+    /// the secondary detached worktree.
+    #[tokio::test]
+    async fn reconcile_repo_with_only_detached_head_worktrees() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\ndetached\n\nworktree {0}/worktrees/detached-2\nHEAD def456\ndetached\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain.into_bytes());
+
+        let mgr = make_manager(&dir, runner).await;
+        let stale = mgr.reconcile().await.unwrap();
+        assert_eq!(stale.len(), 1, "main worktree filtered out by path only");
+        assert_eq!(stale[0].branch_name, DETACHED_BRANCH_SENTINEL);
+        assert_eq!(stale[0].path, dir.path().join("worktrees/detached-2"));
+    }
+
+    /// **Finding for reviewer**: `git worktree list --porcelain` emits a
+    /// `bare` line (not `branch` or `detached`) for the main worktree of a
+    /// bare repository:
+    /// ```text
+    /// worktree /path/to/bare.git
+    /// bare
+    ///
+    /// ```
+    /// (confirmed against real `git worktree list --porcelain` output, git
+    /// 2.50.1 — no `HEAD` line is emitted for bare worktrees at all).
+    ///
+    /// Since #5936's fix flushes a block on *any* `worktree <path>` line
+    /// regardless of what follows, a `bare` block is now also flushed and
+    /// mislabeled with [`DETACHED_BRANCH_SENTINEL`] — even though a bare
+    /// worktree is semantically distinct from a detached-`HEAD` worktree.
+    /// This test documents *current* behavior; it is not a statement that
+    /// the behavior is correct. Neither `spec.md` nor `srs.md` for spec-063
+    /// mentions bare-repo worktrees at all, so this is an unspecified gap,
+    /// not a spec violation — but see the tester handoff for why it can
+    /// still cause a misleading `remove()` outcome downstream.
+    #[test]
+    fn parse_worktree_list_porcelain_mislabels_bare_worktree_as_detached() {
+        let output = "worktree /path/to/bare.git\nbare\n\n";
+        let result = parse_worktree_list_porcelain(output);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path, PathBuf::from("/path/to/bare.git"));
+        // Documents the mislabeling: a bare worktree is reported as detached.
+        assert_eq!(result[0].branch_name, DETACHED_BRANCH_SENTINEL);
+    }
+
+    // --- prune ---
+
+    /// Regression test for #5937: `WorktreeManager::prune` must issue exactly
+    /// `git worktree prune` — the command `zeph worktree clean` is required to
+    /// run (FR-CLEANUP-04) after removing stale entries.
+    #[tokio::test]
+    async fn prune_issues_worktree_prune() {
+        let dir = make_repo();
+        let runner = Arc::new(FakeGitRunner::new());
+        runner.push_ok(b"" as &[u8]);
+
+        let mgr =
+            WorktreeManager::new(dir.path().to_path_buf(), test_config(), Arc::clone(&runner))
+                .await
+                .unwrap();
+
+        mgr.prune().await.unwrap();
+
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].0,
+            vec!["worktree".to_string(), "prune".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_propagates_git_failure() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        runner.push_err(b"fatal: not a working tree\n" as &[u8]);
+
+        let mgr = make_manager(&dir, runner).await;
+        let err = mgr.prune().await.unwrap_err();
+        assert_matches!(err, WorktreeError::GitCommand { ref op, .. } if op == "worktree prune");
     }
 
     // --- parse_git_version ---
