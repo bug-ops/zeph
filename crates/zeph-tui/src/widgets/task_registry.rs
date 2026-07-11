@@ -22,7 +22,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, Paragraph};
+use ratatui::widgets::{Clear, List, ListItem, Paragraph};
 use zeph_common::task_supervisor::{TaskSnapshot, TaskStatus};
 
 use crate::theme::Theme;
@@ -109,6 +109,8 @@ pub fn render(
     theme: &Theme,
     ascii: bool,
 ) {
+    frame.render_widget(Clear, area);
+
     let header_text = format!("tasks · {}", snapshots.len());
     let header = Line::from(Span::styled(
         header_text,
@@ -137,6 +139,8 @@ mod tests {
     use std::time::Instant;
 
     use insta::assert_snapshot;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use zeph_common::task_supervisor::{TaskSnapshot, TaskStatus};
 
     use crate::test_utils::render_to_string;
@@ -228,5 +232,52 @@ mod tests {
             super::render(&snapshots, 2, area, frame, &theme, false);
         });
         assert_snapshot!(output);
+    }
+
+    /// Fills the whole area with a sentinel glyph before calling `render`, in the same frame —
+    /// mirroring the real bug shape (#6054): the task registry overlay shares its `Rect` with
+    /// other sidebar widgets but, before the fix, never called `Clear`, so stale glyphs from
+    /// whatever rendered underneath survived in every cell the panel's own content didn't touch.
+    fn render_over_sentinel(snapshots: &[TaskSnapshot]) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                for y in area.top()..area.bottom() {
+                    for x in area.left()..area.right() {
+                        frame.buffer_mut()[(x, y)].set_symbol("#");
+                    }
+                }
+                let theme = crate::theme::Theme::default();
+                super::render(snapshots, 0, area, frame, &theme, false);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn render_clears_stale_glyphs_before_drawing_empty_state() {
+        let buf = render_over_sentinel(&[]);
+        for cell in &buf.content {
+            assert_ne!(
+                cell.symbol(),
+                "#",
+                "stray sentinel glyph survived render — Clear is missing or not applied to the whole area"
+            );
+        }
+    }
+
+    #[test]
+    fn render_clears_stale_glyphs_before_drawing_task_list() {
+        let snapshots = [running_snapshot("config-watcher")];
+        let buf = render_over_sentinel(&snapshots);
+        for cell in &buf.content {
+            assert_ne!(
+                cell.symbol(),
+                "#",
+                "stray sentinel glyph survived render — Clear is missing or not applied to the whole area"
+            );
+        }
     }
 }

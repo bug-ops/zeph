@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph};
 use zeph_common::format_tokens;
 use zeph_memory::store::agent_sessions::{AgentSessionRow, SessionStatus};
 
@@ -78,6 +78,8 @@ pub fn render(
     list_state: &mut ListState,
     theme: &Theme,
 ) {
+    frame.render_widget(Clear, area);
+
     let header_text = format!(
         "fleet · {} session{}  [f]",
         snapshot.sessions.len(),
@@ -121,7 +123,11 @@ pub fn render(
 
 #[cfg(test)]
 mod tests {
-    use super::format_tokens;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use zeph_memory::store::agent_sessions::{SessionChannel, SessionKind};
+
+    use super::*;
 
     #[test]
     fn format_tokens_zero() {
@@ -146,5 +152,76 @@ mod tests {
     #[test]
     fn format_tokens_exactly_1m() {
         assert_eq!(format_tokens(1_000_000), "1.0M");
+    }
+
+    fn sample_row(id: &str) -> AgentSessionRow {
+        AgentSessionRow {
+            id: id.to_owned(),
+            kind: SessionKind::Interactive,
+            status: SessionStatus::Active,
+            channel: SessionChannel::Cli,
+            model: "claude-sonnet-5".to_owned(),
+            created_at: "2026-01-01T00:00:00".to_owned(),
+            last_active_at: "2026-01-01T00:00:00".to_owned(),
+            turns: 3,
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            reasoning_tokens: 0,
+            cost_cents: 1.2345,
+            goal_text: None,
+        }
+    }
+
+    /// Fills the whole area with a sentinel glyph before calling `render`, in the same frame —
+    /// mirroring the real bug shape (#6054): the fleet overlay shares its `Rect` with other
+    /// sidebar widgets (see `render_subagents_slot`) but, before the fix, never called `Clear`,
+    /// so stale glyphs from whatever rendered underneath survived in every cell the panel's own
+    /// content didn't touch.
+    fn render_over_sentinel(snapshot: &FleetSnapshot) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut list_state = ListState::default();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                for y in area.top()..area.bottom() {
+                    for x in area.left()..area.right() {
+                        frame.buffer_mut()[(x, y)].set_symbol("#");
+                    }
+                }
+                render(snapshot, frame, area, &mut list_state, &Theme::default());
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn render_clears_stale_glyphs_before_drawing_empty_state() {
+        let snapshot = FleetSnapshot {
+            sessions: Vec::new(),
+        };
+        let buf = render_over_sentinel(&snapshot);
+        for cell in &buf.content {
+            assert_ne!(
+                cell.symbol(),
+                "#",
+                "stray sentinel glyph survived render — Clear is missing or not applied to the whole area"
+            );
+        }
+    }
+
+    #[test]
+    fn render_clears_stale_glyphs_before_drawing_session_list() {
+        let snapshot = FleetSnapshot {
+            sessions: vec![sample_row("s1")],
+        };
+        let buf = render_over_sentinel(&snapshot);
+        for cell in &buf.content {
+            assert_ne!(
+                cell.symbol(),
+                "#",
+                "stray sentinel glyph survived render — Clear is missing or not applied to the whole area"
+            );
+        }
     }
 }

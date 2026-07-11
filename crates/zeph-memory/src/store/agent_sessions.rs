@@ -36,7 +36,7 @@ impl SessionKind {
 
 impl std::fmt::Display for SessionKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        f.pad(self.as_str())
     }
 }
 
@@ -84,7 +84,7 @@ impl SessionStatus {
 
 impl std::fmt::Display for SessionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        f.pad(self.as_str())
     }
 }
 
@@ -131,7 +131,7 @@ impl SessionChannel {
 
 impl std::fmt::Display for SessionChannel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        f.pad(self.as_str())
     }
 }
 
@@ -531,6 +531,46 @@ mod tests {
         assert_eq!(
             SessionStatus::from_str("unknown").unwrap(),
             SessionStatus::Unknown
+        );
+    }
+
+    /// Locks in the `f.pad` fix (#6015): `f.write_str` ignores width/fill/align flags, so
+    /// `fleet.rs::build_session_item`'s `format!("{:<12}", row.kind)` used to render unpadded
+    /// text and break column alignment. `f.pad` must reproduce the same padding a plain `&str`
+    /// would get under an identical width specifier.
+    #[test]
+    fn session_kind_display_respects_width() {
+        assert_eq!(
+            format!("{:<12}", SessionKind::Interactive),
+            format!("{:<12}", "interactive")
+        );
+        assert_eq!(
+            format!("{:<12}", SessionKind::Acp),
+            format!("{:<12}", "acp")
+        );
+    }
+
+    #[test]
+    fn session_status_display_respects_width() {
+        assert_eq!(
+            format!("{:<11}", SessionStatus::Active),
+            format!("{:<11}", "active")
+        );
+        assert_eq!(
+            format!("{:<11}", SessionStatus::Cancelled),
+            format!("{:<11}", "cancelled")
+        );
+    }
+
+    #[test]
+    fn session_channel_display_respects_width() {
+        assert_eq!(
+            format!("{:<5}", SessionChannel::Cli),
+            format!("{:<5}", "cli")
+        );
+        assert_eq!(
+            format!("{:<5}", SessionChannel::Telegram),
+            format!("{:<5}", "telegram")
         );
     }
 }

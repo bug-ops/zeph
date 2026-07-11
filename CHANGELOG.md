@@ -128,6 +128,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from durable execution simply being unconfigured; `DurableSnapshot.available: bool` is
   replaced with a `DurableStatus` enum (`Unavailable` / `GateRejected` / `Available`) and gate
   rejections now render the distinct `STATUS_GATE_REJECTED` message (#6041).
+- `fix(tui)`: the Fleet and Task Registry sidebar overlay panels (`f`/task-registry keys) had the
+  same missing-`Clear` stray-glyph bug as the durable panel above (#6048) — neither called
+  `Clear` before drawing into their shared sidebar `Rect`, so leftover glyphs from whatever
+  widget last rendered into that area could bleed through. Both now clear their `Rect` first,
+  matching the crate-wide overlay convention (#6054). Also, the Fleet panel's session table
+  rendered its KIND/STATUS/CH columns with no separating whitespace (e.g.
+  `interactiveactivetuigpt-4o-mini`) because `SessionKind`/`SessionStatus`/`SessionChannel`
+  implemented `Display` via `Formatter::write_str`, which silently ignores the width/fill/align
+  flags carried by `fleet.rs`'s `{:<N}` format specifiers; only `Formatter::pad` respects them.
+  All three `Display` impls now use `f.pad(self.as_str())`, so table columns align correctly
+  (#6015).
 - `fix(core,acp,tools)`: three more per-turn behavioral pipelines/executors that were
   constructed and wired into the `Agent` only in `src/runner.rs` (CLI/TUI) now reach ACP,
   daemon (A2A), and `serve-sessions` too — same "wire-X-into-ACP/daemon/serve" defect class as
