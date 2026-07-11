@@ -1255,6 +1255,35 @@ pub(crate) fn build_quality_pipeline(
     }
 }
 
+/// Builds `load_skill`'s [`SkillLoaderExecutor`](zeph_core::SkillLoaderExecutor) and
+/// `invoke_skill`'s [`SkillInvokeExecutor`](zeph_core::SkillInvokeExecutor) sharing one
+/// `trust_snapshot` `Arc`, shared by every agent entry point (CLI's `runner.rs`, `acp.rs`'s
+/// `spawn_acp_agent`, `daemon.rs`'s `run_daemon`) so the two skill-body tools cannot construct
+/// independent trust state and drift apart (#6049).
+///
+/// Closes #6050 by construction: prior to this helper, `SkillLoaderExecutor` could be (and was)
+/// built without a `trust_snapshot` at all, bypassing the trust gate entirely for `load_skill`.
+/// The returned `Arc` is the single per-turn snapshot written once by
+/// `apply_skill_trust_and_gating` and read lock-free by both executors — callers must also
+/// thread it into `.with_trust_snapshot(...)` on the agent builder (the `SkillState` writer) so
+/// all three holders share the same instance.
+pub(crate) fn build_skill_executors(
+    registry: &Arc<RwLock<zeph_skills::registry::SkillRegistry>>,
+) -> (
+    zeph_core::SkillLoaderExecutor,
+    zeph_core::SkillInvokeExecutor,
+    Arc<RwLock<std::collections::HashMap<String, zeph_core::SkillTrustSnapshot>>>,
+) {
+    let trust_snapshot: Arc<
+        RwLock<std::collections::HashMap<String, zeph_core::SkillTrustSnapshot>>,
+    > = Arc::new(RwLock::new(std::collections::HashMap::new()));
+    let loader =
+        zeph_core::SkillLoaderExecutor::new(Arc::clone(registry), Arc::clone(&trust_snapshot));
+    let invoker =
+        zeph_core::SkillInvokeExecutor::new(Arc::clone(registry), Arc::clone(&trust_snapshot));
+    (loader, invoker, trust_snapshot)
+}
+
 /// Wires a [`zeph_core::debug_dump::DebugDumper`] into `agent` for `dir`/`format`, shared by
 /// every agent entry point that honors `[debug] enabled = true` (CLI, ACP, daemon, serve-sessions).
 ///

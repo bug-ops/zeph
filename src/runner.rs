@@ -2373,19 +2373,8 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         std::sync::Arc::new(memory.sqlite().clone()),
     )
     .with_conversation(conversation_id.0);
-    let skill_loader_executor =
-        zeph_core::SkillLoaderExecutor::new(std::sync::Arc::clone(&registry));
-    // Pre-allocate trust snapshot Arc shared between the agent's SkillState and
-    // SkillInvokeExecutor — written once per turn by prepare_context, read by the executor.
-    let trust_snapshot: std::sync::Arc<
-        parking_lot::RwLock<
-            std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>,
-        >,
-    > = std::sync::Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
-    let skill_invoke_executor = zeph_core::SkillInvokeExecutor::new(
-        std::sync::Arc::clone(&registry),
-        std::sync::Arc::clone(&trust_snapshot),
-    );
+    let (skill_loader_executor, skill_invoke_executor, trust_snapshot) =
+        agent_setup::build_skill_executors(&registry);
     let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> =
         std::sync::Arc::new(tool_setup.executor);
     let inner_executor =

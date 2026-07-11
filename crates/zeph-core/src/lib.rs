@@ -105,6 +105,7 @@ pub mod runtime_context;
 pub mod runtime_layer;
 pub mod skill_invoker;
 pub mod skill_loader;
+mod skill_trust_gate;
 pub use zeph_common::text;
 
 #[cfg(test)]

@@ -764,21 +764,8 @@ pub(crate) async fn run_daemon(
         std::sync::Arc::new(memory.sqlite().clone()),
     )
     .with_conversation(conversation_id.0);
-    let skill_loader_executor =
-        zeph_core::SkillLoaderExecutor::new(std::sync::Arc::clone(&registry));
-    // #5975: pre-allocate trust snapshot Arc shared between the agent's SkillState and
-    // SkillInvokeExecutor — written once per turn by prepare_context, read by the executor.
-    // Mirrors src/runner.rs; previously the daemon never constructed SkillInvokeExecutor at all,
-    // so `invoke_skill` was effectively CLI-only.
-    let trust_snapshot: std::sync::Arc<
-        parking_lot::RwLock<
-            std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>,
-        >,
-    > = std::sync::Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
-    let skill_invoke_executor = zeph_core::SkillInvokeExecutor::new(
-        std::sync::Arc::clone(&registry),
-        std::sync::Arc::clone(&trust_snapshot),
-    );
+    let (skill_loader_executor, skill_invoke_executor, trust_snapshot) =
+        agent_setup::build_skill_executors(&registry);
     let base_tool: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = {
         let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
             zeph_tools::CompositeExecutor::new(base_executor, mcp_executor),
@@ -2348,15 +2335,8 @@ mod tests {
 
         let registry =
             std::sync::Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::empty()));
-        let skill_loader_executor =
-            zeph_core::SkillLoaderExecutor::new(std::sync::Arc::clone(&registry));
-        let trust_snapshot: std::sync::Arc<
-            RwLock<std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>>,
-        > = std::sync::Arc::new(RwLock::new(std::collections::HashMap::new()));
-        let skill_invoke_executor = zeph_core::SkillInvokeExecutor::new(
-            std::sync::Arc::clone(&registry),
-            std::sync::Arc::clone(&trust_snapshot),
-        );
+        let (skill_loader_executor, skill_invoke_executor, _trust_snapshot) =
+            agent_setup::build_skill_executors(&registry);
 
         let composite = zeph_tools::CompositeExecutor::new(
             skill_loader_executor,

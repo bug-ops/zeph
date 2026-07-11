@@ -7,6 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Security
 
+- `zeph-core`: `load_skill` (`SkillLoaderExecutor`) had no trust check at all — it read the raw
+  `SKILL.md` body straight from `SkillRegistry::body` and returned it verbatim, bypassing the
+  entire skill-trust defense-in-depth pipeline that `invoke_skill` already enforced: `Blocked`
+  skills were never refused, `Quarantined`/non-Trusted bodies were never sanitized or wrapped,
+  and the LLM-supplied `skill_name` was echoed unsanitized into the not-found error. The turn-
+  level `TrustGateExecutor` gate does not close this gap — it only denies `load_skill` when the
+  turn's folded `effective_trust` is Quarantined, and never inspects the `skill_name` argument
+  itself, so a `load_skill` call naming a Blocked/Quarantined skill sailed through on any turn
+  where the active skill set wasn't already Quarantined (#6050). `SkillLoaderExecutor` now shares
+  the exact same trust pipeline as `SkillInvokeExecutor` via a new `SkillTrustGate` (extracted
+  into `crates/zeph-core/src/skill_trust_gate.rs`, #6049): Blocked is refused before any body
+  read, non-Trusted bodies are sanitized, Quarantined bodies are additionally wrapped, the
+  per-invocation blake3 integrity re-check now also applies to `load_skill`, and `skill_name` is
+  sanitized on every output path (found, blocked, and not-found). `SkillLoaderExecutor::new` now
+  takes the same `trust_snapshot` `Arc` as `SkillInvokeExecutor`; a new
+  `agent_setup::build_skill_executors` helper constructs both executors around one shared `Arc`
+  so `load_skill` and `invoke_skill` can no longer observe divergent trust state or be wired up
+  independently, replacing five duplicated inline construction sites across `src/runner.rs`,
+  `src/acp.rs`, and `src/daemon.rs` (prod and test).
 - `zeph-durable`/`zeph`: `zeph_durable::encryption_gate` (the documented INV-8 AEAD enforcement
   policy) is now actually invoked at runtime — previously it was a unit-tested pure function that
   no call site ever reached, so `src/commands/durable.rs::load_write_cipher` (the durable journal

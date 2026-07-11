@@ -8,9 +8,11 @@
 //! intent-neutral preview), `invoke_skill` carries intent-to-apply semantics: the next turn
 //! is expected to follow the returned skill body.
 //!
-//! The executor applies the same defense-in-depth pipeline as `format_skills_prompt`:
+//! The shared `SkillTrustGate` (crate-private) applies the same defense-in-depth
+//! pipeline as `format_skills_prompt` (and as `load_skill`'s
+//! [`SkillLoaderExecutor`](crate::skill_loader::SkillLoaderExecutor)):
 //! - Non-Trusted bodies pass through [`sanitize_skill_text`].
-//! - Quarantined bodies are additionally wrapped with [`wrap_quarantined`].
+//! - Quarantined bodies are additionally wrapped with [`wrap_quarantined`](zeph_skills::prompt::wrap_quarantined).
 //! - Blocked skills are refused before any body read.
 //! - `args` are always sanitized regardless of trust level (LLM-chosen text).
 //!
@@ -24,13 +26,14 @@ use parking_lot::RwLock;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use zeph_common::SkillTrustLevel;
-use zeph_skills::prompt::{sanitize_skill_text, wrap_quarantined};
+use zeph_skills::prompt::sanitize_skill_text;
 use zeph_skills::registry::SkillRegistry;
-use zeph_skills::trust::compute_skill_hash;
 use zeph_tools::executor::{
     ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params, truncate_tool_output,
 };
 use zeph_tools::registry::{InvocationHint, ToolDef};
+
+use crate::skill_trust_gate::{SkillBodyResolution, SkillTrustGate};
 
 /// Per-invocation trust metadata snapshot for a single skill.
 ///
@@ -61,106 +64,26 @@ pub struct InvokeSkillParams {
 
 /// Tool executor that returns a skill body by name with trust-aware sanitization.
 ///
-/// Holds a shared reference to the skill registry and a per-turn trust snapshot
-/// refreshed by the agent loop. Both are cheap `Arc` clones — no allocation on hot path.
+/// Delegates trust resolution, integrity checking, sanitization, and quarantine wrapping to a
+/// shared `SkillTrustGate` (crate-private) — the same pipeline `load_skill`
+/// ([`crate::skill_loader::SkillLoaderExecutor`]) uses, so the two tools cannot drift apart.
 #[derive(Clone, Debug)]
 pub struct SkillInvokeExecutor {
-    registry: Arc<RwLock<SkillRegistry>>,
-    /// Per-skill trust snapshot refreshed once per turn by the agent.
-    /// Absence of an entry means no trust row exists — treat as Quarantined
-    /// (see `SkillTrustLevel::default`).
-    trust_snapshot: Arc<RwLock<HashMap<String, SkillTrustSnapshot>>>,
+    gate: SkillTrustGate,
 }
 
 impl SkillInvokeExecutor {
     /// Create a new executor with shared registry and trust snapshot.
     ///
-    /// Both `Arc`s must be the same instances held by the agent so updates are
-    /// visible without re-constructing the executor.
+    /// Both `Arc`s must be the same instances held by the agent — and shared with
+    /// `SkillLoaderExecutor` — so updates are visible without re-constructing the executor.
     #[must_use]
     pub fn new(
         registry: Arc<RwLock<SkillRegistry>>,
         trust_snapshot: Arc<RwLock<HashMap<String, SkillTrustSnapshot>>>,
     ) -> Self {
         Self {
-            registry,
-            trust_snapshot,
-        }
-    }
-
-    /// Resolve the trust snapshot entry for a skill.
-    ///
-    /// Returns `None` when no row exists — callers treat absence as Quarantined (fail-closed).
-    fn resolve_snapshot(&self, skill_name: &str) -> Option<SkillTrustSnapshot> {
-        self.trust_snapshot.read().get(skill_name).cloned()
-    }
-
-    /// Run the per-invocation blake3 integrity check.
-    ///
-    /// Returns `Some(output)` when the invocation must be aborted (hash mismatch, empty stored
-    /// hash, missing skill dir, or IO error). Returns `None` when the check passes and dispatch
-    /// should proceed.
-    async fn check_integrity(
-        &self,
-        skill_name: &str,
-        skill_name_safe: &str,
-        entry: &SkillTrustSnapshot,
-    ) -> Result<Option<ToolOutput>, ToolError> {
-        if entry.blake3_hash.is_empty() {
-            tracing::warn!(
-                skill = %skill_name,
-                "requires_trust_check is set but no stored hash found, aborting invocation"
-            );
-            return Ok(Some(make_output(format!(
-                "skill integrity check failed: {skill_name_safe} \
-                 — requires_trust_check is set but no stored hash found"
-            ))));
-        }
-        let stored_hash = entry.blake3_hash.clone();
-        let skill_dir = {
-            let guard = self.registry.read();
-            guard.skill_dir(skill_name)
-        };
-        let Some(dir) = skill_dir else {
-            tracing::warn!(
-                skill = %skill_name,
-                "requires_trust_check: skill_dir not found, aborting invocation"
-            );
-            return Ok(Some(make_output(format!(
-                "skill integrity check failed: {skill_name_safe} — skill directory not found"
-            ))));
-        };
-        let current_hash = tokio::task::spawn_blocking(move || compute_skill_hash(&dir))
-            .await
-            .map_err(|e| ToolError::InvalidParams {
-                message: format!("spawn_blocking join error: {e}"),
-            })?;
-        match current_hash {
-            Ok(hash) if hash != stored_hash => {
-                tracing::warn!(
-                    skill = %skill_name,
-                    "hash mismatch on per-invocation check, demoting to Quarantined"
-                );
-                self.trust_snapshot
-                    .write()
-                    .entry(skill_name.to_owned())
-                    .and_modify(|e| e.trust_level = SkillTrustLevel::Quarantined);
-                // TODO: persist demotion to trust store (#4293 follow-up)
-                Ok(Some(make_output(format!(
-                    "skill integrity check failed: {skill_name_safe} — demoted to Quarantined"
-                ))))
-            }
-            Err(e) => {
-                tracing::warn!(
-                    skill = %skill_name,
-                    err = %e,
-                    "failed to re-hash skill, aborting invocation"
-                );
-                Ok(Some(make_output(format!(
-                    "skill integrity check failed: {skill_name_safe} — cannot read SKILL.md"
-                ))))
-            }
-            Ok(_) => Ok(None), // hash matches, proceed
+            gate: SkillTrustGate::new(registry, trust_snapshot),
         }
     }
 }
@@ -197,51 +120,11 @@ impl ToolExecutor for SkillInvokeExecutor {
 
         tracing::Span::current().record("skill", skill_name.as_str());
 
-        let snapshot = self.resolve_snapshot(&skill_name);
-        let trust = snapshot
-            .as_ref()
-            .map_or(SkillTrustLevel::MISSING_ENTRY_FALLBACK, |s| s.trust_level);
-        // Sanitize skill_name before it appears in any tool output: it originates from the LLM
-        // and could carry injection markers (e.g. `<|im_start|>`).
-        let skill_name_safe = sanitize_skill_text(&skill_name);
-
-        // Blocked skills are refused before any body read — executor defense layer.
-        if trust == SkillTrustLevel::Blocked {
-            return Ok(Some(make_output(format!(
-                "skill is blocked by policy: {skill_name_safe}"
-            ))));
-        }
-
-        // Per-invocation integrity check: re-hash SKILL.md when requires_trust_check is set.
-        if let Some(entry) = snapshot.as_ref().filter(|s| s.requires_trust_check) {
-            let abort = self
-                .check_integrity(&skill_name, &skill_name_safe, entry)
-                .await?;
-            if let Some(output) = abort {
-                return Ok(Some(output));
+        let summary = match self.gate.resolve_body(&skill_name).await? {
+            SkillBodyResolution::Refused(message) | SkillBodyResolution::NotFound(message) => {
+                message
             }
-        }
-
-        // Clone body out of the read guard before any .await — never hold lock across await.
-        let body = {
-            let guard = self.registry.read();
-            guard.body(&skill_name).map(str::to_owned)
-        };
-
-        let summary = match body {
-            Ok(raw_body) => {
-                // Apply the same pipeline as `format_skills_prompt:194-204`:
-                // sanitize for non-Trusted, additionally wrap for Quarantined.
-                let sanitized = if trust == SkillTrustLevel::Trusted {
-                    raw_body
-                } else {
-                    sanitize_skill_text(&raw_body)
-                };
-                let wrapped = if trust == SkillTrustLevel::Quarantined {
-                    wrap_quarantined(&skill_name_safe, &sanitized)
-                } else {
-                    sanitized
-                };
+            SkillBodyResolution::Body(wrapped) => {
                 let full = if params.args.trim().is_empty() {
                     wrapped
                 } else {
@@ -252,7 +135,6 @@ impl ToolExecutor for SkillInvokeExecutor {
                 };
                 truncate_tool_output(&full)
             }
-            Err(_) => format!("skill not found: {skill_name_safe}"),
         };
 
         Ok(Some(make_output(summary)))

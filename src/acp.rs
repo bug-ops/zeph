@@ -1432,18 +1432,8 @@ async fn spawn_acp_agent(
         }
         ex
     };
-    let skill_loader_executor = zeph_core::SkillLoaderExecutor::new(Arc::clone(&registry));
-    // #5975: pre-allocate trust snapshot Arc shared between the agent's SkillState and
-    // SkillInvokeExecutor — written once per turn by prepare_context, read by the executor.
-    // Mirrors src/runner.rs; previously ACP never constructed SkillInvokeExecutor at all, so
-    // `invoke_skill` was effectively CLI-only.
-    let trust_snapshot: Arc<
-        parking_lot::RwLock<
-            std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>,
-        >,
-    > = Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
-    let skill_invoke_executor =
-        zeph_core::SkillInvokeExecutor::new(Arc::clone(&registry), Arc::clone(&trust_snapshot));
+    let (skill_loader_executor, skill_invoke_executor, trust_snapshot) =
+        agent_setup::build_skill_executors(&registry);
     let (base_composite, cancel_signal, provider_override, parent_tool_use_id): (
         Arc<dyn ErasedToolExecutor>,
         _,
@@ -4011,12 +4001,8 @@ mod tests {
         >,
     ) {
         let registry = Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::empty()));
-        let skill_loader_executor = zeph_core::SkillLoaderExecutor::new(Arc::clone(&registry));
-        let trust_snapshot: Arc<
-            RwLock<std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>>,
-        > = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        let skill_invoke_executor =
-            zeph_core::SkillInvokeExecutor::new(Arc::clone(&registry), Arc::clone(&trust_snapshot));
+        let (skill_loader_executor, skill_invoke_executor, trust_snapshot) =
+            agent_setup::build_skill_executors(&registry);
 
         let mock_provider =
             zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
