@@ -156,9 +156,10 @@ impl<C: Channel> Agent<C> {
 
         tracing::info!("config reloaded");
     }
-    /// Load config from disk, apply plugin overlays, and warn on shell divergence.
+    /// Load config from disk, apply plugin overlays, validate, and warn on shell divergence.
     ///
-    /// Returns `None` when loading or overlay merge fails (caller keeps prior runtime state).
+    /// Returns `None` when loading, overlay merge, or validation fails (caller keeps prior
+    /// runtime state).
     fn load_config_with_overlay(&mut self, path: &std::path::Path) -> Option<Config> {
         let mut config = match Config::load(path) {
             Ok(c) => c,
@@ -186,6 +187,15 @@ impl<C: Channel> Agent<C> {
                 }
             }
         };
+
+        // Validate the fully-assembled config (post-overlay) before it can reach the live
+        // agent — matches the startup path (Config::load + validate in bootstrap/mod.rs).
+        if let Err(e) = config.validate() {
+            tracing::warn!(
+                "config reload failed validation: {e:#}; keeping previous runtime state"
+            );
+            return None;
+        }
 
         // M4: detect shell-level divergence from the baked-in executor and warn loudly.
         // ShellExecutor is not rebuilt on hot-reload; only skill threshold is live.
@@ -245,5 +255,91 @@ impl<C: Channel> Agent<C> {
         }
 
         let _ = new_overlay;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::agent_tests::QuickTestAgent;
+    use super::*;
+
+    /// Writes `config` as TOML to a fresh file inside a per-test [`tempfile::TempDir`] and
+    /// returns both, so the directory outlives the returned path.
+    fn write_config(config: &Config) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, toml::to_string_pretty(config).unwrap()).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn load_config_with_overlay_returns_none_on_invalid_config() {
+        let mut config = Config::default();
+        // Inverted fidelity thresholds: full_threshold must be >= compressed_threshold.
+        config.memory.fidelity = Some(zeph_config::fidelity::FidelityConfig {
+            full_threshold: 0.2,
+            compressed_threshold: 0.5,
+            ..Default::default()
+        });
+        assert!(
+            config.validate().is_err(),
+            "fixture must actually fail validate()"
+        );
+        let (_dir, path) = write_config(&config);
+
+        let mut agent = QuickTestAgent::minimal("ok").agent;
+        agent.runtime.lifecycle.plugins_dir = std::path::PathBuf::new();
+
+        let result = agent.load_config_with_overlay(&path);
+        assert!(
+            result.is_none(),
+            "must return None when the reloaded config fails validate()"
+        );
+    }
+
+    #[test]
+    fn load_config_with_overlay_returns_some_on_valid_config() {
+        let config = Config::default();
+        assert!(config.validate().is_ok(), "fixture must be valid");
+        let (_dir, path) = write_config(&config);
+
+        let mut agent = QuickTestAgent::minimal("ok").agent;
+        agent.runtime.lifecycle.plugins_dir = std::path::PathBuf::new();
+
+        let result = agent.load_config_with_overlay(&path);
+        assert!(
+            result.is_some(),
+            "must return Some when the reloaded config passes validate()"
+        );
+    }
+
+    #[test]
+    fn reload_config_preserves_runtime_state_on_validation_failure() {
+        let mut config = Config::default();
+        config.memory.fidelity = Some(zeph_config::fidelity::FidelityConfig {
+            full_threshold: 0.2,
+            compressed_threshold: 0.5,
+            ..Default::default()
+        });
+        assert!(
+            config.validate().is_err(),
+            "fixture must actually fail validate()"
+        );
+        let (_dir, path) = write_config(&config);
+
+        let mut agent = QuickTestAgent::minimal("ok").agent;
+        agent.runtime.lifecycle.plugins_dir = std::path::PathBuf::new();
+        agent.runtime.lifecycle.config_path = Some(path);
+
+        // Sentinel: Config::default() sets max_active_skills to 5 (root.rs), so any
+        // value far from that proves the field was never touched by the aborted reload.
+        agent.services.skill.max_active_skills = 999;
+
+        agent.reload_config();
+
+        assert_eq!(
+            agent.services.skill.max_active_skills, 999,
+            "prior runtime state must be preserved when the reloaded config fails validate()"
+        );
     }
 }

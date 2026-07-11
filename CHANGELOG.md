@@ -153,6 +153,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: config hot-reload (`Agent::reload_config`) bypassed `Config::validate()` entirely
+  — `load_config_with_overlay` called `Config::load` plus the plugin overlay merge and returned
+  the result straight to the live agent without ever validating it, unlike the startup path
+  (`src/bootstrap/mod.rs`, `src/tui_remote.rs`), which always calls `.validate()` immediately
+  after `Config::load()`. An invalid config edited into the running config file (empty/duplicate
+  LLM providers, inverted ACON/fidelity/trajectory thresholds, etc.) was silently applied to the
+  live runtime on the next reload instead of being rejected (#6063). `load_config_with_overlay`
+  now calls `config.validate()` on the fully-assembled config (after the plugin overlay merge, so
+  overlay-introduced invalid values are also caught) and returns `None` on failure, following the
+  same warn-and-keep-previous-state pattern already used for the `Config::load` and overlay-merge
+  error branches in the same function.
 - **BREAKING**: `ToolExecutor` and `ErasedToolExecutor` no longer provide permissive default
   bodies for the six risk-bearing cross-cutting methods — `requires_confirmation`,
   `execute_tool_call_confirmed`, the checkpoint trio (`checkpoint_undo`/`checkpoint_redo`/
