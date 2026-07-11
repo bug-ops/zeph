@@ -111,6 +111,16 @@ pub(crate) async fn build_agent_factory(
         None
     };
 
+    // SEC-H1 / R1: each session gets its own gate stack, wrapping the shared base composite —
+    // see `gate_serve_session_executor`'s doc comment for the full rationale and the INVARIANT
+    // that binds future serve tool-executor changes.
+    let gated_executor = gate_serve_session_executor(
+        deps.tool_executor,
+        &deps.permission_policy,
+        &deps.policy_gate_pieces,
+        deps.audit_logger.as_ref(),
+    );
+
     move |channel| {
         // Capture before apply_session_config consumes deps.session_config (mirrors
         // spawn_acp_agent's debug_config capture in src/acp.rs).
@@ -123,7 +133,10 @@ pub(crate) async fn build_agent_factory(
         // (impl-critic F1), rather than degraded per-session here.
 
         // Spec 050 Phase 2 (#5913): wrap with ShadowProbeExecutor when
-        // shadow_sentinel.enabled = true — mirrors src/runner.rs/src/acp.rs. Keyed by this
+        // shadow_sentinel.enabled = true — mirrors src/runner.rs/src/acp.rs, where
+        // ScopedToolExecutor/ShadowProbeExecutor wrap OUTSIDE/ABOVE the
+        // Policy/Adversarial/Trust gate stack (not the raw base composite), so shadow-probing
+        // observes the same gated tree the agent actually dispatches through. Keyed by this
         // session's own `conversation_id`, since `ServeAgentDeps.tool_executor` (unlike
         // ACP's per-connection base chain) is shared across every `/sessions*` agent.
         let (final_tool_executor, shadow_sentinel_arc): (Arc<dyn ErasedToolExecutor>, _) =
@@ -149,14 +162,14 @@ pub(crate) async fn build_agent_factory(
                         sentinel: Arc::clone(&sentinel),
                     });
                 let shadow_exec = zeph_tools::ShadowProbeExecutor::new(
-                    zeph_tools::DynExecutor(deps.tool_executor.clone()),
+                    zeph_tools::DynExecutor(gated_executor.0.clone()),
                     probe_gate,
                     turn_number,
                     risk_level,
                 );
                 (Arc::new(shadow_exec), Some(sentinel))
             } else {
-                (deps.tool_executor.clone(), None)
+                (gated_executor.0.clone(), None)
             };
 
         let mut agent = Agent::new_with_registry_arc(
@@ -226,6 +239,41 @@ pub(crate) async fn build_agent_factory(
         }
         agent
     }
+}
+
+/// Wraps `tool_executor` in the per-session trust/policy/adversarial gate stack (SEC-H1 / R1):
+/// each session gets its own `TrustGateExecutor`/`AdversarialPolicyGateExecutor`/
+/// `PolicyGateExecutor` instance (own mutable per-turn trust-state atomic/context), even though
+/// the underlying base composite and the immutable `policy_gate_pieces` are shared across every
+/// `/sessions` agent built from the same [`ServeAgentDeps`]. Gating this eagerly, once, at
+/// `assemble_serve_deps` startup would let one concurrent session's `set_effective_trust`
+/// clobber another's on a shared atomic (serve runs each session on its own thread) — see
+/// [`crate::agent_setup::apply_common_tool_gating`]'s doc comment and
+/// [`ServeAgentDeps::tool_executor`]'s doc comment for the full rationale.
+///
+/// INVARIANT: `tool_executor` must already contain serve's ENTIRE tool surface (today: the base
+/// file/shell/scrape/cwd chain only — see `deps.rs::build_tool_executor`'s doc comment) — any
+/// tool executor added to `ServeAgentDeps` outside that base, or composed onto the result of
+/// this wrap, bypasses trust/policy/adversarial enforcement entirely. See #5977/#5611/#5748.
+fn gate_serve_session_executor(
+    tool_executor: Arc<dyn zeph_tools::ErasedToolExecutor>,
+    permission_policy: &zeph_tools::PermissionPolicy,
+    policy_gate_pieces: &crate::agent_setup::PolicyGatePieces,
+    audit_logger: Option<&Arc<zeph_tools::AuditLogger>>,
+) -> zeph_tools::DynExecutor {
+    let (trust_gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
+        zeph_tools::DynExecutor(tool_executor),
+        permission_policy,
+    );
+    // R7: serve has no MCP-provided tools yet (deps.rs's "Known gap") — this empty-slice call
+    // is the exact seam a future MCP-wiring PR must populate with the connected tool list.
+    crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &[]);
+    crate::agent_setup::apply_policy_gate_chain(
+        trust_gated,
+        policy_gate_pieces,
+        audit_logger,
+        None, // R8: serve has no TrajectorySentinel wiring yet; #5958 seam, mirrors daemon/acp.
+    )
 }
 
 /// Opens (and replays, per D-10) the durable event log for `session_id`, wraps it in a
@@ -603,6 +651,9 @@ mod tests {
             rl_warmup_updates: 0,
             rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            permission_policy: zeph_tools::PermissionPolicy::default(),
+            audit_logger: None,
+            policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
             memory: Arc::clone(&memory),
             history_limit: 10,
             recall_limit: 5,
@@ -684,6 +735,9 @@ mod tests {
             rl_warmup_updates: 0,
             rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            permission_policy: zeph_tools::PermissionPolicy::default(),
+            audit_logger: None,
+            policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
             memory: Arc::clone(&memory),
             history_limit: 10,
             recall_limit: 5,
@@ -792,6 +846,9 @@ mod tests {
             rl_warmup_updates: 0,
             rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            permission_policy: zeph_tools::PermissionPolicy::default(),
+            audit_logger: None,
+            policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
             memory: Arc::clone(&memory),
             history_limit: 10,
             recall_limit: 5,
@@ -885,6 +942,9 @@ mod tests {
             rl_warmup_updates: 0,
             rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            permission_policy: zeph_tools::PermissionPolicy::default(),
+            audit_logger: None,
+            policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
             memory: Arc::clone(&memory),
             history_limit: 10,
             recall_limit: 5,
@@ -977,6 +1037,9 @@ mod tests {
             rl_warmup_updates: 3,
             rl_embed_dim_resolved: Some(8),
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            permission_policy: zeph_tools::PermissionPolicy::default(),
+            audit_logger: None,
+            policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
             memory: Arc::clone(&memory),
             history_limit: 10,
             recall_limit: 5,
@@ -1067,6 +1130,9 @@ mod tests {
             rl_warmup_updates: 0,
             rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            permission_policy: zeph_tools::PermissionPolicy::default(),
+            audit_logger: None,
+            policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
             memory: Arc::clone(&memory),
             history_limit: 10,
             recall_limit: 5,
@@ -1099,6 +1165,303 @@ mod tests {
             msg.contains("semantic_scan_provider") && msg.contains("scan-test-provider"),
             "ServeAgentDeps::semantic_scan/semantic_scan_provider = true/\"scan-test-provider\" \
              must reach the built Agent's fail-closed plugin-add check exactly; got: {msg}"
+        );
+    }
+
+    /// Builds a minimal [`ServeAgentDeps`] shared by the R3/R4 gate-wiring regression tests
+    /// below — `Full` autonomy so [`zeph_tools::TrustGateExecutor`]'s permission-policy
+    /// fallback never interferes with the trust/policy assertions under test.
+    fn make_gate_test_deps(
+        memory: Arc<zeph_memory::semantic::SemanticMemory>,
+        session_config: zeph_core::AgentSessionConfig,
+        resume_condenser: zeph_session::LlmCondenser,
+        resume_token_counter: zeph_agent_context::memory_backend::TokenCounterAdapter,
+        policy_gate_pieces: crate::agent_setup::PolicyGatePieces,
+    ) -> ServeAgentDeps {
+        ServeAgentDeps {
+            provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            embedding_provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            registry: Arc::new(parking_lot::RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: None,
+            max_active_skills: 5,
+            skill_disambiguation_threshold: 0.2,
+            skill_two_stage_matching: false,
+            skill_confusability_threshold: 0.0,
+            skill_group_structured: false,
+            skill_support_similarity_threshold: 0.50,
+            skill_min_injection_score: 0.20,
+            skill_generation_provider: String::new(),
+            skill_disambiguate_provider: String::new(),
+            semantic_scan: false,
+            semantic_scan_provider: String::new(),
+            trust_config: zeph_core::config::TrustConfig::default(),
+            rl_routing_enabled: false,
+            rl_learning_rate: 0.0,
+            rl_weight: 0.0,
+            rl_persist_interval: 0,
+            rl_warmup_updates: 0,
+            rl_embed_dim_resolved: None,
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            permission_policy: zeph_tools::PermissionPolicy::default()
+                .with_autonomy(zeph_tools::AutonomyLevel::Full),
+            audit_logger: None,
+            policy_gate_pieces,
+            memory,
+            history_limit: 10,
+            recall_limit: 5,
+            summarization_threshold: 1000,
+            session_config,
+            session_persistence_config: zeph_config::SessionConfig::default(),
+            resume_condenser: Arc::new(resume_condenser),
+            resume_token_counter: Arc::new(resume_token_counter),
+            provider_pool: Vec::new(),
+            provider_config_snapshot: zeph_core::ProviderConfigSnapshot::default(),
+            shadow_sentinel_config: zeph_config::ShadowSentinelConfig::default(),
+            shadow_sentinel_probe_provider: AnyProvider::Mock(
+                zeph_llm::mock::MockProvider::default(),
+            ),
+        }
+    }
+
+    fn make_tool_call(tool_id: &str) -> zeph_tools::ToolCall {
+        zeph_tools::ToolCall {
+            tool_id: tool_id.into(),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        }
+    }
+
+    /// R3 (SEC-H1 guardrail, #5973/#5977): `build_agent_factory` must give each session its
+    /// OWN `TrustGateExecutor` trust-state instance — not share one gated executor (and its
+    /// single mutable `effective_trust` atomic) across every `/sessions` agent built from the
+    /// same `ServeAgentDeps`. Builds ONE `ServeAgentDeps`, spawns TWO agents from it, sets
+    /// session A's trust to `Quarantined` then session B's to `Trusted` (the order that would
+    /// fail under eager/shared gating: B's write would clobber a shared atomic written after
+    /// A's), and asserts A's `bash` (`QUARANTINE_DENIED`) call is STILL Blocked. This test FAILS
+    /// if `ServeAgentDeps::tool_executor`/`build_agent_factory` reverts to gating once, eagerly,
+    /// in `assemble_serve_deps` instead of per session.
+    #[tokio::test]
+    async fn build_agent_factory_gates_trust_state_independently_per_session() {
+        let memory = make_memory().await;
+        let cid_a = memory.sqlite().create_conversation().await.unwrap();
+        let cid_b = memory.sqlite().create_conversation().await.unwrap();
+        let session_id_a = zeph_common::SessionId::new("trust-race-session-a");
+        let session_id_b = zeph_common::SessionId::new("trust-race-session-b");
+
+        let config = zeph_core::config::Config::default();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+        let deps = make_gate_test_deps(
+            Arc::clone(&memory),
+            session_config,
+            condenser,
+            token_counter,
+            crate::agent_setup::PolicyGatePieces::default(),
+        );
+
+        let build_agent_a = build_agent_factory(deps.clone(), session_id_a, cid_a).await;
+        let build_agent_b = build_agent_factory(deps, session_id_b, cid_b).await;
+        let (channel_a, _handle_a) = zeph_core::LoopbackChannel::pair(8);
+        let (channel_b, _handle_b) = zeph_core::LoopbackChannel::pair(8);
+        let agent_a = build_agent_a(channel_a);
+        let agent_b = build_agent_b(channel_b);
+
+        let executor_a = agent_a.tool_executor_arc();
+        let executor_b = agent_b.tool_executor_arc();
+
+        // Order matters: B's Trusted write happens AFTER A's Quarantined write — under eager
+        // (shared) gating this would clobber the single shared atomic and A's subsequent call
+        // would incorrectly read Trusted.
+        executor_a.set_effective_trust(zeph_common::SkillTrustLevel::Quarantined);
+        executor_b.set_effective_trust(zeph_common::SkillTrustLevel::Trusted);
+
+        let result = executor_a
+            .execute_tool_call_erased(&make_tool_call("bash"))
+            .await;
+        assert!(
+            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+            "session A's Quarantined trust must still block a QUARANTINE_DENIED tool call \
+             (\"bash\") even after session B's concurrent set_effective_trust(Trusted) — a \
+             shared (eager) gate instance would let B's write clobber A's, allowing this call \
+             through; got {result:?}"
+        );
+    }
+
+    /// R4 (#5973 regression): a `[tools.policy]` deny rule must block a tool call dispatched
+    /// through a `/sessions`-built (serve) agent's executor — proving `build_agent_factory`'s
+    /// per-session `apply_policy_gate_chain` wrap is actually reachable, not just constructed.
+    /// Before this PR, `serve/deps.rs::build_tool_executor` never wrapped its executor in
+    /// `PolicyGateExecutor` at all, so this call would have gone through unblocked.
+    #[tokio::test]
+    async fn build_agent_factory_wires_policy_gate_deny_rule() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("policy-deny-test-session");
+
+        let config = zeph_core::config::Config::default();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+
+        let policy_config = zeph_tools::PolicyConfig {
+            enabled: true,
+            default_effect: zeph_tools::DefaultEffect::Allow,
+            rules: vec![zeph_tools::PolicyRuleConfig {
+                effect: zeph_tools::PolicyEffect::Deny,
+                tool: "shell".into(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+                capabilities: vec![],
+            }],
+            ..Default::default()
+        };
+        let enforcer = Arc::new(zeph_tools::PolicyEnforcer::compile(&policy_config).unwrap());
+        let policy_gate_pieces = crate::agent_setup::PolicyGatePieces {
+            policy_enforcer: Some(enforcer),
+            adversarial_validator: None,
+            adversarial_llm_client: None,
+            adv_policy_info: None,
+        };
+        let deps = make_gate_test_deps(
+            memory,
+            session_config,
+            condenser,
+            token_counter,
+            policy_gate_pieces,
+        );
+
+        let build_agent = build_agent_factory(deps, session_id, cid).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let agent = build_agent(channel);
+
+        let result = agent
+            .tool_executor_arc()
+            .execute_tool_call_erased(&make_tool_call("shell"))
+            .await;
+        assert!(
+            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+            "a [tools.policy] deny rule for \"shell\" must block the call through a \
+             /sessions-built agent's executor, got {result:?}"
+        );
+    }
+
+    /// R4 (#5977 regression): a `Quarantined` trust level must deny a `QUARANTINE_DENIED` tool
+    /// call dispatched through a `/sessions`-built (serve) agent's executor — proving
+    /// `build_agent_factory`'s per-session `apply_common_tool_gating` wrap is reachable. Before
+    /// this PR, `serve/deps.rs::build_tool_executor` never called `apply_common_tool_gating` at
+    /// all, so serve had zero trust/quarantine enforcement regardless of `[skills.trust]`.
+    #[tokio::test]
+    async fn build_agent_factory_wires_trust_gate_quarantine_deny() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("trust-quarantine-test-session");
+
+        let config = zeph_core::config::Config::default();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+        let deps = make_gate_test_deps(
+            memory,
+            session_config,
+            condenser,
+            token_counter,
+            crate::agent_setup::PolicyGatePieces::default(),
+        );
+
+        let build_agent = build_agent_factory(deps, session_id, cid).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let agent = build_agent(channel);
+
+        let executor = agent.tool_executor_arc();
+        executor.set_effective_trust(zeph_common::SkillTrustLevel::Quarantined);
+        let result = executor
+            .execute_tool_call_erased(&make_tool_call("bash"))
+            .await;
+        assert!(
+            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+            "Quarantined trust must block a QUARANTINE_DENIED tool call (\"bash\") through a \
+             /sessions-built agent's executor, got {result:?}"
+        );
+    }
+
+    /// Coverage gap closed post-review: `crate::acp::build_combined_deps` (`serve --acp`
+    /// combined mode) claims to inherit the SEC-H1 per-session gate fix "for free" because it
+    /// reuses `deps::assemble_serve_deps` under the hood, but no test previously exercised that
+    /// claim end-to-end — `build_combined_deps_wires_skill_matching_config_from_config`
+    /// (`src/acp.rs`) only asserts skill/RL config fields flow into the two deps structs, never
+    /// `tool_executor`/`policy_gate_pieces`. Drives the full production pipeline
+    /// (`build_combined_deps` -> `ServeAgentDeps` -> [`build_agent_factory`] -> the per-session
+    /// gated executor) with a `[tools.policy]` deny rule configured, and asserts a `shell` call
+    /// is blocked — proving combined mode's `/sessions` agents get the same gate wrap as
+    /// standalone serve (this test), not merely a code-sharing assertion in a doc comment.
+    #[cfg(all(feature = "acp-http", feature = "session"))]
+    #[tokio::test]
+    async fn build_combined_deps_wires_policy_gate_through_to_session_agent() {
+        let mut config =
+            zeph_core::config::Config::load(std::path::Path::new("/nonexistent")).unwrap();
+        config.llm.providers = vec![zeph_core::config::ProviderEntry {
+            provider_type: zeph_core::config::ProviderKind::Ollama,
+            base_url: Some("http://127.0.0.1:1".to_owned()),
+            model: Some("test-model".to_owned()),
+            ..Default::default()
+        }];
+        config.memory.sqlite_path = ":memory:".to_owned();
+        config.tools.policy = zeph_tools::PolicyConfig {
+            enabled: true,
+            default_effect: zeph_tools::DefaultEffect::Allow,
+            rules: vec![zeph_tools::PolicyRuleConfig {
+                effect: zeph_tools::PolicyEffect::Deny,
+                tool: "shell".into(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+                capabilities: vec![],
+            }],
+            ..Default::default()
+        };
+
+        let app = crate::bootstrap::AppBuilder::for_test(config);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let supervisor = std::sync::Arc::new(zeph_common::TaskSupervisor::new(cancel));
+
+        let (serve_deps, _acp_deps, _keepalive) =
+            crate::acp::build_combined_deps(&app, &supervisor)
+                .await
+                .expect("build_combined_deps must succeed against a mock-provider AppBuilder");
+
+        assert!(
+            serve_deps.policy_gate_pieces.policy_enforcer.is_some(),
+            "the [tools.policy] deny rule must compile into ServeAgentDeps::policy_gate_pieces \
+             via assemble_serve_deps, same as the standalone serve path"
+        );
+
+        let session_id = zeph_common::SessionId::new("combined-mode-policy-test-session");
+        let cid = serve_deps
+            .memory
+            .sqlite()
+            .create_conversation()
+            .await
+            .unwrap();
+        let build_agent = build_agent_factory(serve_deps, session_id, cid).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let agent = build_agent(channel);
+
+        let result = agent
+            .tool_executor_arc()
+            .execute_tool_call_erased(&make_tool_call("shell"))
+            .await;
+        assert!(
+            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+            "a [tools.policy] deny rule for \"shell\" must block the call through a \
+             combined-mode (`serve --acp`) /sessions-built agent's executor — the deps-level \
+             assertion above proves construction, this proves the wrap is actually reachable; \
+             got {result:?}"
         );
     }
 }

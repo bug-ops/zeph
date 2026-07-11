@@ -67,8 +67,6 @@ use zeph_llm::provider::LlmProvider;
 
 use zeph_core::config::Config;
 
-use crate::agent_setup::AdversarialPolicyLlmAdapter;
-
 /// Adapts `ShadowSentinel` (from `zeph-core`) to the `ProbeGate` trait (from `zeph-tools`).
 ///
 /// Placed in the binary crate to avoid a circular dependency: `zeph-tools` cannot depend on
@@ -2409,174 +2407,25 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     //
     // Declarative policy (PolicyGate) is outermost — fast, deterministic, zero LLM cost.
     // Adversarial policy gate fires only for calls that pass declarative policy (CRIT-04).
-    let mut adv_policy_info: Option<zeph_core::AdversarialPolicyInfo> = None;
     // Spec 050: shared trajectory risk slot — written by begin_turn(), read by PolicyGateExecutor.
     let trajectory_risk_slot: zeph_tools::TrajectoryRiskSlot =
         std::sync::Arc::new(parking_lot::RwLock::new(0u8));
     // Spec 050: pending risk signal queue — executor layers push signal codes; begin_turn() drains.
     let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
         std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
-    let (tool_executor, mcp_ids_handle) = {
-        // #5610: shared TrustGateExecutor wrap, also used by ACP (`src/acp.rs`) and the
-        // daemon (`src/daemon.rs`) so all three entry points gate the full executor tree
-        // through one code path.
-        let (trust_gated, handle) =
-            crate::agent_setup::apply_common_tool_gating(inner_executor, &permission_policy);
-
-        // Layer 1 (innermost of the policy stack): adversarial policy gate (LLM-based).
-        let adversarial_gated: zeph_tools::DynExecutor = if config.tools.adversarial_policy.enabled
-        {
-            let adv_cfg = &config.tools.adversarial_policy;
-            let policies: Vec<String> = if let Some(ref path) = adv_cfg.policy_file {
-                // SEC-01: canonicalize + boundary check matching load_policy_file() in policy.rs.
-                // Prevents symlink attacks that could exfiltrate arbitrary files via the policy LLM.
-                // spawn_blocking: canonicalize and read_to_string are blocking fs calls.
-                let path_owned = path.clone();
-                let load_result =
-                    tokio::task::spawn_blocking(move || -> Result<Vec<String>, std::io::Error> {
-                        let p = std::path::Path::new(&path_owned);
-                        let canonical = std::fs::canonicalize(p)?;
-                        let canonical_base =
-                            std::env::current_dir().and_then(std::fs::canonicalize)?;
-                        if !canonical.starts_with(&canonical_base) {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::PermissionDenied,
-                                "adversarial policy file escapes project root",
-                            ));
-                        }
-                        let content = std::fs::read_to_string(&canonical)?;
-                        Ok(zeph_tools::parse_policy_lines(&content))
-                    })
-                    .await
-                    .unwrap_or_else(|e| Err(std::io::Error::other(e)));
-                match load_result {
-                    Ok(lines) => lines,
-                    Err(e) => {
-                        tracing::error!(
-                            path = %path,
-                            "adversarial policy: failed to load policy file: {e}"
-                        );
-                        vec![]
-                    }
-                }
-            } else {
-                vec![]
-            };
-
-            if policies.is_empty() {
-                tracing::warn!(
-                    "adversarial policy enabled but no policies loaded; gate is a no-op"
-                );
-            }
-
-            let policy_count = policies.len();
-
-            // Resolve the policy provider first: the effective timeout (when not
-            // explicitly configured) is scaled by the resolved provider's kind, since a
-            // fixed cloud-tuned timeout made the fail-closed gate deny every tool call
-            // against a local Ollama policy_provider — see #5870.
-            let (policy_provider, resolved_provider_name) = if adv_cfg.policy_provider.is_empty() {
-                let name = provider.name().to_string();
-                (provider.clone(), name)
-            } else {
-                match crate::bootstrap::create_named_provider(
-                    adv_cfg.policy_provider.as_str(),
-                    config,
-                ) {
-                    Ok(p) => {
-                        let name = p.name().to_string();
-                        (p, name)
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            provider = %adv_cfg.policy_provider,
-                            error = %e,
-                            "adversarial policy provider resolution failed, using primary"
-                        );
-                        let name = provider.name().to_string();
-                        (provider.clone(), name)
-                    }
-                }
-            };
-
-            let timeout_ms = adv_cfg.timeout_ms.unwrap_or_else(|| {
-                zeph_config::tools::adversarial_timeout_for_provider_kind(
-                    policy_provider.provider_kind_str(),
-                )
-            });
-            let validator = std::sync::Arc::new(zeph_tools::PolicyValidator::new(
-                policies,
-                std::time::Duration::from_millis(timeout_ms),
-                adv_cfg.fail_open,
-                adv_cfg.exempt_tools.clone(),
-            ));
-
-            adv_policy_info = Some(zeph_core::AdversarialPolicyInfo {
-                provider: resolved_provider_name,
-                policy_count,
-                fail_open: adv_cfg.fail_open,
-                timeout_ms,
-            });
-
-            let llm_client: std::sync::Arc<dyn zeph_tools::PolicyLlmClient> =
-                std::sync::Arc::new(AdversarialPolicyLlmAdapter {
-                    provider: policy_provider,
-                });
-
-            let mut gate =
-                zeph_tools::AdversarialPolicyGateExecutor::new(trust_gated, validator, llm_client);
-            if let Some(ref audit) = tool_setup.audit_logger {
-                gate = gate.with_audit(std::sync::Arc::clone(audit));
-            }
-            zeph_tools::DynExecutor(std::sync::Arc::new(gate))
-        } else {
-            trust_gated
-        };
-
-        // Layer 2 (outermost): declarative policy gate.
-        // Merge authorization rules into policy: policy.rules evaluated first (first-match-wins),
-        // then authorization.rules appended after. This means policy rules take precedence.
-        let effective_policy =
-            if config.tools.authorization.enabled && !config.tools.authorization.rules.is_empty() {
-                let mut merged = config.tools.policy.clone();
-                // M2: authorization rules appended after policy rules — policy takes precedence.
-                merged
-                    .rules
-                    .extend(config.tools.authorization.rules.clone());
-                merged.enabled = true;
-                merged
-            } else {
-                config.tools.policy.clone()
-            };
-        let executor = if effective_policy.enabled {
-            match zeph_tools::PolicyEnforcer::compile(&effective_policy) {
-                Ok(enforcer) => {
-                    let policy_context =
-                        std::sync::Arc::new(RwLock::new(zeph_tools::PolicyContext {
-                            trust_level: zeph_common::SkillTrustLevel::Trusted,
-                            env: std::env::vars().collect(),
-                        }));
-                    let gate = zeph_tools::PolicyGateExecutor::new(
-                        adversarial_gated,
-                        std::sync::Arc::new(enforcer),
-                        policy_context,
-                    )
-                    .with_trajectory_risk(std::sync::Arc::clone(&trajectory_risk_slot))
-                    .with_signal_queue(std::sync::Arc::clone(&trajectory_signal_queue));
-                    zeph_tools::DynExecutor(std::sync::Arc::new(gate))
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "failed to compile policy rules, policy enforcement disabled: {e}"
-                    );
-                    adversarial_gated
-                }
-            }
-        } else {
-            adversarial_gated
-        };
-        (executor, handle)
-    };
+    // #5610/#5886: shared TrustGateExecutor wrap, also used by ACP (`src/acp.rs`) and the
+    // daemon (`src/daemon.rs`) so all three entry points gate the full executor tree through
+    // one code path.
+    let (trust_gated, mcp_ids_handle) =
+        crate::agent_setup::apply_common_tool_gating(inner_executor, &permission_policy);
+    let policy_gate_pieces = crate::agent_setup::build_policy_gate_pieces(config, &provider).await;
+    let tool_executor = crate::agent_setup::apply_policy_gate_chain(
+        trust_gated,
+        &policy_gate_pieces,
+        tool_setup.audit_logger.as_ref(),
+        Some((&trajectory_risk_slot, &trajectory_signal_queue)),
+    );
+    let adv_policy_info = policy_gate_pieces.adv_policy_info;
     // Spec 050 F2: wrap with ScopedToolExecutor when capability_scopes are configured.
     let tool_executor = {
         let scopes_cfg = config.security.capability_scopes.clone();

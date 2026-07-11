@@ -15,6 +15,14 @@
 //! forwarding are not wired here — a session created via `/sessions` does not see MCP-provided
 //! tools or live-reload skill/config changes yet. Follow-up once the core create/prompt/events
 //! path is proven out.
+//!
+//! **Gating (#5973/#5977)**: the trust/policy/adversarial-policy gate stack IS wired, matching
+//! `runner.rs`/`acp.rs`/`daemon.rs` — see [`build_tool_executor`]'s and
+//! `agent_factory::build_agent_factory`'s doc comments for the split between eager pieces here
+//! and the per-session gate wrap there (required to avoid a cross-session trust-state race,
+//! SEC-H1). MCP is still absent from the gated tree (the gap above), so
+//! `agent_setup::register_mcp_tool_ids` is called with an empty slice for now — the seam a
+//! future MCP-wiring PR must populate.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -75,7 +83,25 @@ pub(crate) struct ServeAgentDeps {
     pub(crate) rl_persist_interval: u32,
     pub(crate) rl_warmup_updates: u32,
     pub(crate) rl_embed_dim_resolved: Option<usize>,
+    /// Base tool composite (file/shell/scrape/cwd), *not* wrapped in any gate. Per SEC-H1
+    /// (concurrent `/sessions` share this one `Arc`, but `TrustGateExecutor`/`PolicyGateExecutor`
+    /// carry per-turn *mutable* trust state), `agent_factory::build_agent_factory` wraps a
+    /// fresh trust/policy/adversarial gate stack around this shared base **per session** — see
+    /// its doc comment. This field must never be dispatched to directly without that wrap.
     pub(crate) tool_executor: Arc<dyn ErasedToolExecutor>,
+    /// Shared permission policy, threaded into each session's `TrustGateExecutor` wrap (via
+    /// `agent_setup::apply_common_tool_gating`) in `agent_factory::build_agent_factory`.
+    pub(crate) permission_policy: zeph_tools::PermissionPolicy,
+    /// Shared audit logger, threaded into each session's `AdversarialPolicyGateExecutor` wrap
+    /// (via `agent_setup::apply_policy_gate_chain`) in `agent_factory::build_agent_factory`.
+    pub(crate) audit_logger: Option<Arc<zeph_tools::AuditLogger>>,
+    /// Pre-built declarative-policy enforcer and adversarial-policy validator/LLM-client,
+    /// built once eagerly at startup (`assemble_serve_deps`) via
+    /// `agent_setup::build_policy_gate_pieces` — safe to share since they are immutable/
+    /// read-only. `agent_factory::build_agent_factory` wraps fresh `PolicyGateExecutor`/
+    /// `AdversarialPolicyGateExecutor` instances per session (via
+    /// `agent_setup::apply_policy_gate_chain`) reusing these shared pieces.
+    pub(crate) policy_gate_pieces: crate::agent_setup::PolicyGatePieces,
     pub(crate) memory: Arc<SemanticMemory>,
     pub(crate) history_limit: u32,
     pub(crate) recall_limit: usize,
@@ -153,7 +179,30 @@ pub(crate) async fn assemble_serve_deps(
     supervisor: &zeph_common::task_supervisor::TaskSupervisor,
 ) -> anyhow::Result<ServeAgentDeps> {
     let config = app.config();
-    let tool_executor = build_tool_executor(config, supervisor).await?;
+    let (tool_executor, permission_policy, audit_logger) =
+        build_tool_executor(config, supervisor).await?;
+    // R2 (SEC-H1): built once, eagerly, here — its outputs (`PolicyEnforcer`/`PolicyValidator`/
+    // `PolicyLlmClient` Arcs) are immutable and safe to share across sessions; this also keeps
+    // the fallible/logging async prep (policy-file load, provider resolution) at server
+    // startup rather than per-session. The actual gate WRAP happens per session in
+    // `agent_factory::build_agent_factory` — see `ServeAgentDeps::tool_executor`'s doc comment
+    // for why (SEC-H1: `TrustGateExecutor`/`PolicyGateExecutor` carry per-turn mutable trust
+    // state, so sharing one already-gated instance across concurrent sessions would let one
+    // session's trust level clobber another's).
+    let policy_gate_pieces =
+        crate::agent_setup::build_policy_gate_pieces(config, &core.provider).await;
+    // R6: startup observability log, reflecting ACTUAL compiled/config state — emitted ONCE
+    // here (not inside `build_policy_gate_pieces`, which would also change daemon/acp/runner
+    // startup output). `policy=on` only distinguishes "compiled" from "off/failed"; the
+    // preceding `tracing::error!` inside `build_policy_gate_pieces` already carries the
+    // compile-failure detail (C4: accepted as sufficient rather than threading a separate
+    // compile-failed flag through `PolicyGatePieces`).
+    tracing::info!(
+        trust = "on",
+        policy = policy_gate_pieces.policy_enforcer.is_some(),
+        adversarial = policy_gate_pieces.adversarial_validator.is_some(),
+        "serve-sessions: gate stack active (per-session trust/policy/adversarial wrap)"
+    );
 
     // Spec 050 F2 (#5913): wrap with ScopedToolExecutor when capability_scopes are configured —
     // mirrors src/runner.rs/src/daemon.rs. `tool_executor` here is shared/static across every
@@ -319,6 +368,9 @@ pub(crate) async fn assemble_serve_deps(
         rl_warmup_updates: config.skills.rl_warmup_updates,
         rl_embed_dim_resolved: core.rl_embed_dim_resolved,
         tool_executor,
+        permission_policy,
+        audit_logger,
+        policy_gate_pieces,
         memory: Arc::clone(&core.memory),
         history_limit,
         recall_limit,
@@ -498,20 +550,34 @@ pub(crate) async fn resolve_auth_token(app: &crate::bootstrap::AppBuilder) -> Op
 /// Builds the core shell/file/web/cwd tool set (sandbox + audit wired the same way
 /// `build_acp_deps` does for ACP sessions) — extracted from [`build_serve_deps`] to stay under
 /// clippy's `too_many_lines`.
+///
+/// Returns the **un-gated** base composite alongside the `permission_policy`/`audit_logger`
+/// [`assemble_serve_deps`] stores on [`ServeAgentDeps`] for the per-session gate wrap in
+/// `agent_factory::build_agent_factory` (SEC-H1) — see [`ServeAgentDeps::tool_executor`]'s doc
+/// comment.
+///
+/// INVARIANT: any tool executor added to serve's base composite MUST be composited in HERE,
+/// before this function returns — `agent_factory::build_agent_factory` gates exactly this
+/// returned tree (plus nothing else) per session; anything composed onto `ServeAgentDeps`
+/// downstream of that wrap would bypass trust/policy/adversarial enforcement entirely. See
+/// #5977/#5611/#5748.
 async fn build_tool_executor(
     config: &zeph_core::config::Config,
     supervisor: &zeph_common::task_supervisor::TaskSupervisor,
-) -> anyhow::Result<Arc<dyn ErasedToolExecutor>> {
+) -> anyhow::Result<(
+    Arc<dyn ErasedToolExecutor>,
+    zeph_tools::PermissionPolicy,
+    Option<Arc<zeph_tools::AuditLogger>>,
+)> {
+    let permission_policy =
+        zeph_tools::build_permission_policy(&config.tools, config.security.autonomy_level);
     let filter_registry = if config.tools.filters.enabled {
         zeph_tools::OutputFilterRegistry::default_filters(&config.tools.filters)
     } else {
         zeph_tools::OutputFilterRegistry::new(false)
     };
     let mut shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
-        .with_permissions(zeph_tools::build_permission_policy(
-            &config.tools,
-            config.security.autonomy_level,
-        ))
+        .with_permissions(permission_policy.clone())
         .with_output_filters(filter_registry)
         .with_task_supervisor(supervisor.clone());
     if config.tools.sandbox.enabled {
@@ -537,12 +603,14 @@ async fn build_tool_executor(
     }
     let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape)
         .with_egress_config(config.tools.egress.clone());
+    let mut audit_logger = None;
     if config.tools.audit.enabled
         && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit, false).await
     {
         let logger = Arc::new(logger);
         shell_executor = shell_executor.with_audit(Arc::clone(&logger));
-        scrape_executor = scrape_executor.with_audit(logger);
+        scrape_executor = scrape_executor.with_audit(Arc::clone(&logger));
+        audit_logger = Some(logger);
     }
     let file_executor = zeph_tools::FileExecutor::new(
         config
@@ -554,13 +622,14 @@ async fn build_tool_executor(
             .collect(),
     );
     let cwd_executor = zeph_tools::SetCwdExecutor;
-    Ok(Arc::new(zeph_tools::CompositeExecutor::new(
+    let base: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
         file_executor,
         zeph_tools::CompositeExecutor::new(
             shell_executor,
             zeph_tools::CompositeExecutor::new(scrape_executor, cwd_executor),
         ),
-    )))
+    ));
+    Ok((base, permission_policy, audit_logger))
 }
 
 #[cfg(test)]

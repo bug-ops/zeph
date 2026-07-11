@@ -260,10 +260,12 @@ pub(super) async fn prompt_session_handler(
     Json(body): Json<PromptRequest>,
 ) -> StatusCode {
     let session_id = SessionId::new(id);
-    let Some(handle) = state
-        .registry
-        .get_or_reactivate(&session_id, || reactivate_session(&state, &session_id))
-        .await
+    let Some(handle) = Box::pin(
+        state
+            .registry
+            .get_or_reactivate(&session_id, || reactivate_session(&state, &session_id)),
+    )
+    .await
     else {
         return StatusCode::NOT_FOUND;
     };
@@ -307,10 +309,12 @@ pub(super) async fn events_session_handler(
     Path(id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     let session_id = SessionId::new(id);
-    let Some(handle) = state
-        .registry
-        .get_or_reactivate(&session_id, || reactivate_session(&state, &session_id))
-        .await
+    let Some(handle) = Box::pin(
+        state
+            .registry
+            .get_or_reactivate(&session_id, || reactivate_session(&state, &session_id)),
+    )
+    .await
     else {
         return Err(StatusCode::NOT_FOUND);
     };
@@ -510,6 +514,9 @@ mod tests {
             rl_warmup_updates: 0,
             rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            permission_policy: zeph_tools::PermissionPolicy::default(),
+            audit_logger: None,
+            policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
             memory,
             history_limit: 50,
             recall_limit: 5,

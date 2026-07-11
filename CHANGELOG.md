@@ -59,6 +59,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   impl rather than `ShellExecutor`'s own correct one. This is the same defect class as
   #5899/#5905/#5906 but at the leaf type's own smart-pointer shadow-impl rather than a decorator
   wrapper.
+- `fix(serve)`: `zeph serve-sessions` `/sessions`-created agents now enforce the same
+  trust/policy/adversarial-policy gate stack as the CLI, ACP, and daemon entry points
+  (#5973, #5977, #5886). Previously `serve/deps.rs::build_tool_executor` built only a bare
+  file/shell/scrape/cwd composite with none of the three gates, so a Quarantined skill's tools
+  and a configured `[tools.policy]`/`[tools.adversarial_policy]` deny rule were silently
+  unenforced for any session created via `POST /sessions`. Each session now gets its own
+  `TrustGateExecutor`/`PolicyGateExecutor`/`AdversarialPolicyGateExecutor` instance, wrapped
+  per-session in `serve/agent_factory.rs::build_agent_factory` around the shared base composite
+  — gating eagerly, once, at startup would let one concurrent session's trust level clobber
+  another's on a shared mutable trust-state atomic. The verbatim-triplicated
+  policy-file-load/provider-resolve/`PolicyEnforcer`-compile block previously copy-pasted
+  across `runner.rs`, `acp.rs`, and `daemon.rs` (source of the #5881 ordering bug) is now a
+  single shared helper in `src/agent_setup.rs` (`build_policy_gate_pieces` +
+  `apply_policy_gate_chain`), used by all four entry points.
 - `fix(mcp)`: Qdrant-backed MCP tool registry now rehydrates real `input_schema` (plus
   `output_schema`/`security_meta`) for semantically-matched tools instead of surfacing them to
   the LLM with an empty `{}` schema (#5935). `Agent::match_mcp_tools()` no longer trusts
