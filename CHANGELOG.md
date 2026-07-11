@@ -39,6 +39,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `apply_delta()` (atomic but decay-blind, unused in production) is removed — both
     properties now live in one method, eliminating the two-divergent-write-paths root
     cause.
+- `zeph-common`: consolidated three duplicated/diverging security-sanitization
+  implementations into single canonical sources, closing real defense-in-depth gaps
+  (#5925, #5915, #5917). `zeph_common::sanitize::strip_control_chars` and
+  `strip_control_chars_preserve_whitespace` previously stripped only ASCII controls plus
+  `BiDi` overrides — missing zero-width space/joiners, soft hyphen, BOM, Hangul/Khmer/
+  Mongolian fillers, and the Unicode Tags block that `zeph_common::patterns::
+  strip_format_chars` already covered. Both now share a single bypass-codepoint denylist
+  (`patterns::is_bypass_codepoint`), so `zeph-memory`'s graph-resolver `sanitize_fact`/
+  `sanitize_relation` (LLM-extracted entity/relation text stored in the graph and later
+  replayed into community-summarization prompts) transitively gain the stronger coverage
+  (#5925). `zeph-memory::graph::community`'s local `scrub_content` (only 4 filtered
+  categories) is removed; both call sites now use `strip_format_chars` directly (#5915).
+  `zeph-core::redact`'s `SECRET_PREFIXES`/`PATH_REGEX` and `zeph-memory::store::
+  compression_guidelines`'s `SECRET_RE`/`PATH_RE` duplicated the same prefix list
+  character-for-character while drifting apart — `zeph-memory` had gained `Authorization:
+  Bearer` header and standalone-JWT redaction that `zeph-core` lacked. A new
+  `zeph_common::secrets` module is now the single source of truth for
+  `SECRET_PREFIXES`/`PATH_PREFIXES`/`BEARER_TOKEN_PATTERN`/`JWT_PATTERN`; both crates build
+  their own `regex::Regex` from it (matching the existing `zeph_common::patterns`
+  raw-pattern convention), and `zeph-core::redact::redact_secrets`/`scrub_content` now also
+  redact Bearer headers and JWTs (#5917).
 - `zeph-mcp`: `sanitize_tools` walks `input_schema` and `output_schema` with the same
   recursive walker, which enforces `MAX_SCHEMA_DEPTH` (10) by returning without sanitizing
   the subtree at all once the cap is hit — no injection-pattern check, no truncation.

@@ -12,6 +12,7 @@ use petgraph::Graph;
 use petgraph::graph::NodeIndex;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
+use zeph_common::patterns::strip_format_chars;
 use zeph_llm::LlmProvider as _;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, Role};
@@ -22,25 +23,6 @@ use super::store::GraphStore;
 use super::types::{Edge, Entity};
 
 const MAX_LABEL_PROPAGATION_ITERATIONS: usize = 50;
-
-/// Strip control characters, Unicode bidi overrides, and zero-width characters from `s`
-/// to prevent prompt injection via entity names or edge facts sourced from untrusted text.
-///
-/// Filtered categories:
-/// - All Unicode control characters (`Cc` category, covers ASCII controls and more)
-/// - Bidi control characters: U+202A–U+202E, U+2066–U+2069
-/// - Zero-width and invisible characters: U+200B–U+200F (includes U+200C, U+200D)
-/// - Byte-order mark: U+FEFF
-fn scrub_content(s: &str) -> String {
-    s.chars()
-        .filter(|c| {
-            !c.is_control()
-                && !matches!(*c as u32,
-                    0x200B..=0x200F | 0x202A..=0x202E | 0x2066..=0x2069 | 0xFEFF
-                )
-        })
-        .collect()
-}
 
 /// Stats returned from graph eviction.
 #[derive(Debug, Default)]
@@ -251,7 +233,7 @@ fn classify_communities(
         let mut intra_edge_ids: Vec<i64> = Vec::new();
         for (&(src, tgt), facts) in edge_facts_map {
             if member_set.contains(&src) && member_set.contains(&tgt) {
-                intra_facts.extend(facts.iter().map(|f| scrub_content(f)));
+                intra_facts.extend(facts.iter().map(|f| strip_format_chars(f)));
                 if let Some(ids) = edge_id_map.get(&(src, tgt)) {
                     intra_edge_ids.extend_from_slice(ids);
                 }
@@ -268,7 +250,7 @@ fn classify_communities(
 
         let entity_names: Vec<String> = entity_ids
             .iter()
-            .filter_map(|id| entity_name_map.get(id).map(|&s| scrub_content(s)))
+            .filter_map(|id| entity_name_map.get(id).map(|&s| strip_format_chars(s)))
             .collect();
 
         // Append label_index to prevent ON CONFLICT(name) collisions when two communities
@@ -937,40 +919,106 @@ mod tests {
         assert_eq!(store2.extraction_count().await.unwrap(), 5);
     }
 
+    // ── #5915: community.rs's local scrub_content removed — migrated call sites now use
+    // zeph_common::patterns::strip_format_chars directly. These tests exercise both
+    // migrated call sites (entity_names and intra_facts) via classify_communities to prove
+    // codepoints the old local scrub_content missed (soft hyphen, Hangul/Khmer/Mongolian
+    // fillers, Unicode Tags block) are now stripped end-to-end, not just unit-tested on the
+    // shared helper in isolation. ──────────────────────────────────────────────────────
+
     #[test]
-    fn test_scrub_content_ascii_control() {
-        // Newline, carriage return, null byte, tab (all ASCII control chars) must be stripped.
-        let input = "hello\nworld\r\x00\x01\x09end";
-        assert_eq!(scrub_content(input), "helloworldend");
+    fn test_classify_communities_strips_bypass_codepoints_from_facts_and_names() {
+        let mut edge_facts_map: HashMap<(i64, i64), Vec<String>> = HashMap::new();
+        edge_facts_map.insert(
+            (1, 2),
+            vec!["fact\u{00AD}with\u{200B}soft\u{FEFF}hyphen".to_owned()],
+        );
+        let mut edge_id_map: HashMap<(i64, i64), Vec<i64>> = HashMap::new();
+        edge_id_map.insert((1, 2), vec![1]);
+
+        let mut communities: HashMap<usize, Vec<i64>> = HashMap::new();
+        communities.insert(0, vec![1, 2]);
+
+        let mut entity_name_map: HashMap<i64, &str> = HashMap::new();
+        entity_name_map.insert(1, "Entity\u{115F}One");
+        entity_name_map.insert(2, "Entity\u{1160}Two\u{17B4}");
+
+        let stored_fingerprints: HashMap<String, i64> = HashMap::new();
+        let sorted_labels = vec![0usize];
+
+        let result = classify_communities(
+            &communities,
+            &edge_facts_map,
+            &edge_id_map,
+            &entity_name_map,
+            &stored_fingerprints,
+            &sorted_labels,
+        );
+
+        assert_eq!(result.to_summarize.len(), 1);
+        let data = &result.to_summarize[0];
+
+        for fact in &data.intra_facts {
+            assert!(
+                !fact.contains('\u{00AD}'),
+                "soft hyphen must be stripped: {fact:?}"
+            );
+            assert!(
+                !fact.contains('\u{200B}'),
+                "zero-width space must be stripped: {fact:?}"
+            );
+            assert!(!fact.contains('\u{FEFF}'), "BOM must be stripped: {fact:?}");
+            assert!(fact.contains("factwithsofthyphen"));
+        }
+
+        for name in &data.entity_names {
+            assert!(
+                !name.contains('\u{115F}'),
+                "Hangul filler must be stripped: {name:?}"
+            );
+            assert!(
+                !name.contains('\u{1160}'),
+                "Hangul jungseong filler must be stripped: {name:?}"
+            );
+            assert!(
+                !name.contains('\u{17B4}'),
+                "Khmer filler must be stripped: {name:?}"
+            );
+        }
+        assert!(data.entity_names.contains(&"EntityOne".to_owned()));
+        assert!(data.entity_names.contains(&"EntityTwo".to_owned()));
     }
 
     #[test]
-    fn test_scrub_content_bidi_overrides() {
-        // U+202A LEFT-TO-RIGHT EMBEDDING, U+202E RIGHT-TO-LEFT OVERRIDE,
-        // U+2066 LEFT-TO-RIGHT ISOLATE, U+2069 POP DIRECTIONAL ISOLATE.
-        let input = "safe\u{202A}inject\u{202E}end\u{2066}iso\u{2069}done".to_string();
-        assert_eq!(scrub_content(&input), "safeinjectendisodone");
-    }
+    fn test_classify_communities_strips_tags_block_from_facts() {
+        // U+E0041 TAG LATIN SMALL LETTER A — steganographic prompt-injection vector.
+        let mut edge_facts_map: HashMap<(i64, i64), Vec<String>> = HashMap::new();
+        edge_facts_map.insert((1, 2), vec!["safe\u{E0041}fact".to_owned()]);
+        let mut edge_id_map: HashMap<(i64, i64), Vec<i64>> = HashMap::new();
+        edge_id_map.insert((1, 2), vec![1]);
 
-    #[test]
-    fn test_scrub_content_zero_width() {
-        // U+200B ZERO WIDTH SPACE, U+200C ZERO WIDTH NON-JOINER, U+200D ZERO WIDTH JOINER,
-        // U+200F RIGHT-TO-LEFT MARK.
-        let input = "a\u{200B}b\u{200C}c\u{200D}d\u{200F}e".to_string();
-        assert_eq!(scrub_content(&input), "abcde");
-    }
+        let mut communities: HashMap<usize, Vec<i64>> = HashMap::new();
+        communities.insert(0, vec![1, 2]);
 
-    #[test]
-    fn test_scrub_content_bom() {
-        // U+FEFF BYTE ORDER MARK must be stripped.
-        let input = "\u{FEFF}hello".to_string();
-        assert_eq!(scrub_content(&input), "hello");
-    }
+        let mut entity_name_map: HashMap<i64, &str> = HashMap::new();
+        entity_name_map.insert(1, "A");
+        entity_name_map.insert(2, "B");
 
-    #[test]
-    fn test_scrub_content_clean_string_unchanged() {
-        let input = "Hello, World! 123 — normal text.";
-        assert_eq!(scrub_content(input), input);
+        let stored_fingerprints: HashMap<String, i64> = HashMap::new();
+        let sorted_labels = vec![0usize];
+
+        let result = classify_communities(
+            &communities,
+            &edge_facts_map,
+            &edge_id_map,
+            &entity_name_map,
+            &stored_fingerprints,
+            &sorted_labels,
+        );
+
+        let data = &result.to_summarize[0];
+        assert!(data.intra_facts.iter().all(|f| !f.contains('\u{E0041}')));
+        assert!(data.intra_facts.iter().any(|f| f == "safefact"));
     }
 
     #[test]

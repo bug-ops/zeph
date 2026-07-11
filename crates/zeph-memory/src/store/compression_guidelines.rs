@@ -9,32 +9,37 @@ use std::sync::LazyLock;
 use zeph_db::sql;
 
 use regex::Regex;
+use zeph_common::secrets::{BEARER_TOKEN_PATTERN, JWT_PATTERN, PATH_PREFIXES, SECRET_PREFIXES};
 use zeph_common::text::truncate_to_bytes_ref;
 
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::types::ConversationId;
 
+// Prefixes come from zeph_common::secrets::SECRET_PREFIXES (the canonical, unescaped
+// list shared with zeph-core::redact — see #5917) and are regex-escaped here since e.g.
+// `ya29.` contains a literal dot.
 static SECRET_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"(?:sk-|sk_live_|sk_test_|AKIA|ghp_|gho_|-----BEGIN|xoxb-|xoxp-|AIza|ya29\.|glpat-|hf_|npm_|dckr_pat_)[^\s"'`,;\{\}\[\]]*"#,
-    )
-    .expect("secret regex")
+    let alt = SECRET_PREFIXES
+        .iter()
+        .map(|p| regex::escape(p))
+        .collect::<Vec<_>>()
+        .join("|");
+    Regex::new(&format!(r#"(?:{alt})[^\s"'`,;\{{\}}\[\]]*"#)).expect("secret regex")
 });
 
 static PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?:/home/|/Users/|/root/|/tmp/|/var/)[^\s"'`,;\{\}\[\]]*"#).expect("path regex")
+    let alt = PATH_PREFIXES.join("|");
+    Regex::new(&format!(r#"(?:{alt})[^\s"'`,;\{{\}}\[\]]*"#)).expect("path regex")
 });
 
 /// Matches `Authorization: Bearer <token>` headers; captures the token value for redaction.
 static BEARER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)(Authorization:\s*Bearer\s+)\S+").expect("bearer regex"));
+    LazyLock::new(|| Regex::new(BEARER_TOKEN_PATTERN).expect("bearer regex"));
 
 /// Matches standalone JWT tokens (three Base64url-encoded parts separated by dots).
 /// The signature segment uses `*` to handle `alg=none` JWTs with an empty signature.
-static JWT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*").expect("jwt regex")
-});
+static JWT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(JWT_PATTERN).expect("jwt regex"));
 
 /// Redact secrets and filesystem paths from text before persistent storage.
 ///

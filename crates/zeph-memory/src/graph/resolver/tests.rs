@@ -83,6 +83,43 @@ fn sanitize_fact_truncates_oversized_input() {
     assert_eq!(result.len(), MAX_FACT_BYTES);
 }
 
+// ── #5925: sanitize_relation/sanitize_fact call strip_control_chars, which now shares
+// strip_format_chars's bypass-codepoint set — verify the extra coverage flows through. ──
+
+#[test]
+fn sanitize_relation_strips_zero_width_space() {
+    assert_eq!(sanitize_relation("us\u{200B}es"), "uses");
+}
+
+#[test]
+fn sanitize_relation_strips_soft_hyphen() {
+    assert_eq!(sanitize_relation("us\u{00AD}es"), "uses");
+}
+
+#[test]
+fn sanitize_relation_strips_hangul_filler() {
+    assert_eq!(sanitize_relation("us\u{115F}es"), "uses");
+}
+
+#[test]
+fn sanitize_fact_strips_bom_and_zero_width() {
+    let dirty = "\u{FEFF}Alice us\u{200B}es Rust";
+    assert_eq!(sanitize_fact(dirty), "Alice uses Rust");
+}
+
+#[test]
+fn sanitize_fact_strips_mongolian_and_khmer_fillers() {
+    let dirty = "Alice\u{180B} uses\u{17B4} Rust";
+    assert_eq!(sanitize_fact(dirty), "Alice uses Rust");
+}
+
+#[test]
+fn sanitize_fact_strips_tags_block() {
+    // U+E0041 TAG LATIN SMALL LETTER A — steganographic prompt-injection vector.
+    let dirty = "Alice uses\u{E0041} Rust";
+    assert_eq!(sanitize_fact(dirty), "Alice uses Rust");
+}
+
 // ── Existing tests (resolve() with no embedding store — exact match only) ──
 
 #[tokio::test]
@@ -483,6 +520,20 @@ fn strip_control_chars_removes_bidi() {
 fn strip_control_chars_preserves_normal_unicode() {
     assert_eq!(strip_control_chars("привет мир"), "привет мир");
     assert_eq!(strip_control_chars("日本語"), "日本語");
+}
+
+#[test]
+fn strip_control_chars_removes_soft_hyphen_and_bom() {
+    assert_eq!(strip_control_chars("nor\u{00AD}mal"), "normal");
+    assert_eq!(strip_control_chars("\u{FEFF}hello"), "hello");
+}
+
+#[test]
+fn strip_control_chars_removes_hangul_khmer_mongolian_fillers() {
+    assert_eq!(
+        strip_control_chars("a\u{115F}b\u{1160}c\u{17B4}d\u{180B}e"),
+        "abcde"
+    );
 }
 
 #[test]

@@ -4,66 +4,45 @@
 use std::borrow::Cow;
 use std::sync::LazyLock;
 
-/// Apply both secret redaction and path sanitization in a single pass.
+use regex::Regex;
+use zeph_common::secrets::{BEARER_TOKEN_PATTERN, JWT_PATTERN, PATH_PREFIXES, SECRET_PREFIXES};
+
+/// Apply URL-credential stripping, secret redaction (including Bearer headers and JWTs),
+/// and path sanitization in a single pass.
 ///
 /// Returns `Cow::Borrowed` when no changes are needed (zero-allocation fast path).
 #[must_use]
 pub fn scrub_content(text: &str) -> Cow<'_, str> {
     // Strip URL-embedded credentials first (https://user:pass@host → https://[REDACTED]@host).
-    let after_url = match URL_CREDS_REGEX.replace_all(text, "${scheme}[REDACTED]@") {
-        Cow::Borrowed(_) => Cow::Borrowed(text),
+    let after_url: Cow<'_, str> = URL_CREDS_REGEX.replace_all(text, "${scheme}[REDACTED]@");
+    let after_secrets: Cow<'_, str> = match redact_secrets(after_url.as_ref()) {
+        Cow::Borrowed(_) => after_url,
         Cow::Owned(s) => Cow::Owned(s),
     };
-    let after_url_str: &str = &after_url;
-
-    let after_secrets = match redact_secrets(after_url_str) {
-        Cow::Borrowed(_) => {
-            return match sanitize_paths(after_url_str) {
-                Cow::Owned(s) => Cow::Owned(s),
-                Cow::Borrowed(_) => after_url,
-            };
-        }
-        Cow::Owned(s) => s,
-    };
-
-    // Third pass: path sanitization on already-modified string
-    match sanitize_paths(&after_secrets) {
+    match sanitize_paths(after_secrets.as_ref()) {
+        Cow::Borrowed(_) => after_secrets,
         Cow::Owned(s) => Cow::Owned(s),
-        Cow::Borrowed(_) => Cow::Owned(after_secrets),
     }
 }
 
-use regex::Regex;
-
-const SECRET_PREFIXES: &[&str] = &[
-    "sk-",
-    "sk_live_",
-    "sk_test_",
-    "AKIA",
-    "ghp_",
-    "gho_",
-    "-----BEGIN",
-    "xoxb-",
-    "xoxp-",
-    "AIza",
-    "ya29\\.",
-    "glpat-",
-    "hf_",
-    "npm_",
-    "dckr_pat_",
-];
-
 // Matches any secret prefix followed by non-whitespace characters.
-// Using alternation so a single pass covers all prefixes.
+// Using alternation so a single pass covers all prefixes. Prefixes come from
+// zeph_common::secrets::SECRET_PREFIXES (the canonical, unescaped list — see #5917)
+// and are regex-escaped here since e.g. `ya29.` contains a literal dot.
 static SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    let pattern = SECRET_PREFIXES.join("|");
+    let pattern = SECRET_PREFIXES
+        .iter()
+        .map(|p| regex::escape(p))
+        .collect::<Vec<_>>()
+        .join("|");
     let full = format!("(?:{pattern})[^\\s\"'`,;{{}}\\[\\]]*");
     Regex::new(&full).expect("secret redaction regex is valid")
 });
 
 static PATH_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?:/home/|/Users/|/root/|/tmp/|/var/)[^\s"'`,;{}\[\]]*"#)
-        .expect("path redaction regex is valid")
+    let alt = PATH_PREFIXES.join("|");
+    let full = format!(r#"(?:{alt})[^\s"'`,;{{}}\[\]]*"#);
+    Regex::new(&full).expect("path redaction regex is valid")
 });
 
 // Matches basic-auth credentials embedded in URLs: https://user:pass@host
@@ -72,37 +51,40 @@ static URL_CREDS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("url credential redaction regex is valid")
 });
 
+// Matches `Authorization: Bearer <token>` headers, keeping the header name via capture group 1.
+static BEARER_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(BEARER_TOKEN_PATTERN).expect("bearer redaction regex is valid"));
+
+// Matches standalone JWTs (three Base64url-encoded segments separated by dots).
+static JWT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(JWT_PATTERN).expect("jwt redaction regex is valid"));
+
 /// Replace tokens containing known secret patterns with `[REDACTED]`.
 ///
-/// Detects secrets embedded in URLs, JSON values, and quoted strings.
-/// Returns `Cow::Borrowed` when no secrets found (zero-allocation fast path).
+/// Detects secrets embedded in URLs, JSON values, and quoted strings (via the
+/// [`zeph_common::secrets::SECRET_PREFIXES`] prefix list), `Authorization: Bearer` headers,
+/// and standalone JWTs. Returns `Cow::Borrowed` when nothing was redacted (zero-allocation
+/// fast path).
 #[must_use]
 pub fn redact_secrets(text: &str) -> Cow<'_, str> {
-    // Fast path: check for any prefix substring before running regex.
-    let raw_prefixes = &[
-        "sk-",
-        "sk_live_",
-        "sk_test_",
-        "AKIA",
-        "ghp_",
-        "gho_",
-        "-----BEGIN",
-        "xoxb-",
-        "xoxp-",
-        "AIza",
-        "ya29.",
-        "glpat-",
-        "hf_",
-        "npm_",
-        "dckr_pat_",
-    ];
-    if !raw_prefixes.iter().any(|p| text.contains(p)) {
-        return Cow::Borrowed(text);
-    }
+    // Fast path: check for any prefix substring before running the (more expensive)
+    // alternation regex. Bearer/JWT regexes below are cheap enough to run unconditionally —
+    // `Regex::replace_all` itself returns `Cow::Borrowed` when there is no match.
+    let has_prefix_match = SECRET_PREFIXES.iter().any(|p| text.contains(*p));
+    let after_prefixes: Cow<'_, str> = if has_prefix_match {
+        SECRET_REGEX.replace_all(text, "[REDACTED]")
+    } else {
+        Cow::Borrowed(text)
+    };
 
-    let result = SECRET_REGEX.replace_all(text, "[REDACTED]");
-    match result {
-        Cow::Borrowed(_) => Cow::Borrowed(text),
+    let after_bearer: Cow<'_, str> =
+        match BEARER_REGEX.replace_all(after_prefixes.as_ref(), "${1}[REDACTED]") {
+            Cow::Borrowed(_) => after_prefixes,
+            Cow::Owned(s) => Cow::Owned(s),
+        };
+
+    match JWT_REGEX.replace_all(after_bearer.as_ref(), "[REDACTED_JWT]") {
+        Cow::Borrowed(_) => after_bearer,
         Cow::Owned(s) => Cow::Owned(s),
     }
 }
@@ -110,9 +92,7 @@ pub fn redact_secrets(text: &str) -> Cow<'_, str> {
 /// Replace absolute filesystem paths with `[PATH]` to prevent information disclosure.
 #[must_use]
 pub fn sanitize_paths(text: &str) -> Cow<'_, str> {
-    const PATH_PREFIXES: &[&str] = &["/home/", "/Users/", "/root/", "/tmp/", "/var/"];
-
-    if !PATH_PREFIXES.iter().any(|p| text.contains(p)) {
+    if !PATH_PREFIXES.iter().any(|p| text.contains(*p)) {
         return Cow::Borrowed(text);
     }
 
@@ -244,23 +224,7 @@ mod tests {
 
     #[test]
     fn all_secret_prefixes_tested() {
-        for prefix in &[
-            "sk-",
-            "sk_live_",
-            "sk_test_",
-            "AKIA",
-            "ghp_",
-            "gho_",
-            "-----BEGIN",
-            "xoxb-",
-            "xoxp-",
-            "AIza",
-            "ya29.",
-            "glpat-",
-            "hf_",
-            "npm_",
-            "dckr_pat_",
-        ] {
+        for prefix in SECRET_PREFIXES {
             let text = format!("token: {prefix}abc123");
             let result = redact_secrets(&text);
             assert!(result.contains("[REDACTED]"), "Failed for prefix: {prefix}");
@@ -433,6 +397,70 @@ mod tests {
         }
     }
 
+    // ── #5917: Bearer/JWT coverage added to redact_secrets/scrub_content ──────────────
+
+    #[test]
+    fn redacts_bearer_token() {
+        let result = redact_secrets("Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.payload.signature");
+        assert!(
+            result.contains("[REDACTED]"),
+            "Bearer token must be redacted: {result}"
+        );
+        assert!(
+            !result.contains("eyJhbGciOiJSUzI1NiJ9"),
+            "raw JWT header must not appear: {result}"
+        );
+        assert!(
+            result.contains("Authorization:"),
+            "header name must be preserved: {result}"
+        );
+    }
+
+    #[test]
+    fn redacts_bearer_token_case_insensitive() {
+        let result = redact_secrets("authorization: bearer eyJhbGciOiJSUzI1NiJ9.payload.signature");
+        assert!(
+            result.contains("[REDACTED]"),
+            "Bearer header match must be case-insensitive: {result}"
+        );
+    }
+
+    #[test]
+    fn redacts_standalone_jwt() {
+        let jwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIn0.SflKxwRJSMeKKF2";
+        let input = format!("token value: {jwt} was found in logs");
+        let result = redact_secrets(&input);
+        assert!(
+            result.contains("[REDACTED_JWT]"),
+            "standalone JWT must be replaced with [REDACTED_JWT]: {result}"
+        );
+        assert!(
+            !result.contains("eyJhbGci"),
+            "raw JWT must not appear: {result}"
+        );
+    }
+
+    #[test]
+    fn redacts_alg_none_jwt_with_empty_signature() {
+        let input = "token: eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyIn0. was submitted";
+        let result = redact_secrets(input);
+        assert!(
+            result.contains("[REDACTED_JWT]"),
+            "alg=none JWT with empty signature must be redacted: {result}"
+        );
+    }
+
+    #[test]
+    fn scrub_content_redacts_secret_path_bearer_and_jwt_together() {
+        let text =
+            "key sk-abc123 at /home/user/f with Authorization: Bearer eyJhbG.pay.sig and eyJx.b.c";
+        let result = scrub_content(text);
+        assert!(result.contains("[REDACTED]"), "API key must be redacted");
+        assert!(result.contains("[PATH]"), "path must be redacted");
+        assert!(!result.contains("sk-abc123"), "raw API key must not appear");
+        assert!(!result.contains("eyJhbG"), "raw JWT must not appear");
+    }
+
     proptest! {
         #[test]
         fn redact_secrets_never_panics(s in ".*") {
@@ -446,13 +474,12 @@ mod tests {
 
         #[test]
         fn redact_preserves_non_secret_text(s in "[a-zA-Z0-9 .,!?]{1,200}") {
-            // Only test strings that genuinely contain no secret prefixes.
-            let secret_prefixes = [
-                "sk-", "sk_live_", "sk_test_", "AKIA", "ghp_", "gho_",
-                "-----BEGIN", "xoxb-", "xoxp-", "AIza", "ya29.", "glpat-",
-                "hf_", "npm_", "dckr_pat_",
-            ];
-            if !secret_prefixes.iter().any(|p| s.contains(p)) {
+            // Only test strings that genuinely contain nothing redact_secrets will touch:
+            // no known secret prefix, no "eyJ" (JWT marker), no case-insensitive "bearer".
+            let has_secret_prefix = SECRET_PREFIXES.iter().any(|p| s.contains(*p));
+            let has_jwt_marker = s.contains("eyJ");
+            let has_bearer_marker = s.to_lowercase().contains("bearer");
+            if !has_secret_prefix && !has_jwt_marker && !has_bearer_marker {
                 let result = redact_secrets(&s);
                 assert_eq!(result.as_ref(), s.as_str());
             }
@@ -466,13 +493,9 @@ mod tests {
         #[test]
         fn scrub_content_result_never_contains_raw_secret(s in ".*") {
             let result = scrub_content(&s);
-            let secret_prefixes = [
-                "sk-", "sk_live_", "sk_test_", "AKIA", "ghp_", "gho_",
-                "xoxb-", "xoxp-", "AIza", "glpat-", "dckr_pat_",
-            ];
-            for prefix in secret_prefixes {
+            for prefix in SECRET_PREFIXES {
                 assert!(
-                    !result.contains(prefix),
+                    !result.contains(*prefix),
                     "scrub_content must redact prefix: {prefix}"
                 );
             }

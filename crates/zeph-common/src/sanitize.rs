@@ -27,28 +27,34 @@ impl OutputSanitizer for IdentitySanitizer {
     }
 }
 
-/// Strip ASCII control characters (U+0000–U+001F, U+007F) from `s`.
+/// Strip all Unicode control characters from `s`, plus the shared bypass-codepoint
+/// denylist (`BiDi` overrides, zero-width joiners, soft hyphen, BOM, Hangul/Khmer/Mongolian
+/// fillers, the Unicode Tags block — see [`crate::patterns::strip_format_chars`] for the
+/// full list).
 ///
-/// Also strips Unicode `BiDi` override codepoints (U+202A–U+202E, U+2066–U+2069)
-/// which can be used to visually obscure malicious content.
+/// Use [`strip_control_chars_preserve_whitespace`] instead when the input may contain
+/// intentional tabs or newlines that should be kept.
 #[must_use]
 pub fn strip_control_chars(s: &str) -> String {
     s.chars()
-        .filter(|c| !c.is_control() && !matches!(*c as u32, 0x202A..=0x202E | 0x2066..=0x2069))
+        .filter(|&c| !c.is_control() && !crate::patterns::is_bypass_codepoint(c))
         .collect()
 }
 
-/// Strip ASCII control characters while preserving common whitespace (`\t`, `\n`, `\r`).
+/// Strip ASCII control characters while preserving common whitespace (`\t`, `\n`, `\r`),
+/// plus the shared bypass-codepoint denylist (see [`strip_control_chars`] /
+/// [`crate::patterns::strip_format_chars`]).
 ///
-/// Also strips Unicode `BiDi` override codepoints (U+202A–U+202E, U+2066–U+2069).
 /// Use this variant when the input may contain intentional newlines or tabs that
-/// should be kept (e.g., multi-line tool output, webhook payloads).
+/// should be kept (e.g., multi-line tool output, webhook payloads). Note this preserves
+/// `\r` in addition to `\t`/`\n` (unlike [`crate::patterns::strip_format_chars`], which only
+/// preserves `\t`/`\n`) — callers that need CRLF line endings intact use this function.
 #[must_use]
 pub fn strip_control_chars_preserve_whitespace(s: &str) -> String {
     s.chars()
         .filter(|&c| {
             (!c.is_control() || c == '\t' || c == '\n' || c == '\r')
-                && !matches!(c as u32, 0x202A..=0x202E | 0x2066..=0x2069)
+                && !crate::patterns::is_bypass_codepoint(c)
         })
         .collect()
 }
@@ -90,5 +96,71 @@ mod tests {
     #[test]
     fn null_bytes_empty_string() {
         assert_eq!(strip_null_bytes(""), "");
+    }
+
+    // ── #5925: strip_control_chars now shares strip_format_chars's bypass-codepoint set ──
+
+    #[test]
+    fn strip_control_chars_removes_zero_width_space() {
+        let result = strip_control_chars("ig\u{200B}nore");
+        assert!(!result.contains('\u{200B}'));
+        assert_eq!(result, "ignore");
+    }
+
+    #[test]
+    fn strip_control_chars_removes_soft_hyphen() {
+        let result = strip_control_chars("nor\u{00AD}mal");
+        assert!(!result.contains('\u{00AD}'));
+        assert_eq!(result, "normal");
+    }
+
+    #[test]
+    fn strip_control_chars_removes_bom() {
+        let result = strip_control_chars("\u{FEFF}hello");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn strip_control_chars_removes_hangul_khmer_mongolian_fillers() {
+        assert_eq!(strip_control_chars("a\u{115F}b"), "ab");
+        assert_eq!(strip_control_chars("a\u{1160}b"), "ab");
+        assert_eq!(strip_control_chars("a\u{17B4}b"), "ab");
+        assert_eq!(strip_control_chars("a\u{180B}b"), "ab");
+    }
+
+    #[test]
+    fn strip_control_chars_removes_tags_block() {
+        // U+E0041 TAG LATIN SMALL LETTER A — steganographic prompt-injection vector.
+        let result = strip_control_chars("safe\u{E0041}text");
+        assert!(!result.contains('\u{E0041}'));
+        assert_eq!(result, "safetext");
+    }
+
+    #[test]
+    fn preserve_whitespace_shares_bypass_codepoints_with_strip_format_chars() {
+        // Same bypass-codepoint filtering as strip_format_chars, but preserves `\r` too
+        // (strip_format_chars only preserves `\t`/`\n`) — see #5925.
+        let input = "ig\u{200B}nore\ninstructions\tnow";
+        assert_eq!(
+            strip_control_chars_preserve_whitespace(input),
+            crate::patterns::strip_format_chars(input)
+        );
+    }
+
+    #[test]
+    fn preserve_whitespace_keeps_carriage_return_unlike_strip_format_chars() {
+        let input = "line1\r\nline2";
+        assert_eq!(
+            strip_control_chars_preserve_whitespace(input),
+            "line1\r\nline2"
+        );
+        assert_eq!(crate::patterns::strip_format_chars(input), "line1\nline2");
+    }
+
+    #[test]
+    fn preserve_whitespace_removes_bypass_codepoints_keeps_newline_tab() {
+        let input = "a\u{00AD}b\nc\td\u{FEFF}e";
+        let result = strip_control_chars_preserve_whitespace(input);
+        assert_eq!(result, "ab\nc\tde");
     }
 }

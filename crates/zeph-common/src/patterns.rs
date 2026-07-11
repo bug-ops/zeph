@@ -141,6 +141,40 @@ pub const RAW_RESPONSE_PATTERNS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Codepoints used as prompt-injection or secret-scrubbing bypass vectors: zero-width
+/// joiners, soft hyphen, BOM, directional overrides, Hangul/Khmer/Mongolian fillers, and
+/// the Unicode Tags block.
+///
+/// This is the single source of truth for the "invisible bypass character" denylist.
+/// Shared by [`strip_format_chars`] (preserves tab/newline) and
+/// [`crate::sanitize::strip_control_chars`] (strips all control characters, no
+/// whitespace exception) so both scrubbing paths cover the same codepoints and cannot
+/// silently drift apart — see #5925.
+#[must_use]
+pub(crate) fn is_bypass_codepoint(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'  // Soft hyphen
+        | '\u{034F}'  // Combining grapheme joiner
+        | '\u{061C}'  // Arabic letter mark
+        | '\u{115F}'  // Hangul filler
+        | '\u{1160}'  // Hangul jungseong filler
+        | '\u{17B4}'  // Khmer vowel inherent aq
+        | '\u{17B5}'  // Khmer vowel inherent aa
+        | '\u{180B}'..='\u{180D}'  // Mongolian free variation selectors
+        | '\u{180F}'  // Mongolian free variation selector 4
+        | '\u{200B}'..='\u{200F}'  // Zero-width space/ZWNJ/ZWJ/LRM/RLM
+        | '\u{202A}'..='\u{202E}'  // Directional formatting
+        | '\u{2060}'..='\u{2064}'  // Word joiner / invisible separators
+        | '\u{2066}'..='\u{206F}'  // Bidi controls
+        | '\u{FEFF}'  // BOM / zero-width no-break space
+        | '\u{FFF9}'..='\u{FFFB}'  // Interlinear annotation
+        | '\u{1BCA0}'..='\u{1BCA3}'  // Shorthand format controls
+        | '\u{1D173}'..='\u{1D17A}'  // Musical symbol beam controls
+        | '\u{E0000}'..='\u{E007F}'  // Tags block
+    )
+}
+
 /// Strip Unicode format (Cf) characters, selected Lo-category fillers (U+115F, U+1160),
 /// and ASCII control characters (except tab/newline) from `text` before injection pattern
 /// matching.
@@ -148,6 +182,10 @@ pub const RAW_RESPONSE_PATTERNS: &[(&str, &str)] = &[
 /// These characters are invisible to humans but can break regex word boundaries,
 /// allowing attackers to smuggle injection keywords through zero-width joiners,
 /// soft hyphens, BOM, or Hangul filler codepoints.
+///
+/// Preserves tab and newline, unlike [`crate::sanitize::strip_control_chars`], which strips
+/// all control characters unconditionally — use that variant instead when the caller needs
+/// a single-line normalized value (e.g. an entity name or dedup key).
 ///
 /// # Examples
 ///
@@ -171,27 +209,7 @@ pub fn strip_format_chars(text: &str) -> String {
                 return false;
             }
             // Drop known Unicode Cf (format) codepoints that are used as bypass vectors
-            !matches!(
-                c,
-                '\u{00AD}'  // Soft hyphen
-                | '\u{034F}'  // Combining grapheme joiner
-                | '\u{061C}'  // Arabic letter mark
-                | '\u{115F}'  // Hangul filler
-                | '\u{1160}'  // Hangul jungseong filler
-                | '\u{17B4}'  // Khmer vowel inherent aq
-                | '\u{17B5}'  // Khmer vowel inherent aa
-                | '\u{180B}'..='\u{180D}'  // Mongolian free variation selectors
-                | '\u{180F}'  // Mongolian free variation selector 4
-                | '\u{200B}'..='\u{200F}'  // Zero-width space/ZWNJ/ZWJ/LRM/RLM
-                | '\u{202A}'..='\u{202E}'  // Directional formatting
-                | '\u{2060}'..='\u{2064}'  // Word joiner / invisible separators
-                | '\u{2066}'..='\u{206F}'  // Bidi controls
-                | '\u{FEFF}'  // BOM / zero-width no-break space
-                | '\u{FFF9}'..='\u{FFFB}'  // Interlinear annotation
-                | '\u{1BCA0}'..='\u{1BCA3}'  // Shorthand format controls
-                | '\u{1D173}'..='\u{1D17A}'  // Musical symbol beam controls
-                | '\u{E0000}'..='\u{E007F}'  // Tags block
-            )
+            !is_bypass_codepoint(c)
         })
         .collect()
 }
