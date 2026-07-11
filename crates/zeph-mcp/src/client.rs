@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -25,6 +26,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use url::Url;
 
+use zeph_common::net::{ResolveError, resolve_and_validate};
 use zeph_tools::is_private_ip;
 
 use crate::elicitation::ElicitationEvent;
@@ -355,6 +357,16 @@ pub struct OAuthPending {
     pub oauth_state: OAuthState,
     /// Original MCP server URL (needed to rebuild transport after auth).
     pub url: String,
+    /// Addresses resolved and SSRF-validated by [`validate_and_pin_url`] at the start
+    /// of `connect_url_oauth` (`None` when `trusted`). Reused as-is by `complete_oauth`
+    /// to pin the post-callback connection — re-resolving at that point would reopen
+    /// the DNS-rebinding TOCTOU window this pinning closes, since the user's browser
+    /// interaction can take arbitrarily long. If a legitimate server rotates all of its
+    /// DNS A-records during that wait, `complete_oauth` fails with a retryable
+    /// `McpError::Connection` against the now-stale pinned address rather than hanging
+    /// or silently reconnecting to the new address — not a security hole, just a
+    /// user-visible retry.
+    pub(crate) pinned: Option<PinnedTarget>,
     pub timeout: Duration,
     pub tx: Sender<ToolRefreshEvent>,
     pub last_refresh: Arc<DashMap<String, Instant>>,
@@ -494,11 +506,10 @@ impl McpClient {
         last_refresh: Arc<DashMap<String, Instant>>,
         handler_cfg: HandlerConfig,
     ) -> Result<Self, McpError> {
-        if !trusted {
-            validate_url_ssrf(url).await?;
-        }
-
-        let transport = StreamableHttpClientTransport::from_uri(url.to_owned());
+        let pinned = validate_and_pin_url(url, trusted).await?;
+        let client = build_hardened_client(server_id, pinned.as_ref())?;
+        let config = StreamableHttpClientTransportConfig::with_uri(url.to_owned());
+        let transport = StreamableHttpClientTransport::with_client(client, config);
 
         let handler = ToolListChangedHandler::new(
             server_id,
@@ -552,9 +563,7 @@ impl McpClient {
         last_refresh: Arc<DashMap<String, Instant>>,
         handler_cfg: HandlerConfig,
     ) -> Result<Self, McpError> {
-        if !trusted {
-            validate_url_ssrf(url).await?;
-        }
+        let pinned = validate_and_pin_url(url, trusted).await?;
 
         let custom_headers: HashMap<HeaderName, HeaderValue> = headers
             .iter()
@@ -581,8 +590,8 @@ impl McpClient {
 
         let config =
             StreamableHttpClientTransportConfig::with_uri(url).custom_headers(custom_headers);
-        let transport =
-            StreamableHttpClientTransport::with_client(reqwest::Client::default(), config);
+        let client = build_hardened_client(server_id, pinned.as_ref())?;
+        let transport = StreamableHttpClientTransport::with_client(client, config);
 
         let handler = ToolListChangedHandler::new(
             server_id,
@@ -640,12 +649,16 @@ impl McpClient {
         timeout: Duration,
         handler_cfg: HandlerConfig,
     ) -> Result<OAuthConnectResult, McpError> {
-        if !trusted {
-            validate_url_ssrf(url).await?;
-        }
+        let pinned = validate_and_pin_url(url, trusted).await?;
+        let hardened_client = build_hardened_client(server_id, pinned.as_ref())?;
 
-        // Step 1: create OAuthState
-        let mut state = OAuthState::new(url, None)
+        // Step 1: create OAuthState, routing all OAuth HTTP traffic (metadata discovery,
+        // token exchange, refresh) through the same SSRF-pinned client used for the MCP
+        // transport below — otherwise `AuthorizationManager` would build its own default
+        // `reqwest::Client` internally and re-resolve the (already-validated) server host
+        // independently, reopening the DNS-rebinding window for OAuth requests even though
+        // the transport connection itself is pinned (#6069, sibling of #6057).
+        let mut state = OAuthState::new(url, Some(hardened_client.clone()))
             .await
             .map_err(|e| McpError::OAuthError {
                 server_id: server_id.into(),
@@ -675,7 +688,7 @@ impl McpClient {
             };
 
             let auth_client: AuthClient<reqwest::Client> =
-                AuthClient::new(reqwest::Client::default(), manager);
+                AuthClient::new(hardened_client, manager);
             let config = StreamableHttpClientTransportConfig::with_uri(url);
             let transport = StreamableHttpClientTransport::with_client(auth_client, config);
 
@@ -688,9 +701,13 @@ impl McpClient {
                 handler_cfg.elicitation_tx,
                 handler_cfg.elicitation_timeout,
             );
-            let service = handler
-                .serve(transport)
+            let service = tokio::time::timeout(timeout, handler.serve(transport))
                 .await
+                .map_err(|_| McpError::Timeout {
+                    server_id: server_id.into(),
+                    tool_name: "initialize".into(),
+                    timeout_secs: timeout.as_secs(),
+                })?
                 .map_err(|e| classify_connect_error(server_id, &e))?;
 
             return Ok(OAuthConnectResult::Connected(McpClient {
@@ -755,6 +772,7 @@ impl McpClient {
                 actual_port,
                 oauth_state: state,
                 url: url.into(),
+                pinned,
                 timeout,
                 tx,
                 last_refresh,
@@ -798,8 +816,8 @@ impl McpClient {
                 message: "unexpected state after handle_callback".into(),
             })?;
 
-        let auth_client: AuthClient<reqwest::Client> =
-            AuthClient::new(reqwest::Client::default(), manager);
+        let client = build_hardened_client(&pending.server_id, pending.pinned.as_ref())?;
+        let auth_client: AuthClient<reqwest::Client> = AuthClient::new(client, manager);
         let config = StreamableHttpClientTransportConfig::with_uri(pending.url.as_str());
         let transport = StreamableHttpClientTransport::with_client(auth_client, config);
 
@@ -812,9 +830,13 @@ impl McpClient {
             pending.elicitation_tx,
             pending.elicitation_timeout,
         );
-        let service = handler
-            .serve(transport)
+        let service = tokio::time::timeout(pending.timeout, handler.serve(transport))
             .await
+            .map_err(|_| McpError::Timeout {
+                server_id: pending.server_id.clone(),
+                tool_name: "initialize".into(),
+                timeout_secs: pending.timeout.as_secs(),
+            })?
             .map_err(|e| classify_connect_error(&pending.server_id, &e))?;
 
         Ok(McpClient {
@@ -1178,6 +1200,94 @@ pub(crate) async fn validate_url_ssrf(url: &str) -> Result<(), McpError> {
     Ok(())
 }
 
+/// Hostname and DNS-resolved, SSRF-validated addresses for a single connection attempt.
+///
+/// Produced once by [`validate_and_pin_url`] and threaded through to the actual HTTP
+/// client via [`build_hardened_client`]'s `resolve_to_addrs`, so the connection cannot
+/// re-resolve the hostname to a different (attacker-rebound) address after validation.
+#[derive(Debug)]
+pub(crate) struct PinnedTarget {
+    host: String,
+    addrs: Vec<SocketAddr>,
+}
+
+/// Validates `url` for SSRF (unless `trusted`) and, on success, returns the exact
+/// addresses the connection must be pinned to.
+///
+/// Unlike [`validate_url_ssrf`], which discards its DNS lookup result, this keeps the
+/// resolved [`SocketAddr`]s so the caller can pin the actual HTTP client to them via
+/// `reqwest::ClientBuilder::resolve_to_addrs` — closing the DNS-rebinding TOCTOU window
+/// where a second, independent resolution at connect time could return a different
+/// (private) address for the same hostname.
+///
+/// Returns `Ok(None)` when `trusted` is `true` (validation skipped, matching the
+/// existing `trusted` bypass semantics — no pinning is applied either).
+///
+/// # Errors
+///
+/// Returns `McpError::InvalidUrl` if the URL cannot be parsed or has no host, or
+/// `McpError::SsrfBlocked` if any resolved address is private, loopback, or link-local.
+pub(crate) async fn validate_and_pin_url(
+    url: &str,
+    trusted: bool,
+) -> Result<Option<PinnedTarget>, McpError> {
+    if trusted {
+        return Ok(None);
+    }
+
+    let parsed = Url::parse(url).map_err(|e| McpError::InvalidUrl {
+        url: url.into(),
+        message: e.to_string(),
+    })?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| McpError::InvalidUrl {
+            url: url.into(),
+            message: "missing host".into(),
+        })?
+        .to_owned();
+    let port = parsed.port_or_known_default().unwrap_or(443);
+
+    let addrs = resolve_and_validate(&host, port).await.map_err(|e| {
+        if let ResolveError::PrivateAddress { addr, .. } = &e {
+            McpError::SsrfBlocked {
+                url: url.into(),
+                addr: addr.to_string(),
+            }
+        } else {
+            McpError::InvalidUrl {
+                url: url.into(),
+                message: e.to_string(),
+            }
+        }
+    })?;
+
+    Ok(Some(PinnedTarget { host, addrs }))
+}
+
+/// Builds a `reqwest::Client` hardened against SSRF and DNS-rebinding for a single
+/// MCP connection attempt.
+///
+/// Redirects are always disabled (`Policy::none()`) so a malicious MCP server cannot
+/// 3xx-redirect the initial validated request toward an unvalidated (e.g. private)
+/// host. When `pinned` is `Some`, the client is additionally locked to the exact
+/// addresses [`validate_and_pin_url`] resolved and validated, via `resolve_to_addrs` —
+/// this is what actually closes the DNS-rebinding TOCTOU window, since without it
+/// reqwest would perform its own independent resolution at connect time.
+fn build_hardened_client(
+    server_id: &str,
+    pinned: Option<&PinnedTarget>,
+) -> Result<reqwest::Client, McpError> {
+    let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+    if let Some(target) = pinned {
+        builder = builder.resolve_to_addrs(&target.host, &target.addrs);
+    }
+    builder.build().map_err(|e| McpError::Connection {
+        server_id: server_id.into(),
+        message: format!("failed to build hardened client: {e}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1277,6 +1387,124 @@ mod tests {
             .await
             .unwrap_err();
         assert_matches!(err, McpError::SsrfBlocked { .. });
+    }
+
+    #[tokio::test]
+    async fn validate_and_pin_url_skips_validation_when_trusted() {
+        // `trusted` bypasses SSRF validation entirely — even a loopback URL passes,
+        // and no pinning is produced (matches prior `validate_url_ssrf` trusted-skip behavior).
+        let pinned = validate_and_pin_url("http://127.0.0.1/mcp", true)
+            .await
+            .unwrap();
+        assert!(pinned.is_none());
+    }
+
+    #[tokio::test]
+    async fn validate_and_pin_url_blocks_private_ip() {
+        let err = validate_and_pin_url("http://127.0.0.1/mcp", false)
+            .await
+            .unwrap_err();
+        assert_matches!(err, McpError::SsrfBlocked { .. });
+    }
+
+    #[tokio::test]
+    async fn validate_and_pin_url_rejects_invalid_url() {
+        let err = validate_and_pin_url("not-a-url", false).await.unwrap_err();
+        assert_matches!(err, McpError::InvalidUrl { .. });
+    }
+
+    #[tokio::test]
+    async fn validate_and_pin_url_returns_resolved_addrs_for_public_ip_literal() {
+        // An IP literal is validated synchronously (no real DNS lookup — `ToSocketAddrs`
+        // parses it directly), so this stays hermetic in a network-isolated sandbox.
+        let pinned = validate_and_pin_url("http://93.184.216.34:443/mcp", false)
+            .await
+            .unwrap()
+            .expect("public IP must be pinned, not skipped");
+        assert_eq!(pinned.host, "93.184.216.34");
+        assert_eq!(pinned.addrs, vec!["93.184.216.34:443".parse().unwrap()]);
+    }
+
+    /// Proves the DNS-rebinding TOCTOU is closed: `resolve_to_addrs` pins the connection to
+    /// the address validated by `validate_and_pin_url`, so reqwest never re-resolves
+    /// `fake_host` (an RFC 2606 `.invalid` name guaranteed to never resolve via real DNS) at
+    /// connect time. If the client re-resolved instead of using the pinned address, this
+    /// request would fail with a DNS lookup error rather than reaching the mock server.
+    #[tokio::test]
+    async fn hardened_client_pins_connection_bypassing_dns() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let addr: SocketAddr = server
+            .uri()
+            .trim_start_matches("http://")
+            .parse()
+            .expect("wiremock server URI must be a plain host:port");
+        let fake_host = "zeph-mcp-pin-test.invalid";
+        let pinned = PinnedTarget {
+            host: fake_host.to_owned(),
+            addrs: vec![addr],
+        };
+        let hardened = build_hardened_client("test-server", Some(&pinned)).unwrap();
+
+        let resp = hardened
+            .get(format!("http://{fake_host}:{}/", addr.port()))
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("pinned request to unresolvable host failed: {e}"));
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.text().await.unwrap(), "ok");
+    }
+
+    /// Proves the redirect-based SSRF bypass is closed: the hardened client does not
+    /// automatically follow a `3xx` response, even when `Location` points at a private
+    /// address — closing the gap where a malicious MCP server could redirect a validated
+    /// request toward an internal target.
+    #[tokio::test]
+    async fn hardened_client_does_not_auto_follow_redirect_to_private_ip() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(302)
+                    .insert_header("Location", "http://127.0.0.1:9/internal"),
+            )
+            .mount(&server)
+            .await;
+
+        let addr: SocketAddr = server
+            .uri()
+            .trim_start_matches("http://")
+            .parse()
+            .expect("wiremock server URI must be a plain host:port");
+        let fake_host = "zeph-mcp-redirect-test.invalid";
+        let pinned = PinnedTarget {
+            host: fake_host.to_owned(),
+            addrs: vec![addr],
+        };
+        let hardened = build_hardened_client("test-server", Some(&pinned)).unwrap();
+
+        let resp = hardened
+            .get(format!("http://{fake_host}:{}/start", addr.port()))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), reqwest::StatusCode::FOUND);
+        assert_eq!(
+            resp.headers().get(reqwest::header::LOCATION).unwrap(),
+            "http://127.0.0.1:9/internal"
+        );
+    }
+
+    #[test]
+    fn build_hardened_client_without_pinning_still_disables_redirects() {
+        // `trusted == true` connect paths pass `pinned = None`; the client must still
+        // build successfully and keep the redirect policy hardened.
+        let client = build_hardened_client("test-server", None);
+        assert!(client.is_ok());
     }
 
     // ToolListChangedHandler unit tests
@@ -1488,7 +1716,11 @@ mod tests {
     /// Verify the timeout guard pattern: a future that never resolves causes
     /// `tokio::time::timeout` to return `Elapsed`, which maps to `McpError::Timeout`.
     /// This exercises the same code path used by `connect()`, `connect_url()`,
-    /// `connect_url_with_headers()`, and `list_tools()`.
+    /// `connect_url_with_headers()`, `list_tools()`, and — since #6064 — the
+    /// `connect_url_oauth()` cached-token branch and `complete_oauth()`, both of
+    /// which wrap `handler.serve(transport)` with byte-for-byte the same
+    /// `tokio::time::timeout(..).map_err(|_| McpError::Timeout { .. })` pattern
+    /// asserted here.
     #[tokio::test]
     async fn timeout_guard_maps_elapsed_to_mcp_timeout_error() {
         let server_id = "test-server";

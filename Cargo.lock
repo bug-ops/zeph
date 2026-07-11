@@ -10879,6 +10879,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "wiremock",
  "zeph-common",
  "zeph-config",
  "zeph-db",

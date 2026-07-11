@@ -154,6 +154,9 @@ fn hex_val(b: u8) -> Option<u8> {
 /// # Errors
 ///
 /// Returns `McpError::OAuthError` if any endpoint resolves to a private/reserved IP.
+// TODO(critic): cross-origin discovered-issuer OAuth metadata TOCTOU — resolve_to_addrs
+// cannot pin a different host; needs per-request validate+pin via custom OAuthHttpClient
+// (SEP-985). Tracked in #6074.
 #[cfg_attr(
     feature = "profiling",
     tracing::instrument(

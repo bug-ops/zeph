@@ -40,6 +40,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so `load_skill` and `invoke_skill` can no longer observe divergent trust state or be wired up
   independently, replacing five duplicated inline construction sites across `src/runner.rs`,
   `src/acp.rs`, and `src/daemon.rs` (prod and test).
+- `zeph-mcp`: closed a DNS-rebinding TOCTOU gap in the HTTP transport SSRF guard
+  (#6057). `validate_url_ssrf()` resolved and validated the target hostname as a
+  standalone pre-flight check, then discarded the result — the actual connection
+  (`connect_url`, `connect_url_with_headers`, `connect_url_oauth`, including both the
+  cached-token fast path and the post-callback `complete_oauth` path) performed its
+  own independent DNS resolution moments later via a bare `reqwest::Client::default()`
+  with the default redirect policy. An attacker controlling DNS for the target
+  hostname could pass validation with a public IP, then rebind to a private/internal
+  address before the transport's later resolution, or simply 3xx-redirect the request
+  toward an internal target. All three connect paths now call a new
+  `validate_and_pin_url()` helper that resolves the hostname once via
+  `zeph_common::net::resolve_and_validate` and threads the exact validated addresses
+  through to a hardened `reqwest::Client` (`resolve_to_addrs` + `Policy::none()`),
+  eliminating both the re-resolution window and the redirect bypass. The OAuth flow's
+  `OAuthPending` now carries the addresses pinned at the start of
+  `connect_url_oauth` through to `complete_oauth`, since re-resolving after the user's
+  browser interaction (unbounded duration) would reopen the same race. `connect_url_oauth`
+  also now routes `AuthorizationManager`'s internal OAuth HTTP traffic (metadata
+  discovery, token exchange, refresh) through the same SSRF-pinned client via
+  `OAuthState::new(url, Some(hardened_client))`, instead of letting it build its own
+  default, unpinned `reqwest::Client` internally — closing the same DNS-rebinding
+  window for OAuth requests to the original server host (#6069, sibling of #6057,
+  same PR). Note: `Policy::none()` is applied unconditionally, so `trusted` (operator
+  static-config) servers also stop auto-following redirects — previously they inherited
+  `reqwest`'s default of following up to 10 — a deliberate pre-1.0 hardening, not a
+  regression.
+- `zeph-mcp`: `McpClient::connect_url_oauth`'s cached-token fast path and
+  `complete_oauth`'s post-callback path now wrap `handler.serve(transport)` in
+  `tokio::time::timeout`, matching every other connect entry point
+  (`connect_stdio`, `connect_url`, `connect_url_with_headers`); previously these two
+  sites could hang indefinitely if the server never responded (#6064).
 - `zeph-durable`/`zeph`: `zeph_durable::encryption_gate` (the documented INV-8 AEAD enforcement
   policy) is now actually invoked at runtime — previously it was a unit-tested pure function that
   no call site ever reached, so `src/commands/durable.rs::load_write_cipher` (the durable journal
