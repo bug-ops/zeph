@@ -55,6 +55,9 @@ fn daemon_boots_under_constrained_stack_ulimit() {
         .join("skills")
         .display()
         .to_string()]));
+    // This test needs zero secrets and isn't exercising vault behavior — pin to
+    // "env" so boot doesn't require a provisioned age identity/vault file.
+    doc["vault"]["backend"] = toml_edit::value("env");
     std::fs::write(&config_path, doc.to_string()).expect("write test config");
 
     let bin = zeph_bin_path();
