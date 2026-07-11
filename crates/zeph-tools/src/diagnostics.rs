@@ -198,6 +198,8 @@ impl ToolExecutor for DiagnosticsExecutor {
             server_id: None,
         }]
     }
+
+    crate::tool_executor_no_inner_defaults!();
 }
 
 /// Returns the path to the `cargo` binary, failing gracefully if not found.

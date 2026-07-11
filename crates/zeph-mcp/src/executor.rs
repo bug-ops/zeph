@@ -203,6 +203,8 @@ impl ToolExecutor for McpToolExecutor {
             claim_source: Some(zeph_tools::ClaimSource::Mcp),
         }))
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 #[derive(serde::Deserialize)]

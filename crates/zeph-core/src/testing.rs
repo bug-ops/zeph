@@ -193,6 +193,8 @@ impl zeph_tools::executor::ToolExecutor for MockToolExecutor {
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
         self.captured_env.lock().unwrap().push(env);
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 // ---------------------------------------------------------------------------

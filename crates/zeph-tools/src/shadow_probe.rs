@@ -543,6 +543,8 @@ mod tests {
                 claim_source: None,
             }))
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     /// Inner executor that always returns `ConfirmationRequired`, simulating
@@ -561,6 +563,8 @@ mod tests {
                 command: call.tool_id.to_string(),
             })
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     fn make_call(tool: &str) -> ToolCall {
@@ -821,6 +825,18 @@ mod tests {
                 supported: true,
                 ..Default::default()
             }
+        }
+        async fn execute_tool_call_confirmed(
+            &self,
+            call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            self.execute_tool_call(call).await
+        }
+        fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+            false
+        }
+        fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+            false
         }
     }
 

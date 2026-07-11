@@ -145,6 +145,7 @@ impl ToolExecutor for InstrumentedMockExecutor {
             claim_source: None,
         }))
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 #[derive(Clone)]
@@ -160,6 +161,7 @@ impl ToolExecutor for BlockingMockExecutor {
             command: call.tool_id.to_string(),
         })
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 // ==========================

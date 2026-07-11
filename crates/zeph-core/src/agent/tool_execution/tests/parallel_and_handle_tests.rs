@@ -48,6 +48,7 @@ impl zeph_tools::executor::ToolExecutor for DelayExecutor {
             }))
         }
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 struct FailingNthExecutor {
@@ -93,6 +94,7 @@ impl zeph_tools::executor::ToolExecutor for FailingNthExecutor {
             }
         }
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 fn make_calls(n: usize) -> Vec<ToolCall> {

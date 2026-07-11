@@ -314,6 +314,7 @@ impl ToolExecutor for MockToolExecutor {
     fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
         self.definitions.clone()
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 pub(crate) fn create_test_registry() -> SkillRegistry {

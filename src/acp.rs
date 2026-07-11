@@ -3095,6 +3095,7 @@ mod tests {
                 claim_source: None,
             }))
         }
+        zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     fn acp_test_call(tool_id: &str) -> zeph_tools::ToolCall {
@@ -3538,6 +3539,7 @@ mod tests {
                     claim_source: None,
                 }))
             }
+            zeph_tools::tool_executor_no_inner_defaults!();
         }
 
         let pool = zeph_db::DbConfig {
@@ -3985,6 +3987,7 @@ mod tests {
                 self.tool_id
             );
         }
+        zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     /// Builds the full per-session composite `spawn_acp_agent` assembles when the IDE supplies

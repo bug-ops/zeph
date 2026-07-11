@@ -179,6 +179,8 @@ mod tests {
                 claim_source: None,
             }))
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     #[derive(Debug)]
@@ -187,6 +189,8 @@ mod tests {
         async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
             Ok(None)
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     #[derive(Debug)]
@@ -197,6 +201,8 @@ mod tests {
                 command: "test".to_owned(),
             })
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     #[derive(Debug)]
@@ -216,6 +222,8 @@ mod tests {
                 claim_source: None,
             }))
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     #[tokio::test]
@@ -323,6 +331,22 @@ mod tests {
                 claim_source: None,
             }))
         }
+
+        fn checkpoint_undo(&self, _n: usize) -> crate::CheckpointActionResult {
+            crate::CheckpointActionResult::unsupported()
+        }
+        fn checkpoint_redo(&self) -> crate::CheckpointActionResult {
+            crate::CheckpointActionResult::unsupported()
+        }
+        fn checkpoint_list(&self) -> crate::CheckpointListResult {
+            crate::CheckpointListResult::default()
+        }
+        fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+            false
+        }
+        fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+            false
+        }
     }
 
     #[tokio::test]
@@ -400,6 +424,8 @@ mod tests {
                 Ok(None)
             }
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     #[derive(Debug)]
@@ -429,6 +455,8 @@ mod tests {
                 Ok(None)
             }
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     #[tokio::test]
@@ -504,6 +532,8 @@ mod tests {
             fn set_effective_trust(&self, level: SkillTrustLevel) {
                 *self.last_trust.lock().unwrap() = Some(level);
             }
+
+            crate::tool_executor_no_inner_defaults!();
         }
 
         /// Regression test for #5900: `CompositeExecutor::requires_confirmation` must
@@ -519,6 +549,25 @@ mod tests {
             }
             fn requires_confirmation(&self, _call: &ToolCall) -> bool {
                 self.0
+            }
+
+            async fn execute_tool_call_confirmed(
+                &self,
+                call: &ToolCall,
+            ) -> Result<Option<ToolOutput>, ToolError> {
+                self.execute_tool_call(call).await
+            }
+            fn checkpoint_undo(&self, _n: usize) -> crate::CheckpointActionResult {
+                crate::CheckpointActionResult::unsupported()
+            }
+            fn checkpoint_redo(&self) -> crate::CheckpointActionResult {
+                crate::CheckpointActionResult::unsupported()
+            }
+            fn checkpoint_list(&self) -> crate::CheckpointListResult {
+                crate::CheckpointListResult::default()
+            }
+            fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+                false
             }
         }
 

@@ -86,6 +86,30 @@ impl ErasedToolExecutor for NoopExecutor {
     fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
         false
     }
+
+    fn execute_tool_call_confirmed_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        self.execute_tool_call_erased(call)
+    }
+
+    fn checkpoint_undo_erased(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+        zeph_tools::CheckpointActionResult::unsupported()
+    }
+
+    fn checkpoint_redo_erased(&self) -> zeph_tools::CheckpointActionResult {
+        zeph_tools::CheckpointActionResult::unsupported()
+    }
+
+    fn checkpoint_list_erased(&self) -> zeph_tools::CheckpointListResult {
+        zeph_tools::CheckpointListResult::default()
+    }
+
+    fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool {
+        false
+    }
 }
 
 fn mock_provider(responses: Vec<&str>) -> AnyProvider {
@@ -600,6 +624,33 @@ async fn tool_call_loop_two_turns() {
         }
 
         fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
+            false
+        }
+
+        fn execute_tool_call_confirmed_erased<'a>(
+            &'a self,
+            call: &'a ToolCall,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            self.execute_tool_call_erased(call)
+        }
+
+        fn checkpoint_undo_erased(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+
+        fn checkpoint_redo_erased(&self) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+
+        fn checkpoint_list_erased(&self) -> zeph_tools::CheckpointListResult {
+            zeph_tools::CheckpointListResult::default()
+        }
+
+        fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool {
             false
         }
     }
@@ -1452,6 +1503,30 @@ impl ErasedToolExecutor for TrustTrackingExecutor {
     fn set_effective_trust(&self, level: zeph_tools::SkillTrustLevel) {
         *self.recorded.lock().unwrap() = Some(level);
     }
+
+    fn execute_tool_call_confirmed_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        self.execute_tool_call_erased(call)
+    }
+
+    fn checkpoint_undo_erased(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+        zeph_tools::CheckpointActionResult::unsupported()
+    }
+
+    fn checkpoint_redo_erased(&self) -> zeph_tools::CheckpointActionResult {
+        zeph_tools::CheckpointActionResult::unsupported()
+    }
+
+    fn checkpoint_list_erased(&self) -> zeph_tools::CheckpointListResult {
+        zeph_tools::CheckpointListResult::default()
+    }
+
+    fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool {
+        false
+    }
 }
 
 #[test]
@@ -2051,6 +2126,33 @@ async fn run_agent_loop_passes_tools_to_provider() {
         fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
             false
         }
+
+        fn execute_tool_call_confirmed_erased<'a>(
+            &'a self,
+            call: &'a ToolCall,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            self.execute_tool_call_erased(call)
+        }
+
+        fn checkpoint_undo_erased(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+
+        fn checkpoint_redo_erased(&self) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+
+        fn checkpoint_list_erased(&self) -> zeph_tools::CheckpointListResult {
+            zeph_tools::CheckpointListResult::default()
+        }
+
+        fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool {
+            false
+        }
     }
 
     // MockProvider with tool_use: records call count for chat_with_tools.
@@ -2135,6 +2237,33 @@ async fn run_agent_loop_executes_native_tool_call() {
         }
 
         fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
+            false
+        }
+
+        fn execute_tool_call_confirmed_erased<'a>(
+            &'a self,
+            call: &'a ToolCall,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            self.execute_tool_call_erased(call)
+        }
+
+        fn checkpoint_undo_erased(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+
+        fn checkpoint_redo_erased(&self) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+
+        fn checkpoint_list_erased(&self) -> zeph_tools::CheckpointListResult {
+            zeph_tools::CheckpointListResult::default()
+        }
+
+        fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool {
             false
         }
     }
@@ -2654,6 +2783,8 @@ impl ErasedToolExecutor for SandboxExecutor {
     fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
         false
     }
+
+    zeph_tools::erased_tool_executor_no_inner_defaults!();
 }
 
 fn make_write_call(path: &str, content: &str) -> ToolCall {
@@ -2723,6 +2854,50 @@ async fn memory_aware_executor_blocks_path_traversal() {
     assert!(
         matches!(result, Err(ToolError::SandboxViolation { .. })),
         "path traversal should be blocked, got: {result:?}"
+    );
+}
+
+/// Regression for #6019: `execute_tool_call_confirmed_erased` must replicate the
+/// `SandboxViolation` -> memory-executor fallback that `execute_tool_call_erased` already
+/// has. Before the fix, the confirmed method was missing entirely (relying on the removed
+/// trait default, which delegates straight to `execute_tool_call_erased` on `inner` only —
+/// never reaching `memory_executor`), so a confirmed memory-tool write would fail instead
+/// of falling back.
+#[tokio::test]
+#[serial]
+async fn memory_aware_executor_confirmed_path_falls_back_to_memory_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let memory_dir = tmp.path().join("agent-memory");
+    std::fs::create_dir_all(&memory_dir).unwrap();
+
+    let memory_file = memory_dir.join("MEMORY.md");
+    let executor = MemoryAwareExecutor::new(Arc::new(SandboxExecutor), memory_dir.clone());
+
+    let call = make_write_call(memory_file.to_str().unwrap(), "# Memory\nconfirmed content");
+    let result = executor.execute_tool_call_confirmed_erased(&call).await;
+    assert!(
+        result.is_ok(),
+        "confirmed write to memory dir should succeed via fallback, got: {result:?}"
+    );
+}
+
+/// Companion to the fallback test above: the confirmed path must still enforce the
+/// sandbox for writes outside the memory dir, not blanket-allow everything.
+#[tokio::test]
+#[serial]
+async fn memory_aware_executor_confirmed_path_blocks_outside_memory_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let memory_dir = tmp.path().join("agent-memory");
+    std::fs::create_dir_all(&memory_dir).unwrap();
+
+    let outside_file = tmp.path().join("outside.txt");
+    let executor = MemoryAwareExecutor::new(Arc::new(SandboxExecutor), memory_dir);
+
+    let call = make_write_call(outside_file.to_str().unwrap(), "should be blocked");
+    let result = executor.execute_tool_call_confirmed_erased(&call).await;
+    assert!(
+        matches!(result, Err(ToolError::SandboxViolation { .. })),
+        "confirmed write outside memory dir should be blocked, got: {result:?}"
     );
 }
 

@@ -391,6 +391,8 @@ impl ToolExecutor for WebScrapeExecutor {
     fn is_tool_retryable(&self, tool_id: &str) -> bool {
         matches!(tool_id, "web_scrape" | "fetch")
     }
+
+    crate::tool_executor_no_inner_defaults!();
 }
 
 fn tool_error_to_audit_result(e: &ToolError) -> AuditResult {

@@ -60,6 +60,8 @@ impl ToolExecutor for CallableToolExecutor {
             outputs.remove(0)
         }
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 fn tool_use_response(tool_id: &str, tool_name: &str) -> ChatResponse {
@@ -285,6 +287,8 @@ async fn elicitation_event_during_tool_execution_is_handled() {
                 claim_source: None,
             }))
         }
+
+        zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     let (elic_tx, elic_rx) = mpsc::channel::<ElicitationEvent>(4);

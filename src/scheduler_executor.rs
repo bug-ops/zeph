@@ -512,6 +512,8 @@ impl ToolExecutor for SchedulerExecutor {
             _ => Ok(None),
         }
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 /// `Arc`-wrapper so `SchedulerExecutor` can be shared across ACP sessions without `Clone`.
@@ -530,6 +532,33 @@ impl ToolExecutor for DynSchedulerExecutor {
 
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         self.0.execute_tool_call(call).await
+    }
+
+    fn requires_confirmation(&self, call: &ToolCall) -> bool {
+        self.0.requires_confirmation(call)
+    }
+
+    async fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        self.0.execute_tool_call_confirmed(call).await
+    }
+
+    fn checkpoint_undo(&self, n: usize) -> zeph_tools::CheckpointActionResult {
+        self.0.checkpoint_undo(n)
+    }
+
+    fn checkpoint_redo(&self) -> zeph_tools::CheckpointActionResult {
+        self.0.checkpoint_redo()
+    }
+
+    fn checkpoint_list(&self) -> zeph_tools::CheckpointListResult {
+        self.0.checkpoint_list()
+    }
+
+    fn is_tool_speculatable(&self, tool_id: &str) -> bool {
+        self.0.is_tool_speculatable(tool_id)
     }
 }
 

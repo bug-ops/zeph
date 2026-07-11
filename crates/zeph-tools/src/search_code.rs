@@ -487,6 +487,8 @@ impl ToolExecutor for SearchCodeExecutor {
             server_id: None,
         }]
     }
+
+    crate::tool_executor_no_inner_defaults!();
 }
 
 /// Traverse `allowed_paths` collecting structural symbol hits synchronously.

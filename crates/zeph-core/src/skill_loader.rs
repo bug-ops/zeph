@@ -127,6 +127,8 @@ impl ToolExecutor for SkillLoaderExecutor {
             claim_source: None,
         }))
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 #[cfg(test)]

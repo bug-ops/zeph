@@ -69,6 +69,7 @@ pub mod domain_match;
 pub mod error_taxonomy;
 pub mod execution_context;
 pub mod executor;
+pub mod executor_delegate;
 pub mod file;
 pub mod filter;
 pub mod moderation;

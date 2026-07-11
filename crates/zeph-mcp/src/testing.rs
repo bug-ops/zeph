@@ -187,6 +187,8 @@ impl ToolExecutor for MockMcpServer {
             }),
         }
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 #[cfg(test)]

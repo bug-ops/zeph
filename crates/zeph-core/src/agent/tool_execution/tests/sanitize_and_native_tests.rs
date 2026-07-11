@@ -1056,6 +1056,7 @@ impl ToolExecutor for TransientThenOkExecutor {
     fn is_tool_retryable(&self, _tool_id: &str) -> bool {
         true
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 /// Always returns a `Transient` io error (to exhaust retries).
@@ -1088,6 +1089,7 @@ impl ToolExecutor for AlwaysTransientExecutor {
     fn is_tool_retryable(&self, _tool_id: &str) -> bool {
         true
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 #[tokio::test]

@@ -93,6 +93,22 @@ impl ToolExecutor for DagAwareToolExecutor {
     ) -> Result<Option<ToolOutput>, ToolError> {
         Ok(Some(Self::make_output(call.tool_id.as_str(), "confirmed")))
     }
+
+    fn checkpoint_undo(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+        zeph_tools::CheckpointActionResult::unsupported()
+    }
+    fn checkpoint_redo(&self) -> zeph_tools::CheckpointActionResult {
+        zeph_tools::CheckpointActionResult::unsupported()
+    }
+    fn checkpoint_list(&self) -> zeph_tools::CheckpointListResult {
+        zeph_tools::CheckpointListResult::default()
+    }
+    fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+        false
+    }
+    fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+        false
+    }
 }
 
 fn dag_tool_use_response() -> ChatResponse {

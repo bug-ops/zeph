@@ -383,6 +383,8 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
             _ => Ok(None),
         }
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 impl AcpFileExecutor {

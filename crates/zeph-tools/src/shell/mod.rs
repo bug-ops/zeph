@@ -1870,6 +1870,21 @@ impl ToolExecutor for ShellExecutor {
             supported: true,
         }
     }
+
+    fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+        false
+    }
+
+    async fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        self.execute_tool_call(call).await
+    }
+
+    fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+        false
+    }
 }
 
 impl ShellExecutor {

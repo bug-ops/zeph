@@ -98,12 +98,30 @@ impl ErasedToolExecutor for MemoryAwareExecutor {
         })
     }
 
-    fn is_tool_retryable_erased(&self, tool_id: &str) -> bool {
-        self.inner.is_tool_retryable_erased(tool_id)
+    /// Mirrors `execute_tool_call_erased`'s `SandboxViolation` -> memory-executor fallback.
+    /// A blind forward to `inner` here would silently drop that fallback on the confirmed
+    /// path — a confirmed memory-tool call that sandbox-violates on `inner` would fail
+    /// instead of falling back, diverging from the unconfirmed path's behavior.
+    fn execute_tool_call_confirmed_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            match self.inner.execute_tool_call_confirmed_erased(call).await {
+                Err(ToolError::SandboxViolation { .. }) => {
+                    self.memory_executor
+                        .execute_tool_call_confirmed_erased(call)
+                        .await
+                }
+                other => other,
+            }
+        })
     }
 
-    fn is_tool_speculatable_erased(&self, tool_id: &str) -> bool {
-        self.inner.is_tool_speculatable_erased(tool_id)
+    fn is_tool_retryable_erased(&self, tool_id: &str) -> bool {
+        self.inner.is_tool_retryable_erased(tool_id)
     }
 
     fn requires_confirmation_erased(&self, call: &ToolCall) -> bool {
@@ -117,6 +135,8 @@ impl ErasedToolExecutor for MemoryAwareExecutor {
     fn set_effective_trust(&self, level: zeph_tools::SkillTrustLevel) {
         self.inner.set_effective_trust(level);
     }
+
+    zeph_tools::erased_tool_executor_forward!(inner);
 }
 
 pub(crate) fn build_filtered_executor(

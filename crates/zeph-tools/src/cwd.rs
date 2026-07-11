@@ -89,6 +89,8 @@ impl ToolExecutor for SetCwdExecutor {
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         Ok(None)
     }
+
+    crate::tool_executor_no_inner_defaults!();
 }
 
 #[cfg(test)]

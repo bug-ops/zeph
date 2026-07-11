@@ -362,6 +362,8 @@ mod tests {
                 claim_source: None,
             }))
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     fn make_call(tool_id: &str) -> ToolCall {
@@ -731,6 +733,8 @@ mod tests {
         fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
             *self.captured.lock().unwrap() = env;
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     #[test]
@@ -750,6 +754,8 @@ mod tests {
             fn is_tool_retryable(&self, tool_id: &str) -> bool {
                 tool_id == "fetch"
             }
+
+            crate::tool_executor_no_inner_defaults!();
         }
         let gate = TrustGateExecutor::new(RetryableExecutor, PermissionPolicy::default());
         assert!(gate.is_tool_retryable("fetch"));
@@ -790,6 +796,18 @@ mod tests {
                     supported: true,
                     ..Default::default()
                 }
+            }
+            async fn execute_tool_call_confirmed(
+                &self,
+                call: &ToolCall,
+            ) -> Result<Option<ToolOutput>, ToolError> {
+                self.execute_tool_call(call).await
+            }
+            fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+                false
+            }
+            fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+                false
             }
         }
         let gate = TrustGateExecutor::new(CheckpointingExecutor, PermissionPolicy::default());

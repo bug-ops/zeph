@@ -358,6 +358,8 @@ async fn filter_stats_metrics_increment_on_normal_native_tool_path() {
                 claim_source: None,
             }))
         }
+
+        zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     let (mock, _counter) = MockProvider::default().with_tool_use(vec![
@@ -454,6 +456,8 @@ impl zeph_tools::executor::ToolExecutor for TwoToolExecutor {
             }))
         }
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 // Self-reflection remaining-tools path: when the first of two parallel tool calls returns

@@ -178,6 +178,7 @@ impl ToolExecutor for MockToolExecutor {
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         Ok(None)
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 struct OutputToolExecutor {
@@ -214,6 +215,7 @@ impl ToolExecutor for OutputToolExecutor {
             claim_source: None,
         }))
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 struct EmptyOutputToolExecutor;
@@ -248,6 +250,7 @@ impl ToolExecutor for EmptyOutputToolExecutor {
             claim_source: None,
         }))
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 struct ErrorOutputToolExecutor;
@@ -282,6 +285,7 @@ impl ToolExecutor for ErrorOutputToolExecutor {
             claim_source: None,
         }))
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 struct BlockedToolExecutor;
@@ -298,6 +302,7 @@ impl ToolExecutor for BlockedToolExecutor {
             command: "rm -rf /".into(),
         })
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 struct ConfirmToolExecutor;
@@ -347,6 +352,22 @@ impl ToolExecutor for ConfirmToolExecutor {
             claim_source: None,
         }))
     }
+
+    fn checkpoint_undo(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+        zeph_tools::CheckpointActionResult::unsupported()
+    }
+    fn checkpoint_redo(&self) -> zeph_tools::CheckpointActionResult {
+        zeph_tools::CheckpointActionResult::unsupported()
+    }
+    fn checkpoint_list(&self) -> zeph_tools::CheckpointListResult {
+        zeph_tools::CheckpointListResult::default()
+    }
+    fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+        false
+    }
+    fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+        true
+    }
 }
 
 struct SandboxToolExecutor;
@@ -363,6 +384,7 @@ impl ToolExecutor for SandboxToolExecutor {
             path: "/etc/passwd".into(),
         })
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 struct IoErrorToolExecutor;
@@ -381,6 +403,7 @@ impl ToolExecutor for IoErrorToolExecutor {
             "command not found",
         )))
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 struct ExitCodeToolExecutor;
@@ -415,6 +438,7 @@ impl ToolExecutor for ExitCodeToolExecutor {
             claim_source: None,
         }))
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 // -- Config tests --
@@ -2557,6 +2581,7 @@ mod self_learning {
         async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
             Ok(None)
         }
+        zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     struct ErrorToolExecutor;
@@ -2594,6 +2619,7 @@ mod self_learning {
                 claim_source: None,
             }))
         }
+        zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     async fn make_memory(provider: &AnyProvider) -> (SemanticMemory, ConversationId) {

@@ -198,6 +198,18 @@ impl ErasedToolExecutor for FilteredToolExecutor {
         Box::pin(self.inner.execute_tool_call_erased(call))
     }
 
+    /// Same policy as `execute_tool_call_erased`: the confirmed path must go through the
+    /// same allow/deny check, not bypass it. Mirrors the removed trait default's behavior
+    /// (delegate to `execute_tool_call_erased`) while preserving the policy enforcement
+    /// already present there.
+    fn execute_tool_call_confirmed_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        self.execute_tool_call_erased(call)
+    }
+
     fn set_skill_env(&self, env: Option<HashMap<String, String>>) {
         self.inner.set_skill_env(env);
     }
@@ -213,6 +225,8 @@ impl ErasedToolExecutor for FilteredToolExecutor {
     fn requires_confirmation_erased(&self, call: &ToolCall) -> bool {
         self.inner.requires_confirmation_erased(call)
     }
+
+    zeph_tools::erased_tool_executor_forward!(inner);
 }
 
 // ── Plan mode executor ────────────────────────────────────────────────────────
@@ -274,8 +288,24 @@ impl ErasedToolExecutor for PlanModeExecutor {
         })))
     }
 
+    /// Plan mode blocks all execution, confirmed or not — reuse the same block as the
+    /// unconfirmed path rather than forwarding to `inner`.
+    fn execute_tool_call_confirmed_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        self.execute_tool_call_erased(call)
+    }
+
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
         self.inner.set_skill_env(env);
+    }
+
+    /// Read-only in plan mode: trust level is metadata, not an execution capability,
+    /// so it is safe (and necessary for parity with other read paths) to forward.
+    fn set_effective_trust(&self, level: zeph_tools::SkillTrustLevel) {
+        self.inner.set_effective_trust(level);
     }
 
     fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
@@ -285,6 +315,13 @@ impl ErasedToolExecutor for PlanModeExecutor {
     fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
         false
     }
+
+    // Deliberate: this forwards the checkpoint trio to `inner` rather than reporting
+    // "unsupported" (the pre-#6019 behavior). Plan mode blocks new tool *execution*
+    // (`execute_tool_call_erased` above always returns `Blocked`); checkpoint undo/redo/list
+    // act on already-executed side effects and are administrative/read operations, not new
+    // execution, so exposing them while plan mode is active is in scope.
+    zeph_tools::erased_tool_executor_forward!(inner);
 }
 
 // ── Skill filtering ───────────────────────────────────────────────────────────
@@ -479,6 +516,33 @@ mod tests {
         fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
             false
         }
+
+        fn execute_tool_call_confirmed_erased<'a>(
+            &'a self,
+            call: &'a ToolCall,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            self.execute_tool_call_erased(call)
+        }
+
+        fn checkpoint_undo_erased(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+
+        fn checkpoint_redo_erased(&self) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+
+        fn checkpoint_list_erased(&self) -> zeph_tools::CheckpointListResult {
+            zeph_tools::CheckpointListResult::default()
+        }
+
+        fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool {
+            false
+        }
     }
 
     fn fenced_stub_box(tag: &'static str) -> Arc<dyn ErasedToolExecutor> {
@@ -552,6 +616,33 @@ mod tests {
         }
 
         fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
+            false
+        }
+
+        fn execute_tool_call_confirmed_erased<'a>(
+            &'a self,
+            call: &'a ToolCall,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            self.execute_tool_call_erased(call)
+        }
+
+        fn checkpoint_undo_erased(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+
+        fn checkpoint_redo_erased(&self) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+
+        fn checkpoint_list_erased(&self) -> zeph_tools::CheckpointListResult {
+            zeph_tools::CheckpointListResult::default()
+        }
+
+        fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool {
             false
         }
     }
@@ -957,6 +1048,220 @@ mod tests {
         assert_eq!(defs.len(), 2);
         assert!(defs.iter().any(|d| d.id == "shell"));
         assert!(defs.iter().any(|d| d.id == "web"));
+    }
+
+    // ── #6019: checkpoint/speculatable/trust forwarding regression ─────────
+
+    /// Inner executor whose checkpoint/speculatable/trust methods return distinguishable
+    /// non-default values, used to prove `FilteredToolExecutor` and `PlanModeExecutor`
+    /// forward to `inner` rather than falling through to the "unsupported"/`false`
+    /// defaults the removed trait defaults used to provide silently (#6019).
+    struct CheckpointingStub {
+        trust_recorded: std::sync::Mutex<Option<zeph_tools::SkillTrustLevel>>,
+    }
+
+    impl ErasedToolExecutor for CheckpointingStub {
+        fn execute_erased<'a>(
+            &'a self,
+            _response: &'a str,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+
+        fn execute_confirmed_erased<'a>(
+            &'a self,
+            _response: &'a str,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+
+        fn tool_definitions_erased(&self) -> Vec<ToolDef> {
+            vec![]
+        }
+
+        fn execute_tool_call_erased<'a>(
+            &'a self,
+            _call: &'a ToolCall,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+
+        fn execute_tool_call_confirmed_erased<'a>(
+            &'a self,
+            call: &'a ToolCall,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            self.execute_tool_call_erased(call)
+        }
+
+        fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+            false
+        }
+
+        fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
+            false
+        }
+
+        fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool {
+            true
+        }
+
+        fn set_effective_trust(&self, level: zeph_tools::SkillTrustLevel) {
+            *self.trust_recorded.lock().unwrap() = Some(level);
+        }
+
+        fn checkpoint_undo_erased(&self, n: usize) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult {
+                reverted_commands: n,
+                restored: 0,
+                deleted: 0,
+                supported: true,
+                message: "stub-undo".into(),
+            }
+        }
+
+        fn checkpoint_redo_erased(&self) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult {
+                reverted_commands: 0,
+                restored: 0,
+                deleted: 0,
+                supported: true,
+                message: "stub-redo".into(),
+            }
+        }
+
+        fn checkpoint_list_erased(&self) -> zeph_tools::CheckpointListResult {
+            zeph_tools::CheckpointListResult {
+                entries: vec![],
+                redo_depth: 7,
+                supported: true,
+            }
+        }
+    }
+
+    fn checkpointing_stub() -> Arc<CheckpointingStub> {
+        Arc::new(CheckpointingStub {
+            trust_recorded: std::sync::Mutex::new(None),
+        })
+    }
+
+    #[test]
+    fn filtered_executor_forwards_checkpoint_trio_and_speculatable() {
+        let inner = checkpointing_stub();
+        let exec = FilteredToolExecutor::new(Arc::clone(&inner) as _, ToolPolicy::InheritAll);
+
+        let undo = exec.checkpoint_undo_erased(7);
+        assert!(
+            undo.supported,
+            "checkpoint_undo_erased must forward to inner"
+        );
+        assert_eq!(
+            undo.reverted_commands, 7,
+            "n must be forwarded, not hardcoded"
+        );
+        assert!(
+            exec.checkpoint_redo_erased().supported,
+            "checkpoint_redo_erased must forward to inner"
+        );
+        assert_eq!(
+            exec.checkpoint_list_erased().redo_depth,
+            7,
+            "checkpoint_list_erased must forward to inner"
+        );
+        assert!(
+            exec.is_tool_speculatable_erased("anything"),
+            "is_tool_speculatable_erased must forward to inner, not default to false"
+        );
+    }
+
+    #[tokio::test]
+    async fn filtered_executor_confirmed_erased_still_enforces_policy() {
+        // execute_tool_call_confirmed_erased must delegate through execute_tool_call_erased
+        // (preserving the policy check), not blind-forward straight to inner.
+        let inner = checkpointing_stub();
+        let exec = FilteredToolExecutor::with_disallowed(
+            Arc::clone(&inner) as _,
+            ToolPolicy::InheritAll,
+            vec!["blocked_tool".into()],
+        );
+        let call = ToolCall {
+            tool_id: "blocked_tool".into(),
+            params: serde_json::Map::default(),
+            caller_id: None,
+            context: None,
+
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        // confirmed path must still enforce the denylist, not bypass it
+        let res = exec.execute_tool_call_confirmed_erased(&call).await;
+        assert_matches!(res, Err(ToolError::Blocked { .. }));
+    }
+
+    #[test]
+    fn plan_mode_forwards_checkpoint_trio_and_speculatable() {
+        let inner = checkpointing_stub();
+        let exec = PlanModeExecutor::new(Arc::clone(&inner) as _);
+
+        let undo = exec.checkpoint_undo_erased(3);
+        assert!(
+            undo.supported,
+            "checkpoint_undo_erased must forward to inner"
+        );
+        assert_eq!(undo.reverted_commands, 3);
+        assert!(exec.checkpoint_redo_erased().supported);
+        assert_eq!(exec.checkpoint_list_erased().redo_depth, 7);
+        assert!(
+            exec.is_tool_speculatable_erased("anything"),
+            "is_tool_speculatable_erased must forward to inner, not default to false"
+        );
+    }
+
+    #[test]
+    fn plan_mode_forwards_set_effective_trust() {
+        let inner = checkpointing_stub();
+        let exec = PlanModeExecutor::new(Arc::clone(&inner) as _);
+        exec.set_effective_trust(zeph_tools::SkillTrustLevel::Quarantined);
+        assert_eq!(
+            *inner.trust_recorded.lock().unwrap(),
+            Some(zeph_tools::SkillTrustLevel::Quarantined),
+            "set_effective_trust must forward to inner"
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_mode_confirmed_erased_still_blocks_execution() {
+        let inner = checkpointing_stub();
+        let exec = PlanModeExecutor::new(Arc::clone(&inner) as _);
+        let call = ToolCall {
+            tool_id: "shell".into(),
+            params: serde_json::Map::default(),
+            caller_id: None,
+            context: None,
+
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let res = exec.execute_tool_call_confirmed_erased(&call).await;
+        assert!(
+            res.is_err(),
+            "plan mode must block confirmed execution too, not just unconfirmed"
+        );
     }
 
     // ── normalize_tool_id tests ────────────────────────────────────────────

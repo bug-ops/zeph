@@ -471,6 +471,8 @@ impl ToolExecutor for IndexMcpServer {
             "symbol_definition" | "find_text_references" | "call_graph" | "module_summary"
         )
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 #[cfg(test)]

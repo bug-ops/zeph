@@ -240,6 +240,7 @@ async fn infrastructure_error_does_not_trigger_self_reflection() {
                 "connection refused",
             ))))
         }
+        zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     // Provide a reflection response to detect if self-reflection fires.
@@ -776,6 +777,7 @@ impl ToolExecutor for FixedOutputExecutor {
             }
         }
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 // FirstFailsExecutor: fails on the first call (permanent error), succeeds thereafter.
@@ -819,6 +821,7 @@ impl ToolExecutor for FirstFailsExecutor {
             }
         }
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 /// Builds a minimal `ToolUseRequest` for test use.

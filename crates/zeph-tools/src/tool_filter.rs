@@ -145,6 +145,8 @@ mod tests {
                 claim_source: None,
             }))
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     #[test]

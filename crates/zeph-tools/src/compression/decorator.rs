@@ -254,6 +254,18 @@ mod tests {
         fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
             false
         }
+        fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+            false
+        }
+        fn checkpoint_undo(&self, _n: usize) -> crate::executor::CheckpointActionResult {
+            crate::executor::CheckpointActionResult::unsupported()
+        }
+        fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+            crate::executor::CheckpointActionResult::unsupported()
+        }
+        fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+            crate::executor::CheckpointListResult::default()
+        }
     }
 
     /// Always replaces output with a fixed "compressed" string.
@@ -401,6 +413,15 @@ mod tests {
                 redo_depth: 7,
                 supported: true,
             }
+        }
+        async fn execute_tool_call_confirmed(
+            &self,
+            call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            self.execute_tool_call(call).await
+        }
+        fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+            false
         }
     }
 

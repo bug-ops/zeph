@@ -100,6 +100,7 @@ impl ToolExecutor for NoopExecutor {
     }
 
     fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 /// Tool executor that returns a single tool output then `Ok(None)` thereafter.
@@ -133,6 +134,7 @@ impl ToolExecutor for SingleToolExecutor {
     }
 
     fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 /// Build a minimal [`SkillRegistry`] backed by a temporary directory.

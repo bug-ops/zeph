@@ -35,6 +35,8 @@ impl ToolExecutor for NoOpExecutor {
     async fn execute_tool_call(&self, _call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         Ok(None)
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 /// When a pre-execution verifier blocks a tool call and an audit logger is wired,

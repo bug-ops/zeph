@@ -165,6 +165,7 @@ impl ToolExecutor for FixedOutputExecutor {
             }
         }
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 /// Returns success for the first `execute_tool_call` invocation and `[error]` output for all
@@ -211,6 +212,7 @@ impl ToolExecutor for FirstSuccessExecutor {
             }))
         }
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 /// Dispatches by `tool_id` to cover three outcomes in a single batch:
@@ -276,6 +278,7 @@ impl ToolExecutor for DispatchingExecutor {
     fn is_tool_retryable(&self, tool_id: &str) -> bool {
         tool_id == "tool-retryable"
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 /// Builds a minimal `ToolUseRequest` for test use.
@@ -447,6 +450,7 @@ async fn native_tool_network_error_records_tool_failure_not_success() {
                 "connection refused",
             ))))
         }
+        zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     let provider = mock_provider(vec![]);
@@ -1219,6 +1223,7 @@ async fn permanent_tool_error_pushes_tool_result() {
                 "HTTP 403 Forbidden",
             ))))
         }
+        zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     let executor = PermanentErrorExecutor;
@@ -1268,6 +1273,7 @@ async fn parallel_permanent_errors_both_push_tool_results() {
                 "HTTP 403 Forbidden",
             ))))
         }
+        zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     let executor = PermanentErrorExecutor2;
@@ -1477,6 +1483,7 @@ async fn transient_error_on_non_retryable_executor_is_not_retried() {
         fn is_tool_retryable(&self, _tool_id: &str) -> bool {
             false
         }
+        zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     let provider = mock_provider(vec![]);
@@ -2199,6 +2206,7 @@ impl ToolExecutor for RecordingExecutor {
             }))
         }
     }
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 fn tafc_only_think_request(id: &str, name: &str) -> zeph_llm::provider::ToolUseRequest {

@@ -2405,6 +2405,7 @@ mod tests {
         async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
             Ok(None)
         }
+        zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     fn offline_provider() -> AnyProvider {
@@ -3166,6 +3167,7 @@ mod tests {
                 claim_source: None,
             }))
         }
+        zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     fn make_tool_call(tool_id: &str) -> zeph_tools::ToolCall {

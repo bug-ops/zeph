@@ -203,6 +203,25 @@ mod tests {
             fn is_tool_speculatable(&self, _: &str) -> bool {
                 false
             }
+            fn execute_tool_call_confirmed(
+                &self,
+                call: &ToolCall,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                self.execute_tool_call(call)
+            }
+            fn checkpoint_undo(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+                zeph_tools::CheckpointActionResult::unsupported()
+            }
+            fn checkpoint_redo(&self) -> zeph_tools::CheckpointActionResult {
+                zeph_tools::CheckpointActionResult::unsupported()
+            }
+            fn checkpoint_list(&self) -> zeph_tools::CheckpointListResult {
+                zeph_tools::CheckpointListResult::default()
+            }
+            fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+                false
+            }
         }
         let engine = Arc::new(super::super::SpeculationEngine::new(
             Arc::new(NullExec),
@@ -238,6 +257,25 @@ mod tests {
             fn is_tool_speculatable(&self, _: &str) -> bool {
                 self.count.fetch_add(1, Ordering::Relaxed);
                 true
+            }
+            fn execute_tool_call_confirmed(
+                &self,
+                call: &ToolCall,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                self.execute_tool_call(call)
+            }
+            fn checkpoint_undo(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+                zeph_tools::CheckpointActionResult::unsupported()
+            }
+            fn checkpoint_redo(&self) -> zeph_tools::CheckpointActionResult {
+                zeph_tools::CheckpointActionResult::unsupported()
+            }
+            fn checkpoint_list(&self) -> zeph_tools::CheckpointListResult {
+                zeph_tools::CheckpointListResult::default()
+            }
+            fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+                false
             }
         }
 
@@ -308,6 +346,25 @@ mod tests {
             fn is_tool_speculatable(&self, _: &str) -> bool {
                 false
             }
+            fn execute_tool_call_confirmed(
+                &self,
+                call: &ToolCall,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                self.execute_tool_call(call)
+            }
+            fn checkpoint_undo(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+                zeph_tools::CheckpointActionResult::unsupported()
+            }
+            fn checkpoint_redo(&self) -> zeph_tools::CheckpointActionResult {
+                zeph_tools::CheckpointActionResult::unsupported()
+            }
+            fn checkpoint_list(&self) -> zeph_tools::CheckpointListResult {
+                zeph_tools::CheckpointListResult::default()
+            }
+            fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+                false
+            }
         }
         let engine = Arc::new(super::super::SpeculationEngine::new(
             Arc::new(NullExec),
@@ -336,6 +393,25 @@ mod tests {
                 Ok(None)
             }
             fn is_tool_speculatable(&self, _: &str) -> bool {
+                false
+            }
+            fn execute_tool_call_confirmed(
+                &self,
+                call: &ToolCall,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                self.execute_tool_call(call)
+            }
+            fn checkpoint_undo(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+                zeph_tools::CheckpointActionResult::unsupported()
+            }
+            fn checkpoint_redo(&self) -> zeph_tools::CheckpointActionResult {
+                zeph_tools::CheckpointActionResult::unsupported()
+            }
+            fn checkpoint_list(&self) -> zeph_tools::CheckpointListResult {
+                zeph_tools::CheckpointListResult::default()
+            }
+            fn requires_confirmation(&self, _call: &ToolCall) -> bool {
                 false
             }
         }
@@ -368,6 +444,25 @@ mod tests {
                 Ok(None)
             }
             fn is_tool_speculatable(&self, _: &str) -> bool {
+                false
+            }
+            fn execute_tool_call_confirmed(
+                &self,
+                call: &ToolCall,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                self.execute_tool_call(call)
+            }
+            fn checkpoint_undo(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+                zeph_tools::CheckpointActionResult::unsupported()
+            }
+            fn checkpoint_redo(&self) -> zeph_tools::CheckpointActionResult {
+                zeph_tools::CheckpointActionResult::unsupported()
+            }
+            fn checkpoint_list(&self) -> zeph_tools::CheckpointListResult {
+                zeph_tools::CheckpointListResult::default()
+            }
+            fn requires_confirmation(&self, _call: &ToolCall) -> bool {
                 false
             }
         }
@@ -412,6 +507,25 @@ mod tests {
                 Ok(None)
             }
             fn is_tool_speculatable(&self, _: &str) -> bool {
+                false
+            }
+            fn execute_tool_call_confirmed(
+                &self,
+                call: &ToolCall,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                self.execute_tool_call(call)
+            }
+            fn checkpoint_undo(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+                zeph_tools::CheckpointActionResult::unsupported()
+            }
+            fn checkpoint_redo(&self) -> zeph_tools::CheckpointActionResult {
+                zeph_tools::CheckpointActionResult::unsupported()
+            }
+            fn checkpoint_list(&self) -> zeph_tools::CheckpointListResult {
+                zeph_tools::CheckpointListResult::default()
+            }
+            fn requires_confirmation(&self, _call: &ToolCall) -> bool {
                 false
             }
         }

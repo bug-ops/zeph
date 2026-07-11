@@ -740,6 +740,8 @@ impl ToolExecutor for FileExecutor {
             },
         ]
     }
+
+    crate::tool_executor_no_inner_defaults!();
 }
 
 /// Lexically normalize a path by collapsing `.` and `..` components without

@@ -451,6 +451,8 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
             claim_source: Some(zeph_tools::ClaimSource::Shell),
         }))
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 async fn forward_stdin_via_ext(

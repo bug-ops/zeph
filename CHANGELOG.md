@@ -108,6 +108,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **BREAKING**: `ToolExecutor` and `ErasedToolExecutor` no longer provide permissive default
+  bodies for the six risk-bearing cross-cutting methods — `requires_confirmation`,
+  `execute_tool_call_confirmed`, the checkpoint trio (`checkpoint_undo`/`checkpoint_redo`/
+  `checkpoint_list`), and `is_tool_speculatable`, plus their `_erased` counterparts on the
+  object-safe trait (#6019). This recurring defect class — a wrapper forgetting to override one
+  of these and silently inheriting a default that disabled a security check, a checkpoint
+  capability, or a confirmation gate — required five prior one-off patches (#5930, #6011, #5998,
+  #6036, and the #5999/#6001/#6012 cluster). Every implementor of either trait must now supply
+  all six explicitly; the compiler rejects any omission at build time instead of the gap
+  surfacing only when a specific wrapper composition is exercised. Four new `macro_rules!`
+  helpers in `zeph-tools::executor_delegate` (`tool_executor_forward!`,
+  `tool_executor_no_inner_defaults!`, `erased_tool_executor_forward!`,
+  `erased_tool_executor_no_inner_defaults!`) keep the compiler-forced boilerplate to one line for
+  the common wrapper-forwards-to-inner and leaf-has-no-inner shapes; both `*_no_inner_defaults!`
+  macros carry a rustdoc warning against use on a type with a delegate field, since
+  `macro_rules!` cannot enforce that structurally. Closes three live gaps on the erased side
+  (previously dormant, gated on whether the wrapped executor supports checkpoints): the removed
+  `execute_tool_call_confirmed_erased` default already forwarded correctly
+  (`self.execute_tool_call_erased(call)`), so omitting it was not itself a live bug — the actual
+  gaps were the checkpoint trio and `is_tool_speculatable_erased`, whose removed defaults silently
+  reported "unsupported"/`false` regardless of the wrapped executor's real capability.
+  `FilteredToolExecutor` and `PlanModeExecutor` (`zeph-subagent::filter`) now forward the
+  checkpoint trio and `is_tool_speculatable_erased` to their inner executor; `PlanModeExecutor`
+  also now forwards `set_effective_trust`, which previously no-op'd silently, so a trust
+  cap set by an outer wrapper (e.g. `PolicyGateExecutor`) never reached the underlying tool while
+  a sub-agent was in plan mode. `PlanModeExecutor`'s checkpoint trio now intentionally forwards to
+  `inner` rather than staying "unsupported" — plan mode blocks new tool *execution* but checkpoint
+  undo/redo/list are metadata/administrative operations on already-executed side effects, not new
+  execution, so this is a deliberate scope decision, not an oversight.
+  `execute_tool_call_confirmed_erased` was nonetheless hand-written (not macro-forwarded) on all
+  three wrappers now that the trait requires it explicitly: `FilteredToolExecutor` and
+  `PlanModeExecutor` delegate to their own `execute_tool_call_erased` to preserve policy
+  enforcement / the execution block; `MemoryAwareExecutor` (`zeph-subagent::manager::spawn`)
+  replicates the `SandboxViolation` -> memory-tool fallback already present on its unconfirmed
+  path, since a blind forward to `inner` would have dropped that fallback specifically on the
+  confirmed path. `ShellExecutor` gained explicit
+  `requires_confirmation`/`execute_tool_call_confirmed`/`is_tool_speculatable` (previously
+  relying on the removed defaults despite implementing real checkpoints).
 - `fix(config)`: `Config::validate()` now calls 7 subsystem `validate()` functions that existed
   with real invariant checks but were unreachable from the production config-load path — only
   their own unit tests exercised them (#5932). `validate_pool()` was the most severe gap: two

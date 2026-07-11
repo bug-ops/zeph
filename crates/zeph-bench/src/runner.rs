@@ -151,6 +151,8 @@ impl ToolExecutor for NoopExecutor {
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         Ok(None)
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 /// Drives [`Agent<BenchmarkChannel>`] over a dataset and collects scored results.

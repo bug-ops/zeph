@@ -139,6 +139,8 @@ impl ToolExecutor for SkillInvokeExecutor {
 
         Ok(Some(make_output(summary)))
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 fn make_output(summary: String) -> ToolOutput {

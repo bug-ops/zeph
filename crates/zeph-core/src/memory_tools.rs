@@ -250,6 +250,8 @@ impl ToolExecutor for MemoryToolExecutor {
             _ => Ok(None),
         }
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 #[cfg(test)]

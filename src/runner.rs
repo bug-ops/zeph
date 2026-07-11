@@ -5325,6 +5325,7 @@ mod tests {
                     claim_source: None,
                 }))
             }
+            zeph_tools::tool_executor_no_inner_defaults!();
         }
 
         let sentinel = std::sync::Arc::new(ShadowSentinel::new(

@@ -240,6 +240,8 @@ impl ToolExecutor for AirlineEnv {
             claim_source: None,
         }))
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

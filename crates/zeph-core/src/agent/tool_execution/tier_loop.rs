@@ -4395,6 +4395,7 @@ mod tests {
             fn is_tool_retryable(&self, _tool_id: &str) -> bool {
                 true
             }
+            zeph_tools::tool_executor_no_inner_defaults!();
         }
 
         fn tool_result_ids(agent: &Agent<MockChannel>, id: &str) -> Vec<&'static str> {

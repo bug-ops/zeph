@@ -265,6 +265,8 @@ impl ToolExecutor for RetailEnv {
             claim_source: None,
         }))
     }
+
+    zeph_tools::tool_executor_no_inner_defaults!();
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────────────

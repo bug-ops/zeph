@@ -985,6 +985,33 @@ mod handle_tool_step_granted_secrets_tests {
         fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
             false
         }
+
+        fn execute_tool_call_confirmed_erased<'a>(
+            &'a self,
+            call: &'a ToolCall,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            self.execute_tool_call_erased(call)
+        }
+
+        fn checkpoint_undo_erased(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+
+        fn checkpoint_redo_erased(&self) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+
+        fn checkpoint_list_erased(&self) -> zeph_tools::CheckpointListResult {
+            zeph_tools::CheckpointListResult::default()
+        }
+
+        fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool {
+            false
+        }
     }
 
     fn tool_use_response() -> ChatResponse {

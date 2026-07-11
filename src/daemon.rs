@@ -1753,6 +1753,7 @@ mod tests {
                 claim_source: None,
             }))
         }
+        zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     fn daemon_test_call(tool_id: &str) -> zeph_tools::ToolCall {
@@ -2426,6 +2427,7 @@ mod tests {
                     claim_source: None,
                 }))
             }
+            zeph_tools::tool_executor_no_inner_defaults!();
         }
 
         let pool = zeph_db::DbConfig {

@@ -446,6 +446,8 @@ mod tests {
                 claim_source: None,
             }))
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     fn make_gate(config: &PolicyConfig) -> PolicyGateExecutor<MockExecutor> {
@@ -514,6 +516,18 @@ mod tests {
                 ..Default::default()
             }
         }
+        async fn execute_tool_call_confirmed(
+            &self,
+            call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            self.execute_tool_call(call).await
+        }
+        fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+            false
+        }
+        fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+            false
+        }
     }
 
     /// Regression test for #5931: `requires_confirmation` must be forwarded to `self.inner`.
@@ -531,6 +545,25 @@ mod tests {
         }
         fn requires_confirmation(&self, _call: &ToolCall) -> bool {
             true
+        }
+
+        async fn execute_tool_call_confirmed(
+            &self,
+            call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            self.execute_tool_call(call).await
+        }
+        fn checkpoint_undo(&self, _n: usize) -> crate::executor::CheckpointActionResult {
+            crate::executor::CheckpointActionResult::unsupported()
+        }
+        fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+            crate::executor::CheckpointActionResult::unsupported()
+        }
+        fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+            crate::executor::CheckpointListResult::default()
+        }
+        fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+            false
         }
     }
 

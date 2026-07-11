@@ -693,6 +693,25 @@ impl ToolExecutor for AlwaysOkSpecExec {
     fn is_tool_speculatable(&self, _: &str) -> bool {
         true
     }
+
+    fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        self.execute_tool_call(call)
+    }
+    fn checkpoint_undo(&self, _n: usize) -> zeph_tools::executor::CheckpointActionResult {
+        zeph_tools::executor::CheckpointActionResult::unsupported()
+    }
+    fn checkpoint_redo(&self) -> zeph_tools::executor::CheckpointActionResult {
+        zeph_tools::executor::CheckpointActionResult::unsupported()
+    }
+    fn checkpoint_list(&self) -> zeph_tools::executor::CheckpointListResult {
+        zeph_tools::executor::CheckpointListResult::default()
+    }
+    fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+        false
+    }
 }
 
 struct AlwaysErrSpecExec;
@@ -709,6 +728,25 @@ impl ToolExecutor for AlwaysErrSpecExec {
 
     fn is_tool_speculatable(&self, _: &str) -> bool {
         true
+    }
+
+    fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        self.execute_tool_call(call)
+    }
+    fn checkpoint_undo(&self, _n: usize) -> zeph_tools::executor::CheckpointActionResult {
+        zeph_tools::executor::CheckpointActionResult::unsupported()
+    }
+    fn checkpoint_redo(&self) -> zeph_tools::executor::CheckpointActionResult {
+        zeph_tools::executor::CheckpointActionResult::unsupported()
+    }
+    fn checkpoint_list(&self) -> zeph_tools::executor::CheckpointListResult {
+        zeph_tools::executor::CheckpointListResult::default()
+    }
+    fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+        false
     }
 }
 

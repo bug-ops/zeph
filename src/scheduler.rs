@@ -559,6 +559,7 @@ mod tests {
             ) -> Result<Option<ToolOutput>, ToolError> {
                 Ok(None)
             }
+            zeph_tools::tool_executor_no_inner_defaults!();
         }
 
         let (channel, _handle) = LoopbackChannel::pair(16);

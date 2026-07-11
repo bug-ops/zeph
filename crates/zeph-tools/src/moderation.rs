@@ -300,6 +300,30 @@ impl<B: ReactionModerationBackend + std::fmt::Debug> ToolExecutor for Moderation
             "telegram_delete_reaction" | "telegram_delete_all_reactions"
         )
     }
+
+    async fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        self.execute_tool_call(call).await
+    }
+
+    fn checkpoint_undo(&self, _n: usize) -> crate::executor::CheckpointActionResult {
+        crate::executor::CheckpointActionResult::unsupported()
+    }
+
+    fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+        crate::executor::CheckpointActionResult::unsupported()
+    }
+
+    fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+        crate::executor::CheckpointListResult::default()
+    }
+
+    /// Reaction deletion is a one-shot, irreversible API call — never speculatable.
+    fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+        false
+    }
 }
 
 // ── Unit tests ─────────────────────────────────────────────────────────────

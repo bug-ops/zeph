@@ -341,6 +341,7 @@ fn is_strict_pattern(pattern: &str, strictness: PatternStrictness) -> bool {
 /// struct MockExecutor;
 /// impl ToolExecutor for MockExecutor {
 ///     async fn execute(&self, _: &str) -> Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError> { Ok(None) }
+///     zeph_tools::tool_executor_no_inner_defaults!();
 /// }
 /// let executor = ScopedToolExecutor::new(MockExecutor, scope);
 /// ```
@@ -369,6 +370,7 @@ impl<E: ToolExecutor> ScopedToolExecutor<E> {
     /// struct Noop;
     /// impl zeph_tools::ToolExecutor for Noop {
     ///     async fn execute(&self, _: &str) -> Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError> { Ok(None) }
+    ///     zeph_tools::tool_executor_no_inner_defaults!();
     /// }
     /// let executor = ScopedToolExecutor::new(Noop, ToolScope::full());
     /// ```
@@ -430,6 +432,7 @@ impl<E: ToolExecutor> ScopedToolExecutor<E> {
     /// struct Noop;
     /// impl zeph_tools::ToolExecutor for Noop {
     ///     async fn execute(&self, _: &str) -> Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError> { Ok(None) }
+    ///     zeph_tools::tool_executor_no_inner_defaults!();
     /// }
     /// let mut executor = ScopedToolExecutor::new(Noop, ToolScope::full());
     /// // scope_for_task returns None for unregistered task types
@@ -677,6 +680,7 @@ impl<E: ToolExecutor> ToolExecutor for ScopedToolExecutor<E> {
 /// struct Noop;
 /// impl zeph_tools::ToolExecutor for Noop {
 ///     async fn execute(&self, _: &str) -> Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError> { Ok(None) }
+///     zeph_tools::tool_executor_no_inner_defaults!();
 /// }
 ///
 /// let cfg = CapabilityScopesConfig::default();
@@ -765,6 +769,8 @@ mod tests {
                 claim_source: None,
             }))
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     struct CheckpointingExecutor;
@@ -796,6 +802,15 @@ mod tests {
         }
         fn requires_confirmation(&self, _call: &ToolCall) -> bool {
             true
+        }
+        async fn execute_tool_call_confirmed(
+            &self,
+            call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            self.execute_tool_call(call).await
+        }
+        fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+            false
         }
     }
 

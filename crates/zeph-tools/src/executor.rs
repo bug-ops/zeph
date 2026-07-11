@@ -650,6 +650,8 @@ pub fn deserialize_params<T: serde::de::DeserializeOwned>(
 ///             claim_source: None,
 ///         }))
 ///     }
+///
+///     zeph_tools::tool_executor_no_inner_defaults!();
 /// }
 /// ```
 /// # TODO (G3 — deferred: Tower-style tool middleware stack)
@@ -725,7 +727,13 @@ pub trait ToolExecutor: Send + Sync {
     /// Execute a structured tool call bypassing confirmation checks.
     ///
     /// Called after the user has explicitly approved the tool invocation.
-    /// Default implementation delegates to [`execute_tool_call`](ToolExecutor::execute_tool_call).
+    ///
+    /// Required (no default): a wrapper that forgets to override this silently falls back
+    /// to whatever an inherited default would do, which has repeatedly reintroduced #6019.
+    /// Executors with no confirmation-specific behavior should delegate to
+    /// [`execute_tool_call`](ToolExecutor::execute_tool_call); see
+    /// [`tool_executor_no_inner_defaults!`](crate::tool_executor_no_inner_defaults) for leaf
+    /// executors with no wrapped inner.
     ///
     /// # Errors
     ///
@@ -733,9 +741,7 @@ pub trait ToolExecutor: Send + Sync {
     fn execute_tool_call_confirmed(
         &self,
         call: &ToolCall,
-    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
-        self.execute_tool_call(call)
-    }
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send;
 
     /// Inject environment variables for the currently active skill. No-op by default.
     ///
@@ -759,26 +765,22 @@ pub trait ToolExecutor: Send + Sync {
 
     /// Undo the last `n` checkpointed write commands.
     ///
-    /// Returns [`CheckpointActionResult::unsupported`] by default. Executors that
-    /// implement checkpoints (i.e. [`ShellExecutor`](crate::ShellExecutor) with
-    /// `checkpoints_enabled = true`) override this.
-    fn checkpoint_undo(&self, _n: usize) -> CheckpointActionResult {
-        CheckpointActionResult::unsupported()
-    }
+    /// Required (no default). Executors that implement checkpoints (i.e.
+    /// [`ShellExecutor`](crate::ShellExecutor) with `checkpoints_enabled = true`) provide
+    /// real behavior here; all others should return [`CheckpointActionResult::unsupported`].
+    /// Wrappers must forward to their inner executor — see
+    /// [`tool_executor_forward!`](crate::tool_executor_forward).
+    fn checkpoint_undo(&self, n: usize) -> CheckpointActionResult;
 
     /// Redo the last undone checkpoint.
     ///
-    /// Returns [`CheckpointActionResult::unsupported`] by default.
-    fn checkpoint_redo(&self) -> CheckpointActionResult {
-        CheckpointActionResult::unsupported()
-    }
+    /// Required (no default). See [`checkpoint_undo`](ToolExecutor::checkpoint_undo).
+    fn checkpoint_redo(&self) -> CheckpointActionResult;
 
     /// List the current undo stack entries and redo depth.
     ///
-    /// Returns an empty [`CheckpointListResult`] with `supported = false` by default.
-    fn checkpoint_list(&self) -> CheckpointListResult {
-        CheckpointListResult::default()
-    }
+    /// Required (no default). See [`checkpoint_undo`](ToolExecutor::checkpoint_undo).
+    fn checkpoint_list(&self) -> CheckpointListResult;
 
     /// Whether a tool call can be safely dispatched speculatively (before the LLM finishes).
     ///
@@ -787,39 +789,54 @@ pub trait ToolExecutor: Send + Sync {
     /// 2. Side-effect-free or cheaply reversible.
     /// 3. Not subject to user confirmation (`needs_confirmation` must be false at call time).
     ///
-    /// Default: `false` (safe). Override to `true` only for tools that satisfy all three
-    /// properties. The engine additionally gates on trust level and confirmation status
-    /// regardless of this flag.
+    /// Required (no default). Return `false` (safe) unless the tool satisfies all three
+    /// properties above. The engine additionally gates on trust level and confirmation
+    /// status regardless of this flag.
     ///
     /// # Examples
     ///
     /// ```rust
-    /// use zeph_tools::ToolExecutor;
+    /// use zeph_tools::{ToolExecutor, ToolCall, ToolOutput, ToolError};
     ///
     /// struct ReadOnlyExecutor;
     /// impl ToolExecutor for ReadOnlyExecutor {
-    ///     async fn execute(&self, _: &str) -> Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError> {
+    ///     async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
     ///         Ok(None)
     ///     }
     ///     fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
     ///         true // read-only, idempotent
     ///     }
+    ///     fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+    ///         false
+    ///     }
+    ///     async fn execute_tool_call_confirmed(
+    ///         &self,
+    ///         call: &ToolCall,
+    ///     ) -> Result<Option<ToolOutput>, ToolError> {
+    ///         self.execute_tool_call(call).await
+    ///     }
+    ///     fn checkpoint_undo(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+    ///         zeph_tools::CheckpointActionResult::unsupported()
+    ///     }
+    ///     fn checkpoint_redo(&self) -> zeph_tools::CheckpointActionResult {
+    ///         zeph_tools::CheckpointActionResult::unsupported()
+    ///     }
+    ///     fn checkpoint_list(&self) -> zeph_tools::CheckpointListResult {
+    ///         zeph_tools::CheckpointListResult::default()
+    ///     }
     /// }
     /// ```
-    fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
-        false
-    }
+    fn is_tool_speculatable(&self, _tool_id: &str) -> bool;
 
     /// Return `true` when `call` would require user confirmation before execution.
     ///
     /// This is a pure metadata/policy query — implementations must **not** execute the tool.
     /// Used by the speculative engine to gate dispatch without causing double side-effects.
     ///
-    /// Default: `false`. Executors that enforce a confirmation policy (e.g. `TrustGateExecutor`)
-    /// must override this to reflect their actual policy without executing the tool.
-    fn requires_confirmation(&self, _call: &ToolCall) -> bool {
-        false
-    }
+    /// Required (no default). Executors with no confirmation policy of their own should
+    /// return `false`; executors that enforce one (e.g. `TrustGateExecutor`) must reflect
+    /// their actual policy without executing the tool.
+    fn requires_confirmation(&self, _call: &ToolCall) -> bool;
 }
 
 /// Object-safe erased version of [`ToolExecutor`] using boxed futures.
@@ -848,16 +865,19 @@ pub trait ErasedToolExecutor: Send + Sync {
         call: &'a ToolCall,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>;
 
+    /// Required (no default). TrustGateExecutor-style wrappers that override
+    /// [`ToolExecutor::execute_tool_call_confirmed`] reach it through the blanket impl below.
+    /// Other implementors should fall back to
+    /// [`execute_tool_call_erased`](ErasedToolExecutor::execute_tool_call_erased) (normal
+    /// enforcement path) unless they need to replicate confirmed-path-specific behavior
+    /// (e.g. a fallback that only applies on the unconfirmed path must be mirrored
+    /// explicitly, not assumed). See
+    /// [`erased_tool_executor_no_inner_defaults!`](crate::erased_tool_executor_no_inner_defaults)
+    /// for leaf executors with no wrapped inner.
     fn execute_tool_call_confirmed_erased<'a>(
         &'a self,
         call: &'a ToolCall,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
-    {
-        // TrustGateExecutor overrides ToolExecutor::execute_tool_call_confirmed; the blanket
-        // impl for T: ToolExecutor routes this call through it via execute_tool_call_confirmed_erased.
-        // Other implementors fall back to execute_tool_call_erased (normal enforcement path).
-        self.execute_tool_call_erased(call)
-    }
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>;
 
     /// Inject environment variables for the currently active skill. No-op by default.
     fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
@@ -865,42 +885,44 @@ pub trait ErasedToolExecutor: Send + Sync {
     /// Set the effective trust level for the currently active skill. No-op by default.
     fn set_effective_trust(&self, _level: crate::SkillTrustLevel) {}
 
-    /// Undo the last `n` checkpointed write commands. No-op (unsupported) by default.
-    fn checkpoint_undo_erased(&self, _n: usize) -> CheckpointActionResult {
-        CheckpointActionResult::unsupported()
-    }
+    /// Undo the last `n` checkpointed write commands.
+    ///
+    /// Required (no default). Wrappers must forward to their inner executor — see
+    /// [`erased_tool_executor_forward!`](crate::erased_tool_executor_forward). Leaf
+    /// executors with no checkpoint support should return
+    /// [`CheckpointActionResult::unsupported`].
+    fn checkpoint_undo_erased(&self, n: usize) -> CheckpointActionResult;
 
-    /// Redo the last undone checkpoint. No-op (unsupported) by default.
-    fn checkpoint_redo_erased(&self) -> CheckpointActionResult {
-        CheckpointActionResult::unsupported()
-    }
+    /// Redo the last undone checkpoint.
+    ///
+    /// Required (no default). See
+    /// [`checkpoint_undo_erased`](ErasedToolExecutor::checkpoint_undo_erased).
+    fn checkpoint_redo_erased(&self) -> CheckpointActionResult;
 
-    /// List the current undo stack entries and redo depth. Returns empty by default.
-    fn checkpoint_list_erased(&self) -> CheckpointListResult {
-        CheckpointListResult::default()
-    }
+    /// List the current undo stack entries and redo depth.
+    ///
+    /// Required (no default). See
+    /// [`checkpoint_undo_erased`](ErasedToolExecutor::checkpoint_undo_erased).
+    fn checkpoint_list_erased(&self) -> CheckpointListResult;
 
     /// Whether the executor can safely retry this tool call on a transient error.
     fn is_tool_retryable_erased(&self, tool_id: &str) -> bool;
 
     /// Whether a tool call can be safely dispatched speculatively.
     ///
-    /// Default: `false`. Override to `true` in read-only executors.
-    fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool {
-        false
-    }
+    /// Required (no default). Return `false` unless the executor is read-only and
+    /// idempotent for the given tool.
+    fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool;
 
     /// Return `true` when `call` would require user confirmation before execution.
     ///
     /// This is a pure metadata/policy query — implementations must **not** execute the tool.
     /// Used by the speculative engine to gate dispatch without causing double side-effects.
     ///
-    /// Default: `true` (confirmation required). Implementors that want to allow speculative
-    /// dispatch must explicitly return `false`. The blanket impl for `T: ToolExecutor`
+    /// Required (no default). Return `true` (confirmation required) unless the executor
+    /// explicitly wants to allow speculative dispatch. The blanket impl for `T: ToolExecutor`
     /// delegates to [`ToolExecutor::requires_confirmation`].
-    fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
-        true
-    }
+    fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool;
 }
 
 impl<T: ToolExecutor> ErasedToolExecutor for T {
@@ -1382,6 +1404,8 @@ mod tests {
         async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
             Ok(None)
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     #[tokio::test]
@@ -1490,6 +1514,8 @@ mod tests {
                 claim_source: None,
             }))
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     #[tokio::test]
@@ -1568,6 +1594,8 @@ mod tests {
                 };
                 self.0.store(v, Ordering::Relaxed);
             }
+
+            crate::tool_executor_no_inner_defaults!();
         }
 
         let inner = std::sync::Arc::new(TrustCapture(AtomicU8::new(0)));
@@ -1859,6 +1887,8 @@ mod tests {
         async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
             Ok(None)
         }
+
+        crate::tool_executor_no_inner_defaults!();
     }
 
     /// Stub that always signals confirmation is required via `ToolExecutor::requires_confirmation`.
@@ -1869,6 +1899,25 @@ mod tests {
         }
         fn requires_confirmation(&self, _call: &ToolCall) -> bool {
             true
+        }
+
+        async fn execute_tool_call_confirmed(
+            &self,
+            call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            self.execute_tool_call(call).await
+        }
+        fn checkpoint_undo(&self, _n: usize) -> CheckpointActionResult {
+            CheckpointActionResult::unsupported()
+        }
+        fn checkpoint_redo(&self) -> CheckpointActionResult {
+            CheckpointActionResult::unsupported()
+        }
+        fn checkpoint_list(&self) -> CheckpointListResult {
+            CheckpointListResult::default()
+        }
+        fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+            false
         }
     }
 
@@ -1915,11 +1964,12 @@ mod tests {
     }
 
     #[test]
-    fn requires_confirmation_erased_default_on_erased_trait_is_true() {
-        // ErasedToolExecutor's own default (trait method body) returns true.
-        // We construct a DynExecutor wrapping ConfirmingExecutor and verify via the erased path.
-        // (We cannot instantiate ErasedToolExecutor directly without a concrete type.)
-        // Instead verify via a type that only implements ErasedToolExecutor manually:
+    fn requires_confirmation_erased_manual_impl_returns_true() {
+        // Prior to #6019, ErasedToolExecutor::requires_confirmation_erased had a
+        // trait-level default of `true`. That default was removed — every direct
+        // ErasedToolExecutor implementor must now provide it explicitly. This stub
+        // reproduces the old default's value by hand to document the historical
+        // behavior and confirm it still compiles as a deliberate choice.
         struct ManualErased;
         impl ErasedToolExecutor for ManualErased {
             fn execute_erased<'a>(
@@ -1952,12 +2002,13 @@ mod tests {
             fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
                 false
             }
-            // requires_confirmation_erased NOT overridden → trait default returns true
+
+            crate::erased_tool_executor_no_inner_defaults!();
         }
         let exec = ManualErased;
         assert!(
             exec.requires_confirmation_erased(&dummy_call()),
-            "ErasedToolExecutor trait-level default for requires_confirmation_erased must be true"
+            "requires_confirmation_erased must be true (matches the removed trait default's value)"
         );
     }
 
