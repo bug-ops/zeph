@@ -62,7 +62,7 @@ pub use def::{
 };
 pub use durable::{
     DurableResolverSeat, SubagentResult, await_durable_subagent, make_durable_promise,
-    resolve_durable_promise,
+    resolve_durable_promise, try_replay_durable_subagent,
 };
 pub use error::SubAgentError;
 pub use filter::{FilteredToolExecutor, PlanModeExecutor, filter_skills};

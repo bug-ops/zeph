@@ -302,9 +302,22 @@ impl DurableContext {
         .await
     }
 
-    /// Read a promise's state and, if resolved, open and decode its value.
+    /// Read a promise's state and, if resolved, open and decode its value — without parking.
+    ///
+    /// Unlike [`await_promise`](Self::await_promise), this performs a single backend read and
+    /// returns immediately regardless of resolution state: `Ok(None)` means the promise row
+    /// exists but has not been resolved yet. Callers on an interactive path (e.g. a resumed
+    /// parent deciding whether to replay a journaled subagent result or spawn a fresh one) use
+    /// this to avoid an unbounded park on a promise that may never resolve (INV-9: a resumed
+    /// promise's resolver token is unrecoverable, so nothing can ever resolve it if the
+    /// original resolver is gone).
+    ///
+    /// # Errors
+    ///
+    /// - [`DurableError::UnknownPromise`] if the promise row is missing (e.g. pruned).
+    /// - A decode/integrity error if the resolved payload cannot be opened into `T`.
     #[tracing::instrument(name = "durable.context.take_resolved_promise", skip_all, fields(promise_id = %id.as_uuid()))]
-    async fn take_resolved_promise<T: DeserializeOwned>(
+    pub async fn take_resolved_promise<T: DeserializeOwned>(
         &self,
         id: PromiseId,
     ) -> Result<Option<T>, DurableError> {

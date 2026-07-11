@@ -10,9 +10,9 @@
 //! # Scope boundary
 //!
 //! This adapter covers the **finished-child replay** case only: when a parent resumes after a
-//! crash and the child already resolved its promise, `await_durable_subagent` returns the
-//! journaled `SubagentResult` immediately without re-spawning the child (spec §1038, acceptance
-//! test item 4).
+//! crash and the child already resolved its promise, [`try_replay_durable_subagent`] returns the
+//! journaled `SubagentResult` immediately so the call site can skip re-spawning the child (spec
+//! §1038, acceptance test item 4).
 //!
 //! The still-running-child-on-parent-crash case is intentionally out of scope. Only the BLAKE3
 //! hash of the resolver token is persisted (INV-9); the raw 32-byte token is `Zeroizing` and
@@ -33,11 +33,18 @@
 //! `DurableContext` are available). When `durable.enabled && durable.subagent`, the call site:
 //!
 //! 1. Calls [`make_durable_promise`] to create the promise and optionally a resolver seat.
-//! 2. Places the seat in [`crate::manager::SpawnContext::durable_resolver`] before spawning.
-//! 3. Calls [`await_durable_subagent`] instead of [`crate::SubAgentManager::collect`].
+//! 2. On a **fresh** run (`seat` is `Some`) it places the seat in
+//!    [`crate::manager::SpawnContext::durable_resolver`] before spawning, so the child resolves
+//!    the promise on exit via [`resolve_durable_promise`].
+//! 3. On a **resumed** run (`seat` is `None`) it calls [`try_replay_durable_subagent`] against
+//!    the re-derived promise. If the child already resolved, the call site replays the journaled
+//!    `SubagentResult` and skips `spawn` entirely — the fix this module exists for. If the
+//!    promise is still pending, the call site falls back to a plain spawn (documented "Scope
+//!    boundary" gap above: a genuinely in-flight child cannot be re-attached to after a crash).
 //!
-//! When either flag is `false`, `SpawnContext::durable_resolver` is `None` and the plain
-//! `spawn`/`collect` path runs byte-identically to today (opt-in, zero overhead when disabled).
+//! When `durable.enabled && durable.subagent` is `false`, `SpawnContext::durable_resolver` stays
+//! `None` and the plain `spawn`/`collect` path runs byte-identically to today (opt-in, zero
+//! overhead when disabled).
 
 use std::sync::Arc;
 
@@ -170,6 +177,28 @@ pub async fn await_durable_subagent(
     }
     .instrument(span)
     .await
+}
+
+/// Non-blocking check for a resumed subagent promise's journaled result (spec §1038).
+///
+/// Unlike [`await_durable_subagent`], this never parks: it performs a single backend read and
+/// returns `Ok(None)` immediately if the child has not resolved yet. Call sites that decide
+/// between replaying a journaled result and spawning a fresh child (see module docs, "Gate
+/// pattern") use this on a resumed promise (`promise.is_resumed()`) to avoid blocking the
+/// interactive path on a promise that may never resolve — its resolver token is unrecoverable
+/// (INV-9), so nothing can resolve it if the original child is gone.
+///
+/// # Errors
+///
+/// Propagates [`DurableError`] if the promise row is missing (pruned) or the payload cannot
+/// be decoded.
+pub async fn try_replay_durable_subagent(
+    ctx: &DurableContext,
+    promise: &DurablePromise<SubagentResult>,
+) -> Result<Option<SubagentResult>, SubAgentError> {
+    ctx.take_resolved_promise(promise.id())
+        .await
+        .map_err(|e| SubAgentError::Durable(e.to_string()))
 }
 
 /// Called from the child's background task after the agent loop terminates.
@@ -320,5 +349,136 @@ mod tests {
         assert!(result.error.is_none());
         assert_eq!(result.state, crate::state::SubAgentState::Completed);
         let _ = promise_id;
+    }
+
+    /// #5944 regression: a resumed context (simulating a parent restart — a fresh
+    /// `DurableContext` over the same execution/backend, step counter reset to 0) whose child
+    /// already resolved the promise before the crash must see the journaled result via
+    /// `try_replay_durable_subagent` without parking.
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn try_replay_durable_subagent_sees_already_resolved_promise_on_resume() {
+        use std::sync::Arc;
+        use zeph_durable::{
+            DurableBackendEnum, DurableConfig, DurableContext, ExecutionId, ExecutionKind,
+            JournalWriter, LocalBackend,
+        };
+
+        let exec_id = ExecutionId::new();
+        let config = DurableConfig {
+            journal_flush_interval_ms: 5,
+            journal_ack_timeout_ms: 2000,
+            ..DurableConfig::default()
+        };
+
+        let local = Arc::new(LocalBackend::open(":memory:", 1_048_576).await.unwrap());
+        local.init().await.unwrap();
+        local
+            .open_execution(exec_id, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+
+        let (writer, handle) = JournalWriter::new(local.clone(), &config);
+        let _writer_task = tokio::spawn(writer.run());
+        let backend = Arc::new(DurableBackendEnum::Local(local.clone()));
+
+        // "Run 1": fresh promise created and resolved by the child before the parent crashes.
+        let ctx1 = DurableContext::new(
+            exec_id,
+            ExecutionKind::AgentTurn,
+            false,
+            backend.clone(),
+            handle.clone(),
+            &config,
+        );
+        let (_promise1, seat_opt) = make_durable_promise(&ctx1).await.unwrap();
+        let seat = seat_opt.expect("fresh execution must yield a resolver seat");
+        let loop_result: Result<String, crate::error::SubAgentError> =
+            Ok("finished before crash".to_owned());
+        resolve_durable_promise(seat, "task-resumed-01", &loop_result).await;
+
+        // "Run 2": simulates the restarted parent re-deriving the same promise position.
+        let ctx2 = DurableContext::new(
+            exec_id,
+            ExecutionKind::AgentTurn,
+            true,
+            backend,
+            handle,
+            &config,
+        );
+        let (promise2, seat_opt2) = make_durable_promise(&ctx2).await.unwrap();
+        assert!(
+            promise2.is_resumed(),
+            "test setup: run 2 must observe a resumed promise, not a fresh one"
+        );
+        assert!(seat_opt2.is_none());
+
+        let replayed = try_replay_durable_subagent(&ctx2, &promise2).await.unwrap();
+        let result =
+            replayed.expect("child already resolved before the crash — must replay, not spawn");
+        assert_eq!(result.task_id, "task-resumed-01");
+        assert_eq!(result.output, "finished before crash");
+        assert_eq!(result.state, crate::state::SubAgentState::Completed);
+    }
+
+    /// #5944: the still-pending resumed case must return `None` immediately rather than
+    /// parking — the caller falls back to a plain spawn (documented v1 scope gap).
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn try_replay_durable_subagent_returns_none_when_still_pending() {
+        use std::sync::Arc;
+        use zeph_durable::{
+            DurableBackendEnum, DurableConfig, DurableContext, ExecutionId, ExecutionKind,
+            JournalWriter, LocalBackend,
+        };
+
+        let exec_id = ExecutionId::new();
+        let config = DurableConfig {
+            journal_flush_interval_ms: 5,
+            journal_ack_timeout_ms: 2000,
+            ..DurableConfig::default()
+        };
+
+        let local = Arc::new(LocalBackend::open(":memory:", 1_048_576).await.unwrap());
+        local.init().await.unwrap();
+        local
+            .open_execution(exec_id, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+
+        let (writer, handle) = JournalWriter::new(local.clone(), &config);
+        let _writer_task = tokio::spawn(writer.run());
+        let backend = Arc::new(DurableBackendEnum::Local(local.clone()));
+
+        // "Run 1": fresh promise created; the child never resolves it (still running/lost).
+        let ctx1 = DurableContext::new(
+            exec_id,
+            ExecutionKind::AgentTurn,
+            false,
+            backend.clone(),
+            handle.clone(),
+            &config,
+        );
+        let (_promise1, seat_opt) = make_durable_promise(&ctx1).await.unwrap();
+        assert!(seat_opt.is_some());
+
+        // "Run 2": resumed context re-derives the same pending promise.
+        let ctx2 = DurableContext::new(
+            exec_id,
+            ExecutionKind::AgentTurn,
+            true,
+            backend,
+            handle,
+            &config,
+        );
+        let (promise2, seat_opt2) = make_durable_promise(&ctx2).await.unwrap();
+        assert!(promise2.is_resumed());
+        assert!(seat_opt2.is_none());
+
+        let replayed = try_replay_durable_subagent(&ctx2, &promise2).await.unwrap();
+        assert!(
+            replayed.is_none(),
+            "still-pending resumed promise must return None without parking"
+        );
     }
 }

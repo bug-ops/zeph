@@ -443,16 +443,31 @@ impl<C: Channel> Agent<C> {
         let skills = self.filtered_skills_for(name);
         let cfg = self.services.orchestration.subagent_config.clone();
         let mut spawn_ctx = self.build_spawn_context(&cfg);
-        // Background durable: seat wired so child can resolve; promise dropped (background
-        // results are collected via poll_subagents, not await_durable_subagent).
+        // Background durable: seat wired so child can resolve; on a fresh run the promise
+        // (await side) is dropped — background results are collected via poll_subagents. On a
+        // resumed run whose child already finished, replay short-circuits below instead.
         self.ensure_session_durable_ctx().await;
-        if let Some(seat) = maybe_make_durable_seat(
+        match resolve_durable_spawn_gate(
             self.services.session.durable_subagent,
             self.services.session.durable_ctx.as_deref(),
         )
         .await
         {
-            spawn_ctx.durable_resolver = Some(seat);
+            DurableSpawnGate::Fresh(seat) => spawn_ctx.durable_resolver = Some(seat),
+            DurableSpawnGate::Replayed(result) => {
+                let short = &result.task_id[..8.min(result.task_id.len())];
+                return Some(if result.output.is_empty() {
+                    format!(
+                        "[sub-agent {short}] completed (no output, replayed from durable journal)"
+                    )
+                } else {
+                    format!(
+                        "[sub-agent {short}] completed (replayed from durable journal):\n{}",
+                        result.output
+                    )
+                });
+            }
+            DurableSpawnGate::None => {}
         }
         let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         match mgr
@@ -480,17 +495,39 @@ impl<C: Channel> Agent<C> {
         let skills = self.filtered_skills_for(name);
         let cfg = self.services.orchestration.subagent_config.clone();
         let mut spawn_ctx = self.build_spawn_context(&cfg);
-        // Wire the durable resolver seat so the child can resolve its promise on exit.
-        // The promise (await side) is dropped here; foreground result is collected via
-        // poll_subagent_until_done which reads the join-handle output directly.
+        // Wire the durable resolver seat so the child can resolve its promise on exit. On a
+        // fresh run the promise (await side) is dropped here; foreground result is collected
+        // via poll_subagent_until_done which reads the join-handle output directly. On a
+        // resumed run whose child already finished, replay short-circuits below instead.
         self.ensure_session_durable_ctx().await;
-        if let Some(seat) = maybe_make_durable_seat(
+        match resolve_durable_spawn_gate(
             self.services.session.durable_subagent,
             self.services.session.durable_ctx.as_deref(),
         )
         .await
         {
-            spawn_ctx.durable_resolver = Some(seat);
+            DurableSpawnGate::Fresh(seat) => spawn_ctx.durable_resolver = Some(seat),
+            DurableSpawnGate::Replayed(result) => {
+                let success = result.state == zeph_subagent::SubAgentState::Completed;
+                let text = if success {
+                    result.output
+                } else {
+                    result.error.unwrap_or_else(|| "unknown error".to_owned())
+                };
+                let _ = self
+                    .channel
+                    .send(&format!(
+                        "Sub-agent '{name}' replayed from durable journal (already finished \
+                         before the parent restarted)."
+                    ))
+                    .await;
+                let _ = self
+                    .channel
+                    .notify_foreground_subagent_completed(&result.task_id, name, success)
+                    .await;
+                return Some(text);
+            }
+            DurableSpawnGate::None => {}
         }
         let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         let task_id = match mgr
@@ -749,25 +786,57 @@ impl<C: Channel> Agent<C> {
     }
 }
 
-/// Create a durable resolver seat for the next sub-agent spawn when the gate is open.
+/// Outcome of checking the durable-execution gate before a sub-agent spawn (spec-064 §P4).
+enum DurableSpawnGate {
+    /// Fresh run: wire this seat into `SpawnContext::durable_resolver` so the child resolves
+    /// the promise on exit (INV-9 channel rule).
+    Fresh(zeph_subagent::DurableResolverSeat),
+    /// Resumed run whose child already resolved its promise before the parent crashed. The
+    /// caller must skip `spawn` entirely and replay this result instead — spawning here would
+    /// duplicate the LLM calls and any side-effecting tool calls the finished child already
+    /// performed (#5944).
+    Replayed(zeph_subagent::SubagentResult),
+    /// Gate closed: durable subagent support disabled, a resumed run whose child promise is
+    /// still pending (out of v1 scope — see `durable.rs` module docs "Scope boundary"), or an
+    /// error (logged at `warn`). The caller degrades to a plain spawn with no durable wiring.
+    None,
+}
+
+/// Check the durable-execution gate for the next sub-agent spawn.
 ///
-/// Returns `Some(seat)` when `enabled` is `true` and `ctx` is `Some` and the promise row
-/// was freshly created (first run). The seat goes into `SpawnContext::durable_resolver` for
-/// the child's background task (INV-9 channel rule).
-///
-/// Returns `None` when the gate is closed, on a resumed parent (token unrecoverable, INV-9),
-/// or on error (logged at `warn`) — the caller degrades to the plain spawn path.
-async fn maybe_make_durable_seat(
+/// See [`DurableSpawnGate`] for the three possible outcomes.
+async fn resolve_durable_spawn_gate(
     enabled: bool,
     ctx: Option<&zeph_durable::DurableContext>,
-) -> Option<zeph_subagent::DurableResolverSeat> {
-    let ctx = ctx.filter(|_| enabled)?;
-    match zeph_subagent::make_durable_promise(ctx).await {
-        Ok((_promise, Some(seat))) => Some(seat),
-        Ok((_promise, None)) => None, // Resumed: token unrecoverable (INV-9).
+) -> DurableSpawnGate {
+    let Some(ctx) = ctx.filter(|_| enabled) else {
+        return DurableSpawnGate::None;
+    };
+    let (promise, seat) = match zeph_subagent::make_durable_promise(ctx).await {
+        Ok(pair) => pair,
         Err(e) => {
             tracing::warn!(error = %e, "durable: make_durable_promise failed — degrading to non-durable spawn");
-            None
+            return DurableSpawnGate::None;
+        }
+    };
+    if let Some(seat) = seat {
+        return DurableSpawnGate::Fresh(seat);
+    }
+    // Resumed: token unrecoverable (INV-9). Check without blocking whether the child already
+    // resolved the promise before the crash — replay it instead of re-spawning a duplicate.
+    match zeph_subagent::try_replay_durable_subagent(ctx, &promise).await {
+        Ok(Some(result)) => DurableSpawnGate::Replayed(result),
+        Ok(None) => {
+            tracing::warn!(
+                "durable: resumed sub-agent promise still pending after restart — original \
+                 child did not resolve before the crash; re-spawning may duplicate side effects \
+                 (#5944 residual v1 gap)"
+            );
+            DurableSpawnGate::None
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "durable: replay check failed on resumed sub-agent promise — degrading to non-durable spawn");
+            DurableSpawnGate::None
         }
     }
 }
@@ -1084,7 +1153,7 @@ mod tests {
     /// Agent with `durable_ctx` populated via the real `ensure_session_durable_ctx` bootstrap
     /// path (mirrors `durable_bootstrap::tests::agent_with_conversation`), with
     /// `durable_subagent` set per `subagent_enabled` — used to test the FR-003/US-002 seat
-    /// wiring gate at `maybe_make_durable_seat`, not just the config-to-builder plumbing.
+    /// wiring gate at `resolve_durable_spawn_gate`, not just the config-to-builder plumbing.
     async fn agent_with_durable_ctx_ready(subagent_enabled: bool) -> Agent<MockChannel> {
         let provider = mock_provider(vec!["ok".into()]);
         let channel = MockChannel::new(vec![]);
@@ -1112,14 +1181,14 @@ mod tests {
     async fn seat_wired_when_subagent_enabled_and_durable_ctx_populated() {
         let agent = Box::pin(agent_with_durable_ctx_ready(true)).await;
 
-        let seat = maybe_make_durable_seat(
+        let gate = resolve_durable_spawn_gate(
             agent.services.session.durable_subagent,
             agent.services.session.durable_ctx.as_deref(),
         )
         .await;
 
         assert!(
-            seat.is_some(),
+            matches!(gate, DurableSpawnGate::Fresh(_)),
             "US-002: [durable] subagent=true with a populated durable_ctx must yield a seat, \
              not just wire the config-to-builder plumbing"
         );
@@ -1129,16 +1198,235 @@ mod tests {
     async fn seat_absent_when_subagent_disabled() {
         let agent = Box::pin(agent_with_durable_ctx_ready(false)).await;
 
-        let seat = maybe_make_durable_seat(
+        let gate = resolve_durable_spawn_gate(
             agent.services.session.durable_subagent,
             agent.services.session.durable_ctx.as_deref(),
         )
         .await;
 
         assert!(
-            seat.is_none(),
+            matches!(gate, DurableSpawnGate::None),
             "FR-008: durable_subagent=false must keep the seat gate closed even when \
              durable_ctx is populated"
+        );
+    }
+
+    // ── #5944 end-to-end replay regression tests ────────────────────────────
+    //
+    // These simulate a real parent-process restart: two *separate* `Agent` instances
+    // pointed at the same on-disk sqlite durable journal and the same `conversation_id`,
+    // so the second instance's `DurableContext` genuinely re-derives the first's
+    // `ExecutionId`/`PromiseId` (mirrors `try_replay_durable_subagent_sees_already_resolved_promise_on_resume`
+    // in `zeph-subagent/src/durable.rs`, but at the `handle_agent_background`/
+    // `handle_agent_spawn_foreground` call-site level rather than the adapter level).
+
+    fn subagent_def(name: &str) -> zeph_subagent::SubAgentDef {
+        use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use zeph_subagent::hooks::SubagentHooks;
+
+        zeph_subagent::SubAgentDef {
+            name: name.to_owned(),
+            description: "A helper bot".into(),
+            model: None,
+            tools: ToolPolicy::InheritAll,
+            disallowed_tools: vec![],
+            permissions: SubAgentPermissions::default(),
+            skills: SkillFilter::default(),
+            system_prompt: "You are helpful.".into(),
+            hooks: SubagentHooks::default(),
+            memory: None,
+            source: None,
+            file_path: None,
+        }
+    }
+
+    /// Builds an `Agent` wired for durable sub-agent spawns against a real sqlite file at
+    /// `db_url`, with a `SubAgentManager` carrying a single "helper" definition so
+    /// `handle_agent_background`/`handle_agent_spawn_foreground` can run past the gate check.
+    async fn agent_with_durable_and_manager(
+        db_url: &str,
+        conversation_id: i64,
+    ) -> Agent<MockChannel> {
+        let provider = mock_provider(vec!["ok".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.memory.persistence.conversation_id =
+            Some(zeph_memory::ConversationId(conversation_id));
+        agent.services.session.durable_agent_turns_config = Some(zeph_config::DurableConfig {
+            enabled: true,
+            agent_turns: true,
+            ..zeph_config::DurableConfig::default()
+        });
+        agent.services.session.durable_agent_turns_db_url = Some(db_url.to_owned());
+        agent.services.session.durable_subagent = true;
+
+        let mut mgr = zeph_subagent::SubAgentManager::new(4);
+        mgr.definitions_mut().push(subagent_def("helper"));
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        agent.ensure_session_durable_ctx().await;
+        assert!(
+            agent.services.session.durable_ctx.is_some(),
+            "test setup: durable_ctx must be populated before exercising the handler"
+        );
+        agent
+    }
+
+    #[tokio::test]
+    async fn handle_agent_background_replays_finished_child_without_respawning() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+
+        // "Run 1": the child finishes and resolves its promise before the parent crashes.
+        let agent1 = Box::pin(agent_with_durable_and_manager(&db_url, 100)).await;
+        let ctx1 = agent1.services.session.durable_ctx.clone().unwrap();
+        let (_promise1, seat) = zeph_subagent::make_durable_promise(&ctx1).await.unwrap();
+        let seat = seat.expect("test setup: run 1 must be fresh and yield a resolver seat");
+        let loop_result: Result<String, zeph_subagent::SubAgentError> =
+            Ok("child finished before crash".to_owned());
+        zeph_subagent::resolve_durable_promise(seat, "task-e2e-01", &loop_result).await;
+        agent1
+            .services
+            .session
+            .durable_writer
+            .as_ref()
+            .unwrap()
+            .flush()
+            .await
+            .unwrap();
+
+        // "Run 2": a brand-new `Agent` (simulating the restarted parent) with the same
+        // conversation_id and db file re-derives the same promise and must see it resolved.
+        let mut agent2 = Box::pin(agent_with_durable_and_manager(&db_url, 100)).await;
+
+        let resp = agent2
+            .handle_agent_background("helper", "do work")
+            .await
+            .unwrap();
+        assert!(
+            resp.contains("replayed from durable journal"),
+            "expected a replay notice, got: {resp}"
+        );
+        assert!(
+            resp.contains("child finished before crash"),
+            "expected the journaled output to be surfaced, got: {resp}"
+        );
+        assert!(
+            agent2
+                .services
+                .orchestration
+                .subagent_manager
+                .as_ref()
+                .unwrap()
+                .statuses()
+                .is_empty(),
+            "mgr.spawn must not be called when the child result is replayed"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_agent_spawn_foreground_replays_finished_child_without_respawning() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+
+        // "Run 1": the child finishes and resolves its promise before the parent crashes.
+        let agent1 = Box::pin(agent_with_durable_and_manager(&db_url, 200)).await;
+        let ctx1 = agent1.services.session.durable_ctx.clone().unwrap();
+        let (_promise1, seat) = zeph_subagent::make_durable_promise(&ctx1).await.unwrap();
+        let seat = seat.expect("test setup: run 1 must be fresh and yield a resolver seat");
+        let loop_result: Result<String, zeph_subagent::SubAgentError> =
+            Ok("foreground child output".to_owned());
+        zeph_subagent::resolve_durable_promise(seat, "task-e2e-02", &loop_result).await;
+        agent1
+            .services
+            .session
+            .durable_writer
+            .as_ref()
+            .unwrap()
+            .flush()
+            .await
+            .unwrap();
+
+        // "Run 2": a brand-new `Agent` re-derives the same promise and must see it resolved,
+        // returning the journaled output directly instead of spawning and polling a new child.
+        let mut agent2 = Box::pin(agent_with_durable_and_manager(&db_url, 200)).await;
+
+        let resp = agent2
+            .handle_agent_spawn_foreground("helper", "do work")
+            .await
+            .unwrap();
+        assert_eq!(resp, "foreground child output");
+        assert!(
+            agent2
+                .channel
+                .sent_messages()
+                .iter()
+                .any(|m| m.contains("replayed from durable journal")),
+            "expected the replay notice to be sent to the channel"
+        );
+        assert!(
+            agent2
+                .services
+                .orchestration
+                .subagent_manager
+                .as_ref()
+                .unwrap()
+                .statuses()
+                .is_empty(),
+            "mgr.spawn must not be called when the child result is replayed"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_agent_background_resumed_still_pending_falls_back_to_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+
+        // "Run 1": the promise is created (child spawned) but never resolved — simulates a
+        // child that was still genuinely running (or lost) when the parent crashed.
+        let agent1 = Box::pin(agent_with_durable_and_manager(&db_url, 300)).await;
+        let ctx1 = agent1.services.session.durable_ctx.clone().unwrap();
+        let (_promise1, seat) = zeph_subagent::make_durable_promise(&ctx1).await.unwrap();
+        assert!(
+            seat.is_some(),
+            "test setup: run 1 must be fresh and yield a resolver seat"
+        );
+        agent1
+            .services
+            .session
+            .durable_writer
+            .as_ref()
+            .unwrap()
+            .flush()
+            .await
+            .unwrap();
+
+        // "Run 2": resumed execution observes the same promise still pending — per the
+        // documented v1 scope boundary (INV-9: no way to recover an orphaned resolver token)
+        // the gate must degrade to a plain spawn rather than replay or block indefinitely.
+        let mut agent2 = Box::pin(agent_with_durable_and_manager(&db_url, 300)).await;
+
+        let resp = agent2
+            .handle_agent_background("helper", "do work")
+            .await
+            .unwrap();
+        assert!(
+            resp.contains("started in background"),
+            "still-pending resumed promise must fall back to a normal spawn, got: {resp}"
+        );
+        assert_eq!(
+            agent2
+                .services
+                .orchestration
+                .subagent_manager
+                .as_ref()
+                .unwrap()
+                .statuses()
+                .len(),
+            1,
+            "exactly one real spawn must occur on the still-pending fallback path"
         );
     }
 }

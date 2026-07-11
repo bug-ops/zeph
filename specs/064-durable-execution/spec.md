@@ -884,8 +884,15 @@ Respects the invariant "fire via `message_queue` injection, never direct agent c
 ### P4 — Subagent Durable Promise (`zeph-subagent`)
 
 Parent opens a `DurablePromise<SubagentResult>` at spawn time; the subagent resolves it on
-completion via the `DurableHandle` resolver. On parent crash: restarted execution's `await_promise`
-replays to the journaled resolution if the child finished, or re-parks if still running.
+completion via the `DurableHandle` resolver. On parent crash: restarted execution replays to the
+journaled resolution if the child finished (via a non-blocking check,
+`try_replay_durable_subagent` in `zeph-subagent`, wrapping `DurableContext::take_resolved_promise`)
+before spawning a fresh child. If the promise is still pending, the general re-park behavior
+described above applies to distributed backends; the v1 `LocalBackend`-only integration
+(`resolve_durable_spawn_gate` in `zeph-core`, #5944) falls back to a plain spawn instead of
+parking — subagents run as in-process tokio tasks, so a still-pending promise after a real
+process crash always means the child died with the parent (never "genuinely still running"),
+and INV-9 makes its resolver token unrecoverable either way, so parking would hang forever.
 
 The JSONL transcript remains the human-readable record; the durable journal carries resumable
 control state. Reconciles with spec-063 (worktree teardown) and spec-044 (MCP re-inherit on

@@ -2214,7 +2214,7 @@ impl<C: Channel> Agent<C> {
     /// Mirror `config.durable.subagent` onto `services.session.durable_subagent` (#5452 FR-003).
     ///
     /// A direct, unconditional config copy — no I/O, no dependency on `agent_turns`. The P4
-    /// gate at the subagent-spawn call sites (`maybe_make_durable_seat`) separately requires
+    /// gate at the subagent-spawn call sites (`resolve_durable_spawn_gate`) separately requires
     /// `durable_ctx` to be `Some`, so setting this to `true` while `agent_turns = false` is a
     /// harmless no-op there (FR-008).
     #[must_use]

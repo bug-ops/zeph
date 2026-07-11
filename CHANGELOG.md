@@ -41,6 +41,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `requires_confirmation` (and `AdversarialPolicyGateExecutor` also `is_tool_speculatable`) to
   `self.inner`. Same defect class as #5899/#5905/#5906 (fixed by #5930) — these three wrapper
   layers were explicitly scoped out of that PR to keep it minimal.
+- `fix(subagent,core)`: durable sub-agent resume now replays the journaled result instead of
+  unconditionally re-spawning the child (#5944, spec-064 §P4). With `[durable].subagent = true`,
+  restarting a crashed parent whose sub-agent had already finished (and resolved its durable
+  promise) previously discarded that promise and spawned a brand-new child from scratch,
+  duplicating LLM calls and any side-effecting tool calls (git operations, GitHub issue/PR
+  creation, file writes) the finished child had already performed. `maybe_make_durable_seat` is
+  replaced by `resolve_durable_spawn_gate`, which on a resumed run performs a non-blocking check
+  (`zeph_durable::DurableContext::take_resolved_promise`, exposed via the new
+  `zeph_subagent::try_replay_durable_subagent`) for whether the child already resolved its
+  promise before the crash; if so, `handle_agent_background` and `handle_agent_spawn_foreground`
+  skip `mgr.spawn(...)` entirely and feed the journaled `SubagentResult` through the normal
+  completion path instead. A still-pending resumed promise (child's fate unknown after a crash —
+  its resolver token is unrecoverable per INV-9) falls back to the pre-existing spawn behavior,
+  matching the documented v1 scope boundary in `zeph-subagent/src/durable.rs`, and now logs a
+  `tracing::warn!` at that fallback so the residual duplicate-spawn window is observable rather
+  than silent (tracked as a known v1 limitation in #6010).
 - `fix(commands)`: `/mcp` and `/plugins` now require a trusted (local) session, closing an
   unauthenticated remote code execution path (#5997, CWE-284). `McpCommand` and `PluginsCommand`
   previously left `requires_auth()` at its default `false`, so Telegram/Discord/Slack/gateway
