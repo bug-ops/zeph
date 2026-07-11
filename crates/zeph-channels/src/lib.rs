@@ -33,6 +33,7 @@
 
 mod any;
 pub mod cli;
+mod common;
 pub mod confirm;
 #[cfg(feature = "discord")]
 pub mod discord;

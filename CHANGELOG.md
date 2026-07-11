@@ -249,6 +249,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-channels`: Telegram's raw API extension client and Slack's Web API client had no
+  429 retry-with-backoff, unlike Discord's REST client (#4728) — a rate-limited request
+  surfaced as a hard error on the first attempt instead of transparently retrying
+  (#5949). Discord's `send_with_retry` (reads the `Retry-After` header, falls back to the
+  JSON body's `retry_after` field, clamps to 60s, retries up to 3 times) is now a shared
+  `crate::common::http_retry::send_with_retry` helper used by all three adapters:
+  `TelegramApiClient::post`, and all four `SlackApi` methods (`auth_test`, `post_message`,
+  `update_message`, `download_file`). `SlackApi` gained a `base_url` field (test-only
+  override) for wiremock testability, and its previous per-call
+  `tokio::time::timeout(15s, ...)` was replaced with a per-attempt `.timeout(15s)` on the
+  `RequestBuilder`, since an outer timeout is incompatible with a retry loop that
+  legitimately needs to run longer than one request when backing off — worst-case
+  wall-clock under sustained 429 is now bounded by attempts x per-attempt timeout plus
+  backoff sleeps, documented on the helper.
+- `zeph-channels`: `TelegramChannel` never implemented `Channel::send_status`, unlike its
+  `DiscordChannel`/`SlackChannel` peers, so Telegram users got no visibility into any of
+  the ~15 background/implicit-operation status messages (skill reload, MCP elicitation,
+  memory recall, etc.) that Discord/Slack users see — only the generic `typing…` chat
+  action (#5923). `TelegramChannel::send_status` now posts the status text as a plain-text
+  message, mirroring the Discord/Slack pattern, and no-ops when the text is empty, there is
+  no active chat, or the channel is in a Guest Mode context (a guest reply can only be sent
+  once via `answerGuestQuery`).
 - `zeph-core`: config hot-reload (`Agent::reload_config`) bypassed `Config::validate()` entirely
   — `load_config_with_overlay` called `Config::load` plus the plugin overlay merge and returned
   the result straight to the live agent without ever validating it, unlike the startup path

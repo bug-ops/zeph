@@ -10,10 +10,14 @@ use serde_json::Value;
 
 const SLACK_API: &str = "https://slack.com/api";
 const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
+/// Per-request HTTP timeout applied to every Slack Web API call.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct SlackApi {
     client: reqwest::Client,
     token: String,
+    /// Base URL for the Slack Web API. Always [`SLACK_API`] outside of tests.
+    base_url: String,
 }
 
 impl std::fmt::Debug for SlackApi {
@@ -52,6 +56,17 @@ impl SlackApi {
         Self {
             client: zeph_core::http::default_client(),
             token,
+            base_url: SLACK_API.to_string(),
+        }
+    }
+
+    /// Test-only constructor pointing at a custom base URL (e.g. a mock server).
+    #[cfg(test)]
+    fn with_base_url(base_url: String, token: String) -> Self {
+        Self {
+            client: zeph_core::http::default_client(),
+            token,
+            base_url,
         }
     }
 
@@ -65,15 +80,14 @@ impl SlackApi {
         tracing::instrument(name = "channels.slack.auth_test", skip_all)
     )]
     pub async fn auth_test(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let resp: Value = tokio::time::timeout(
-            Duration::from_secs(15),
+        let url = format!("{}/auth.test", self.base_url);
+        let resp: Value = crate::common::http_retry::send_with_retry("slack", || {
             self.client
-                .post(format!("{SLACK_API}/auth.test"))
+                .post(&url)
                 .bearer_auth(&self.token)
-                .send(),
-        )
+                .timeout(REQUEST_TIMEOUT)
+        })
         .await
-        .map_err(|_| "slack auth.test timed out")?
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
         .json()
         .await
@@ -106,16 +120,16 @@ impl SlackApi {
         channel: &str,
         text: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let resp: SlackResponse = tokio::time::timeout(
-            Duration::from_secs(15),
+        let url = format!("{}/chat.postMessage", self.base_url);
+        let body = PostMessage { channel, text };
+        let resp: SlackResponse = crate::common::http_retry::send_with_retry("slack", || {
             self.client
-                .post(format!("{SLACK_API}/chat.postMessage"))
+                .post(&url)
                 .bearer_auth(&self.token)
-                .json(&PostMessage { channel, text })
-                .send(),
-        )
+                .timeout(REQUEST_TIMEOUT)
+                .json(&body)
+        })
         .await
-        .map_err(|_| "slack chat.postMessage timed out")?
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
         .json()
         .await
@@ -144,16 +158,16 @@ impl SlackApi {
         ts: &str,
         text: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let resp: SlackResponse = tokio::time::timeout(
-            Duration::from_secs(15),
+        let url = format!("{}/chat.update", self.base_url);
+        let body = UpdateMessage { channel, ts, text };
+        let resp: SlackResponse = crate::common::http_retry::send_with_retry("slack", || {
             self.client
-                .post(format!("{SLACK_API}/chat.update"))
+                .post(&url)
                 .bearer_auth(&self.token)
-                .json(&UpdateMessage { channel, ts, text })
-                .send(),
-        )
+                .timeout(REQUEST_TIMEOUT)
+                .json(&body)
+        })
         .await
-        .map_err(|_| "slack chat.update timed out")?
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
         .json()
         .await
@@ -185,16 +199,14 @@ impl SlackApi {
             return Err(format!("refusing to send token to non-slack host: {url}").into());
         }
 
-        let resp = tokio::time::timeout(
-            Duration::from_secs(15),
-            self.client.get(url).bearer_auth(&self.token).send(),
-        )
+        let resp = crate::common::http_retry::send_with_retry("slack", || {
+            self.client
+                .get(url)
+                .bearer_auth(&self.token)
+                .timeout(REQUEST_TIMEOUT)
+        })
         .await
-        .map_err(|_| "slack file download timed out")?
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-        if !resp.status().is_success() {
-            return Err(format!("slack file download failed: {}", resp.status()).into());
-        }
         let bytes = tokio::time::timeout(Duration::from_secs(15), resp.bytes())
             .await
             .map_err(|_| "slack file download body timed out")?
@@ -207,5 +219,67 @@ impl SlackApi {
             .into());
         }
         Ok(bytes.to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::*;
+
+    #[test]
+    fn slack_api_debug_redacts_token() {
+        let api = SlackApi::new("xoxb-secret-token".into());
+        let debug = format!("{api:?}");
+        assert!(!debug.contains("xoxb-secret-token"));
+        assert!(debug.contains("REDACTED"));
+    }
+
+    // Generic 429 retry-with-backoff behavior is covered by
+    // `crate::common::http_retry`'s own test suite. This test only proves
+    // that `post_message` is wired to retry rather than failing immediately.
+    #[tokio::test]
+    async fn post_message_retries_on_429_then_succeeds() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat.postMessage"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .append_header("Retry-After", "0")
+                    .set_body_json(serde_json::json!({"retry_after": 0.0})),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat.postMessage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "ts": "1234.5678"
+            })))
+            .mount(&server)
+            .await;
+
+        let api = SlackApi::with_base_url(server.uri(), "xoxb-test".into());
+        let ts = api.post_message("C123", "hello").await.unwrap();
+        assert_eq!(ts, "1234.5678");
+    }
+
+    // Regression coverage for the SSRF-style host guard in `download_file`:
+    // the bot token must never be sent to a non-`*.slack.com` host. This
+    // rejects before any network call, so no mock server is needed.
+    #[tokio::test]
+    async fn download_file_rejects_non_slack_host() {
+        let api = SlackApi::new("xoxb-test".into());
+        let err = api.download_file("https://evil.com/x").await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("refusing to send token to non-slack host"),
+            "expected host-guard rejection, got: {err}"
+        );
     }
 }

@@ -298,11 +298,14 @@ impl TelegramApiClient {
 
     /// POST `body` to `{base_url}/{method}` and deserialize the result.
     ///
-    /// Calls `.error_for_status()` before JSON parsing so that non-2xx HTTP
-    /// responses (e.g. 429 rate-limit, 502 gateway error) surface as
-    /// [`TelegramApiError::Http`] rather than serde deserialization errors.
-    /// URLs (which contain the bot token) are stripped from any `reqwest::Error`
-    /// before propagation to prevent token leakage into logs.
+    /// Retries transparently on HTTP 429 (rate-limit) via
+    /// [`crate::common::http_retry::send_with_retry`], honouring the
+    /// `Retry-After` header or JSON body field. Once a non-429 response is
+    /// obtained, `.error_for_status()` is applied so non-2xx HTTP responses
+    /// (e.g. 502 gateway error) surface as [`TelegramApiError::Http`] rather
+    /// than serde deserialization errors. URLs (which contain the bot token)
+    /// are stripped from any `reqwest::Error` before propagation to prevent
+    /// token leakage into logs.
     #[tracing::instrument(skip(self, body), fields(method = method))]
     async fn post<T: serde::de::DeserializeOwned>(
         &self,
@@ -310,14 +313,11 @@ impl TelegramApiClient {
         body: &impl Serialize,
     ) -> Result<T, TelegramApiError> {
         let url = format!("{}/{method}", self.base_url);
-        let resp: TelegramResponse<T> = self
-            .client
-            .post(&url)
-            .json(body)
-            .send()
+        let resp: TelegramResponse<T> =
+            crate::common::http_retry::send_with_retry("telegram", || {
+                self.client.post(&url).json(body)
+            })
             .await
-            .map_err(|e| TelegramApiError::Http(e.without_url()))?
-            .error_for_status()
             .map_err(|e| TelegramApiError::Http(e.without_url()))?
             .json()
             .await
@@ -1073,7 +1073,11 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(".*/answerGuestQuery$"))
-            .respond_with(ResponseTemplate::new(429).set_body_string("Too Many Requests"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .append_header("Retry-After", "0")
+                    .set_body_string("Too Many Requests"),
+            )
             .mount(&server)
             .await;
 
@@ -1084,7 +1088,39 @@ mod tests {
             .unwrap_err();
         assert!(
             matches!(err, TelegramApiError::Http(_)),
-            "expected Http error for 429, got {err:?}"
+            "expected Http error for 429 after retries are exhausted, got {err:?}"
         );
+    }
+
+    // ── 429 retry-with-backoff wiring ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn post_retries_on_429_then_succeeds() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(".*/getMe$"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .append_header("Retry-After", "0")
+                    .set_body_json(serde_json::json!({"retry_after": 0.0})),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(".*/getMe$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ok_body(&serde_json::json!({
+                    "id": 1, "is_bot": true, "first_name": "Bot"
+                }))),
+            )
+            .mount(&server)
+            .await;
+
+        let client = TelegramApiClient::with_base_url(server.uri());
+        let me = client.get_me().await.unwrap();
+        assert_eq!(me.id, 1);
     }
 }

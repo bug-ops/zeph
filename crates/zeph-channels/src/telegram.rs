@@ -1337,6 +1337,33 @@ impl Channel for TelegramChannel {
         Ok(())
     }
 
+    /// Send a status label to the active Telegram chat (shown as spinner text in TUI).
+    ///
+    /// Posted as a plain-text message with no Markdown parsing, since status
+    /// labels (e.g. `Searching memory…`) are short and free-form rather than
+    /// formatted content. Silently succeeds (returns `Ok(())`) when there is
+    /// no active chat yet, or in a Guest Mode context — a guest reply can
+    /// only be sent once via `answerGuestQuery`, so it is not a suitable
+    /// channel for interim status updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the Telegram API call fails.
+    #[tracing::instrument(name = "channels.telegram.send_status", skip_all)]
+    async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
+        if text.is_empty() || self.guest_query_id.is_some() {
+            return Ok(());
+        }
+        let Some(chat_id) = self.chat_id else {
+            return Ok(());
+        };
+        self.bot
+            .send_message(chat_id, text)
+            .await
+            .map_err(ChannelError::telegram)?;
+        Ok(())
+    }
+
     /// Send a yes/no confirmation prompt to Telegram and await the reply.
     ///
     /// Sends `prompt` followed by instructions to reply `yes`.  Waits up to
@@ -1846,6 +1873,69 @@ mod tests {
 
         assert!(channel.buffer.is_empty());
         assert!(channel.message_id.is_none());
+    }
+
+    // ---------------------------------------------------------------------------
+    // send_status() — regression coverage for #5923 (TelegramChannel previously
+    // had no override, so status text was silently dropped by the trait default).
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn send_status_posts_message_when_chat_active() {
+        let server = MockServer::start().await;
+        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+
+        channel.send_status("Searching memory…").await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            !requests.is_empty(),
+            "send_status must post a message via the Telegram API"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_status_noop_on_empty_text() {
+        let server = MockServer::start().await;
+        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+
+        channel.send_status("").await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            requests.is_empty(),
+            "empty status text must not call the API"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_status_noop_without_active_chat() {
+        let server = MockServer::start().await;
+        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        channel.chat_id = None;
+
+        channel.send_status("Searching memory…").await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            requests.is_empty(),
+            "send_status must no-op without an active chat"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_status_noop_in_guest_context() {
+        let server = MockServer::start().await;
+        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        channel.guest_query_id = Some("qid".to_string());
+
+        channel.send_status("Searching memory…").await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            requests.is_empty(),
+            "send_status must no-op in a Guest Mode context"
+        );
     }
 
     // ---------------------------------------------------------------------------
