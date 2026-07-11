@@ -7,6 +7,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Security
 
+- `zeph-commands`: 19 privileged slash-command handlers now override `requires_auth()` to
+  return `true`, closing a trust-gate gap where they ran the default `false` and were therefore
+  reachable from untrusted remote channels (Telegram/Discord/Slack) as well as trusted local
+  sessions (#6003). Gated handlers: `UndoCommand`/`RedoCommand` (`/undo`, `/redo` — mutate the
+  on-disk working tree), `PlanCommand` (`/plan` — executes tools/shell via orchestration),
+  `SkillCommand` (`/skill` — installs/removes/trusts executable skills), `FeedbackCommand`
+  (`/feedback` — writes persistent self-learning input), `KnowledgeSlashCommand` (`/knowledge` —
+  unconfirmed destructive `rollback`), `AgentCommand`/`AgentsFleetCommand` (`/agent`, `/agents` —
+  spawn/mutate sub-agent definitions), `ConvCommand` (`/conv`, feature `session` — session
+  hijack/cross-session disclosure via `resume`/`fork`), `MemoryCommand`/`GraphCommand`
+  (`/memory`, `/graph` — mutate semantic memory / knowledge graph, LLM cost), `GoalCommand`
+  (`/goal` — mutates persisted goal FSM, can drive autonomous execution), `AcpCommand` (`/acp`,
+  feature `acp` — discloses ACP allowlist/auth/bind-address config), `CocoonCommand` (`/cocoon`,
+  feature `cocoon` — discloses sidecar state and TON balance), `CompactCommand`/
+  `NewConversationCommand` (`/compact`, `/new` — mutate conversation state, LLM cost/DoS), and
+  `ClearCommand`/`ResetCommand`/`ClearQueueCommand` (`/clear`, `/reset`, `/clear-queue` —
+  remote wipe of the operator's live session). `RecapCommand`, `SkillsCommand`,
+  `GuidelinesCommand`, `ExitCommand`, `QuitCommand`, and `HelpCommand` were audited and left at
+  the default (read-only, or already self-gated via `supports_exit()`). The
+  `CommandHandler::requires_auth()` default value itself is unchanged — revisiting the default
+  is deferred to a follow-up issue.
 - `zeph-db`: `redact_url` no longer leaks the tail of a Postgres password containing `@` (#5969).
   The previous regex (`://[^:]+:[^@]+@`) stopped at the first `@`, so
   `postgres://user:p@ss@host/db` only redacted up to `p`, leaking `ss@host` verbatim into

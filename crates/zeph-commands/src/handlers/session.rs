@@ -98,6 +98,10 @@ impl CommandHandler<CommandContext<'_>> for ClearCommand {
         SlashCategory::Session
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -129,6 +133,10 @@ impl CommandHandler<CommandContext<'_>> for ResetCommand {
 
     fn category(&self) -> SlashCategory {
         SlashCategory::Session
+    }
+
+    fn requires_auth(&self) -> bool {
+        true
     }
 
     fn handle<'a>(
@@ -164,6 +172,10 @@ impl CommandHandler<CommandContext<'_>> for ClearQueueCommand {
 
     fn category(&self) -> SlashCategory {
         SlashCategory::Session
+    }
+
+    fn requires_auth(&self) -> bool {
+        true
     }
 
     fn handle<'a>(
@@ -407,5 +419,134 @@ mod tests {
         assert!(reg.find_handler("/clear").is_some());
         assert!(reg.find_handler("/reset").is_some());
         assert!(reg.find_handler("/clear-queue").is_some());
+    }
+
+    #[tokio::test]
+    async fn clear_dispatch_allowed_when_trusted() {
+        let mut sink = MockSink { sent: vec![] };
+        let mut debug = MockDebug;
+        let mut messages = MockMessages {
+            cleared: false,
+            queue: 0,
+        };
+        let session = MockSession {
+            supports_exit: false,
+        };
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(ClearCommand);
+
+        let result = reg.dispatch(&mut ctx, "/clear", true).await;
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn clear_dispatch_rejected_when_untrusted() {
+        let mut sink = MockSink { sent: vec![] };
+        let mut debug = MockDebug;
+        let mut messages = MockMessages {
+            cleared: false,
+            queue: 0,
+        };
+        let session = MockSession {
+            supports_exit: false,
+        };
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(ClearCommand);
+
+        let result = reg.dispatch(&mut ctx, "/clear", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
+    }
+
+    #[tokio::test]
+    async fn reset_dispatch_allowed_when_trusted() {
+        let mut sink = MockSink { sent: vec![] };
+        let mut debug = MockDebug;
+        let mut messages = MockMessages {
+            cleared: false,
+            queue: 0,
+        };
+        let session = MockSession {
+            supports_exit: false,
+        };
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(ResetCommand);
+
+        let result = reg.dispatch(&mut ctx, "/reset", true).await;
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn reset_dispatch_rejected_when_untrusted() {
+        let mut sink = MockSink { sent: vec![] };
+        let mut debug = MockDebug;
+        let mut messages = MockMessages {
+            cleared: false,
+            queue: 0,
+        };
+        let session = MockSession {
+            supports_exit: false,
+        };
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(ResetCommand);
+
+        let result = reg.dispatch(&mut ctx, "/reset", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
+    }
+
+    #[tokio::test]
+    async fn clear_queue_dispatch_allowed_when_trusted() {
+        let mut sink = MockSink { sent: vec![] };
+        let mut debug = MockDebug;
+        let mut messages = MockMessages {
+            cleared: false,
+            queue: 0,
+        };
+        let session = MockSession {
+            supports_exit: false,
+        };
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(ClearQueueCommand);
+
+        let result = reg.dispatch(&mut ctx, "/clear-queue", true).await;
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn clear_queue_dispatch_rejected_when_untrusted() {
+        let mut sink = MockSink { sent: vec![] };
+        let mut debug = MockDebug;
+        let mut messages = MockMessages {
+            cleared: false,
+            queue: 0,
+        };
+        let session = MockSession {
+            supports_exit: false,
+        };
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(ClearQueueCommand);
+
+        let result = reg.dispatch(&mut ctx, "/clear-queue", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
     }
 }

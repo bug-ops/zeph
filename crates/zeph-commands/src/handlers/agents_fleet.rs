@@ -138,6 +138,10 @@ impl CommandHandler<CommandContext<'_>> for AgentsFleetCommand {
         SlashCategory::Integration
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -267,6 +271,47 @@ mod tests {
     fn agents_fleet_command_name() {
         assert_eq!(AgentsFleetCommand.name(), "/agents");
         assert!(!AgentsFleetCommand.description().is_empty());
+    }
+
+    #[tokio::test]
+    async fn agents_fleet_dispatch_allowed_when_trusted() {
+        use crate::CommandRegistry;
+        use crate::handlers::test_helpers::{MockDebug, MockMessages, MockSession, make_ctx};
+        use crate::sink::NullSink;
+
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(AgentsFleetCommand);
+
+        let result = reg.dispatch(&mut ctx, "/agents list", true).await;
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn agents_fleet_dispatch_rejected_when_untrusted() {
+        use crate::CommandRegistry;
+        use crate::handlers::test_helpers::{MockDebug, MockMessages, MockSession, make_ctx};
+        use crate::sink::NullSink;
+
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(AgentsFleetCommand);
+
+        let result = reg.dispatch(&mut ctx, "/agents list", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
     }
 
     // Test format_elapsed edge cases

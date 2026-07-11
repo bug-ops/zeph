@@ -33,6 +33,10 @@ impl CommandHandler<CommandContext<'_>> for CocoonCommand {
         Some("cocoon")
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -70,5 +74,10 @@ mod tests {
     fn description_and_args_hint_non_empty() {
         assert!(!CocoonCommand.description().is_empty());
         assert!(!CocoonCommand.args_hint().is_empty());
+    }
+
+    #[test]
+    fn cocoon_requires_auth() {
+        assert!(CocoonCommand.requires_auth());
     }
 }

@@ -33,6 +33,10 @@ impl CommandHandler<CommandContext<'_>> for AgentCommand {
         SlashCategory::Integration
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -60,6 +64,7 @@ impl CommandHandler<CommandContext<'_>> for AgentCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CommandRegistry;
     use crate::handlers::test_helpers::{MockDebug, MockMessages, MockSession, make_ctx};
     use crate::sink::NullSink;
     use std::assert_matches;
@@ -93,5 +98,38 @@ mod tests {
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
         let out = AgentCommand.handle(&mut ctx, "list").await.unwrap();
         assert_matches!(out, CommandOutput::Silent);
+    }
+
+    #[tokio::test]
+    async fn agent_dispatch_allowed_when_trusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(AgentCommand);
+
+        let result = reg.dispatch(&mut ctx, "/agent list", true).await;
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn agent_dispatch_rejected_when_untrusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(AgentCommand);
+
+        let result = reg.dispatch(&mut ctx, "/agent list", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
     }
 }

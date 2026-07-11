@@ -33,6 +33,10 @@ impl CommandHandler<CommandContext<'_>> for AcpCommand {
         Some("acp")
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -70,5 +74,10 @@ mod tests {
     fn description_and_args_hint_non_empty() {
         assert!(!AcpCommand.description().is_empty());
         assert!(!AcpCommand.args_hint().is_empty());
+    }
+
+    #[test]
+    fn acp_requires_auth() {
+        assert!(AcpCommand.requires_auth());
     }
 }

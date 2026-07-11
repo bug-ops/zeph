@@ -32,6 +32,10 @@ impl CommandHandler<CommandContext<'_>> for CompactCommand {
         SlashCategory::Session
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -71,6 +75,10 @@ impl CommandHandler<CommandContext<'_>> for NewConversationCommand {
 
     fn category(&self) -> SlashCategory {
         SlashCategory::Session
+    }
+
+    fn requires_auth(&self) -> bool {
+        true
     }
 
     fn handle<'a>(
@@ -141,7 +149,10 @@ fn parse_new_flags(args: &str) -> (bool, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_new_flags;
+    use super::*;
+    use crate::CommandRegistry;
+    use crate::handlers::test_helpers::{MockDebug, MockMessages, MockSession, make_ctx};
+    use crate::sink::NullSink;
 
     #[test]
     fn no_flags_both_false() {
@@ -171,5 +182,71 @@ mod tests {
         assert_eq!(parse_new_flags("--keep"), (false, false));
         assert_eq!(parse_new_flags("--no"), (false, false));
         assert_eq!(parse_new_flags("keep-plan"), (false, false));
+    }
+
+    #[tokio::test]
+    async fn compact_dispatch_allowed_when_trusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(CompactCommand);
+
+        let result = reg.dispatch(&mut ctx, "/compact", true).await;
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn compact_dispatch_rejected_when_untrusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(CompactCommand);
+
+        let result = reg.dispatch(&mut ctx, "/compact", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
+    }
+
+    #[tokio::test]
+    async fn new_conversation_dispatch_allowed_when_trusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(NewConversationCommand);
+
+        let result = reg.dispatch(&mut ctx, "/new", true).await;
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn new_conversation_dispatch_rejected_when_untrusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(NewConversationCommand);
+
+        let result = reg.dispatch(&mut ctx, "/new", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
     }
 }

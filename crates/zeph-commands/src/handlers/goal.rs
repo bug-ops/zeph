@@ -42,6 +42,10 @@ impl CommandHandler<CommandContext<'_>> for GoalCommand {
         SlashCategory::Session
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -62,6 +66,7 @@ impl CommandHandler<CommandContext<'_>> for GoalCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CommandRegistry;
     use crate::handlers::test_helpers::{MockDebug, MockMessages, MockSession, make_ctx};
     use crate::sink::NullSink;
 
@@ -94,5 +99,41 @@ mod tests {
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
         let result = GoalCommand.handle(&mut ctx, "").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn goal_dispatch_allowed_when_trusted() {
+        // NullAgent::handle_goal errors, but the error must come from the handler,
+        // not from the trust gate rejecting the dispatch.
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(GoalCommand);
+
+        let result = reg.dispatch(&mut ctx, "/goal status", true).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(!err.0.contains("trusted"));
+    }
+
+    #[tokio::test]
+    async fn goal_dispatch_rejected_when_untrusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(GoalCommand);
+
+        let result = reg.dispatch(&mut ctx, "/goal status", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
     }
 }

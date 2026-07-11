@@ -31,6 +31,10 @@ impl CommandHandler<CommandContext<'_>> for UndoCommand {
         SlashCategory::Session
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -70,6 +74,10 @@ impl CommandHandler<CommandContext<'_>> for RedoCommand {
         SlashCategory::Session
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -90,6 +98,7 @@ impl CommandHandler<CommandContext<'_>> for RedoCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CommandRegistry;
     use crate::handlers::test_helpers::{MockDebug, MockMessages, MockSession, make_ctx};
     use crate::sink::NullSink;
 
@@ -133,5 +142,71 @@ mod tests {
         if let Ok(CommandOutput::Message(msg)) = result {
             assert!(!msg.is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn undo_dispatch_rejected_when_untrusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(UndoCommand);
+
+        let result = reg.dispatch(&mut ctx, "/undo", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
+    }
+
+    #[tokio::test]
+    async fn undo_dispatch_allowed_when_trusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(UndoCommand);
+
+        let result = reg.dispatch(&mut ctx, "/undo", true).await;
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn redo_dispatch_rejected_when_untrusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(RedoCommand);
+
+        let result = reg.dispatch(&mut ctx, "/redo", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
+    }
+
+    #[tokio::test]
+    async fn redo_dispatch_allowed_when_trusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(RedoCommand);
+
+        let result = reg.dispatch(&mut ctx, "/redo", true).await;
+        assert!(result.unwrap().is_ok());
     }
 }

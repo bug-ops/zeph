@@ -31,6 +31,10 @@ impl CommandHandler<CommandContext<'_>> for MemoryCommand {
         SlashCategory::Memory
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -76,6 +80,10 @@ impl CommandHandler<CommandContext<'_>> for GraphCommand {
 
     fn category(&self) -> SlashCategory {
         SlashCategory::Memory
+    }
+
+    fn requires_auth(&self) -> bool {
+        true
     }
 
     fn handle<'a>(
@@ -182,6 +190,10 @@ impl CommandHandler<CommandContext<'_>> for KnowledgeSlashCommand {
         SlashCategory::Memory
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -216,7 +228,10 @@ fn parse_backfill_limit(args: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_backfill_limit;
+    use super::*;
+    use crate::CommandRegistry;
+    use crate::handlers::test_helpers::{MockDebug, MockMessages, MockSession, make_ctx};
+    use crate::sink::NullSink;
 
     #[test]
     fn backfill_limit_parsing() {
@@ -224,5 +239,104 @@ mod tests {
         assert_eq!(parse_backfill_limit("backfill"), None);
         assert_eq!(parse_backfill_limit("backfill --limit"), None);
         assert_eq!(parse_backfill_limit("backfill --limit 0"), Some(0));
+    }
+
+    #[tokio::test]
+    async fn memory_dispatch_allowed_when_trusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(MemoryCommand);
+
+        let result = reg.dispatch(&mut ctx, "/memory tiers", true).await;
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn memory_dispatch_rejected_when_untrusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(MemoryCommand);
+
+        let result = reg.dispatch(&mut ctx, "/memory tiers", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
+    }
+
+    #[tokio::test]
+    async fn graph_dispatch_allowed_when_trusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(GraphCommand);
+
+        let result = reg.dispatch(&mut ctx, "/graph", true).await;
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn graph_dispatch_rejected_when_untrusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(GraphCommand);
+
+        let result = reg.dispatch(&mut ctx, "/graph", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
+    }
+
+    #[tokio::test]
+    async fn knowledge_dispatch_allowed_when_trusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(KnowledgeSlashCommand);
+
+        let result = reg.dispatch(&mut ctx, "/knowledge status", true).await;
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn knowledge_dispatch_rejected_when_untrusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(KnowledgeSlashCommand);
+
+        let result = reg.dispatch(&mut ctx, "/knowledge status", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
     }
 }
