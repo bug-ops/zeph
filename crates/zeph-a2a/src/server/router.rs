@@ -46,11 +46,11 @@ pub fn build_router_with_full_config(
     let protected = Router::new()
         .route("/a2a", post(jsonrpc_handler))
         .route("/a2a/stream", post(stream_handler))
+        .layer(middleware::from_fn_with_state(auth_cfg, auth_middleware))
         .layer(middleware::from_fn_with_state(
             rate_state,
             rate_limit_middleware,
         ))
-        .layer(middleware::from_fn_with_state(auth_cfg, auth_middleware))
         .layer(RequestBodyLimitLayer::new(max_body_size));
 
     Router::new()
@@ -264,6 +264,41 @@ mod tests {
         // Third request should be rate-limited
         let resp = app.call(make_req()).await.unwrap();
         assert_eq!(resp.status(), 429, "request 3 should be rate-limited");
+    }
+
+    #[tokio::test]
+    async fn failed_auth_requests_are_rate_limited() {
+        use tower::Service;
+
+        // Regression test for #6110: repeated failed-auth requests from the same IP must
+        // still increment the rate-limit counter, so a bearer-token brute-force gets
+        // throttled with 429 instead of bypassing rate limiting via 401 short-circuits.
+        let mut app = build_router_with_config(test_state(), Some("secret-token"), 2);
+
+        let make_req = || {
+            let body = serde_json::json!({
+                "jsonrpc": "2.0", "id": "1",
+                "method": "tasks/get", "params": {"id": "x"}
+            });
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/a2a")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer wrong-token")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap()
+        };
+
+        let resp = app.call(make_req()).await.unwrap();
+        assert_eq!(resp.status(), 401);
+        let resp = app.call(make_req()).await.unwrap();
+        assert_eq!(resp.status(), 401);
+        let resp = app.call(make_req()).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            429,
+            "third failed-auth request from the same IP must be rate-limited"
+        );
     }
 
     fn ip_from_index(i: usize) -> IpAddr {

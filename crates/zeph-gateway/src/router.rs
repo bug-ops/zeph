@@ -21,8 +21,14 @@ use super::server::AppState;
 ///
 /// Middleware stack applied to `/webhook` (outermost → innermost):
 /// 1. [`RequestBodyLimitLayer`] — rejects bodies larger than `max_body_size`
-/// 2. [`auth_middleware`] — constant-time bearer-token check
-/// 3. [`rate_limit_middleware`] — per-IP fixed-window counter
+/// 2. [`rate_limit_middleware`] — per-IP fixed-window counter
+/// 3. [`auth_middleware`] — constant-time bearer-token check
+///
+/// Rate limiting must wrap auth, not the other way around: [`auth_middleware`] returns
+/// `401` without calling `next.run`, so if it were outer, failed-auth requests would never
+/// reach the counter and an attacker could brute-force the bearer token with no throttling.
+/// Placing [`rate_limit_middleware`] outermost of the pair guarantees every request —
+/// including failed-auth ones — increments the per-IP counter before the auth check runs.
 pub(crate) fn build_router(
     state: AppState,
     auth_token: Option<&str>,
@@ -35,11 +41,11 @@ pub(crate) fn build_router(
 
     let protected = Router::new()
         .route("/webhook", post(webhook_handler))
+        .layer(middleware::from_fn_with_state(auth_cfg, auth_middleware))
         .layer(middleware::from_fn_with_state(
             rate_state,
             rate_limit_middleware,
         ))
-        .layer(middleware::from_fn_with_state(auth_cfg, auth_middleware))
         .layer(RequestBodyLimitLayer::new(max_body_size));
 
     Router::new()
@@ -202,6 +208,35 @@ mod tests {
         assert_eq!(resp.status(), 200);
         let resp = app.call(make_req()).await.unwrap();
         assert_eq!(resp.status(), 429);
+    }
+
+    #[tokio::test]
+    async fn failed_auth_requests_are_rate_limited() {
+        // Regression test for #6110: repeated failed-auth requests from the same IP must
+        // still increment the rate-limit counter, so a bearer-token brute-force gets
+        // throttled with 429 instead of bypassing rate limiting via 401 short-circuits.
+        let (mut app, _rx) = make_router(Some("secret"), 2);
+        let make_req = || {
+            let body = serde_json::json!({"channel":"a","sender":"b","body":"c"});
+            Request::builder()
+                .method("POST")
+                .uri("/webhook")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer wrong")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap()
+        };
+
+        let resp = app.call(make_req()).await.unwrap();
+        assert_eq!(resp.status(), 401);
+        let resp = app.call(make_req()).await.unwrap();
+        assert_eq!(resp.status(), 401);
+        let resp = app.call(make_req()).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            429,
+            "third failed-auth request from the same IP must be rate-limited"
+        );
     }
 
     #[tokio::test]

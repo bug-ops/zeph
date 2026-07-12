@@ -269,6 +269,11 @@ impl RateLimitState {
 /// - No token, `require_auth = true` → 401 with a warning log
 /// - No token, `require_auth = false` → passes through, `AuthIdentity { authenticated: false }`
 ///
+/// On failure this returns `401` directly, without calling `next.run` — so this middleware
+/// must be layered *inside* [`rate_limit_middleware`] (i.e. `rate_limit_middleware` wraps
+/// it). Otherwise failed-auth requests would never reach the rate limiter, letting an
+/// attacker brute-force the bearer token with no per-IP throttling.
+///
 /// # Errors
 ///
 /// Returns `401 Unauthorized` on authentication failure.
@@ -335,6 +340,13 @@ pub async fn auth_middleware(
 /// receives `429 Too Many Requests`.
 ///
 /// Setting [`RateLimitState::limit`] to `0` disables rate limiting entirely.
+///
+/// This middleware must be layered *outside* [`auth_middleware`] (i.e. it wraps
+/// `auth_middleware`, not the other way around), so that its counter is incremented for
+/// every request — including ones that fail authentication — before `auth_middleware`
+/// gets a chance to short-circuit with `401`. Layering auth outermost would let a
+/// failed-auth request skip the counter entirely, allowing unthrottled bearer-token
+/// brute-forcing.
 ///
 /// # Errors
 ///

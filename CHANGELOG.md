@@ -21,6 +21,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-gateway` and `zeph-a2a`: fixed a bearer-token brute-force bypass caused by
+  middleware layer order (#6110, CWE-307). `auth_middleware` returns `401` directly
+  without calling `next.run`, so with auth layered outside `rate_limit_middleware`,
+  failed-auth requests never reached the per-IP counter — an attacker could brute-force
+  the bearer token with zero rate limiting. Swapped the `.layer()` order in
+  `build_router` (`zeph-gateway/src/router.rs`) and `build_router_with_full_config`
+  (`zeph-a2a/src/server/router.rs`) so `rate_limit_middleware` wraps `auth_middleware`,
+  guaranteeing every request — including failed-auth ones — increments the counter
+  before the auth check runs.
 - `IndexMcpServer` registration (`apply_code_retrieval` in `src/agent_setup.rs`) hardcoded
   `std::env::current_dir()` and never read `[index] workspace_root`, unlike the sibling
   background-indexer path (`apply_code_indexer`), which resolved it correctly. Scoping
