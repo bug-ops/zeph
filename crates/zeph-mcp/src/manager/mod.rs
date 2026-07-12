@@ -44,8 +44,12 @@ pub(crate) use zeph_config::McpTrustLevel;
 const MAX_INJECTION_PENALTIES_PER_REGISTRATION: usize = 3;
 
 /// Transport type for MCP server connections.
+///
+/// `Serialize` is hand-written and redacts `Stdio.env` / `Http.headers` values to
+/// `"[REDACTED]"` (keys are kept for diagnostics), mirroring the `Debug` impl below;
+/// `Deserialize` is derived and reads real values untouched (needed for ACP `mcp/add`).
 #[non_exhaustive]
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 pub enum McpTransport {
     /// Stdio: spawn child process with command + args.
     Stdio {
@@ -105,6 +109,44 @@ impl std::fmt::Debug for McpTransport {
                 .field("callback_port", callback_port)
                 .field("client_name", client_name)
                 .finish(),
+        }
+    }
+}
+
+impl serde::Serialize for McpTransport {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStructVariant;
+        match self {
+            Self::Stdio { command, args, env } => {
+                let redacted: HashMap<&str, &str> =
+                    env.keys().map(|k| (k.as_str(), "[REDACTED]")).collect();
+                let mut v = serializer.serialize_struct_variant("McpTransport", 0, "Stdio", 3)?;
+                v.serialize_field("command", command)?;
+                v.serialize_field("args", args)?;
+                v.serialize_field("env", &redacted)?;
+                v.end()
+            }
+            Self::Http { url, headers } => {
+                let redacted: HashMap<&str, &str> =
+                    headers.keys().map(|k| (k.as_str(), "[REDACTED]")).collect();
+                let mut v = serializer.serialize_struct_variant("McpTransport", 1, "Http", 2)?;
+                v.serialize_field("url", url)?;
+                v.serialize_field("headers", &redacted)?;
+                v.end()
+            }
+            Self::OAuth {
+                url,
+                scopes,
+                callback_port,
+                client_name,
+            } => {
+                let mut v = serializer.serialize_struct_variant("McpTransport", 2, "OAuth", 4)?;
+                v.serialize_field("url", url)?;
+                v.serialize_field("scopes", scopes)?;
+                v.serialize_field("callback_port", callback_port)?;
+                v.serialize_field("client_name", client_name)?;
+                v.end()
+            }
         }
     }
 }

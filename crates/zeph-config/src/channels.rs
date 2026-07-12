@@ -344,6 +344,18 @@ max_bot_chain_depth = 5
         assert!(debug.contains("primary"));
         assert!(debug.contains("REDACTED"));
     }
+
+    #[test]
+    fn ibct_key_config_serialize_redacts_key_hex() {
+        let key = IbctKeyConfig {
+            key_id: "primary".into(),
+            key_hex: "deadbeefdeadbeefdeadbeefdeadbeef".into(),
+        };
+        let json = serde_json::to_string(&key).unwrap();
+        assert!(!json.contains("deadbeefdeadbeefdeadbeefdeadbeef"));
+        assert!(json.contains("primary"));
+        assert!(json.contains("REDACTED"));
+    }
 }
 
 fn default_slack_port() -> u16 {
@@ -559,7 +571,23 @@ impl std::fmt::Debug for SlackConfig {
 /// An IBCT signing key entry in the A2A server configuration.
 ///
 /// Multiple entries allow key rotation: keep old keys until all tokens signed with them expire.
-#[derive(Clone, Deserialize, Serialize)]
+///
+/// `Serialize` is hand-written and redacts `key_hex` to `"[REDACTED]"` (mirroring the
+/// `Debug` impl below); `Deserialize` is derived and reads the real hex key untouched, since
+/// config loading and the `--init` wizard both need the real value on the way in.
+///
+/// # Tradeoff
+///
+/// A future "load config → mutate → save TOML" flow that persists an inline
+/// `[a2a] ibct_keys[].key_hex` would round-trip through this redacting `Serialize` and write
+/// back `key_hex = "[REDACTED]"`, corrupting the key. This is acceptable today: no such flow
+/// exists, `--migrate-config` operates on the TOML text directly (never through
+/// `Config`/`Serialize`), and the documented direction is vault-resolved keys via
+/// [`A2aServerConfig::ibct_signing_key_vault_ref`](crate::channels::A2aServerConfig::ibct_signing_key_vault_ref)
+/// (which takes precedence over `ibct_keys[0]`), making inline `key_hex` a legacy path. If a
+/// struct-based config save flow is ever added, this type should graduate to a split
+/// config/diagnostic-shape design instead of redacting in place.
+#[derive(Clone, Deserialize)]
 pub struct IbctKeyConfig {
     /// Unique key identifier. Must match the `key_id` field in issued IBCT tokens.
     pub key_id: String,
@@ -573,6 +601,16 @@ impl std::fmt::Debug for IbctKeyConfig {
             .field("key_id", &self.key_id)
             .field("key_hex", &"[REDACTED]")
             .finish()
+    }
+}
+
+impl Serialize for IbctKeyConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("IbctKeyConfig", 2)?;
+        s.serialize_field("key_id", &self.key_id)?;
+        s.serialize_field("key_hex", "[REDACTED]")?;
+        s.end()
     }
 }
 

@@ -245,6 +245,24 @@ fn transport_stdio_debug_redacts_env_values() {
 }
 
 #[test]
+fn transport_stdio_serialize_redacts_env_values() {
+    let mut env = HashMap::new();
+    env.insert(
+        "GITHUB_PERSONAL_ACCESS_TOKEN".to_string(),
+        "ghp_super_secret_token".to_string(),
+    );
+    let transport = McpTransport::Stdio {
+        command: "npx".into(),
+        args: vec![],
+        env,
+    };
+    let json = serde_json::to_string(&transport).unwrap();
+    assert!(!json.contains("ghp_super_secret_token"));
+    assert!(json.contains("GITHUB_PERSONAL_ACCESS_TOKEN"));
+    assert!(json.contains("REDACTED"));
+}
+
+#[test]
 fn transport_http_debug() {
     let transport = McpTransport::Http {
         url: "http://example.com".into(),
@@ -270,6 +288,23 @@ fn transport_http_debug_redacts_header_values() {
     assert!(!dbg.contains("sk-super-secret-token"));
     assert!(dbg.contains("Authorization"));
     assert!(dbg.contains("REDACTED"));
+}
+
+#[test]
+fn transport_http_serialize_redacts_header_values() {
+    let mut headers = HashMap::new();
+    headers.insert(
+        "Authorization".to_string(),
+        "Bearer sk-super-secret-token".to_string(),
+    );
+    let transport = McpTransport::Http {
+        url: "http://example.com".into(),
+        headers,
+    };
+    let json = serde_json::to_string(&transport).unwrap();
+    assert!(!json.contains("sk-super-secret-token"));
+    assert!(json.contains("Authorization"));
+    assert!(json.contains("REDACTED"));
 }
 
 #[test]
