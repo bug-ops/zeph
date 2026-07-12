@@ -312,7 +312,7 @@ impl EdgeType {
 
 impl fmt::Display for EdgeType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+        f.pad(self.as_str())
     }
 }
 
@@ -761,7 +761,22 @@ pub trait ContextMemoryBackend: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::MemoryRoute;
+    use super::{EdgeType, MemoryRoute};
+
+    /// Locks in the `f.pad` fix (#6066): `f.write_str` ignores width/fill/align flags.
+    /// `f.pad` must reproduce the same padding a plain `&str` would get under an
+    /// identical width specifier.
+    #[test]
+    fn edge_type_display_respects_width() {
+        assert_eq!(
+            format!("{:<10}", EdgeType::Causal),
+            format!("{:<10}", "causal")
+        );
+        assert_eq!(
+            format!("{:>10}", EdgeType::Semantic),
+            format!("{:>10}", "semantic")
+        );
+    }
 
     #[test]
     fn memory_route_serde_roundtrip() {

@@ -101,6 +101,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Known gap: MCP-provided tools are not inspected and may still perform their own HTTP
   egress. This is a best-effort tool/command-identity block, not a sandbox-level
   guarantee — see `specs/069-threat-model/spec.md` INVARIANT-5.
+
+- `zeph-config`/`zeph-memory`/`zeph-experiments`/`zeph-common`/`zeph-index`: 9 `Display`
+  impls (`ProviderKind`, `MemoryTier`, `ContentFidelity`, `EntityType`, `SourceKind`,
+  `ParameterKind`, `ExperimentSource`, `EdgeType`, `Lang`) used `Formatter::write_str`,
+  which silently ignores width/fill/align flags from the caller's format spec — only
+  `Formatter::pad` respects them. Switched all 9 to `f.pad(...)`, closing off the same
+  latent width-spec bug already fixed for `SessionKind`/`SessionStatus`/`SessionChannel`
+  in #6060 (#6066).
+
 - `zeph-skills`/`src/acp.rs`/`src/serve/`: `SkillOrchestra`'s RL routing head lost learned
   updates under concurrent ACP/`/sessions` agents (#5974). `#5921` wired `RoutingHead`
   persistence into `spawn_acp_agent` and `build_agent_factory`, but each session independently

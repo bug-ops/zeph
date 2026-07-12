@@ -58,7 +58,7 @@ impl EntityType {
 
 impl fmt::Display for EntityType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+        f.pad(self.as_str())
     }
 }
 
@@ -623,6 +623,21 @@ mod tests {
             let s = et.to_string();
             assert_eq!(s.parse::<EntityType>().unwrap(), et);
         }
+    }
+
+    /// Locks in the `f.pad` fix (#6066): `f.write_str` ignores width/fill/align flags.
+    /// `f.pad` must reproduce the same padding a plain `&str` would get under an
+    /// identical width specifier.
+    #[test]
+    fn entity_type_display_respects_width() {
+        assert_eq!(
+            format!("{:<15}", EntityType::Person),
+            format!("{:<15}", "person")
+        );
+        assert_eq!(
+            format!("{:>15}", EntityType::Organization),
+            format!("{:>15}", "organization")
+        );
     }
 
     #[test]

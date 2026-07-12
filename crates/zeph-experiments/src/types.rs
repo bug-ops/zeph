@@ -132,7 +132,7 @@ impl ParameterKind {
 
 impl std::fmt::Display for ParameterKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        f.pad(self.as_str())
     }
 }
 
@@ -283,7 +283,7 @@ impl ExperimentSource {
 
 impl std::fmt::Display for ExperimentSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        f.pad(self.as_str())
     }
 }
 
@@ -381,6 +381,33 @@ mod tests {
         assert_eq!(ExperimentSource::Scheduled.as_str(), "scheduled");
         assert_eq!(ExperimentSource::Manual.to_string(), "manual");
         assert_eq!(ExperimentSource::Scheduled.to_string(), "scheduled");
+    }
+
+    /// Locks in the `f.pad` fix (#6066): `f.write_str` ignores width/fill/align flags.
+    /// `f.pad` must reproduce the same padding a plain `&str` would get under an
+    /// identical width specifier.
+    #[test]
+    fn parameter_kind_display_respects_width() {
+        assert_eq!(
+            format!("{:<20}", ParameterKind::TopK),
+            format!("{:<20}", "top_k")
+        );
+        assert_eq!(
+            format!("{:>20}", ParameterKind::SimilarityThreshold),
+            format!("{:>20}", "similarity_threshold")
+        );
+    }
+
+    #[test]
+    fn experiment_source_display_respects_width() {
+        assert_eq!(
+            format!("{:<12}", ExperimentSource::Manual),
+            format!("{:<12}", "manual")
+        );
+        assert_eq!(
+            format!("{:>12}", ExperimentSource::Scheduled),
+            format!("{:>12}", "scheduled")
+        );
     }
 
     #[test]
