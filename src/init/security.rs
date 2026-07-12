@@ -220,6 +220,12 @@ pub(super) fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
         )
         .default(true)
         .interact()?;
+    state.skill_require_integrity_check_on_promote = Confirm::new()
+        .with_prompt(
+            "Automatically require a per-invocation integrity re-check when promoting a skill to trusted/verified? (re-hashes SKILL.md before every dispatch; override per-command with --no-require-check; recommended)",
+        )
+        .default(true)
+        .interact()?;
     state.skill_capability_escalation_check = Confirm::new()
         .with_prompt(
             "Check skill capability escalation on load? (warns if skills declare tools exceeding their trust level)",

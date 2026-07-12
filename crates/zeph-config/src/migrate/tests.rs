@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        79,
-        "MIGRATIONS registry must contain all 79 sequential steps"
+        80,
+        "MIGRATIONS registry must contain all 80 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1753,7 +1753,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 79);
+    assert_eq!(MIGRATIONS.len(), 80);
 }
 
 #[test]
@@ -1872,6 +1872,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_acp_auth_clients_config",
         "migrate_skills_registry",
         "migrate_durable_shared_db",
+        "migrate_skill_trust_require_check",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -3994,6 +3995,86 @@ fn step_79_idempotent_on_own_output() {
     let first = migrate_durable_shared_db(src).expect("first migrate");
     assert_eq!(first.changed_count, 1);
     let second = migrate_durable_shared_db(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
+    );
+}
+
+// ── migrate_skill_trust_require_check tests (step 80, #6087) ─────────────────
+
+#[test]
+fn step_80_adds_commented_advisory_when_skills_trust_active_and_missing_field() {
+    let src = "[skills.trust]\ndefault_level = \"quarantined\"\nlocal_level = \"trusted\"\n";
+    let result = migrate_skill_trust_require_check(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result
+            .output
+            .contains("# require_integrity_check_on_promote = true")
+    );
+    assert!(
+        !result
+            .output
+            .contains("\nrequire_integrity_check_on_promote =")
+    );
+    assert!(result.output.contains("default_level = \"quarantined\""));
+    assert!(result.output.contains("local_level = \"trusted\""));
+    assert_eq!(
+        result.sections_changed,
+        vec!["skills.trust.require_integrity_check_on_promote".to_owned()]
+    );
+}
+
+#[test]
+fn step_80_noop_when_require_integrity_check_on_promote_already_present() {
+    let src = "[skills.trust]\nrequire_integrity_check_on_promote = false\n";
+    let result = migrate_skill_trust_require_check(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_80_noop_when_require_integrity_check_on_promote_comment_already_present() {
+    let src = "[skills.trust]\n# require_integrity_check_on_promote = true\n";
+    let result = migrate_skill_trust_require_check(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_80_noop_when_skills_trust_section_absent() {
+    let src = "[skills]\ndefault_level = \"quarantined\"\n";
+    let result = migrate_skill_trust_require_check(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_80_noop_when_skills_trust_only_commented_section() {
+    let src = "# [skills.trust]\n# scan_on_load = true\n";
+    let result = migrate_skill_trust_require_check(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_80_does_not_match_skills_trust_scanner_subtable() {
+    let src = "[skills.trust.scanner]\ncapability_escalation_check = false\n";
+    let result = migrate_skill_trust_require_check(src).expect("migrate");
+    assert_eq!(
+        result.changed_count, 0,
+        "[skills.trust.scanner] alone must not count as an active [skills.trust] table"
+    );
+}
+
+#[test]
+fn step_80_idempotent_on_own_output() {
+    let src = "[skills.trust]\ndefault_level = \"quarantined\"\n";
+    let first = migrate_skill_trust_require_check(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_skill_trust_require_check(&first.output).expect("second migrate");
     assert_eq!(second.changed_count, 0, "second run must be a no-op");
     assert_eq!(
         second.output, first.output,

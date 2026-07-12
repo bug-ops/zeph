@@ -203,6 +203,7 @@ pub(crate) async fn handle_skill_command(
             name,
             level,
             require_check,
+            no_require_check,
         } => {
             let trust_level = level.parse::<zeph_common::SkillTrustLevel>().map_err(|_| {
                 anyhow::anyhow!(
@@ -254,15 +255,26 @@ pub(crate) async fn handle_skill_command(
             }
             println!("Trust level for \"{name}\" set to {trust_level}.");
 
-            // #6080: expose the previously unreachable `requires_trust_check` setter so the
-            // per-invocation blake3 re-check (`SkillTrustGate::resolve_body`) can actually be
-            // armed for a skill.
-            if require_check {
-                store
-                    .set_requires_trust_check(&name, true)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
-                println!("Per-invocation integrity re-check enabled for \"{name}\".");
+            // #6087: promotion to Trusted/Verified is the choke point where a tampered
+            // SKILL.md body would be dispatched verbatim — arm the re-check by default there,
+            // with --require-check/--no-require-check overriding the config default.
+            // Quarantined/Blocked promotions leave requires_trust_check untouched.
+            if matches!(
+                trust_level,
+                zeph_common::SkillTrustLevel::Trusted | zeph_common::SkillTrustLevel::Verified
+            ) {
+                let arm = zeph_core::resolve_require_check(
+                    require_check,
+                    no_require_check,
+                    config.skills.trust.require_integrity_check_on_promote,
+                );
+                if arm {
+                    store
+                        .set_requires_trust_check(&name, true)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    println!("Per-invocation integrity re-check enabled for \"{name}\".");
+                }
             }
         }
 
@@ -712,5 +724,135 @@ mod registry_tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("registry fetch failed"));
+    }
+}
+
+// ── `handle_skill_command` Trust promotion (#6087) ───────────────────────────
+//
+// Handler-level coverage confirming `SkillCommand::Trust` actually calls the shared
+// `zeph_core::resolve_require_check` (not just that the pure function is correct in isolation —
+// see `skill_trust_gate::tests::resolve_require_check_*` in `zeph-core`). Isolated from the real
+// `~/.config/zeph` vault via a per-test `XDG_CONFIG_HOME`, restored afterward; `#[serial]`
+// prevents concurrent env-var mutation across tests in this binary (mirrors the established
+// pattern in `src/commands/durable.rs`).
+#[allow(unsafe_code)]
+#[cfg(test)]
+mod trust_promotion_tests {
+    use serial_test::serial;
+
+    use super::*;
+
+    /// Points `XDG_CONFIG_HOME` (and therefore `managed_skills_dir()`) at a fresh temp dir,
+    /// writes a config file with an isolated sqlite path, and installs one skill via the real
+    /// `SkillCommand::Install` path. Returns the config path, the installed skill's name, and
+    /// the previous `XDG_CONFIG_HOME` value to restore via [`restore_xdg_config_home`].
+    async fn install_test_skill(
+        root: &std::path::Path,
+    ) -> (std::path::PathBuf, String, Option<String>) {
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", root);
+        }
+
+        let config_path = root.join("config.toml");
+        let db_path = root.join("test.db");
+        let mut config = zeph_core::config::Config::default();
+        config.memory.sqlite_path = db_path.to_string_lossy().into_owned();
+        std::fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
+
+        // Source directory basename must match the skill's frontmatter `name` (load_skill_meta
+        // validates this before install).
+        let skill_src = root.join("trust-promo-test");
+        std::fs::create_dir_all(&skill_src).unwrap();
+        std::fs::write(
+            skill_src.join("SKILL.md"),
+            "---\nname: trust-promo-test\ndescription: A test skill for #6087.\n---\nbody",
+        )
+        .unwrap();
+
+        handle_skill_command(
+            SkillCommand::Install {
+                source: skill_src.to_string_lossy().into_owned(),
+            },
+            Some(&config_path),
+        )
+        .await
+        .unwrap();
+
+        (config_path, "trust-promo-test".to_owned(), prev_xdg)
+    }
+
+    fn restore_xdg_config_home(prev: Option<String>) {
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn trust_promotion_with_no_flags_arms_check_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config_path, name, prev_xdg) = Box::pin(install_test_skill(dir.path())).await;
+
+        let result = handle_skill_command(
+            SkillCommand::Trust {
+                name: name.clone(),
+                level: "trusted".to_owned(),
+                require_check: false,
+                no_require_check: false,
+            },
+            Some(&config_path),
+        )
+        .await;
+
+        let db_path = dir.path().join("test.db");
+        let store = zeph_memory::store::SqliteStore::new(db_path.to_str().unwrap())
+            .await
+            .unwrap();
+        let row = store.load_skill_trust(&name).await.unwrap();
+
+        restore_xdg_config_home(prev_xdg);
+
+        result.unwrap();
+        assert!(
+            row.unwrap().requires_trust_check,
+            "default config (require_integrity_check_on_promote unset -> true) must arm the \
+             check via resolve_require_check even with no CLI flags"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn trust_promotion_with_no_require_check_flag_overrides_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config_path, name, prev_xdg) = Box::pin(install_test_skill(dir.path())).await;
+
+        let result = handle_skill_command(
+            SkillCommand::Trust {
+                name: name.clone(),
+                level: "trusted".to_owned(),
+                require_check: false,
+                no_require_check: true,
+            },
+            Some(&config_path),
+        )
+        .await;
+
+        let db_path = dir.path().join("test.db");
+        let store = zeph_memory::store::SqliteStore::new(db_path.to_str().unwrap())
+            .await
+            .unwrap();
+        let row = store.load_skill_trust(&name).await.unwrap();
+
+        restore_xdg_config_home(prev_xdg);
+
+        result.unwrap();
+        assert!(
+            !row.unwrap().requires_trust_check,
+            "--no-require-check must win over the config default via resolve_require_check"
+        );
     }
 }

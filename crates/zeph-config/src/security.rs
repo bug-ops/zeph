@@ -128,6 +128,16 @@ pub struct TrustConfig {
     /// Defaults to `true` (secure by default).
     #[serde(default = "default_true")]
     pub scan_on_load: bool,
+    /// Arm the per-invocation blake3 integrity re-check (`requires_trust_check`) whenever a
+    /// skill is promoted to `Trusted` or `Verified`.
+    ///
+    /// Trusted/Verified bodies are dispatched verbatim (no sanitization), so this is the
+    /// choke point that matters for tamper detection. `--require-check`/`--no-require-check`
+    /// on the promoting command always win over this default (#6087).
+    ///
+    /// Defaults to `true` (secure by default).
+    #[serde(default = "default_true")]
+    pub require_integrity_check_on_promote: bool,
     /// Fine-grained scanner controls (injection patterns, capability escalation).
     #[serde(default)]
     pub scanner: ScannerConfig,
@@ -141,6 +151,7 @@ impl Default for TrustConfig {
             hash_mismatch_level: default_trust_hash_mismatch_level(),
             bundled_level: default_trust_bundled_level(),
             scan_on_load: true,
+            require_integrity_check_on_promote: true,
             scanner: ScannerConfig::default(),
         }
     }
@@ -666,12 +677,14 @@ mod tests {
             hash_mismatch_level: SkillTrustLevel::Quarantined,
             bundled_level: SkillTrustLevel::Trusted,
             scan_on_load: false,
+            require_integrity_check_on_promote: false,
             scanner: ScannerConfig::default(),
         };
         let toml = toml::to_string(&config).expect("serialize");
         let deserialized: TrustConfig = toml::from_str(&toml).expect("deserialize");
         assert!(!deserialized.scan_on_load);
         assert_eq!(deserialized.bundled_level, SkillTrustLevel::Trusted);
+        assert!(!deserialized.require_integrity_check_on_promote);
     }
 
     #[test]
@@ -692,6 +705,26 @@ hash_mismatch_level = "quarantined"
     fn trust_config_default_has_bundled_level_trusted() {
         let config = TrustConfig::default();
         assert_eq!(config.bundled_level, SkillTrustLevel::Trusted);
+    }
+
+    #[test]
+    fn trust_config_default_has_require_integrity_check_on_promote_true() {
+        let config = TrustConfig::default();
+        assert!(config.require_integrity_check_on_promote);
+    }
+
+    #[test]
+    fn trust_config_missing_require_integrity_check_on_promote_defaults_to_true() {
+        let toml = r#"
+default_level = "quarantined"
+local_level = "trusted"
+hash_mismatch_level = "quarantined"
+"#;
+        let config: TrustConfig = toml::from_str(toml).expect("deserialize");
+        assert!(
+            config.require_integrity_check_on_promote,
+            "missing require_integrity_check_on_promote must default to true"
+        );
     }
 
     #[test]

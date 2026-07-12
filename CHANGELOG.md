@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+
+- **Skills**: `[skills.trust] require_integrity_check_on_promote` (default `true`) automatically
+  arms the per-invocation BLAKE3 integrity re-check (`requires_trust_check`) whenever a skill is
+  promoted to `trusted`/`verified`, at both the CLI (`zeph skill trust`) and in-session
+  (`/skill trust`) promotion handlers. Previously the re-check could only be armed manually via
+  `--require-check`, so an operator who forgot the flag left a promoted skill's tampered-on-disk
+  `SKILL.md` undetected between promotions (#6087). `--require-check`/`--no-require-check`
+  (mutually exclusive) continue to override the config default per command; promotion to
+  `quarantined`/`blocked` leaves `requires_trust_check` untouched. A migration step (80) adds a
+  commented advisory for the new key to existing configs that already declare `[skills.trust]`.
+  Self-learning/heuristic auto-promotion and reload trust-assignment are intentionally out of
+  scope for this change — see the PR description.
+
 ### Fixed
 
 - `src/commands/db.rs`: `zeph db migrate` fell back to the raw, unredacted database URL
@@ -125,6 +139,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Known gap: MCP-provided tools are not inspected and may still perform their own HTTP
   egress. This is a best-effort tool/command-identity block, not a sandbox-level
   guarantee — see `specs/069-threat-model/spec.md` INVARIANT-5.
+
+- `zeph-config`/`zeph-memory`/`zeph-experiments`/`zeph-common`/`zeph-index`: 9 `Display`
+  impls (`ProviderKind`, `MemoryTier`, `ContentFidelity`, `EntityType`, `SourceKind`,
+  `ParameterKind`, `ExperimentSource`, `EdgeType`, `Lang`) used `Formatter::write_str`,
+  which silently ignores width/fill/align flags from the caller's format spec — only
+  `Formatter::pad` respects them. Switched all 9 to `f.pad(...)`, closing off the same
+  latent width-spec bug already fixed for `SessionKind`/`SessionStatus`/`SessionChannel`
+  in #6060 (#6066).
+
 - `zeph-skills`/`src/acp.rs`/`src/serve/`: `SkillOrchestra`'s RL routing head lost learned
   updates under concurrent ACP/`/sessions` agents (#5974). `#5921` wired `RoutingHead`
   persistence into `spawn_acp_agent` and `build_agent_factory`, but each session independently

@@ -126,7 +126,7 @@ pub use config::{Config, ConfigError};
 pub use runtime_context::RuntimeContext;
 pub use skill_invoker::{InvokeSkillParams, SkillInvokeExecutor, SkillTrustSnapshot};
 pub use skill_loader::SkillLoaderExecutor;
-pub use skill_trust_gate::{SkillBodyResolution, SkillTrustGate};
+pub use skill_trust_gate::{SkillBodyResolution, SkillTrustGate, resolve_require_check};
 pub use zeph_common::hash::blake3_hex as content_hash;
 pub use zeph_sanitizer::exfiltration::{
     ExfiltrationEvent, ExfiltrationGuard, ExfiltrationGuardConfig, extract_flagged_urls,

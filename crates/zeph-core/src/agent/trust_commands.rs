@@ -53,17 +53,31 @@ impl<C: Channel> Agent<C> {
                         return Ok(format!("Skill \"{name}\" not found in trust database."));
                     }
                     let mut output = format!("Trust level for \"{name}\" set to {level}.");
-                    // #6080: `--require-check` arms the per-invocation blake3 integrity
-                    // re-check (`SkillTrustGate::resolve_body`), previously unreachable from
-                    // any production entry point. Scan the whole remaining slice rather than
-                    // indexing a fixed position — a security toggle must not silently fail to
-                    // arm just because the flag isn't the 3rd token (review finding, #6080).
-                    if args[2..].contains(&"--require-check") {
-                        memory.sqlite().set_requires_trust_check(name, true).await?;
-                        let _ = write!(
-                            output,
-                            "\nPer-invocation integrity re-check enabled for \"{name}\"."
-                        );
+                    // #6087: promotion to Trusted/Verified is the choke point where a
+                    // tampered SKILL.md body would be dispatched verbatim — arm the
+                    // per-invocation blake3 re-check by default there, with
+                    // --require-check/--no-require-check overriding the config default.
+                    // Quarantined/Blocked promotions leave requires_trust_check untouched.
+                    // Scan the whole remaining slice rather than indexing a fixed position —
+                    // a security toggle must not silently fail to arm just because the flag
+                    // isn't the 3rd token (review finding, #6080).
+                    if matches!(level, SkillTrustLevel::Trusted | SkillTrustLevel::Verified) {
+                        let rest = &args[2..];
+                        let force_on = rest.contains(&"--require-check");
+                        let force_off = rest.contains(&"--no-require-check");
+                        let config_default = self
+                            .services
+                            .skill
+                            .trust_config
+                            .require_integrity_check_on_promote;
+                        let arm = crate::resolve_require_check(force_on, force_off, config_default);
+                        if arm {
+                            memory.sqlite().set_requires_trust_check(name, true).await?;
+                            let _ = write!(
+                                output,
+                                "\nPer-invocation integrity re-check enabled for \"{name}\"."
+                            );
+                        }
                     }
                     Ok(output)
                 } else {
@@ -310,7 +324,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trust_without_flag_leaves_requires_trust_check_false() {
+    async fn trust_default_config_arms_check_on_promotion_without_flags() {
+        // #6087: require_integrity_check_on_promote defaults to true, so promoting to
+        // Trusted with no flags must arm the re-check.
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Quarantined,
+                SourceKind::Local,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+        let mut agent = agent_with_memory(memory.clone());
+        assert!(
+            agent
+                .services
+                .skill
+                .trust_config
+                .require_integrity_check_on_promote,
+            "default TrustConfig must arm by default"
+        );
+
+        let out = agent
+            .handle_skill_trust_command_as_string(&["git", "trusted"])
+            .await
+            .unwrap();
+        assert!(out.contains("Trust level for \"git\" set to trusted"));
+        assert!(out.contains("Per-invocation integrity re-check enabled"));
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("git")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(row.requires_trust_check);
+    }
+
+    #[tokio::test]
+    async fn trust_no_require_check_flag_overrides_config_default() {
         let memory = test_memory().await;
         memory
             .sqlite()
@@ -327,6 +384,44 @@ mod tests {
         let mut agent = agent_with_memory(memory.clone());
 
         let out = agent
+            .handle_skill_trust_command_as_string(&["git", "trusted", "--no-require-check"])
+            .await
+            .unwrap();
+        assert!(out.contains("Trust level for \"git\" set to trusted"));
+        assert!(!out.contains("Per-invocation integrity re-check enabled"));
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("git")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!row.requires_trust_check);
+    }
+
+    #[tokio::test]
+    async fn trust_config_default_false_leaves_check_unarmed_without_flags() {
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Quarantined,
+                SourceKind::Local,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+        let mut agent = agent_with_memory(memory.clone());
+        agent
+            .services
+            .skill
+            .trust_config
+            .require_integrity_check_on_promote = false;
+
+        let out = agent
             .handle_skill_trust_command_as_string(&["git", "trusted"])
             .await
             .unwrap();
@@ -340,6 +435,86 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!row.requires_trust_check);
+    }
+
+    #[tokio::test]
+    async fn trust_require_check_flag_forces_arm_even_when_config_default_false() {
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Quarantined,
+                SourceKind::Local,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+        let mut agent = agent_with_memory(memory.clone());
+        agent
+            .services
+            .skill
+            .trust_config
+            .require_integrity_check_on_promote = false;
+
+        let out = agent
+            .handle_skill_trust_command_as_string(&["git", "trusted", "--require-check"])
+            .await
+            .unwrap();
+        assert!(out.contains("Per-invocation integrity re-check enabled"));
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("git")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(row.requires_trust_check);
+    }
+
+    #[tokio::test]
+    async fn trust_promotion_to_quarantined_leaves_requires_trust_check_untouched() {
+        // Quarantined/Blocked promotions must not be affected by the config default or
+        // either flag — the re-check only matters for Trusted/Verified skills.
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Trusted,
+                SourceKind::Local,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .set_requires_trust_check("git", true)
+            .await
+            .unwrap();
+        let mut agent = agent_with_memory(memory.clone());
+
+        let out = agent
+            .handle_skill_trust_command_as_string(&["git", "quarantined"])
+            .await
+            .unwrap();
+        assert!(out.contains("Trust level for \"git\" set to quarantined"));
+        assert!(!out.contains("Per-invocation integrity re-check enabled"));
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("git")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            row.requires_trust_check,
+            "demoting to quarantined must not clear a previously armed re-check"
+        );
     }
 
     #[tokio::test]

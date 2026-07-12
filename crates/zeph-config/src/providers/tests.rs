@@ -982,3 +982,18 @@ fn validate_cocoon_pricing_valid_passes() {
     });
     assert!(e.validate().is_ok());
 }
+
+/// Locks in the `f.pad` fix (#6066): `f.write_str` ignores width/fill/align flags, so
+/// width-specifier `format!` calls used to render unpadded text. `f.pad` must reproduce
+/// the same padding a plain `&str` would get under an identical width specifier.
+#[test]
+fn provider_kind_display_respects_width() {
+    assert_eq!(
+        format!("{:<12}", ProviderKind::Claude),
+        format!("{:<12}", "claude")
+    );
+    assert_eq!(
+        format!("{:>12}", ProviderKind::Compatible),
+        format!("{:>12}", "compatible")
+    );
+}

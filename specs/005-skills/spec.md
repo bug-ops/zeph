@@ -569,6 +569,26 @@ blocks invocation.
 requires_trust_check = true
 ```
 
+#### Automatic Activation on Promotion (#6087)
+
+`requires_trust_check` is armed **automatically** whenever an operator promotes a skill to
+`Trusted` or `Verified` — the choke point where a skill's body is dispatched verbatim without
+sanitization — via `[skills.trust] require_integrity_check_on_promote` (default `true`). Both
+operator-facing promotion handlers apply this: CLI `zeph skill trust <name> trusted|verified`
+(`src/commands/skill.rs`) and in-session `/skill trust <name> trusted|verified`
+(`crates/zeph-core/src/agent/trust_commands.rs`). `--require-check`/`--no-require-check`
+(mutually exclusive) on the promoting command always override the config default. Promotion to
+`Quarantined`/`Blocked` leaves `requires_trust_check` untouched — it is irrelevant at those
+levels and a previously armed flag must survive a temporary demotion.
+
+Self-learning/heuristic auto-promotion (`crates/zeph-core/src/agent/learning/trust.rs`) and
+reload trust-assignment (`crates/zeph-core/src/agent/skill_reload.rs`) also raise a skill's
+trust level to `Trusted`/`Verified` but are **not** operator promotion and do not arm
+`requires_trust_check` — the threat this default addresses is an operator promoting a skill
+and forgetting to arm the re-check, not autonomous promotion paths. This is an intentional
+scope boundary, not an oversight, for #6087; a follow-up issue may be filed to cover the
+auto-promotion paths separately.
+
 ### Recursive Nested Skill Discovery (#4682, #4684)
 
 `WalkDir`-based discovery replaces the flat `read_dir` loop in the skill scanner. The traversal uses
@@ -702,6 +722,8 @@ and emits an advisory `SecurityEvent::SkillAdvisory` with severity and matched p
 
 - `sanitize_skill_metadata()` MUST run before EVERY description injection — no bypass path
 - Blake3 re-hash only applies to skills with `requires_trust_check = true`; normal skills use load-time trust only
+- `requires_trust_check` is armed by default on promotion to `Trusted`/`Verified` (`require_integrity_check_on_promote`, default `true`) — NEVER silently leave it off without an explicit `--no-require-check` or config override (#6087)
+- Promotion to `Quarantined`/`Blocked` MUST NOT clear `requires_trust_check` — NEVER reset the flag on demotion
 - Advisory scan result MUST NOT block skill invocation in v1 — advisory only
 - NEVER store the raw unsanitized description in the system prompt
 - NEVER proceed when `semantic_scan = true` but `semantic_scan_provider` is empty — return a config error (fail-closed, #4706, #4709)

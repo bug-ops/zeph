@@ -297,7 +297,7 @@ impl Lang {
 
 impl std::fmt::Display for Lang {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.id())
+        f.pad(self.id())
     }
 }
 
@@ -454,5 +454,17 @@ mod tests {
             assert!(!lang.id().is_empty());
             assert_eq!(lang.to_string(), lang.id());
         }
+    }
+
+    /// Locks in the `f.pad` fix (#6066): `f.write_str` ignores width/fill/align flags.
+    /// `f.pad` must reproduce the same padding a plain `&str` would get under an
+    /// identical width specifier.
+    #[test]
+    fn lang_display_respects_width() {
+        assert_eq!(format!("{:<12}", Lang::Rust), format!("{:<12}", "rust"));
+        assert_eq!(
+            format!("{:>12}", Lang::TypeScript),
+            format!("{:>12}", "typescript")
+        );
     }
 }
