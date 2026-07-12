@@ -31,6 +31,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `src/commands/skill.rs`/`src/commands/plugin.rs`: `zeph skill search`/`get` and
+  `zeph plugin search`/`get` printed the correct, actionable FR-004 message
+  (`REGISTRY_NOT_CONFIGURED_MSG`) to stdout when the registry is disabled, then
+  immediately failed with a second, differently-worded `anyhow::bail!` on stderr — and
+  for the plugin subcommands that second message incorrectly said "skill registry"
+  instead of "plugin registry" (#5943). All four call sites now reuse
+  `REGISTRY_NOT_CONFIGURED_MSG` for the bail as well, so stdout and the error both show
+  the same, subsystem-neutral, actionable message.
 - `src/commands/db.rs`: `zeph db migrate` fell back to the raw, unredacted database URL
   in error messages and the migration-status line whenever `redact_url` returned `None`
   — which only means the URL didn't match a recognized credential-bearing shape, not that

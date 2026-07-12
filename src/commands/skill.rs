@@ -496,7 +496,7 @@ async fn registry_search(config: &zeph_core::config::Config, query: &str) -> any
 
     if !config.skills.registry.enabled {
         println!("{REGISTRY_NOT_CONFIGURED_MSG}");
-        anyhow::bail!("skill registry is not configured");
+        anyhow::bail!("{REGISTRY_NOT_CONFIGURED_MSG}");
     }
 
     let token = resolve_registry_token(config).await?;
@@ -544,7 +544,7 @@ async fn registry_get(
 
     if !config.skills.registry.enabled {
         println!("{REGISTRY_NOT_CONFIGURED_MSG}");
-        anyhow::bail!("skill registry is not configured");
+        anyhow::bail!("{REGISTRY_NOT_CONFIGURED_MSG}");
     }
 
     let token = resolve_registry_token(config).await?;
@@ -724,6 +724,49 @@ mod registry_tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("registry fetch failed"));
+    }
+
+    // ── #5943: disabled-registry bail must match the printed FR-004 message ──
+    //
+    // Regression coverage for the outer `registry_search`/`registry_get` gate (not exercised by
+    // the `_with` tests above, which only drive post-gate logic): before the fix, the bail! used
+    // a hardcoded `"skill registry is not configured"` string that diverged from the
+    // `REGISTRY_NOT_CONFIGURED_MSG` printed to stdout just above it. Asserting exact equality
+    // (not just `contains`) pins both wording and future re-divergence.
+
+    #[tokio::test]
+    async fn registry_search_bails_with_registry_not_configured_msg_when_disabled() {
+        use crate::commands::registry_client::REGISTRY_NOT_CONFIGURED_MSG;
+
+        let config = zeph_core::config::Config::default();
+        assert!(!config.skills.registry.enabled);
+
+        let err = registry_search(&config, "query").await.unwrap_err();
+        assert_eq!(err.to_string(), REGISTRY_NOT_CONFIGURED_MSG);
+    }
+
+    #[tokio::test]
+    async fn registry_get_bails_with_registry_not_configured_msg_when_disabled() {
+        use crate::commands::registry_client::REGISTRY_NOT_CONFIGURED_MSG;
+
+        let dir = tempfile::tempdir().unwrap();
+        let managed_dir = dir.path().join("managed");
+        let sqlite_path = dir.path().join("test.db");
+        let mgr = zeph_skills::manager::SkillManager::new(managed_dir.clone());
+
+        let config = zeph_core::config::Config::default();
+        assert!(!config.skills.registry.enabled);
+
+        let err = registry_get(
+            &config,
+            &mgr,
+            &managed_dir,
+            sqlite_path.to_str().unwrap(),
+            "acme/x",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.to_string(), REGISTRY_NOT_CONFIGURED_MSG);
     }
 }
 
