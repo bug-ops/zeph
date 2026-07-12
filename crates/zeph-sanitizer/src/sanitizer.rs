@@ -286,7 +286,7 @@ impl ContentSanitizer {
         self
     }
 
-    /// Attach a [`ClassifierMetrics`] instance to record injection and PII latencies.
+    /// Attach a [`ClassifierMetrics`](zeph_llm::ClassifierMetrics) instance to record injection and PII latencies.
     #[cfg(feature = "classifiers")]
     #[must_use]
     pub fn with_classifier_metrics(

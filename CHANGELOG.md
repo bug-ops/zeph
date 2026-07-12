@@ -86,6 +86,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `build_combined_deps(...).await` call sites with `Box::pin(...)` that #6169 added unboxed,
   reintroducing `clippy::large_futures` after #6168 had already closed the same lint class
   (#6175). Same fix pattern as #6168/#3521. No behavior change.
+- `crates/zeph-sanitizer/src/sanitizer.rs`: `with_classifier_metrics`'s doc comment linked
+  `[`ClassifierMetrics`]` unqualified, which rustdoc could not resolve since the type
+  (`zeph_llm::ClassifierMetrics`) is never imported unqualified in this module, breaking the
+  `rustdoc::broken_intra_doc_links` gate (#6177). Changed the link to the fully-qualified path
+  `[`ClassifierMetrics`](zeph_llm::ClassifierMetrics)`.
 
 ### Testing
 
