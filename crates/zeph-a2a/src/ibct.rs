@@ -86,7 +86,10 @@ pub enum IbctError {
 ///
 /// Multiple entries allow key rotation: old keys are kept until all in-flight tokens
 /// signed with them expire.
-#[derive(Clone, Serialize, Deserialize)]
+///
+/// `Serialize` is hand-written and redacts `key_bytes` to `"[REDACTED]"` (mirroring the
+/// `Debug` impl below); `Deserialize` is derived and reads the real key bytes untouched.
+#[derive(Clone, Deserialize)]
 pub struct IbctKey {
     /// Unique key identifier. Embedded in the token so the verifier can look it up.
     pub key_id: String,
@@ -101,6 +104,16 @@ impl std::fmt::Debug for IbctKey {
             .field("key_id", &self.key_id)
             .field("key_bytes", &"[REDACTED]")
             .finish()
+    }
+}
+
+impl Serialize for IbctKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("IbctKey", 2)?;
+        s.serialize_field("key_id", &self.key_id)?;
+        s.serialize_field("key_bytes", "[REDACTED]")?;
+        s.end()
     }
 }
 
@@ -307,11 +320,7 @@ fn unix_now() -> u64 {
 
 /// Serde helper for hex-encoded byte vectors.
 mod hex_bytes {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &Vec<u8>, ser: S) -> Result<S::Ok, S::Error> {
-        ser.serialize_str(&hex::encode(bytes))
-    }
+    use serde::{Deserialize, Deserializer};
 
     pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Vec<u8>, D::Error> {
         let s = String::deserialize(de)?;
@@ -538,5 +547,15 @@ mod tests {
         assert!(!debug.contains("super-secret-key-for-testing-only"));
         assert!(debug.contains("k1"));
         assert!(debug.contains("REDACTED"));
+    }
+
+    #[cfg(feature = "ibct")]
+    #[test]
+    fn ibct_key_serialize_redacts_key_bytes() {
+        let key = test_key();
+        let json = serde_json::to_string(&key).unwrap();
+        assert!(!json.contains(&hex::encode(b"super-secret-key-for-testing-only")));
+        assert!(json.contains("k1"));
+        assert!(json.contains("REDACTED"));
     }
 }

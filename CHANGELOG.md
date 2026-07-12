@@ -97,6 +97,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-config`/`zeph-a2a`/`zeph-mcp`: `IbctKeyConfig`, `IbctKey`, and `McpTransport` derived
+  `Serialize` unredacted, so any future `serde_json`/`toml::to_string`/log/status/ACP path
+  serializing one of these types would have leaked the raw secret even though their `Debug`
+  impls were already redacted by #6005 (#6006). Replaced the derived `Serialize` on all three
+  with hand-written impls mirroring the existing `Debug` redaction: `IbctKeyConfig.key_hex` and
+  `IbctKey.key_bytes` emit `"[REDACTED]"`; `McpTransport::Stdio.env` and `McpTransport::Http
+  .headers` redact values only, keeping keys for diagnostics (`ServerEntry` inherits this
+  automatically since it nests `McpTransport`). `Deserialize` is untouched on all three — config
+  load, the ACP `mcp/add` handler, and IBCT token decoding still need the real values on the way
+  in. No live leak existed before this fix (audited: `--migrate-config` is text-based, the
+  `--init` wizard never populates these fields with raw secrets, and the runtime types have no
+  serialize-to-output path today) — this closes the latent risk for any future caller.
 - `zeph-orchestration`/`zeph-subagent`/`zeph-core`: `TaskNode::network_scope: Deny` was
   advisory-only — the field was never read at dispatch time, so a planner-emitted
   `network_scope: Deny` silently left a task's network egress unrestricted (spec
