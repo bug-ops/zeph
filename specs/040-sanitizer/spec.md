@@ -50,7 +50,6 @@ eight layers, each addressing different threat vectors:
 | 10 | `NliSanitizer` | Wired | SONAR NLI entailment-based injection layer; can be attached via builder |
 | 11 | `SecretMaskRegistry` | Wired | Vault-secret placeholder masking at the LLM boundary |
 | 12 | `ShadowMemory` | Wired | Cross-turn goal-drift detector; complements Layer 8's single-batch analysis |
-| 13 | `Pipeline`/`Stage` | Internal | Generic composable synchronous stage framework for custom sanitization chains |
 
 ---
 

@@ -29,6 +29,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Self-learning/heuristic auto-promotion and reload trust-assignment are intentionally out of
   scope for this change — see the PR description.
 
+### Removed
+
+- `crates/zeph-sanitizer/src/pipeline.rs`: deleted the composable `Pipeline`/`Stage`/
+  `SanitizeContext` abstraction. It had zero production consumers — `ContentSanitizer`
+  (`sanitizer.rs`) implements its own inline sequence of steps (truncate, strip, detect,
+  escape, spotlight) as ordinary method calls and never used `Pipeline`/`add_stage` (#5911).
+  No `pub use` re-export existed and no other crate in the workspace referenced these types,
+  so removal is a pure dead-code cleanup with no behavior change.
+
 ### Fixed
 
 - `src/commands/skill.rs`/`src/commands/plugin.rs`: `zeph skill search`/`get` and
