@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+
+- `src/commands/db.rs`: `zeph db migrate` fell back to the raw, unredacted database URL
+  in error messages and the migration-status line whenever `redact_url` returned `None`
+  — which only means the URL didn't match a recognized credential-bearing shape, not that
+  it's credential-free (#6026). All three call sites now fall back to the literal
+  `"[redacted]"` marker, matching the existing safe pattern in
+  `crates/zeph-db/src/pool.rs::connect_postgres`.
+- `src/commands/migrate.rs`: `zeph migrate-config` operated on the raw TOML document and
+  never validated the result against the strict `Config` schema, so an invalid existing
+  value (e.g. an unrecognized `vault.backend`) silently survived migration while real
+  startup (`Config::load`, hardened by #6025) would reject it (#6038). `migrate-config`
+  now attempts to deserialize the migrated document into `Config` and prints a warning
+  with the underlying error if that fails, without turning the migration itself into a
+  hard failure — its job remains adding missing keys, not fixing preexisting invalid
+  values.
+- `src/cli.rs`/`src/runner.rs`: `--tui` silently fell through to plain CLI mode with zero
+  diagnostic when the binary was compiled without the `tui` feature, since `Cli::tui` was
+  never feature-gated but every consumer of it was (#6016). Added
+  `warn_if_tui_requested_but_unavailable`, mirroring the existing
+  `warn_if_acp_enabled_but_unavailable` precedent but returning a hard error instead of a
+  warning, since silently falling back to a different mode than requested is a materially
+  different UX.
+
 ### Testing
 
 - `zeph-llm`: reduced the discoverability of bypassing the Claude no-prefill funnel introduced

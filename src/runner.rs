@@ -531,6 +531,26 @@ fn warn_if_acp_enabled_but_unavailable(config: &Config) {
     }
 }
 
+/// Reject `--tui` outright when the binary was not compiled with the `tui` feature.
+///
+/// Unlike ACP autostart (which falls back to a different but still functional mode),
+/// silently falling through to plain CLI mode is a materially different UX than the
+/// user asked for, so this is a hard error rather than a warning.
+///
+/// # Errors
+///
+/// Returns an error if `--tui` was passed but this binary lacks the `tui` feature.
+#[cfg(not(feature = "tui"))]
+fn warn_if_tui_requested_but_unavailable(cli: &Cli) -> anyhow::Result<()> {
+    if cli.tui {
+        anyhow::bail!(
+            "--tui was requested but this binary was not compiled with the `tui` feature; \
+             rebuild with --features tui (or a bundle like 'desktop'/'full') to use the TUI dashboard."
+        );
+    }
+    Ok(())
+}
+
 /// Resolve the API key for the STT provider entry.
 ///
 /// `OpenAI` and Candle use the `OpenAI` key; Compatible providers use their own inline key or the
@@ -1205,6 +1225,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
 
     #[cfg(not(feature = "acp"))]
     warn_if_acp_enabled_but_unavailable(app.config());
+
+    #[cfg(not(feature = "tui"))]
+    warn_if_tui_requested_but_unavailable(&cli)?;
 
     #[cfg(feature = "scheduler")]
     {
@@ -4506,6 +4529,28 @@ mod deep_link_tests {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    // --- warn_if_tui_requested_but_unavailable ---
+
+    #[test]
+    #[cfg(not(feature = "tui"))]
+    fn tui_requested_without_feature_is_rejected() {
+        let cli = Cli {
+            tui: true,
+            ..Default::default()
+        };
+        let err = warn_if_tui_requested_but_unavailable(&cli)
+            .expect_err("--tui without the tui feature must be a hard error");
+        assert!(err.to_string().contains("--tui"));
+        assert!(err.to_string().contains("tui"));
+    }
+
+    #[test]
+    #[cfg(not(feature = "tui"))]
+    fn tui_not_requested_is_ok() {
+        let cli = Cli::default();
+        assert!(warn_if_tui_requested_but_unavailable(&cli).is_ok());
+    }
 
     // --- parse_plugin_url_arg ---
 
