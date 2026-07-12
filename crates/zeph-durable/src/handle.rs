@@ -453,12 +453,18 @@ impl DurableContext {
     /// Assign the next step id, rejecting it if it exceeds the per-execution step cap.
     fn checked_step_id(&self) -> Result<StepId, DurableError> {
         let step_id = self.assign_step_id();
+        self.enforce_step_cap(step_id)?;
+        Ok(step_id)
+    }
+
+    /// Reject `step_id` if it exceeds the per-execution step cap (`0` means uncapped).
+    fn enforce_step_cap(&self, step_id: StepId) -> Result<(), DurableError> {
         if self.max_steps_per_execution != 0 && step_id.value() >= self.max_steps_per_execution {
             return Err(DurableError::StepCapExceeded {
                 cap: self.max_steps_per_execution,
             });
         }
-        Ok(step_id)
+        Ok(())
     }
 
     /// Fold a checkpoint on a background task the first time a step crosses the soft cap.
@@ -514,11 +520,7 @@ impl DurableContext {
         F: FnOnce(StepHandle) -> Fut + Send,
         Fut: Future<Output = Result<T, StepError>> + Send,
     {
-        if self.max_steps_per_execution != 0 && step_id.value() >= self.max_steps_per_execution {
-            return Err(DurableError::StepCapExceeded {
-                cap: self.max_steps_per_execution,
-            });
-        }
+        self.enforce_step_cap(step_id)?;
         // Soft cap (90%): fold a checkpoint on a background task, once per execution.
         self.maybe_checkpoint(step_id);
         let effect = desc.effect();
@@ -1553,6 +1555,40 @@ mod tests {
             )
             .await
             .unwrap_err();
+        assert_matches!(err, DurableError::StepCapExceeded { cap: 1 });
+        drop(ctx);
+        drop(handle);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn step_cap_is_enforced_via_checked_step_id() {
+        // `promise`/`timer` route through `checked_step_id` rather than `run_step_at`; assert both
+        // call sites share the same enforcement after the dedup refactor (#6082).
+        let exec = ExecutionId::new();
+        let local = Arc::new(LocalBackend::open(":memory:", 1_048_576).await.unwrap());
+        local.init().await.unwrap();
+        local
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        let (writer, handle) = JournalWriter::new(local.clone(), &fast_config());
+        let task = tokio::spawn(writer.run());
+        let backend = Arc::new(DurableBackendEnum::Local(local.clone()));
+        let ctx = DurableContext::new(
+            exec,
+            ExecutionKind::AgentTurn,
+            false,
+            backend,
+            handle.clone(),
+            &DurableConfig {
+                max_steps_per_execution: 1,
+                ..fast_config()
+            },
+        );
+        // Step id 0 is allowed; step id 1 exceeds the cap of 1.
+        ctx.promise::<u32>().await.unwrap();
+        let err = ctx.promise::<u32>().await.unwrap_err();
         assert_matches!(err, DurableError::StepCapExceeded { cap: 1 });
         drop(ctx);
         drop(handle);

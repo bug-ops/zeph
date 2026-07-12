@@ -105,6 +105,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`zeph_llm::ClassifierMetrics`) is never imported unqualified in this module, breaking the
   `rustdoc::broken_intra_doc_links` gate (#6177). Changed the link to the fully-qualified path
   `[`ClassifierMetrics`](zeph_llm::ClassifierMetrics)`.
+- `crates/zeph-durable/src/handle.rs`: `DurableContext::checked_step_id` and `run_step_at`
+  repeated the identical per-execution step-cap condition verbatim. Extracted into a single
+  `enforce_step_cap` helper called from both sites (#6082). Pure refactor, no behavior change.
 
 ### Testing
 
