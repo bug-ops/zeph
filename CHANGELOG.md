@@ -174,6 +174,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **DRY**: consolidated the four near-identical memory-maintenance-loop spawn blocks in
+  `src/runner.rs` (CLI/TUI, previously inline), `src/acp.rs` (`build_acp_deps`, previously
+  inline), `src/daemon.rs` (`run_daemon`, previously inline), and `src/serve/deps.rs`
+  (`spawn_memory_maintenance_loops`) into a single shared
+  `agent_setup::spawn_memory_maintenance_loops`, now called by all four entry points (#6180).
+  The function takes `status_tx: Option<&UnboundedSender<String>>` to unify the ACP/`/sessions*`
+  (`None`) vs. CLI/TUI/daemon (`Some`) difference in the hebbian-consolidation loop's status
+  sender, and a `skip_eviction: bool` preserving `runner.rs`'s pre-existing `--bare` gate, which
+  only ever applied to the eviction loop. The `acp.rs`/`daemon.rs` unit tests previously
+  reconstructed a hand-written copy of the production spawn block (unlike `serve/deps.rs`'s
+  test, which already called the real function); both now call the shared production function
+  directly via `AppBuilder::for_test`, closing a test-realism gap left by #6170. No behavior
+  change for any entry point.
+
 - **DRY**: extracted the `zeph worktree clean` reconcile → remove → prune pipeline and its
   removed/skipped/errored counting into a single `WorktreeManager::clean` method plus a
   `format_clean_summary` free function (`zeph-worktree`), now shared by both the CLI
