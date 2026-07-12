@@ -302,6 +302,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `zeph-durable`, `zeph-orchestration`, `zeph-index`, `src/bootstrap/mod.rs`,
   `src/commands/db.rs`) are updated; `max_connections` was never exposed as a user-facing
   `config.toml` key, so no config migration step is needed.
+- `refactor(common)`: deduplicated the near-identical `Arc<str>`-backed newtype boilerplate in
+  `ToolName`, `ProviderName`, and `SkillName` (`crates/zeph-common/src/types.rs`) — each
+  independently reimplemented the same ~115-line block (`Default`, `Display`, `AsRef<str>`,
+  `Borrow<str>`, `From<&str>`, `From<String>`, `FromStr`, and 5 hand-written `PartialEq`
+  directions) — behind a private `macro_rules! arc_str_newtype!`, parameterized per type via
+  captured doc-comment attributes so each type keeps its own tailored rustdoc and doctests
+  (#5927). `ProviderName`'s `is_empty`/`as_non_empty` empty-sentinel helpers stay in a separate
+  hand-written `impl` block, unchanged. Pure refactor, no behavior change.
 
 ### Fixed
 

@@ -18,49 +18,158 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-/// Strongly-typed tool name label.
+/// Generates an `Arc<str>`-backed newtype with the shared trait surface used by
+/// `ToolName`, `ProviderName`, and `SkillName`: `Default`, `Display`, `AsRef<str>`,
+/// `Borrow<str>`, `From<&str>`, `From<String>`, `FromStr`, and both directions of
+/// `PartialEq` against `str`/`&str`/`String`, plus `new`/`as_str` constructors.
 ///
-/// `ToolName` identifies a tool by its canonical name (e.g., `"shell"`, `"web_scrape"`).
-/// It is produced by the LLM in JSON tool-use responses and matched against the registered
-/// tool registry at dispatch time.
-///
-/// # Label semantics (not a validated reference)
-///
-/// `ToolName` is an unvalidated label from untrusted input (LLM JSON). It does **not**
-/// guarantee that a tool with this name is registered. Validation happens downstream at
-/// tool dispatch, not at construction.
-///
-/// # Inner type: `Arc<str>`
-///
-/// The inner type is `Arc<str>`, not `String`. Tool names are cloned into multiple contexts
-/// (event channels, tracing spans, tool output structs) during a single tool execution.
-/// `Arc<str>` makes all clones O(1) vs O(n) for `String`. Use `.clone()` to duplicate
-/// a `ToolName` — it is cheap.
-///
-/// # No `Deref<Target=str>`
-///
-/// `ToolName` does **not** implement `Deref<Target=str>`. This prevents the `.to_owned()`
-/// footgun where muscle memory returns `String` instead of `ToolName`. Use `.as_str()` for
-/// explicit string conversion and `.clone()` to duplicate the `ToolName`.
-///
-/// # Examples
-///
-/// ```
-/// use zeph_common::ToolName;
-///
-/// let name = ToolName::new("shell");
-/// assert_eq!(name.as_str(), "shell");
-/// assert_eq!(name, "shell");
-///
-/// // Clone is O(1) — Arc reference count increment only.
-/// let name2 = name.clone();
-/// assert_eq!(name, name2);
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ToolName(Arc<str>);
+/// `Borrow<str>` and `derive(Hash)` are kept consistent so instances can be used as
+/// `HashMap` keys and looked up by `&str` without allocating.
+macro_rules! arc_str_newtype {
+    (
+        $(#[$struct_doc:meta])*
+        struct $name:ident;
+        new_doc: $(#[$new_doc:meta])*
+        as_str_doc: $(#[$as_str_doc:meta])*
+        default_doc: $(#[$default_doc:meta])*
+    ) => {
+        $(#[$struct_doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(Arc<str>);
 
-impl ToolName {
+        impl $name {
+            $(#[$new_doc])*
+            #[must_use]
+            pub fn new(s: impl Into<Arc<str>>) -> Self {
+                Self(s.into())
+            }
+
+            $(#[$as_str_doc])*
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl Default for $name {
+            $(#[$default_doc])*
+            fn default() -> Self {
+                Self(Arc::from(""))
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl Borrow<str> for $name {
+            fn borrow(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl From<&str> for $name {
+            fn from(s: &str) -> Self {
+                Self(Arc::from(s))
+            }
+        }
+
+        impl From<String> for $name {
+            fn from(s: String) -> Self {
+                Self(Arc::from(s.as_str()))
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = std::convert::Infallible;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Ok(Self::from(s))
+            }
+        }
+
+        impl PartialEq<str> for $name {
+            fn eq(&self, other: &str) -> bool {
+                self.0.as_ref() == other
+            }
+        }
+
+        impl PartialEq<&str> for $name {
+            fn eq(&self, other: &&str) -> bool {
+                self.0.as_ref() == *other
+            }
+        }
+
+        impl PartialEq<String> for $name {
+            fn eq(&self, other: &String) -> bool {
+                self.0.as_ref() == other.as_str()
+            }
+        }
+
+        impl PartialEq<$name> for str {
+            fn eq(&self, other: &$name) -> bool {
+                self == other.0.as_ref()
+            }
+        }
+
+        impl PartialEq<$name> for String {
+            fn eq(&self, other: &$name) -> bool {
+                self.as_str() == other.0.as_ref()
+            }
+        }
+    };
+}
+
+arc_str_newtype!(
+    /// Strongly-typed tool name label.
+    ///
+    /// `ToolName` identifies a tool by its canonical name (e.g., `"shell"`, `"web_scrape"`).
+    /// It is produced by the LLM in JSON tool-use responses and matched against the registered
+    /// tool registry at dispatch time.
+    ///
+    /// # Label semantics (not a validated reference)
+    ///
+    /// `ToolName` is an unvalidated label from untrusted input (LLM JSON). It does **not**
+    /// guarantee that a tool with this name is registered. Validation happens downstream at
+    /// tool dispatch, not at construction.
+    ///
+    /// # Inner type: `Arc<str>`
+    ///
+    /// The inner type is `Arc<str>`, not `String`. Tool names are cloned into multiple contexts
+    /// (event channels, tracing spans, tool output structs) during a single tool execution.
+    /// `Arc<str>` makes all clones O(1) vs O(n) for `String`. Use `.clone()` to duplicate
+    /// a `ToolName` — it is cheap.
+    ///
+    /// # No `Deref<Target=str>`
+    ///
+    /// `ToolName` does **not** implement `Deref<Target=str>`. This prevents the `.to_owned()`
+    /// footgun where muscle memory returns `String` instead of `ToolName`. Use `.as_str()` for
+    /// explicit string conversion and `.clone()` to duplicate the `ToolName`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::ToolName;
+    ///
+    /// let name = ToolName::new("shell");
+    /// assert_eq!(name.as_str(), "shell");
+    /// assert_eq!(name, "shell");
+    ///
+    /// // Clone is O(1) — Arc reference count increment only.
+    /// let name2 = name.clone();
+    /// assert_eq!(name, name2);
+    /// ```
+    struct ToolName;
+    new_doc:
     /// Construct a `ToolName` from any value convertible to `Arc<str>`.
     ///
     /// This is the primary constructor. The name is accepted without validation — it is a
@@ -74,11 +183,7 @@ impl ToolName {
     /// let name = ToolName::new("shell");
     /// assert_eq!(name.as_str(), "shell");
     /// ```
-    #[must_use]
-    pub fn new(s: impl Into<Arc<str>>) -> Self {
-        Self(s.into())
-    }
-
+    as_str_doc:
     /// Return the inner string slice.
     ///
     /// Prefer this over `Deref` (which is intentionally not implemented) when an `&str`
@@ -92,126 +197,47 @@ impl ToolName {
     /// let name = ToolName::new("web_scrape");
     /// assert_eq!(name.as_str(), "web_scrape");
     /// ```
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Default for ToolName {
+    default_doc:
     /// Returns an empty `ToolName`.
     ///
     /// This implementation exists solely for `#[serde(default)]` on optional fields.
     /// Do not construct a `ToolName` with an empty string in application code.
-    fn default() -> Self {
-        Self(Arc::from(""))
-    }
-}
-
-impl fmt::Display for ToolName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl AsRef<str> for ToolName {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Borrow<str> for ToolName {
-    fn borrow(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<&str> for ToolName {
-    fn from(s: &str) -> Self {
-        Self(Arc::from(s))
-    }
-}
-
-impl From<String> for ToolName {
-    fn from(s: String) -> Self {
-        Self(Arc::from(s.as_str()))
-    }
-}
-
-impl FromStr for ToolName {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::from(s))
-    }
-}
-
-impl PartialEq<str> for ToolName {
-    fn eq(&self, other: &str) -> bool {
-        self.0.as_ref() == other
-    }
-}
-
-impl PartialEq<&str> for ToolName {
-    fn eq(&self, other: &&str) -> bool {
-        self.0.as_ref() == *other
-    }
-}
-
-impl PartialEq<String> for ToolName {
-    fn eq(&self, other: &String) -> bool {
-        self.0.as_ref() == other.as_str()
-    }
-}
-
-impl PartialEq<ToolName> for str {
-    fn eq(&self, other: &ToolName) -> bool {
-        self == other.0.as_ref()
-    }
-}
-
-impl PartialEq<ToolName> for String {
-    fn eq(&self, other: &ToolName) -> bool {
-        self.as_str() == other.0.as_ref()
-    }
-}
+);
 
 // ── ProviderName ─────────────────────────────────────────────────────────────
 
-/// Strongly-typed LLM provider name.
-///
-/// `ProviderName` identifies a configured provider by its name field (e.g., `"fast"`,
-/// `"quality"`, `"ollama-local"`). Names come from `[[llm.providers]] name = "…"` in the
-/// TOML config; subsystems reference providers by this name via `*_provider` fields.
-///
-/// # Inner type: `Arc<str>`
-///
-/// The inner type is `Arc<str>`. Provider names are cloned widely across subsystem config
-/// structs, metric labels, and log spans. `Arc<str>` makes all clones O(1).
-///
-/// # No `Deref<Target=str>`
-///
-/// `ProviderName` does **not** implement `Deref<Target=str>`. Use `.as_str()` for explicit
-/// string conversion and `.clone()` to duplicate.
-///
-/// # Examples
-///
-/// ```
-/// use zeph_common::ProviderName;
-///
-/// let name = ProviderName::new("fast");
-/// assert_eq!(name.as_str(), "fast");
-/// assert_eq!(name, "fast");
-///
-/// // Clone is O(1) — Arc reference count increment only.
-/// let name2 = name.clone();
-/// assert_eq!(name, name2);
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ProviderName(Arc<str>);
-
-impl ProviderName {
+arc_str_newtype!(
+    /// Strongly-typed LLM provider name.
+    ///
+    /// `ProviderName` identifies a configured provider by its name field (e.g., `"fast"`,
+    /// `"quality"`, `"ollama-local"`). Names come from `[[llm.providers]] name = "…"` in the
+    /// TOML config; subsystems reference providers by this name via `*_provider` fields.
+    ///
+    /// # Inner type: `Arc<str>`
+    ///
+    /// The inner type is `Arc<str>`. Provider names are cloned widely across subsystem config
+    /// structs, metric labels, and log spans. `Arc<str>` makes all clones O(1).
+    ///
+    /// # No `Deref<Target=str>`
+    ///
+    /// `ProviderName` does **not** implement `Deref<Target=str>`. Use `.as_str()` for explicit
+    /// string conversion and `.clone()` to duplicate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::ProviderName;
+    ///
+    /// let name = ProviderName::new("fast");
+    /// assert_eq!(name.as_str(), "fast");
+    /// assert_eq!(name, "fast");
+    ///
+    /// // Clone is O(1) — Arc reference count increment only.
+    /// let name2 = name.clone();
+    /// assert_eq!(name, name2);
+    /// ```
+    struct ProviderName;
+    new_doc:
     /// Construct a `ProviderName` from any value convertible to `Arc<str>`.
     ///
     /// # Examples
@@ -222,11 +248,7 @@ impl ProviderName {
     /// let name = ProviderName::new("quality");
     /// assert_eq!(name.as_str(), "quality");
     /// ```
-    #[must_use]
-    pub fn new(s: impl Into<Arc<str>>) -> Self {
-        Self(s.into())
-    }
-
+    as_str_doc:
     /// Return the inner string slice.
     ///
     /// # Examples
@@ -237,11 +259,14 @@ impl ProviderName {
     /// let name = ProviderName::new("ollama-local");
     /// assert_eq!(name.as_str(), "ollama-local");
     /// ```
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+    default_doc:
+    /// Returns an empty `ProviderName`.
+    ///
+    /// Exists solely for `#[serde(default)]` on optional fields. Do not use in
+    /// application code — an empty name will fail provider lookup.
+);
 
+impl ProviderName {
     /// Return `true` when this is the empty sentinel (use the primary provider).
     ///
     /// # Examples
@@ -277,121 +302,41 @@ impl ProviderName {
     }
 }
 
-impl Default for ProviderName {
-    /// Returns an empty `ProviderName`.
-    ///
-    /// Exists solely for `#[serde(default)]` on optional fields. Do not use in
-    /// application code — an empty name will fail provider lookup.
-    fn default() -> Self {
-        Self(Arc::from(""))
-    }
-}
-
-impl fmt::Display for ProviderName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl AsRef<str> for ProviderName {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Borrow<str> for ProviderName {
-    fn borrow(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<&str> for ProviderName {
-    fn from(s: &str) -> Self {
-        Self(Arc::from(s))
-    }
-}
-
-impl From<String> for ProviderName {
-    fn from(s: String) -> Self {
-        Self(Arc::from(s.as_str()))
-    }
-}
-
-impl FromStr for ProviderName {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::from(s))
-    }
-}
-
-impl PartialEq<str> for ProviderName {
-    fn eq(&self, other: &str) -> bool {
-        self.0.as_ref() == other
-    }
-}
-
-impl PartialEq<&str> for ProviderName {
-    fn eq(&self, other: &&str) -> bool {
-        self.0.as_ref() == *other
-    }
-}
-
-impl PartialEq<String> for ProviderName {
-    fn eq(&self, other: &String) -> bool {
-        self.0.as_ref() == other.as_str()
-    }
-}
-
-impl PartialEq<ProviderName> for str {
-    fn eq(&self, other: &ProviderName) -> bool {
-        self == other.0.as_ref()
-    }
-}
-
-impl PartialEq<ProviderName> for String {
-    fn eq(&self, other: &ProviderName) -> bool {
-        self.as_str() == other.0.as_ref()
-    }
-}
-
 // ── SkillName ────────────────────────────────────────────────────────────────
 
-/// Strongly-typed skill name identifier.
-///
-/// `SkillName` identifies a skill by its canonical name (e.g., `"rust-agents"`,
-/// `"readme-generator"`). Names come from `SKILL.md` frontmatter `name:` fields and
-/// are used at match time, invocation routing, and telemetry.
-///
-/// # Inner type: `Arc<str>`
-///
-/// The inner type is `Arc<str>`. Skill names are referenced from multiple subsystems
-/// (registry, matcher, invoker, TUI) during a single agent turn. `Arc<str>` makes all
-/// clones O(1).
-///
-/// # No `Deref<Target=str>`
-///
-/// `SkillName` does **not** implement `Deref<Target=str>`. Use `.as_str()` for explicit
-/// string conversion and `.clone()` to duplicate.
-///
-/// # Examples
-///
-/// ```
-/// use zeph_common::SkillName;
-///
-/// let name = SkillName::new("rust-agents");
-/// assert_eq!(name.as_str(), "rust-agents");
-/// assert_eq!(name, "rust-agents");
-///
-/// // Clone is O(1) — Arc reference count increment only.
-/// let name2 = name.clone();
-/// assert_eq!(name, name2);
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SkillName(Arc<str>);
-
-impl SkillName {
+arc_str_newtype!(
+    /// Strongly-typed skill name identifier.
+    ///
+    /// `SkillName` identifies a skill by its canonical name (e.g., `"rust-agents"`,
+    /// `"readme-generator"`). Names come from `SKILL.md` frontmatter `name:` fields and
+    /// are used at match time, invocation routing, and telemetry.
+    ///
+    /// # Inner type: `Arc<str>`
+    ///
+    /// The inner type is `Arc<str>`. Skill names are referenced from multiple subsystems
+    /// (registry, matcher, invoker, TUI) during a single agent turn. `Arc<str>` makes all
+    /// clones O(1).
+    ///
+    /// # No `Deref<Target=str>`
+    ///
+    /// `SkillName` does **not** implement `Deref<Target=str>`. Use `.as_str()` for explicit
+    /// string conversion and `.clone()` to duplicate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::SkillName;
+    ///
+    /// let name = SkillName::new("rust-agents");
+    /// assert_eq!(name.as_str(), "rust-agents");
+    /// assert_eq!(name, "rust-agents");
+    ///
+    /// // Clone is O(1) — Arc reference count increment only.
+    /// let name2 = name.clone();
+    /// assert_eq!(name, name2);
+    /// ```
+    struct SkillName;
+    new_doc:
     /// Construct a `SkillName` from any value convertible to `Arc<str>`.
     ///
     /// # Examples
@@ -402,11 +347,7 @@ impl SkillName {
     /// let name = SkillName::new("readme-generator");
     /// assert_eq!(name.as_str(), "readme-generator");
     /// ```
-    #[must_use]
-    pub fn new(s: impl Into<Arc<str>>) -> Self {
-        Self(s.into())
-    }
-
+    as_str_doc:
     /// Return the inner string slice.
     ///
     /// # Examples
@@ -417,89 +358,12 @@ impl SkillName {
     /// let name = SkillName::new("rust-agents");
     /// assert_eq!(name.as_str(), "rust-agents");
     /// ```
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Default for SkillName {
+    default_doc:
     /// Returns an empty `SkillName`.
     ///
     /// Exists solely for `#[serde(default)]` on optional fields. Do not use in
     /// application code — an empty name will fail skill lookup.
-    fn default() -> Self {
-        Self(Arc::from(""))
-    }
-}
-
-impl fmt::Display for SkillName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl AsRef<str> for SkillName {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Borrow<str> for SkillName {
-    fn borrow(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<&str> for SkillName {
-    fn from(s: &str) -> Self {
-        Self(Arc::from(s))
-    }
-}
-
-impl From<String> for SkillName {
-    fn from(s: String) -> Self {
-        Self(Arc::from(s.as_str()))
-    }
-}
-
-impl FromStr for SkillName {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::from(s))
-    }
-}
-
-impl PartialEq<str> for SkillName {
-    fn eq(&self, other: &str) -> bool {
-        self.0.as_ref() == other
-    }
-}
-
-impl PartialEq<&str> for SkillName {
-    fn eq(&self, other: &&str) -> bool {
-        self.0.as_ref() == *other
-    }
-}
-
-impl PartialEq<String> for SkillName {
-    fn eq(&self, other: &String) -> bool {
-        self.0.as_ref() == other.as_str()
-    }
-}
-
-impl PartialEq<SkillName> for str {
-    fn eq(&self, other: &SkillName) -> bool {
-        self == other.0.as_ref()
-    }
-}
-
-impl PartialEq<SkillName> for String {
-    fn eq(&self, other: &SkillName) -> bool {
-        self.as_str() == other.0.as_ref()
-    }
-}
+);
 
 // ── SessionId ────────────────────────────────────────────────────────────────
 
@@ -757,7 +621,15 @@ mod tests {
         assert_eq!(name.as_str(), "shell");
         assert_eq!(name, "shell");
         assert_eq!(name, "shell".to_owned());
-        assert_eq!(name, "shell"); // symmetric check via PartialEq<str>
+        // Reverse direction: PartialEq<ToolName> for str/String
+        assert_eq!(*"shell", name);
+        assert_eq!("shell".to_owned(), name);
+    }
+
+    #[test]
+    fn tool_name_default_is_empty() {
+        let name = ToolName::default();
+        assert_eq!(name.as_str(), "");
     }
 
     #[test]
@@ -858,6 +730,9 @@ mod tests {
         assert_eq!(name.as_str(), "fast");
         assert_eq!(name, "fast");
         assert_eq!(name, "fast".to_owned());
+        // Reverse direction: PartialEq<ProviderName> for str/String
+        assert_eq!(*"fast", name);
+        assert_eq!("fast".to_owned(), name);
     }
 
     #[test]
@@ -906,6 +781,15 @@ mod tests {
         assert_eq!(name.as_str(), "rust-agents");
         assert_eq!(name, "rust-agents");
         assert_eq!(name, "rust-agents".to_owned());
+        // Reverse direction: PartialEq<SkillName> for str/String
+        assert_eq!(*"rust-agents", name);
+        assert_eq!("rust-agents".to_owned(), name);
+    }
+
+    #[test]
+    fn skill_name_default_is_empty() {
+        let name = SkillName::default();
+        assert_eq!(name.as_str(), "");
     }
 
     #[test]
