@@ -108,6 +108,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--force` reaching `WorktreeManager` with correct semantics). Previously only the
   disabled-subsystem `None` short-circuit had coverage, via `zeph-commands`'
   `NullAgent`-backed tests (#6142).
+- `tests/workspace_lints.rs`: added a guard test asserting
+  `workspace.lints.rust.linker_messages` stays `"allow"` in root `Cargo.toml`, closing a CI
+  blind spot where an accidental removal would only surface on a manual `ci-non-linux.yml`
+  macOS/arm64 run or the next tagged release build, not on any automated per-PR check (#5961).
 
 ### Changed
 

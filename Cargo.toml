@@ -203,6 +203,11 @@ unsafe_code = "deny"
 # scoped to it. Accepted tradeoff: linker *errors* still fail the build; only
 # non-fatal linker diagnostics are suppressed. All other rustc/clippy/rustdoc
 # warnings remain denied. See #5895.
+# `tests/workspace_lints.rs` guards this line's presence/value on every PR via
+# Linux CI (ci.yml) — it only verifies the config value, not actual linker
+# behavior. Verifying the real linker behavior on macOS/arm64 still requires
+# either a manual `ci-non-linux.yml` workflow_dispatch run or the next tagged
+# `release.yml` build. See #5961.
 linker_messages = "allow"
 
 [workspace.lints.clippy]
