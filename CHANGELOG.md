@@ -74,6 +74,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   over the 16384-byte threshold) that only triggered on macOS/aarch64 due to platform-specific
   stack layout differences (#6163). Same fix pattern as #3521: move the large future onto the
   heap rather than tuning its size. No behavior change.
+- `src/acp.rs`, `src/serve/agent_factory.rs`, `src/serve/test_support.rs`: boxed 3 new
+  `build_combined_deps(...).await` call sites with `Box::pin(...)` that #6169 added unboxed,
+  reintroducing `clippy::large_futures` after #6168 had already closed the same lint class
+  (#6175). Same fix pattern as #6168/#3521. No behavior change.
 
 ### Testing
 
