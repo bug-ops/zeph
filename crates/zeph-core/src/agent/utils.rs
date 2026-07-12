@@ -162,8 +162,15 @@ impl<C: Channel> Agent<C> {
     ///
     /// Call once per turn after all four phases have written to `pending_timings`.
     /// Resets `pending_timings` to default after flushing.
+    ///
+    /// When the `profiling` feature is compiled in, per-field values that `MetricsBridge`
+    /// marked as freshly written this turn (`MetricsSnapshot::bridge_timings_written`) take
+    /// precedence over the manual value computed here; unmarked fields keep the manual value.
+    /// This avoids unconditionally clobbering the bridge's span-derived timings every turn
+    /// (#5946) while still working correctly for fields the bridge does not (yet) populate.
     pub(super) fn flush_turn_timings(&mut self) {
-        let timings = std::mem::take(&mut self.runtime.metrics.pending_timings);
+        #[cfg_attr(not(feature = "profiling"), allow(unused_mut))]
+        let mut timings = std::mem::take(&mut self.runtime.metrics.pending_timings);
         tracing::debug!(
             prepare_context_ms = timings.prepare_context_ms,
             llm_chat_ms = timings.llm_chat_ms,
@@ -171,6 +178,30 @@ impl<C: Channel> Agent<C> {
             persist_message_ms = timings.persist_message_ms,
             "turn timings"
         );
+
+        // #5946 (critic finding S2): read the bridge's per-field "written this turn" mask,
+        // reconcile it into `timings`, AND clear the mask — all inside this one `send_modify`
+        // closure (via `update_metrics`), so the whole read-then-clear is atomic. A previous
+        // version read the mask via a separate `borrow()` and cleared it in a later, independent
+        // `update_metrics` call; a `MetricsBridge::on_close` write landing in the gap between
+        // those two steps would have had its bit and value silently discarded.
+        #[cfg(feature = "profiling")]
+        self.update_metrics(|m| {
+            let mask = m.bridge_timings_written;
+            if mask & crate::metrics_bridge::TimingField::PrepareContext.bridge_bit() != 0 {
+                timings.prepare_context_ms = m.last_turn_timings.prepare_context_ms;
+            }
+            if mask & crate::metrics_bridge::TimingField::LlmChat.bridge_bit() != 0 {
+                timings.llm_chat_ms = m.last_turn_timings.llm_chat_ms;
+            }
+            if mask & crate::metrics_bridge::TimingField::ToolExec.bridge_bit() != 0 {
+                timings.tool_exec_ms = m.last_turn_timings.tool_exec_ms;
+            }
+            if mask & crate::metrics_bridge::TimingField::PersistMessage.bridge_bit() != 0 {
+                timings.persist_message_ms = m.last_turn_timings.persist_message_ms;
+            }
+            m.bridge_timings_written = 0;
+        });
 
         if self.runtime.metrics.timing_window.len() >= 10 {
             self.runtime.metrics.timing_window.pop_front();
@@ -928,5 +959,37 @@ mod tests {
         assert_eq!(snap.max_turn_timings.llm_chat_ms, 120);
         // avg of 30,40,...,120 = (30+120)*10/2/10 = 75
         assert_eq!(snap.avg_turn_timings.llm_chat_ms, 75);
+    }
+
+    // #5946: fields MetricsBridge marked as written this turn keep the bridge's span-derived
+    // value instead of being clobbered by the manual `Instant::now()` value; unmarked fields
+    // still fall back to manual. The bitmask is cleared (taken) after the flush.
+    #[cfg(feature = "profiling")]
+    #[test]
+    fn flush_turn_timings_prefers_bridge_value_for_marked_fields() {
+        let (mut agent, rx) = agent_with_metrics_watch();
+
+        if let Some(tx) = agent.runtime.metrics.metrics_tx.as_ref() {
+            tx.send_modify(|m| {
+                m.last_turn_timings.llm_chat_ms = 999;
+                m.bridge_timings_written = crate::metrics_bridge::TimingField::LlmChat.bridge_bit();
+            });
+        }
+
+        agent.runtime.metrics.pending_timings = make_timings(10, 200, 50, 5);
+        agent.flush_turn_timings();
+
+        let snap = rx.borrow();
+        assert_eq!(
+            snap.last_turn_timings.llm_chat_ms, 999,
+            "bridge-marked field must keep the bridge value, not the manual one"
+        );
+        assert_eq!(snap.last_turn_timings.prepare_context_ms, 10);
+        assert_eq!(snap.last_turn_timings.tool_exec_ms, 50);
+        assert_eq!(snap.last_turn_timings.persist_message_ms, 5);
+        assert_eq!(
+            snap.bridge_timings_written, 0,
+            "bitmask must be cleared after flush"
+        );
     }
 }

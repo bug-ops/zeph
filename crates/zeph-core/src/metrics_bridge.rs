@@ -5,9 +5,16 @@
 //!
 //! [`MetricsBridge`] implements [`tracing_subscriber::Layer`] and observes
 //! the close event of a fixed set of known spans. When a watched span closes,
-//! the bridge computes the elapsed duration and writes it into the shared
-//! [`MetricsCollector`], replacing manual `Instant::now()` timing in the
-//! agent hot path.
+//! the bridge computes the elapsed duration, writes it into the shared
+//! [`MetricsCollector`], and marks the corresponding bit in
+//! [`crate::metrics::MetricsSnapshot::bridge_timings_written`].
+//!
+//! `Agent::flush_turn_timings` (`agent/utils.rs`) consults that bitmask once per turn: for
+//! each field the bridge marked as written, its span-derived value wins over the manual
+//! `Instant::now()` timing computed on the hot path; fields the bridge did not mark (either
+//! because no span with a matching name closed this turn, or a watched span name does not
+//! yet correspond to any real span) fall back to the manual value (#5946). This makes the
+//! two timing sources coexist per-field rather than one unconditionally clobbering the other.
 //!
 //! This module is compiled only when the `profiling` feature is enabled.
 
@@ -30,12 +37,31 @@ const WATCHED_SPANS: &[(&str, TimingField)] = &[
 ];
 
 /// Identifies which [`crate::metrics::TurnTimings`] field a watched span maps to.
+///
+/// `pub(crate)` so `Agent::flush_turn_timings` (`agent/utils.rs`) can look up
+/// [`Self::bridge_bit`] when deciding whether to keep the bridge's span-derived value or
+/// fall back to manual timing for a given field (#5946).
 #[derive(Clone, Copy)]
-enum TimingField {
+pub(crate) enum TimingField {
     PrepareContext,
     LlmChat,
     ToolExec,
     PersistMessage,
+}
+
+impl TimingField {
+    /// Bit set in [`crate::metrics::MetricsSnapshot::bridge_timings_written`] when this field
+    /// is written by [`MetricsBridge::on_close`]. Consumed by `Agent::flush_turn_timings`
+    /// (`agent/utils.rs`) to decide, per field, whether the bridge's span-derived value should
+    /// win over the manual `Instant::now()` timing for the current turn (#5946).
+    pub(crate) const fn bridge_bit(self) -> u8 {
+        match self {
+            Self::PrepareContext => 1 << 0,
+            Self::LlmChat => 1 << 1,
+            Self::ToolExec => 1 << 2,
+            Self::PersistMessage => 1 << 3,
+        }
+    }
 }
 
 /// Zero-size marker extension inserted in `on_new_span` for watched spans only.
@@ -150,19 +176,22 @@ where
                 let name = span.name();
                 if let Some((_, field)) = WATCHED_SPANS.iter().find(|(n, _)| *n == name) {
                     let field = *field;
-                    self.collector.update(|m| match field {
-                        TimingField::PrepareContext => {
-                            m.last_turn_timings.prepare_context_ms = duration_ms;
+                    self.collector.update(|m| {
+                        match field {
+                            TimingField::PrepareContext => {
+                                m.last_turn_timings.prepare_context_ms = duration_ms;
+                            }
+                            TimingField::LlmChat => {
+                                m.last_turn_timings.llm_chat_ms = duration_ms;
+                            }
+                            TimingField::ToolExec => {
+                                m.last_turn_timings.tool_exec_ms = duration_ms;
+                            }
+                            TimingField::PersistMessage => {
+                                m.last_turn_timings.persist_message_ms = duration_ms;
+                            }
                         }
-                        TimingField::LlmChat => {
-                            m.last_turn_timings.llm_chat_ms = duration_ms;
-                        }
-                        TimingField::ToolExec => {
-                            m.last_turn_timings.tool_exec_ms = duration_ms;
-                        }
-                        TimingField::PersistMessage => {
-                            m.last_turn_timings.persist_message_ms = duration_ms;
-                        }
+                        m.bridge_timings_written |= field.bridge_bit();
                     });
                 }
             }

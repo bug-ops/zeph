@@ -48,6 +48,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     resolved a distinct judge via `build_eval_provider()`, but the scheduler path never did.
     `ExperimentTaskHandler` now resolves `eval_provider` the same way, falling back to the
     primary provider only when unset (#5947).
+- `zeph-core`: `TracingCollector::finish()` wrote `trace.json` via synchronous `std::fs`
+  I/O, reachable from the async agent turn loop (#6107). `write_trace_file` now offloads to
+  `tokio::task::spawn_blocking` when a Tokio runtime is active, falling back to an inline
+  synchronous write when none is present — `finish()` is also reachable from `Drop` (which
+  cannot `.await`) and from plain non-async unit tests, so a fallback was required rather than
+  making the offload unconditional. `finish()` now returns the write's `JoinHandle` so the
+  session-end call site (`agent/mod.rs`, where nothing else will write this session's trace)
+  can await it and guarantee the file lands before the process/runtime tears down, instead of
+  racing it fire-and-forget; the mid-session `/dump-format` switch site and `Drop` keep the
+  fire-and-forget behavior, mirroring `DebugDumper::write` from #6101, since a lost dump there
+  doesn't lose the only copy.
+- `zeph-core` (`profiling` feature): `MetricsBridge` derives per-phase turn timings from
+  tracing span durations, but `Agent::flush_turn_timings` unconditionally overwrote
+  `last_turn_timings` with the manually-timed (`Instant::now()`) value every turn, discarding
+  whatever the bridge had just written (#5946). The clobbering itself is now fixed:
+  `MetricsBridge` marks a bitmask (`MetricsSnapshot::bridge_timings_written`) for each field it
+  writes; `flush_turn_timings` reads that mask, reconciles it against the manual value, and
+  clears it, all inside a single `send_modify` closure so a concurrent `MetricsBridge::on_close`
+  write cannot land in the gap between reading and clearing the mask. Fields the bridge did not
+  mark this turn still fall back to the manual value. This is **not** the same as "`MetricsBridge`
+  is now fully functional" — three of the four span names in `WATCHED_SPANS`
+  (`agent.prepare_context`, `agent.tool_loop`, `agent.persist_message`) do not currently match
+  any real span in the codebase, so in practice the bridge only ever populates `llm_chat_ms`;
+  the other three fields continue to come from manual timing exactly as before this fix, just
+  no longer at risk of losing bridge data for fields the bridge was never actually producing.
+  Reconciling those span names, and `persist_message`'s multi-call-per-turn semantics (which
+  don't map 1:1 to the single-span-instance model `MetricsBridge` assumes), is tracked
+  separately in #6111.
 - `zeph-core`: removed two blocking-I/O sites from the async agent turn loop (#6020, #6029).
   - `rebuild_system_prompt` called `project::discover_project_configs`/`load_project_context`
     directly on every turn — a filesystem walk from cwd to the root plus a `read_to_string`

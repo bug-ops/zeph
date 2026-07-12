@@ -460,11 +460,19 @@ impl TracingCollector {
 
     /// Finalize the session span and write `trace.json`.
     ///
-    /// Safe to call multiple times — subsequent calls after the first are no-ops.
-    /// Also sends spans over the `OTel` channel when the `otel` feature is enabled (C-05).
-    pub fn finish(&mut self) {
+    /// Safe to call multiple times — subsequent calls after the first are no-ops (returning
+    /// `None`). Also sends spans over the `OTel` channel when the `otel` feature is enabled
+    /// (C-05).
+    ///
+    /// Returns the `trace.json` write's `JoinHandle` when it was dispatched to the blocking
+    /// pool (a Tokio runtime was active), so a caller for whom this is the *only* remaining
+    /// write of the session — nothing runs after it — can `.await` it to guarantee the file
+    /// actually lands before the process/runtime tears down (#6107). Callers that don't need
+    /// that guarantee (a mid-session format switch, or `Drop`, which cannot `.await` anyway)
+    /// are free to drop the handle and keep the write fire-and-forget.
+    pub fn finish(&mut self) -> Option<tokio::task::JoinHandle<()>> {
         if self.flushed {
-            return;
+            return None;
         }
         self.flushed = true;
 
@@ -508,11 +516,7 @@ impl TracingCollector {
 
         let json = serialize_otlp_json(&all_spans, &self.service_name, &self.trace_metadata);
         let path = self.output_dir.join("trace.json");
-        if let Err(e) = write_trace_file(&path, json.as_bytes()) {
-            tracing::warn!(path = %path.display(), error = %e, "trace.json write failed");
-        } else {
-            tracing::info!(path = %path.display(), "OTel trace written");
-        }
+        let handle = write_trace_file(&path, json.as_bytes());
 
         // C-05: forward spans to OTLP exporter when the root crate has wired the channel.
         if let Some(ref tx) = self.trace_tx {
@@ -524,13 +528,18 @@ impl TracingCollector {
                 tracing::debug!("OTLP trace channel closed, skipping export");
             }
         }
+
+        handle
     }
 }
 
-// C-04: Drop flushes partial traces on error/panic/cancellation.
+// C-04: Drop flushes partial traces on error/panic/cancellation. Fire-and-forget: `Drop::drop`
+// cannot `.await` the returned handle, but this is a best-effort partial-trace capture (the
+// normal-exit path calls `finish()` explicitly and awaits it — see `agent/mod.rs`), not the
+// session's only copy of the trace.
 impl Drop for TracingCollector {
     fn drop(&mut self) {
-        self.finish();
+        let _ = self.finish();
     }
 }
 
@@ -630,24 +639,31 @@ pub fn serialize_otlp_json<S: std::hash::BuildHasher>(
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Write `data` to `path` with mode 0o600 on Unix (SEC-01).
-/// Falls back to `std::fs::write` on non-Unix platforms.
-fn write_trace_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        f.write_all(data)
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, data)
+/// Write `data` to `path` with mode 0o600 on Unix (SEC-01) via `zeph_common::fs_secure`.
+///
+/// Offloaded to the blocking thread pool when a Tokio runtime is available — `finish()` is
+/// reachable from the async agent hot path (#6107) and must never block it on synchronous
+/// file I/O — returning the `JoinHandle` so a caller for whom this write is session-critical
+/// (nothing else will write this session's trace) can await completion instead of racing
+/// process/runtime teardown. Callers that don't need that guarantee may drop the handle,
+/// mirroring the fire-and-forget `DebugDumper::write` pattern from #6101.
+///
+/// Falls back to an inline synchronous write (returning `None`) when no runtime is present,
+/// since `finish()` is also reachable from `Drop` (which cannot `.await`) and from plain
+/// non-async unit tests; this mirrors the runtime-detection idiom in
+/// `zeph_common::task_supervisor::TaskSupervisor::new`.
+fn write_trace_file(path: &Path, data: &[u8]) -> Option<tokio::task::JoinHandle<()>> {
+    let path = path.to_owned();
+    let data = data.to_vec();
+    let write_and_log = move || match zeph_common::fs_secure::write_private(&path, &data) {
+        Ok(()) => tracing::info!(path = %path.display(), "OTel trace written"),
+        Err(e) => tracing::warn!(path = %path.display(), error = %e, "trace.json write failed"),
+    };
+    if tokio::runtime::Handle::try_current().is_ok() {
+        Some(tokio::task::spawn_blocking(write_and_log))
+    } else {
+        write_and_log();
+        None
     }
 }
 
@@ -864,6 +880,36 @@ mod tests {
         c.finish();
         c.finish();
         assert!(tmp.path().join("trace.json").exists());
+    }
+
+    // #6107: every other test in this module runs as a plain `#[test]` (no Tokio runtime), so
+    // they only ever exercise `write_trace_file`'s synchronous fallback branch — the actual
+    // `spawn_blocking` dispatch added for #6107 was previously untested. This test runs inside
+    // a real runtime so `finish()` takes that branch (asserted via `Some`), then awaits the
+    // returned handle to confirm the write actually completes.
+    #[tokio::test]
+    async fn finish_dispatches_via_spawn_blocking_under_active_runtime() {
+        let tmp = tempdir().unwrap();
+        let mut c = make_collector(tmp.path());
+        c.begin_iteration(0, "hello");
+        c.end_iteration(0, SpanStatus::Ok);
+
+        let handle = c.finish();
+        assert!(
+            handle.is_some(),
+            "finish() must dispatch the write via spawn_blocking (Some) when a Tokio runtime \
+             is active, not silently take the synchronous fallback path (None)"
+        );
+        handle
+            .unwrap()
+            .await
+            .expect("spawn_blocking write task must not panic");
+
+        let path = tmp.path().join("trace.json");
+        assert!(
+            path.exists(),
+            "trace.json must exist once the spawn_blocking handle has been awaited"
+        );
     }
 
     #[test]

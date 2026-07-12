@@ -385,6 +385,16 @@ pub struct MetricsSnapshot {
     pub classifier: ClassifierMetricsSnapshot,
     /// Latency breakdown for the most recently completed agent turn.
     pub last_turn_timings: TurnTimings,
+    /// Bitmask of [`TurnTimings`] fields freshly written into `last_turn_timings` by
+    /// `MetricsBridge`'s span-derived timing since the last `flush_turn_timings` call
+    /// (bit `n` per `metrics_bridge::TimingField` ordinal: `prepare_context`=0, `llm_chat`=1,
+    /// `tool_exec`=2, `persist_message`=3).
+    ///
+    /// `flush_turn_timings` consults this per-field so it only falls back to the manual
+    /// `Instant::now()` timing for fields the bridge did not populate this turn, instead of
+    /// unconditionally clobbering every field (#5946). Cleared (taken) on every flush. Only
+    /// ever set when the `profiling` feature is compiled in.
+    pub bridge_timings_written: u8,
     /// Rolling average of per-phase latency over the last 10 turns.
     pub avg_turn_timings: TurnTimings,
     /// Maximum per-phase latency observed within the rolling window (tail-latency visibility).

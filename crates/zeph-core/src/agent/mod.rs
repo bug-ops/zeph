@@ -721,9 +721,16 @@ impl<C: Channel> Agent<C> {
         // AutoSkill A1: extract skill candidates from the completed session trace (spec 056).
         self.maybe_extract_skills_from_trace().await;
 
-        // Flush trace collector on normal exit (C-04: Drop handles error/panic paths).
-        if let Some(ref mut tc) = self.runtime.debug.trace_collector {
-            tc.finish();
+        // Flush trace collector on normal exit (C-04: Drop handles error/panic paths). This is
+        // the last write of the session's trace.json — nothing runs after it, so unlike the
+        // mid-session format-switch site (`state/mod.rs`) there's no latency benefit to firing
+        // it and forgetting; await the handle so the write is guaranteed to land instead of
+        // racing process/runtime teardown (#6107 critic finding S1).
+        if let Some(ref mut tc) = self.runtime.debug.trace_collector
+            && let Some(handle) = tc.finish()
+            && let Err(e) = handle.await
+        {
+            tracing::warn!(error = %e, "trace.json write task did not complete");
         }
 
         Ok(())

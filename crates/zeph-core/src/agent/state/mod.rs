@@ -1083,7 +1083,10 @@ impl DebugState {
             && !now_trace
             && let Some(mut tc) = self.trace_collector.take()
         {
-            tc.finish();
+            // Fire-and-forget: this is a sync fn, and unlike the session-end call site
+            // (`agent/mod.rs`) a subsequent format switch or session activity follows, so
+            // there's a real concurrency benefit to not blocking on this write (#6107 critic S1).
+            let _ = tc.finish();
         }
 
         self.dump_format = new_format;
