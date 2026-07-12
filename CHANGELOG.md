@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Added
 
+- **Security**: added `.gitleaks.toml` allowlisting the 31 known-benign gitleaks
+  findings from a full git-history scan — all fake/example secrets in test
+  fixtures, doctests, and documentation (`secret_mask.rs`, `redact.rs`,
+  `tool_execution.rs`/tests, `notifications.rs`, `secrets.rs`, `doctor.rs`,
+  `compression_guidelines.rs`, the `api-request` skill doc, and A2A
+  `ZEPH_A2A_IBCT_KEY`/`VAULT_A2A_IBCT_KEY_1` env-var names), none a real
+  credential. Extends (not replaces) gitleaks' default ruleset via
+  `[extend] useDefault = true`; allowlist entries match the literal dummy
+  string so future test fixtures reusing the same established pattern are
+  also covered, not just the already-known commits. `gitleaks detect` now
+  exits clean (0 findings) instead of re-surfacing the same 31 hits on every
+  scan. `SECURITY.md` documents the convention: reuse an existing dummy
+  pattern in new test fixtures where possible, or add a new allowlist entry
+  (#6056, #6081).
 - **Memory**: wired the five remaining memory-maintenance loops — guidelines
   (`mem-guidelines`), tree-consolidation (`mem-tree-consolidation`), hebbian-consolidation
   (`mem-hebbian-consolidation`), episodic-consolidation (`mem-episodic-consolidation`), and

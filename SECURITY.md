@@ -29,3 +29,4 @@ You can expect an initial response within 72 hours.
 - Dependabot monitors for known vulnerabilities in dependencies
 - Shell execution is sandboxed with a 30-second timeout
 - Telegram bot supports user whitelisting to restrict access
+- Full git history is scanned for leaked secrets with [gitleaks](https://github.com/gitleaks/gitleaks); `.gitleaks.toml` allowlists known-benign dummy secrets used in test fixtures, doctests, and documentation examples. When adding a new test fixture that needs a fake secret, reuse an already-allowlisted dummy pattern where possible, or add a new entry to `.gitleaks.toml` and re-run `gitleaks detect --no-banner --source .` to confirm it stays clean

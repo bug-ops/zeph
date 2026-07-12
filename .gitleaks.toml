@@ -1,0 +1,37 @@
+title = "zeph gitleaks config"
+
+# Extend gitleaks' built-in ruleset instead of replacing it, so all default
+# detectors (generic-api-key, jwt, curl-auth-user, curl-auth-header,
+# stripe-access-token, etc.) keep running; only the allowlist below is added.
+[extend]
+useDefault = true
+
+# Known-benign dummy secrets used in test fixtures, doctests, and
+# documentation examples across the codebase (issues #6056, #6081).
+# Every entry here was verified via a real `gitleaks detect` run to
+# resolve to a fake/example value, never a live credential. Matching on
+# the literal dummy string (not just file path) also suppresses future
+# test fixtures that reuse the same established dummy pattern — see the
+# convention note in SECURITY.md.
+[[allowlists]]
+description = "Test-fixture and documentation dummy secrets"
+regexTarget = "match"
+regexes = [
+  '''sk-abc123secret''',
+  '''sk-abc123def456''',
+  '''sk-abc123def''',
+  '''sk-abc123xyz''',
+  '''AKIA1234567890ABCDEF''',
+  '''AIzaSyA1234567890abcdefghijklmnop''',
+  '''sk_live_abcdef123456''',
+  '''sk-REDACTMEAKIA1234567890abcdef''',
+  '''tg-injected-789''',
+  '''mysecret12345678''',
+  '''supersecretvalue1''',
+  '''admin:secret''',
+  '''eyJhbGciOiJub25lIn0\.eyJzdWIiOiJ1c2VyIn0\.''',
+  '''eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9\.eyJzdWIiOiJ1c2VyMTIzIn0\.SflKxwRJSMeKKF2''',
+  '''eyJhbGciOi\.\.\.''',
+  '''ZEPH_A2A_IBCT_KEY''',
+  '''VAULT_A2A_IBCT_KEY_1''',
+]
