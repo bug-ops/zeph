@@ -1959,7 +1959,7 @@ mod tests {
         let supervisor = std::sync::Arc::new(zeph_common::TaskSupervisor::new(cancel));
 
         let (serve_deps, _acp_deps, _keepalive) =
-            crate::acp::build_combined_deps(&app, &supervisor)
+            Box::pin(crate::acp::build_combined_deps(&app, &supervisor))
                 .await
                 .expect("build_combined_deps must succeed against a mock-provider AppBuilder");
 

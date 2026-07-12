@@ -239,9 +239,10 @@ pub(crate) async fn build_shared_pair() -> (super::deps::ServeAgentDeps, crate::
     let cancel = tokio_util::sync::CancellationToken::new();
     let supervisor = Arc::new(zeph_common::task_supervisor::TaskSupervisor::new(cancel));
 
-    let (serve_deps, acp_deps, _keepalive) = crate::acp::build_combined_deps(&app, &supervisor)
-        .await
-        .expect("build_combined_deps must succeed against a mock-provider AppBuilder");
+    let (serve_deps, acp_deps, _keepalive) =
+        Box::pin(crate::acp::build_combined_deps(&app, &supervisor))
+            .await
+            .expect("build_combined_deps must succeed against a mock-provider AppBuilder");
     (serve_deps, acp_deps)
 }
 

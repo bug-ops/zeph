@@ -4725,7 +4725,7 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let supervisor = std::sync::Arc::new(zeph_common::TaskSupervisor::new(cancel));
 
-        let (serve_deps, acp_deps, _keepalive) = build_combined_deps(&app, &supervisor)
+        let (serve_deps, acp_deps, _keepalive) = Box::pin(build_combined_deps(&app, &supervisor))
             .await
             .expect("build_combined_deps must succeed against a mock-provider AppBuilder");
 
