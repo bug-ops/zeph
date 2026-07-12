@@ -771,12 +771,15 @@ fn check_url_scheme() -> CheckResult {
 /// # Errors
 ///
 /// Returns an error if config resolution or I/O fails at the top level.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(crate) async fn run_doctor(
     config_path: &Path,
     json: bool,
     llm_timeout_secs: u64,
     mcp_timeout_secs: u64,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&Path>,
+    vault_path_override: Option<&Path>,
 ) -> anyhow::Result<i32> {
     let total_start = Instant::now();
     let mut results: Vec<CheckResult> = Vec::new();
@@ -797,7 +800,12 @@ pub(crate) async fn run_doctor(
     // 2 + 3 + 4. Vault checks
     {
         let start = Instant::now();
-        match crate::bootstrap::parse_vault_args(&config, None, None, None) {
+        match crate::bootstrap::parse_vault_args(
+            &config,
+            vault_override,
+            vault_key_override,
+            vault_path_override,
+        ) {
             Ok(vault_args) => {
                 if vault_args.backend == zeph_config::VaultBackend::Age {
                     if let Some(ref vault_path) = vault_args.vault_path {

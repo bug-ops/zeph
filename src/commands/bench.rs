@@ -17,9 +17,13 @@ use zeph_bench::{
 };
 use zeph_core::config::SecretResolver as _;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_bench_command(
     cmd: &BenchCommand,
     config_path: Option<&std::path::Path>,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&std::path::Path>,
+    vault_path_override: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     match cmd {
         BenchCommand::List => {
@@ -47,6 +51,9 @@ pub(crate) async fn handle_bench_command(
                     *resume,
                     *no_deterministic,
                     config_path,
+                    vault_override,
+                    vault_key_override,
+                    vault_path_override,
                 )
                 .await
             } else {
@@ -59,6 +66,9 @@ pub(crate) async fn handle_bench_command(
                     *resume,
                     *no_deterministic,
                     config_path,
+                    vault_override,
+                    vault_key_override,
+                    vault_path_override,
                 )
                 .await
             }
@@ -78,6 +88,9 @@ async fn handle_run_baseline(
     resume: bool,
     no_deterministic: bool,
     config_path: Option<&std::path::Path>,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&std::path::Path>,
+    vault_path_override: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     match dataset {
         "longmemeval" | "locomo" => {}
@@ -100,8 +113,13 @@ async fn handle_run_baseline(
     let path = resolve_config_path(config_path);
     let mut config = load_config_or_default(&path);
 
-    let vault_args = parse_vault_args(&config, None, None, None)
-        .map_err(|e| anyhow::anyhow!("invalid vault backend: {e}"))?;
+    let vault_args = parse_vault_args(
+        &config,
+        vault_override,
+        vault_key_override,
+        vault_path_override,
+    )
+    .map_err(|e| anyhow::anyhow!("invalid vault backend: {e}"))?;
     if let Some(vault) = crate::bootstrap::build_vault_provider(&vault_args)
         && let Err(e) = config.resolve_secrets(vault.as_ref()).await
     {
@@ -366,6 +384,9 @@ async fn handle_run(
     resume: bool,
     no_deterministic: bool,
     config_path: Option<&std::path::Path>,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&std::path::Path>,
+    vault_path_override: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     let reg = DatasetRegistry::new();
     if reg.get(dataset).is_none() {
@@ -383,8 +404,13 @@ async fn handle_run(
     // Resolve vault secrets before building the provider.
     // The bench command is dispatched before AppBuilder runs, so we must
     // initialize the vault here to populate config.secrets.
-    let vault_args = parse_vault_args(&config, None, None, None)
-        .map_err(|e| anyhow::anyhow!("invalid vault backend: {e}"))?;
+    let vault_args = parse_vault_args(
+        &config,
+        vault_override,
+        vault_key_override,
+        vault_path_override,
+    )
+    .map_err(|e| anyhow::anyhow!("invalid vault backend: {e}"))?;
     if let Some(vault) = crate::bootstrap::build_vault_provider(&vault_args)
         && let Err(e) = config.resolve_secrets(vault.as_ref()).await
     {
@@ -535,4 +561,75 @@ fn secs_to_ymdhms(secs: u64) -> (u64, u64, u64, u64, u64, u64) {
     let mo = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if mo <= 2 { y + 1 } else { y };
     (y, mo, d, h, mi, s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression tests for #6037: `handle_bench_command`'s two `--baseline` /
+    // non-baseline call sites hardcoded `None, None, None` instead of
+    // forwarding the `--vault` CLI flag into `parse_vault_args`. Both
+    // functions validate the vault backend before touching the network, so
+    // this fails fast on the bogus override without requiring a live provider.
+
+    #[tokio::test]
+    async fn handle_run_baseline_rejects_invalid_vault_cli_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_file = dir.path().join("data.jsonl");
+        std::fs::write(&data_file, "").unwrap();
+        let config_path = dir.path().join("missing-config.toml");
+        let output = dir.path().join("out.json");
+
+        let err = handle_run_baseline(
+            "longmemeval",
+            &output,
+            Some(&data_file),
+            None,
+            None,
+            false,
+            false,
+            Some(config_path.as_path()),
+            Some("bogus_backend_name"),
+            None,
+            None,
+        )
+        .await
+        .expect_err("bogus --vault backend must be rejected");
+
+        assert!(
+            err.to_string().contains("unknown vault backend"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_run_rejects_invalid_vault_cli_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_file = dir.path().join("data.jsonl");
+        std::fs::write(&data_file, "").unwrap();
+        let config_path = dir.path().join("missing-config.toml");
+        let output = dir.path().join("out.json");
+
+        let err = handle_run(
+            "longmemeval",
+            &output,
+            Some(&data_file),
+            None,
+            None,
+            false,
+            false,
+            Some(config_path.as_path()),
+            Some("bogus_backend_name"),
+            None,
+            None,
+        )
+        .await
+        .expect_err("bogus --vault backend must be rejected");
+
+        assert!(
+            err.to_string().contains("unknown vault backend"),
+            "unexpected error: {err}"
+        );
+    }
 }

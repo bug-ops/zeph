@@ -233,6 +233,9 @@ async fn check_vault_key(
     config: &zeph_core::config::Config,
     entry: &zeph_config::ProviderEntry,
     results: &mut Vec<CheckResult>,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&Path>,
+    vault_path_override: Option<&Path>,
 ) {
     let start = Instant::now();
 
@@ -246,7 +249,12 @@ async fn check_vault_key(
     }
 
     let _span = tracing::info_span!("cli.cocoon.doctor.vault").entered();
-    let vault_args = match crate::bootstrap::parse_vault_args(config, None, None, None) {
+    let vault_args = match crate::bootstrap::parse_vault_args(
+        config,
+        vault_override,
+        vault_key_override,
+        vault_path_override,
+    ) {
         Ok(args) => args,
         Err(e) => {
             results.push(CheckResult::fail("cocoon.vault", e, elapsed_ms(start)));
@@ -323,10 +331,14 @@ async fn check_vault_key(
 /// # Errors
 ///
 /// Returns an error if I/O fails at the top level.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_cocoon_doctor(
     config_path: &Path,
     json: bool,
     timeout_secs: u64,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&Path>,
+    vault_path_override: Option<&Path>,
 ) -> anyhow::Result<i32> {
     let _span = tracing::info_span!("cli.cocoon.doctor").entered();
     let total_start = Instant::now();
@@ -361,7 +373,15 @@ pub(crate) async fn run_cocoon_doctor(
     check_model_listed(&client, &entry, health_opt.as_ref(), &mut results).await;
 
     // Check 6: Vault key (only when cocoon_access_hash is Some)
-    check_vault_key(&config, &entry, &mut results).await;
+    check_vault_key(
+        &config,
+        &entry,
+        &mut results,
+        vault_override,
+        vault_key_override,
+        vault_path_override,
+    )
+    .await;
 
     let report = DoctorReport {
         results,
@@ -529,9 +549,38 @@ mod tests {
         };
         let config = zeph_core::config::Config::default();
         let mut results = Vec::new();
-        check_vault_key(&config, &entry, &mut results).await;
+        check_vault_key(&config, &entry, &mut results, None, None, None).await;
         assert_eq!(results[0].status, CheckStatus::Ok);
         assert!(results[0].detail.contains("skipped"));
+    }
+
+    #[tokio::test]
+    async fn cocoon_doctor_vault_rejects_invalid_cli_backend_override() {
+        // Regression test for #6037: the `--vault` CLI flag was silently
+        // discarded because `run_cocoon_doctor` hardcoded `None, None, None`
+        // instead of forwarding it to `check_vault_key`.
+        use zeph_config::ProviderEntry;
+        let entry = ProviderEntry {
+            cocoon_access_hash: Some("hash".into()),
+            ..ProviderEntry::default()
+        };
+        let config = zeph_core::config::Config::default();
+        let mut results = Vec::new();
+        check_vault_key(
+            &config,
+            &entry,
+            &mut results,
+            Some("bogus_backend_name"),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(results[0].status, CheckStatus::Fail);
+        assert!(
+            results[0].detail.contains("unknown vault backend"),
+            "unexpected detail: {}",
+            results[0].detail
+        );
     }
 
     #[test]

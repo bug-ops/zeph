@@ -934,8 +934,14 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         }
         #[cfg(feature = "bench")]
         Some(Command::Bench { command: bench_cmd }) => {
-            return crate::commands::bench::handle_bench_command(&bench_cmd, cli.config.as_deref())
-                .await;
+            return crate::commands::bench::handle_bench_command(
+                &bench_cmd,
+                cli.config.as_deref(),
+                cli.vault.as_deref(),
+                cli.vault_key.as_deref(),
+                cli.vault_path.as_deref(),
+            )
+            .await;
         }
         #[cfg(all(unix, feature = "scheduler"))]
         Some(Command::Serve {
@@ -976,6 +982,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 json,
                 llm_timeout_secs,
                 mcp_timeout_secs,
+                cli.vault.as_deref(),
+                cli.vault_key.as_deref(),
+                cli.vault_path.as_deref(),
             )
             .await?;
             std::process::exit(exit_code);
@@ -985,8 +994,15 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             command: crate::cli::GonkaCommand::Doctor { json, timeout_secs },
         }) => {
             let config_path = resolve_config_path(cli.config.as_deref());
-            let exit_code =
-                crate::commands::gonka::run_gonka_doctor(&config_path, json, timeout_secs).await?;
+            let exit_code = crate::commands::gonka::run_gonka_doctor(
+                &config_path,
+                json,
+                timeout_secs,
+                cli.vault.as_deref(),
+                cli.vault_key.as_deref(),
+                cli.vault_path.as_deref(),
+            )
+            .await?;
             std::process::exit(exit_code);
         }
         #[cfg(feature = "cocoon")]
@@ -994,9 +1010,15 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             command: crate::cli::CocoonCommand::Doctor { json, timeout_secs },
         }) => {
             let config_path = resolve_config_path(cli.config.as_deref());
-            let exit_code =
-                crate::commands::cocoon::run_cocoon_doctor(&config_path, json, timeout_secs)
-                    .await?;
+            let exit_code = crate::commands::cocoon::run_cocoon_doctor(
+                &config_path,
+                json,
+                timeout_secs,
+                cli.vault.as_deref(),
+                cli.vault_key.as_deref(),
+                cli.vault_path.as_deref(),
+            )
+            .await?;
             std::process::exit(exit_code);
         }
         Some(Command::Notify {

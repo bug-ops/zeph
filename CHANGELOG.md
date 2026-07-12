@@ -50,6 +50,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   handshake starts, mirroring the non-OAuth path (with matching cleanup on connection
   failure in `process_oauth_results`), and the `lock_tool_list`/`tool_list_locked`
   invariant now has test coverage for the first time.
+- `doctor`, `bench`, `gonka doctor`, and `cocoon doctor` all called
+  `parse_vault_args(&config, None, None, None)`, silently discarding the global
+  `--vault`/`--vault-key`/`--vault-path` CLI flags — only the real application startup path
+  (`AppBuilder::new`) threaded them through (#6037). `--vault <BACKEND>` and related flags
+  are now respected by all four commands, matching `AppBuilder::new`'s behavior; an
+  unrecognized `--vault` value is now rejected the same way on these paths as it already was
+  on the main startup path (#6025).
 - `IndexMcpServer` registration (`apply_code_retrieval` in `src/agent_setup.rs`) hardcoded
   `std::env::current_dir()` and never read `[index] workspace_root`, unlike the sibling
   background-indexer path (`apply_code_indexer`), which resolved it correctly. Scoping

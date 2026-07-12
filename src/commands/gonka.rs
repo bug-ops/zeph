@@ -44,9 +44,17 @@ fn finish(report: &DoctorReport, json: bool) -> anyhow::Result<i32> {
 /// `address_opt` is the raw vault-stored bech32 address, used to verify against the derived one.
 async fn resolve_vault_secrets(
     config: &zeph_core::config::Config,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&Path>,
+    vault_path_override: Option<&Path>,
 ) -> (CheckResult, Option<String>, CheckResult, Option<String>) {
     let _span = tracing::info_span!("cli.gonka.doctor.vault").entered();
-    let vault_args = match crate::bootstrap::parse_vault_args(config, None, None, None) {
+    let vault_args = match crate::bootstrap::parse_vault_args(
+        config,
+        vault_override,
+        vault_key_override,
+        vault_path_override,
+    ) {
         Ok(args) => args,
         Err(e) => {
             let start = Instant::now();
@@ -370,11 +378,14 @@ async fn probe_all_nodes(
 /// # Errors
 ///
 /// Returns an error if config parsing or I/O fails at the top level.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(crate) async fn run_gonka_doctor(
     config_path: &Path,
     json: bool,
     timeout_secs: u64,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&Path>,
+    vault_path_override: Option<&Path>,
 ) -> anyhow::Result<i32> {
     let _span = tracing::info_span!("cli.gonka.doctor").entered();
     let total_start = Instant::now();
@@ -427,8 +438,13 @@ pub(crate) async fn run_gonka_doctor(
     }
 
     // 2 + 3. Vault: resolve private key and optional address
-    let (priv_key_result, priv_key_opt, addr_result, vault_addr_opt) =
-        resolve_vault_secrets(&config).await;
+    let (priv_key_result, priv_key_opt, addr_result, vault_addr_opt) = resolve_vault_secrets(
+        &config,
+        vault_override,
+        vault_key_override,
+        vault_path_override,
+    )
+    .await;
     let priv_key_failed = priv_key_result.status == CheckStatus::Fail;
     results.push(priv_key_result);
     results.push(addr_result);
@@ -580,5 +596,22 @@ mod tests {
     #[test]
     fn gonka_detect_clock_skew_returns_none_for_invalid_date() {
         assert!(detect_clock_skew("not a date").is_none());
+    }
+
+    #[tokio::test]
+    async fn gonka_doctor_vault_rejects_invalid_cli_backend_override() {
+        // Regression test for #6037: the `--vault` CLI flag was silently
+        // discarded because `run_gonka_doctor` hardcoded `None, None, None`
+        // instead of forwarding it to `resolve_vault_secrets`.
+        let config = zeph_core::config::Config::default();
+        let (priv_key_result, priv_key_opt, _addr_result, _addr_opt) =
+            resolve_vault_secrets(&config, Some("bogus_backend_name"), None, None).await;
+        assert_eq!(priv_key_result.status, CheckStatus::Fail);
+        assert!(
+            priv_key_result.detail.contains("unknown vault backend"),
+            "unexpected detail: {}",
+            priv_key_result.detail
+        );
+        assert!(priv_key_opt.is_none());
     }
 }
