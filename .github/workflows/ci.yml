@@ -143,7 +143,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - features: "desktop,ide,server,chat,pdf,scheduler,testing,deep-link"
+          - features: "desktop,ide,server,chat,pdf,scheduler,registry,testing,deep-link"
             label: desktop-ide-server-chat-pdf-scheduler
           - features: bench
             label: bench
@@ -169,7 +169,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - features: "desktop,ide,server,chat,pdf,scheduler,deep-link"
+          - features: "desktop,ide,server,chat,pdf,scheduler,registry,deep-link"
             label: desktop-ide-server-chat-pdf-scheduler
           - features: bench
             label: bench
@@ -208,7 +208,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2 # nextest
       - name: Build and archive tests
-        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features "desktop,ide,server,chat,pdf,scheduler,deep-link" --lib --bins --tests --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features "desktop,ide,server,chat,pdf,scheduler,registry,deep-link" --lib --bins --tests --archive-file nextest-archive.tar.zst
       - name: Upload test archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -564,7 +564,7 @@ jobs:
         # `#![recursion_limit]` fix) because it skips codegen/LTO layout finalization. Only a
         # real `cargo build --release` with this workspace's `[profile.release]` (lto = true,
         # codegen-units = 1) exercises the same query depth CI is meant to gate on.
-        run: cargo build --release --workspace --all-targets --features "desktop,ide,server,chat,pdf,scheduler,testing,deep-link"
+        run: cargo build --release --workspace --all-targets --features "desktop,ide,server,chat,pdf,scheduler,registry,testing,deep-link"
 
   release-build-full:
     name: Release Build Check (full)
@@ -664,9 +664,9 @@ jobs:
         with:
           shared-key: "ci"
       - name: Build docs (all features except candle)
-        run: cargo doc --no-deps --workspace --features "desktop,ide,server,chat,pdf,scheduler,deep-link"
+        run: cargo doc --no-deps --workspace --features "desktop,ide,server,chat,pdf,scheduler,registry,deep-link"
       - name: Doc-tests
-        run: cargo test --doc --workspace --features "desktop,ide,server,chat,pdf,scheduler,deep-link"
+        run: cargo test --doc --workspace --features "desktop,ide,server,chat,pdf,scheduler,registry,deep-link"
 
   validate-specs:
     name: Validate Specs

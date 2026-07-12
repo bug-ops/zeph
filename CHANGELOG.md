@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+
+- **CI**: the `registry` feature (`zeph-plugins/registry`, spec-045) was declared in root
+  `Cargo.toml` and bundled into `full`, but excluded from every PR-gating CI job's feature
+  string — `lint-clippy`, `msrv`, `build-tests` (and by extension the sharded `test` job that
+  consumes its archive), `rustdoc`, and `release-build` in `.github/workflows/ci.yml` all built
+  without it. Only the post-merge `coverage` job and the compile-only `bundle-check` matrix
+  (via `full`) ever touched it, so a regression in the marketplace/skills.sh registry client
+  (`crates/zeph-plugins/src/marketplace/skills_sh.rs`, wiremock-mocked HTTP tests) could merge
+  to `main` without a single PR-gating job catching it (#6176). Added `registry` to the
+  feature strings at all five call sites above; `.claude/rules/branching.md`'s documented
+  local commands are updated to match so they still mirror CI exactly.
+
 ### Added
 
 - **Security**: added `.gitleaks.toml` allowlisting the 31 known-benign gitleaks
