@@ -90,6 +90,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         feature_gate: None,
     },
     CommandInfo {
+        name: "/quit",
+        args: "",
+        description: "Exit the agent (alias for /exit)",
+        category: SlashCategory::Session,
+        feature_gate: None,
+    },
+    CommandInfo {
         name: "/new",
         args: "[--no-digest] [--keep-plan]",
         description: "Start a new conversation (reset context, preserve memory and MCP)",
@@ -130,6 +137,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Show a recap of the current or previous session",
         category: SlashCategory::Session,
         feature_gate: None,
+    },
+    CommandInfo {
+        name: "/conv",
+        args: "[list | show <id> | resume <id> | fork <id>]",
+        description: "List, inspect, resume, or fork durable conversation-sessions",
+        category: SlashCategory::Session,
+        feature_gate: Some("session"),
     },
     // --- Configuration (model/provider) ---
     CommandInfo {
@@ -234,6 +248,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         feature_gate: None,
     },
     CommandInfo {
+        name: "/cocoon",
+        args: "[status | models]",
+        description: "Inspect Cocoon sidecar (status, models)",
+        category: SlashCategory::Integration,
+        feature_gate: Some("cocoon"),
+    },
+    CommandInfo {
         name: "/image",
         args: "<path>",
         description: "Attach an image to the next message",
@@ -296,6 +317,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         name: "/scope",
         args: "[list [task_type]]",
         description: "List configured capability scopes (spec 050)",
+        category: SlashCategory::Advanced,
+        feature_gate: None,
+    },
+    CommandInfo {
+        name: "/worktree",
+        args: "list | clean [--force]",
+        description: "List or clean the live session's git worktrees",
         category: SlashCategory::Advanced,
         feature_gate: None,
     },

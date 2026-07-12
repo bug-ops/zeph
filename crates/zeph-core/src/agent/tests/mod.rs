@@ -6,6 +6,8 @@ pub mod agent_tests; // path-preserving — DO NOT rename (used by 24+ modules v
 #[cfg(test)]
 mod bare_mode_shutdown_tests;
 #[cfg(test)]
+mod commands_rs_drift_tests;
+#[cfg(test)]
 mod compaction_e2e;
 #[cfg(test)]
 mod confirmation_propagation_tests;

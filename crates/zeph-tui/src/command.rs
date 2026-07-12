@@ -162,6 +162,22 @@ pub enum TuiCommand {
     SubagentSidebarUp,
     /// Send `/clear-queue` to the agent input channel (Ctrl+K in Insert mode).
     SendClearQueue,
+    /// Send an arbitrary slash command's bare text verbatim to the agent input channel.
+    ///
+    /// Used for [`zeph_commands::COMMANDS`] entries that have no dedicated hand-authored
+    /// `TuiCommand` variant (#5875): every such command gets autocomplete for free instead
+    /// of requiring a matching enum variant and reducer arm to be added by hand. Only used
+    /// for commands whose bare (no-argument) form is a valid, useful default — see
+    /// [`crate::command::zeph_commands_entries`].
+    SendVerbatim(String),
+    /// Fill the input box with an arbitrary slash command's text without submitting it.
+    ///
+    /// Counterpart to [`TuiCommand::SendVerbatim`] for [`zeph_commands::COMMANDS`] entries
+    /// whose argument is required (e.g. `/image <path>`) — submitting the bare command would
+    /// just produce a usage error, so this instead prefills the input for the user to
+    /// complete, mirroring the existing `*Prompt` variants' `prefill_input` behavior (#5875
+    /// F1).
+    PrefillVerbatim(String),
 }
 
 /// Metadata for a single entry in the command palette.
@@ -859,6 +875,118 @@ fn build_knowledge_commands() -> Vec<CommandEntry> {
     ]
 }
 
+/// Top-level command names already covered — exactly, with no arguments — by an existing
+/// hand-authored [`TuiCommand`] entry in [`command_registry`], [`daemon_command_registry`],
+/// or [`extra_command_registry`].
+///
+/// Excluded from [`zeph_commands_entries`] so the merged autocomplete list never shows the
+/// same bare invocation twice (#5875). Each comment names the existing entry that already
+/// performs the identical bare command (either by sending the same text, or — for the
+/// locally-rendered view commands — by displaying the same information without a round
+/// trip through the agent).
+///
+/// Every name here must have a real matching `id` in [`command_registry`],
+/// [`daemon_command_registry`], or [`extra_command_registry`] — see the
+/// `zeph_commands_dedup_entries_have_a_real_hand_authored_replacement` test, which fails
+/// loudly if a covering entry is ever renamed or removed without updating this list (#5875
+/// F3). `/clear-queue` was deliberately **not** added here even though a `SendClearQueue`
+/// `TuiCommand` variant exists — that variant is reachable only via the Ctrl+K keybinding
+/// (`crates/zeph-tui/src/app/keys.rs`), not through any `CommandEntry` in the three
+/// registries above, so there is nothing to actually deduplicate against.
+const ZEPH_COMMANDS_DEDUP: &[&str] = &[
+    "/skills",     // skill:list
+    "/mcp",        // mcp:list
+    "/memory",     // memory:stats
+    "/guidelines", // guidelines:view
+    "/log",        // log:status
+    "/undo",       // session:undo
+    "/redo",       // session:redo
+    "/graph",      // graph:stats
+    "/lsp",        // lsp:status
+    "/scheduler",  // scheduler:list
+    "/subagent",   // acp:subagent-spawn (already prefills "/subagent spawn " when empty)
+];
+
+/// Returns `false` only for entries whose `feature_gate` names a Cargo feature that is
+/// unified, via the root binary crate, with this crate's own feature of the same name — and
+/// that feature is disabled in this build.
+///
+/// Every `feature_gate` value in [`zeph_commands::COMMANDS`] is otherwise purely descriptive
+/// (rendered as `[requires: X]` in `/help` text): the underlying `CommandHandler` is
+/// unconditionally registered in `Agent::run` regardless of any Cargo feature with a
+/// matching name (most such names — `"acp"`, `"guardrail"`, `"scheduler"`, `"session"`,
+/// etc. — do not even exist as Cargo features on the relevant crates). `"cocoon"` is the one
+/// exception: `CocoonCommand`'s registration in `crates/zeph-core/src/agent/slash_commands.rs`
+/// really is `#[cfg(feature = "cocoon")]`-gated, and the root `Cargo.toml`'s `cocoon` feature
+/// unifies `zeph-core/cocoon` with this crate's own `cocoon` feature (which already gates
+/// `build_cocoon_commands`), so checking it here faithfully predicts whether `CocoonCommand`
+/// exists in this exact build (#5875 F2) — without this check, a `cocoon`-feature-off build
+/// would still show `/cocoon` in autocomplete and fail when submitted.
+fn command_is_compiled_in_this_build(entry: &zeph_commands::CommandInfo) -> bool {
+    entry.feature_gate != Some("cocoon") || cfg!(feature = "cocoon")
+}
+
+/// Returns the [`CommandEntry`] projection of every [`zeph_commands::COMMANDS`] entry that
+/// has no dedicated hand-authored `TuiCommand` (see `ZEPH_COMMANDS_DEDUP`).
+///
+/// `zeph_commands::COMMANDS` is the canonical, always-up-to-date list of channel-agnostic
+/// `AgentAccess` slash commands (`/model`, `/provider`, `/skill`, `/policy`, etc.) — the
+/// same list `/help` renders from. Projecting it here means a new command registered there
+/// automatically gets TUI autocomplete, instead of requiring a second, hand-authored
+/// `TuiCommand` variant and registry entry that can silently drift out of sync (#5875).
+///
+/// Commands whose `args` hint signals a *required* argument (e.g. `/image <path>`,
+/// `/feedback <skill> <message>`) dispatch [`TuiCommand::PrefillVerbatim`] instead — this
+/// fills the input box with the bare command plus a trailing space for the user to complete,
+/// the same behavior every existing hand-authored `*Prompt` `TuiCommand` variant uses (see
+/// `execute_command` in `app/keys.rs`), rather than submitting an incomplete command that the
+/// handler would just reject. Every other entry dispatches [`TuiCommand::SendVerbatim`] with
+/// the command's bare name (no arguments) — verified against each handler's actual empty-args
+/// behavior (not just the `args` hint text, which is documentation-only and not always
+/// bracket-consistent — e.g. `/goal` and `/worktree` both default sensibly on empty args
+/// despite their hint text not being `[`-wrapped).
+///
+/// Entries whose `feature_gate` corresponds to a real, compile-time-relevant Cargo feature
+/// are excluded when that feature is off in this build (see `command_is_compiled_in_this_build`)
+/// — otherwise a feature-gated command that was never actually registered would still appear
+/// in autocomplete and fail when submitted (#5875 F2).
+///
+/// Lazily initialised and shared for the process lifetime, like [`command_registry`] and
+/// [`extra_command_registry`].
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::command::zeph_commands_entries;
+///
+/// let entries = zeph_commands_entries();
+/// assert!(entries.iter().any(|e| e.id == "/model"));
+/// // Commands already covered by a hand-authored entry are not duplicated.
+/// assert!(!entries.iter().any(|e| e.id == "/graph"));
+/// ```
+#[must_use]
+pub fn zeph_commands_entries() -> &'static [CommandEntry] {
+    static ENTRIES: std::sync::OnceLock<Vec<CommandEntry>> = std::sync::OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        zeph_commands::COMMANDS
+            .iter()
+            .filter(|c| !ZEPH_COMMANDS_DEDUP.contains(&c.name))
+            .filter(|c| command_is_compiled_in_this_build(c))
+            .map(|c| CommandEntry {
+                id: c.name,
+                label: c.description,
+                category: c.category.as_str(),
+                shortcut: None,
+                command: if c.args.starts_with('<') {
+                    TuiCommand::PrefillVerbatim(format!("{} ", c.name))
+                } else {
+                    TuiCommand::SendVerbatim(c.name.to_owned())
+                },
+            })
+            .collect()
+    })
+}
+
 fn build_extra_commands() -> Vec<CommandEntry> {
     let mut cmds = build_infra_commands();
     cmds.extend(build_agent_plan_commands());
@@ -985,6 +1113,7 @@ pub fn filter_commands(query: &str) -> Vec<&'static CommandEntry> {
     let mut all: Vec<&'static CommandEntry> = command_registry().iter().collect();
     all.extend(daemon_command_registry());
     all.extend(extra_command_registry());
+    all.extend(zeph_commands_entries());
 
     if query.is_empty() {
         return all;
@@ -1065,6 +1194,7 @@ mod tests {
             command_registry().len()
                 + daemon_command_registry().len()
                 + extra_command_registry().len()
+                + zeph_commands_entries().len()
         );
     }
 
@@ -1225,6 +1355,172 @@ mod tests {
         let help = registry.iter().find(|e| e.id == "app:help").unwrap();
         assert_eq!(quit.shortcut, Some("q"));
         assert_eq!(help.shortcut, Some("?"));
+    }
+
+    #[test]
+    fn zeph_commands_entries_includes_previously_invisible_commands() {
+        // #5875: these AgentAccess-routed commands were dispatchable when typed in full but
+        // never appeared in TUI autocomplete because zeph-tui's registry never sourced from
+        // zeph_commands::COMMANDS.
+        let entries = zeph_commands_entries();
+        for name in [
+            "/model",
+            "/provider",
+            "/skill",
+            "/policy",
+            "/think-tokens",
+            "/reasoning-effort",
+            "/status",
+            "/conv",
+        ] {
+            assert!(
+                entries.iter().any(|e| e.id == name),
+                "{name} must appear in zeph_commands_entries()"
+            );
+        }
+    }
+
+    #[test]
+    fn zeph_commands_entries_excludes_dedup_list() {
+        let entries = zeph_commands_entries();
+        for name in ZEPH_COMMANDS_DEDUP {
+            assert!(
+                !entries.iter().any(|e| &e.id == name),
+                "{name} is already covered by a hand-authored TuiCommand and must not be \
+                 duplicated in zeph_commands_entries()"
+            );
+        }
+    }
+
+    #[test]
+    fn zeph_commands_entries_includes_clear_queue_not_a_real_duplicate() {
+        // #5875 F3 fix: /clear-queue was incorrectly in ZEPH_COMMANDS_DEDUP — the only
+        // matching TuiCommand (SendClearQueue) is reachable exclusively via the Ctrl+K
+        // keybinding, with no CommandEntry in any of the three hand-authored registries, so
+        // there was nothing to actually deduplicate against. It must appear here.
+        let entries = zeph_commands_entries();
+        assert!(entries.iter().any(|e| e.id == "/clear-queue"));
+    }
+
+    #[test]
+    fn zeph_commands_dedup_entries_have_a_real_hand_authored_replacement() {
+        // #5875 F3: guards against a dedup'd name silently becoming an orphan (e.g. if the
+        // hand-authored entry it claims to duplicate is later renamed or removed).
+        let mut hand_authored: Vec<&'static CommandEntry> = command_registry().iter().collect();
+        hand_authored.extend(daemon_command_registry());
+        hand_authored.extend(extra_command_registry());
+
+        let expected: &[(&str, &str)] = &[
+            ("/skills", "skill:list"),
+            ("/mcp", "mcp:list"),
+            ("/memory", "memory:stats"),
+            ("/guidelines", "guidelines:view"),
+            ("/log", "log:status"),
+            ("/undo", "session:undo"),
+            ("/redo", "session:redo"),
+            ("/graph", "graph:stats"),
+            ("/lsp", "lsp:status"),
+            ("/scheduler", "scheduler:list"),
+            ("/subagent", "acp:subagent-spawn"),
+        ];
+        assert_eq!(
+            expected.len(),
+            ZEPH_COMMANDS_DEDUP.len(),
+            "this test's `expected` table has drifted out of sync with ZEPH_COMMANDS_DEDUP — \
+             update both together"
+        );
+        for (dedup_name, expected_hand_id) in expected {
+            assert!(
+                ZEPH_COMMANDS_DEDUP.contains(dedup_name),
+                "test out of sync: {dedup_name} is not in ZEPH_COMMANDS_DEDUP"
+            );
+            assert!(
+                hand_authored.iter().any(|e| &e.id == expected_hand_id),
+                "{dedup_name} is in ZEPH_COMMANDS_DEDUP claiming to be covered by \
+                 {expected_hand_id}, but no such hand-authored CommandEntry exists — either \
+                 restore equivalent coverage or remove {dedup_name} from ZEPH_COMMANDS_DEDUP \
+                 so it reappears in autocomplete"
+            );
+        }
+    }
+
+    #[test]
+    fn zeph_commands_entries_prefills_mandatory_arg_commands() {
+        // #5875 F1: commands whose bare form would just produce a usage error must prefill
+        // the input for the user to complete, not submit immediately.
+        let entries = zeph_commands_entries();
+        for name in [
+            "/image",
+            "/feedback",
+            "/skill",
+            "/skill create",
+            "/dump-format",
+            "/loop",
+        ] {
+            let entry = entries
+                .iter()
+                .find(|e| e.id == name)
+                .unwrap_or_else(|| panic!("{name} must appear in zeph_commands_entries()"));
+            assert!(
+                matches!(entry.command, TuiCommand::PrefillVerbatim(_)),
+                "{name} requires an argument and must prefill rather than submit bare"
+            );
+        }
+    }
+
+    #[test]
+    fn zeph_commands_entries_sends_safe_bare_commands_immediately() {
+        // #5875 F1: commands whose bare (no-arg) form is a valid, useful default (verified
+        // against each handler's real empty-args behavior, not just the `args` hint text —
+        // `/goal` and `/worktree` both default sensibly despite non-bracket-wrapped hints)
+        // must still submit immediately.
+        let entries = zeph_commands_entries();
+        for name in ["/model", "/status", "/goal", "/worktree", "/conv"] {
+            let entry = entries
+                .iter()
+                .find(|e| e.id == name)
+                .unwrap_or_else(|| panic!("{name} must appear in zeph_commands_entries()"));
+            assert!(
+                matches!(entry.command, TuiCommand::SendVerbatim(_)),
+                "{name} has a safe bare default and should submit immediately"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "cocoon")]
+    fn zeph_commands_entries_includes_cocoon_when_feature_enabled() {
+        // #5875 F2.
+        let entries = zeph_commands_entries();
+        assert!(entries.iter().any(|e| e.id == "/cocoon"));
+    }
+
+    #[test]
+    #[cfg(not(feature = "cocoon"))]
+    fn zeph_commands_entries_excludes_cocoon_when_feature_disabled() {
+        // #5875 F2: without this, a cocoon-feature-off build would still show /cocoon in
+        // autocomplete and fail when submitted, since CocoonCommand is never registered.
+        let entries = zeph_commands_entries();
+        assert!(!entries.iter().any(|e| e.id == "/cocoon"));
+    }
+
+    #[test]
+    fn filter_commands_merges_zeph_commands_entries() {
+        let results = filter_commands("model");
+        assert!(results.iter().any(|e| e.id == "/model"));
+    }
+
+    #[test]
+    fn no_duplicate_ids_across_merged_registries() {
+        let all = filter_commands("");
+        let mut seen = std::collections::HashSet::new();
+        for entry in &all {
+            assert!(
+                seen.insert(entry.id),
+                "duplicate command id in merged autocomplete list: {}",
+                entry.id
+            );
+        }
     }
 
     #[test]

@@ -534,27 +534,7 @@ impl<C: Channel> Agent<C> {
             // null_agent must be declared before reg so it lives longer (LIFO drop order).
             let mut null_agent = zeph_commands::NullAgent;
             let registry_handled = {
-                use zeph_commands::CommandRegistry;
-                use zeph_commands::handlers::debug::{
-                    DebugDumpCommand, DumpFormatCommand, LogCommand,
-                };
-                use zeph_commands::handlers::help::HelpCommand;
-                use zeph_commands::handlers::session::{
-                    ClearCommand, ClearQueueCommand, ExitCommand, QuitCommand, ResetCommand,
-                };
-
-                let mut reg = CommandRegistry::new();
-                reg.register(ExitCommand);
-                reg.register(QuitCommand);
-                reg.register(ClearCommand);
-                reg.register(ResetCommand);
-                reg.register(ClearQueueCommand);
-                reg.register(LogCommand);
-                reg.register(DebugDumpCommand);
-                reg.register(DumpFormatCommand);
-                reg.register(HelpCommand);
-                #[cfg(test)]
-                reg.register(test_stubs::TestErrorCommand);
+                let reg = slash_commands::build_session_debug_registry();
 
                 let mut ctx = zeph_commands::CommandContext {
                     sink: &mut sink_adapter,
@@ -589,83 +569,7 @@ impl<C: Channel> Agent<C> {
             let agent_result: Option<
                 Result<zeph_commands::CommandOutput, zeph_commands::CommandError>,
             > = if session_reg_missed {
-                use zeph_commands::CommandRegistry;
-                use zeph_commands::handlers::{
-                    acp::AcpCommand,
-                    agent_cmd::AgentCommand,
-                    agents_fleet::AgentsFleetCommand,
-                    caveman::CavemanCommand,
-                    checkpoint::{RedoCommand, UndoCommand},
-                    compaction::{CompactCommand, NewConversationCommand, RecapCommand},
-                    conv::ConvCommand,
-                    experiment::ExperimentCommand,
-                    goal::GoalCommand,
-                    loop_cmd::LoopCommand,
-                    lsp::LspCommand,
-                    mcp::McpCommand,
-                    memory::{
-                        GraphCommand, GuidelinesCommand, KnowledgeSlashCommand, MemoryCommand,
-                    },
-                    misc::{CacheStatsCommand, ImageCommand, NotifyTestCommand},
-                    model::{ModelCommand, ProviderCommand},
-                    plan::PlanCommand,
-                    plugins::PluginsCommand,
-                    policy::PolicyCommand,
-                    reasoning_effort::ReasoningEffortCommand,
-                    scheduler::SchedulerCommand,
-                    skill::{FeedbackCommand, SkillCommand, SkillsCommand},
-                    status::{FocusCommand, GuardrailCommand, SideQuestCommand, StatusCommand},
-                    think_tokens::ThinkTokensCommand,
-                    trajectory::{ScopeCommand, TrajectoryCommand},
-                    worktree::WorktreeCommand,
-                };
-
-                let mut agent_reg = CommandRegistry::new();
-                agent_reg.register(CavemanCommand);
-                agent_reg.register(MemoryCommand);
-                agent_reg.register(GraphCommand);
-                agent_reg.register(KnowledgeSlashCommand);
-                agent_reg.register(GuidelinesCommand);
-                agent_reg.register(ModelCommand);
-                agent_reg.register(ProviderCommand);
-                agent_reg.register(ThinkTokensCommand);
-                agent_reg.register(ReasoningEffortCommand);
-                // Phase 6 migrations: /skill, /skills, /feedback use clone-before-await pattern.
-                agent_reg.register(SkillCommand);
-                agent_reg.register(SkillsCommand);
-                agent_reg.register(FeedbackCommand);
-                agent_reg.register(McpCommand);
-                agent_reg.register(PolicyCommand);
-                agent_reg.register(SchedulerCommand);
-                agent_reg.register(LspCommand);
-                // Phase 4 migrations (Send-safe commands):
-                agent_reg.register(CacheStatsCommand);
-                agent_reg.register(ImageCommand);
-                agent_reg.register(NotifyTestCommand);
-                agent_reg.register(StatusCommand);
-                agent_reg.register(GuardrailCommand);
-                agent_reg.register(FocusCommand);
-                agent_reg.register(SideQuestCommand);
-                agent_reg.register(AgentCommand);
-                agent_reg.register(AgentsFleetCommand);
-                // Phase 5 migrations (Send-compatible):
-                agent_reg.register(CompactCommand);
-                agent_reg.register(NewConversationCommand);
-                agent_reg.register(RecapCommand);
-                agent_reg.register(ExperimentCommand);
-                agent_reg.register(PlanCommand);
-                agent_reg.register(LoopCommand);
-                agent_reg.register(PluginsCommand);
-                agent_reg.register(AcpCommand);
-                #[cfg(feature = "cocoon")]
-                agent_reg.register(zeph_commands::handlers::cocoon::CocoonCommand);
-                agent_reg.register(TrajectoryCommand);
-                agent_reg.register(ScopeCommand);
-                agent_reg.register(GoalCommand);
-                agent_reg.register(UndoCommand);
-                agent_reg.register(RedoCommand);
-                agent_reg.register(ConvCommand);
-                agent_reg.register(WorktreeCommand);
+                let agent_reg = slash_commands::build_agent_command_registry();
 
                 let mut ctx = zeph_commands::CommandContext {
                     sink: &mut agent_null_sink,

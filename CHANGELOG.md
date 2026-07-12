@@ -152,6 +152,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in. No live leak existed before this fix (audited: `--migrate-config` is text-based, the
   `--init` wizard never populates these fields with raw secrets, and the runtime types have no
   serialize-to-output path today) — this closes the latent risk for any future caller.
+- `zeph-commands`/`zeph-core`/`zeph-tui`: `/help` and TUI slash autocomplete were both
+  hand-maintained lists that had drifted from the real command registrations (#5987, #5875).
+  `/conv`, `/cocoon`, `/quit`, and `/worktree` were dispatchable but missing from
+  `zeph_commands::COMMANDS`, hiding them from `/help`; added the four missing entries.
+  `Agent::run`'s two command-registry constructions (session/debug and agent-command) are now
+  extracted into `zeph_commands::build_session_debug_registry`/`build_agent_command_registry`
+  (`crates/zeph-core/src/agent/slash_commands.rs`) so a new regression test
+  (`commands_rs_drift_tests`) can assert every registered handler has a matching `COMMANDS`
+  entry, closing the door on this recurring drift class. Separately, `zeph-tui`'s `/`-triggered
+  autocomplete (`SlashAutocompleteState`/`filter_commands`) never sourced from
+  `zeph_commands::COMMANDS` at all, so every channel-agnostic `AgentAccess` command
+  (`/model`, `/provider`, `/skill`, `/policy`, `/think-tokens`, `/reasoning-effort`, etc.) was
+  dispatchable when typed in full but never suggested. Added `TuiCommand::SendVerbatim`/
+  `TuiCommand::PrefillVerbatim` and `zeph_tui::command::zeph_commands_entries()`, which
+  projects `zeph_commands::COMMANDS` into `CommandEntry`s and merges them into
+  `filter_commands`, so future `AgentAccess` commands get TUI autocomplete automatically
+  instead of requiring a parallel hand-authored registration. Commands whose bare (no-argument)
+  form is not a valid default (e.g. `/image <path>`, `/feedback <skill> <message>`) prefill the
+  input for the user to complete instead of submitting an incomplete command, mirroring the
+  existing `*Prompt` variants' behavior. Deduplicated against existing hand-authored entries
+  that already cover the identical bare command; entries gated behind a Cargo feature that is
+  actually unified with this crate's own feature of the same name (currently only `cocoon`)
+  are excluded when that feature is off, so a feature-off build cannot show a dead command in
+  autocomplete.
 - `zeph-orchestration`/`zeph-subagent`/`zeph-core`: `TaskNode::network_scope: Deny` was
   advisory-only — the field was never read at dispatch time, so a planner-emitted
   `network_scope: Deny` silently left a task's network egress unrestricted (spec

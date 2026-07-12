@@ -897,6 +897,15 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
                 TuiCommand::SendClearQueue => {
                     return vec![Effect::SendUserInput("/clear-queue".to_owned())];
                 }
+                TuiCommand::SendVerbatim(text) => {
+                    return vec![Effect::SendUserInput(text.clone())];
+                }
+                TuiCommand::PrefillVerbatim(text) => {
+                    app.sessions.current_mut().input.clear();
+                    app.sessions.current_mut().input.push_str(text);
+                    app.sessions.current_mut().cursor_position = app.char_count();
+                    return vec![];
+                }
 
                 _ => {}
             }
@@ -1741,6 +1750,37 @@ mod tests {
         assert_eq!(
             effects,
             vec![Effect::SendUserInput("/clear-queue".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_send_verbatim_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(
+            &mut app,
+            Action::Dispatch(TuiCommand::SendVerbatim("/model".to_owned())),
+        );
+        assert_eq!(effects, vec![Effect::SendUserInput("/model".to_owned())]);
+    }
+
+    #[test]
+    fn dispatch_prefill_verbatim_fills_input_without_submitting() {
+        // #5875 F1: mandatory-argument zeph_commands entries (e.g. /image) must prefill
+        // rather than submit an incomplete command.
+        let (mut app, _rx) = make_app();
+        let effects = reduce(
+            &mut app,
+            Action::Dispatch(TuiCommand::PrefillVerbatim("/image ".to_owned())),
+        );
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().input, "/image ");
+        assert!(
+            app.sessions
+                .current()
+                .messages
+                .iter()
+                .all(|m| m.role != MessageRole::User),
+            "prefilled command must not be sent as a chat message"
         );
     }
 

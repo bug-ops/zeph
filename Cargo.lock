@@ -11216,6 +11216,7 @@ dependencies = [
  "tree-sitter-typescript",
  "tree-sitter-yaml",
  "unicode-width",
+ "zeph-commands",
  "zeph-common",
  "zeph-config",
  "zeph-core",
