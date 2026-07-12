@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use similar::{ChangeTag, TextDiff};
+use zeph_core::config::Config;
 use zeph_core::config::migrate::{ConfigMigrator, MIGRATIONS, MigrationResult};
 
 /// Aggregated totals from a `migrate-config` run, returned by [`handle_migrate_config`]
@@ -58,6 +59,8 @@ pub(crate) fn handle_migrate_config(
     let (total_changed_count, total_sections_changed) = aggregate_totals(&step_results, &result);
     let total_sections_len = total_sections_changed.len();
 
+    warn_if_migrated_config_invalid(&result.output);
+
     if diff {
         print_diff(&input, &result.output);
         for (name, step_result) in &step_results {
@@ -100,6 +103,25 @@ pub(crate) fn handle_migrate_config(
         total_changed_count,
         total_sections_changed: total_sections_len,
     })
+}
+
+/// Warn if the migrated TOML would fail to deserialize into [`Config`].
+///
+/// `migrate-config` only adds missing keys — it never validates the user's existing
+/// values, so a preexisting invalid value (e.g. an unrecognized `vault.backend`) survives
+/// the migration untouched. Real startup (`Config::load`) deserializes with the same
+/// `toml::from_str::<Config>` call and rejects such values (see #6025), which previously
+/// gave a false sense that a config accepted by `migrate-config` would also load — file it
+/// as a warning rather than a hard error, since fixing unrelated invalid values isn't this
+/// command's job.
+fn warn_if_migrated_config_invalid(migrated_toml: &str) {
+    if let Err(err) = toml::from_str::<Config>(migrated_toml) {
+        eprintln!(
+            "warning: the migrated config would fail to load: {err}\n\
+             migrate-config only adds missing keys — it does not fix invalid existing \
+             values. Fix the reported error in the config file before relying on it."
+        );
+    }
 }
 
 /// Sum `changed_count` and union `sections_changed` across every named migration step
@@ -234,6 +256,43 @@ mod tests {
             !migrated.is_empty(),
             "migration should add content to an empty config"
         );
+    }
+
+    #[test]
+    fn warn_if_migrated_config_invalid_detects_bogus_vault_backend() {
+        // Reproduces #6038: an invalid vault.backend value survives migration
+        // untouched (migrate-config only adds missing keys), but `Config::load`
+        // (via the same `toml::from_str::<Config>` call) rejects it at startup.
+        // Start from an otherwise-valid config (so the only failure reason is the
+        // bogus backend value, not missing required sections) and corrupt just
+        // `vault.backend` via the TOML value tree.
+        let default_toml = toml::to_string(&Config::default()).expect("serialize default config");
+        let mut value: toml::Value = toml::from_str(&default_toml).expect("parse as toml value");
+        value["vault"]["backend"] = toml::Value::String("bogus_backend_name".to_owned());
+        let corrupted = toml::to_string(&value).expect("serialize corrupted config");
+
+        assert!(toml::from_str::<Config>(&corrupted).is_err());
+    }
+
+    #[test]
+    fn warn_if_migrated_config_invalid_accepts_valid_config() {
+        // A default config round-tripped through TOML must still deserialize —
+        // the warning must not fire on a well-formed config.
+        let default_toml = toml::to_string(&Config::default()).expect("serialize default config");
+        assert!(toml::from_str::<Config>(&default_toml).is_ok());
+    }
+
+    #[test]
+    fn handle_migrate_config_with_invalid_vault_backend_still_succeeds() {
+        // The warning must not turn migrate-config into a hard failure — its job
+        // is adding missing keys, not fixing preexisting invalid values.
+        let raw = "[vault]\nbackend = \"bogus_backend_name\"\n";
+        let mut file = NamedTempFile::new().expect("create temp config file");
+        file.write_all(raw.as_bytes()).expect("write config");
+        let path = file.path().to_path_buf();
+
+        handle_migrate_config(&path, false, true)
+            .expect("migrate-config must not hard-fail on an invalid existing value");
     }
 
     #[test]
