@@ -774,19 +774,49 @@ impl Scheduler {
                     drop(guard);
                 }
 
+                let handler = self.handlers.get(task.kind.as_str()).cloned();
+
+                // Snapshot the external-read flag as it stood *before* this task's own
+                // dispatch, so a handler that itself declares `reads_external_content()` never
+                // suppresses its own execution below — Mechanism 4 only suppresses prompt
+                // injection that comes *after* an external-read task within the same tick.
+                let tick_was_external_read_before_this_task = self.tick_read_external;
+
                 // Mechanism 4 (capability attenuation): mark this tick as having an
-                // external-read if the task fetches from the network.
+                // external-read if the resolved handler declares (via
+                // `TaskHandler::reads_external_content`) that it reads content originating
+                // outside the scheduler's own trusted config/state. Kinds with no registered
+                // handler cannot make this declaration and are treated as not external-read.
                 if self.reentry_defense_enabled
                     && self.attenuate_after_external_read
-                    && matches!(task.kind, TaskKind::UpdateCheck)
+                    && handler.as_ref().is_some_and(|h| h.reads_external_content())
                 {
                     self.tick_read_external = true;
                 }
 
-                if let Some(handler) = self.handlers.get(task.kind.as_str()) {
+                if let Some(handler) = handler {
                     tracing::info!(task = %task.name, kind = task.kind.as_str(), "executing task");
 
-                    let execute_result = self.execute_handler(handler.clone(), task, slot_ms).await;
+                    // Mechanism 4 (consume side): suppress a handler's execution when it
+                    // declares `injects_agent_prompt` and an earlier task in this tick already
+                    // read external content. This closes the gap where the registered
+                    // `CustomTaskHandler` (or any future/operator handler that injects
+                    // agent-facing prompts) bypassed suppression entirely — previously only the
+                    // no-handler-registered fallback below was guarded.
+                    let suppressed = self.reentry_defense_enabled
+                        && self.attenuate_after_external_read
+                        && tick_was_external_read_before_this_task
+                        && handler.injects_agent_prompt();
+
+                    let execute_result = if suppressed {
+                        tracing::warn!(
+                            task = %task.name,
+                            "RTW-A Mech4: custom prompt suppressed (external-read tick)"
+                        );
+                        Ok(())
+                    } else {
+                        self.execute_handler(handler, task, slot_ms).await
+                    };
 
                     match execute_result {
                         Ok(()) => match &task.mode {
@@ -2091,6 +2121,10 @@ mod tests {
             > {
                 Box::pin(async move { Ok(()) })
             }
+
+            fn reads_external_content(&self) -> bool {
+                true
+            }
         }
 
         let pool = test_pool().await;
@@ -2159,6 +2193,417 @@ mod tests {
         assert!(
             prompt_rx.try_recv().is_err(),
             "RTW-A Mech4: custom prompt must be suppressed in an external-read tick"
+        );
+    }
+
+    /// RTW-A Mechanism 4 must cover `TaskKind::SkillRefresh` too: a handler registered under
+    /// that kind that declares `reads_external_content() == true` must attenuate the rest of
+    /// the tick, closing the gap from issue #6120 (previously only `TaskKind::UpdateCheck`
+    /// was hardcoded into this check).
+    #[tokio::test]
+    async fn reentry_mech4_skill_refresh_handler_triggers_attenuation() {
+        struct SkillRefreshHandler;
+        impl crate::task::TaskHandler for SkillRefreshHandler {
+            fn execute(
+                &self,
+                _config: &serde_json::Value,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<(), SchedulerError>> + Send + '_>,
+            > {
+                Box::pin(async move { Ok(()) })
+            }
+
+            fn reads_external_content(&self) -> bool {
+                true
+            }
+        }
+
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store, rx);
+
+        let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::channel(8);
+        scheduler = scheduler.with_custom_task_sender(prompt_tx);
+
+        scheduler.register_handler(&TaskKind::SkillRefresh, Box::new(SkillRefreshHandler));
+
+        scheduler.init().await.unwrap();
+
+        let past = Utc::now() - Duration::hours(1);
+
+        let refresh_task = ScheduledTask {
+            name: "skill-refresh-task".to_owned(),
+            mode: crate::task::TaskMode::OneShot { run_at: past },
+            kind: TaskKind::SkillRefresh,
+            config: serde_json::Value::Null,
+            provenance: crate::task::TaskProvenance::Static,
+        };
+        scheduler.tasks.push(refresh_task);
+        scheduler
+            .store
+            .upsert_job_with_mode(
+                "skill-refresh-task",
+                "",
+                "skill_refresh",
+                "oneshot",
+                Some(&past.to_rfc3339()),
+                "",
+            )
+            .await
+            .unwrap();
+
+        let custom_task = ScheduledTask {
+            name: "custom-after-skill-refresh".to_owned(),
+            mode: crate::task::TaskMode::OneShot {
+                run_at: past + Duration::seconds(1),
+            },
+            kind: TaskKind::Custom("my_kind".into()),
+            config: serde_json::json!({"task": "run weekly report"}),
+            provenance: crate::task::TaskProvenance::External,
+        };
+        scheduler.tasks.push(custom_task);
+        scheduler
+            .store
+            .upsert_job_with_mode(
+                "custom-after-skill-refresh",
+                "",
+                "custom",
+                "oneshot",
+                Some(&(past + Duration::seconds(1)).to_rfc3339()),
+                "run weekly report",
+            )
+            .await
+            .unwrap();
+
+        scheduler.tick().await;
+
+        assert!(
+            prompt_rx.try_recv().is_err(),
+            "RTW-A Mech4: custom prompt must be suppressed after a SkillRefresh handler \
+             that declares reads_external_content()"
+        );
+    }
+
+    /// RTW-A Mechanism 4 extension point must work for operator-registered `TaskKind::Custom`
+    /// handlers too (e.g. `zeph-memory`'s `five_signal_consolidation` daemon), not just the
+    /// built-in kinds — this is the general mechanism issue #6120 asked for instead of a
+    /// hardcoded per-kind `matches!` expansion.
+    #[tokio::test]
+    async fn reentry_mech4_custom_kind_external_read_handler_triggers_attenuation() {
+        struct FiveSignalConsolidationStub;
+        impl crate::task::TaskHandler for FiveSignalConsolidationStub {
+            fn execute(
+                &self,
+                _config: &serde_json::Value,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<(), SchedulerError>> + Send + '_>,
+            > {
+                Box::pin(async move { Ok(()) })
+            }
+
+            fn reads_external_content(&self) -> bool {
+                true
+            }
+        }
+
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store, rx);
+
+        let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::channel(8);
+        scheduler = scheduler.with_custom_task_sender(prompt_tx);
+
+        scheduler.register_handler(
+            &TaskKind::Custom("five_signal_consolidation".into()),
+            Box::new(FiveSignalConsolidationStub),
+        );
+
+        scheduler.init().await.unwrap();
+
+        let past = Utc::now() - Duration::hours(1);
+
+        let consolidation_task = ScheduledTask {
+            name: "five-signal-consolidation-task".to_owned(),
+            mode: crate::task::TaskMode::OneShot { run_at: past },
+            kind: TaskKind::Custom("five_signal_consolidation".into()),
+            config: serde_json::Value::Null,
+            provenance: crate::task::TaskProvenance::Static,
+        };
+        scheduler.tasks.push(consolidation_task);
+        scheduler
+            .store
+            .upsert_job_with_mode(
+                "five-signal-consolidation-task",
+                "",
+                "five_signal_consolidation",
+                "oneshot",
+                Some(&past.to_rfc3339()),
+                "",
+            )
+            .await
+            .unwrap();
+
+        let custom_task = ScheduledTask {
+            name: "custom-after-consolidation".to_owned(),
+            mode: crate::task::TaskMode::OneShot {
+                run_at: past + Duration::seconds(1),
+            },
+            kind: TaskKind::Custom("my_kind".into()),
+            config: serde_json::json!({"task": "run weekly report"}),
+            provenance: crate::task::TaskProvenance::External,
+        };
+        scheduler.tasks.push(custom_task);
+        scheduler
+            .store
+            .upsert_job_with_mode(
+                "custom-after-consolidation",
+                "",
+                "custom",
+                "oneshot",
+                Some(&(past + Duration::seconds(1)).to_rfc3339()),
+                "run weekly report",
+            )
+            .await
+            .unwrap();
+
+        scheduler.tick().await;
+
+        assert!(
+            prompt_rx.try_recv().is_err(),
+            "RTW-A Mech4: custom prompt must be suppressed after a Custom-kind handler \
+             (e.g. five_signal_consolidation) that declares reads_external_content()"
+        );
+    }
+
+    /// A handler that does not override `reads_external_content` (default `false`) must NOT
+    /// attenuate the tick — otherwise every registered handler would silently gain Mechanism 4
+    /// coverage regardless of whether it actually reads untrusted content.
+    #[tokio::test]
+    async fn reentry_mech4_handler_without_declaration_does_not_attenuate() {
+        struct TrustedInternalHandler;
+        impl crate::task::TaskHandler for TrustedInternalHandler {
+            fn execute(
+                &self,
+                _config: &serde_json::Value,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<(), SchedulerError>> + Send + '_>,
+            > {
+                Box::pin(async move { Ok(()) })
+            }
+            // reads_external_content intentionally not overridden — defaults to false.
+        }
+
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store, rx);
+
+        let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::channel(8);
+        scheduler = scheduler.with_custom_task_sender(prompt_tx);
+
+        scheduler.register_handler(&TaskKind::HealthCheck, Box::new(TrustedInternalHandler));
+
+        scheduler.init().await.unwrap();
+
+        let past = Utc::now() - Duration::hours(1);
+
+        let health_task = ScheduledTask {
+            name: "health-check-task".to_owned(),
+            mode: crate::task::TaskMode::OneShot { run_at: past },
+            kind: TaskKind::HealthCheck,
+            config: serde_json::Value::Null,
+            provenance: crate::task::TaskProvenance::Static,
+        };
+        scheduler.tasks.push(health_task);
+        scheduler
+            .store
+            .upsert_job_with_mode(
+                "health-check-task",
+                "",
+                "health_check",
+                "oneshot",
+                Some(&past.to_rfc3339()),
+                "",
+            )
+            .await
+            .unwrap();
+
+        let custom_task = ScheduledTask {
+            name: "custom-after-health-check".to_owned(),
+            mode: crate::task::TaskMode::OneShot {
+                run_at: past + Duration::seconds(1),
+            },
+            kind: TaskKind::Custom("my_kind".into()),
+            config: serde_json::json!({"task": "run weekly report"}),
+            provenance: crate::task::TaskProvenance::External,
+        };
+        scheduler.tasks.push(custom_task);
+        scheduler
+            .store
+            .upsert_job_with_mode(
+                "custom-after-health-check",
+                "",
+                "custom",
+                "oneshot",
+                Some(&(past + Duration::seconds(1)).to_rfc3339()),
+                "run weekly report",
+            )
+            .await
+            .unwrap();
+
+        scheduler.tick().await;
+
+        assert!(
+            prompt_rx.try_recv().is_ok(),
+            "custom prompt must NOT be suppressed when the prior handler does not declare \
+             reads_external_content()"
+        );
+    }
+
+    /// RTW-A Mechanism 4 (consume side) must suppress the *production* `CustomTaskHandler`
+    /// dispatch path, not just the no-handler-registered fallback. `CustomTaskHandler` is
+    /// registered under `TaskKind::Custom("custom")` in production (`src/scheduler.rs`) and
+    /// feeds the agent loop from inside its own `execute()` — it must declare
+    /// `injects_agent_prompt() == true` and be gated by the scheduler's dispatch loop like any
+    /// other agent-facing prompt injector.
+    #[tokio::test]
+    async fn reentry_mech4_production_custom_task_handler_suppressed_after_external_read_tick() {
+        struct ExternalReadHandler;
+        impl crate::task::TaskHandler for ExternalReadHandler {
+            fn execute(
+                &self,
+                _config: &serde_json::Value,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<(), SchedulerError>> + Send + '_>,
+            > {
+                Box::pin(async move { Ok(()) })
+            }
+
+            fn reads_external_content(&self) -> bool {
+                true
+            }
+        }
+
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store, rx);
+
+        let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::channel(8);
+
+        scheduler.register_handler(&TaskKind::UpdateCheck, Box::new(ExternalReadHandler));
+        scheduler.register_handler(
+            &TaskKind::Custom("custom".into()),
+            Box::new(crate::handlers::CustomTaskHandler::new(prompt_tx)),
+        );
+
+        scheduler.init().await.unwrap();
+
+        let past = Utc::now() - Duration::hours(1);
+
+        let update_task = ScheduledTask {
+            name: "update-check-task".to_owned(),
+            mode: crate::task::TaskMode::OneShot { run_at: past },
+            kind: TaskKind::UpdateCheck,
+            config: serde_json::Value::Null,
+            provenance: crate::task::TaskProvenance::Static,
+        };
+        scheduler.tasks.push(update_task);
+        scheduler
+            .store
+            .upsert_job_with_mode(
+                "update-check-task",
+                "",
+                "update_check",
+                "oneshot",
+                Some(&past.to_rfc3339()),
+                "",
+            )
+            .await
+            .unwrap();
+
+        let custom_task = ScheduledTask {
+            name: "production-custom-task".to_owned(),
+            mode: crate::task::TaskMode::OneShot {
+                run_at: past + Duration::seconds(1),
+            },
+            kind: TaskKind::Custom("custom".into()),
+            config: serde_json::json!({"task": "run weekly report"}),
+            provenance: crate::task::TaskProvenance::External,
+        };
+        scheduler.tasks.push(custom_task);
+        scheduler
+            .store
+            .upsert_job_with_mode(
+                "production-custom-task",
+                "",
+                "custom",
+                "oneshot",
+                Some(&(past + Duration::seconds(1)).to_rfc3339()),
+                "run weekly report",
+            )
+            .await
+            .unwrap();
+
+        scheduler.tick().await;
+
+        assert!(
+            prompt_rx.try_recv().is_err(),
+            "RTW-A Mech4: the production CustomTaskHandler dispatch path (registered under \
+             TaskKind::Custom(\"custom\")) must be suppressed after an external-read tick, not \
+             just the no-handler-registered fallback"
+        );
+    }
+
+    /// Sanity companion to the suppression test above: with no preceding external-read task,
+    /// the production `CustomTaskHandler` dispatch path must deliver the prompt normally.
+    #[tokio::test]
+    async fn reentry_mech4_production_custom_task_handler_not_suppressed_without_external_read() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store, rx);
+
+        let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::channel(8);
+
+        scheduler.register_handler(
+            &TaskKind::Custom("custom".into()),
+            Box::new(crate::handlers::CustomTaskHandler::new(prompt_tx)),
+        );
+
+        scheduler.init().await.unwrap();
+
+        let past = Utc::now() - Duration::hours(1);
+
+        let custom_task = ScheduledTask {
+            name: "production-custom-task-no-suppression".to_owned(),
+            mode: crate::task::TaskMode::OneShot { run_at: past },
+            kind: TaskKind::Custom("custom".into()),
+            config: serde_json::json!({"task": "run weekly report"}),
+            provenance: crate::task::TaskProvenance::External,
+        };
+        scheduler.tasks.push(custom_task);
+        scheduler
+            .store
+            .upsert_job_with_mode(
+                "production-custom-task-no-suppression",
+                "",
+                "custom",
+                "oneshot",
+                Some(&past.to_rfc3339()),
+                "run weekly report",
+            )
+            .await
+            .unwrap();
+
+        scheduler.tick().await;
+
+        assert!(
+            prompt_rx.try_recv().is_ok(),
+            "production CustomTaskHandler prompt must NOT be suppressed absent a prior \
+             external-read task in the same tick"
         );
     }
 }

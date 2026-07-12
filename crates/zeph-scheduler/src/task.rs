@@ -542,6 +542,101 @@ pub trait TaskHandler: Send + Sync {
         &self,
         config: &serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = Result<(), SchedulerError>> + Send + '_>>;
+
+    /// Returns `true` when [`execute`](TaskHandler::execute) reads content that originates
+    /// outside the scheduler's own trusted config or in-process state — e.g. a network/HTTP
+    /// response, an MCP tool result, a file loaded from a plugin-marketplace skill directory,
+    /// or stored memory/graph facts that may themselves have been populated from such an
+    /// external source.
+    ///
+    /// RTW-A Mechanism 4 (capability attenuation, see
+    /// [`crate::Scheduler::with_reentry_defense`]) reads this flag to decide whether the
+    /// *current tick* counts as an external-read tick and should therefore suppress any
+    /// custom-prompt injection dispatched later in the same tick.
+    ///
+    /// Defaults to `false` so a handler must explicitly opt in — treating "unknown" as
+    /// "safe" would silently exempt any handler that reads untrusted content from
+    /// attenuation, defeating the purpose of the mechanism. Override this to `true` for any
+    /// handler whose `execute` performs network I/O, reads MCP/tool output, reloads skills
+    /// from disk, or surfaces previously stored content that may have originated from a
+    /// less-trusted source.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::future::Future;
+    /// use std::pin::Pin;
+    /// use zeph_scheduler::{SchedulerError, TaskHandler};
+    ///
+    /// struct FetchesRemoteData;
+    ///
+    /// impl TaskHandler for FetchesRemoteData {
+    ///     fn execute(
+    ///         &self,
+    ///         _config: &serde_json::Value,
+    ///     ) -> Pin<Box<dyn Future<Output = Result<(), SchedulerError>> + Send + '_>> {
+    ///         Box::pin(async move { Ok(()) })
+    ///     }
+    ///
+    ///     fn reads_external_content(&self) -> bool {
+    ///         true
+    ///     }
+    /// }
+    ///
+    /// assert!(FetchesRemoteData.reads_external_content());
+    /// ```
+    fn reads_external_content(&self) -> bool {
+        false
+    }
+
+    /// Returns `true` when [`execute`](TaskHandler::execute) injects an operator- or
+    /// externally-supplied prompt into the agent loop (e.g. by sending it on a channel the
+    /// agent reads as a new user message), as opposed to doing purely internal work (memory
+    /// consolidation, a health probe, a network poll with no agent-facing output, etc.).
+    ///
+    /// RTW-A Mechanism 4 (capability attenuation, see
+    /// [`crate::Scheduler::with_reentry_defense`]) reads this flag on the scheduler's normal
+    /// handler-dispatch path (`register_handler` + `execute_handler`) to decide whether to
+    /// suppress this handler's `execute` for the remainder of a tick that already contained an
+    /// external-read task (see [`reads_external_content`](TaskHandler::reads_external_content)).
+    /// Without this declaration, a handler registered for `TaskKind::Custom` that injects
+    /// prompts (e.g. the built-in `CustomTaskHandler`) would bypass Mechanism 4 entirely, since
+    /// suppression only guarded the no-handler-registered fallback path.
+    ///
+    /// Defaults to `false` for the same reason [`reads_external_content`] defaults to `false`:
+    /// a handler must explicitly declare that it performs agent-facing prompt injection, so
+    /// unrelated handlers (health checks, memory daemons, experiment runs) are never
+    /// unnecessarily suppressed.
+    ///
+    /// [`reads_external_content`]: TaskHandler::reads_external_content
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::future::Future;
+    /// use std::pin::Pin;
+    /// use zeph_scheduler::{SchedulerError, TaskHandler};
+    ///
+    /// struct InjectsAgentPrompt;
+    ///
+    /// impl TaskHandler for InjectsAgentPrompt {
+    ///     fn execute(
+    ///         &self,
+    ///         _config: &serde_json::Value,
+    ///     ) -> Pin<Box<dyn Future<Output = Result<(), SchedulerError>> + Send + '_>> {
+    ///         Box::pin(async move { Ok(()) })
+    ///     }
+    ///
+    ///     fn injects_agent_prompt(&self) -> bool {
+    ///         true
+    ///     }
+    /// }
+    ///
+    /// assert!(InjectsAgentPrompt.injects_agent_prompt());
+    /// ```
+    fn injects_agent_prompt(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

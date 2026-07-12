@@ -111,6 +111,11 @@ impl UpdateCheckHandler {
 }
 
 impl TaskHandler for UpdateCheckHandler {
+    /// Always `true`: every execution fetches the GitHub releases API over the network.
+    fn reads_external_content(&self) -> bool {
+        true
+    }
+
     fn execute(
         &self,
         _config: &serde_json::Value,

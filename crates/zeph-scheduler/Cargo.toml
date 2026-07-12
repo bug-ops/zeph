@@ -15,10 +15,10 @@ readme = "README.md"
 [features]
 ## Enable Unix daemon lifecycle: `PidFile`, `detach_and_run`, and `run_foreground`.
 ##
-## Pulls in `rustix` (fs + process features) for advisory file locking and `zeph-common`
-## for the shared `flock(2)` pid-file guard primitive.
+## Pulls in `rustix` (fs + process features) for advisory file locking, used by the
+## shared `flock(2)` pid-file guard primitive (`zeph_common::pidfile`).
 ## Only meaningful on Unix targets; daemon code is `#[cfg(unix)]`-gated.
-daemon = ["dep:rustix", "dep:zeph-common"]
+daemon = ["dep:rustix"]
 sqlite = ["zeph-db/sqlite", "zeph-durable/sqlite"]
 postgres = ["zeph-db/postgres", "zeph-durable/postgres"]
 default = ["sqlite"]
@@ -34,7 +34,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 tracing.workspace = true
-zeph-common = { workspace = true, optional = true }
+zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-db.workspace = true
 zeph-durable.workspace = true

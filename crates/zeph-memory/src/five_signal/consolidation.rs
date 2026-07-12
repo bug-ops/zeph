@@ -53,6 +53,14 @@ impl ConsolidationHandler {
 
 #[cfg(feature = "scheduler")]
 impl TaskHandler for ConsolidationHandler {
+    /// Always `true`: each run re-surfaces stored episodic facts (`messages` rows) that may
+    /// themselves have been populated from externally-sourced content (e.g. web-scrape or
+    /// MCP tool output persisted earlier in the session), so RTW-A Mechanism 4 must treat a
+    /// consolidation run the same as any other external-read task.
+    fn reads_external_content(&self) -> bool {
+        true
+    }
+
     fn execute(
         &self,
         _config: &serde_json::Value,

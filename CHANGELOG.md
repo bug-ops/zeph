@@ -155,6 +155,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     (`[index] enabled`) were wired only in `src/runner.rs`; ACP and the daemon (A2A server) never
     received repo context regardless of configuration (#6022). Both entry points now wire it the
     same way the CLI does.
+- `zeph-scheduler`: closed two RTW-A re-entry-defense gaps (#6120, #6119).
+  - Mechanism 4 (capability attenuation) hardcoded `matches!(task.kind, TaskKind::UpdateCheck)`
+    as the only way to mark a tick "external-read", so `SkillRefresh` tasks and operator-registered
+    `TaskKind::Custom` handlers (e.g. `zeph-memory`'s `five_signal_consolidation` daemon, which
+    re-surfaces stored facts that may themselves carry externally-sourced content) were invisible
+    to the mechanism regardless of what they actually read (#6120). `TaskHandler` gained a
+    `reads_external_content()` method (default `false`); the scheduler's tick loop now attenuates
+    based on the resolved handler's declaration instead of the task's `kind`. Overridden to `true`
+    on `UpdateCheckHandler` and `ConsolidationHandler`; any current or future handler (including
+    `Custom`-kind ones) can opt in the same way without touching `zeph-scheduler` internals.
+    Attenuation was also only ever *consumed* on the no-handler-registered fallback path
+    (`inject_custom_task`), so the production `CustomTaskHandler` — registered under
+    `TaskKind::Custom("custom")` and feeding the same agent-facing prompt channel from inside its
+    own `execute()` — bypassed suppression entirely, the exact scenario #6120's attack description
+    named. `TaskHandler` gained a second method, `injects_agent_prompt()` (default `false`,
+    overridden to `true` on `CustomTaskHandler`); the tick loop now suppresses any handler that
+    declares it whenever an earlier task in the same tick already read external content, closing
+    the production dispatch path alongside the existing fallback.
+  - Mechanism 3 (injection-pattern detection) matched `INJECTION_PATTERNS` via plain
+    case-insensitive substring search, and the pre-check cleaning step only stripped ASCII
+    control characters below `U+0020` — a zero-width space or other Unicode format character
+    inserted mid-pattern (e.g. `"sy\u{200b}stem:"`) defeated `.contains("system:")` while still
+    reading as `"system:"` to an LLM tokenizer (#6119). `sanitize_task_prompt_checked`/
+    `sanitize_task_prompt` now route their cleaning step through
+    `zeph_common::sanitize::strip_control_chars_preserve_whitespace`, which also strips the
+    shared bypass-codepoint denylist (zero-width spaces, soft hyphens, BOM, Hangul/Khmer/Mongolian
+    fillers, the Unicode Tags block) — the same defense already used by `zeph-memory`'s community
+    summarization pipeline — before truncating to 512 code points, so padding attacks cannot hide
+    a pattern past the truncation window either. `zeph-common` is now a required (non-optional)
+    dependency of `zeph-scheduler` rather than gated behind the `daemon` feature.
 
 ### Security
 

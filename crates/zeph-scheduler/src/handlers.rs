@@ -75,6 +75,12 @@ impl CustomTaskHandler {
 }
 
 impl TaskHandler for CustomTaskHandler {
+    /// Always `true`: every execution sends the sanitised prompt on `tx` for the agent loop
+    /// to process as a new user message, so RTW-A Mechanism 4 must be able to suppress it.
+    fn injects_agent_prompt(&self) -> bool {
+        true
+    }
+
     fn execute(
         &self,
         config: &serde_json::Value,
