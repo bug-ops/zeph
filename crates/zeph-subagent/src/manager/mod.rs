@@ -16,7 +16,6 @@ use std::time::Instant;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use zeph_common::secret::Secret;
 use zeph_common::task_supervisor::BlockingHandle;
 use zeph_common::{SkillTrustLevel, TaskSupervisor};
 use zeph_config::{ContentIsolationConfig, McpServerConfig};
@@ -26,7 +25,7 @@ use crate::def::{PermissionMode, SubAgentDef};
 use crate::durable::DurableResolverSeat;
 use crate::error::SubAgentError;
 use crate::fleet::SharedFleetRegistry;
-use crate::grants::{PermissionGrants, SecretRequest};
+use crate::grants::{GrantedSecret, PermissionGrants, SecretRequest};
 use crate::state::SubAgentState;
 
 /// Parent-derived state propagated to a spawned sub-agent at spawn time.
@@ -184,8 +183,9 @@ pub struct SubAgentHandle {
     /// Receives secret requests from the sub-agent loop.
     pub pending_secret_rx: mpsc::Receiver<SecretRequest>,
     /// Delivers the approval outcome to the sub-agent loop: `None` = denied,
-    /// `Some(value)` = approved, carrying the resolved vault secret value.
-    pub secret_tx: mpsc::Sender<Option<Secret>>,
+    /// `Some(value)` = approved, carrying the resolved vault secret value and its
+    /// grant expiry so the loop can re-validate the TTL locally on every tool call.
+    pub secret_tx: mpsc::Sender<Option<GrantedSecret>>,
     /// ISO 8601 UTC timestamp recorded when the agent was spawned or resumed.
     pub started_at_str: String,
     /// Resolved transcript directory at spawn time; `None` if transcripts were disabled.

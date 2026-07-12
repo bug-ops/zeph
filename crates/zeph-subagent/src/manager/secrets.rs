@@ -8,7 +8,7 @@ use zeph_common::secret::Secret;
 
 use super::SubAgentManager;
 use crate::error::SubAgentError;
-use crate::grants::{GrantKind, SecretRequest};
+use crate::grants::{GrantKind, GrantedSecret, SecretRequest};
 
 /// Build the standard hook environment for a sub-agent lifecycle event.
 pub(crate) fn make_hook_env(
@@ -76,6 +76,10 @@ impl SubAgentManager {
     /// [`PermissionGrants::is_active`][crate::grants::PermissionGrants::is_active]
     /// load-bearing rather than unused bookkeeping.
     ///
+    /// The delivered value is stamped with the grant's expiry (see [`GrantedSecret`]) so the
+    /// sub-agent loop can keep re-validating the TTL locally on every subsequent tool call,
+    /// rather than trusting this one-time gate for the remainder of a long-running turn loop.
+    ///
     /// # Errors
     ///
     /// Returns [`SubAgentError::NotFound`] if the task ID is unknown, or
@@ -91,7 +95,7 @@ impl SubAgentManager {
             .get_mut(task_id)
             .ok_or_else(|| SubAgentError::NotFound(task_id.to_owned()))?;
 
-        if !handle.grants.is_active(&GrantKind::Secret(key.to_owned())) {
+        let Some(expires_at) = handle.grants.expires_at(&GrantKind::Secret(key.to_owned())) else {
             tracing::warn!(
                 task_id,
                 "secret delivery denied: no active grant (missing approval or TTL expired)"
@@ -99,11 +103,11 @@ impl SubAgentManager {
             return Err(SubAgentError::Invalid(
                 "no active grant for this secret".to_owned(),
             ));
-        }
+        };
 
         handle
             .secret_tx
-            .try_send(Some(value))
+            .try_send(Some(GrantedSecret { value, expires_at }))
             .map_err(|e| SubAgentError::Channel(e.to_string()))
     }
 
@@ -136,6 +140,25 @@ impl SubAgentManager {
             }
         }
         None
+    }
+
+    /// Try to receive a pending secret request from one specific sub-agent (non-blocking).
+    ///
+    /// Unlike [`try_recv_secret_request`](Self::try_recv_secret_request), this only polls
+    /// `task_id`'s own request channel, so it never pops and discards an unrelated sibling
+    /// sub-agent's pending request. Use this when the caller already knows which sub-agent
+    /// it wants to act on (e.g. an explicit `/agent approve <id>` command), instead of the
+    /// pop-then-filter pattern of polling [`try_recv_secret_request`](Self::try_recv_secret_request)
+    /// and discarding non-matching results — a discarded result is popped off the channel
+    /// and lost forever, silently starving the sub-agent that actually sent it.
+    ///
+    /// Returns `None` if `task_id` is unknown or has no pending request.
+    pub fn try_recv_secret_request_for(&mut self, task_id: &str) -> Option<SecretRequest> {
+        self.agents
+            .get_mut(task_id)?
+            .pending_secret_rx
+            .try_recv()
+            .ok()
     }
 }
 

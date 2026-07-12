@@ -15,6 +15,7 @@
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use zeph_common::secret::Secret;
 
 /// Metadata sent by a sub-agent when it needs a secret from the vault.
 ///
@@ -197,6 +198,37 @@ impl PermissionGrants {
         self.grants.iter().any(|g| &g.kind == kind)
     }
 
+    /// Returns the absolute instant at which the active grant for `kind` expires.
+    ///
+    /// Automatically sweeps expired grants before checking, so a `None` result means
+    /// there is no active grant for `kind` (never granted, already expired, or revoked).
+    /// Used by [`SubAgentManager::deliver_secret`][crate::manager::SubAgentManager::deliver_secret]
+    /// to stamp the delivered value with its expiry so the sub-agent loop can re-validate the
+    /// TTL locally on every subsequent tool call, without needing further access to this
+    /// `PermissionGrants` instance (which stays on the manager side, not the spawned loop task).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::time::Duration;
+    /// use zeph_subagent::grants::{GrantKind, PermissionGrants};
+    ///
+    /// let mut grants = PermissionGrants::default();
+    /// let kind = GrantKind::Secret("api-key".to_owned());
+    /// assert!(grants.expires_at(&kind).is_none());
+    ///
+    /// grants.add(kind.clone(), Duration::from_mins(5));
+    /// assert!(grants.expires_at(&kind).is_some());
+    /// ```
+    #[must_use]
+    pub fn expires_at(&mut self, kind: &GrantKind) -> Option<Instant> {
+        self.sweep_expired();
+        self.grants
+            .iter()
+            .find(|g| &g.kind == kind)
+            .map(|g| g.granted_at + g.ttl)
+    }
+
     /// Grant access to a vault secret with the given TTL.
     ///
     /// Sweeps expired grants first. Logs an audit event at DEBUG (key is redacted
@@ -223,6 +255,58 @@ impl PermissionGrants {
         if count > 0 {
             tracing::debug!(count, "all permission grants revoked");
         }
+    }
+}
+
+/// A resolved secret value delivered to a sub-agent loop, paired with the absolute
+/// instant its originating grant expires.
+///
+/// Sent over the `secret_tx`/`secret_rx` channel
+/// (see [`SubAgentHandle::secret_tx`][crate::manager::SubAgentHandle::secret_tx]) instead of a
+/// bare [`Secret`] so the spawned agent loop task — which has no further access to the
+/// manager-side [`PermissionGrants`] once the value is delivered — can still re-validate the
+/// TTL locally before every tool call and evict the value once it expires.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::time::{Duration, Instant};
+/// use zeph_common::secret::Secret;
+/// use zeph_subagent::grants::GrantedSecret;
+///
+/// let granted = GrantedSecret {
+///     value: Secret::new("sekrit"),
+///     expires_at: Instant::now() + Duration::from_mins(5),
+/// };
+/// assert!(!granted.is_expired());
+/// ```
+#[derive(Debug)]
+pub struct GrantedSecret {
+    /// The resolved vault secret value.
+    pub value: Secret,
+    /// The absolute instant after which this value must no longer be used.
+    pub expires_at: Instant,
+}
+
+impl GrantedSecret {
+    /// Returns `true` if `expires_at` has already passed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::time::{Duration, Instant};
+    /// use zeph_common::secret::Secret;
+    /// use zeph_subagent::grants::GrantedSecret;
+    ///
+    /// let expired = GrantedSecret {
+    ///     value: Secret::new("sekrit"),
+    ///     expires_at: Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+    /// };
+    /// assert!(expired.is_expired());
+    /// ```
+    #[must_use]
+    pub fn is_expired(&self) -> bool {
+        Instant::now() >= self.expires_at
     }
 }
 

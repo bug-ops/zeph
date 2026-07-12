@@ -8,7 +8,6 @@ use std::time::Instant;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-use zeph_common::secret::Secret;
 use zeph_config::{BgIsolation, ContentIsolationConfig, SubAgentConfig};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, Role};
@@ -26,7 +25,7 @@ use crate::def::{MemoryScope, PermissionMode, SubAgentDef, ToolPolicy};
 use crate::error::SubAgentError;
 use crate::filter::{self, FilteredToolExecutor, PlanModeExecutor};
 use crate::fleet::{FleetSessionInfo, FleetSessionStatus};
-use crate::grants::{PermissionGrants, SecretRequest};
+use crate::grants::{GrantedSecret, PermissionGrants, SecretRequest};
 use crate::hooks::fire_hooks;
 use crate::manager::secrets::make_hook_env;
 use crate::memory::{ensure_memory_dir, escape_memory_content, load_memory_content};
@@ -672,7 +671,7 @@ impl SubAgentManager {
         }
 
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
-        let (secret_tx, secret_rx) = mpsc::channel::<Option<Secret>>(4);
+        let (secret_tx, secret_rx) = mpsc::channel::<Option<GrantedSecret>>(4);
 
         let transcript_writer = self.create_transcript_writer(config, &task_id, &def.name, None);
 
@@ -1061,7 +1060,7 @@ impl SubAgentManager {
         }
 
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
-        let (secret_tx, secret_rx) = mpsc::channel::<Option<Secret>>(4);
+        let (secret_tx, secret_rx) = mpsc::channel::<Option<GrantedSecret>>(4);
 
         let transcript_writer =
             self.create_transcript_writer(config, &new_task_id, &def.name, Some(&original_id));

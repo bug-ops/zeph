@@ -67,7 +67,7 @@ pub use durable::{
 pub use error::SubAgentError;
 pub use filter::{FilteredToolExecutor, PlanModeExecutor, filter_skills};
 pub use fleet::{FleetRegistry, FleetSessionInfo, FleetSessionStatus, SharedFleetRegistry};
-pub use grants::{Grant, GrantKind, PermissionGrants, SecretRequest};
+pub use grants::{Grant, GrantKind, GrantedSecret, PermissionGrants, SecretRequest};
 pub use hooks::{
     HookAction, HookDef, HookError, HookMatcher, HookOutput, HookRunResult, McpDispatch,
     PostToolUseHookInput, SubagentHooks, TOOL_ARGS_JSON_LIMIT, fire_hooks, hook_if_matches,

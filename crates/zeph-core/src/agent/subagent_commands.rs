@@ -300,10 +300,9 @@ impl<C: Channel> Agent<C> {
         };
         let req = {
             let mgr = self.services.orchestration.subagent_manager.as_mut()?;
-            mgr.try_recv_secret_request()
-                .filter(|(tid, _)| *tid == full_id)
+            mgr.try_recv_secret_request_for(&full_id)
         };
-        let Some((_, req)) = req else {
+        let Some(req) = req else {
             return Some(format!(
                 "No pending secret request for sub-agent '{full_id}'."
             ));

@@ -21,6 +21,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-subagent`: sub-agent vault secrets now re-validate their grant TTL live instead of
+  only gating once at delivery time, and a targeted secret-request lookup no longer drops a
+  concurrent sibling sub-agent's pending request (#5991, #5993).
+  - `SubAgentManager::deliver_secret` previously sent the bare resolved `Secret` value over
+    the sub-agent's channel; the running agent loop cached it for the rest of its
+    `run_agent_loop` invocation and kept injecting it into every subsequent tool call's
+    `ExecutionContext`, even after the originating grant's TTL had elapsed (#5991). Added
+    `grants::GrantedSecret` (value + absolute expiry, computed from the active grant via the
+    new `PermissionGrants::expires_at`) as the channel payload, and `handle_tool_step` now
+    evicts expired entries from `granted_secrets` before building the `ExecutionContext` for
+    every tool call, not just once at approval time.
+  - `handle_agent_approve`'s explicit `/agent approve <id>` path polled
+    `SubAgentManager::try_recv_secret_request` (which pops the first pending request across
+    *all* sub-agents) and filtered by task ID, silently discarding a different sub-agent's
+    pending request when it happened to pop first (#5993). Added
+    `SubAgentManager::try_recv_secret_request_for(task_id)`, which polls only that sub-agent's
+    own request channel, and switched the approve path to use it.
 - `zeph-channels`/`zeph-core`: hardened the channel send/retry/status path (#6094, #6106, #6095).
   - `Channel::send_status` was awaited inline on the agent turn hot path at ~45 call sites via
     `let _ = self.channel.send_status(...).await;`, with no outer timeout. Under sustained

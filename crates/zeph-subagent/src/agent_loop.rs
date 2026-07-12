@@ -6,7 +6,6 @@ use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
-use zeph_common::secret::Secret;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{
     ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ToolDefinition,
@@ -15,7 +14,7 @@ use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
 use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
 
 use super::filter::FilteredToolExecutor;
-use super::grants::SecretRequest;
+use super::grants::{GrantedSecret, SecretRequest};
 use super::hooks::{HookDef, SubagentHooks, fire_hooks, make_base_hook_env, matching_hooks};
 use super::manager::SubAgentStatus;
 use super::state::SubAgentState;
@@ -59,7 +58,7 @@ pub(super) struct AgentLoopArgs {
     pub(super) status_tx: watch::Sender<SubAgentStatus>,
     pub(super) started_at: Instant,
     pub(super) secret_request_tx: mpsc::Sender<SecretRequest>,
-    pub(super) secret_rx: mpsc::Receiver<Option<Secret>>,
+    pub(super) secret_rx: mpsc::Receiver<Option<GrantedSecret>>,
     pub(super) background: bool,
     pub(super) hooks: SubagentHooks,
     pub(super) task_id: String,
@@ -194,9 +193,9 @@ async fn handle_secret_request(
     transcript_writer: Option<&TranscriptWriter>,
     seq: &mut u32,
     messages: &mut Vec<Message>,
-    granted_secrets: &mut HashMap<String, Secret>,
+    granted_secrets: &mut HashMap<String, GrantedSecret>,
     secret_request_tx: &mpsc::Sender<SecretRequest>,
-    secret_rx: &mut mpsc::Receiver<Option<Secret>>,
+    secret_rx: &mut mpsc::Receiver<Option<GrantedSecret>>,
     cancel: &CancellationToken,
     background: bool,
     is_text_response: bool,
@@ -253,13 +252,15 @@ async fn handle_secret_request(
             }
         };
         let reply = match outcome {
-            Some(Some(secret_value)) => {
+            Some(Some(granted)) => {
                 // Accumulated for the loop's lifetime and attached to every subsequent tool
                 // call's `ExecutionContext` (see `handle_tool_step`) — a per-call override,
                 // never written into the shared `ShellExecutor::skill_env` slot, because that
                 // slot is on the same executor instance the parent agent uses and would leak
                 // the secret into unrelated tool calls made outside this sub-agent's run.
-                granted_secrets.insert(key_name.clone(), secret_value);
+                // `handle_tool_step` re-checks `granted.is_expired()` before every tool call,
+                // so the cached value stops being usable once its grant's TTL elapses.
+                granted_secrets.insert(key_name.clone(), granted);
                 format!(
                     "[secret:{key_name}] approved — available as ${key_name} in the tool \
                      execution environment"
@@ -406,8 +407,8 @@ async fn run_turn(
     background: bool,
     started_at: Instant,
     secret_request_tx: &mpsc::Sender<SecretRequest>,
-    secret_rx: &mut mpsc::Receiver<Option<Secret>>,
-    granted_secrets: &mut HashMap<String, Secret>,
+    secret_rx: &mut mpsc::Receiver<Option<GrantedSecret>>,
+    granted_secrets: &mut HashMap<String, GrantedSecret>,
     sanitizer: &ContentSanitizer,
     llm_timeout: std::time::Duration,
 ) -> Result<TurnOutcome, super::error::SubAgentError> {
@@ -461,7 +462,7 @@ async fn run_turn(
         task_id,
         agent_name,
         sanitizer,
-        &*granted_secrets,
+        granted_secrets,
     )
     .await;
 
@@ -503,7 +504,7 @@ async fn handle_tool_step(
     task_id: &str,
     agent_name: &str,
     sanitizer: &ContentSanitizer,
-    granted_secrets: &HashMap<String, Secret>,
+    granted_secrets: &mut HashMap<String, GrantedSecret>,
 ) -> bool {
     match response {
         ChatResponse::Text(text) => {
@@ -553,6 +554,11 @@ async fn handle_tool_step(
                 // env override (highest-priority, call-scoped) rather than the executor's
                 // shared `skill_env` slot, which is aliased with the parent agent's own tool
                 // executor and would leak the secret beyond this sub-agent's run.
+                //
+                // Re-check the TTL live before every tool call rather than trusting the
+                // one-time gate at delivery time: a long-running turn loop can otherwise keep
+                // using a secret well after its grant expired (issue #5991).
+                granted_secrets.retain(|_, granted| !granted.is_expired());
                 let exec_ctx = if granted_secrets.is_empty() {
                     None
                 } else {
@@ -560,7 +566,7 @@ async fn handle_tool_step(
                         zeph_tools::ExecutionContext::new().with_envs(
                             granted_secrets
                                 .iter()
-                                .map(|(k, v)| (k.clone(), v.expose().to_owned())),
+                                .map(|(k, v)| (k.clone(), v.value.expose().to_owned())),
                         ),
                     )
                 };
@@ -744,8 +750,9 @@ pub(super) async fn run_agent_loop(
     let mut any_tool_called = false;
     // Accumulates resolved secret values across the loop's lifetime so a later approval
     // does not evict an earlier one from the tool executor's environment (see
-    // `handle_secret_request`).
-    let mut granted_secrets: HashMap<String, Secret> = HashMap::new();
+    // `handle_secret_request`). Entries whose grant TTL has elapsed are evicted live in
+    // `handle_tool_step`, not just gated once at delivery time.
+    let mut granted_secrets: HashMap<String, GrantedSecret> = HashMap::new();
 
     loop {
         if cancel.is_cancelled() {
@@ -912,7 +919,9 @@ mod make_hook_env_tests {
 mod handle_tool_step_granted_secrets_tests {
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
+    use zeph_common::secret::Secret;
     use zeph_llm::provider::ToolUseRequest;
     use zeph_tools::executor::{ErasedToolExecutor, ToolCall, ToolError, ToolOutput};
     use zeph_tools::registry::ToolDef;
@@ -1036,7 +1045,13 @@ mod handle_tool_step_granted_secrets_tests {
         let hooks = SubagentHooks::default();
         let mut messages = Vec::new();
         let mut granted_secrets = HashMap::new();
-        granted_secrets.insert("SOME_VAULT_KEY".to_owned(), Secret::new("the-secret-value"));
+        granted_secrets.insert(
+            "SOME_VAULT_KEY".to_owned(),
+            GrantedSecret {
+                value: Secret::new("the-secret-value"),
+                expires_at: Instant::now() + Duration::from_mins(5),
+            },
+        );
         let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
 
         let no_tool = handle_tool_step(
@@ -1047,7 +1062,7 @@ mod handle_tool_step_granted_secrets_tests {
             "task-1",
             "bot",
             &sanitizer,
-            &granted_secrets,
+            &mut granted_secrets,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -1078,7 +1093,7 @@ mod handle_tool_step_granted_secrets_tests {
         );
         let hooks = SubagentHooks::default();
         let mut messages = Vec::new();
-        let granted_secrets: HashMap<String, Secret> = HashMap::new();
+        let mut granted_secrets: HashMap<String, GrantedSecret> = HashMap::new();
         let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
 
         let no_tool = handle_tool_step(
@@ -1089,7 +1104,7 @@ mod handle_tool_step_granted_secrets_tests {
             "task-1",
             "bot",
             &sanitizer,
-            &granted_secrets,
+            &mut granted_secrets,
         )
         .await;
         assert!(!no_tool);
@@ -1099,6 +1114,54 @@ mod handle_tool_step_granted_secrets_tests {
         assert!(
             calls[0].context.is_none(),
             "no granted secrets must leave context as None"
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_granted_secret_is_not_attached_and_is_evicted() {
+        // Regression guard for #5991: a secret whose grant TTL has already elapsed must
+        // not be re-injected into a tool call's ExecutionContext, and must be dropped
+        // from the loop's local cache rather than lingering for the rest of the run.
+        let recorder = Arc::new(RecordingExecutor::default());
+        let executor = FilteredToolExecutor::new(
+            Arc::clone(&recorder) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let hooks = SubagentHooks::default();
+        let mut messages = Vec::new();
+        let mut granted_secrets = HashMap::new();
+        granted_secrets.insert(
+            "SOME_VAULT_KEY".to_owned(),
+            GrantedSecret {
+                value: Secret::new("the-secret-value"),
+                expires_at: Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+            },
+        );
+
+        let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+
+        let no_tool = handle_tool_step(
+            &executor,
+            tool_use_response(),
+            &mut messages,
+            &hooks,
+            "task-1",
+            "bot",
+            &sanitizer,
+            &mut granted_secrets,
+        )
+        .await;
+        assert!(!no_tool, "a tool call was made");
+
+        let calls = recorder.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0].context.is_none(),
+            "an expired grant must not be attached to the tool call context"
+        );
+        assert!(
+            granted_secrets.is_empty(),
+            "an expired grant must be evicted from the local cache"
         );
     }
 }

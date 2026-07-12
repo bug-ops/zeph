@@ -312,7 +312,11 @@ async fn deliver_secret_after_approval_sends_value_over_channel() {
         .try_recv()
         .expect("value must be sent over the channel");
     let secret = received.expect("delivered value must be Some, not a denial");
-    assert_eq!(secret.expose(), "sekrit-value");
+    assert_eq!(secret.value.expose(), "sekrit-value");
+    assert!(
+        secret.expires_at > std::time::Instant::now(),
+        "delivered value must carry a future expiry"
+    );
 }
 
 #[test]
@@ -322,6 +326,76 @@ fn deliver_secret_unknown_task_id_returns_not_found() {
         .deliver_secret("unknown", "key", zeph_common::secret::Secret::new("sekrit"))
         .unwrap_err();
     assert_matches!(err, SubAgentError::NotFound(_));
+}
+
+// ── try_recv_secret_request_for concurrent-request tests (#5993) ───────────
+
+/// Insert a minimal active `SubAgentHandle` for `task_id` and return the sender half of
+/// its `pending_secret_rx` channel, so tests can push a `SecretRequest` onto it directly.
+fn insert_handle_with_pending_secret_channel(
+    mgr: &mut SubAgentManager,
+    task_id: &str,
+) -> tokio::sync::mpsc::Sender<SecretRequest> {
+    let (req_tx, pending_secret_rx) = tokio::sync::mpsc::channel(4);
+    let (secret_tx, _secret_rx) = tokio::sync::mpsc::channel(4);
+    let (status_tx, status_rx) = watch::channel(SubAgentStatus {
+        state: SubAgentState::Working,
+        last_message: None,
+        turns_used: 0,
+        started_at: std::time::Instant::now(),
+    });
+    drop(status_tx);
+    mgr.agents.insert(
+        task_id.to_owned(),
+        SubAgentHandle {
+            id: task_id.to_owned(),
+            def: sample_def(),
+            task_id: task_id.to_owned(),
+            state: SubAgentState::Working,
+            join_handle: None,
+            cancel: CancellationToken::new(),
+            status_rx,
+            grants: PermissionGrants::default(),
+            pending_secret_rx,
+            secret_tx,
+            started_at_str: String::new(),
+            transcript_dir: None,
+            mcp_tool_names: Vec::new(),
+        },
+    );
+    req_tx
+}
+
+#[tokio::test]
+async fn try_recv_secret_request_for_does_not_steal_sibling_request() {
+    // Regression guard for #5993: polling for one sub-agent's pending secret request must
+    // not pop-and-drop a different sub-agent's unrelated pending request.
+    let mut mgr = make_manager();
+    let _req_tx_a = insert_handle_with_pending_secret_channel(&mut mgr, "agent-a");
+    let req_tx_b = insert_handle_with_pending_secret_channel(&mut mgr, "agent-b");
+
+    // Only agent-b has a pending request; agent-a's channel is empty.
+    req_tx_b
+        .send(SecretRequest {
+            secret_key: "b-key".to_owned(),
+            reason: None,
+        })
+        .await
+        .unwrap();
+
+    // Polling specifically for agent-a must see nothing — and, critically, must not consume
+    // agent-b's request in the process.
+    assert!(mgr.try_recv_secret_request_for("agent-a").is_none());
+
+    // agent-b's request must still be retrievable afterward.
+    let req = mgr.try_recv_secret_request_for("agent-b");
+    assert_eq!(req.map(|r| r.secret_key), Some("b-key".to_owned()));
+}
+
+#[tokio::test]
+async fn try_recv_secret_request_for_unknown_task_id_returns_none() {
+    let mut mgr = make_manager();
+    assert!(mgr.try_recv_secret_request_for("unknown").is_none());
 }
 
 #[tokio::test]
@@ -2038,7 +2112,7 @@ fn make_agent_loop_args(
     });
     let (secret_request_tx, _secret_request_rx) = tokio::sync::mpsc::channel(1);
     let (_secret_approved_tx, secret_rx) =
-        tokio::sync::mpsc::channel::<Option<zeph_common::secret::Secret>>(1);
+        tokio::sync::mpsc::channel::<Option<crate::grants::GrantedSecret>>(1);
     AgentLoopArgs {
         provider,
         executor,
