@@ -7,6 +7,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Testing
 
+- `zeph-llm`: reduced the discoverability of bypassing the Claude no-prefill funnel introduced
+  by #6154, and closed a real HTTP-level coverage gap (#6155, #6156). `split_messages`/
+  `split_messages_structured` in `crates/zeph-llm/src/claude/request.rs` are now
+  `pub(in crate::claude)` instead of `pub(super)`. In the current module nesting (`request` is
+  a direct child of `claude`, i.e. `mod.rs`) the two are functionally identical — Rust has no
+  way to grant a child module's item to its parent while excluding the parent's other children,
+  so this is a self-documenting anchor to the intended boundary, not a new compile-time barrier;
+  `claude::tests` remains exactly as reachable as before in raw visibility terms. A true
+  compile-error barrier is architecturally impossible while the no-prefill funnel
+  (`structured_history`/`plain_history`) lives in the parent module (`claude`/`mod.rs`) — a new
+  request-construction path added there calling the raw split functions directly would still
+  compile fine, so this remains a code-review catch rather than a compiler error. The actual
+  hardening is that the ~22 pure message-conversion tests (tool-use pairing, cache breakpoints,
+  image blocks, thinking/redacted-thinking blocks, compaction round-trip) that used to call
+  these functions directly moved from `claude/tests.rs` into a same-file `mod tests` inside
+  `request.rs`, so `claude::tests` no longer imports or calls them — removing the habit/
+  discoverability path a future author would reach for, not adding a compiler-enforced one. A
+  genuine compile-time guarantee (a newtype only constructible via `structured_history`/
+  `plain_history`, so a request body cannot accept an ungated history) is tracked as a
+  follow-up: #6158. Separately, `ClaudeProvider`'s Messages API
+  base URL is now an injectable field (`api_url`, defaulting to the real `API_URL` in
+  production) with a `#[cfg(test)]`-only `with_api_url` override, replacing a dead hand-rolled
+  TCP mock server in `claude/tests.rs` that had given up on HTTP-level assertions ("We can't
+  override API_URL from outside"). New `wiremock`-backed tests drive `chat_with_tools`,
+  `chat_with_tools_stream`, and `chat_typed` through a real (mocked) HTTP round-trip and assert
+  the no-prefill gate strips a trailing assistant message in the request actually sent over the
+  wire, closing the gap where prior coverage only exercised the identical body-construction
+  sequence via `debug_request_json` as a same-order proxy.
 - `zeph-worktree`: added a regression test confirming `WorktreeManager::remove()`'s single
   `git worktree remove --force` still refuses a `git worktree lock`-ed worktree (requires
   `-f -f`), the second safety layer alongside the `prunable`-gating from #6076 — previously

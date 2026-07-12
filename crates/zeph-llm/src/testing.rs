@@ -138,6 +138,38 @@ pub fn claude_messages_response(content: &str) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(body)
 }
 
+/// Non-streaming Anthropic Messages API response containing a single `tool_use` block.
+///
+/// Compatible with `ClaudeProvider::chat_with_tools`, `chat_with_tools_stream` (non-streaming
+/// send path), and `chat_typed`.
+#[must_use]
+pub fn claude_tool_use_response(
+    tool_name: &str,
+    tool_id: &str,
+    input: &serde_json::Value,
+) -> ResponseTemplate {
+    let body = serde_json::json!({
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": TEST_CLAUDE_MODEL,
+        "content": [{
+            "type": "tool_use",
+            "id": tool_id,
+            "name": tool_name,
+            "input": input
+        }],
+        "stop_reason": "tool_use",
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0
+        }
+    });
+    ResponseTemplate::new(200).set_body_json(body)
+}
+
 /// Claude 429 rate-limit / 529 overload response.
 #[must_use]
 pub fn claude_overload_response(status: u16) -> ResponseTemplate {
@@ -178,6 +210,43 @@ pub fn claude_sse_stream_response(chunks: &[&str]) -> ResponseTemplate {
     );
     body.push_str(
         "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":5}}\n\n",
+    );
+    body.push_str("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_string(body)
+}
+
+/// Claude streaming SSE response containing a single `tool_use` block.
+///
+/// Encodes `input_json` (already-serialized JSON) as one `input_json_delta` event.
+/// Compatible with `ClaudeProvider::chat_with_tools_stream`.
+#[must_use]
+pub fn claude_tool_use_sse_response(
+    tool_id: &str,
+    tool_name: &str,
+    input_json: &str,
+) -> ResponseTemplate {
+    let mut body = String::new();
+
+    body.push_str(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-5\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
+    );
+    let _ = write!(
+        body,
+        "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"{tool_id}\",\"name\":\"{tool_name}\",\"input\":{{}}}}}}\n\n"
+    );
+    let escaped = input_json.replace('\\', "\\\\").replace('"', "\\\"");
+    let _ = write!(
+        body,
+        "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":\"{escaped}\"}}}}\n\n"
+    );
+    body.push_str(
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    );
+    body.push_str(
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":5}}\n\n",
     );
     body.push_str("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
 

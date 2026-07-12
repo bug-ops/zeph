@@ -138,6 +138,9 @@ pub struct ClaudeProvider {
     /// tracking and provider selection can distinguish between multiple configured Claude
     /// instances (#5892).
     provider_name: String,
+    /// Messages API base URL. Always [`API_URL`] in production; overridable only under
+    /// `#[cfg(test)]` via `with_api_url` so tests can point requests at a mock HTTP server.
+    api_url: String,
 }
 
 impl fmt::Debug for ClaudeProvider {
@@ -176,6 +179,7 @@ impl fmt::Debug for ClaudeProvider {
                 &self.max_tool_description_bytes,
             )
             .field("provider_name", &self.provider_name)
+            .field("api_url", &self.api_url)
             .finish()
     }
 }
@@ -204,6 +208,7 @@ impl Clone for ClaudeProvider {
             max_tool_description_bytes: self.max_tool_description_bytes,
             stream_limits: self.stream_limits.clone(),
             provider_name: self.provider_name.clone(),
+            api_url: self.api_url.clone(),
         }
     }
 }
@@ -283,7 +288,18 @@ impl ClaudeProvider {
             prompt_cache_ttl: None,
             stream_limits: zeph_config::StreamLimits::default(),
             provider_name: "claude".to_owned(),
+            api_url: API_URL.to_owned(),
         }
+    }
+
+    /// Override the Messages API base URL. Test-only: points requests at a mock HTTP server
+    /// (e.g. `wiremock`) so tests can assert on the wire format Claude actually receives,
+    /// instead of only on the request body construction functions in isolation.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_api_url(mut self, url: impl Into<String>) -> Self {
+        self.api_url = url.into();
+        self
     }
 
     /// Set the name reported by [`LlmProvider::name`].
@@ -947,13 +963,16 @@ impl ClaudeProvider {
     /// cache-control blocks are capped at Anthropic's budget and the no-prefill gate has
     /// already been applied.
     ///
-    /// This is the only sanctioned way to obtain a `Vec<StructuredApiMessage>` for a request
-    /// body. `split_messages_structured` itself is intentionally NOT imported at this module's
-    /// top level (see the local `use` inside this function) so it isn't one autocomplete away
-    /// from every call site — request-construction code must go through this funnel, which
-    /// bundles the split with the no-prefill strip so the two cannot be pulled apart again the
-    /// way they were before #6146 (this is the second filing of this bug class; #5903 fixed the
-    /// gate for `build_request` only).
+    /// This is the *sanctioned* way to obtain a `Vec<StructuredApiMessage>` for a request body,
+    /// not a compiler-enforced one. `split_messages_structured` itself is intentionally NOT
+    /// imported at this module's top level (see the local `use` inside this function) so it
+    /// isn't one autocomplete away from every call site, which raises the friction of pulling
+    /// the split and the no-prefill strip apart again the way they were before #6146 (this is
+    /// the second filing of this bug class; #5903 fixed the gate for `build_request` only). A
+    /// true compile-time barrier is not achievable while this funnel lives in `claude` (this
+    /// module) and `split_messages_structured` must remain visible to it — see the doc comment
+    /// on `split_messages_structured` in `request.rs` and follow-up #6158 for a design that
+    /// would make bypassing this funnel a compile error instead of a code-review catch.
     fn structured_history(
         &self,
         messages: &[Message],
@@ -979,7 +998,8 @@ impl ClaudeProvider {
     }
 
     /// Split `messages` into a system prompt and a plain chat history, with the no-prefill gate
-    /// already applied. Same bypass-prevention rationale as [`Self::structured_history`].
+    /// already applied. Same friction-raising rationale (not a compile-time guarantee) as
+    /// [`Self::structured_history`].
     fn plain_history<'m>(
         &self,
         messages: &'m [Message],
@@ -1020,7 +1040,7 @@ impl ClaudeProvider {
             };
             let mut req = self
                 .client
-                .post(API_URL)
+                .post(&self.api_url)
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION);
             if let Some(b) = beta {
@@ -1045,7 +1065,7 @@ impl ClaudeProvider {
 
         let mut req = self
             .client
-            .post(API_URL)
+            .post(&self.api_url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION);
         if let Some(b) = beta {
@@ -1158,7 +1178,7 @@ impl ClaudeProvider {
             let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
                 let mut req = self
                     .client
-                    .post(API_URL)
+                    .post(&self.api_url)
                     .header("x-api-key", &self.api_key)
                     .header("anthropic-version", ANTHROPIC_VERSION);
                 if let Some(ref b) = beta {
@@ -1339,7 +1359,7 @@ impl LlmProvider for ClaudeProvider {
             let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
                 let mut req = self
                     .client
-                    .post(API_URL)
+                    .post(&self.api_url)
                     .header("x-api-key", &self.api_key)
                     .header("anthropic-version", ANTHROPIC_VERSION);
                 if let Some(ref b) = beta {
@@ -1505,7 +1525,7 @@ impl LlmProvider for ClaudeProvider {
             let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
                 let mut req = self
                     .client
-                    .post(API_URL)
+                    .post(&self.api_url)
                     .header("x-api-key", &self.api_key)
                     .header("anthropic-version", ANTHROPIC_VERSION);
                 if let Some(ref b) = beta {
