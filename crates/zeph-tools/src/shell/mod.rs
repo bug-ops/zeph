@@ -206,7 +206,13 @@ pub fn effective_shell_command<'a>(binary: &str, args: &'a [String]) -> Option<&
     args.get(pos + 1).map(String::as_str)
 }
 
-const NETWORK_COMMANDS: &[&str] = &["curl", "wget", "nc ", "ncat", "netcat"];
+/// Shell commands that perform outbound network egress.
+///
+/// Used both to derive [`ShellConfig::allow_network`]'s effective blocklist entries here,
+/// and by [`check_blocklist`] callers outside this module (e.g. `zeph-subagent`'s
+/// `NetworkDenyToolExecutor`) that need to block network egress for a single sub-agent
+/// spawn without mutating the shared executor's global policy.
+pub const NETWORK_COMMANDS: &[&str] = &["curl", "wget", "nc ", "ncat", "netcat"];
 
 /// Effective command-restriction policy held inside a `ShellExecutor`.
 ///

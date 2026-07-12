@@ -65,7 +65,7 @@ pub use durable::{
     resolve_durable_promise, try_replay_durable_subagent,
 };
 pub use error::SubAgentError;
-pub use filter::{FilteredToolExecutor, PlanModeExecutor, filter_skills};
+pub use filter::{FilteredToolExecutor, NetworkDenyToolExecutor, PlanModeExecutor, filter_skills};
 pub use fleet::{FleetRegistry, FleetSessionInfo, FleetSessionStatus, SharedFleetRegistry};
 pub use grants::{Grant, GrantKind, GrantedSecret, PermissionGrants, SecretRequest};
 pub use hooks::{

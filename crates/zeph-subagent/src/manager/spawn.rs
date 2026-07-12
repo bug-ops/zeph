@@ -23,7 +23,7 @@ use crate::agent_loop::{AgentLoopArgs, run_agent_loop};
 use crate::cwd_guard::CwdRestoreGuard;
 use crate::def::{MemoryScope, PermissionMode, SubAgentDef, ToolPolicy};
 use crate::error::SubAgentError;
-use crate::filter::{self, FilteredToolExecutor, PlanModeExecutor};
+use crate::filter::{self, FilteredToolExecutor, NetworkDenyToolExecutor, PlanModeExecutor};
 use crate::fleet::{FleetSessionInfo, FleetSessionStatus};
 use crate::grants::{GrantedSecret, PermissionGrants, SecretRequest};
 use crate::hooks::fire_hooks;
@@ -143,10 +143,19 @@ pub(crate) fn build_filtered_executor(
     permission_mode: PermissionMode,
     def: &SubAgentDef,
     memory_dir: Option<PathBuf>,
+    network_denied: bool,
 ) -> FilteredToolExecutor {
     let base: Arc<dyn ErasedToolExecutor> = match memory_dir {
         Some(dir) => Arc::new(MemoryAwareExecutor::new(tool_executor, dir)),
         None => tool_executor,
+    };
+    // NetworkScope::Deny (spec 069-threat-model OQ-1): wrap innermost so the restriction
+    // applies regardless of permission mode, and does not depend on FilteredToolExecutor's
+    // tool-level allow/deny policy.
+    let base: Arc<dyn ErasedToolExecutor> = if network_denied {
+        Arc::new(NetworkDenyToolExecutor::new(base))
+    } else {
+        base
     };
     if permission_mode == PermissionMode::Plan {
         let plan_inner = Arc::new(PlanModeExecutor::new(base));
@@ -563,6 +572,7 @@ impl SubAgentManager {
 
         apply_def_config_defaults(&mut def, config)?;
         apply_constraint_propagation(&mut def, &ctx);
+        let network_denied = ctx.network_denied;
 
         let active = self
             .agents
@@ -664,7 +674,13 @@ impl SubAgentManager {
                 .push("set_working_directory".to_string());
         }
 
-        let executor = build_filtered_executor(tool_executor, permission_mode, &def, memory_dir);
+        let executor = build_filtered_executor(
+            tool_executor,
+            permission_mode,
+            &def,
+            memory_dir,
+            network_denied,
+        );
 
         if let Some(cap) = ctx.max_trust_level {
             executor.set_effective_trust(cap);
@@ -1051,7 +1067,9 @@ impl SubAgentManager {
         let agent_hooks = def.hooks.clone();
         let agent_name_clone = def.name.clone();
 
-        let executor = build_filtered_executor(tool_executor, permission_mode, &def, None);
+        let network_denied = spawn_context.is_some_and(|ctx| ctx.network_denied);
+        let executor =
+            build_filtered_executor(tool_executor, permission_mode, &def, None, network_denied);
 
         if let Some(ctx) = spawn_context
             && let Some(cap) = ctx.max_trust_level
@@ -1246,5 +1264,148 @@ impl SubAgentManager {
             .join_handle = Some(wrapped_join);
 
         Ok(handle_id)
+    }
+}
+
+#[cfg(test)]
+mod build_filtered_executor_tests {
+    //! Regression tests for issue #6030 (`NetworkScope::Deny` enforcement): verify
+    //! `build_filtered_executor` installs `NetworkDenyToolExecutor` exactly when
+    //! `network_denied` is `true`, and leaves the default path unaffected otherwise.
+
+    use super::*;
+    use crate::def::SubAgentDef;
+
+    /// Minimal `bash`-only stub executor that always succeeds.
+    struct StubBashExecutor;
+
+    impl ErasedToolExecutor for StubBashExecutor {
+        fn execute_erased<'a>(
+            &'a self,
+            _response: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+
+        fn execute_confirmed_erased<'a>(
+            &'a self,
+            _response: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+
+        fn tool_definitions_erased(&self) -> Vec<zeph_tools::registry::ToolDef> {
+            use zeph_tools::registry::InvocationHint;
+            vec![zeph_tools::registry::ToolDef {
+                id: "bash".into(),
+                description: "stub".into(),
+                schema: schemars::Schema::default(),
+                invocation: InvocationHint::ToolCall,
+                output_schema: None,
+                server_id: None,
+            }]
+        }
+
+        fn execute_tool_call_erased<'a>(
+            &'a self,
+            call: &'a ToolCall,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            let result = Ok(Some(ToolOutput {
+                tool_name: zeph_common::ToolName::new(call.tool_id.as_str()),
+                summary: "ok".into(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+            }));
+            Box::pin(std::future::ready(result))
+        }
+
+        fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+            false
+        }
+
+        zeph_tools::erased_tool_executor_no_inner_defaults!();
+    }
+
+    fn bash_call(command: &str) -> ToolCall {
+        let mut params = serde_json::Map::new();
+        params.insert("command".into(), serde_json::Value::from(command));
+        ToolCall {
+            tool_id: "bash".into(),
+            params,
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn network_denied_true_blocks_network_egress() {
+        let def = SubAgentDef::for_test("net-denied");
+        let exec = build_filtered_executor(
+            Arc::new(StubBashExecutor),
+            PermissionMode::Default,
+            &def,
+            None,
+            true,
+        );
+        let res = exec
+            .execute_tool_call_erased(&bash_call("curl https://evil.example"))
+            .await;
+        assert!(res.is_err(), "network_denied=true must block curl");
+    }
+
+    #[tokio::test]
+    async fn network_denied_false_permits_network_egress() {
+        let def = SubAgentDef::for_test("net-allowed");
+        let exec = build_filtered_executor(
+            Arc::new(StubBashExecutor),
+            PermissionMode::Default,
+            &def,
+            None,
+            false,
+        );
+        let res = exec
+            .execute_tool_call_erased(&bash_call("curl https://example.com"))
+            .await;
+        assert!(
+            res.is_ok(),
+            "network_denied=false (default) must not restrict network commands"
+        );
+    }
+
+    #[tokio::test]
+    async fn network_denied_true_permits_non_network_bash() {
+        let def = SubAgentDef::for_test("net-denied-2");
+        let exec = build_filtered_executor(
+            Arc::new(StubBashExecutor),
+            PermissionMode::Default,
+            &def,
+            None,
+            true,
+        );
+        let res = exec.execute_tool_call_erased(&bash_call("ls -la")).await;
+        assert!(
+            res.is_ok(),
+            "network_denied=true must not block non-network commands"
+        );
     }
 }

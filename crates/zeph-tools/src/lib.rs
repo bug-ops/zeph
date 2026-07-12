@@ -153,8 +153,8 @@ pub use search_code::{
 pub use shadow_probe::{ProbeGate, ProbeOutcome, ShadowProbeExecutor};
 pub use shell::background::{BackgroundCompletion, BackgroundRunSnapshot, RunId};
 pub use shell::{
-    DEFAULT_BLOCKED_COMMANDS, SHELL_INTERPRETERS, SafeFixSuggestion, ShellExecutor,
-    ShellOutputEnvelope, ShellPolicyHandle, check_blocklist, deobfuscate_command,
+    DEFAULT_BLOCKED_COMMANDS, NETWORK_COMMANDS, SHELL_INTERPRETERS, SafeFixSuggestion,
+    ShellExecutor, ShellOutputEnvelope, ShellPolicyHandle, check_blocklist, deobfuscate_command,
     effective_shell_command, is_blocked_rm_worktrees,
 };
 pub use tool_filter::ToolFilter;

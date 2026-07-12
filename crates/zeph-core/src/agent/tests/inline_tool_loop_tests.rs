@@ -212,6 +212,77 @@ async fn provider_error_is_propagated() {
     assert!(result.is_err());
 }
 
+// Regression test for #6030 S1 (critic finding): `handle_run_inline_action` wraps
+// `self.tool_executor` with `NetworkDenyToolExecutor` for the duration of a single inline
+// turn when the task carries `NetworkScope::Deny`, since `RunInline` tasks share the
+// parent agent's own tool loop (no per-spawn executor to wrap, unlike spawned sub-agents).
+// This test exercises that exact mechanism directly against `run_inline_tool_loop` — the
+// same call `handle_run_inline_action` awaits — proving the `fetch` tool call never
+// reaches the inner executor once wrapped.
+#[tokio::test]
+async fn network_deny_wrapped_executor_blocks_fetch_before_reaching_inner() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct FlaggingExecutor {
+        called: Arc<AtomicBool>,
+    }
+
+    impl ToolExecutor for FlaggingExecutor {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+
+        async fn execute_tool_call(
+            &self,
+            _call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            self.called.store(true, Ordering::SeqCst);
+            Ok(Some(ToolOutput {
+                tool_name: "fetch".into(),
+                summary: "should not be reached".into(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+            }))
+        }
+
+        zeph_tools::tool_executor_no_inner_defaults!();
+    }
+
+    let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+        tool_use_response("call-1", "fetch"),
+        ChatResponse::Text("done".into()),
+    ]);
+    let provider = AnyProvider::Mock(mock);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let called = Arc::new(AtomicBool::new(false));
+    let executor = FlaggingExecutor {
+        called: called.clone(),
+    };
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    // Simulate the swap `handle_run_inline_action` performs when `network_denied_for_task`
+    // returns `true` for the dispatched task.
+    agent.tool_executor = Arc::new(zeph_subagent::NetworkDenyToolExecutor::new(
+        agent.tool_executor.clone(),
+    ));
+
+    let result = agent.run_inline_tool_loop("fetch a url", 10).await;
+
+    assert_eq!(result.unwrap(), "done");
+    assert!(
+        !called.load(Ordering::SeqCst),
+        "fetch tool call must be blocked before reaching the inner executor"
+    );
+}
+
 // Regression test for issue #2542: elicitation deadlock in run_inline_tool_loop.
 //
 // The real deadlock scenario: MCP tool sends an elicitation event and then blocks

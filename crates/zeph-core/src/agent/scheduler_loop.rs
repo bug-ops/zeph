@@ -19,6 +19,25 @@ fn lookahead_effective_depth(fidelity: Option<&zeph_config::FidelityConfig>) -> 
     fidelity.map_or(0, |c| if c.enabled { c.lookahead_depth } else { 0 })
 }
 
+/// Returns `true` if `task` carries `NetworkScope::Deny`, in which case the spawned
+/// sub-agent's tool executor must be wrapped with `NetworkDenyToolExecutor` (spec
+/// `069-threat-model` OQ-1). `Inherit`, `Allow`, and `None` all return `false` — only an
+/// explicit `Deny` restricts network egress; the default/non-Deny path is unaffected.
+///
+/// Fails open (`false`) when `task` is `None` — a graph-desync task-lookup miss cannot be
+/// distinguished from a genuinely scope-less task here, so this logs at `debug` for
+/// observability rather than assuming `Deny` (consistent with the product's
+/// network-allow-by-default model).
+fn network_denied_for_task(task: Option<&zeph_orchestration::TaskNode>) -> bool {
+    if task.is_none() {
+        tracing::debug!("network_denied_for_task: task lookup missed, defaulting to not-denied");
+    }
+    matches!(
+        task.and_then(|t| t.network_scope),
+        Some(zeph_orchestration::NetworkScope::Deny)
+    )
+}
+
 /// Save a graph snapshot to persistent storage with a 5-second timeout.
 ///
 /// Fail-open: errors and timeouts are logged at `warn!` level and do not abort
@@ -88,11 +107,9 @@ impl<C: crate::channel::Channel> Agent<C> {
         spawn_counter: &mut usize,
         task_count: usize,
     ) -> (bool, bool, Option<zeph_orchestration::GraphStatus>) {
-        let task_title = scheduler
-            .graph()
-            .tasks
-            .get(task_id.index())
-            .map_or("unknown", |t| t.title.as_str());
+        let task = scheduler.graph().tasks.get(task_id.index());
+        let task_title = task.map_or("unknown", |t| t.title.as_str());
+        let network_denied = network_denied_for_task(task);
 
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
@@ -101,7 +118,8 @@ impl<C: crate::channel::Channel> Agent<C> {
         let event_tx = scheduler.event_sender();
         let task_supervisor = Arc::clone(&self.runtime.lifecycle.task_supervisor);
 
-        let spawn_ctx = self.build_spawn_context(&cfg);
+        let mut spawn_ctx = self.build_spawn_context(&cfg);
+        spawn_ctx.network_denied = network_denied;
 
         let mgr = self
             .services
@@ -193,11 +211,9 @@ impl<C: crate::channel::Channel> Agent<C> {
         task_count: usize,
         cancel_token: &CancellationToken,
     ) {
-        let task_title = scheduler
-            .graph()
-            .tasks
-            .get(task_id.index())
-            .map_or("unknown", |t| t.title.as_str());
+        let task = scheduler.graph().tasks.get(task_id.index());
+        let task_title = task.map_or("unknown", |t| t.title.as_str());
+        let network_denied = network_denied_for_task(task);
         self.channel
             .send_status_best_effort(&format!(
                 "Executing task {spawn_counter}/{task_count} (inline): {task_title}..."
@@ -215,6 +231,27 @@ impl<C: crate::channel::Channel> Agent<C> {
             .tasks
             .get(task_id.index())
             .and_then(|t| t.execution_environment.clone());
+
+        // NetworkScope::Deny (spec 069-threat-model OQ-1, #6030 S1 follow-up): unlike a
+        // spawned sub-agent, a `RunInline` task executes inside this agent's own tool loop
+        // and shares `self.tool_executor` directly (see `run_inline_tool_loop`'s dispatch
+        // via `self.tool_executor.execute_tool_call_erased`). There is no per-spawn
+        // executor to wrap, so temporarily replace `self.tool_executor` with a
+        // `NetworkDenyToolExecutor` for the duration of this single inline turn, then
+        // restore it unconditionally. Safe because `Agent<C>` methods take `&mut self`:
+        // no concurrent task can observe or race the swap, and any sub-agent already
+        // spawned holds its own `Arc` clone taken before this point, so it is unaffected.
+        let prev_executor = network_denied.then(|| {
+            tracing::warn!(
+                %task_id,
+                "RunInline task carries NetworkScope::Deny — wrapping tool_executor for this turn"
+            );
+            let prev = Arc::clone(&self.tool_executor);
+            self.tool_executor = Arc::new(zeph_subagent::NetworkDenyToolExecutor::new(Arc::clone(
+                &prev,
+            )));
+            prev
+        });
 
         let event_tx = scheduler.event_sender();
         let max_iter = self.tool_orchestrator.max_iterations;
@@ -238,6 +275,9 @@ impl<C: crate::channel::Channel> Agent<C> {
         };
         // Restore prior env (supports nested RunInline, though unusual in practice).
         self.services.orchestration.task_execution_env = prev_task_env;
+        if let Some(prev) = prev_executor {
+            self.tool_executor = prev;
+        }
 
         let event = zeph_orchestration::TaskEvent {
             task_id,
@@ -799,7 +839,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
 #[cfg(test)]
 mod tests {
-    use super::lookahead_effective_depth;
+    use super::{lookahead_effective_depth, network_denied_for_task};
 
     #[test]
     fn fidelity_none_returns_zero() {
@@ -824,5 +864,44 @@ mod tests {
             ..zeph_config::FidelityConfig::default()
         };
         assert_eq!(lookahead_effective_depth(Some(&cfg)), 4);
+    }
+
+    // ── network_denied_for_task (issue #6030) ──────────────────────────────
+
+    fn task_with_scope(
+        scope: Option<zeph_orchestration::NetworkScope>,
+    ) -> zeph_orchestration::TaskNode {
+        let mut node = zeph_orchestration::TaskNode::new(0, "t", "d");
+        node.network_scope = scope;
+        node
+    }
+
+    #[test]
+    fn no_task_returns_false() {
+        assert!(!network_denied_for_task(None));
+    }
+
+    #[test]
+    fn missing_network_scope_returns_false() {
+        let node = task_with_scope(None);
+        assert!(!network_denied_for_task(Some(&node)));
+    }
+
+    #[test]
+    fn inherit_scope_returns_false() {
+        let node = task_with_scope(Some(zeph_orchestration::NetworkScope::Inherit));
+        assert!(!network_denied_for_task(Some(&node)));
+    }
+
+    #[test]
+    fn allow_scope_returns_false() {
+        let node = task_with_scope(Some(zeph_orchestration::NetworkScope::Allow));
+        assert!(!network_denied_for_task(Some(&node)));
+    }
+
+    #[test]
+    fn deny_scope_returns_true() {
+        let node = task_with_scope(Some(zeph_orchestration::NetworkScope::Deny));
+        assert!(network_denied_for_task(Some(&node)));
     }
 }

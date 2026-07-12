@@ -324,6 +324,145 @@ impl ErasedToolExecutor for PlanModeExecutor {
     zeph_tools::erased_tool_executor_forward!(inner);
 }
 
+// ── Network egress denial ─────────────────────────────────────────────────────
+
+/// Tool IDs that are pure network-egress tools — any call is blocked outright, no command
+/// inspection needed (unlike `bash`, which is dual-use).
+///
+/// `web_scrape`/`fetch` are the native `WebScrapeExecutor` tool IDs (see `zeph-tools`
+/// `scrape.rs`) — the tool an LLM reaches for by default to retrieve a URL, and therefore
+/// the highest-likelihood egress vector for a `Deny`-scoped task (#6030 critic finding S2).
+const NETWORK_ONLY_TOOL_IDS: &[&str] = &["web_scrape", "fetch"];
+
+/// Blocks network-egress tool calls for a single sub-agent spawn.
+///
+/// Wraps an [`ErasedToolExecutor`] and rejects two classes of call with
+/// [`ToolError::Blocked`]:
+/// - Any call to a network-only tool (`web_scrape`, `fetch`) — blocked unconditionally,
+///   since these tools have no non-network purpose.
+/// - `bash` tool calls whose command matches [`zeph_tools::NETWORK_COMMANDS`] (`curl`,
+///   `wget`, `nc`, `ncat`, `netcat`).
+///
+/// All other tool calls pass through unchanged. **Known gap**: MCP-provided tools (which may
+/// perform their own HTTP egress) are not inspected — see `specs/069-threat-model/spec.md`
+/// INVARIANT-5. This is a best-effort, tool/command-identity block, not a sandbox boundary.
+///
+/// Installed by `build_filtered_executor` (`crate::manager::spawn`) when the spawning
+/// task carries `NetworkScope::Deny` (spec `069-threat-model` OQ-1). Unlike mutating
+/// [`ShellConfig`](zeph_tools::ShellConfig)'s `allow_network` field directly, this
+/// wrapper scopes the restriction to a single spawn without affecting the shared
+/// `tool_executor` used by the parent agent and sibling tasks.
+pub struct NetworkDenyToolExecutor {
+    inner: Arc<dyn ErasedToolExecutor>,
+    blocklist: Vec<String>,
+}
+
+impl NetworkDenyToolExecutor {
+    /// Wrap `inner`, blocking network-egress tool calls for every call.
+    #[must_use]
+    pub fn new(inner: Arc<dyn ErasedToolExecutor>) -> Self {
+        Self {
+            inner,
+            blocklist: zeph_tools::NETWORK_COMMANDS
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
+        }
+    }
+
+    /// Returns `Err` if `call` targets a network-only tool (`web_scrape`, `fetch`) or is a
+    /// `bash` invocation whose command matches the network-command blocklist; `Ok(())`
+    /// otherwise.
+    fn check_call(&self, call: &ToolCall) -> Result<(), ToolError> {
+        let tool_id = normalize_tool_id(call.tool_id.as_str());
+
+        if NETWORK_ONLY_TOOL_IDS.contains(&tool_id.as_str()) {
+            tracing::warn!(
+                tool_id = %tool_id,
+                "network egress denied for sub-agent task (NetworkScope::Deny)"
+            );
+            return Err(ToolError::Blocked { command: tool_id });
+        }
+
+        if tool_id != "bash" {
+            return Ok(());
+        }
+        let Some(command) = call.params.get("command").and_then(|v| v.as_str()) else {
+            return Ok(());
+        };
+        if let Some(matched) = zeph_tools::check_blocklist(command, &self.blocklist) {
+            tracing::warn!(
+                command = %matched,
+                "network egress denied for sub-agent task (NetworkScope::Deny)"
+            );
+            return Err(ToolError::Blocked { command: matched });
+        }
+        Ok(())
+    }
+}
+
+impl ErasedToolExecutor for NetworkDenyToolExecutor {
+    fn execute_erased<'a>(
+        &'a self,
+        response: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        self.inner.execute_erased(response)
+    }
+
+    fn execute_confirmed_erased<'a>(
+        &'a self,
+        response: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        self.inner.execute_confirmed_erased(response)
+    }
+
+    fn tool_definitions_erased(&self) -> Vec<ToolDef> {
+        self.inner.tool_definitions_erased()
+    }
+
+    fn execute_tool_call_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        if let Err(e) = self.check_call(call) {
+            return Box::pin(std::future::ready(Err(e)));
+        }
+        Box::pin(self.inner.execute_tool_call_erased(call))
+    }
+
+    fn execute_tool_call_confirmed_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        if let Err(e) = self.check_call(call) {
+            return Box::pin(std::future::ready(Err(e)));
+        }
+        Box::pin(self.inner.execute_tool_call_confirmed_erased(call))
+    }
+
+    fn set_skill_env(&self, env: Option<HashMap<String, String>>) {
+        self.inner.set_skill_env(env);
+    }
+
+    fn set_effective_trust(&self, level: zeph_tools::SkillTrustLevel) {
+        self.inner.set_effective_trust(level);
+    }
+
+    fn is_tool_retryable_erased(&self, tool_id: &str) -> bool {
+        self.inner.is_tool_retryable_erased(tool_id)
+    }
+
+    fn requires_confirmation_erased(&self, call: &ToolCall) -> bool {
+        self.inner.requires_confirmation_erased(call)
+    }
+
+    zeph_tools::erased_tool_executor_forward!(inner);
+}
+
 // ── Skill filtering ───────────────────────────────────────────────────────────
 
 /// Filter skills from a registry according to a [`SkillFilter`].
@@ -983,6 +1122,112 @@ mod tests {
         let defs = exec.tool_definitions_erased();
         assert_eq!(defs.len(), 2);
         assert!(!defs.iter().any(|d| d.id == "dangerous"));
+    }
+
+    // ── NetworkDenyToolExecutor tests (issue #6030) ────────────────────────
+
+    fn bash_call(command: &str) -> ToolCall {
+        let mut params = serde_json::Map::new();
+        params.insert("command".into(), serde_json::Value::from(command));
+        ToolCall {
+            tool_id: "bash".into(),
+            params,
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn network_deny_blocks_curl() {
+        let exec = NetworkDenyToolExecutor::new(stub_box(&["bash"]));
+        let res = exec
+            .execute_tool_call_erased(&bash_call("curl https://evil.example"))
+            .await;
+        assert_matches!(res, Err(ToolError::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn network_deny_blocks_wget_and_nc() {
+        let exec = NetworkDenyToolExecutor::new(stub_box(&["bash"]));
+        assert!(
+            exec.execute_tool_call_erased(&bash_call("wget https://evil.example"))
+                .await
+                .is_err()
+        );
+        assert!(
+            exec.execute_tool_call_erased(&bash_call("nc -l 4444"))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn network_deny_permits_non_network_bash() {
+        let exec = NetworkDenyToolExecutor::new(stub_box(&["bash"]));
+        let res = exec.execute_tool_call_erased(&bash_call("ls -la")).await;
+        assert!(res.is_ok(), "non-network command must pass through");
+    }
+
+    #[tokio::test]
+    async fn network_deny_ignores_non_bash_tools() {
+        let exec = NetworkDenyToolExecutor::new(stub_box(&["web"]));
+        let call = ToolCall {
+            tool_id: "web".into(),
+            params: serde_json::Map::default(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let res = exec.execute_tool_call_erased(&call).await;
+        assert!(res.is_ok(), "non-bash tool calls must not be inspected");
+    }
+
+    #[tokio::test]
+    async fn network_deny_confirmed_path_also_enforces() {
+        let exec = NetworkDenyToolExecutor::new(stub_box(&["bash"]));
+        let res = exec
+            .execute_tool_call_confirmed_erased(&bash_call("curl https://evil.example"))
+            .await;
+        assert_matches!(res, Err(ToolError::Blocked { .. }));
+    }
+
+    fn tool_call(tool_id: &str) -> ToolCall {
+        ToolCall {
+            tool_id: tool_id.into(),
+            params: serde_json::Map::default(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn network_deny_blocks_web_scrape_unconditionally() {
+        let exec = NetworkDenyToolExecutor::new(stub_box(&["web_scrape"]));
+        let res = exec
+            .execute_tool_call_erased(&tool_call("web_scrape"))
+            .await;
+        assert_matches!(res, Err(ToolError::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn network_deny_blocks_fetch_unconditionally() {
+        let exec = NetworkDenyToolExecutor::new(stub_box(&["fetch"]));
+        let res = exec.execute_tool_call_erased(&tool_call("fetch")).await;
+        assert_matches!(res, Err(ToolError::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn network_deny_blocks_fetch_confirmed_path_too() {
+        let exec = NetworkDenyToolExecutor::new(stub_box(&["fetch"]));
+        let res = exec
+            .execute_tool_call_confirmed_erased(&tool_call("fetch"))
+            .await;
+        assert_matches!(res, Err(ToolError::Blocked { .. }));
     }
 
     // ── #1184: PlanModeExecutor + disallowed_tools catalog test ───────────

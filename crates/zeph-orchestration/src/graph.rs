@@ -311,8 +311,20 @@ pub enum ExecutionMode {
 
 /// Controls network access for a task node during orchestrated execution.
 ///
-/// **Advisory only** — this field is not yet read at runtime. See the
-/// `TODO(enforcement)` on the `Deny` variant and `specs/069-threat-model/spec.md §5`.
+/// **`Deny` is enforced as a best-effort tool/command-identity block, not a sandbox
+/// boundary.** Both dispatch paths (`handle_scheduler_spawn_action` for spawned
+/// sub-agents, and `handle_run_inline_action` for `RunInline` tasks) wrap the task's tool
+/// executor with `zeph_subagent::NetworkDenyToolExecutor` when this field is `Deny`, which
+/// blocks:
+/// - `bash` invocations of network commands (`curl`, `wget`, `nc`, `ncat`, `netcat`)
+/// - any call to the native `web_scrape`/`fetch` tool
+///
+/// **Known gap**: MCP-provided tools are not inspected and may still perform their own
+/// HTTP egress. Obfuscated shell commands (`eval`, `bash -c` payloads, variable expansion,
+/// `/dev/tcp`, language-runtime one-liners) also bypass the `bash` check — this is the same
+/// pre-existing class of limitation documented on `ShellExecutor`'s own blocklist. See
+/// `specs/069-threat-model/spec.md` INVARIANT-5 for the full enforcement boundary and
+/// residual risk.
 ///
 /// # Examples
 ///
@@ -335,9 +347,12 @@ pub enum NetworkScope {
     Inherit,
     /// Explicitly allow network egress (shell network commands + scrape/fetch) for this task.
     Allow,
-    /// Deny all network egress for this task regardless of global config.
-    // TODO(enforcement): wire to spawned sub-agent launch in handle_scheduler_spawn_action.
-    // See scheduler_loop.rs spawn_for_task — it does not thread per-task scope today.
+    /// Deny network egress for this task via `bash` network commands and the
+    /// `web_scrape`/`fetch` tool, regardless of global config.
+    ///
+    /// This is a best-effort tool/command-identity block enforced via
+    /// `NetworkDenyToolExecutor`, not a full network-egress guarantee — MCP-provided
+    /// tools and obfuscated shell commands are not covered. See the type-level doc above.
     Deny,
 }
 
@@ -418,7 +433,8 @@ pub struct TaskNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget_cents: Option<f64>,
 
-    /// Per-task network egress policy. Advisory only for spawned sub-agents.
+    /// Per-task network egress policy. Enforced (best-effort) for both spawned
+    /// sub-agents and `RunInline` tasks.
     ///
     /// `None` / `Inherit` = inherit the executor/global `allow_network` default.
     /// See [`NetworkScope`] for enforcement caveats and `specs/069-threat-model/spec.md §5`.

@@ -164,7 +164,7 @@ Each tree starts from an adversarial goal and branches to leaf attack steps.
 | 2.2.1 Prompt → ShellExecutor | VIGIL tripwire; `ScopedToolExecutor`; Seatbelt sandbox | **Low** |
 | 2.2.2 MCP tool name collision | Collision detection in `zeph-mcp`; `normalize_tool_id` | **Low** |
 | 2.2.3 Seatbelt profile bypass | Deny-first profile; audited by `SeatbeltProfile` | **Medium** — depends on profile completeness |
-| 2.2.4 Spawned sub-agent scope (§5) | **None today** — `network_scope` advisory only | **High** — uncontrolled path |
+| 2.2.4 Spawned sub-agent scope (§5) | `NetworkDenyToolExecutor` blocks `curl`/`wget`/`nc`/`ncat`/`netcat` in `bash` calls, and unconditionally blocks the `web_scrape`/`fetch` tool, for both spawned sub-agents and `RunInline` tasks (OQ-1, resolved) | **Medium** — detection is tool/command-identity matching, not sandbox-level; MCP-provided tools and obfuscated shell commands are not covered |
 | 2.3.1 SSRF direct | `SsrfGuard` + `ScrapeConfig` allowlist | **Low** — if allowlist is configured |
 | 2.3.2 SSRF via redirect | `SsrfGuard` (initial URL only) | **Medium** — redirect not re-validated |
 | 2.3.3 DNS rebinding | No connect-time IP re-validation | **High** — no current control |
@@ -181,12 +181,16 @@ Each tree starts from an adversarial goal and branches to leaf attack steps.
 
 The following paths have **no or weak controls** today:
 
-### 4.1 Per-task network egress is not bounded by orchestration
+### 4.1 Per-task network egress is bounded by orchestration on a best-effort basis (RESOLVED, OQ-1)
 
-The orchestration planner can annotate a task with `network_scope: Deny`, but this field
-is **advisory only** — the spawned sub-agent's `ShellConfig.allow_network` is set by the
-runner's global config, not per the task node. Issue #3934 introduces the types and the
-spec annotation; runner enforcement is a follow-up (see §5 and §7).
+The orchestration planner can annotate a task with `network_scope: Deny`. This is now
+enforced on both dispatch paths: `handle_scheduler_spawn_action` (spawned sub-agents) and
+`handle_run_inline_action` (`RunInline` tasks — the latter by temporarily wrapping the
+parent agent's own `tool_executor` for the duration of that inline turn, then restoring
+it) both wrap the task's tool executor with `NetworkDenyToolExecutor`, which blocks
+network-egress `bash` commands (`curl`/`wget`/`nc`/`ncat`/`netcat`) and the native
+`web_scrape`/`fetch` tool (OQ-1, resolved, #6030). Residual gap: MCP-provided tools are not
+inspected and may still perform their own HTTP egress — see §5.2.
 
 ### 4.2 Asset-sensitivity is not propagated to planner tool scoping
 
@@ -226,23 +230,32 @@ and graph-wide on `OrchestrationConfig::default_asset_sensitivity`.
 
 ### 5.2 Enforcement caveat (MANDATORY — read before using these types)
 
-> **Advisory only — not enforced for spawned sub-agents.**
+> **`NetworkScope::Deny` is enforced (best-effort) on both dispatch paths;
+> `AssetSensitivity` remains advisory everywhere.**
 >
-> The `RunInline` path (scheduler_loop.rs `tick_once`) reads `TaskNode::execution_environment`
-> to configure the inline executor. `NetworkScope` and `AssetSensitivity` follow the same
-> advisory pattern as `token_budget_cents` (warn-only, pre-v1.0.0).
+> `handle_scheduler_spawn_action` (spawned sub-agents) reads `TaskNode::network_scope` and
+> sets `SpawnContext::network_denied` accordingly; `build_filtered_executor` wraps the
+> sub-agent's tool executor with `NetworkDenyToolExecutor` when `Deny` (OQ-1, resolved,
+> #6030). `handle_run_inline_action` (`RunInline` path, `scheduler_loop.rs`) reads the same
+> field and, when `Deny`, temporarily replaces the parent agent's own `self.tool_executor`
+> with a `NetworkDenyToolExecutor`-wrapped copy for the duration of that single inline turn,
+> restoring it afterward — `RunInline` tasks share the parent's tool loop, so there is no
+> per-task executor to wrap independently.
 >
-> The spawned sub-agent path (`handle_scheduler_spawn_action` → `spawn_for_task`) builds its
-> context via `build_spawn_context(&cfg)` and does **NOT** read per-task scope fields.
-> A planner-emitted `network_scope: Deny` is silently ignored for spawned tasks until the
-> runner wiring described in §7 is implemented.
+> `NetworkDenyToolExecutor` blocks two classes of call: `bash` invocations of `curl`,
+> `wget`, `nc`, `ncat`, `netcat`; and any call to the native `web_scrape`/`fetch` tool
+> (blocked unconditionally — no command inspection needed, since these tools have no
+> non-network purpose). **Known gap**: MCP-provided tools are not inspected.
+>
+> `AssetSensitivity` follows the same advisory pattern as `token_budget_cents` (warn-only,
+> pre-v1.0.0) on both paths — `TaskNode::network_scope` enforcement does not extend to
+> `asset_sensitivity` (OQ-2 open).
 
-<!-- TODO(critic): NetworkScope/AssetSensitivity are advisory in this PR; spawned sub-agent
-enforcement (handle_scheduler_spawn_action / spawn_for_task) is deferred.
-See scheduler_loop.rs handle_scheduler_spawn_action and spawn_for_task. -->
-
-This means: **do not treat `network_scope: Deny` as a security guarantee** in the current
-implementation. It is a planner annotation for future enforcement only.
+This means: **`network_scope: Deny` is a best-effort tool/command-identity block, not a
+sandbox-level guarantee** — it does not protect against obfuscated or subshell-embedded
+shell commands the underlying blocklist heuristic misses (see §2.2.3), nor against MCP
+tools performing their own HTTP egress. `asset_sensitivity` remains a planner annotation
+for future enforcement only (OQ-2).
 
 ### 5.3 Planner JSON schema exposure
 
@@ -272,9 +285,13 @@ tracked as a finding in §4.4.)*
 **INVARIANT-4 (Memory-write-gate):** All writes to Qdrant and the graph entity store MUST
 pass through `MemoryWriteGate` scoring. `NEVER` bypass the write gate for "trusted" inputs.
 
-**INVARIANT-5 (NetworkScope-advisory):** `network_scope: Deny` on a `TaskNode` is an advisory
-annotation only. `NEVER` document or represent it as a security enforcement boundary until
-runner wiring in §7 is complete.
+**INVARIANT-5 (NetworkScope-enforcement-scope):** `network_scope: Deny` on a `TaskNode` is
+enforced for both spawned sub-agents and `RunInline` tasks via `NetworkDenyToolExecutor`
+(OQ-1, resolved), which blocks `bash` network commands and the native `web_scrape`/`fetch`
+tool. This is a best-effort tool/command-identity block, not a sandbox boundary — it does
+not cover obfuscated shell commands, subshell embedding beyond what the underlying
+blocklist heuristic catches, or MCP tool calls performing their own HTTP egress. `NEVER`
+represent it as a hard security boundary.
 
 **INVARIANT-6 (AssetSensitivity-advisory):** `asset_sensitivity: Confidential` on a `TaskNode`
 does NOT cause the dispatcher to tighten the tool allow-list in the current implementation.
@@ -289,7 +306,7 @@ MCP client MUST emit an `EgressEvent` with a non-empty `ToolCall.skill_egress_at
 
 | # | Question | Tracked by |
 |---|----------|-----------|
-| OQ-1 | Wire `network_scope: Deny` to `ShellConfig.allow_network` in `handle_scheduler_spawn_action` and `build_spawn_context`. Requires threading per-task scope through `SchedulerAction::Spawn`. | Follow-up issue after #3934 |
+| OQ-1 | ~~Wire `network_scope: Deny` to `ShellConfig.allow_network` in `handle_scheduler_spawn_action` and `build_spawn_context`.~~ **Resolved** (#6030): both `handle_scheduler_spawn_action` (spawned sub-agents, via `SpawnContext::network_denied`) and `handle_run_inline_action` (`RunInline` tasks, via a temporary swap of `self.tool_executor`) wrap the task's tool executor with `NetworkDenyToolExecutor` instead of mutating the shared `ShellConfig` directly (avoids affecting sibling tasks / the parent agent outside the wrapped call). Blocks `bash` network commands and the native `web_scrape`/`fetch` tool. Remaining known gap: MCP-provided tools are not inspected. | #6030 |
 | OQ-2 | Wire `asset_sensitivity ≥ Confidential` to auto-tighten `ScopedToolExecutor` allow-list at dispatch time. | Follow-up issue after #3934 |
 | OQ-3 | Re-validate HTTP target IP after each redirect in `WebScrapeExecutor` to close SSRF-via-redirect (§4.4 / 2.3.2). | See `010-security/spec.md` |
 | OQ-4 | Add connect-time IP validation (DNS rebinding guard, §4.4 / 2.3.3). | See `010-security/spec.md` |

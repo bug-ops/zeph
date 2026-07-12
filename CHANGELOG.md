@@ -83,6 +83,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-orchestration`/`zeph-subagent`/`zeph-core`: `TaskNode::network_scope: Deny` was
+  advisory-only — the field was never read at dispatch time, so a planner-emitted
+  `network_scope: Deny` silently left a task's network egress unrestricted (spec
+  `069-threat-model` OQ-1, #6030). Now enforced on both dispatch paths via the new
+  `NetworkDenyToolExecutor`, which blocks `bash` invocations of `curl`, `wget`, `nc`,
+  `ncat`, `netcat`, and any call to the native `web_scrape`/`fetch` tool:
+  - Spawned sub-agents: `handle_scheduler_spawn_action` sets the new
+    `SpawnContext::network_denied` flag; `build_filtered_executor` wraps the sub-agent's
+    tool executor when set — sibling tasks and the parent agent's own executor are
+    unaffected.
+  - `RunInline` tasks: `handle_run_inline_action` temporarily wraps the parent agent's own
+    `tool_executor` for the duration of that single inline turn (there is no per-task
+    executor to wrap independently, since `RunInline` shares the parent's tool loop),
+    restoring it afterward.
+
+  Known gap: MCP-provided tools are not inspected and may still perform their own HTTP
+  egress. This is a best-effort tool/command-identity block, not a sandbox-level
+  guarantee — see `specs/069-threat-model/spec.md` INVARIANT-5.
 - `zeph-skills`/`src/acp.rs`/`src/serve/`: `SkillOrchestra`'s RL routing head lost learned
   updates under concurrent ACP/`/sessions` agents (#5974). `#5921` wired `RoutingHead`
   persistence into `spawn_acp_agent` and `build_agent_factory`, but each session independently

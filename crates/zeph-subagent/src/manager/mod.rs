@@ -138,6 +138,26 @@ pub struct SpawnContext {
     ///
     /// `None` when `durable.enabled && durable.subagent` is false (plain spawn/collect path).
     pub durable_resolver: Option<DurableResolverSeat>,
+
+    /// Deny network egress for this sub-agent's `bash` tool calls.
+    ///
+    /// Set by the orchestration layer when the spawning `TaskNode` carries
+    /// `network_scope: NetworkScope::Deny` (spec `069-threat-model` OQ-1). When `true`,
+    /// `build_filtered_executor` wraps the tool executor with
+    /// [`NetworkDenyToolExecutor`](crate::NetworkDenyToolExecutor), which blocks `bash`
+    /// invocations of `curl`, `wget`, `nc`, `ncat`, and `netcat` for this spawn only —
+    /// sibling tasks and the parent agent's own executor are unaffected.
+    ///
+    /// # Caller responsibility for nested spawns
+    ///
+    /// Like [`max_trust_level`][Self::max_trust_level], this field does **not** propagate
+    /// automatically. A sub-agent that itself spawns a grandchild must copy this field
+    /// from its own received `SpawnContext` into the grandchild's `SpawnContext`, or the
+    /// grandchild spawns with network access regardless of the original task's scope.
+    ///
+    /// `false` (the default) imposes no restriction beyond the executor/global
+    /// `allow_network` default.
+    pub network_denied: bool,
 }
 
 /// Live status snapshot of a running sub-agent.
