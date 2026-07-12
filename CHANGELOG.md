@@ -89,6 +89,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Testing
 
+- `src/acp.rs`/`src/daemon.rs`: the memory-maintenance-loop regression tests
+  (`acp_memory_maintenance_loops_registered_on_connection_supervisor`,
+  `daemon_memory_maintenance_loops_registered_on_mem_supervisor`) reconstructed the
+  spawn blocks inline with a mock `TaskSupervisor` instead of calling the real
+  production wiring path, so a broken or inverted `config.memory.*.enabled` guard in
+  `build_acp_deps`/`run_daemon` would go undetected by either test (#6170). Extracted
+  the wiring into standalone `spawn_acp_memory_maintenance_loops`/
+  `spawn_daemon_memory_maintenance_loops` functions, mirroring the existing
+  `spawn_memory_maintenance_loops` pattern in `src/serve/deps.rs` (#5979); both tests
+  now call the extracted functions directly. No behavior change — all ten loops still
+  spawn identically, gated the same way, via `TaskSupervisor::spawn`.
 - `zeph-llm`: reduced the discoverability of bypassing the Claude no-prefill funnel introduced
   by #6154, and closed a real HTTP-level coverage gap (#6155, #6156). `split_messages`/
   `split_messages_structured` in `crates/zeph-llm/src/claude/request.rs` are now
