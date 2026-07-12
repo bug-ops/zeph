@@ -121,11 +121,31 @@ pub(crate) async fn build_agent_factory(
     let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
         Arc::new(parking_lot::Mutex::new(Vec::new()));
 
-    // SEC-H1 / R1: each session gets its own gate stack, wrapping the shared base composite —
-    // see `gate_serve_session_executor`'s doc comment for the full rationale and the INVARIANT
-    // that binds future serve tool-executor changes.
-    let gated_executor = gate_serve_session_executor(
+    // #6046: skill_loader/invoke_skill/memory/overflow — mirrors src/acp.rs's spawn_acp_agent
+    // and src/daemon.rs's run_daemon composition (skill_loader -> skill_invoke -> memory ->
+    // overflow -> base), closing the gap where `/sessions*` agents previously had none of these
+    // tools. Built here, in the async prefix (not the closure), since memory/overflow depend on
+    // this session's own `conversation_id` and skill_loader/skill_invoke need their own
+    // per-session `SkillTrustSnapshot` — mirrors ACP's per-connection build. Composed BEFORE the
+    // trust/policy/adversarial gate wrap below so these tools are covered by it too, instead of
+    // bypassing enforcement (#5977/#5611/#5748). `compose_session_tool_tree` is also called by
+    // `serve::deps::assemble_serve_deps`'s startup capability-scope validation (#6045/F1) — one
+    // source of truth for the tool-id surface a configured scope pattern may reference.
+    let memory_validation_config = deps.session_config.security.memory_validation.clone();
+    let (composed_base, trust_snapshot) = compose_session_tool_tree(
         deps.tool_executor,
+        &deps.registry,
+        &deps.memory,
+        conversation_id,
+        memory_validation_config,
+    );
+
+    // SEC-H1 / R1: each session gets its own gate stack, wrapping the composed per-session tree
+    // (base + skill_loader + skill_invoke + memory + overflow, #6046) — see
+    // `gate_serve_session_executor`'s doc comment for the full rationale and the INVARIANT that
+    // binds future serve tool-executor changes.
+    let gated_executor = gate_serve_session_executor(
+        composed_base,
         &deps.permission_policy,
         &deps.policy_gate_pieces,
         deps.audit_logger.as_ref(),
@@ -137,19 +157,28 @@ pub(crate) async fn build_agent_factory(
         // spawn_acp_agent's debug_config capture in src/acp.rs).
         let debug_config = deps.session_config.debug_config.clone();
 
-        // Spec 050 F2 (#5913): `capability_scopes` wrapping (when configured) already happened
-        // once in `serve::deps::assemble_serve_deps` — `deps.tool_executor` is shared/static
-        // across every `/sessions*` agent (unlike ACP's per-session composite), so the
-        // dead-glob outcome (FR-CG-005/NFR-CG-004) is knowable at startup and made fatal there
-        // (impl-critic F1), rather than degraded per-session here.
+        // #6045: wrap ScopedToolExecutor fresh per session (when
+        // `[security.capability_scopes]` is configured) around the already trust/policy/
+        // adversarial-gated tree — mirrors src/acp.rs/src/runner.rs's wiring order (Trust ->
+        // Policy/Adversarial -> Scope -> Shadow). `assemble_serve_deps` already validated
+        // `deps.capability_scopes_config` compiles against the tool registry at startup (fatal
+        // on error there, `serve::deps` module docs) — building the wrap fresh here, per
+        // session, lets `.with_signal_queue(...)` attach THIS session's own
+        // `trajectory_signal_queue` without leaking `OutOfScope` denials into other concurrent
+        // sessions sharing the same base composite (see `wrap_capability_scope`'s doc comment).
+        let scope_wrapped = wrap_capability_scope(
+            gated_executor.0,
+            &deps.capability_scopes_config,
+            &trajectory_signal_queue,
+        );
 
         // Spec 050 Phase 2 (#5913): wrap with ShadowProbeExecutor when
         // shadow_sentinel.enabled = true — mirrors src/runner.rs/src/acp.rs, where
         // ScopedToolExecutor/ShadowProbeExecutor wrap OUTSIDE/ABOVE the
         // Policy/Adversarial/Trust gate stack (not the raw base composite), so shadow-probing
-        // observes the same gated tree the agent actually dispatches through. Keyed by this
-        // session's own `conversation_id`, since `ServeAgentDeps.tool_executor` (unlike
-        // ACP's per-connection base chain) is shared across every `/sessions*` agent.
+        // observes the same gated (and now scoped) tree the agent actually dispatches through.
+        // Keyed by this session's own `conversation_id`, since `ServeAgentDeps.tool_executor`
+        // (unlike ACP's per-connection base chain) is shared across every `/sessions*` agent.
         let (final_tool_executor, shadow_sentinel_arc): (Arc<dyn ErasedToolExecutor>, _) =
             if deps.shadow_sentinel_config.enabled {
                 let sentinel_cfg = &deps.shadow_sentinel_config;
@@ -173,14 +202,14 @@ pub(crate) async fn build_agent_factory(
                         sentinel: Arc::clone(&sentinel),
                     });
                 let shadow_exec = zeph_tools::ShadowProbeExecutor::new(
-                    zeph_tools::DynExecutor(gated_executor.0.clone()),
+                    zeph_tools::DynExecutor(scope_wrapped),
                     probe_gate,
                     turn_number,
                     risk_level,
                 );
                 (Arc::new(shadow_exec), Some(sentinel))
             } else {
-                (gated_executor.0.clone(), None)
+                (scope_wrapped, None)
             };
 
         let mut agent = Agent::new_with_registry_arc(
@@ -209,6 +238,10 @@ pub(crate) async fn build_agent_factory(
         )
         .with_semantic_scan(deps.semantic_scan, deps.semantic_scan_provider)
         .with_trust_config(deps.trust_config)
+        // #6046: wire this session's SkillTrustSnapshot (from build_skill_executors above),
+        // matching src/acp.rs/src/daemon.rs — without this, SkillLoaderExecutor/
+        // SkillInvokeExecutor's trust bookkeeping would never reach the Agent that reads it.
+        .with_trust_snapshot(trust_snapshot)
         .with_rl_routing(
             deps.rl_routing_enabled,
             deps.rl_learning_rate,
@@ -273,20 +306,20 @@ pub(crate) async fn build_agent_factory(
 /// [`crate::agent_setup::apply_common_tool_gating`]'s doc comment and
 /// [`ServeAgentDeps::tool_executor`]'s doc comment for the full rationale.
 ///
-/// INVARIANT: `tool_executor` must already contain serve's ENTIRE tool surface (today: the base
-/// file/shell/scrape/cwd chain only — see `deps.rs::build_tool_executor`'s doc comment) — any
-/// tool executor added to `ServeAgentDeps` outside that base, or composed onto the result of
-/// this wrap, bypasses trust/policy/adversarial enforcement entirely. See #5977/#5611/#5748.
+/// INVARIANT: `tool_executor` must already contain serve's ENTIRE tool surface (the base
+/// file/shell/scrape/cwd chain plus `skill_loader`/`skill_invoke`/`memory`/`overflow`, #6046 — see
+/// `build_agent_factory`'s composition above this call and `deps.rs::build_tool_executor`'s doc
+/// comment for the base) — any tool executor added to `ServeAgentDeps` outside that composed
+/// tree, or composed onto the result of this wrap (other than the `ScopedToolExecutor`/
+/// `ShadowProbeExecutor` wraps `build_agent_factory` applies afterward, which wrap OUTSIDE the
+/// gate stack by design, matching `runner.rs`/`acp.rs`), bypasses trust/policy/adversarial
+/// enforcement entirely. See #5977/#5611/#5748.
 ///
 /// `trajectory`, when `Some`, wires `PolicyGateExecutor`'s trajectory-risk reporting (#5958) —
-/// see `apply_policy_gate_chain`'s doc comment. Note this does NOT cover `ScopedToolExecutor`
-/// (`[security.capability_scopes]`) `OutOfScope` denials feeding the same signal queue, unlike
-/// runner.rs/acp.rs/daemon.rs: serve wraps `ScopedToolExecutor` once, eagerly, in
-/// `deps.rs::assemble_serve_deps`, shared across every `/sessions*` agent (SEC-H1 rationale on
-/// `ServeAgentDeps::tool_executor`), before any per-session signal queue exists — attaching one
-/// session's queue there would leak its signals into every other session sharing the same
-/// executor. `PolicyGateExecutor`'s own declarative/adversarial-policy denials still reach
-/// `TrajectorySentinel` correctly since that gate IS per-session.
+/// see `apply_policy_gate_chain`'s doc comment. `ScopedToolExecutor`'s `OutOfScope` denials feed
+/// the same signal queue too, but that wrap happens separately, per session, in
+/// `wrap_capability_scope` (called by `build_agent_factory` after this function returns) — see
+/// its doc comment for why.
 fn gate_serve_session_executor(
     tool_executor: Arc<dyn zeph_tools::ErasedToolExecutor>,
     permission_policy: &zeph_tools::PermissionPolicy,
@@ -310,6 +343,128 @@ fn gate_serve_session_executor(
         audit_logger,
         trajectory,
     )
+}
+
+/// Wraps `tool_executor` (the already trust/policy/adversarial-gated tree from
+/// [`gate_serve_session_executor`]) in a fresh per-session `ScopedToolExecutor` when
+/// `[security.capability_scopes]` is configured (#6045) — mirrors `src/acp.rs`'s per-connection
+/// wrap and `src/runner.rs`'s wiring order (`ScopedToolExecutor` wraps OUTSIDE/ABOVE the
+/// Trust/Policy/Adversarial gate stack, not the raw base composite).
+///
+/// Built fresh per session, unlike `deps.rs::assemble_serve_deps`'s pre-#6045 eager wrap: a
+/// `ScopedToolExecutor` built once and shared across every `/sessions*` agent cannot receive a
+/// per-session `TrajectorySentinel` signal queue via `.with_signal_queue(...)` without leaking
+/// one session's `OutOfScope` denials into every other concurrent session sharing that instance
+/// — see [`ServeAgentDeps::capability_scopes_config`]'s doc comment. `assemble_serve_deps`
+/// already validated `scopes_cfg` compiles against the tool registry at server startup (fatal on
+/// error there, matching `runner.rs`/`daemon.rs`'s precedent for this process-global setting),
+/// so the `Err` branch below should be unreachable in practice — it is still handled fail-closed
+/// (deny all tool access for this session), not fail-open, matching how `src/acp.rs` handles the
+/// same theoretical race for its own per-connection wrap.
+fn wrap_capability_scope(
+    tool_executor: Arc<dyn zeph_tools::ErasedToolExecutor>,
+    scopes_cfg: &zeph_config::CapabilityScopesConfig,
+    trajectory_signal_queue: &zeph_tools::RiskSignalQueue,
+) -> Arc<dyn zeph_tools::ErasedToolExecutor> {
+    use zeph_tools::scope::build_scoped_executor;
+    if scopes_cfg.scopes.is_empty() {
+        return tool_executor;
+    }
+    let registry_ids: std::collections::HashSet<String> = tool_executor
+        .tool_definitions_erased()
+        .into_iter()
+        .map(|def| {
+            let id = def.id.to_string();
+            if id.contains(':') {
+                id
+            } else {
+                format!("builtin:{id}")
+            }
+        })
+        .collect();
+    // Retain a cheap Arc clone for the Err fallback below — `build_scoped_executor` takes
+    // `tool_executor` by value.
+    let fallback = Arc::clone(&tool_executor);
+    match build_scoped_executor(
+        zeph_tools::DynExecutor(tool_executor),
+        scopes_cfg,
+        &registry_ids,
+    ) {
+        Ok(scoped) => {
+            // #6045: OutOfScope denials feed the trajectory signal queue too, matching
+            // src/runner.rs/src/acp.rs/src/daemon.rs — otherwise capability-scope violations
+            // would be invisible to TrajectorySentinel's risk escalation.
+            let scoped = scoped.with_signal_queue(Arc::clone(trajectory_signal_queue));
+            Arc::new(scoped)
+        }
+        Err(e) => {
+            tracing::error!(
+                "capability_scopes: {e}, denying all tool access for this session (fail-closed)"
+            );
+            Arc::new(zeph_tools::scope::ScopedToolExecutor::new(
+                zeph_tools::DynExecutor(fallback),
+                zeph_tools::scope::ToolScope::empty(),
+            ))
+        }
+    }
+}
+
+/// Composes `skill_loader`/`skill_invoke`/`memory`/`overflow` (#6046) around `base`, mirroring
+/// `src/acp.rs`'s `spawn_acp_agent`/`src/daemon.rs`'s `run_daemon` composite order
+/// (`skill_loader -> skill_invoke -> memory -> overflow -> base`).
+///
+/// Two callers, one source of truth (#6045/F1): [`build_agent_factory`] uses this for the real
+/// per-session tool tree the agent dispatches through, and
+/// `serve::deps::assemble_serve_deps`'s startup `[security.capability_scopes]` validation uses
+/// it too — before this fix, that validation ran against `deps.rs::build_tool_executor`'s
+/// base-only registry (file/shell/scrape/cwd), which does NOT contain these four tools, so a
+/// scope pattern referencing e.g. `builtin:invoke_skill` compiled fine per-session but hit
+/// `ScopeError::DeadPattern` (a strict `builtin:`/`skill:` pattern matching zero registry ids)
+/// against the smaller startup registry, aborting `serve-sessions` startup even though the
+/// pattern was valid. Calling this same function at both sites keeps the two registries
+/// identical by construction — see [`ServeAgentDeps::capability_scopes_config`]'s doc comment.
+///
+/// `conversation_id`/`memory_validation_config` only affect `MemoryToolExecutor`'s *runtime*
+/// dispatch behavior (which conversation `memory_save`/`memory_search` read/write) — every
+/// executor's `tool_definitions()` is static regardless of these values, so a validation-only
+/// caller may pass placeholder values (e.g. `ConversationId(0)`,
+/// `MemoryWriteValidationConfig::default()`) safely; only the tool *ids* are used for
+/// registry-based scope validation, never the executors' dispatch behavior.
+#[allow(clippy::type_complexity)]
+pub(super) fn compose_session_tool_tree(
+    base: Arc<dyn ErasedToolExecutor>,
+    registry: &Arc<parking_lot::RwLock<zeph_skills::registry::SkillRegistry>>,
+    memory: &Arc<zeph_memory::semantic::SemanticMemory>,
+    conversation_id: zeph_memory::ConversationId,
+    memory_validation_config: zeph_config::MemoryWriteValidationConfig,
+) -> (
+    Arc<dyn ErasedToolExecutor>,
+    Arc<parking_lot::RwLock<std::collections::HashMap<String, zeph_core::SkillTrustSnapshot>>>,
+) {
+    let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
+        Arc::clone(memory),
+        conversation_id,
+        zeph_sanitizer::memory_validation::MemoryWriteValidator::new(memory_validation_config),
+    );
+    let overflow_executor =
+        zeph_core::overflow_tools::OverflowToolExecutor::new(Arc::new(memory.sqlite().clone()))
+            .with_conversation(conversation_id.0);
+    let (skill_loader_executor, skill_invoke_executor, trust_snapshot) =
+        crate::agent_setup::build_skill_executors(registry);
+    let composed: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
+        skill_loader_executor,
+        zeph_tools::CompositeExecutor::new(
+            skill_invoke_executor,
+            zeph_tools::CompositeExecutor::new(
+                memory_executor,
+                zeph_tools::CompositeExecutor::new(
+                    overflow_executor,
+                    zeph_tools::DynExecutor(base),
+                ),
+            ),
+        ),
+    ));
+    (composed, trust_snapshot)
 }
 
 /// Opens (and replays, per D-10) the durable event log for `session_id`, wraps it in a
@@ -687,6 +842,7 @@ mod tests {
             rl_warmup_updates: 0,
             rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
             policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
@@ -773,6 +929,7 @@ mod tests {
             rl_warmup_updates: 0,
             rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
             policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
@@ -886,6 +1043,7 @@ mod tests {
             rl_warmup_updates: 0,
             rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
             policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
@@ -984,6 +1142,7 @@ mod tests {
             rl_warmup_updates: 0,
             rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
             policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
@@ -1081,6 +1240,7 @@ mod tests {
             rl_warmup_updates: 3,
             rl_embed_dim_resolved: Some(8),
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
             policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
@@ -1176,6 +1336,7 @@ mod tests {
             rl_warmup_updates: 0,
             rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
             policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
@@ -1252,6 +1413,7 @@ mod tests {
             rl_warmup_updates: 0,
             rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default()
                 .with_autonomy(zeph_tools::AutonomyLevel::Full),
             audit_logger: None,
@@ -1377,6 +1539,7 @@ mod tests {
             adversarial_validator: None,
             adversarial_llm_client: None,
             adv_policy_info: None,
+            policy_configured: true,
         };
         let deps = make_gate_test_deps(
             memory,
@@ -1409,12 +1572,11 @@ mod tests {
     /// `gate_serve_session_executor` directly (same module) with a `[tools.policy]` deny rule
     /// and `Some((&trajectory_risk_slot, &trajectory_signal_queue))` exactly as
     /// `build_agent_factory` now does, and asserts the signal queue receives the `PolicyDeny`
-    /// code (`1`) after a denied call. Note this deliberately does NOT cover capability-scope
-    /// (`ScopedToolExecutor`) `OutOfScope` denials — per `gate_serve_session_executor`'s doc
-    /// comment, serve's `ScopedToolExecutor` is built once, eagerly, in
-    /// `deps.rs::assemble_serve_deps`, shared across every session, before any per-session
-    /// queue exists (SEC-H1); that gap is a documented, intentional deviation from ACP/daemon,
-    /// not something this PR closes.
+    /// code (`1`) after a denied call. The sibling capability-scope (`ScopedToolExecutor`)
+    /// `OutOfScope` signal source (#6045) is covered separately by
+    /// `wrap_capability_scope_wires_trajectory_signal_queue_on_out_of_scope_denial` below, since
+    /// that wrap now happens in a distinct function (`wrap_capability_scope`), called after
+    /// `gate_serve_session_executor` returns, not inside it.
     #[tokio::test]
     async fn gate_serve_session_executor_wires_trajectory_signal_queue_on_policy_denial() {
         let policy_config = zeph_tools::PolicyConfig {
@@ -1437,6 +1599,7 @@ mod tests {
             adversarial_validator: None,
             adversarial_llm_client: None,
             adv_policy_info: None,
+            policy_configured: true,
         };
 
         let trajectory_risk_slot: zeph_tools::TrajectoryRiskSlot =
@@ -1466,6 +1629,268 @@ mod tests {
              signal queue after a denied tool call, proving gate_serve_session_executor's \
              trajectory parameter is actually wired through to PolicyGateExecutor instead of \
              the old hardcoded None"
+        );
+    }
+
+    /// #6045 regression: `wrap_capability_scope`'s `ScopedToolExecutor` wrap must actually push
+    /// the `OutOfScope` signal code (`3`) into the trajectory signal queue it's given — before
+    /// this PR, serve's `ScopedToolExecutor` was built once, eagerly, in
+    /// `deps.rs::assemble_serve_deps`, shared across every `/sessions*` agent, before any
+    /// per-session queue existed, so it never received `.with_signal_queue(...)` at all and
+    /// capability-scope denials were invisible to `TrajectorySentinel`. Mirrors
+    /// `src/acp.rs`'s `trajectory_signal_queue_receives_scope_denial_in_acp_composite_chain`.
+    #[tokio::test]
+    async fn wrap_capability_scope_wires_trajectory_signal_queue_on_out_of_scope_denial() {
+        let scopes_cfg = zeph_config::CapabilityScopesConfig {
+            default_scope: "narrow".to_owned(),
+            scopes: std::collections::HashMap::from([(
+                "narrow".to_owned(),
+                zeph_config::ScopeConfig {
+                    patterns: vec!["builtin:read".to_owned()],
+                },
+            )]),
+            ..Default::default()
+        };
+        let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
+            Arc::new(parking_lot::Mutex::new(Vec::new()));
+
+        // Base must register "read" (matching the "builtin:read" pattern above) so
+        // build_scoped_executor compiles successfully instead of hitting DeadPattern — a
+        // registry with zero matches for a strict `builtin:` pattern is a compile FAILURE
+        // (the fail-closed branch below, which intentionally does NOT get a signal queue,
+        // since it represents misconfiguration rather than a legitimate scope denial).
+        let wrapped = wrap_capability_scope(
+            Arc::new(zeph_tools::FileExecutor::new(vec![])),
+            &scopes_cfg,
+            &trajectory_signal_queue,
+        );
+
+        let denied = wrapped
+            .execute_tool_call_erased(&make_tool_call("bash"))
+            .await;
+        assert!(
+            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+            "expected OutOfScope from ScopedToolExecutor for a tool outside the configured \
+             scope, got {denied:?}"
+        );
+        assert_eq!(
+            *trajectory_signal_queue.lock(),
+            vec![3u8],
+            "expected the OutOfScope signal code (3) to be pushed into the shared trajectory \
+             signal queue after a scope-denied tool call, proving wrap_capability_scope's \
+             .with_signal_queue(...) call is actually reachable"
+        );
+    }
+
+    /// #6045 end-to-end regression: a real agent built through `build_agent_factory` with
+    /// `[security.capability_scopes]` configured must admit an in-scope tool call while
+    /// rejecting an out-of-scope one — proving the per-session `wrap_capability_scope` call is
+    /// actually wired into the production closure (composed with #6046's `skill_loader`/
+    /// `skill_invoke`/`memory`/`overflow` tree), not just unit-tested in isolation above. Scopes on
+    /// `"builtin:set_working_directory"` (registered by `SetCwdExecutor`, present in
+    /// `make_gate_test_deps`'s base composite) specifically so `build_scoped_executor` compiles
+    /// a real scope instead of hitting `DeadPattern` (zero registry matches) and falling into
+    /// the fail-closed branch — which would also produce `OutOfScope` for every call and could
+    /// mask a broken scope wrap as a passing test.
+    #[tokio::test]
+    async fn build_agent_factory_wires_capability_scopes_per_session() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("capability-scope-test-session");
+
+        let config = zeph_core::config::Config::default();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+        let mut deps = make_gate_test_deps(
+            memory,
+            session_config,
+            condenser,
+            token_counter,
+            crate::agent_setup::PolicyGatePieces::default(),
+        );
+        deps.capability_scopes_config = zeph_config::CapabilityScopesConfig {
+            default_scope: "narrow".to_owned(),
+            scopes: std::collections::HashMap::from([(
+                "narrow".to_owned(),
+                zeph_config::ScopeConfig {
+                    patterns: vec!["builtin:set_working_directory".to_owned()],
+                },
+            )]),
+            ..Default::default()
+        };
+
+        let build_agent = build_agent_factory(deps, session_id, cid).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let agent = build_agent(channel);
+        let executor = agent.tool_executor_arc();
+
+        // "invoke_skill" is registered (by #6046's skill_invoke_executor) but NOT admitted by
+        // the "narrow" scope above — must be rejected.
+        let denied = executor
+            .execute_tool_call_erased(&make_tool_call("invoke_skill"))
+            .await;
+        assert!(
+            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+            "a [security.capability_scopes] scope that excludes \"invoke_skill\" must reject it \
+             through a /sessions-built agent's executor, proving build_agent_factory's \
+             per-session ScopedToolExecutor wrap is reachable, got {denied:?}"
+        );
+
+        // "set_working_directory" IS admitted — must reach past ScopedToolExecutor (proving the
+        // scope actually compiled, rather than the fail-closed empty-scope fallback denying
+        // everything indiscriminately).
+        let mut params = serde_json::Map::new();
+        params.insert("path".to_owned(), serde_json::Value::String(".".to_owned()));
+        let allowed = executor
+            .execute_tool_call_erased(&zeph_tools::ToolCall {
+                tool_id: "set_working_directory".into(),
+                params,
+                caller_id: None,
+                context: None,
+                tool_call_id: String::new(),
+                skill_name: None,
+            })
+            .await;
+        assert!(
+            !matches!(allowed, Err(zeph_tools::ToolError::OutOfScope { .. })),
+            "\"set_working_directory\" matches the active scope's pattern, so it must reach \
+             past ScopedToolExecutor instead of being rejected, got {allowed:?}"
+        );
+    }
+
+    /// #6045/F1 regression (critic finding): a `[security.capability_scopes]` scope that
+    /// admits a #6046 tool (`invoke_skill`, added by `compose_session_tool_tree`, not present
+    /// in `deps.rs::build_tool_executor`'s base file/shell/scrape/cwd chain) must actually admit
+    /// it through the per-session `ScopedToolExecutor` wrap, while still rejecting a tool
+    /// outside the scope. The sibling `build_agent_factory_wires_capability_scopes_per_session`
+    /// test above only scoped on a BASE tool and only asserted #6046-tool REJECTION — it would
+    /// not have caught F1 (the startup validation registry excluding #6046 tools entirely,
+    /// which manifests as `assemble_serve_deps` aborting startup, not as a per-session
+    /// admit/deny mismatch — see `assemble_serve_deps_succeeds_with_capability_scope_on_6046_tool`
+    /// in `serve/deps.rs` for that direct regression test). This test guards the per-session
+    /// admit path so a future regression narrowing `compose_session_tool_tree`'s output would
+    /// still be caught here even if the startup-validation registry stayed in sync.
+    #[tokio::test]
+    async fn build_agent_factory_admits_6046_tool_via_capability_scope() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("capability-scope-6046-test-session");
+
+        let config = zeph_core::config::Config::default();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+        let mut deps = make_gate_test_deps(
+            memory,
+            session_config,
+            condenser,
+            token_counter,
+            crate::agent_setup::PolicyGatePieces::default(),
+        );
+        deps.capability_scopes_config = zeph_config::CapabilityScopesConfig {
+            default_scope: "skills-only".to_owned(),
+            scopes: std::collections::HashMap::from([(
+                "skills-only".to_owned(),
+                zeph_config::ScopeConfig {
+                    patterns: vec!["builtin:invoke_skill".to_owned()],
+                },
+            )]),
+            ..Default::default()
+        };
+
+        let build_agent = build_agent_factory(deps, session_id, cid).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let agent = build_agent(channel);
+        let executor = agent.tool_executor_arc();
+
+        // "invoke_skill" (a #6046 tool) IS admitted — must reach past ScopedToolExecutor.
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "skill_name".to_owned(),
+            serde_json::Value::String("nonexistent-skill".to_owned()),
+        );
+        let admitted = executor
+            .execute_tool_call_erased(&zeph_tools::ToolCall {
+                tool_id: "invoke_skill".into(),
+                params,
+                caller_id: None,
+                context: None,
+                tool_call_id: String::new(),
+                skill_name: None,
+            })
+            .await;
+        assert!(
+            !matches!(admitted, Err(zeph_tools::ToolError::OutOfScope { .. })),
+            "a [security.capability_scopes] scope on \"builtin:invoke_skill\" must admit it \
+             through a /sessions-built agent's executor — got {admitted:?}. If this fails, the \
+             startup validation registry (assemble_serve_deps) and the per-session scope \
+             registry (wrap_capability_scope) have diverged again (#6045/F1)."
+        );
+
+        // "set_working_directory" (a base tool, NOT in the scope) is still rejected.
+        let denied = executor
+            .execute_tool_call_erased(&make_tool_call("set_working_directory"))
+            .await;
+        assert!(
+            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+            "a scope limited to \"builtin:invoke_skill\" must still reject \
+             \"set_working_directory\", got {denied:?}"
+        );
+    }
+
+    /// #6046 regression: `invoke_skill` must dispatch through `SkillInvokeExecutor` in a real
+    /// `/sessions`-built agent's composite — before this PR, `serve/deps.rs` never wired
+    /// `skill_loader`/`invoke_skill`/`memory`/`overflow` at all, so this call would have fallen
+    /// through to the base composite and failed with an unknown-tool error instead of
+    /// `SkillInvokeExecutor`'s own "skill not found" response. Mirrors `src/acp.rs`'s
+    /// `invoke_skill_reaches_skill_invoke_executor_in_full_acp_session_composite`.
+    #[tokio::test]
+    async fn build_agent_factory_wires_invoke_skill_executor() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("invoke-skill-test-session");
+
+        let config = zeph_core::config::Config::default();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+        let deps = make_gate_test_deps(
+            memory,
+            session_config,
+            condenser,
+            token_counter,
+            crate::agent_setup::PolicyGatePieces::default(),
+        );
+
+        let build_agent = build_agent_factory(deps, session_id, cid).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let agent = build_agent(channel);
+
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "skill_name".to_owned(),
+            serde_json::Value::String("nonexistent-skill".to_owned()),
+        );
+        let call = zeph_tools::ToolCall {
+            tool_id: "invoke_skill".into(),
+            params,
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = agent
+            .tool_executor_arc()
+            .execute_tool_call_erased(&call)
+            .await;
+        let output = result
+            .expect("invoke_skill must dispatch successfully through SkillInvokeExecutor")
+            .expect("SkillInvokeExecutor must always return Some(ToolOutput) for invoke_skill");
+        assert!(
+            output
+                .summary
+                .contains("skill not found: nonexistent-skill"),
+            "expected the \"skill not found: ...\" summary that only SkillInvokeExecutor \
+             produces, proving invoke_skill actually reaches it in the /sessions-built agent's \
+             composite instead of falling through to an unknown-tool error, got: {output:?}"
         );
     }
 

@@ -9,7 +9,9 @@
 //! apply to a plain HTTP/SSE session, so it is not reused wholesale here. [`ServeAgentDeps`]
 //! covers the minimum needed for a working conversational session — provider, skills, memory,
 //! and a core tool set (shell/file/web/cwd, with sandbox and audit wired the same way
-//! `build_acp_deps` does for ACP sessions).
+//! `build_acp_deps` does for ACP sessions). `agent_factory::build_agent_factory` additionally
+//! composes `skill_loader`/`invoke_skill`/`memory`/`overflow` tool executors around this base
+//! per session (#6046), matching CLI/TUI/ACP/daemon's tool surface.
 //!
 //! **Known gap**: MCP tools, the scheduler executor, and skill/config hot-reload broadcast
 //! forwarding are not wired here — a session created via `/sessions` does not see MCP-provided
@@ -23,6 +25,13 @@
 //! SEC-H1). MCP is still absent from the gated tree (the gap above), so
 //! `agent_setup::register_mcp_tool_ids` is called with an empty slice for now — the seam a
 //! future MCP-wiring PR must populate.
+//!
+//! **`[tools.policy]` compile failure (#6008)**: unlike CLI/TUI/ACP/daemon, which stay
+//! fail-open (see `agent_setup::build_policy_gate_pieces`'s doc comment) since an operator
+//! running those locally sees the `tracing::error!` line themselves, [`assemble_serve_deps`]
+//! aborts `serve-sessions` startup on a real compile failure — an HTTP-facing entrypoint with
+//! potentially remote/less-trusted callers has no other way to learn policy enforcement is
+//! silently disabled.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -89,6 +98,21 @@ pub(crate) struct ServeAgentDeps {
     /// fresh trust/policy/adversarial gate stack around this shared base **per session** — see
     /// its doc comment. This field must never be dispatched to directly without that wrap.
     pub(crate) tool_executor: Arc<dyn ErasedToolExecutor>,
+    /// `[security.capability_scopes]` snapshot (#6045). `assemble_serve_deps` only *validates*
+    /// this compiles against the tool registry at startup (fatal on error, matching
+    /// `runner.rs`/`daemon.rs`'s precedent for this process-global config) — the actual
+    /// `ScopedToolExecutor` WRAP happens fresh per session in
+    /// `agent_factory::build_agent_factory`, mirroring `src/acp.rs`'s per-connection wrap, so
+    /// each session's `OutOfScope` denials can feed that session's own `TrajectorySentinel`
+    /// signal queue via `.with_signal_queue(...)` without leaking into other concurrent
+    /// sessions sharing this same config snapshot.
+    ///
+    /// The startup validation and the per-session wrap must compile patterns against the SAME
+    /// tool-id registry, or a pattern valid per-session can falsely abort startup (#6045/F1,
+    /// caught by adversarial review): both call sites use
+    /// `agent_factory::compose_session_tool_tree` to build that registry, so they can never
+    /// drift apart.
+    pub(crate) capability_scopes_config: zeph_config::CapabilityScopesConfig,
     /// Shared permission policy, threaded into each session's `TrustGateExecutor` wrap (via
     /// `agent_setup::apply_common_tool_gating`) in `agent_factory::build_agent_factory`.
     pub(crate) permission_policy: zeph_tools::PermissionPolicy,
@@ -201,6 +225,22 @@ pub(crate) async fn assemble_serve_deps(
     // session's trust level clobber another's).
     let policy_gate_pieces =
         crate::agent_setup::build_policy_gate_pieces(config, &core.provider).await;
+    // #6008: `PolicyEnforcer::compile` failure is intentionally fail-open at all four
+    // `Agent`-construction entry points (`build_policy_gate_pieces` leaves `policy_enforcer:
+    // None` and logs `tracing::error!`, per #5973/#5977/#5886) — CLI/TUI/ACP/daemon operators
+    // see that log line in their own terminal. `serve-sessions` is HTTP-facing with potentially
+    // remote/less-trusted callers who have no such visibility, so it diverges here: abort
+    // startup rather than silently accepting connections with declarative policy unenforced.
+    // `policy_configured` (true only when `[tools.policy]`/`[tools.authorization]` was actually
+    // enabled) distinguishes a real compile failure from policy being legitimately absent by
+    // config, which must stay fail-open (no rules configured is not a degraded state).
+    if policy_gate_pieces.policy_configured && policy_gate_pieces.policy_enforcer.is_none() {
+        anyhow::bail!(
+            "[tools.policy]/[tools.authorization] failed to compile (see the preceding error \
+             log for details) — refusing to start serve-sessions with policy enforcement \
+             silently disabled; fix the policy config or disable it explicitly to proceed"
+        );
+    }
     // R6: startup observability log, reflecting ACTUAL compiled/config state — emitted ONCE
     // here (not inside `build_policy_gate_pieces`, which would also change daemon/acp/runner
     // startup output). `policy=on` only distinguishes "compiled" from "off/failed"; the
@@ -214,45 +254,56 @@ pub(crate) async fn assemble_serve_deps(
         "serve-sessions: gate stack active (per-session trust/policy/adversarial wrap)"
     );
 
-    // Spec 050 F2 (#5913): wrap with ScopedToolExecutor when capability_scopes are configured —
-    // mirrors src/runner.rs/src/daemon.rs. `tool_executor` here is shared/static across every
-    // `/sessions*` agent (unlike ACP's per-session composite), so the dead-glob outcome
-    // (FR-CG-005/NFR-CG-004) is knowable at startup, before any live session exists — same as
-    // runner.rs's CLI process and daemon.rs's static agent, so this is a fatal startup error
-    // (`?`) rather than a per-session degradation (impl-critic F1: degrading to the unscoped
-    // executor would be fail-OPEN for a security control the operator explicitly enabled, and
-    // `capability_scopes` is process-global — a config typo would silently disable scoping for
-    // every `/sessions*` agent).
-    let tool_executor: Arc<dyn ErasedToolExecutor> = {
-        let scopes_cfg = config.security.capability_scopes.clone();
-        if scopes_cfg.scopes.is_empty() {
-            tool_executor
-        } else {
-            use zeph_tools::scope::build_scoped_executor;
-            let registry_ids: std::collections::HashSet<String> = tool_executor
-                .tool_definitions_erased()
-                .into_iter()
-                .map(|def| {
-                    let id = def.id.to_string();
-                    if id.contains(':') {
-                        id
-                    } else {
-                        format!("builtin:{id}")
-                    }
-                })
-                .collect();
-            match build_scoped_executor(
-                zeph_tools::DynExecutor(tool_executor),
-                &scopes_cfg,
-                &registry_ids,
-            ) {
-                Ok(scoped) => Arc::new(scoped),
-                Err(e) => {
-                    anyhow::bail!("capability_scopes: {e}");
+    // Spec 050 F2 (#5913): validate `capability_scopes` compiles against the tool registry —
+    // mirrors src/runner.rs/src/daemon.rs's fatal-startup-error precedent for this
+    // process-global config (a typo should not silently disable scoping for every
+    // `/sessions*` agent). The actual `ScopedToolExecutor` WRAP now happens fresh per session
+    // in `agent_factory::build_agent_factory` (#6045), mirroring `src/acp.rs`, so it can attach
+    // that session's own `TrajectorySentinel` signal queue — see
+    // `ServeAgentDeps::capability_scopes_config`'s doc comment. This is validation-only: the
+    // compiled `ScopedToolExecutor` built here is discarded, not stored, since `tool_executor`
+    // must stay the unscoped base for the per-session wrap to compose around.
+    //
+    // #6045/F1: the registry validated here MUST be the same tool-id surface the per-session
+    // wrap will scope, not just the shared base — otherwise a scope pattern referencing a
+    // #6046 tool (skill_loader/skill_invoke/memory/overflow, not present in the bare
+    // `build_tool_executor` base) compiles fine per-session but fatally aborts startup here as
+    // a `DeadPattern` (zero matches against the smaller base-only registry), even though the
+    // pattern is valid. `agent_factory::compose_session_tool_tree` is the one function both
+    // this validation and `build_agent_factory`'s real per-session tree call, so the two
+    // registries can never drift apart. `conversation_id`/`memory_validation_config` only
+    // affect runtime dispatch, not `tool_definitions()` — safe to use placeholder values here.
+    let capability_scopes_config = config.security.capability_scopes.clone();
+    if !capability_scopes_config.scopes.is_empty() {
+        use zeph_tools::scope::build_scoped_executor;
+        let (composed_for_validation, _trust_snapshot) =
+            crate::serve::agent_factory::compose_session_tool_tree(
+                Arc::clone(&tool_executor),
+                &core.registry,
+                &core.memory,
+                zeph_memory::ConversationId(0),
+                zeph_config::MemoryWriteValidationConfig::default(),
+            );
+        let registry_ids: std::collections::HashSet<String> = composed_for_validation
+            .tool_definitions_erased()
+            .into_iter()
+            .map(|def| {
+                let id = def.id.to_string();
+                if id.contains(':') {
+                    id
+                } else {
+                    format!("builtin:{id}")
                 }
-            }
+            })
+            .collect();
+        if let Err(e) = build_scoped_executor(
+            zeph_tools::DynExecutor(composed_for_validation),
+            &capability_scopes_config,
+            &registry_ids,
+        ) {
+            anyhow::bail!("capability_scopes: {e}");
         }
-    };
+    }
 
     // #5914: memory maintenance loops — mirrors src/runner.rs's CLI/TUI wiring so `/sessions*`
     // agents get the same ongoing eviction/tier-promotion/scene-consolidation/consolidation/
@@ -390,6 +441,7 @@ pub(crate) async fn assemble_serve_deps(
         rl_warmup_updates: config.skills.rl_warmup_updates,
         rl_embed_dim_resolved: core.rl_embed_dim_resolved,
         tool_executor,
+        capability_scopes_config,
         permission_policy,
         audit_logger,
         policy_gate_pieces,
@@ -580,10 +632,13 @@ pub(crate) async fn resolve_auth_token(app: &crate::bootstrap::AppBuilder) -> Op
 /// `agent_factory::build_agent_factory` (SEC-H1) — see [`ServeAgentDeps::tool_executor`]'s doc
 /// comment.
 ///
-/// INVARIANT: any tool executor added to serve's base composite MUST be composited in HERE,
-/// before this function returns — `agent_factory::build_agent_factory` gates exactly this
-/// returned tree (plus nothing else) per session; anything composed onto `ServeAgentDeps`
-/// downstream of that wrap would bypass trust/policy/adversarial enforcement entirely. See
+/// INVARIANT: any *shared, session-independent* tool executor MUST be composited in HERE,
+/// before this function returns, so it is part of the tree `agent_factory::build_agent_factory`
+/// gates. `skill_loader`/`invoke_skill`/`memory`/`overflow` (#6046) are the one exception —
+/// they depend on a per-session `conversation_id`, so `build_agent_factory` composes them
+/// itself, still *before* wrapping the trust/policy/adversarial gate stack around the combined
+/// tree — see its doc comment. Anything composed onto `ServeAgentDeps` downstream of that gate
+/// wrap (in either function) would bypass trust/policy/adversarial enforcement entirely. See
 /// #5977/#5611/#5748.
 async fn build_tool_executor(
     config: &zeph_core::config::Config,
@@ -720,15 +775,29 @@ mod tests {
         }
     }
 
-    /// Regression test confirming `ScopedToolExecutor` (Spec 050 F2, #5913) is reachable
-    /// through `assemble_serve_deps` itself — the real, shipped production function, not a
-    /// reconstruction — since `capability_scopes` wrapping now happens once here (fatal on a
-    /// bad config, mirroring `src/daemon.rs`) rather than per-session in
-    /// `agent_factory::build_agent_factory`. Configures a narrow `[security.capability_scopes]`
-    /// scope and asserts the resulting `ServeAgentDeps.tool_executor` rejects a tool outside
-    /// the scope while an in-scope tool still dispatches.
+    fn make_test_core(memory: Arc<SemanticMemory>) -> crate::acp::SharedCore {
+        let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+        crate::acp::SharedCore {
+            provider: provider.clone(),
+            embedding_provider: provider,
+            registry: Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::empty())),
+            matcher: None,
+            memory,
+            budget_tokens: 4096,
+            rl_embed_dim_resolved: None,
+        }
+    }
+
+    /// #6045 regression: `assemble_serve_deps` must *validate* `[security.capability_scopes]`
+    /// at startup (fatal on a bad config, mirroring `src/runner.rs`/`src/daemon.rs`'s
+    /// precedent for this process-global setting) but must NOT bake a `ScopedToolExecutor`
+    /// wrap into `ServeAgentDeps.tool_executor` — that field must stay the unscoped base so
+    /// `agent_factory::build_agent_factory` can wrap it fresh per session (see
+    /// `ServeAgentDeps::capability_scopes_config`'s doc comment for why: a shared, eagerly
+    /// wrapped instance cannot receive a per-session `TrajectorySentinel` signal queue without
+    /// leaking one session's `OutOfScope` signals into every other concurrent session).
     #[tokio::test]
-    async fn assemble_serve_deps_wraps_tool_executor_with_capability_scopes() {
+    async fn assemble_serve_deps_validates_but_does_not_wrap_capability_scopes() {
         let mut config = zeph_core::config::Config::default();
         config.security.capability_scopes = zeph_config::CapabilityScopesConfig {
             default_scope: "narrow".to_owned(),
@@ -742,16 +811,7 @@ mod tests {
         };
         let app = crate::bootstrap::AppBuilder::for_test(config);
         let memory = make_memory().await;
-        let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
-        let core = crate::acp::SharedCore {
-            provider: provider.clone(),
-            embedding_provider: provider,
-            registry: Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::empty())),
-            matcher: None,
-            memory,
-            budget_tokens: 4096,
-            rl_embed_dim_resolved: None,
-        };
+        let core = make_test_core(memory);
         let cancel = tokio_util::sync::CancellationToken::new();
         let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(cancel);
 
@@ -759,7 +819,17 @@ mod tests {
             .await
             .expect("assemble_serve_deps must succeed with a valid single-pattern scope");
 
-        let denied = deps
+        assert_eq!(
+            deps.capability_scopes_config.scopes.len(),
+            1,
+            "the validated config must be carried forward on ServeAgentDeps for the \
+             per-session wrap"
+        );
+
+        // "bash" is outside the configured scope, but `deps.tool_executor` must still be the
+        // UNSCOPED base — `ScopedToolExecutor` no longer wraps it here — so this call must NOT
+        // be rejected with OutOfScope (it fails for an unrelated reason: no shell config).
+        let result = deps
             .tool_executor
             .execute_tool_call_erased(&zeph_tools::ToolCall {
                 tool_id: "bash".into(),
@@ -771,31 +841,133 @@ mod tests {
             })
             .await;
         assert!(
-            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
-            "expected OutOfScope from ScopedToolExecutor for a tool outside the configured \
-             scope, got {denied:?}"
+            !matches!(result, Err(zeph_tools::ToolError::OutOfScope { .. })),
+            "deps.tool_executor must stay unscoped after assemble_serve_deps — the scope wrap \
+             now happens per session in agent_factory::build_agent_factory, got {result:?}"
         );
+    }
 
-        // "read" matches the active scope's pattern, so it must reach the underlying
-        // `FileExecutor` instead of being rejected by `ScopedToolExecutor` — asserting on the
-        // absence of `OutOfScope` rather than a bare `is_ok()`, since an empty `params` map
-        // still fails `FileExecutor`'s own param validation (missing `path`), which is a
-        // separate, expected failure mode that proves the call *did* reach past the scope gate.
-        let allowed = deps
-            .tool_executor
-            .execute_tool_call_erased(&zeph_tools::ToolCall {
-                tool_id: "read".into(),
-                params: serde_json::Map::new(),
-                caller_id: None,
-                context: None,
-                tool_call_id: String::new(),
-                skill_name: None,
-            })
-            .await;
+    /// #6045/F1 regression (critic finding): before this fix, `assemble_serve_deps`'s startup
+    /// capability-scope validation compiled patterns against `build_tool_executor`'s base-only
+    /// registry (file/shell/scrape/cwd), which does NOT include the #6046 tools
+    /// (`skill_loader`/`invoke_skill`/`memory`/`overflow`). A scope pattern referencing a
+    /// #6046 tool — e.g. `builtin:invoke_skill`, a strict namespace under the default
+    /// `PatternStrictness::ProvisionalForDynamicNamespaces` — matched zero ids in that smaller
+    /// registry and hit `ScopeError::DeadPattern`, aborting `serve-sessions` startup entirely
+    /// even though the pattern is valid against the real per-session registry
+    /// `agent_factory::wrap_capability_scope` uses. `assemble_serve_deps` must now validate
+    /// against the SAME composed registry (`agent_factory::compose_session_tool_tree`) the
+    /// per-session wrap uses, so this must succeed, not abort.
+    #[tokio::test]
+    async fn assemble_serve_deps_succeeds_with_capability_scope_on_6046_tool() {
+        let mut config = zeph_core::config::Config::default();
+        config.security.capability_scopes = zeph_config::CapabilityScopesConfig {
+            default_scope: "skills-only".to_owned(),
+            scopes: std::collections::HashMap::from([(
+                "skills-only".to_owned(),
+                zeph_config::ScopeConfig {
+                    patterns: vec!["builtin:invoke_skill".to_owned()],
+                },
+            )]),
+            ..Default::default()
+        };
+        let app = crate::bootstrap::AppBuilder::for_test(config);
+        let memory = make_memory().await;
+        let core = make_test_core(memory);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(cancel);
+
+        let result = assemble_serve_deps(&app, &core, &supervisor).await;
         assert!(
-            !matches!(allowed, Err(zeph_tools::ToolError::OutOfScope { .. })),
-            "expected read to reach past ScopedToolExecutor since it matches the active \
-             scope's pattern, got {allowed:?}"
+            result.is_ok(),
+            "a [security.capability_scopes] pattern targeting a #6046 tool (\"builtin:invoke_skill\") \
+             must NOT abort serve-sessions startup — it is valid against the real per-session \
+             registry, got err: {:?}",
+            result.err().map(|e| e.to_string())
         );
+    }
+
+    /// #6045: a `[security.capability_scopes]` pattern that fails to compile against the tool
+    /// registry must still abort `serve-sessions` startup — mirrors the pre-#6045 fatal-error
+    /// behavior, just moved to a validation-only build rather than the (now removed) eager wrap.
+    #[tokio::test]
+    async fn assemble_serve_deps_fails_startup_on_invalid_capability_scope_pattern() {
+        let mut config = zeph_core::config::Config::default();
+        config.security.capability_scopes = zeph_config::CapabilityScopesConfig {
+            default_scope: "broken".to_owned(),
+            scopes: std::collections::HashMap::from([(
+                "broken".to_owned(),
+                zeph_config::ScopeConfig {
+                    patterns: vec!["[".to_owned()],
+                },
+            )]),
+            ..Default::default()
+        };
+        let app = crate::bootstrap::AppBuilder::for_test(config);
+        let memory = make_memory().await;
+        let core = make_test_core(memory);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(cancel);
+
+        let result = assemble_serve_deps(&app, &core, &supervisor).await;
+        assert!(
+            result.is_err(),
+            "an invalid capability_scopes glob pattern must abort serve-sessions startup"
+        );
+    }
+
+    /// #6008 regression: unlike CLI/TUI/ACP/daemon (which stay fail-open on a
+    /// `[tools.policy]` compile failure, per #5973/#5977/#5886), `assemble_serve_deps` must
+    /// abort `serve-sessions` startup instead of silently leaving `policy_enforcer: None` for
+    /// an HTTP-facing entrypoint. Uses an invalid `args_match` regex (`(` is unterminated) to
+    /// make `PolicyEnforcer::compile` fail without touching the filesystem.
+    #[tokio::test]
+    async fn assemble_serve_deps_fails_startup_on_policy_compile_failure() {
+        let mut config = zeph_core::config::Config::default();
+        config.tools.policy = zeph_tools::PolicyConfig {
+            enabled: true,
+            default_effect: zeph_tools::DefaultEffect::Allow,
+            rules: vec![zeph_tools::PolicyRuleConfig {
+                effect: zeph_tools::PolicyEffect::Deny,
+                tool: "shell".into(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: Some("(".to_owned()),
+                capabilities: vec![],
+            }],
+            ..Default::default()
+        };
+        let app = crate::bootstrap::AppBuilder::for_test(config);
+        let memory = make_memory().await;
+        let core = make_test_core(memory);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(cancel);
+
+        let result = assemble_serve_deps(&app, &core, &supervisor).await;
+        assert!(
+            result.is_err(),
+            "a [tools.policy] compile failure must abort serve-sessions startup (fail-closed), \
+             not silently disable policy enforcement"
+        );
+    }
+
+    /// Counterpart to the failure test above: `[tools.policy]` being absent/disabled entirely
+    /// is a legitimate, non-degraded state and must stay fail-open — `assemble_serve_deps` must
+    /// still succeed.
+    #[tokio::test]
+    async fn assemble_serve_deps_succeeds_when_policy_not_configured() {
+        let config = zeph_core::config::Config::default();
+        let app = crate::bootstrap::AppBuilder::for_test(config);
+        let memory = make_memory().await;
+        let core = make_test_core(memory);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(cancel);
+
+        let deps = assemble_serve_deps(&app, &core, &supervisor).await.expect(
+            "[tools.policy] absent by config is legitimate and must stay fail-open, not \
+                 abort startup",
+        );
+        assert!(deps.policy_gate_pieces.policy_enforcer.is_none());
     }
 }

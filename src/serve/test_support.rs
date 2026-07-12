@@ -127,6 +127,7 @@ impl ServeTestHarness {
             rl_warmup_updates: 0,
             rl_embed_dim_resolved: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
             policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
