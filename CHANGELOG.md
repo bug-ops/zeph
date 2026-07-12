@@ -5,7 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Testing
+
+- `zeph-worktree`: added a regression test confirming `WorktreeManager::remove()`'s single
+  `git worktree remove --force` still refuses a `git worktree lock`-ed worktree (requires
+  `-f -f`), the second safety layer alongside the `prunable`-gating from #6076 — previously
+  only confirmed manually against real git 2.50.1 (#6077).
+- `src/commands/worktree.rs`: added an end-to-end test calling the real `handle_worktree_command`
+  handler (not a reimplementation of its skip-gating logic) against a real git repo with a
+  mixed stale list (N>1 prunable + M>1 in-use entries in the same run) (#6077).
+- `zeph-worktree`: added `FakeGitRunner`-backed unit tests for the new shared
+  `WorktreeManager::clean`/`format_clean_summary` covering the mixed prunable/non-prunable
+  case, the `--force` bypass, a `remove()` failure being counted as `errored`, and — the
+  exact divergence caught in #6141's review — a final `prune()` failure recording a warning
+  without discarding an already-successful removal count (#6142).
+- `zeph-core`: added a live-`SubAgentManager` fixture test suite for `Agent::
+  handle_worktree_list_as_string`/`handle_worktree_clean_as_string` (`crates/zeph-core/src/
+  agent/worktree_commands.rs`) — a real `DefaultWorktreeManager` over a temp git repo wired
+  into a real `SubAgentManager` via `set_worktree_manager`, exercising the live-manager
+  `Some(wm)` branch end to end (0/1/N active worktrees, mixed prunable/in-use stale lists,
+  `--force` reaching `WorktreeManager` with correct semantics). Previously only the
+  disabled-subsystem `None` short-circuit had coverage, via `zeph-commands`'
+  `NullAgent`-backed tests (#6142).
+
 ### Changed
+
+- **DRY**: extracted the `zeph worktree clean` reconcile → remove → prune pipeline and its
+  removed/skipped/errored counting into a single `WorktreeManager::clean` method plus a
+  `format_clean_summary` free function (`zeph-worktree`), now shared by both the CLI
+  (`src/commands/worktree.rs`) and the agent-side `/worktree clean` slash command
+  (`crates/zeph-core/src/agent/worktree_commands.rs`) (#6142). These two call sites
+  previously duplicated the same loop independently, which already caused a real bug during
+  #6141's review (the agent-side path originally discarded the `prune()` failure instead of
+  reporting it, diverging from the CLI's warn-and-continue behavior). Only the `--force`
+  hint text in the skip warning still differs between the two surfaces (`force_hint`
+  parameter), since that's the one piece of legitimately surface-specific UX.
 
 - **BREAKING**: `zeph-db`'s `DbConfig` collapses `max_connections` and `pool_size` into a
   single `pool_size: u32` field, used as `sqlx`'s `.max_connections()` for both `SQLite` and
@@ -48,6 +82,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `claude-sonnet-4`, not `claude-sonnet-4-5` (#5902). Replaced with `claude-sonnet-5`,
   matching the dateless convention used for the current Sonnet release elsewhere in
   the book since #5901.
+- `zeph worktree clean`'s `Removed N, skipped M` summary omitted entries whose
+  `WorktreeManager::remove()` call itself failed (e.g. a locked worktree with `--force`),
+  silently undercounting the actual outcomes (#6077). Added an `errored` count, folded into a
+  new `format_clean_summary` helper so the total now always adds up to the number of stale
+  entries `reconcile()` discovered. Also fixed `WorktreeManager::reconcile()`'s doc comment,
+  which claimed it was "used at startup" — its only callers are the `zeph worktree list`/`clean`
+  CLI subcommands; there is no startup caller.
 - `zeph-gateway` and `zeph-a2a`: fixed a bearer-token brute-force bypass caused by
   middleware layer order (#6110, CWE-307). `auth_middleware` returns `401` directly
   without calling `next.run`, so with auth layered outside `rate_limit_middleware`,

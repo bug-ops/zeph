@@ -296,8 +296,11 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// worktrees that exist on disk but are not in the current session's
     /// in-memory list.
     ///
-    /// This is used at startup (and via `worktree clean`) to recover from a
-    /// previous crash that left stale worktrees behind. Each entry carries
+    /// This is called by the `zeph worktree list` and `zeph worktree clean`
+    /// CLI subcommands (`handle_worktree_command` in `src/commands/worktree.rs`)
+    /// to recover from a previous crash that left stale worktrees behind. There
+    /// is no startup caller — worktrees are only reconciled on-demand via these
+    /// subcommands. Each entry carries
     /// git's own `prunable` verdict (see [`StaleWorktree::is_safe_to_force_remove`])
     /// so callers can distinguish a worktree whose directory is already gone
     /// from one that is merely untracked by *this* process — the latter may
@@ -394,6 +397,105 @@ impl<R: GitRunner> WorktreeManager<R> {
         check_git_status(&out, "worktree prune")?;
         Ok(())
     }
+
+    /// Runs the full `worktree clean` pipeline: [`reconcile`][Self::reconcile], then
+    /// [`remove`][Self::remove] each stale entry that is either `prunable` or covered by
+    /// `force`, then [`prune`][Self::prune] the registry.
+    ///
+    /// Shared by the CLI (`zeph worktree clean`, `src/commands/worktree.rs`) and the
+    /// agent-side `/worktree clean` slash command (`crates/zeph-core/src/agent/
+    /// worktree_commands.rs`) so their removed/skipped/errored counts and per-entry
+    /// warnings cannot silently diverge — this exact divergence (a discarded `prune()`
+    /// failure on one call site) was caught in review during #6141 (#6142).
+    ///
+    /// `force_hint` is substituted into the skip-warning for a non-`force` run advising
+    /// the operator how to override it (e.g. `` `zeph worktree clean --force` `` for the
+    /// CLI, `` `/worktree clean --force` `` for the slash command) — the only piece of
+    /// UX text that legitimately differs between the two surfaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorktreeError::GitCommand`] only if the initial [`reconcile`][Self::reconcile] call
+    /// fails — nothing has been removed yet, so there is no partial outcome to lose.
+    /// Per-entry removal failures and a final prune failure are both recorded in the
+    /// returned [`CleanOutcome`] instead of aborting.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(mgr: &zeph_worktree::DefaultWorktreeManager) -> Result<(), zeph_worktree::WorktreeError> {
+    /// let outcome = mgr.clean(false, false, "`zeph worktree clean --force`").await?;
+    /// println!("{}", zeph_worktree::format_clean_summary(&outcome));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn clean(
+        &self,
+        force: bool,
+        prune_branch_on_remove: bool,
+        force_hint: &str,
+    ) -> Result<CleanOutcome, WorktreeError> {
+        let stale = self.reconcile().await?;
+        let mut outcome = CleanOutcome::default();
+        for stale_wt in stale {
+            if !force && !stale_wt.is_safe_to_force_remove() {
+                outcome.warnings.push(format!(
+                    "warning: skipping {} — directory exists and git does not report it as \
+                     prunable; it may be in active use by another zeph session. \
+                     Re-run with {force_hint} if you are certain it is abandoned.",
+                    stale_wt.handle.path.display()
+                ));
+                outcome.skipped += 1;
+                continue;
+            }
+            if let Err(e) = self.remove(&stale_wt.handle, prune_branch_on_remove).await {
+                outcome.warnings.push(format!(
+                    "warning: failed to remove {}: {e}",
+                    stale_wt.handle.path.display()
+                ));
+                outcome.errored += 1;
+            } else {
+                outcome.removed += 1;
+            }
+        }
+        // FR-CLEANUP-04: clear any remaining stale administrative entries
+        // (e.g. worktrees deleted outside Zeph) from the git registry.
+        if let Err(e) = self.prune().await {
+            outcome
+                .warnings
+                .push(format!("warning: failed to prune worktree registry: {e}"));
+        }
+        Ok(outcome)
+    }
+}
+
+/// Outcome of a [`WorktreeManager::clean`] pass.
+///
+/// Every stale entry `reconcile()` discovers is accounted for in exactly one of
+/// `removed`, `skipped`, or `errored` — the three always sum to the number of stale
+/// entries processed, so a caller can never silently undercount what happened.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CleanOutcome {
+    /// Number of stale entries successfully removed.
+    pub removed: usize,
+    /// Number of stale entries left in place because they were not `prunable` and
+    /// `force` was not passed.
+    pub skipped: usize,
+    /// Number of stale entries whose removal was attempted but the underlying
+    /// `git worktree remove` call itself failed (e.g. a locked worktree).
+    pub errored: usize,
+    /// One warning line per skipped, errored, or prune-failure event, in encounter order.
+    pub warnings: Vec<String>,
+}
+
+/// Formats a [`CleanOutcome`]'s counts into the standard one-line summary shared by
+/// both the CLI and agent-side `/worktree clean` output.
+#[must_use]
+pub fn format_clean_summary(outcome: &CleanOutcome) -> String {
+    format!(
+        "Removed {} stale worktree(s), skipped {} in-use candidate(s), {} error(s).",
+        outcome.removed, outcome.skipped, outcome.errored
+    )
 }
 
 /// Intermediate result of parsing one `git worktree list --porcelain` block,
@@ -1240,6 +1342,151 @@ mod tests {
         let mgr = make_manager(&dir, runner).await;
         let err = mgr.prune().await.unwrap_err();
         assert_matches!(err, WorktreeError::GitCommand { ref op, .. } if op == "worktree prune");
+    }
+
+    // --- clean (#6142: shared by CLI + agent-side /worktree clean) ---
+
+    /// Mixed prunable/non-prunable stale list, `force = false`: the prunable entry is
+    /// removed, the non-prunable one is skipped and left alone — the standard case
+    /// both the CLI and agent-side callers depend on.
+    #[tokio::test]
+    async fn clean_removes_prunable_and_skips_non_prunable_without_force() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
+             worktree {0}/worktrees/prunable-1\nHEAD def456\nbranch refs/heads/agent/prunable-1\n\
+             prunable gitdir file points to non-existent location\n\n\
+             worktree {0}/worktrees/in-use-1\nHEAD ghi789\nbranch refs/heads/agent/in-use-1\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain.into_bytes()); // reconcile: worktree list --porcelain
+        runner.push_ok(b"" as &[u8]); // remove prunable-1: worktree remove --force
+        runner.push_ok(b"" as &[u8]); // final: worktree prune
+
+        let mgr = make_manager(&dir, runner).await;
+        let outcome = mgr.clean(false, false, "`--force`").await.unwrap();
+
+        assert_eq!(outcome.removed, 1);
+        assert_eq!(outcome.skipped, 1);
+        assert_eq!(outcome.errored, 0);
+        assert_eq!(
+            outcome.warnings.len(),
+            1,
+            "only the skip warning: {:?}",
+            outcome.warnings
+        );
+        assert!(outcome.warnings[0].contains("in-use-1"));
+        assert!(outcome.warnings[0].contains("`--force`"));
+    }
+
+    /// `force = true` bypasses the non-prunable skip-gate: the same entry that would be
+    /// skipped without `--force` is now attempted and removed.
+    #[tokio::test]
+    async fn clean_with_force_removes_non_prunable_entries_too() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
+             worktree {0}/worktrees/in-use-1\nHEAD ghi789\nbranch refs/heads/agent/in-use-1\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain.into_bytes());
+        runner.push_ok(b"" as &[u8]); // remove in-use-1 (force bypasses the skip-gate)
+        runner.push_ok(b"" as &[u8]); // final prune
+
+        let mgr = make_manager(&dir, runner).await;
+        let outcome = mgr.clean(true, false, "`--force`").await.unwrap();
+
+        assert_eq!(outcome.removed, 1);
+        assert_eq!(outcome.skipped, 0);
+        assert_eq!(outcome.errored, 0);
+    }
+
+    /// Regression test for #6077/#6142 (critic M2): a stale entry whose `remove()` call
+    /// itself fails (e.g. a locked worktree under `--force`) must be counted as
+    /// `errored`, not silently folded into `removed` or `skipped`.
+    #[tokio::test]
+    async fn clean_counts_errored_when_remove_fails() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
+             worktree {0}/worktrees/locked-1\nHEAD def456\nbranch refs/heads/agent/locked-1\n\
+             prunable gitdir file points to non-existent location\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain.into_bytes());
+        runner.push_err(b"error: unable to remove worktree: it is locked\n" as &[u8]);
+        runner.push_ok(b"" as &[u8]); // final prune still runs
+
+        let mgr = make_manager(&dir, runner).await;
+        let outcome = mgr.clean(false, false, "`--force`").await.unwrap();
+
+        assert_eq!(outcome.removed, 0);
+        assert_eq!(outcome.skipped, 0);
+        assert_eq!(outcome.errored, 1);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(outcome.warnings[0].contains("failed to remove"));
+    }
+
+    /// Regression test for the exact divergence caught in #6141's review: a failure of
+    /// the final `prune()` step must be recorded as a warning, not discard an
+    /// otherwise-successful removal count or turn the whole call into an `Err`.
+    #[tokio::test]
+    async fn clean_records_prune_failure_without_discarding_removed_count() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
+             worktree {0}/worktrees/prunable-1\nHEAD def456\nbranch refs/heads/agent/prunable-1\n\
+             prunable gitdir file points to non-existent location\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain.into_bytes());
+        runner.push_ok(b"" as &[u8]); // remove succeeds
+        runner.push_err(b"fatal: not a working tree\n" as &[u8]); // prune fails
+
+        let mgr = make_manager(&dir, runner).await;
+        let outcome = mgr
+            .clean(false, false, "`--force`")
+            .await
+            .expect("a prune failure must not turn clean() into an Err");
+
+        assert_eq!(
+            outcome.removed, 1,
+            "the successful removal must not be discarded by a later prune failure"
+        );
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("failed to prune worktree registry")),
+            "got: {:?}",
+            outcome.warnings
+        );
+    }
+
+    #[test]
+    fn format_clean_summary_all_zero() {
+        assert_eq!(
+            format_clean_summary(&CleanOutcome::default()),
+            "Removed 0 stale worktree(s), skipped 0 in-use candidate(s), 0 error(s)."
+        );
+    }
+
+    #[test]
+    fn format_clean_summary_includes_all_three_counts() {
+        let outcome = CleanOutcome {
+            removed: 2,
+            skipped: 1,
+            errored: 3,
+            warnings: Vec::new(),
+        };
+        let msg = format_clean_summary(&outcome);
+        assert!(msg.contains("Removed 2"), "got: {msg}");
+        assert!(msg.contains("skipped 1"), "got: {msg}");
+        assert!(msg.contains("3 error(s)"), "got: {msg}");
     }
 
     // --- parse_git_version ---

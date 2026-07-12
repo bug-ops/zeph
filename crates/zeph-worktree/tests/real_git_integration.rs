@@ -13,7 +13,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use zeph_config::WorktreeConfig;
-use zeph_worktree::{DETACHED_BRANCH_SENTINEL, DefaultGitRunner, WorktreeManager};
+use zeph_worktree::{DETACHED_BRANCH_SENTINEL, DefaultGitRunner, WorktreeError, WorktreeManager};
 
 fn git(args: &[&str], cwd: &Path) -> std::process::Output {
     Command::new("git")
@@ -220,6 +220,52 @@ fn detached_branch_sentinel_is_not_a_valid_git_ref_name() {
         "DETACHED_BRANCH_SENTINEL ({DETACHED_BRANCH_SENTINEL:?}) must be REJECTED by \
          `git check-ref-format --branch` — otherwise a real branch could be given this exact \
          name and collide with the sentinel (see #5936 review finding)"
+    );
+}
+
+/// Regression test for #6077 (tester gap A): `WorktreeManager::remove()`'s
+/// single `git worktree remove --force` is a *second* safety layer, alongside
+/// the `prunable`-gating callers perform before ever calling `remove` (#6055)
+/// — git itself refuses to remove a `git worktree lock`-ed worktree unless
+/// given a second `--force` (`remove -f -f`), which `remove()` deliberately
+/// never passes (see its doc comment). Before this test, that refusal was
+/// only confirmed manually against real git 2.50.1; if `remove()` were ever
+/// changed to pass `-f -f`, this protection would silently regress with
+/// nothing catching it.
+#[tokio::test]
+async fn remove_refuses_locked_worktree_with_single_force() {
+    let repo = init_repo();
+    let repo_root = repo.path().canonicalize().unwrap();
+
+    let mgr = WorktreeManager::new(repo_root.clone(), config(), DefaultGitRunner::new())
+        .await
+        .unwrap();
+    let handle = mgr.create("locked-agent").await.expect("create worktree");
+
+    let lock_out = git(
+        &["worktree", "lock", "--", &handle.path.to_string_lossy()],
+        &repo_root,
+    );
+    assert!(
+        lock_out.status.success(),
+        "git worktree lock must succeed: {lock_out:?}"
+    );
+
+    let err = mgr.remove(&handle, false).await.unwrap_err();
+    assert!(
+        matches!(err, WorktreeError::GitCommand { ref op, .. } if op == "worktree remove"),
+        "expected a `worktree remove` GitCommand failure, got: {err:?}"
+    );
+    assert!(
+        handle.path.exists(),
+        "a locked worktree's directory must survive `remove()`'s single --force"
+    );
+
+    // Unlock so the underlying tempdir can be cleaned up without a dangling
+    // lock file confusing later `git worktree` invocations against it.
+    git(
+        &["worktree", "unlock", "--", &handle.path.to_string_lossy()],
+        &repo_root,
     );
 }
 
