@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Tracing layer that derives [`TurnTimings`] from span durations.
+//! Tracing layer that derives [`crate::metrics::TurnTimings`] from span durations.
 //!
 //! [`MetricsBridge`] implements [`tracing_subscriber::Layer`] and observes
 //! the close event of a fixed set of known spans. When a watched span closes,
@@ -29,11 +29,19 @@ use tracing_subscriber::registry::LookupSpan;
 use crate::metrics::MetricsCollector;
 
 /// Span names watched by the bridge, mapped to the [`TimingField`] they update.
+///
+/// `persist_message`'s real span (`core.persist.persist_message`) fires on every
+/// `persist_message()` call — 7+ times per turn (user message, assistant response(s), tool
+/// results) — not once per turn like the other three. `TurnTimings::persist_message_ms` is
+/// meant to time only the first user-message persist of the turn, which only the pre-existing
+/// manual `Instant::now()` timing in `agent/mod.rs` captures; watching the real span here would
+/// make the bridge overwrite that value with whichever persist call happens to close last, which
+/// is wrong. So `persist_message` is intentionally left out of `WATCHED_SPANS` — that field stays
+/// manually-timed only (#6111).
 const WATCHED_SPANS: &[(&str, TimingField)] = &[
-    ("agent.prepare_context", TimingField::PrepareContext),
+    ("core.context.prepare_context", TimingField::PrepareContext),
     ("llm.chat", TimingField::LlmChat),
-    ("agent.tool_loop", TimingField::ToolExec),
-    ("agent.persist_message", TimingField::PersistMessage),
+    ("core.tool.native_loop", TimingField::ToolExec),
 ];
 
 /// Identifies which [`crate::metrics::TurnTimings`] field a watched span maps to.
@@ -46,7 +54,6 @@ pub(crate) enum TimingField {
     PrepareContext,
     LlmChat,
     ToolExec,
-    PersistMessage,
 }
 
 impl TimingField {
@@ -59,7 +66,6 @@ impl TimingField {
             Self::PrepareContext => 1 << 0,
             Self::LlmChat => 1 << 1,
             Self::ToolExec => 1 << 2,
-            Self::PersistMessage => 1 << 3,
         }
     }
 }
@@ -84,8 +90,8 @@ struct SpanTiming(u64);
 
 /// Custom tracing layer that derives [`crate::metrics::TurnTimings`] from span durations.
 ///
-/// Watches a fixed set of span names (`agent.prepare_context`, `llm.chat`,
-/// `agent.tool_loop`, `agent.persist_message`) and records their close-time
+/// Watches a fixed set of span names (`core.context.prepare_context`, `llm.chat`,
+/// `core.tool.native_loop` — see `WATCHED_SPANS`) and records their close-time
 /// durations into a shared [`MetricsCollector`].
 ///
 /// Timing is captured on `on_enter` (not `on_new_span`) so that async spans
@@ -187,9 +193,6 @@ where
                             TimingField::ToolExec => {
                                 m.last_turn_timings.tool_exec_ms = duration_ms;
                             }
-                            TimingField::PersistMessage => {
-                                m.last_turn_timings.persist_message_ms = duration_ms;
-                            }
                         }
                         m.bridge_timings_written |= field.bridge_bit();
                     });
@@ -263,14 +266,14 @@ mod tests {
         assert_eq!(snapshot.last_turn_timings.persist_message_ms, 0);
     }
 
-    /// All four watched span names must be present in `WATCHED_SPANS`.
+    /// The three watched span names must be present in `WATCHED_SPANS` (#6111:
+    /// `agent.persist_message` was deliberately dropped, see the `WATCHED_SPANS` doc comment).
     #[test]
     fn all_watched_span_names_registered() {
         let expected = [
-            "agent.prepare_context",
+            "core.context.prepare_context",
             "llm.chat",
-            "agent.tool_loop",
-            "agent.persist_message",
+            "core.tool.native_loop",
         ];
 
         for span_name in expected {
@@ -283,6 +286,31 @@ mod tests {
             super::WATCHED_SPANS.len(),
             expected.len(),
             "unexpected extra spans in WATCHED_SPANS"
+        );
+    }
+
+    /// Regression guard for #6111: `WATCHED_SPANS` entries whose span is defined in this crate
+    /// must match a real `#[tracing::instrument(name = "...")]` name, not a name that looks
+    /// plausible but was never wired up. `llm.chat` lives in `zeph-llm` and is exercised by
+    /// that crate's own span-name literals instead.
+    #[test]
+    fn watched_spans_match_real_instrument_names_in_this_crate() {
+        let assembly_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/agent/context/assembly.rs"
+        ));
+        let tier_loop_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/agent/tool_execution/tier_loop.rs"
+        ));
+
+        assert!(
+            assembly_src.contains(r#"name = "core.context.prepare_context""#),
+            "core.context.prepare_context span not found in assembly.rs — WATCHED_SPANS has drifted"
+        );
+        assert!(
+            tier_loop_src.contains(r#"name = "core.tool.native_loop""#),
+            "core.tool.native_loop span not found in tier_loop.rs — WATCHED_SPANS has drifted"
         );
     }
 }

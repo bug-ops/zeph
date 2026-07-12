@@ -197,9 +197,9 @@ impl<C: Channel> Agent<C> {
             if mask & crate::metrics_bridge::TimingField::ToolExec.bridge_bit() != 0 {
                 timings.tool_exec_ms = m.last_turn_timings.tool_exec_ms;
             }
-            if mask & crate::metrics_bridge::TimingField::PersistMessage.bridge_bit() != 0 {
-                timings.persist_message_ms = m.last_turn_timings.persist_message_ms;
-            }
+            // persist_message_ms is intentionally never bridged (#6111) — its real span fires
+            // 7+ times per turn, not once, so `timings.persist_message_ms` always keeps the
+            // manual `Instant::now()` value computed in `agent/mod.rs`.
             m.bridge_timings_written = 0;
         });
 

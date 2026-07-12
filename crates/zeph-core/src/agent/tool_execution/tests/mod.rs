@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod apply_tier_results_tests;
 mod boundary_and_classifier_tests;
 mod focus_tests;
 mod hook_block_cap_tests;

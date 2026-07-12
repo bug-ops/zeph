@@ -1410,6 +1410,7 @@ impl<C: Channel> Agent<C> {
                 mcp_tool_ids,
                 args_hashes,
                 tool_started_ats,
+                max_parallel,
                 &mut failed_ids,
                 &mut tool_results,
             )
@@ -2215,10 +2216,17 @@ impl<C: Channel> Agent<C> {
         mcp_tool_ids: &std::collections::HashSet<String>,
         args_hashes: &[u64],
         tool_started_ats: &[std::time::Instant],
+        max_parallel: usize,
         failed_ids: &mut std::collections::HashSet<String>,
         tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
     ) {
-        for (idx, mut result) in indices.into_iter().zip(tier_results) {
+        // Phase 1: sequential bookkeeping (dependency-graph, result cache, failed_ids). Cheap,
+        // synchronous, and needs `&mut self` — kept sequential rather than folded into phase 2.
+        let mut pending: Vec<(
+            usize,
+            Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+        )> = Vec::with_capacity(indices.len());
+        for (idx, result) in indices.into_iter().zip(tier_results) {
             // IMP-02: Err(_) covers all error variants including ConfirmationRequired.
             // Ok(Some(out)) with "[error]" prefix covers synthetic/blocked results.
             let is_failed = match &result {
@@ -2258,55 +2266,75 @@ impl<C: Channel> Agent<C> {
                     .insert(tool_calls[idx].name.to_string());
             }
 
-            // RuntimeLayer after_tool hooks.
-            if !self.runtime.config.layers.is_empty() {
-                let conv_id_str = self
-                    .services
-                    .memory
-                    .persistence
-                    .conversation_id
-                    .map(|id| id.0.to_string());
-                let ctx = crate::runtime_layer::LayerContext {
-                    conversation_id: conv_id_str.as_deref(),
-                    turn_number: u32::try_from(self.services.sidequest.turn_counter)
-                        .unwrap_or(u32::MAX),
-                };
-                for layer in &self.runtime.config.layers {
+            pending.push((idx, result));
+        }
+
+        let layers_empty = self.runtime.config.layers.is_empty();
+        let post_hooks = self.services.session.hooks_config.post_tool_use.clone();
+        if layers_empty && post_hooks.is_empty() {
+            for (idx, result) in pending {
+                tool_results[idx] = result;
+            }
+            return;
+        }
+
+        // Phase 2: RuntimeLayer::after_tool and PostToolUse hook firing per index. Unlike
+        // process_one_tool_result (which must stay strictly sequential to preserve
+        // OpenAI/Claude message-ordering — see the comment above its call site), there is no
+        // ordering constraint between different tool-result indices here: each index's layer
+        // chain and hook firing only observes/mutates that index's own result. Run them
+        // concurrently, bounded by the same `max_parallel` semaphore the tier's tool execution
+        // itself already uses, so a tier with many hook-matching calls doesn't serialize N
+        // subprocess spawns after already paying for bounded-parallel tool execution (#6128).
+        let conv_id_str = self
+            .services
+            .memory
+            .persistence
+            .conversation_id
+            .map(|id| id.0.to_string());
+        let ctx = crate::runtime_layer::LayerContext {
+            conversation_id: conv_id_str.as_deref(),
+            turn_number: u32::try_from(self.services.sidequest.turn_counter).unwrap_or(u32::MAX),
+        };
+        let dispatch = self.mcp_dispatch();
+        let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
+            .as_ref()
+            .map(|d| d as &dyn zeph_subagent::McpDispatch);
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_parallel.max(1)));
+        let layers = &self.runtime.config.layers;
+        // Reborrow as plain references (`&T` is `Copy`) so the `FnMut` closure below can
+        // capture them by value on every invocation instead of moving the owned originals.
+        let ctx_ref = &ctx;
+        let conv_id = conv_id_str.as_deref();
+
+        let futs = pending.into_iter().map(|(idx, result)| {
+            let sem = std::sync::Arc::clone(&semaphore);
+            let tc = &tool_calls[idx];
+            let call = &calls[idx];
+            let matched: Vec<&zeph_config::HookDef> =
+                zeph_subagent::matching_hooks(&post_hooks, tc.name.as_str());
+            async move {
+                let _permit = sem.acquire().await;
+                let mut result = result;
+
+                // RuntimeLayer after_tool hooks.
+                for layer in layers {
                     let hook_result =
-                        std::panic::AssertUnwindSafe(layer.after_tool(&ctx, &calls[idx], &result))
+                        std::panic::AssertUnwindSafe(layer.after_tool(ctx_ref, call, &result))
                             .catch_unwind()
                             .await;
                     if hook_result.is_err() {
                         tracing::warn!("RuntimeLayer::after_tool panicked, continuing");
                     }
                 }
-            }
 
-            // Fire PostToolUse hooks after the tool result is available (fail-open).
-            let post_hooks = self.services.session.hooks_config.post_tool_use.clone();
-            if !post_hooks.is_empty() {
-                let matched: Vec<&zeph_config::HookDef> =
-                    zeph_subagent::matching_hooks(&post_hooks, tool_calls[idx].name.as_str());
+                // Fire PostToolUse hooks after the tool result is available (fail-open).
                 if !matched.is_empty() {
-                    let conv_id_str = self
-                        .services
-                        .memory
-                        .persistence
-                        .conversation_id
-                        .map(|id| id.0.to_string());
-                    let mut env = make_tool_hook_env(
-                        tool_calls[idx].name.as_str(),
-                        &tool_calls[idx].input,
-                        conv_id_str.as_deref(),
-                    );
+                    let mut env = make_tool_hook_env(tc.name.as_str(), &tc.input, conv_id);
                     let duration_ms = u64::try_from(tool_started_ats[idx].elapsed().as_millis())
                         .unwrap_or(u64::MAX);
                     env.insert("ZEPH_TOOL_DURATION_MS".to_owned(), duration_ms.to_string());
                     let owned: Vec<zeph_config::HookDef> = matched.into_iter().cloned().collect();
-                    let dispatch = self.mcp_dispatch();
-                    let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
-                        .as_ref()
-                        .map(|d| d as &dyn zeph_subagent::McpDispatch);
 
                     // Build stdin JSON context for the hook process.
                     let tool_output_text = match &result {
@@ -2318,13 +2346,13 @@ impl<C: Channel> Agent<C> {
                         _ => None,
                     };
                     let hook_input = zeph_subagent::PostToolUseHookInput {
-                        tool_name: tool_calls[idx].name.as_str(),
-                        tool_args: &tool_calls[idx].input,
-                        session_id: conv_id_str.as_deref(),
+                        tool_name: tc.name.as_str(),
+                        tool_args: &tc.input,
+                        session_id: conv_id,
                         duration_ms,
                         tool_output: tool_output_text,
                         tool_error: tool_error_text.as_deref(),
-                        agent_id: conv_id_str.as_deref(),
+                        agent_id: conv_id,
                         agent_type: "main",
                     };
                     let stdin_bytes = serde_json::to_vec(&hook_input).ok();
@@ -2337,7 +2365,7 @@ impl<C: Channel> Agent<C> {
                     )
                     .instrument(tracing::info_span!(
                         "core.hooks.post_tool_use",
-                        tool = %tool_calls[idx].name
+                        tool = %tc.name
                     ))
                     .await
                     {
@@ -2346,7 +2374,7 @@ impl<C: Channel> Agent<C> {
                                 // Apply hook-requested output substitution.
                                 if let Ok(Some(ref mut out)) = result {
                                     tracing::debug!(
-                                        tool = %tool_calls[idx].name,
+                                        tool = %tc.name,
                                         original_len = out.summary.len(),
                                         replacement_len = replacement.len(),
                                         "PostToolUse hook replaced tool output"
@@ -2358,14 +2386,18 @@ impl<C: Channel> Agent<C> {
                         Err(e) => {
                             tracing::warn!(
                                 error = %e,
-                                tool = %tool_calls[idx].name,
+                                tool = %tc.name,
                                 "PostToolUse hook failed"
                             );
                         }
                     }
                 }
-            }
 
+                (idx, result)
+            }
+        });
+
+        for (idx, result) in futures::future::join_all(futs).await {
             tool_results[idx] = result;
         }
     }

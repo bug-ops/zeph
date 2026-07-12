@@ -28,6 +28,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `IndexMcpServer` always walked the full process working directory instead (#6129).
   Extracted the existing resolution logic into a shared `resolve_workspace_root` helper so
   both call sites resolve `workspace_root` identically.
+- `zeph-core`: `apply_tier_results` processed each tool result's `RuntimeLayer::after_tool`
+  chain and `PostToolUse` hook firing sequentially, one index at a time, even though the
+  tier's tool execution itself already runs bounded-parallel (#6128). A tier with many
+  `PostToolUse`-matching calls paid N sequential subprocess spawns after already paying for
+  parallel tool execution. The layer/hook phase now runs concurrently across a tier's
+  indices via `futures::future::join_all`, bounded by the same `max_parallel` semaphore the
+  tier's tool execution uses.
+- `zeph-core`: `MetricsBridge::WATCHED_SPANS` (profiling feature) named three spans
+  (`agent.prepare_context`, `agent.tool_loop`, `agent.persist_message`) that never matched any
+  real `tracing` span, silently making their `on_close` handling dead code — only `llm.chat`
+  was ever observed (#6111). Renamed the first two to their real span names
+  (`core.context.prepare_context`, `core.tool.native_loop`). `agent.persist_message` is
+  intentionally left unwatched: its real span (`core.persist.persist_message`) fires 7+ times
+  per turn, not once, so bridging it would report the wrong (last) call's duration instead of
+  the first user-message persist that `TurnTimings::persist_message_ms` is meant to measure;
+  that field stays manually-timed only.
 - `zeph-tui`: closed three independent dispatch/state gaps (#6061, #5984, #5983).
   - The task-registry overlay's supervisor-unavailable fallback (`render_subagents_slot`)
     drew its "supervisor not available" message directly into the shared subagents-slot
