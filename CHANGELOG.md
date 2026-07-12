@@ -69,6 +69,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   between the previously-separate locked reads used to build the persisted DB row. No config or
   behavior change for `rl_routing_enabled = false` (still the default) or single-session
   (`runner`/`daemon`) deployments.
+- `zeph-llm` Claude provider: the no-prefill gate that strips a trailing assistant
+  message for models that reject assistant prefill (`ClaudeProvider::no_prefill`,
+  added by #5903 and extended to cover the unconditional `rejects_prefill` case by
+  #6145 — see that `[Unreleased]/Fixed` entry for exactly which models/
+  thinking-states the gate covers) was only applied in `build_request()`. The
+  other four request-construction paths on `ClaudeProvider` —
+  `chat_with_tools_stream` (the agent's primary tool-use loop), `chat_with_tools`,
+  `chat_typed`, and `debug_request_json` — built their request bodies
+  independently and never applied the gate, so a trailing-assistant-message
+  history routed through any of them could still trigger the same class of 400
+  for any model/thinking-state the gate is meant to cover (#6146). This is the
+  second time this bug class was filed, so the split step and the no-prefill
+  strip are now bundled into two funnel methods —
+  `ClaudeProvider::structured_history`/`plain_history` — that every
+  request-construction path calls to obtain its message history; the raw
+  `split_messages`/`split_messages_structured` functions are no longer imported
+  at the `claude` module's top level, so a future request path cannot easily
+  split a history without the strip being applied.
 - `.github/deny.toml`: the `cargo-deny` advisories gate scanned only the `candle`
   and `tui` features, excluding `pdf` and every other feature shipped by the
   blocking `bundle-check` (`full`) CI job and release builds — any RUSTSEC

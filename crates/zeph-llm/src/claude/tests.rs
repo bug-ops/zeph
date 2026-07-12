@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::cache::cache_min_tokens;
-use super::request::split_messages_structured;
+use super::request::{split_messages, split_messages_structured};
 use std::assert_matches;
 
 use super::types::{
@@ -2970,6 +2970,220 @@ fn build_request_opus_4_6_no_thinking_keeps_trailing_assistant() {
         msgs.last().and_then(|m| m["role"].as_str()),
         Some("assistant"),
         "Opus 4.6 keeps trailing assistant message when thinking is disabled"
+    );
+}
+
+// ── #6146: no-prefill gate must apply on every request-construction path,
+// not just build_request() ─────────────────────────────────────────────────
+
+#[test]
+fn no_prefill_true_for_opus_4_6_with_thinking() {
+    // Opus 4.6 is excluded from unconditional `rejects_prefill` (#6145) — it only rejects
+    // prefill while thinking is active, so this isolates the `prefers_effort` branch.
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-4-6".into(), 32_000)
+        .with_thinking(ThinkingConfig::Adaptive { effort: None })
+        .unwrap();
+    let (thinking_param, _, _) = provider.build_thinking_param();
+    assert!(provider.no_prefill(thinking_param.as_ref()));
+}
+
+#[test]
+fn no_prefill_false_for_opus_4_6_without_thinking() {
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-4-6".into(), 32_000);
+    let (thinking_param, _, _) = provider.build_thinking_param();
+    assert!(!provider.no_prefill(thinking_param.as_ref()));
+}
+
+#[test]
+fn no_prefill_true_for_sonnet_4_6_with_thinking() {
+    // Sonnet 4.6 rejects prefill unconditionally since #6145 (`rejects_prefill`), regardless
+    // of whether thinking is configured.
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 32_000)
+        .with_thinking(ThinkingConfig::Extended {
+            budget_tokens: 5_000,
+        })
+        .unwrap();
+    let (thinking_param, _, _) = provider.build_thinking_param();
+    assert!(provider.no_prefill(thinking_param.as_ref()));
+}
+
+#[test]
+fn no_prefill_true_for_sonnet_4_6_without_thinking() {
+    // Companion to the case above: `rejects_prefill` is unconditional, so this must also be
+    // true with no thinking configured at all — the case #6145 added and this branch's
+    // pre-rebase `no_prefill()` would have missed.
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 32_000);
+    let (thinking_param, _, _) = provider.build_thinking_param();
+    assert!(provider.no_prefill(thinking_param.as_ref()));
+}
+
+#[test]
+fn strip_trailing_assistant_structured_removes_only_trailing_run() {
+    let mut messages = vec![
+        StructuredApiMessage {
+            role: "user".into(),
+            content: StructuredContent::Text("hi".into()),
+        },
+        StructuredApiMessage {
+            role: "assistant".into(),
+            content: StructuredContent::Text("mid".into()),
+        },
+        StructuredApiMessage {
+            role: "user".into(),
+            content: StructuredContent::Text("follow-up".into()),
+        },
+        StructuredApiMessage {
+            role: "assistant".into(),
+            content: StructuredContent::Text("trailing".into()),
+        },
+    ];
+    ClaudeProvider::strip_trailing_assistant_structured(true, &mut messages);
+    assert_eq!(
+        messages.len(),
+        3,
+        "only the trailing assistant run is stripped"
+    );
+    assert_eq!(messages.last().unwrap().role, "user");
+}
+
+#[test]
+fn strip_trailing_assistant_structured_noop_when_gate_false() {
+    let mut messages = vec![StructuredApiMessage {
+        role: "assistant".into(),
+        content: StructuredContent::Text("trailing".into()),
+    }];
+    ClaudeProvider::strip_trailing_assistant_structured(false, &mut messages);
+    assert_eq!(
+        messages.len(),
+        1,
+        "no_prefill=false must never strip messages"
+    );
+}
+
+#[test]
+fn strip_trailing_assistant_plain_removes_only_trailing_run() {
+    let mut messages = vec![
+        ApiMessage {
+            role: "user",
+            content: "hi",
+        },
+        ApiMessage {
+            role: "assistant",
+            content: "trailing",
+        },
+    ];
+    ClaudeProvider::strip_trailing_assistant_plain(true, &mut messages);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.last().unwrap().role, "user");
+}
+
+#[test]
+fn debug_request_json_tools_branch_strips_trailing_assistant_for_opus_thinking() {
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-4-8".into(), 32_000)
+        .with_thinking(ThinkingConfig::Adaptive { effort: None })
+        .unwrap();
+    let messages = vec![
+        Message::from_legacy(Role::User, "hello"),
+        Message::from_legacy(Role::Assistant, "world"),
+    ];
+    let tools = vec![ToolDefinition {
+        name: "read_file".into(),
+        description: "Read a file".into(),
+        parameters: serde_json::json!({"type": "object", "properties": {}}),
+        output_schema: None,
+    }];
+
+    let body = provider.debug_request_json(&messages, &tools, false);
+    let msgs = body["messages"].as_array().unwrap();
+    assert_eq!(
+        msgs.len(),
+        1,
+        "only the trailing assistant message should be stripped, not the whole history"
+    );
+    assert_eq!(
+        msgs[0]["role"].as_str(),
+        Some("user"),
+        "tool-use requests must strip trailing assistant messages for Opus with thinking"
+    );
+}
+
+#[test]
+fn debug_request_json_tools_branch_keeps_trailing_assistant_without_thinking() {
+    // Opus 4.6 is the only current model whose prefill rejection is thinking-gated
+    // (`prefers_effort`) rather than unconditional (`rejects_prefill`, #6145) — Opus 4.8
+    // would strip here regardless of thinking state.
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-4-6".into(), 32_000);
+    let messages = vec![
+        Message::from_legacy(Role::User, "hello"),
+        Message::from_legacy(Role::Assistant, "world"),
+    ];
+    let tools = vec![ToolDefinition {
+        name: "read_file".into(),
+        description: "Read a file".into(),
+        parameters: serde_json::json!({"type": "object", "properties": {}}),
+        output_schema: None,
+    }];
+
+    let body = provider.debug_request_json(&messages, &tools, false);
+    let msgs = body["messages"].as_array().unwrap();
+    assert_eq!(
+        msgs.last().and_then(|m| m["role"].as_str()),
+        Some("assistant"),
+        "trailing assistant message must be preserved when thinking is disabled"
+    );
+}
+
+#[test]
+fn debug_request_json_image_branch_strips_trailing_assistant_for_opus_thinking() {
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-4-8".into(), 32_000)
+        .with_thinking(ThinkingConfig::Adaptive { effort: None })
+        .unwrap();
+    let messages = vec![
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::Image(Box::new(ImageData {
+                data: vec![1, 2, 3],
+                mime_type: "image/png".into(),
+            }))],
+        ),
+        Message::from_legacy(Role::Assistant, "world"),
+    ];
+
+    let body = provider.debug_request_json(&messages, &[], false);
+    let msgs = body["messages"].as_array().unwrap();
+    assert_eq!(
+        msgs.len(),
+        1,
+        "only the trailing assistant message should be stripped, not the whole history"
+    );
+    assert_eq!(
+        msgs[0]["role"].as_str(),
+        Some("user"),
+        "vision requests must strip trailing assistant messages for Opus with thinking"
+    );
+}
+
+#[test]
+fn debug_request_json_plain_branch_strips_trailing_assistant_for_opus_thinking() {
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-4-8".into(), 32_000)
+        .with_thinking(ThinkingConfig::Adaptive { effort: None })
+        .unwrap();
+    let messages = vec![
+        Message::from_legacy(Role::User, "hello"),
+        Message::from_legacy(Role::Assistant, "world"),
+    ];
+
+    let body = provider.debug_request_json(&messages, &[], false);
+    let msgs = body["messages"].as_array().unwrap();
+    assert_eq!(
+        msgs.len(),
+        1,
+        "only the trailing assistant message should be stripped, not the whole history"
+    );
+    assert_eq!(
+        msgs[0]["role"].as_str(),
+        Some("user"),
+        "plain (no tools, no image) requests must strip trailing assistant messages too"
     );
 }
 

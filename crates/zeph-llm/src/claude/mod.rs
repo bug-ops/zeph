@@ -62,9 +62,9 @@ use crate::retry::send_with_retry;
 use crate::sse::claude_sse_to_stream;
 
 use self::cache::{build_cache_control, log_cache_usage, split_system_into_blocks, tool_cache_key};
-use self::request::{parse_tool_response, split_messages, split_messages_structured};
+use self::request::parse_tool_response;
 use self::types::{
-    AnthropicContentBlock, AnthropicTool, ContextManagement, ContextManagementTrigger,
+    AnthropicContentBlock, AnthropicTool, ApiMessage, ContextManagement, ContextManagementTrigger,
     OutputConfig, RequestBody, StructuredApiMessage, SystemContentBlock, ToolApiResponse,
     ToolChoice, ToolRequestBody, TypedToolRequestBody, VisionRequestBody,
 };
@@ -904,6 +904,96 @@ impl ClaudeProvider {
         }
     }
 
+    /// Whether the conversation must end on a non-assistant turn for this request.
+    ///
+    /// Sonnet 4.6+ and the Opus 4.7+/Sonnet 5 generation reject assistant prefill
+    /// unconditionally (`rejects_prefill`). Opus 4.6 only rejects it while thinking is
+    /// enabled, which is why that case additionally checks `prefers_effort` alongside
+    /// `thinking_param`. Either way, the API returns 400 if the message history ends with
+    /// an assistant turn. Shared by every request-construction path (`build_request`,
+    /// `chat_with_tools`, `chat_with_tools_stream`, `chat_typed`, `debug_request_json`) so the
+    /// gate cannot drift out of sync between call sites again (#5903, #6145, #6146).
+    fn no_prefill(&self, thinking_param: Option<&types::ThinkingParam>) -> bool {
+        let cap = thinking_capability(&self.model);
+        cap.rejects_prefill || (cap.prefers_effort && thinking_param.is_some())
+    }
+
+    /// Strip trailing assistant messages from a structured chat history when [`Self::no_prefill`]
+    /// requires the request to end on a non-assistant turn.
+    fn strip_trailing_assistant_structured(
+        no_prefill: bool,
+        chat_messages: &mut Vec<StructuredApiMessage>,
+    ) {
+        if !no_prefill {
+            return;
+        }
+        while chat_messages.last().is_some_and(|m| m.role == "assistant") {
+            chat_messages.pop();
+        }
+    }
+
+    /// Strip trailing assistant messages from a plain (non-structured) chat history when
+    /// [`Self::no_prefill`] requires the request to end on a non-assistant turn.
+    fn strip_trailing_assistant_plain(no_prefill: bool, chat_messages: &mut Vec<ApiMessage<'_>>) {
+        if !no_prefill {
+            return;
+        }
+        while chat_messages.last().is_some_and(|m| m.role == "assistant") {
+            chat_messages.pop();
+        }
+    }
+
+    /// Split `messages` into a system prompt and a structured chat history, ready to send:
+    /// cache-control blocks are capped at Anthropic's budget and the no-prefill gate has
+    /// already been applied.
+    ///
+    /// This is the only sanctioned way to obtain a `Vec<StructuredApiMessage>` for a request
+    /// body. `split_messages_structured` itself is intentionally NOT imported at this module's
+    /// top level (see the local `use` inside this function) so it isn't one autocomplete away
+    /// from every call site — request-construction code must go through this funnel, which
+    /// bundles the split with the no-prefill strip so the two cannot be pulled apart again the
+    /// way they were before #6146 (this is the second filing of this bug class; #5903 fixed the
+    /// gate for `build_request` only).
+    fn structured_history(
+        &self,
+        messages: &[Message],
+        thinking_param: Option<&types::ThinkingParam>,
+        cache_tool_blocks: usize,
+    ) -> (Option<Vec<SystemContentBlock>>, Vec<StructuredApiMessage>) {
+        use self::request::split_messages_structured;
+
+        let (system, mut chat_messages) =
+            split_messages_structured(messages, self.cache_user_messages, self.prompt_cache_ttl);
+        let system_blocks =
+            system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
+        Self::cap_block_cache_controls(
+            cache_tool_blocks,
+            system_blocks.as_deref(),
+            Some(&mut chat_messages),
+        );
+        Self::strip_trailing_assistant_structured(
+            self.no_prefill(thinking_param),
+            &mut chat_messages,
+        );
+        (system_blocks, chat_messages)
+    }
+
+    /// Split `messages` into a system prompt and a plain chat history, with the no-prefill gate
+    /// already applied. Same bypass-prevention rationale as [`Self::structured_history`].
+    fn plain_history<'m>(
+        &self,
+        messages: &'m [Message],
+        thinking_param: Option<&types::ThinkingParam>,
+    ) -> (Option<Vec<SystemContentBlock>>, Vec<ApiMessage<'m>>) {
+        use self::request::split_messages;
+
+        let (system, mut chat_messages) = split_messages(messages);
+        Self::strip_trailing_assistant_plain(self.no_prefill(thinking_param), &mut chat_messages);
+        let system_blocks =
+            system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
+        (system_blocks, chat_messages)
+    }
+
     fn build_request(&self, messages: &[Message], stream: bool) -> reqwest::RequestBuilder {
         let (thinking_param, mut temperature, effort) = self.build_thinking_param();
         if thinking_param.is_none()
@@ -913,28 +1003,9 @@ impl ClaudeProvider {
         }
         let output_config = effort.map(|e| OutputConfig { effort: e }); // lgtm[rust/cleartext-logging]
 
-        let cap = thinking_capability(&self.model);
-        // Sonnet 4.6+ and the Opus 4.7+/Sonnet 5 generation reject assistant prefill
-        // unconditionally (`rejects_prefill`). Opus 4.6 only rejects it while thinking
-        // is enabled, which is why that case still checks `prefers_effort` alongside
-        // `thinking_param`. Either way, strip trailing assistant messages so the
-        // conversation always ends with a user turn.
-        let no_prefill = cap.rejects_prefill || (cap.prefers_effort && thinking_param.is_some());
-
         if Self::has_image_parts(messages) {
-            let (system, mut chat_messages) = split_messages_structured(
-                messages,
-                self.cache_user_messages,
-                self.prompt_cache_ttl,
-            );
-            let system_blocks =
-                system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
-            Self::cap_block_cache_controls(0, system_blocks.as_deref(), Some(&mut chat_messages));
-            if no_prefill {
-                while chat_messages.last().is_some_and(|m| m.role == "assistant") {
-                    chat_messages.pop();
-                }
-            }
+            let (system_blocks, chat_messages) =
+                self.structured_history(messages, thinking_param.as_ref(), 0);
             let beta = self.beta_header(false);
             let body = VisionRequestBody {
                 model: &self.model,
@@ -958,14 +1029,7 @@ impl ClaudeProvider {
             return req.header("content-type", "application/json").json(&body);
         }
 
-        let (system, mut chat_messages) = split_messages(messages);
-        if no_prefill {
-            while chat_messages.last().is_some_and(|m| m.role == "assistant") {
-                chat_messages.pop();
-            }
-        }
-        let system_blocks =
-            system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
+        let (system_blocks, chat_messages) = self.plain_history(messages, thinking_param.as_ref());
         let beta = self.beta_header(false);
         let body = RequestBody {
             model: &self.model,
@@ -1062,8 +1126,6 @@ impl ClaudeProvider {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<crate::sse::ToolSseStream, LlmError> {
-        let (system, mut chat_messages) =
-            split_messages_structured(messages, self.cache_user_messages, self.prompt_cache_ttl);
         let api_tools = self.get_or_build_api_tools(tools);
 
         let (thinking_param, mut temperature, effort) = self.build_thinking_param();
@@ -1073,9 +1135,8 @@ impl ClaudeProvider {
             temperature = Some(t);
         }
         let output_config = effort.map(|e| OutputConfig { effort: e });
-        let system_blocks =
-            system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
-        Self::cap_block_cache_controls(1, system_blocks.as_deref(), Some(&mut chat_messages));
+        let (system_blocks, chat_messages) =
+            self.structured_history(messages, thinking_param.as_ref(), 1);
         let has_tools = !tools.is_empty();
         let mut body = ToolRequestBody {
             model: &self.model,
@@ -1241,8 +1302,6 @@ impl LlmProvider for ClaudeProvider {
             parameters: schema_value,
             output_schema: None,
         };
-        let (system, mut chat_messages) =
-            split_messages_structured(messages, self.cache_user_messages, self.prompt_cache_ttl);
         let api_tool = AnthropicTool {
             name: tool.name.as_str(),
             description: &tool.description,
@@ -1255,9 +1314,8 @@ impl LlmProvider for ClaudeProvider {
             temperature = Some(t);
         }
         let output_config = effort.map(|e| OutputConfig { effort: e });
-        let system_blocks =
-            system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
-        Self::cap_block_cache_controls(0, system_blocks.as_deref(), Some(&mut chat_messages));
+        let (system_blocks, chat_messages) =
+            self.structured_history(messages, thinking_param.as_ref(), 0);
         let tool_choice = ToolChoice {
             r#type: "tool",
             name: &tool_name,
@@ -1352,14 +1410,8 @@ impl LlmProvider for ClaudeProvider {
         let output_config = effort.map(|e| OutputConfig { effort: e });
 
         if !tools.is_empty() {
-            let (system, mut chat_messages) = split_messages_structured(
-                messages,
-                self.cache_user_messages,
-                self.prompt_cache_ttl,
-            );
-            let system_blocks =
-                system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
-            Self::cap_block_cache_controls(1, system_blocks.as_deref(), Some(&mut chat_messages));
+            let (system_blocks, chat_messages) =
+                self.structured_history(messages, thinking_param.as_ref(), 1);
             let api_tools = self.get_or_build_api_tools(tools);
             let body = ToolRequestBody {
                 model: &self.model,
@@ -1378,14 +1430,8 @@ impl LlmProvider for ClaudeProvider {
         }
 
         if Self::has_image_parts(messages) {
-            let (system, mut chat_messages) = split_messages_structured(
-                messages,
-                self.cache_user_messages,
-                self.prompt_cache_ttl,
-            );
-            let system_blocks =
-                system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
-            Self::cap_block_cache_controls(0, system_blocks.as_deref(), Some(&mut chat_messages));
+            let (system_blocks, chat_messages) =
+                self.structured_history(messages, thinking_param.as_ref(), 0);
             let body = VisionRequestBody {
                 model: &self.model,
                 max_tokens: self.max_tokens,
@@ -1401,9 +1447,7 @@ impl LlmProvider for ClaudeProvider {
                 .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
         }
 
-        let (system, chat_messages) = split_messages(messages);
-        let system_blocks =
-            system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
+        let (system_blocks, chat_messages) = self.plain_history(messages, thinking_param.as_ref());
         let body = RequestBody {
             model: &self.model,
             max_tokens: self.max_tokens,
@@ -1429,8 +1473,6 @@ impl LlmProvider for ClaudeProvider {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<ChatResponse, LlmError> {
-        let (system, mut chat_messages) =
-            split_messages_structured(messages, self.cache_user_messages, self.prompt_cache_ttl);
         let api_tools = self.get_or_build_api_tools(tools);
 
         let (thinking_param, mut temperature, effort) = self.build_thinking_param();
@@ -1440,9 +1482,8 @@ impl LlmProvider for ClaudeProvider {
             temperature = Some(t);
         }
         let output_config = effort.map(|e| OutputConfig { effort: e });
-        let system_blocks =
-            system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
-        Self::cap_block_cache_controls(1, system_blocks.as_deref(), Some(&mut chat_messages));
+        let (system_blocks, chat_messages) =
+            self.structured_history(messages, thinking_param.as_ref(), 1);
         let has_tools = !tools.is_empty();
         let mut body = ToolRequestBody {
             model: &self.model,

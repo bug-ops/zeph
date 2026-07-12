@@ -14,6 +14,12 @@ use super::types::{
 };
 use crate::CacheTtl;
 
+/// Raw message split, with no no-prefill gating applied.
+///
+/// Not re-exported at `claude` module top level and not meant to be called directly from a
+/// request-construction path — `ClaudeProvider::plain_history` is the funnel that applies the
+/// no-prefill strip after this split (see its doc comment for why). Called directly only by
+/// this crate's tests (to exercise the pure conversion logic) and by the funnel itself.
 pub(super) fn split_messages(messages: &[Message]) -> (Option<String>, Vec<ApiMessage<'_>>) {
     let mut system_parts = Vec::new();
     let mut chat = Vec::new();
@@ -47,6 +53,12 @@ pub(super) fn split_messages(messages: &[Message]) -> (Option<String>, Vec<ApiMe
     (system, chat)
 }
 
+/// Raw structured message split, with no no-prefill gating applied.
+///
+/// Not re-exported at `claude` module top level and not meant to be called directly from a
+/// request-construction path — `ClaudeProvider::structured_history` is the funnel that applies
+/// the no-prefill strip after this split (see its doc comment for why). Called directly only by
+/// this crate's tests (to exercise the pure conversion logic) and by the funnel itself.
 pub(super) fn split_messages_structured(
     messages: &[Message],
     cache_user_messages: bool,
