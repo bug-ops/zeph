@@ -315,10 +315,10 @@ impl<C: Channel> Agent<C> {
                 let anomaly_outcome = if matches!(e, zeph_tools::ToolError::Blocked { .. }) {
                     AnomalyOutcome::Blocked
                 } else if is_quality_failure
-                    && zeph_tools::is_reasoning_model(self.provider.model_identifier())
+                    && zeph_tools::is_reasoning_model(self.provider.effective_model_identifier())
                 {
                     AnomalyOutcome::ReasoningQualityFailure {
-                        model: self.provider.model_identifier().to_owned(),
+                        model: self.provider.effective_model_identifier().to_owned(),
                         tool: tc.name.to_string(),
                     }
                 } else {

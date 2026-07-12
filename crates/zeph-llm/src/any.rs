@@ -786,6 +786,10 @@ impl LlmProvider for AnyProvider {
         delegate_provider!(self, |p| p.model_identifier())
     }
 
+    fn effective_model_identifier(&self) -> &str {
+        delegate_provider!(self, |p| p.effective_model_identifier())
+    }
+
     fn supports_structured_output(&self) -> bool {
         delegate_provider!(self, |p| p.supports_structured_output())
     }

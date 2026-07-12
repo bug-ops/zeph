@@ -112,6 +112,9 @@ pub struct CandleProvider {
     /// tracking and provider selection can distinguish between multiple configured Candle
     /// instances (#5892).
     provider_name: String,
+    /// Model identifier reported by [`LlmProvider::model_identifier`], derived once from
+    /// the [`ModelSource`](crate::candle_provider::loader::ModelSource) at construction time.
+    model_id: String,
 }
 
 impl std::fmt::Debug for CandleProvider {
@@ -122,6 +125,7 @@ impl std::fmt::Debug for CandleProvider {
             .field("device", &format!("{:?}", self.device))
             .field("embed_model", &self.embed_model)
             .field("provider_name", &self.provider_name)
+            .field("model_id", &self.model_id)
             .finish_non_exhaustive()
     }
 }
@@ -143,6 +147,7 @@ impl Clone for CandleProvider {
             embed_model: self.embed_model.clone(),
             device: self.device.clone(),
             provider_name: self.provider_name.clone(),
+            model_id: self.model_id.clone(),
         }
     }
 }
@@ -190,6 +195,7 @@ impl CandleProvider {
         device: Device,
         inference_timeout: Duration,
     ) -> Result<Self, LlmError> {
+        let model_id = source.model_id();
         let LoadedModel {
             weights,
             tokenizer,
@@ -230,6 +236,7 @@ impl CandleProvider {
             embed_model,
             device,
             provider_name: "candle".to_owned(),
+            model_id,
         })
     }
 
@@ -362,5 +369,9 @@ impl LlmProvider for CandleProvider {
 
     fn name(&self) -> &str {
         &self.provider_name
+    }
+
+    fn model_identifier(&self) -> &str {
+        &self.model_id
     }
 }

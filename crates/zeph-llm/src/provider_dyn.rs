@@ -120,6 +120,10 @@ pub trait LlmProviderDyn: private::Sealed + std::fmt::Debug + Send + Sync {
     /// Model identifier string (e.g. `gpt-4o-mini`, `claude-sonnet-5`).
     fn model_identifier(&self) -> &str;
 
+    /// Model identifier that actually served the most recent dispatch. See
+    /// [`LlmProvider::effective_model_identifier`] for the full contract.
+    fn effective_model_identifier(&self) -> &str;
+
     /// Whether this provider supports image input (vision).
     fn supports_vision(&self) -> bool;
 
@@ -223,6 +227,10 @@ impl<T: LlmProvider + std::fmt::Debug + Send + Sync + 'static> LlmProviderDyn fo
 
     fn model_identifier(&self) -> &str {
         LlmProvider::model_identifier(self)
+    }
+
+    fn effective_model_identifier(&self) -> &str {
+        LlmProvider::effective_model_identifier(self)
     }
 
     fn supports_vision(&self) -> bool {

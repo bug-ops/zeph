@@ -27,6 +27,26 @@ pub enum ModelSource {
     },
 }
 
+impl ModelSource {
+    /// Returns a model identifier suitable for `is_reasoning_model` classification.
+    ///
+    /// `HuggingFace` sources use `repo_id` (e.g. `deepseek-ai/DeepSeek-R1-Distill-Qwen-7B`),
+    /// the canonical identity that reasoning-model heuristics match against. `Local` sources
+    /// have no such canonical id, so this falls back to the file stem of `path` — a known
+    /// limitation: a generically-named local GGUF (e.g. `model-q4.gguf`) yields a false
+    /// negative for reasoning-model detection, since the filename carries no model identity.
+    #[must_use]
+    pub fn model_id(&self) -> String {
+        match self {
+            ModelSource::Local { path } => path
+                .file_stem()
+                .and_then(std::ffi::OsStr::to_str)
+                .map_or_else(|| path.display().to_string(), ToOwned::to_owned),
+            ModelSource::HuggingFace { repo_id, .. } => repo_id.clone(),
+        }
+    }
+}
+
 pub struct LoadedModel {
     pub weights: ModelWeights,
     pub tokenizer: Tokenizer,
@@ -161,5 +181,46 @@ mod tests {
         let debug = format!("{source:?}");
         assert!(debug.contains("HuggingFace"));
         assert!(debug.contains("TheBloke/Mistral-7B"));
+    }
+
+    // ── #6183: model_id() must return an identifier `is_reasoning_model` can match ──
+
+    #[test]
+    fn model_source_model_id_local_uses_file_stem() {
+        let source = ModelSource::Local {
+            path: PathBuf::from("/models/deepseek-r1-distill-qwen-7b.gguf"),
+        };
+        assert_eq!(source.model_id(), "deepseek-r1-distill-qwen-7b");
+    }
+
+    #[test]
+    fn model_source_model_id_local_falls_back_to_full_path_when_no_stem() {
+        // `Path::file_stem()` returns `None` when there is no file name component
+        // (e.g. the root path) — verify the documented fallback to `path.display()`.
+        let source = ModelSource::Local {
+            path: PathBuf::from("/"),
+        };
+        assert_eq!(source.model_id(), "/");
+    }
+
+    #[test]
+    fn model_source_model_id_huggingface_uses_repo_id() {
+        let source = ModelSource::HuggingFace {
+            repo_id: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B".into(),
+            filename: Some("model.Q4_K_M.gguf".into()),
+            sha256: None,
+        };
+        assert_eq!(source.model_id(), "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B");
+    }
+
+    #[test]
+    fn model_source_model_id_huggingface_ignores_filename() {
+        // repo_id is the canonical identity even when filename carries no signal.
+        let source = ModelSource::HuggingFace {
+            repo_id: "microsoft/Phi-3-mini-4k-instruct".into(),
+            filename: None,
+            sha256: None,
+        };
+        assert_eq!(source.model_id(), "microsoft/Phi-3-mini-4k-instruct");
     }
 }

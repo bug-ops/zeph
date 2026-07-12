@@ -1649,4 +1649,202 @@ mod reasoning_amplification_call_site {
              captured logs:\n{logs}"
         );
     }
+
+    // --- #6183: same call site through Router/TriageRouter (model_identifier() == "router" / "") ---
+    //
+    // `Router::model_identifier()` returns the stable label `"router"` and `TriageRouter`
+    // inherits the trait default `""` — neither ever matches an `is_reasoning_model` pattern,
+    // so before this fix the branch was permanently unreachable whenever `self.provider` was a
+    // Router/TriageRouter (same defect class #5909/#6182 fixed for 7 concrete providers).
+    // `effective_model_identifier()` resolves the sub-provider that actually served the last
+    // dispatch instead. These tests drive a *real* dispatch (not a direct state poke) so the
+    // coverage matches production: construct the router, call `chat_with_tools` once to let it
+    // naturally record the dispatched sub-provider, then trigger the failure path.
+
+    #[tokio::test]
+    async fn quality_failure_reachable_through_router_last_active_provider() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::router::RouterProvider;
+
+        let reasoner = AnyProvider::Mock(
+            MockProvider::default()
+                .with_name("reasoner")
+                .with_model_identifier("o3-mini"),
+        );
+        let router = RouterProvider::new(vec![reasoner]);
+        // Drive a real dispatch so the router records the sub-provider that served it —
+        // mirrors what the agent's normal `chat_with_tools` call does before a tool result
+        // is classified.
+        zeph_llm::provider::LlmProvider::chat_with_tools(&router, &[], &[])
+            .await
+            .unwrap();
+        let provider = AnyProvider::Router(Box::new(router));
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.runtime.debug.anomaly_detector = Some(zeph_tools::AnomalyDetector::new(10, 0.0, 1.0));
+        agent.runtime.debug.reasoning_model_warning = true;
+
+        let tc = make_tool_use_request("id-router-reasoning", "bash");
+        let err = zeph_tools::executor::ToolError::InvalidParams {
+            message: "missing required field 'command'".into(),
+        };
+
+        let logs = capture_logs(|| async {
+            agent
+                .process_one_tool_result(
+                    &tc,
+                    "id-router-reasoning",
+                    &std::time::Instant::now(),
+                    Err(err),
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &mut false,
+                    &mut None,
+                    &mut Vec::new(),
+                )
+                .await
+                .unwrap();
+        })
+        .await;
+
+        assert!(
+            logs.contains("reasoning_amplification"),
+            "a Router whose last-active sub-provider's model_identifier() is a reasoning-model \
+             pattern must emit the reasoning_amplification warning; captured logs:\n{logs}"
+        );
+        assert!(
+            logs.contains("o3-mini"),
+            "the emitted warning must carry the resolved sub-provider's model identifier, not \
+             the router's own \"router\" label; captured logs:\n{logs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn quality_failure_not_flagged_for_router_with_non_reasoning_sub_provider() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::router::RouterProvider;
+
+        let openai = AnyProvider::Mock(
+            MockProvider::default()
+                .with_name("openai")
+                .with_model_identifier("gpt-4o"),
+        );
+        let router = RouterProvider::new(vec![openai]);
+        zeph_llm::provider::LlmProvider::chat_with_tools(&router, &[], &[])
+            .await
+            .unwrap();
+        let provider = AnyProvider::Router(Box::new(router));
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.runtime.debug.anomaly_detector = Some(zeph_tools::AnomalyDetector::new(10, 0.0, 1.0));
+        agent.runtime.debug.reasoning_model_warning = true;
+
+        let tc = make_tool_use_request("id-router-non-reasoning", "bash");
+        let err = zeph_tools::executor::ToolError::InvalidParams {
+            message: "missing required field 'command'".into(),
+        };
+
+        let logs = capture_logs(|| async {
+            agent
+                .process_one_tool_result(
+                    &tc,
+                    "id-router-non-reasoning",
+                    &std::time::Instant::now(),
+                    Err(err),
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &mut false,
+                    &mut None,
+                    &mut Vec::new(),
+                )
+                .await
+                .unwrap();
+        })
+        .await;
+
+        assert!(
+            !logs.contains("reasoning_amplification"),
+            "a Router whose last-active sub-provider is not a reasoning model must not \
+             misclassify; captured logs:\n{logs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn quality_failure_reachable_through_triage_router_last_provider_idx() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+        use zeph_llm::router::triage::{ComplexityTier, TriageRouter};
+
+        let triage_model = AnyProvider::Mock(MockProvider::with_responses(vec![
+            r#"{"tier":"expert","reason":"complex task"}"#.to_owned(),
+        ]));
+        let expert = AnyProvider::Mock(
+            MockProvider::default()
+                .with_name("expert")
+                .with_model_identifier("deepseek-r1"),
+        );
+        let triage_router =
+            TriageRouter::new(triage_model, vec![(ComplexityTier::Expert, expert)], 5, 100);
+        let classify_msgs = vec![Message {
+            role: Role::User,
+            content: "design a distributed consensus protocol".to_owned(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        zeph_llm::provider::LlmProvider::chat_with_tools(&triage_router, &classify_msgs, &[])
+            .await
+            .unwrap();
+        let provider = AnyProvider::Triage(Box::new(triage_router));
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.runtime.debug.anomaly_detector = Some(zeph_tools::AnomalyDetector::new(10, 0.0, 1.0));
+        agent.runtime.debug.reasoning_model_warning = true;
+
+        let tc = make_tool_use_request("id-triage-reasoning", "bash");
+        let err = zeph_tools::executor::ToolError::InvalidParams {
+            message: "missing required field 'command'".into(),
+        };
+
+        let logs = capture_logs(|| async {
+            agent
+                .process_one_tool_result(
+                    &tc,
+                    "id-triage-reasoning",
+                    &std::time::Instant::now(),
+                    Err(err),
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &mut false,
+                    &mut None,
+                    &mut Vec::new(),
+                )
+                .await
+                .unwrap();
+        })
+        .await;
+
+        assert!(
+            logs.contains("reasoning_amplification"),
+            "a TriageRouter whose last-dispatched tier provider's model_identifier() is a \
+             reasoning-model pattern must emit the reasoning_amplification warning; captured \
+             logs:\n{logs}"
+        );
+        assert!(
+            logs.contains("deepseek-r1"),
+            "the emitted warning must carry the resolved tier provider's model identifier; \
+             captured logs:\n{logs}"
+        );
+    }
 }

@@ -287,6 +287,10 @@ impl LlmProvider for MaskedProvider {
         LlmProvider::model_identifier(self.inner.as_ref())
     }
 
+    fn effective_model_identifier(&self) -> &str {
+        LlmProvider::effective_model_identifier(self.inner.as_ref())
+    }
+
     fn supports_structured_output(&self) -> bool {
         LlmProvider::supports_structured_output(self.inner.as_ref())
     }
@@ -540,5 +544,29 @@ mod tests {
         let mp = masked(mock_any(vec![]));
         let s = format!("{mp:?}");
         assert!(s.contains("MaskedProvider"));
+    }
+
+    /// #6183: a masked Router must still resolve the real dispatched sub-provider's model id,
+    /// not fall through to the trait default (`model_identifier()` -> inner `"router"` label).
+    #[test]
+    fn effective_model_identifier_resolves_through_masked_router() {
+        use crate::claude::ClaudeProvider;
+        use crate::router::RouterProvider;
+
+        let claude = AnyProvider::Claude(ClaudeProvider::new(
+            "k".into(),
+            "claude-3-opus-think".into(),
+            1024,
+        ));
+        let router = RouterProvider::new(vec![claude]);
+        *router.state.last_active_provider.lock() = Some("claude".to_owned());
+
+        let mp = masked(AnyProvider::Router(Box::new(router)));
+
+        assert_eq!(
+            LlmProvider::effective_model_identifier(&mp),
+            "claude-3-opus-think"
+        );
+        assert_ne!(LlmProvider::effective_model_identifier(&mp), "router");
     }
 }

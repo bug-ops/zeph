@@ -568,6 +568,24 @@ impl LlmProvider for RouterProvider {
         "router"
     }
 
+    // Mirrors the `last_active_provider` read pattern already used by reputation
+    // attribution (`last_selected_provider_kind`, `record_quality_outcome`): correct
+    // as long as the tool loop stays sequential per turn (no interleaving dispatch
+    // between the call that sets `last_active_provider` and this read). Concurrent
+    // dispatch on a shared Router `Arc` across subagents can race (last-writer-wins);
+    // pre-existing and inherited from the same attribution state, not a new class.
+    fn effective_model_identifier(&self) -> &str {
+        let name = self.state.last_active_provider.lock().clone();
+        let Some(name) = name else {
+            return "router";
+        };
+        self.state
+            .providers
+            .iter()
+            .find(|p| p.name() == name)
+            .map_or("router", |p| p.model_identifier())
+    }
+
     fn supports_tool_use(&self) -> bool {
         self.state
             .providers

@@ -603,6 +603,16 @@ impl LlmProvider for TriageRouter {
         &self.name
     }
 
+    // Mirrors the `capability_target_index` read pattern already used by
+    // `/think-tokens` / `/reasoning-effort` command targeting: correct as long as
+    // the tool loop stays sequential per turn (no interleaving dispatch between the
+    // call that sets `last_provider_idx` and this read) — same invariant
+    // `record_quality_outcome`-style attribution already relies on for Router.
+    fn effective_model_identifier(&self) -> &str {
+        self.capability_target_index()
+            .map_or("", |idx| self.tier_providers[idx].1.model_identifier())
+    }
+
     fn context_window(&self) -> Option<usize> {
         // Return the largest context window across all tier providers.
         self.tier_providers
@@ -906,6 +916,138 @@ mod tests {
             100,
         );
         assert_eq!(router.capability_delegation_advisory(), None);
+    }
+
+    // ── #6183: effective_model_identifier resolves the real dispatched tier provider ──
+    //
+    // `model_identifier()` returns `""` (trait default, never overridden by `TriageRouter`),
+    // which never matches an `is_reasoning_model` pattern — reasoning-quality detection was
+    // permanently unreachable for triage-routed calls. `effective_model_identifier()` reuses
+    // `capability_target_index()` (the same seam already used by `/think-tokens` delegation)
+    // to resolve the tier provider that actually served the last dispatch.
+
+    #[test]
+    fn triage_effective_model_identifier_falls_back_to_default_index_before_first_call() {
+        let router = TriageRouter::new(
+            mock_provider("triage-model"),
+            vec![
+                (
+                    ComplexityTier::Simple,
+                    AnyProvider::Mock(
+                        MockProvider::default()
+                            .with_name("simple")
+                            .with_model_identifier("gpt-4o-mini"),
+                    ),
+                ),
+                (
+                    ComplexityTier::Expert,
+                    AnyProvider::Mock(
+                        MockProvider::default()
+                            .with_name("expert")
+                            .with_model_identifier("o3"),
+                    ),
+                ),
+            ],
+            5,
+            100,
+        );
+        // default_index == 0 (Simple) — no dispatch has happened yet.
+        assert_eq!(router.effective_model_identifier(), "gpt-4o-mini");
+    }
+
+    #[test]
+    fn triage_effective_model_identifier_resolves_last_provider_idx() {
+        let router = TriageRouter::new(
+            mock_provider("triage-model"),
+            vec![
+                (
+                    ComplexityTier::Simple,
+                    AnyProvider::Mock(
+                        MockProvider::default()
+                            .with_name("simple")
+                            .with_model_identifier("gpt-4o-mini"),
+                    ),
+                ),
+                (
+                    ComplexityTier::Expert,
+                    AnyProvider::Mock(
+                        MockProvider::default()
+                            .with_name("expert")
+                            .with_model_identifier("deepseek-r1"),
+                    ),
+                ),
+            ],
+            5,
+            100,
+        );
+        router.last_provider_idx.store(1, Ordering::Relaxed);
+
+        assert_eq!(router.effective_model_identifier(), "deepseek-r1");
+    }
+
+    #[test]
+    fn triage_effective_model_identifier_resolves_last_provider_idx_non_reasoning() {
+        let router = TriageRouter::new(
+            mock_provider("triage-model"),
+            vec![
+                (
+                    ComplexityTier::Simple,
+                    AnyProvider::Mock(
+                        MockProvider::default()
+                            .with_name("simple")
+                            .with_model_identifier("gpt-4o-mini"),
+                    ),
+                ),
+                (
+                    ComplexityTier::Expert,
+                    AnyProvider::Mock(
+                        MockProvider::default()
+                            .with_name("expert")
+                            .with_model_identifier("gpt-4o"),
+                    ),
+                ),
+            ],
+            5,
+            100,
+        );
+        router.last_provider_idx.store(1, Ordering::Relaxed);
+
+        assert_eq!(router.effective_model_identifier(), "gpt-4o");
+    }
+
+    /// End-to-end: drive a real `chat_with_tools` dispatch through triage classification
+    /// (not a direct `last_provider_idx` poke) and verify `effective_model_identifier()`
+    /// resolves the tier provider that actually served it.
+    #[tokio::test]
+    async fn triage_effective_model_identifier_resolves_via_real_dispatch() {
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"expert","reason":"architecture decision"}"#),
+            vec![
+                (
+                    ComplexityTier::Simple,
+                    AnyProvider::Mock(
+                        MockProvider::default()
+                            .with_name("simple")
+                            .with_model_identifier("gpt-4o-mini"),
+                    ),
+                ),
+                (
+                    ComplexityTier::Expert,
+                    AnyProvider::Mock(
+                        MockProvider::default()
+                            .with_name("expert")
+                            .with_model_identifier("o3"),
+                    ),
+                ),
+            ],
+            5,
+            100,
+        );
+        let msgs = vec![make_user_msg("design a distributed consensus protocol")];
+
+        router.chat_with_tools(&msgs, &[]).await.unwrap();
+
+        assert_eq!(router.effective_model_identifier(), "o3");
     }
 
     #[test]

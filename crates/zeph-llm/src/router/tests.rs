@@ -2173,3 +2173,110 @@ fn masked_triage_set_thinking_budget_delegates_through_inner() {
     masked.set_thinking_budget(Some(4096)).unwrap();
     assert_eq!(masked.current_thinking_budget(), Some(4096));
 }
+
+// ── #6183: effective_model_identifier resolves the real dispatched sub-provider ──
+//
+// `model_identifier()` returns the stable `"router"` label (never a reasoning-model
+// pattern), so `is_reasoning_model(self.provider.model_identifier())` at the
+// `tool_result.rs` call site was permanently unreachable for Router-wrapped
+// providers. `effective_model_identifier()` resolves the actually-dispatched
+// sub-provider instead, reusing the same `last_active_provider` state already
+// read by reputation attribution (`last_selected_provider_kind`).
+
+#[test]
+fn router_effective_model_identifier_before_dispatch_is_router_label() {
+    use crate::mock::MockProvider;
+
+    let p1 = AnyProvider::Mock(
+        MockProvider::default()
+            .with_name("p1")
+            .with_model_identifier("o3"),
+    );
+    let r = RouterProvider::new(vec![p1]);
+    assert_eq!(r.effective_model_identifier(), "router");
+}
+
+#[test]
+fn router_effective_model_identifier_resolves_last_active_reasoning_model() {
+    use crate::mock::MockProvider;
+
+    let openai = AnyProvider::Mock(
+        MockProvider::default()
+            .with_name("openai")
+            .with_model_identifier("gpt-4o"),
+    );
+    let reasoner = AnyProvider::Mock(
+        MockProvider::default()
+            .with_name("reasoner")
+            .with_model_identifier("o3-mini"),
+    );
+    let r = RouterProvider::new(vec![openai, reasoner]);
+    *r.state.last_active_provider.lock() = Some("reasoner".to_owned());
+
+    assert_eq!(r.effective_model_identifier(), "o3-mini");
+}
+
+#[test]
+fn router_effective_model_identifier_resolves_last_active_non_reasoning_model() {
+    use crate::mock::MockProvider;
+
+    let openai = AnyProvider::Mock(
+        MockProvider::default()
+            .with_name("openai")
+            .with_model_identifier("gpt-4o"),
+    );
+    let r = RouterProvider::new(vec![openai]);
+    *r.state.last_active_provider.lock() = Some("openai".to_owned());
+
+    assert_eq!(r.effective_model_identifier(), "gpt-4o");
+}
+
+#[test]
+fn router_effective_model_identifier_falls_back_to_router_on_stale_name() {
+    use crate::mock::MockProvider;
+
+    let p1 = AnyProvider::Mock(
+        MockProvider::default()
+            .with_name("p1")
+            .with_model_identifier("gpt-4o"),
+    );
+    let r = RouterProvider::new(vec![p1]);
+    *r.state.last_active_provider.lock() = Some("gone".to_owned());
+
+    assert_eq!(r.effective_model_identifier(), "router");
+}
+
+/// End-to-end: drive a real `chat_with_tools` dispatch (not a direct state poke) and
+/// verify `effective_model_identifier()` resolves the sub-provider that actually served
+/// it, exercising the same `last_active_provider` write the production dispatch loop
+/// performs (`provider_impl.rs` `chat_with_tools`).
+#[tokio::test]
+async fn router_effective_model_identifier_resolves_via_real_dispatch() {
+    use crate::mock::MockProvider;
+
+    let reasoner = AnyProvider::Mock(
+        MockProvider::default()
+            .with_name("reasoner")
+            .with_model_identifier("deepseek-r1"),
+    );
+    let r = RouterProvider::new(vec![reasoner]);
+
+    r.chat_with_tools(&[], &[]).await.unwrap();
+
+    assert_eq!(r.effective_model_identifier(), "deepseek-r1");
+}
+
+/// Regression guard: the default `effective_model_identifier()` impl must forward
+/// unchanged to `model_identifier()` for a concrete (non-router) provider — the new
+/// trait method must not alter behavior for the 7 providers PR #6182 already fixed.
+#[test]
+fn mock_provider_effective_model_identifier_defaults_to_model_identifier() {
+    use crate::mock::MockProvider;
+
+    let p = MockProvider::default()
+        .with_name("openai")
+        .with_model_identifier("o3-mini");
+
+    assert_eq!(p.effective_model_identifier(), p.model_identifier());
+    assert_eq!(p.effective_model_identifier(), "o3-mini");
+}

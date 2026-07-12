@@ -825,6 +825,21 @@ pub trait LlmProvider: Send + Sync {
         ""
     }
 
+    /// Model identifier that actually served the most recent dispatch.
+    ///
+    /// For a concrete single-model provider (Claude, `OpenAI`, Candle, ...) this is
+    /// identical to [`model_identifier`](Self::model_identifier) — the default
+    /// implementation simply forwards to it. Routing providers (`Router`,
+    /// `TriageRouter`) override it to resolve the sub-provider that served the last
+    /// call, since their own `model_identifier()` returns a stable routing-policy
+    /// label (e.g. `"router"`) rather than a real model id. Callers that need to
+    /// reason about the model that produced a specific response (for example,
+    /// `is_reasoning_model` detection) should call this method instead of
+    /// `model_identifier()`.
+    fn effective_model_identifier(&self) -> &str {
+        self.model_identifier()
+    }
+
     /// Whether this provider supports image input (vision).
     fn supports_vision(&self) -> bool {
         false

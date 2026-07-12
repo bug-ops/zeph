@@ -70,6 +70,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unreachable (#5909). Both the detection call and the stored `model:` field now use
   `self.provider.model_identifier()`. Also added a missing `model_identifier()` override on
   `GeminiProvider`, which fell back to the trait default (`""`) for the same reason.
+- `crates/zeph-llm/src/provider.rs`: `RouterProvider`, `TriageRouter`, and `CandleProvider`
+  still fed a value that could never match `is_reasoning_model()`'s patterns into the
+  `reasoning_amplification` anomaly check fixed by #5909 above — `Router`/`TriageRouter`
+  hardcode the stable routing-policy label `"router"`/`""` from `model_identifier()`, and
+  `CandleProvider` had no override at all, so detection stayed permanently unreachable for
+  these three providers, the same defect class one call site removed (#6182, follow-up
+  #6183). Added `LlmProvider::effective_model_identifier()` (defaults to
+  `model_identifier()`) and switched the `tool_result.rs` call site to it: `RouterProvider`
+  and `TriageRouter` override it to resolve the sub-provider that actually served the most
+  recent dispatch (reusing the existing `last_active_provider`/`last_provider_idx` state
+  already read by reputation attribution), and `CandleProvider` gets a genuine static
+  `model_id` field derived from its `ModelSource` (`repo_id` for `HuggingFace` sources, file
+  stem for `Local` sources). `MaskedProvider` (the outbound-secret-masking wrapper applied to
+  every provider by default) also needed an explicit override forwarding to its inner
+  provider's `effective_model_identifier()` — without it, a masked Router/TriageRouter
+  (the structural default configuration) silently fell back to the trait default and the fix
+  never took effect.
 - `src/commands/db.rs`: `zeph db migrate` fell back to the raw, unredacted database URL
   in error messages and the migration-status line whenever `redact_url` returned `None`
   — which only means the URL didn't match a recognized credential-bearing shape, not that
