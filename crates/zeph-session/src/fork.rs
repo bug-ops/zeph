@@ -9,11 +9,16 @@
 
 use std::path::Path;
 
+use tokio::fs;
+
 use crate::error::SessionError;
-use crate::event::SessionEvent;
+use crate::event::{SessionEvent, SessionEventEnvelope};
 use crate::log::SessionEventLog;
 use crate::replay::ReplayEngine;
 use crate::store::SessionStore;
+
+/// Name of the per-session directory holding content-hash-addressed blob files (spec §4.1).
+const BLOBS_DIR_NAME: &str = "blobs";
 
 /// The result of a successful fork.
 #[derive(Debug, Clone)]
@@ -114,6 +119,8 @@ impl ForkEngine {
                 .await?;
         }
 
+        copy_referenced_blobs(&src_dir, &child_dir, &to_copy).await?;
+
         store.record_fork(new_id, src_id, at_seq, owner).await?;
         store
             .update_seq(
@@ -139,6 +146,99 @@ impl ForkEngine {
             events_copied: to_copy.len(),
         })
     }
+}
+
+/// Copy the `blobs/` files referenced by `UserMessage.image_refs` in `events` from the parent's
+/// session directory into the child's (spec §7.2 step 6). Hard-links each blob (cheap, same
+/// filesystem — content-hash-addressed blobs are immutable so sharing the inode is safe); falls
+/// back to a full copy if the hard-link fails (e.g. `src_dir`/`child_dir` are on different
+/// filesystems/devices).
+///
+/// A referenced blob missing on disk is logged and skipped rather than treated as a hard
+/// error: the event-log copy (the fork's primary content) already succeeded by this point, and
+/// a missing blob only means the child loses one attachment rather than the whole conversation
+/// history — consistent with [`crate::log`]'s own torn-tail handling, which prefers a
+/// best-effort recovery over failing the whole read.
+///
+/// # Write-once contract
+///
+/// Hard-linking is only safe if blobs are content-addressed and never mutated in place after
+/// being written. No blob writer exists yet anywhere in this codebase to enforce that; when one
+/// lands, it MUST use append-by-new-hash semantics (never overwrite an existing hash's file) or
+/// this fork's hard-link would let a later parent-side mutation silently corrupt the child's
+/// copy through the shared inode.
+///
+/// # Errors
+///
+/// Returns [`SessionError::InvalidBlobHash`] if any `image_refs` entry is not a non-empty,
+/// bare hex string (rejected before use in [`Path::join`] to prevent path traversal), or
+/// [`SessionError::Io`] if directory creation, the hard-link, or the copy fallback fails.
+async fn copy_referenced_blobs(
+    src_dir: &Path,
+    child_dir: &Path,
+    events: &[SessionEventEnvelope],
+) -> Result<(), SessionError> {
+    let mut hashes: Vec<&str> = Vec::new();
+    for envelope in events {
+        let SessionEvent::UserMessage { image_refs, .. } = &envelope.kind else {
+            continue;
+        };
+        for hash in image_refs {
+            validate_blob_hash(hash)?;
+            hashes.push(hash.as_str());
+        }
+    }
+
+    if hashes.is_empty() {
+        return Ok(());
+    }
+
+    // Dedup: the same hash can legitimately appear twice (repeated attachment, or reused across
+    // messages) — without this, the second `hard_link` on an already-linked destination returns
+    // `AlreadyExists`, which would otherwise fall into the generic error arm below and trigger a
+    // wasteful (and, per that arm's own comment, misleading) copy fallback.
+    hashes.sort_unstable();
+    hashes.dedup();
+
+    let src_blobs = src_dir.join(BLOBS_DIR_NAME);
+    let child_blobs = child_dir.join(BLOBS_DIR_NAME);
+    fs::create_dir_all(&child_blobs).await?;
+    crate::log::set_permissions(&child_blobs, 0o700).await?;
+
+    for hash in hashes {
+        let src_blob = src_blobs.join(hash);
+        let child_blob = child_blobs.join(hash);
+
+        match fs::hard_link(&src_blob, &child_blob).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::warn!(
+                    blob = hash,
+                    path = %src_blob.display(),
+                    "fork: referenced blob missing on parent's disk, skipping"
+                );
+            }
+            Err(_) => {
+                // Hard-link failed for a reason other than a missing source (e.g. cross-device
+                // link, EXDEV) — fall back to a full copy.
+                fs::copy(&src_blob, &child_blob).await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Rejects any `image_refs` hash that is not a non-empty, bare hex string, before it is used in
+/// a [`Path::join`] (#5982 follow-up). Content hashes elsewhere in this codebase are BLAKE3 hex
+/// (64 lowercase chars, `zeph_common::hash::blake3_hex`), but no length is enforced here since
+/// no blob writer exists yet to fix the format — a bare hexdigit charset already rules out `/`,
+/// `..`, and absolute paths, which is what makes `join` safe.
+fn validate_blob_hash(hash: &str) -> Result<(), SessionError> {
+    if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(SessionError::InvalidBlobHash(hash.to_owned()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -333,5 +433,252 @@ mod tests {
             .unwrap();
         // seed_parent appends 4 events total.
         assert_eq!(result.events_copied, 4);
+    }
+
+    /// Regression test for #5982 (spec §7.2 step 6): a blob referenced by a copied
+    /// `UserMessage.image_refs` must be hard-linked into the child's `blobs/` directory.
+    #[tokio::test]
+    async fn test_fork_copies_referenced_blobs() {
+        let store = SessionStore::new(make_pool().await);
+        let data_dir = tempfile::tempdir().unwrap();
+        seed_parent(data_dir.path(), &store, "parent").await;
+
+        let parent_dir = crate::session_dir(data_dir.path(), "parent");
+        let parent_blobs = parent_dir.join("blobs");
+        tokio::fs::create_dir_all(&parent_blobs).await.unwrap();
+        tokio::fs::write(parent_blobs.join("a1b2c3"), b"image-bytes")
+            .await
+            .unwrap();
+
+        let parent_log = SessionEventLog::open(&parent_dir).await.unwrap();
+        parent_log
+            .append(
+                None,
+                None,
+                SessionEvent::UserMessage {
+                    text: "with image".to_owned(),
+                    image_refs: vec!["a1b2c3".to_owned()],
+                },
+            )
+            .await
+            .unwrap();
+        store.update_seq("parent", 4, 5).await.unwrap();
+
+        let result = ForkEngine::fork(data_dir.path(), "parent", "child", Some(5), &store, None)
+            .await
+            .unwrap();
+        assert_eq!(result.events_copied, 5);
+
+        let child_dir = crate::session_dir(data_dir.path(), "child");
+        let child_blob = child_dir.join("blobs").join("a1b2c3");
+        let copied = tokio::fs::read(&child_blob).await.unwrap();
+        assert_eq!(copied, b"image-bytes");
+    }
+
+    /// Regression test for #5982: a referenced blob missing on the parent's disk must not fail
+    /// the fork — it is logged and skipped, since the event-log copy (the fork's primary
+    /// content) already succeeded.
+    #[tokio::test]
+    async fn test_fork_skips_missing_blob_without_failing() {
+        let store = SessionStore::new(make_pool().await);
+        let data_dir = tempfile::tempdir().unwrap();
+        seed_parent(data_dir.path(), &store, "parent").await;
+
+        let parent_dir = crate::session_dir(data_dir.path(), "parent");
+        let parent_log = SessionEventLog::open(&parent_dir).await.unwrap();
+        parent_log
+            .append(
+                None,
+                None,
+                SessionEvent::UserMessage {
+                    text: "with missing image".to_owned(),
+                    image_refs: vec!["deadbeef".to_owned()],
+                },
+            )
+            .await
+            .unwrap();
+        store.update_seq("parent", 4, 5).await.unwrap();
+
+        let result = ForkEngine::fork(data_dir.path(), "parent", "child", Some(5), &store, None)
+            .await
+            .unwrap();
+        assert_eq!(result.events_copied, 5);
+
+        let child_dir = crate::session_dir(data_dir.path(), "child");
+        assert!(!child_dir.join("blobs").join("deadbeef").exists());
+    }
+
+    /// Regression test for #5982: when no copied event references a blob, `fork` must not
+    /// create an empty `blobs/` directory in the child (keeps the eager-copy path a no-op for
+    /// the common, image-free case).
+    #[tokio::test]
+    async fn test_fork_without_image_refs_creates_no_blobs_dir() {
+        let store = SessionStore::new(make_pool().await);
+        let data_dir = tempfile::tempdir().unwrap();
+        seed_parent(data_dir.path(), &store, "parent").await;
+
+        ForkEngine::fork(data_dir.path(), "parent", "child", Some(2), &store, None)
+            .await
+            .unwrap();
+
+        let child_dir = crate::session_dir(data_dir.path(), "child");
+        assert!(!child_dir.join("blobs").exists());
+    }
+
+    /// Regression test for the critic's S3 finding: a malicious `image_refs` entry containing a
+    /// path-traversal sequence must be rejected before it reaches `PathBuf::join`, not silently
+    /// joined (which would let the parent-side `hard_link` read an arbitrary file, or the
+    /// child-side path escape `blobs/`).
+    #[tokio::test]
+    async fn test_fork_rejects_path_traversal_in_image_refs() {
+        let store = SessionStore::new(make_pool().await);
+        let data_dir = tempfile::tempdir().unwrap();
+        seed_parent(data_dir.path(), &store, "parent").await;
+
+        let parent_dir = crate::session_dir(data_dir.path(), "parent");
+        let parent_log = SessionEventLog::open(&parent_dir).await.unwrap();
+        parent_log
+            .append(
+                None,
+                None,
+                SessionEvent::UserMessage {
+                    text: "malicious ref".to_owned(),
+                    image_refs: vec!["../../../etc/passwd".to_owned()],
+                },
+            )
+            .await
+            .unwrap();
+        store.update_seq("parent", 4, 5).await.unwrap();
+
+        let err = ForkEngine::fork(data_dir.path(), "parent", "child", Some(5), &store, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SessionError::InvalidBlobHash(_)));
+
+        // No child directory content should have been created by the rejected fork attempt.
+        let child_dir = crate::session_dir(data_dir.path(), "child");
+        assert!(!child_dir.join("blobs").exists());
+    }
+
+    /// Regression test for the critic's S3 finding: an absolute-path `image_refs` entry must
+    /// also be rejected — `PathBuf::join` with an absolute path silently discards the base
+    /// directory entirely, which is the most severe form of this traversal.
+    #[tokio::test]
+    async fn test_fork_rejects_absolute_path_in_image_refs() {
+        let store = SessionStore::new(make_pool().await);
+        let data_dir = tempfile::tempdir().unwrap();
+        seed_parent(data_dir.path(), &store, "parent").await;
+
+        let parent_dir = crate::session_dir(data_dir.path(), "parent");
+        let parent_log = SessionEventLog::open(&parent_dir).await.unwrap();
+        parent_log
+            .append(
+                None,
+                None,
+                SessionEvent::UserMessage {
+                    text: "malicious absolute ref".to_owned(),
+                    image_refs: vec!["/etc/passwd".to_owned()],
+                },
+            )
+            .await
+            .unwrap();
+        store.update_seq("parent", 4, 5).await.unwrap();
+
+        let err = ForkEngine::fork(data_dir.path(), "parent", "child", Some(5), &store, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SessionError::InvalidBlobHash(_)));
+    }
+
+    /// Regression test for the critic's M3 finding: the same hash referenced twice in the
+    /// copied range must not trigger the cross-device copy fallback on the second occurrence —
+    /// the hash list is deduped before any `hard_link` is attempted.
+    #[tokio::test]
+    async fn test_fork_dedups_duplicate_blob_hash() {
+        let store = SessionStore::new(make_pool().await);
+        let data_dir = tempfile::tempdir().unwrap();
+        seed_parent(data_dir.path(), &store, "parent").await;
+
+        let parent_dir = crate::session_dir(data_dir.path(), "parent");
+        let parent_blobs = parent_dir.join("blobs");
+        tokio::fs::create_dir_all(&parent_blobs).await.unwrap();
+        tokio::fs::write(parent_blobs.join("cafe01"), b"shared-bytes")
+            .await
+            .unwrap();
+
+        let parent_log = SessionEventLog::open(&parent_dir).await.unwrap();
+        parent_log
+            .append(
+                None,
+                None,
+                SessionEvent::UserMessage {
+                    text: "first ref".to_owned(),
+                    image_refs: vec!["cafe01".to_owned()],
+                },
+            )
+            .await
+            .unwrap();
+        parent_log
+            .append(
+                None,
+                None,
+                SessionEvent::UserMessage {
+                    text: "second ref, same hash".to_owned(),
+                    image_refs: vec!["cafe01".to_owned()],
+                },
+            )
+            .await
+            .unwrap();
+        store.update_seq("parent", 4, 6).await.unwrap();
+
+        let result = ForkEngine::fork(data_dir.path(), "parent", "child", Some(6), &store, None)
+            .await
+            .unwrap();
+        assert_eq!(result.events_copied, 6);
+
+        let child_dir = crate::session_dir(data_dir.path(), "child");
+        let child_blob = child_dir.join("blobs").join("cafe01");
+        assert_eq!(tokio::fs::read(&child_blob).await.unwrap(), b"shared-bytes");
+    }
+
+    /// Regression test for the critic's M1 finding: the child's `blobs/` directory must get the
+    /// same `0o700` permission the crate already enforces on the sibling session directory.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_fork_sets_0700_on_child_blobs_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let store = SessionStore::new(make_pool().await);
+        let data_dir = tempfile::tempdir().unwrap();
+        seed_parent(data_dir.path(), &store, "parent").await;
+
+        let parent_dir = crate::session_dir(data_dir.path(), "parent");
+        let parent_blobs = parent_dir.join("blobs");
+        tokio::fs::create_dir_all(&parent_blobs).await.unwrap();
+        tokio::fs::write(parent_blobs.join("a1b2c3"), b"image-bytes")
+            .await
+            .unwrap();
+
+        let parent_log = SessionEventLog::open(&parent_dir).await.unwrap();
+        parent_log
+            .append(
+                None,
+                None,
+                SessionEvent::UserMessage {
+                    text: "with image".to_owned(),
+                    image_refs: vec!["a1b2c3".to_owned()],
+                },
+            )
+            .await
+            .unwrap();
+        store.update_seq("parent", 4, 5).await.unwrap();
+
+        ForkEngine::fork(data_dir.path(), "parent", "child", Some(5), &store, None)
+            .await
+            .unwrap();
+
+        let child_dir = crate::session_dir(data_dir.path(), "child");
+        let meta = tokio::fs::metadata(child_dir.join("blobs")).await.unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
     }
 }

@@ -20,7 +20,7 @@ event log, deterministic replay, and fork engine, shared by every channel (CLI, 
 ## Overview
 
 Every conversation-session's history is appended as one line per event to
-`<data_dir>/sessions/<session_id>/events.jsonl` — the source of truth. The existing `acp_sessions`
+`<data_dir>/<session_id>/events.jsonl` — the source of truth. The existing `acp_sessions`
 table (promoted from ACP-only to channel-agnostic, per spec-068 Decision D1) tracks lightweight
 queryable metadata (`last_seq`, `status`, fork provenance) so `sessions list` and reconciliation on
 open don't require replaying every log.
@@ -58,7 +58,7 @@ The on-disk layout for one session is derived from the data directory and sessio
 use std::path::Path;
 
 let dir = zeph_session::session_dir(Path::new(".zeph/sessions"), "abc-123");
-assert_eq!(dir, Path::new(".zeph/sessions/sessions/abc-123"));
+assert_eq!(dir, Path::new(".zeph/sessions/abc-123"));
 ```
 
 ## Features

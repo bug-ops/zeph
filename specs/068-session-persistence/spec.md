@@ -65,7 +65,7 @@ Four distinct "session" concepts already exist in the codebase. The spec MUST NO
 ┌───────────────────────────────────────────────────────┐
 │  zeph-session  (new crate)                             │
 │                                                        │
-│  SessionEventLog  ──JSONL──▶  <data_dir>/sessions/    │
+│  SessionEventLog  ──JSONL──▶  <data_dir>/<session_id>/ │
 │  SessionStore     ──────────▶  acp_sessions (SQLite)   │
 │  ReplayEngine     (fold events → ReconstructedState)   │
 │  ForkEngine       (eager copy + new acp_sessions row)  │
@@ -99,8 +99,8 @@ Four distinct "session" concepts already exist in the codebase. The spec MUST NO
 ### 4.1 On-Disk Layout
 
 ```
-<data_dir>/sessions/<session_id>/events.jsonl   # append-only event log (source of truth)
-<data_dir>/sessions/<session_id>/blobs/<hash>   # referenced image/audio blobs (by content hash)
+<data_dir>/<session_id>/events.jsonl   # append-only event log (source of truth)
+<data_dir>/<session_id>/blobs/<hash>   # referenced image/audio blobs (by content hash)
 ```
 
 `<data_dir>` defaults to `.zeph/sessions/` (sibling of `memory.sqlite_path`'s parent directory). Configurable via `[session] data_dir`.
@@ -335,7 +335,7 @@ ForkEngine::fork(
 1. Validate `at_seq` ≤ `acp_sessions.last_seq` for `src_id` (cannot fork into the future).
 2. `ReplayEngine::replay(src_id, up_to = Some(at_seq))` to validate the cut point is internally consistent.
 3. Allocate `new_id` (UUID v4, matching ACP convention at `mod.rs:1747`).
-4. Create `<data_dir>/sessions/<new_id>/` directory with `0o700` permissions.
+4. Create `<data_dir>/<new_id>/` directory with `0o700` permissions.
 5. Copy JSONL lines `seq ∈ [0, at_seq)` from parent log into child's `events.jsonl`. Write a `SessionStarted{ forked_from: (src_id, at_seq) }` as the first line (seq = 0 in child log, or as a header event).
 6. Copy referenced blobs: for any `UserMessage.image_refs` in the copied range, hard-link (or copy) blobs into the child's `blobs/` directory.
 7. Insert new `acp_sessions` row via `SessionStore::record_fork(src_id, new_id, at_seq)`.

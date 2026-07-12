@@ -804,6 +804,20 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         Some(std::sync::Arc::clone(&metrics_collector_arc)),
     );
 
+    // One-time startup migration for session directories still sitting at the pre-#5981 layout
+    // (`<data_dir>/sessions/<id>/`) — must run before any entry point below opens a session log,
+    // or a pre-fix session's real history becomes silently unreachable (critic finding S1).
+    // Best-effort: a migration failure is logged, not fatal, since the primary command dispatch
+    // (which may not even touch sessions, e.g. `zeph vault`) must not be blocked by it.
+    let session_data_dir = std::path::PathBuf::from(&base_config.session.data_dir);
+    if let Err(e) = zeph_session::migrate_legacy_session_layout(&session_data_dir).await {
+        tracing::warn!(
+            error = %e,
+            data_dir = %session_data_dir.display(),
+            "failed to migrate legacy (#5981) session directory layout; continuing startup"
+        );
+    }
+
     match cli.command {
         Some(Command::Init { output }) => return crate::init::run(output),
         Some(Command::Vault { command: vault_cmd }) => {

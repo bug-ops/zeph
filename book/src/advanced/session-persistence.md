@@ -20,7 +20,7 @@ session, in order, and can I replay it deterministically?*
 Each session writes to its own append-only JSONL file:
 
 ```text
-<data_dir>/sessions/<session_id>/events.jsonl
+<data_dir>/<session_id>/events.jsonl
 ```
 
 Every line is one `SessionEvent` — `SessionStarted`, `UserMessage`, `AssistantMessage`,

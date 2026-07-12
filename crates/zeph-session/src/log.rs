@@ -445,8 +445,11 @@ async fn read_events_chunked(
     Ok(())
 }
 
+/// Sets Unix permission bits on `path` (e.g. `0o700` for a directory, `0o600` for a file); a
+/// no-op on non-Unix targets. `pub(crate)` so other modules (e.g. [`crate::fork`]) can apply the
+/// same permission convention to directories/files they create outside this module.
 #[cfg(unix)]
-async fn set_permissions(path: &Path, mode: u32) -> Result<(), SessionError> {
+pub(crate) async fn set_permissions(path: &Path, mode: u32) -> Result<(), SessionError> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await?;
     Ok(())
@@ -502,7 +505,7 @@ impl AdvisoryLock {
 }
 
 #[cfg(not(unix))]
-async fn set_permissions(_path: &Path, _mode: u32) -> Result<(), SessionError> {
+pub(crate) async fn set_permissions(_path: &Path, _mode: u32) -> Result<(), SessionError> {
     Ok(())
 }
 

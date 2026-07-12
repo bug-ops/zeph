@@ -36,7 +36,7 @@ pub struct SessionConfig {
     ///
     /// When `true`, every channel (CLI, TUI, Telegram, ACP) mints a
     /// [`zeph_common::SessionId`] on first turn and appends
-    /// `SessionEvent`s to `<data_dir>/sessions/<session_id>/events.jsonl`. When `false`, only the
+    /// `SessionEvent`s to `<data_dir>/<session_id>/events.jsonl`. When `false`, only the
     /// existing `messages` `SQLite` projection is written (pre-#5343 behavior).
     pub enabled: bool,
     /// Directory under which per-session event logs are stored (spec-068 §4.1).

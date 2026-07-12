@@ -40,4 +40,9 @@ pub enum SessionError {
     /// holding the session's advisory write lock.
     #[error("session event log at {0} is already locked by another process")]
     AlreadyLocked(String),
+
+    /// A `UserMessage.image_refs` entry was not a bare hex string, so it was rejected before
+    /// being joined into a filesystem path (#5982 follow-up, path-traversal guard).
+    #[error("invalid blob hash (must be a non-empty hex string): {0:?}")]
+    InvalidBlobHash(String),
 }

@@ -115,6 +115,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of `Completed`. Removed the reap driver's independent deadline entirely — it now
   drains until no tasks remain active, and `shutdown_all`'s own `sleep(timeout)` +
   force-abort is the sole deadline authority for the whole shutdown sequence.
+- `zeph-session`: `session_dir()` double-nested every on-disk session path as
+  `<data_dir>/sessions/<session_id>` instead of `<data_dir>/<session_id>` (#5981), since
+  `data_dir` (default `.zeph/sessions`) already names the sessions root. All callers
+  (`zeph-core`, `zeph-acp`, `src/runner.rs`, `src/commands/sessions.rs`, `src/acp.rs`,
+  `src/serve/agent_factory.rs`) resolve session paths exclusively through this function, so the
+  fix is a single-point change; the crate's own doc-test asserted the buggy double-nested path
+  and is corrected alongside it. A new `zeph_session::migrate_legacy_session_layout` runs once at
+  process startup (`src/runner.rs`, before any command dispatch), moving any session directory
+  still sitting at the old `<data_dir>/sessions/<session_id>` path up one level to
+  `<data_dir>/<session_id>`; a destination that already exists is left in place (skipped, with a
+  warning) rather than clobbered. Idempotent and a cheap no-op on installs with nothing to
+  migrate — without this, a pre-fix session would silently resume as a blank conversation
+  (`SessionEventLog::open` creates an empty log at the new, previously-unused path) with zero
+  error or warning.
+- `zeph-session`: `ForkEngine::fork` never implemented spec-068 §7.2 step 6 (#5982) — it copied
+  every raw event (including any `UserMessage.image_refs`) into the child's `events.jsonl` but
+  never copied the referenced files from the parent's `blobs/` directory into the child's.
+  Currently dormant (no production call site populates `image_refs` yet), but would have
+  silently dropped attachments once wired up. `ForkEngine::fork` now hard-links (falling back to
+  a copy on cross-device hard-link failure) each blob referenced in the copied event range into
+  the child's `blobs/` directory, creating it with `0o700` permissions (matching the sibling
+  session directory) only when needed; a blob missing on the parent's disk is logged and skipped
+  rather than failing the fork. Each `image_refs` hash is now validated as a non-empty, bare hex
+  string before being used in a `PathBuf::join` — an unvalidated entry containing a path
+  separator, `..`, or an absolute path would otherwise have let a fork read or write outside the
+  session's `blobs/` directory; the hash list is also deduped before copying so a hash referenced
+  twice in one fork range hard-links once instead of falling into the cross-device copy fallback
+  on the second occurrence.
 - `zeph-gateway` and `zeph-a2a`: fixed a bearer-token brute-force bypass caused by
   middleware layer order (#6110, CWE-307). `auth_middleware` returns `401` directly
   without calling `next.run`, so with auth layered outside `rate_limit_middleware`,
