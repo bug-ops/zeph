@@ -21,6 +21,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `.github/deny.toml`: the `cargo-deny` advisories gate scanned only the `candle`
+  and `tui` features, excluding `pdf` and every other feature shipped by the
+  blocking `bundle-check` (`full`) CI job and release builds — any RUSTSEC
+  advisory affecting a `pdf`-only dependency (or any of `acp`, `gateway`, `a2a`,
+  `discord`, `slack`, `scheduler`, `profiling`, `sandbox`, `gonka`, `cocoon`,
+  `registry`, `session`) was invisible to the security gate despite shipping in
+  production (#5994). `[graph] features` now scans the `full` bundle itself
+  instead of an enumerated feature list, so the gate tracks whatever `full`
+  includes without manual upkeep. This surfaced `RUSTSEC-2026-0192` (`ttf-parser`
+  0.25.1 unmaintained, no patched version, via `pdf-extract` -> `lopdf` ->
+  `ttf-parser`), added to the advisories `ignore` list alongside the existing
+  unmaintained-dependency entries, with a comment noting the suggested
+  alternative (`skrifa`) for a future migration (#6085).
 - `zeph-gateway` and `zeph-a2a`: fixed a bearer-token brute-force bypass caused by
   middleware layer order (#6110, CWE-307). `auth_middleware` returns `401` directly
   without calling `next.run`, so with auth layered outside `rate_limit_middleware`,

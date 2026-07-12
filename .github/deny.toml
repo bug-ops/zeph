@@ -5,7 +5,14 @@ targets = [
     "aarch64-apple-darwin",
 ]
 all-features = false
-features = ["candle", "tui"]
+# Scan the "full" bundle rather than hand-picked leaf features: it is the most
+# feature-complete build shipped by CI (blocking `bundle-check` job) and release
+# artifacts, transitively covering pdf, candle (via classifiers), tui (via desktop),
+# acp, gateway, a2a, discord, slack, scheduler, profiling, sandbox, gonka, cocoon,
+# registry, and session. Keeping this as a single bundle reference (instead of an
+# enumerated feature list) avoids silent scan-scope drift whenever `full` gains a
+# new leaf feature (see #5994: `pdf` shipped in production but was invisible here).
+features = ["full"]
 
 [advisories]
 db-path = "~/.cargo/advisory-db"
@@ -15,7 +22,11 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # number_prefix unmaintained (via indicatif -> hf-hub, candle transitive dep)
 # proc-macro-error2 unmaintained (RUSTSEC-2026-0173, via aquamarine -> teloxide and i18n-embed-fl -> age)
 # Both are transitive; remove once teloxide/age update their proc-macro dependencies
-ignore = ["RUSTSEC-2025-0134", "RUSTSEC-2024-0436", "RUSTSEC-2026-0173"]
+# ttf-parser unmaintained (RUSTSEC-2026-0192, via pdf-extract -> lopdf -> ttf-parser, pdf feature)
+# No patched version exists; advisory suggests migrating to `skrifa`. Transitive via
+# pdf-extract/lopdf, which do not offer a ttf-parser-free path yet; track migrating off
+# ttf-parser (or pdf-extract/lopdf entirely) once an upstream alternative lands
+ignore = ["RUSTSEC-2025-0134", "RUSTSEC-2024-0436", "RUSTSEC-2026-0173", "RUSTSEC-2026-0192"]
 
 [licenses]
 confidence-threshold = 0.93
