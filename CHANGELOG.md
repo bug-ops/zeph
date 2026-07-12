@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+
+- **Skills**: `[skills.trust] require_integrity_check_on_promote` (default `true`) automatically
+  arms the per-invocation BLAKE3 integrity re-check (`requires_trust_check`) whenever a skill is
+  promoted to `trusted`/`verified`, at both the CLI (`zeph skill trust`) and in-session
+  (`/skill trust`) promotion handlers. Previously the re-check could only be armed manually via
+  `--require-check`, so an operator who forgot the flag left a promoted skill's tampered-on-disk
+  `SKILL.md` undetected between promotions (#6087). `--require-check`/`--no-require-check`
+  (mutually exclusive) continue to override the config default per command; promotion to
+  `quarantined`/`blocked` leaves `requires_trust_check` untouched. A migration step (80) adds a
+  commented advisory for the new key to existing configs that already declare `[skills.trust]`.
+  Self-learning/heuristic auto-promotion and reload trust-assignment are intentionally out of
+  scope for this change — see the PR description.
+
 ### Testing
 
 - `zeph-llm`: reduced the discoverability of bypassing the Claude no-prefill funnel introduced

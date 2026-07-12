@@ -295,6 +295,10 @@ local_level = "trusted"
 hash_mismatch_level = "quarantined"
 # Scan skill body content for injection patterns at load time (advisory, secure by default)
 scan_on_load = true
+# Arm the per-invocation blake3 integrity re-check when a skill is promoted to trusted/verified
+# (secure by default). `--require-check`/`--no-require-check` on `skill trust`/`/skill trust`
+# always override this default (#6087).
+require_integrity_check_on_promote = true
 
 [skills.trust.scanner]
 # Scan for injection patterns in skill body (advisory, logs warnings)

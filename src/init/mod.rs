@@ -156,6 +156,7 @@ pub(crate) struct WizardState {
     pub(crate) pii_filter_enabled: bool,
     pub(crate) rate_limit_enabled: bool,
     pub(crate) skill_scan_on_load: bool,
+    pub(crate) skill_require_integrity_check_on_promote: bool,
     pub(crate) skill_cross_session_rollout: bool,
     pub(crate) skill_min_sessions_before_promote: u32,
     pub(crate) skill_capability_escalation_check: bool,
@@ -425,6 +426,7 @@ impl Default for WizardState {
             pii_filter_enabled: false,
             rate_limit_enabled: false,
             skill_scan_on_load: true,
+            skill_require_integrity_check_on_promote: true,
             skill_cross_session_rollout: false,
             skill_min_sessions_before_promote: 2,
             skill_capability_escalation_check: false,
@@ -1153,6 +1155,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         .clone_from(&state.sandbox_denied_domains);
     config.tools.sandbox.fail_if_unavailable = state.sandbox_fail_if_unavailable;
     config.skills.trust.scan_on_load = state.skill_scan_on_load;
+    config.skills.trust.require_integrity_check_on_promote =
+        state.skill_require_integrity_check_on_promote;
     config.skills.trust.scanner.capability_escalation_check =
         state.skill_capability_escalation_check;
     if state.skill_cross_session_rollout {

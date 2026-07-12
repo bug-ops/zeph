@@ -201,6 +201,17 @@ follow-up issue filed with the #3077 PR.
 - Null bytes, path traversal (`../`), and symlink escapes are caught at load time
 - Instruction file loading: canonical path must stay within project root
 
+## Skill Trust: Default-On Integrity Re-Check on Promotion (#6087)
+
+Promoting a skill to `Trusted`/`Verified` — the tier whose body is dispatched verbatim, without
+sanitization — arms the per-invocation BLAKE3 integrity re-check (`requires_trust_check`) by
+default, per `[skills.trust] require_integrity_check_on_promote` (default `true`). Prior to this,
+the re-check could only be armed via an explicit `--require-check` flag (#6080), leaving the
+attack the check exists for — a Trusted/Verified skill's `SKILL.md` tampered on disk after
+promotion — unprotected by default. See `specs/005-skills/spec.md` §"Automatic Activation on
+Promotion" for the full behavior spec and scope boundary (operator promotion only; self-learning
+auto-promotion and reload trust-assignment are out of scope for this default).
+
 ## Key Invariants
 
 - Secrets never flow through logging, error messages, or debug dumps (redaction applied)

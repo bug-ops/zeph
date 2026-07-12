@@ -250,6 +250,37 @@ impl SkillTrustGate {
     }
 }
 
+/// Single source of truth for the `requires_trust_check` arming decision made on promotion to
+/// `Trusted`/`Verified` (#6087).
+///
+/// `force_on` (`--require-check`) always wins; otherwise `force_off` (`--no-require-check`)
+/// wins; otherwise falls back to `config_default`
+/// (`[skills.trust] require_integrity_check_on_promote`). Used identically by the CLI
+/// (`zeph skill trust`, binary crate) and in-session (`/skill trust`,
+/// `crate::agent::trust_commands`) promotion handlers — both already gate the call on
+/// `matches!(level, SkillTrustLevel::Trusted | SkillTrustLevel::Verified)` before consulting
+/// this function; promotion to `Quarantined`/`Blocked` must never call it.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_core::resolve_require_check;
+///
+/// assert!(resolve_require_check(true, true, false), "force_on always wins");
+/// assert!(!resolve_require_check(false, true, true), "force_off wins over the default");
+/// assert!(resolve_require_check(false, false, true), "falls back to the config default");
+/// ```
+#[must_use]
+pub fn resolve_require_check(force_on: bool, force_off: bool, config_default: bool) -> bool {
+    if force_on {
+        true
+    } else if force_off {
+        false
+    } else {
+        config_default
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -392,5 +423,32 @@ mod tests {
             }
             other => panic!("expected Body, got a different variant: {other:?}"),
         }
+    }
+
+    // ── resolve_require_check (#6087) ────────────────────────────────────────
+
+    #[test]
+    fn resolve_require_check_defaults_to_config_when_no_flag_forces_it() {
+        assert!(resolve_require_check(false, false, true));
+        assert!(!resolve_require_check(false, false, false));
+    }
+
+    #[test]
+    fn resolve_require_check_force_on_wins_over_config_default_false() {
+        assert!(resolve_require_check(true, false, false));
+    }
+
+    #[test]
+    fn resolve_require_check_force_off_wins_over_config_default_true() {
+        assert!(!resolve_require_check(false, true, true));
+    }
+
+    #[test]
+    fn resolve_require_check_force_on_wins_over_force_off() {
+        // Both flags present is nonsensical (clap rejects it on the CLI via conflicts_with),
+        // but the in-session parser has no such enforcement — force_on must still take
+        // precedence so the decision is total and unambiguous either way.
+        assert!(resolve_require_check(true, true, false));
+        assert!(resolve_require_check(true, true, true));
     }
 }

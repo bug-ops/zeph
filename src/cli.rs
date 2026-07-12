@@ -875,9 +875,14 @@ pub(crate) enum SkillCommand {
         /// Trust level: trusted, verified, quarantined, blocked
         level: String,
         /// Enable per-invocation blake3 integrity re-check: re-hash SKILL.md before every
-        /// dispatch and demote to quarantined on mismatch (#4293, #6080)
-        #[arg(long)]
+        /// dispatch and demote to quarantined on mismatch (#4293, #6080). Forces the check on
+        /// regardless of `[skills.trust] require_integrity_check_on_promote`.
+        #[arg(long, conflicts_with = "no_require_check")]
         require_check: bool,
+        /// Skip arming the per-invocation integrity re-check even if
+        /// `[skills.trust] require_integrity_check_on_promote` defaults it on (#6087)
+        #[arg(long)]
+        no_require_check: bool,
     },
     /// Block a skill
     Block {
@@ -1555,6 +1560,88 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    // ── skill trust auto-activation CLI parsing (#6087) ──────────────────────
+
+    #[test]
+    fn cli_parses_skill_trust_with_no_flags() {
+        use super::{Command, SkillCommand};
+        let cli = Cli::try_parse_from(["zeph", "skill", "trust", "git", "trusted"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Skill {
+                command: SkillCommand::Trust {
+                    require_check: false,
+                    no_require_check: false,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_skill_trust_require_check() {
+        use super::{Command, SkillCommand};
+        let cli = Cli::try_parse_from([
+            "zeph",
+            "skill",
+            "trust",
+            "git",
+            "trusted",
+            "--require-check",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Skill {
+                command: SkillCommand::Trust {
+                    require_check: true,
+                    no_require_check: false,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_skill_trust_no_require_check() {
+        use super::{Command, SkillCommand};
+        let cli = Cli::try_parse_from([
+            "zeph",
+            "skill",
+            "trust",
+            "git",
+            "trusted",
+            "--no-require-check",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Skill {
+                command: SkillCommand::Trust {
+                    require_check: false,
+                    no_require_check: true,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_skill_trust_require_check_and_no_require_check_conflict() {
+        let err = Cli::try_parse_from([
+            "zeph",
+            "skill",
+            "trust",
+            "git",
+            "trusted",
+            "--require-check",
+            "--no-require-check",
+        ])
+        .err()
+        .unwrap();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

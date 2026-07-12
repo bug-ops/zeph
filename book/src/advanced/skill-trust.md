@@ -66,21 +66,41 @@ BLAKE3 hash is recomputed and compared against the stored hash on *every* dispat
 `invoke_skill`, and `zeph skill invoke`), not just at promotion time. A mismatch aborts the
 invocation and demotes the skill to `quarantined` immediately, before its body is ever returned.
 
-Arm it with `--require-check` on the trust-setting commands:
+### Automatic activation on promotion (default)
+
+Promoting a skill to `trusted` or `verified` — via `zeph skill trust <name> trusted|verified` or
+`/skill trust <name> trusted|verified` — arms `requires_trust_check` **automatically** unless
+disabled, per `[skills.trust] require_integrity_check_on_promote` (default `true`). This closes
+the "operator forgot to pass `--require-check`" gap: Trusted/Verified is the trust tier whose body
+is dispatched verbatim (no sanitization), so it is the choke point where a tampered `SKILL.md`
+matters most.
+
+Promoting to `quarantined` or `blocked` never touches `requires_trust_check` — a previously armed
+flag survives a temporary demotion and re-promotion.
+
+Override per command:
 
 ```bash
-# CLI
+# CLI — force the check on even if the config default is false
 zeph skill trust my-skill trusted --require-check
+
+# CLI — skip arming even though the config default is true
+zeph skill trust my-skill trusted --no-require-check
 ```
 
 ```text
-# In-session
+# In-session — same two overrides
 /skill trust my-skill trusted --require-check
+/skill trust my-skill trusted --no-require-check
 ```
 
+`--require-check` and `--no-require-check` are mutually exclusive and always win over the config
+default. With neither flag, the command falls back to
+`[skills.trust] require_integrity_check_on_promote`.
+
 `/skill trust <name>` (no level argument) shows the flag's current state as
-`requires_trust_check=true|false`. There is no command to clear it yet — the only way is to
-manually update the `requires_trust_check` column in the `skill_trust` SQLite table directly.
+`requires_trust_check=true|false`. There is no command to clear it once armed — the only way is
+to manually update the `requires_trust_check` column in the `skill_trust` SQLite table directly.
 This is a known usability gap, not a security one (the flag only ever makes enforcement
 stricter).
 
@@ -100,7 +120,7 @@ External skills installed via `zeph skill install` are stored in `~/.config/zeph
 |---------|-------------|
 | `/skill trust` | List all skills with their trust level, source, and hash |
 | `/skill trust <name>` | Show trust details for a specific skill |
-| `/skill trust <name> <level>` | Set trust level (`trusted`, `verified`, `quarantined`, `blocked`); append `--require-check` to also arm the [per-invocation integrity re-check](#per-invocation-integrity-re-check) |
+| `/skill trust <name> <level>` | Set trust level (`trusted`, `verified`, `quarantined`, `blocked`). Promotion to `trusted`/`verified` arms the [per-invocation integrity re-check](#per-invocation-integrity-re-check) by default; append `--require-check`/`--no-require-check` to force it on/off |
 | `/skill block <name>` | Block a skill (all tool access denied) |
 | `/skill unblock <name>` | Unblock a skill (reverts to `quarantined`) |
 | `/skill install <url\|path>` | Install an external skill (git URL or local path) with hot reload |
@@ -128,6 +148,9 @@ default_level = "quarantined"
 local_level = "trusted"
 # Trust level assigned after BLAKE3 hash mismatch on hot-reload
 hash_mismatch_level = "quarantined"
+# Arm the per-invocation integrity re-check by default on promotion to trusted/verified
+# (see "Automatic activation on promotion" above)
+require_integrity_check_on_promote = true
 ```
 
 Environment variable overrides:
@@ -136,4 +159,5 @@ Environment variable overrides:
 export ZEPH_SKILLS_TRUST_DEFAULT_LEVEL=quarantined
 export ZEPH_SKILLS_TRUST_LOCAL_LEVEL=trusted
 export ZEPH_SKILLS_TRUST_HASH_MISMATCH_LEVEL=quarantined
+export ZEPH_SKILLS_TRUST_REQUIRE_INTEGRITY_CHECK_ON_PROMOTE=true
 ```

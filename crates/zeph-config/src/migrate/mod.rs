@@ -25,8 +25,8 @@ pub use features::{
     migrate_deep_link_config, migrate_five_signal_config, migrate_goals_config,
     migrate_knowledge_config, migrate_magic_docs_config, migrate_microcompact_config,
     migrate_orchestration_asset_sensitivity, migrate_orchestration_persistence,
-    migrate_skills_registry, migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config,
-    migrate_tui_theme_defaults,
+    migrate_skill_trust_require_check, migrate_skills_registry, migrate_tui_delights,
+    migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
 };
 pub use infra::*;
 /// Advisory `GonkaGate` migration is crate-internal (registered via the [`MIGRATIONS`] registry).
@@ -618,8 +618,8 @@ use steps::{
     MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
     MigrateSecretMaskingConfig, MigrateServeConfig, MigrateSessionPersistProviderOverrides,
     MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
-    MigrateShellCheckpointsConfig, MigrateShellTransactional, MigrateSkillsRegistry,
-    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
+    MigrateShellCheckpointsConfig, MigrateShellTransactional, MigrateSkillTrustRequireCheck,
+    MigrateSkillsRegistry, MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
     MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
     MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateUtilityHighGainTools,
     MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
@@ -767,6 +767,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateSkillsRegistry),
             // Step 79 — add shared_db = false advisory to an existing active [durable] table (#5996)
             Box::new(MigrateDurableSharedDb),
+            // Step 80 — add require_integrity_check_on_promote advisory to an existing active
+            // [skills.trust] table (#6087)
+            Box::new(MigrateSkillTrustRequireCheck),
         ]
     });
 

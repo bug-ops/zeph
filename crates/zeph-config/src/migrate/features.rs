@@ -9,7 +9,7 @@
 
 use regex::Regex;
 
-use super::{MigrateError, MigrationResult, insert_after_section};
+use super::{MigrateError, MigrationResult, insert_after_section, section_header_present};
 
 /// Regex matching the `[tui]` section header line (used by step 67).
 static TUI_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
@@ -844,5 +844,66 @@ pub fn migrate_skills_registry(toml_src: &str) -> Result<MigrationResult, Migrat
         output,
         changed_count: 1,
         sections_changed: vec!["skills.registry".to_owned()],
+    })
+}
+
+/// Regex matching the `[skills.trust]` section header line (used by step 80).
+static SKILLS_TRUST_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"(?m)^[ \t]*\[skills\.trust\][ \t]*(?:#[^\r\n]*)?\r?\n").expect("static pattern")
+});
+
+/// Step 80 — add a commented `require_integrity_check_on_promote = true` advisory to an
+/// existing active `[skills.trust]` table (#6087).
+///
+/// The field has `#[serde(default = "default_true")]`, so existing configs already behave as
+/// if it were `true` without this migration — this step only surfaces the new key for
+/// discoverability on configs that already declare `[skills.trust]` explicitly. No-op when
+/// `[skills.trust]` is absent (nothing to annotate) or the key (active or commented) is
+/// already present.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the source is not valid TOML.
+pub fn migrate_skill_trust_require_check(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if !section_header_present(toml_src, "skills.trust") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let already_present = toml_src.lines().any(|l| {
+        l.trim()
+            .trim_start_matches('#')
+            .trim()
+            .starts_with("require_integrity_check_on_promote")
+    });
+    if already_present || !SKILLS_TRUST_HEADER_RE.is_match(toml_src) {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "# require_integrity_check_on_promote = true  # arm per-invocation blake3 \
+        re-check on promotion to trusted/verified; override with --no-require-check (#6087)\n";
+    let output = SKILLS_TRUST_HEADER_RE
+        .replacen(toml_src, 1, |caps: &regex::Captures| {
+            format!("{}{comment}", &caps[0])
+        })
+        .into_owned();
+
+    let changed = output != toml_src;
+    let changed_count = usize::from(changed);
+    Ok(MigrationResult {
+        output,
+        changed_count,
+        sections_changed: if changed {
+            vec!["skills.trust.require_integrity_check_on_promote".to_owned()]
+        } else {
+            Vec::new()
+        },
     })
 }

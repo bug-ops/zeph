@@ -91,7 +91,7 @@ Manage external skills. Installed skills are stored in `~/.config/zeph/skills/`.
 | `skill remove <name>` | Remove an installed skill by name |
 | `skill list` | List installed skills with trust level and source metadata |
 | `skill verify [name]` | Verify BLAKE3 integrity of one or all installed skills |
-| `skill trust <name> [level]` | Show or set trust level (`trusted`, `verified`, `quarantined`, `blocked`); add `--require-check` when setting a level to also arm the per-invocation BLAKE3 integrity re-check (see [Skill Trust Levels](../advanced/skill-trust.md#per-invocation-integrity-re-check)) |
+| `skill trust <name> [level]` | Show or set trust level (`trusted`, `verified`, `quarantined`, `blocked`). Promoting to `trusted`/`verified` arms the per-invocation BLAKE3 integrity re-check by default (`[skills.trust] require_integrity_check_on_promote`); add `--require-check`/`--no-require-check` to force it on/off (see [Skill Trust Levels](../advanced/skill-trust.md#per-invocation-integrity-re-check)) |
 | `skill block <name>` | Block a skill (deny all tool access) |
 | `skill unblock <name>` | Unblock a skill (revert to `quarantined`) |
 | `skill promote-heuristics [--skill <name>]` | Dry-run: show skills eligible for A6 heuristic → full promotion (requires `[skills.learning.heuristic_promotion_enabled = true]`) |
@@ -108,12 +108,12 @@ zeph skill install /path/to/my-skill
 # List installed skills
 zeph skill list
 
-# Verify integrity and promote trust
+# Verify integrity and promote trust (arms the per-invocation integrity re-check by default)
 zeph skill verify my-skill
 zeph skill trust my-skill trusted
 
-# Promote and also arm the per-invocation integrity re-check
-zeph skill trust my-skill trusted --require-check
+# Promote without arming the per-invocation integrity re-check
+zeph skill trust my-skill trusted --no-require-check
 
 # Remove a skill
 zeph skill remove my-skill
