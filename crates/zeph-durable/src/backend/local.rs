@@ -36,12 +36,14 @@
 
 use std::fmt;
 use std::fmt::Write as _;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use zeph_db::{DbPool, sql};
 
+use crate::backend::execution_lock::ExecutionLock;
 use crate::backend::{BackendCapabilities, ExecutionBackend, ExecutionSummary, RedactedEntry};
 use crate::cipher::{EntryKindTag, PayloadAad, PayloadCipher, ensure_payload_within_limit};
 use crate::config::RetentionPolicy;
@@ -112,6 +114,12 @@ pub struct LocalBackend {
     promise_waiters: NotifyRegistry,
     /// In-process wakeup map for parked timers, shared with the timer service.
     timer_waiters: NotifyRegistry,
+    /// Directory for per-`ExecutionId` advisory lock files (INV-15, #6122), used by
+    /// [`open_execution_exclusive`](Self::open_execution_exclusive). `None` when no on-disk path
+    /// is known for this backend — a `:memory:` database, a backend built via
+    /// [`LocalBackend::new`] from a caller-supplied pool, or a non-SQLite (Postgres) deployment,
+    /// where a filesystem lock file cannot express cross-process exclusivity anyway.
+    lock_dir: Option<PathBuf>,
 }
 
 impl fmt::Debug for LocalBackend {
@@ -140,6 +148,7 @@ impl LocalBackend {
             max_payload_bytes,
             promise_waiters: NotifyRegistry::default(),
             timer_waiters: NotifyRegistry::default(),
+            lock_dir: None,
         }
     }
 
@@ -147,6 +156,11 @@ impl LocalBackend {
     ///
     /// Connecting also applies the schema migrations, so a freshly opened backend is ready to use;
     /// [`init`](Self::init) may still be called and is idempotent.
+    ///
+    /// On the `SQLite` backend, also derives the lock directory used by
+    /// [`open_execution_exclusive`](Self::open_execution_exclusive) from `path` (a sibling
+    /// `<path>.locks/` directory), unless `path` is `:memory:`. The Postgres backend never derives
+    /// one — `path` there is a connection URL (which may embed credentials), not a filesystem path.
     ///
     /// # Errors
     ///
@@ -159,7 +173,9 @@ impl LocalBackend {
         .connect()
         .await
         .map_err(|e| DurableError::storage("open", e))?;
-        Ok(Self::new(pool, max_payload_bytes))
+        let mut backend = Self::new(pool, max_payload_bytes);
+        backend.lock_dir = lock_dir_for_path(path);
+        Ok(backend)
     }
 
     /// Inject the AEAD payload cipher used to seal and open payload-bearing entries.
@@ -388,6 +404,41 @@ impl LocalBackend {
         }
         .instrument(span)
         .await
+    }
+
+    /// Like [`open_execution`](Self::open_execution), but additionally takes a non-blocking,
+    /// exclusive, process-scoped advisory lock on `id` before touching the row (INV-15, #6122).
+    ///
+    /// Closes the race two processes deriving the same `ExecutionId` (e.g. two CLI instances
+    /// pointed at the same `memory.sqlite_path` and the same `ConversationId`) would otherwise hit
+    /// in [`open_execution`](Self::open_execution)'s unsynchronized SELECT-then-INSERT: both could
+    /// observe "no existing row", both insert, and both then drive `next_step` from 0 against the
+    /// same journal, corrupting it. The lock is acquired first, so the loser never reaches the
+    /// row check at all.
+    ///
+    /// Returns `(is_resume, lock)`. The caller MUST hold `lock` for as long as it drives the
+    /// execution — dropping it releases the lock and allows another process to open the same
+    /// `id`. `lock` is `None` when this backend has no on-disk lock directory (a `:memory:`
+    /// database, a backend built via [`LocalBackend::new`], or a Postgres deployment), in which
+    /// case process exclusivity is not enforced — the caller degrades the same way it already does
+    /// for `open_execution`'s other failure modes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::ExecutionLocked`] if another process already holds `id`'s lock, or
+    /// any error [`open_execution`](Self::open_execution) can return.
+    pub async fn open_execution_exclusive(
+        &self,
+        id: ExecutionId,
+        kind: ExecutionKind,
+    ) -> Result<(bool, Option<ExecutionLock>), DurableError> {
+        let lock = self
+            .lock_dir
+            .as_deref()
+            .map(|dir| ExecutionLock::acquire(dir, id))
+            .transpose()?;
+        let is_resume = self.open_execution(id, kind).await?;
+        Ok((is_resume, lock))
     }
 
     /// Group-commit a batch of buffered entries in a single write transaction.
@@ -1512,6 +1563,43 @@ type PromiseRowRead = (String, Vec<u8>, i64, Option<Vec<u8>>);
 /// `(step_id, idem_key, payload_version, payload)`.
 type FoldableRowRead = (i64, Option<Vec<u8>>, Option<i32>, Option<Vec<u8>>);
 
+/// Derive the per-execution lock directory sibling to a `path` passed to
+/// [`LocalBackend::open`], `None` for `:memory:`.
+///
+/// Feature-gated to the `SQLite` backend only (INV-15): under `postgres`, `path` is a connection
+/// URL that may embed credentials, and appending a suffix to mint a directory name would risk
+/// creating a secret-bearing path component on disk.
+#[cfg(feature = "sqlite")]
+fn lock_dir_for_path(path: &str) -> Option<std::path::PathBuf> {
+    (path != ":memory:").then(|| std::path::PathBuf::from(format!("{path}.locks")))
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn lock_dir_for_path(_path: &str) -> Option<std::path::PathBuf> {
+    None
+}
+
+/// Regression coverage for the `postgres`-only branch of [`lock_dir_for_path`] (INV-15): a
+/// connection URL — which may embed credentials — must never be used to mint an on-disk lock
+/// directory name. The main `mod tests` block below is gated on `feature = "sqlite"` and so never
+/// exercises this branch; run with `cargo nextest run -p zeph-durable --no-default-features
+/// --features postgres`.
+#[cfg(all(test, not(feature = "sqlite")))]
+mod postgres_lock_dir_tests {
+    use super::lock_dir_for_path;
+
+    #[test]
+    fn postgres_url_never_derives_a_lock_dir() {
+        assert_eq!(
+            lock_dir_for_path("postgres://user:secret@host/db"),
+            None,
+            "a Postgres connection URL (which may embed credentials) must never be used to mint \
+             an on-disk lock directory name"
+        );
+        assert_eq!(lock_dir_for_path(":memory:"), None);
+    }
+}
+
 /// Current Unix time in milliseconds, clamped into `i64` and never panicking.
 pub(crate) fn now_unix_millis() -> i64 {
     SystemTime::now()
@@ -1668,6 +1756,77 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn open_execution_exclusive_is_fresh_then_resume() {
+        // A file-backed (not `:memory:`) backend is required: only `LocalBackend::open` with a
+        // real on-disk path derives a `lock_dir` (#6122).
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("durable.db");
+        let backend = LocalBackend::open(&db_path.to_string_lossy(), 1_048_576)
+            .await
+            .unwrap();
+        backend.init().await.unwrap();
+
+        let exec = ExecutionId::new();
+        let (is_resume, lock) = backend
+            .open_execution_exclusive(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        assert!(!is_resume);
+        assert!(lock.is_some(), "a file-backed backend must derive a lock");
+        drop(lock);
+
+        let (is_resume, _lock) = backend
+            .open_execution_exclusive(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        assert!(is_resume);
+    }
+
+    /// Regression test for #6122: two `LocalBackend` handles onto the same on-disk journal (as
+    /// two independent CLI processes sharing `memory.sqlite_path` would each construct) must not
+    /// both be able to hold `open_execution_exclusive` for the same colliding `ExecutionId`
+    /// concurrently.
+    #[tokio::test]
+    async fn open_execution_exclusive_rejects_concurrent_second_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("durable.db");
+        let url = db_path.to_string_lossy().into_owned();
+
+        let backend_a = LocalBackend::open(&url, 1_048_576).await.unwrap();
+        backend_a.init().await.unwrap();
+        let backend_b = LocalBackend::open(&url, 1_048_576).await.unwrap();
+
+        let exec = ExecutionId::new();
+        let (_, _lock_a) = backend_a
+            .open_execution_exclusive(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+
+        let err = backend_b
+            .open_execution_exclusive(exec, ExecutionKind::AgentTurn)
+            .await
+            .expect_err("a second concurrent holder must be rejected");
+        assert!(
+            matches!(err, DurableError::ExecutionLocked { execution_id, .. } if execution_id == exec),
+            "expected ExecutionLocked, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_execution_exclusive_on_memory_backend_returns_no_lock() {
+        // `:memory:` has no on-disk directory to lock, so it degrades to unenforced exclusivity —
+        // consistent with `SessionEventLog::open_exclusive`'s non-Unix degrade.
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        let (is_resume, lock) = backend
+            .open_execution_exclusive(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        assert!(!is_resume);
+        assert!(lock.is_none());
     }
 
     #[tokio::test]

@@ -52,6 +52,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     CLI's `zeph worktree` subcommands construct their own, disconnected manager per
     invocation); both now push a system message pointing to the equivalent CLI command
     (`zeph worktree list` / `zeph worktree clean [--force]`) instead of doing nothing.
+- `zeph-durable`/`zeph-core`: durable `agent_turn` executions no longer race two processes into
+  corrupting the same journal when they derive the same `ExecutionId` (#6122).
+  - `Agent::ensure_session_durable_ctx` derives the P1 `ExecutionId` deterministically from
+    `(ConversationId, sqlite_path)`, so two CLI processes sharing `memory.sqlite_path` and
+    resolving the same conversation (the common non-`--resume` path) always agree on the id.
+    `LocalBackend::open_execution` alone (a plain SELECT-then-INSERT, no transaction) let both
+    processes race the same row and independently drive `next_step` from `0`, corrupting the
+    journal and surfacing as `ReplayDivergence`/`ReplayIntegrity` on whichever process lost.
+  - Added `LocalBackend::open_execution_exclusive`, which takes a non-blocking, `flock(2)`-backed
+    process-exclusivity lock on the `ExecutionId` (a new `zeph_durable::ExecutionLock`) before
+    touching the row. A second concurrent process gets `DurableError::ExecutionLocked` and
+    degrades to non-durable instead of racing. The lock is released automatically by the kernel on
+    process exit (including `SIGKILL`), so a hard-killed process never leaves a stale lock; unlike
+    `zeph_common::pidfile::PidLockGuard`, the lock file is never unlinked on drop (a permanent
+    sentinel, matching `zeph-session::log::SessionEventLog`'s own `AdvisoryLock`) — unlinking would
+    reopen a `flock`+`unlink` TOCTOU race under this lock's much higher per-turn contention. SQLite
+    only — a `:memory:` database or a Postgres deployment has no derivable lock directory and
+    degrades to unenforced exclusivity, matching `SessionEventLog::open_exclusive`'s existing
+    non-Unix degrade.
 - `zeph-subagent`: sub-agent vault secrets now re-validate their grant TTL live instead of
   only gating once at delivery time, and a targeted secret-request lookup no longer drops a
   concurrent sibling sub-agent's pending request (#5991, #5993).

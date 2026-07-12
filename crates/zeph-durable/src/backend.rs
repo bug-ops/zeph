@@ -35,8 +35,10 @@ use crate::journal::{ExecutionStatus, Journal, JournalEntry};
 use crate::promise::PromiseRecord;
 use crate::waiters::NotifyRegistry;
 
+pub mod execution_lock;
 pub mod local;
 
+pub use execution_lock::ExecutionLock;
 pub use local::LocalBackend;
 
 /// A read-only summary of a single durable execution, for operability surfaces.

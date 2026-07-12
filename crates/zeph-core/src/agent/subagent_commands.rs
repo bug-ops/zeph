@@ -1294,6 +1294,11 @@ mod tests {
             .flush()
             .await
             .unwrap();
+        // Drop run 1 to release its process-exclusivity lock on the execution (INV-15, #6122) —
+        // a real crash closes the process's file descriptors (and thus the flock) before the
+        // restarted parent below re-opens the same execution; without this, run 2's
+        // `open_execution_exclusive` would see run 1 as still live and correctly refuse to open.
+        drop(agent1);
 
         // "Run 2": a brand-new `Agent` (simulating the restarted parent) with the same
         // conversation_id and db file re-derives the same promise and must see it resolved.
@@ -1346,6 +1351,9 @@ mod tests {
             .flush()
             .await
             .unwrap();
+        // Drop run 1 to release its process-exclusivity lock on the execution (INV-15, #6122) —
+        // see the comment in `handle_agent_background_replays_finished_child_without_respawning`.
+        drop(agent1);
 
         // "Run 2": a brand-new `Agent` re-derives the same promise and must see it resolved,
         // returning the journaled output directly instead of spawning and polling a new child.
@@ -1400,6 +1408,9 @@ mod tests {
             .flush()
             .await
             .unwrap();
+        // Drop run 1 to release its process-exclusivity lock on the execution (INV-15, #6122) —
+        // see the comment in `handle_agent_background_replays_finished_child_without_respawning`.
+        drop(agent1);
 
         // "Run 2": resumed execution observes the same promise still pending — per the
         // documented v1 scope boundary (INV-9: no way to recover an orphaned resolver token)

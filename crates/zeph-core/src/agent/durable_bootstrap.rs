@@ -147,12 +147,29 @@ impl<C: Channel> Agent<C> {
         exec_payload.extend_from_slice(sqlite_path.as_bytes());
         let exec_id = zeph_durable::ExecutionId::derive(b"zeph.agent_turn.v1", &exec_payload);
         tracing::debug!("durable agent_turns: open_execution start");
+        // `_exclusive` acquires a process-scoped advisory lock on `exec_id` before touching the
+        // row (INV-15, #6122): two processes that derive the same `exec_id` (e.g. two CLI
+        // instances sharing `memory.sqlite_path` and resolving the same latest `ConversationId`)
+        // can no longer both drive the execution concurrently. The lock is held in
+        // `durable_execution_lock` for as long as `durable_ctx` is `Some`.
         let open_execution_result = local_backend
-            .open_execution(exec_id, zeph_durable::ExecutionKind::AgentTurn)
+            .open_execution_exclusive(exec_id, zeph_durable::ExecutionKind::AgentTurn)
             .await;
         tracing::debug!("durable agent_turns: open_execution done");
-        let is_resume = match open_execution_result {
+        let (is_resume, execution_lock) = match open_execution_result {
             Ok(r) => r,
+            Err(zeph_durable::DurableError::ExecutionLocked {
+                execution_id,
+                holder_pid,
+            }) => {
+                tracing::warn!(
+                    %execution_id,
+                    holder_pid,
+                    "durable agent_turns: execution already open in another process; \
+                     degrading to non-durable"
+                );
+                return;
+            }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
@@ -179,6 +196,7 @@ impl<C: Channel> Agent<C> {
         self.services.session.durable_ctx = Some(Arc::new(ctx));
         self.services.session.durable_writer = Some(writer);
         self.services.session.durable_writer_task = Some(task_handle);
+        self.services.session.durable_execution_lock = execution_lock;
     }
 
     /// Detach the P1 durable execution before a conversation switch (`/new`, `/conv resume`,
@@ -190,7 +208,9 @@ impl<C: Channel> Agent<C> {
     /// conversation's execution — silently mixing two conversations' turn state and defeating the
     /// per-conversation crash-resume the keying is meant to provide. Flushes and aborts the old
     /// writer (best-effort, same 2s deadline as `flush_durable_writer` on shutdown) before
-    /// clearing the session's durable fields so the next durable-gated call re-derives a fresh
+    /// clearing the session's durable fields — including `durable_execution_lock` (INV-15,
+    /// #6122), releasing the old execution's advisory lock so another process (or a later switch
+    /// back in this same process) may open it — so the next durable-gated call re-derives a fresh
     /// execution for the new `conversation_id`.
     pub(in crate::agent) async fn reset_durable_ctx_for_conversation_switch(&mut self) {
         if let Some(ref writer) = self.services.session.durable_writer {
@@ -214,6 +234,7 @@ impl<C: Channel> Agent<C> {
         self.services.session.durable_ctx = None;
         self.services.session.durable_writer = None;
         self.services.session.durable_ctx_init_attempted = false;
+        self.services.session.durable_execution_lock = None;
     }
 }
 
@@ -462,6 +483,65 @@ mod tests {
             executions.len(),
             2,
             "the shared legacy journal must contain two distinct executions, not a collapsed one"
+        );
+    }
+
+    /// Regression test for #6122: two agent processes sharing the same `memory.sqlite_path` and
+    /// resolving the same (first-ever) `ConversationId` derive byte-for-byte identical
+    /// `ExecutionId`s by design (#5553's fold is only a cross-*database* discriminator). Before
+    /// the fix, both processes' `open_execution` would race the same row and both would drive
+    /// `next_step` from 0 against the same journal. The second process must now be rejected with
+    /// a clear degrade instead of silently corrupting the shared execution.
+    #[tokio::test]
+    async fn concurrent_agents_on_same_conversation_do_not_collide() {
+        async fn bootstrap(db_url: &str, sqlite_path: &str) -> crate::agent::Agent<MockChannel> {
+            let mut agent = agent_with_conversation();
+            agent.services.session.durable_agent_turns_config = Some(zeph_config::DurableConfig {
+                enabled: true,
+                agent_turns: true,
+                ..zeph_config::DurableConfig::default()
+            });
+            agent.services.session.durable_agent_turns_db_url = Some(db_url.to_owned());
+            agent.services.session.durable_agent_turns_sqlite_path = Some(sqlite_path.to_owned());
+            agent.ensure_session_durable_ctx().await;
+            agent
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+        let sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+
+        // Process A: same conversation_id (ConversationId(1) via agent_with_conversation), same
+        // sqlite_path, same db_url — wins the race and keeps its durable_ctx + lock.
+        let agent_a = Box::pin(bootstrap(&db_url, &sqlite_path)).await;
+        assert!(
+            agent_a.services.session.durable_ctx.is_some(),
+            "the first process must get a durable_ctx"
+        );
+        assert!(
+            agent_a.services.session.durable_execution_lock.is_some(),
+            "the first process must hold the execution lock"
+        );
+
+        // Process B: identical derivation inputs -> identical ExecutionId. Must degrade to
+        // non-durable rather than silently racing process A's journal.
+        let agent_b = Box::pin(bootstrap(&db_url, &sqlite_path)).await;
+        assert!(
+            agent_b.services.session.durable_ctx.is_none(),
+            "a second concurrent process on the same execution must degrade to non-durable"
+        );
+        assert!(
+            agent_b.services.session.durable_execution_lock.is_none(),
+            "a rejected process must not hold any lock"
+        );
+
+        // Once A releases the lock (conversation switch / drop), a later process may open it.
+        let mut agent_a = agent_a;
+        agent_a.reset_durable_ctx_for_conversation_switch().await;
+        let agent_c = Box::pin(bootstrap(&db_url, &sqlite_path)).await;
+        assert!(
+            agent_c.services.session.durable_ctx.is_some(),
+            "after the lock holder releases, a later process must be able to open the execution"
         );
     }
 }

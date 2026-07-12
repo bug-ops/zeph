@@ -159,6 +159,12 @@ impl Default for ExecutionId {
     }
 }
 
+impl fmt::Display for ExecutionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
 /// Position of a step within an execution.
 ///
 /// Assigned at the moment a step is *called* (the Nth call in program order is `StepId(N)`), never
@@ -502,6 +508,12 @@ mod tests {
     fn promise_and_timer_ids_are_unique() {
         assert_ne!(PromiseId::new(), PromiseId::new());
         assert_ne!(TimerId::new(), TimerId::new());
+    }
+
+    #[test]
+    fn execution_id_display_matches_uuid() {
+        let id = ExecutionId::new();
+        assert_eq!(id.to_string(), id.as_uuid().to_string());
     }
 
     #[test]

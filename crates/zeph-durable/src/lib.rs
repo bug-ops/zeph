@@ -96,8 +96,8 @@ pub mod writer;
 pub use sealed::Sealed;
 
 pub use backend::{
-    BackendCapabilities, DurableBackendEnum, ExecutionBackend, ExecutionSummary, LocalBackend,
-    RedactedEntry,
+    BackendCapabilities, DurableBackendEnum, ExecutionBackend, ExecutionLock, ExecutionSummary,
+    LocalBackend, RedactedEntry,
 };
 pub use cipher::{
     CipherError, EntryKindTag, PayloadAad, PayloadCipher, ensure_payload_within_limit,

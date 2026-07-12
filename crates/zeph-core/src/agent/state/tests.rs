@@ -83,6 +83,7 @@ fn make_session_state() -> SessionState {
         durable_ctx_init_attempted: false,
         durable_writer: None,
         durable_writer_task: None,
+        durable_execution_lock: None,
         session_sink: None,
         session_persistence_config: None,
     }

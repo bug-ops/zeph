@@ -168,6 +168,37 @@ against the dedicated `durable.db` pool — one call to the single, centralized 
 are unused in that file. Future option (b): add a scoped `zeph_db::run_durable_migrations(pool)`
 helper; deferred post-v1. Both options comply with 031.
 
+**INV-15 — An `ExecutionId` is process-exclusive while held (#6122).**
+Two processes can legitimately derive the same `ExecutionId` for a fresh execution — the P1
+adapter keys it on `(ConversationId, sqlite_path)` (INV-14's #5553 fold), so two CLI instances
+pointed at the same `memory.sqlite_path` and the same (first-ever) `ConversationId` always agree
+on the id. `LocalBackend::open_execution` alone (a plain SELECT-then-INSERT, no transaction) does
+not stop two such processes from both observing "no existing row", both inserting, and both then
+driving `next_step` from `0` against the same journal — corrupting it and surfacing as
+`ReplayDivergence`/`ReplayIntegrity` on whichever process loses the race. `open_execution_exclusive`
+closes this by taking a non-blocking, `flock(2)`-backed advisory lock on `id` (`ExecutionLock`, a
+lock file named after the execution's UUID) before the row check; the loser gets
+`DurableError::ExecutionLocked` instead of racing. The lock is held for the caller's
+`DurableContext` lifetime and released on drop — `flock(2)` locks are released by the kernel when
+the holding process's file descriptors close (including on `SIGKILL`), so a hard-killed process
+never leaves a stale lock. Unlike `zeph_common::pidfile::PidLockGuard` (the primitive backing
+`PidGuard`/`PidFile`), `ExecutionLock` never unlinks its lock file on drop — it is a permanent
+sentinel, matching `zeph-session::log::SessionEventLog`'s own `AdvisoryLock`. `PidLockGuard`
+unlinks-then-closes, which is safe for a pid file acquired once at daemon startup but is a real
+`flock`+`unlink` TOCTOU hazard under the much higher per-conversation-turn contention this lock
+sees. SQLite only: a `:memory:` database, a backend built via `LocalBackend::new` from a
+caller-supplied pool, or a Postgres deployment has no derivable lock directory (a Postgres
+connection URL may embed credentials and is never used to mint a directory name) and
+`open_execution_exclusive` degrades to unenforced exclusivity there (mirrors
+`SessionEventLog::open_exclusive`'s non-Unix degrade). Callers that need genuine crash-resume
+(re-deriving the *same* `ExecutionId` after their own process restarts) are unaffected: the lock
+only rejects a *second, concurrent* holder — a sequential resume by the same logical session
+re-acquires the (now-released) lock normally. Track A alone is sufficient: `PayloadAad` already
+binds `execution_id` (cipher.rs) and `IdempotencyKey::derive` already folds `execution_id` +
+`step_id` (ids.rs), so an `op_fingerprint`/content salt on top would add no defense — the AAD/
+`IdempotencyKey` collision this invariant's introduction considered was only ever possible when
+`ExecutionId` itself collided, which this lock now prevents structurally.
+
 ---
 
 ## NEVER
@@ -197,6 +228,10 @@ helper; deferred post-v1. Both options comply with 031.
   log lines, or CLI output without `--reveal` (INV-5).
 - **NEVER** claim P2 fixes automatic crash-recovery. The durable journal fixes the replan-budget
   reset on the existing `/plan resume` user command path only. Auto crash-recovery is not wired.
+- **NEVER** drive an `ExecutionId` an adapter did not open through `open_execution_exclusive`
+  (INV-15) when two processes could plausibly derive the same id (e.g. any id keyed on
+  externally-observable state like `ConversationId` rather than a runtime-minted `UUIDv7`). Calling
+  the unsynchronized `open_execution` directly from such an adapter reopens the #6122 race.
 
 ---
 
@@ -856,6 +891,12 @@ This integration is an **explicit rewrite of the agent-loop control flow**, not 
 - `StepOutcome::Replayed` discriminator is surfaced through `RuntimeLayer` for the single purpose
   of suppressing user-visible re-emission of already-printed assistant output. Replay *control*
   does not flow through `RuntimeLayer`.
+- `ExecutionId` derivation (`Agent::ensure_session_durable_ctx`,
+  `crates/zeph-core/src/agent/durable_bootstrap.rs`) folds `ConversationId` and `sqlite_path` — two
+  processes agreeing on both derive the same id. `ensure_session_durable_ctx` opens it via
+  `LocalBackend::open_execution_exclusive` (INV-15), not the plain `open_execution`, so a second
+  concurrent process on the same conversation degrades to non-durable instead of corrupting the
+  first process's journal (#6122).
 
 **LLM-serialization gate (MANDATORY for P1 PR).** The P1 implementation touches the LLM call
 serialization path (`zeph-core/src/agent/tool_execution/tier_loop.rs`). Before the PR is merged:

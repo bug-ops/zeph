@@ -902,6 +902,13 @@ pub(crate) struct SessionState {
     /// [`BlockingHandle`] for the P1 adapter's background `JournalWriter` actor task, aborted on
     /// shutdown by `flush_durable_writer` (mirrors `services.orchestration.durable_writer_task`).
     pub(crate) durable_writer_task: Option<zeph_common::task_supervisor::BlockingHandle<()>>,
+    /// Process-exclusivity lock on `durable_ctx`'s `ExecutionId` (INV-15, #6122), held for as long
+    /// as this session drives the execution. Dropping it (on shutdown or
+    /// `reset_durable_ctx_for_conversation_switch`) releases the lock so another process — or a
+    /// later conversation switch in this same process — can open the same `ExecutionId`. `None`
+    /// when `durable_ctx` is `None`, or when the backend could not derive a lock (`:memory:`,
+    /// Postgres — see [`zeph_durable::LocalBackend::open_execution_exclusive`]).
+    pub(crate) durable_execution_lock: Option<zeph_durable::ExecutionLock>,
     /// When `true`, the system prompt volatile block includes the `CAVEMAN_DIRECTIVE` on every
     /// turn, instructing the LLM to use ultra-compressed telegraphic output.
     ///
@@ -1307,6 +1314,7 @@ impl SessionState {
             durable_ctx_init_attempted: false,
             durable_writer: None,
             durable_writer_task: None,
+            durable_execution_lock: None,
             caveman_active: false,
             session_sink: None,
             session_persistence_config: None,

@@ -6,7 +6,7 @@
 //! [`DurableError`] never carries payload bytes or resolver tokens in its messages (INV-5): every
 //! variant reports metadata only, so an error can be logged without leaking sealed content.
 
-use crate::ids::StepId;
+use crate::ids::{ExecutionId, StepId};
 
 /// An error raised by the durable execution layer.
 ///
@@ -157,6 +157,23 @@ pub enum DurableError {
     /// appears in the message (INV-5). The pending promise is left untouched.
     #[error("promise resolution rejected: resolver token did not authenticate")]
     PromiseRejected,
+
+    /// [`crate::backend::LocalBackend::open_execution_exclusive`] found another process already
+    /// holding the execution's advisory lock (INV-15, #6122).
+    ///
+    /// Two processes deriving the same `ExecutionId` (e.g. two CLI instances pointed at the same
+    /// `memory.sqlite_path` and the same `ConversationId`) can no longer both drive it
+    /// concurrently: the second process gets this error instead of silently racing the first into
+    /// `ReplayDivergence`/`ReplayIntegrity` failures. Distinct from those two variants so callers
+    /// (and operators reading logs) can tell "another live process owns this execution" apart from
+    /// "the journal itself is corrupt or was tampered with".
+    #[error("execution {execution_id} is already open in another process (pid {holder_pid})")]
+    ExecutionLocked {
+        /// The execution whose lock is already held.
+        execution_id: ExecutionId,
+        /// PID of the process currently holding the lock, or `0` if it could not be determined.
+        holder_pid: u32,
+    },
 }
 
 impl DurableError {
@@ -242,5 +259,17 @@ mod tests {
 
         let serialize = DurableError::Serialize { step: "persist" };
         assert!(serialize.to_string().contains("persist"));
+    }
+
+    #[test]
+    fn execution_locked_names_execution_and_holder_pid() {
+        let execution_id = ExecutionId::new();
+        let err = DurableError::ExecutionLocked {
+            execution_id,
+            holder_pid: 4242,
+        };
+        let rendered = err.to_string();
+        assert!(rendered.contains(&execution_id.to_string()));
+        assert!(rendered.contains("4242"));
     }
 }
