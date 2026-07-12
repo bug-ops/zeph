@@ -2945,9 +2945,7 @@ impl<C: Channel> Agent<C> {
             CacheCheckResult::Hit(cached) => {
                 self.persist_message(Role::Assistant, &cached, &[], false)
                     .await;
-                self.msg
-                    .messages
-                    .push(Message::from_legacy(Role::Assistant, cached.as_str()));
+                self.push_message(Message::from_legacy(Role::Assistant, cached.as_str()));
                 if cached.contains(zeph_llm::provider::MAX_TOKENS_TRUNCATION_MARKER) {
                     let _ = self.channel.send_stop_hint(StopHint::MaxTokens).await;
                 }
@@ -3172,9 +3170,7 @@ impl<C: Channel> Agent<C> {
             }
             self.persist_message(Role::Assistant, &cleaned, &[], false)
                 .await;
-            self.msg
-                .messages
-                .push(Message::from_legacy(Role::Assistant, cleaned.as_str()));
+            self.push_message(Message::from_legacy(Role::Assistant, cleaned.as_str()));
             // Detect context loss after compaction and log failure pair if found.
             self.maybe_log_compression_failure(&cleaned).await;
             if cleaned.contains(zeph_llm::provider::MAX_TOKENS_TRUNCATION_MARKER) {

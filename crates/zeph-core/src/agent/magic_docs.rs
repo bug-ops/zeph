@@ -38,24 +38,40 @@ impl MagicDocsState {
 }
 
 impl<C: Channel> super::Agent<C> {
-    /// Detect `# MAGIC DOC:` headers in `ToolOutput` parts and register their paths.
+    /// Detect `# MAGIC DOC:` headers in `ToolOutput`/`ToolResult` parts and register their paths.
     ///
-    /// Call this after pushing an assistant message that may contain `ToolOutput` parts.
-    /// No-op when `MagicDocs` is disabled.
+    /// Call this after pushing an assistant message, or a user message carrying tool
+    /// results, that may contain `ToolOutput`/`ToolResult` parts. No-op when `MagicDocs`
+    /// is disabled.
     pub(super) fn detect_magic_docs_in_messages(&mut self) {
         if !self.services.memory.subsystems.magic_docs_config.enabled {
             return;
         }
 
-        // Scan the last assistant message for ToolOutput parts from file-read tools.
+        // Scan on the last assistant message (may carry fresh ToolUse requests) or the
+        // last user message carrying tool results — the latter is where a magic-doc
+        // header actually arrives (`process_tool_result_batch`'s push). Scanning only on
+        // assistant pushes deferred detection to the *next* assistant message, which
+        // never comes for a single read-then-respond turn or for a turn that exits the
+        // native loop via shutdown/cancel/doom-loop/max-iterations with an unpaired tool
+        // result as the last message (#6127).
         let Some(last_msg) = self.msg.messages.last() else {
             return;
         };
-        if last_msg.role != Role::Assistant {
+        let has_tool_result = last_msg.parts.iter().any(|p| {
+            matches!(
+                p,
+                MessagePart::ToolResult { .. } | MessagePart::ToolOutput { .. }
+            )
+        });
+        if last_msg.role != Role::Assistant && !(last_msg.role == Role::User && has_tool_result) {
             return;
         }
 
-        // Walk all messages looking for ToolUse → ToolOutput pairs where ToolOutput has magic header.
+        // Walk all messages looking for ToolUse → ToolOutput pairs where ToolOutput has magic
+        // header. Scanning on every tool-result push (not just assistant pushes) makes this
+        // O(n) per tool-result turn instead of only per assistant turn — accepted trade-off to
+        // close the coverage gap above; typical turn/tool-call counts keep it cheap.
         self.scan_messages_for_magic_docs();
     }
 

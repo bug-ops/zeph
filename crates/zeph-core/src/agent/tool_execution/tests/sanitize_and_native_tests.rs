@@ -1370,3 +1370,286 @@ async fn nli_and_secret_masking_are_independently_toggleable() {
     assert!(!rx.borrow().nli_enabled);
     assert!(!rx.borrow().secret_masking_enabled);
 }
+
+// ---------------------------------------------------------------------------
+// #6127 regression: MagicDocs registration for a single read-then-respond turn with no
+// subsequent tool call (the shape `--bare -p "read X"` sessions always take).
+// ---------------------------------------------------------------------------
+
+/// #6127: a single read-then-respond turn — `Assistant{ToolUse(read)}` ->
+/// `User{ToolResult(# MAGIC DOC: ...)}` -> terminal `Assistant{Text}` with NO further tool
+/// call, exactly the shape `--bare -p "read X"` sessions always take — must register the doc.
+///
+/// Before the fix, `detect_magic_docs_in_messages()` only scanned when the *last pushed
+/// message* had `role == Assistant`. The `ToolResult` carrying the magic-doc header is pushed
+/// with `role == User` (`process_tool_result_batch`, `tier_loop.rs`), so that push's scan bailed
+/// immediately; detection was deferred to the *next* `Assistant` push, which never comes for a
+/// single read-then-respond turn. The fix broadens the guard in
+/// `crates/zeph-core/src/agent/magic_docs.rs` to also scan when the last message is a `User`
+/// message carrying `ToolResult`/`ToolOutput` parts, so registration happens synchronously at
+/// the tool-result push instead of being deferred to a tool call that may never arrive. Drives
+/// the real `process_response()` -> `process_response_native_tools()` ->
+/// `process_single_native_turn()` path (not a hand-constructed message history), so this test
+/// only passes if the production code actually detects on the `ToolResult` push.
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn magic_doc_registered_after_single_read_then_respond_turn() {
+    use crate::agent::agent_tests::*;
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::{ChatResponse, Message, MessageMetadata, Role, ToolUseRequest};
+
+    let tool_call = ToolUseRequest {
+        id: "tu_readme".into(),
+        name: "read".into(),
+        input: serde_json::json!({"file_path": "/docs/readme.md"}),
+    };
+    let (mock, call_count) = MockProvider::with_responses(vec![]).with_tool_use(vec![
+        ChatResponse::ToolUse {
+            text: None,
+            tool_calls: vec![tool_call],
+            thinking_blocks: vec![],
+        },
+        ChatResponse::Text("Here's a summary of the file.".into()),
+    ]);
+    let provider = AnyProvider::Mock(mock);
+
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::with_output("read", "# MAGIC DOC: readme\nSome content.");
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+    agent.services.memory.subsystems.magic_docs_config.enabled = true;
+    // Disable sanitizer spotlighting so the ToolResult content is the raw tool summary,
+    // keeping this test focused on the push_message wiring, not sanitizer output shape.
+    agent.services.security.sanitizer =
+        zeph_sanitizer::ContentSanitizer::new(&zeph_sanitizer::ContentIsolationConfig {
+            enabled: false,
+            ..Default::default()
+        });
+
+    agent.msg.messages.push(Message {
+        role: Role::User,
+        content: "read /docs/readme.md and summarize it".into(),
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    });
+
+    agent.process_response().await.unwrap();
+
+    assert_eq!(
+        *call_count.lock().unwrap(),
+        2,
+        "provider must be called twice: once for ToolUse, once for the terminal Text response"
+    );
+    let sent = agent.channel.sent_messages();
+    assert!(
+        sent.iter().any(|s| s == "Here's a summary of the file."),
+        "terminal text response must be sent to the channel; got: {sent:?}"
+    );
+
+    assert!(
+        agent
+            .services
+            .memory
+            .subsystems
+            .magic_docs
+            .registered
+            .contains_key(&std::path::PathBuf::from("/docs/readme.md")),
+        "magic doc must be registered after the terminal text response of a single \
+         read-then-respond turn, without requiring a second tool call; registered = {:?}",
+        agent.services.memory.subsystems.magic_docs.registered
+    );
+}
+
+/// #6127 companion regression: the `CacheCheckResult::Hit` branch (semantic-cache-hit path)
+/// shares the same raw-push bug as the plain-text branch. Seeds message history with a
+/// `read` `ToolUse`/`ToolResult` pair carrying a `# MAGIC DOC:` header (as if loaded from a
+/// prior turn's persisted session state, before this session ever ran detection on it), primes
+/// the response cache so `check_response_cache()` returns a `Hit` for the current last-user
+/// message, then drives the real `process_response()` path. The LLM must never be called (pure
+/// cache hit), yet the doc must still be registered — proving the `CacheCheckResult::Hit` arm's
+/// terminal push also goes through `push_message()`.
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn magic_doc_registered_on_semantic_cache_hit_branch() {
+    use crate::agent::agent_tests::*;
+    use std::sync::Arc;
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+    use zeph_memory::{ResponseCache, store::SqliteStore};
+
+    let (mock, call_count) = MockProvider::with_responses(vec![]).with_tool_use(vec![]);
+    let provider = AnyProvider::Mock(mock);
+
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+    agent.services.memory.subsystems.magic_docs_config.enabled = true;
+
+    // Fixture setup: seed the ToolUse/ToolResult pair directly (not via push_message) to
+    // simulate history already present before this turn's cache-hit branch runs — this test
+    // targets the Hit branch's own push, not the (already covered) plain-text branch.
+    agent.msg.messages.push(Message {
+        role: Role::User,
+        content: "read /docs/design.md and summarize it".into(),
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    });
+    agent.msg.messages.push(Message::from_parts(
+        Role::Assistant,
+        vec![MessagePart::ToolUse {
+            id: "tu_design".into(),
+            name: "read".into(),
+            input: serde_json::json!({"file_path": "/docs/design.md"}),
+        }],
+    ));
+    let tool_result_msg = Message::from_parts(
+        Role::User,
+        vec![MessagePart::ToolResult {
+            tool_use_id: "tu_design".into(),
+            content: "# MAGIC DOC: Design\nSome content.".into(),
+            is_error: false,
+        }],
+    );
+    agent.msg.messages.push(tool_result_msg.clone());
+
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
+    let key =
+        ResponseCache::compute_key(&tool_result_msg.content, &agent.runtime.config.model_name);
+    cache
+        .put(&key, "cached summary", &agent.runtime.config.model_name)
+        .await
+        .unwrap();
+    agent.services.session.response_cache = Some(cache);
+
+    agent.process_response().await.unwrap();
+
+    assert_eq!(
+        *call_count.lock().unwrap(),
+        0,
+        "provider must not be called at all on a semantic cache hit"
+    );
+    let sent = agent.channel.sent_messages();
+    assert!(
+        sent.iter().any(|s| s == "cached summary"),
+        "cached response must be sent to the channel; got: {sent:?}"
+    );
+
+    assert!(
+        agent
+            .services
+            .memory
+            .subsystems
+            .magic_docs
+            .registered
+            .contains_key(&std::path::PathBuf::from("/docs/design.md")),
+        "magic doc must be registered after the CacheCheckResult::Hit branch's terminal push; \
+         registered = {:?}",
+        agent.services.memory.subsystems.magic_docs.registered
+    );
+}
+
+/// #6127 companion regression: a native-loop exit where the LAST message of the turn is the
+/// `ToolResult` push itself — no terminal `Assistant` text ever follows, because the loop exits
+/// via `max_iterations` exhaustion right after the tool result is recorded. This is one of four
+/// exit branches (shutdown/user-cancel/doom-loop/`max_iterations`) that share the same shape:
+/// `process_tool_result_batch` pushes the `ToolResult` via `push_message()` (this call site was
+/// never buggy), then the native loop simply stops without ever reaching a terminal
+/// `ChatResponse::Text` or `CacheCheckResult::Hit` push.
+///
+/// Before the fix, `detect_magic_docs_in_messages()`'s guard only scanned when the *last
+/// pushed message* had `role == Assistant`; a `ToolResult` push (`role == User`) always
+/// returned early, so a turn that terminates on this `ToolResult` (no further Assistant push ever
+/// arrives) could never register the doc — independent of the two `tier_loop.rs` raw-push
+/// sites. The fix broadens the guard in `crates/zeph-core/src/agent/magic_docs.rs` to also
+/// scan when the last message is a `User` message carrying `ToolResult`/`ToolOutput` parts,
+/// which covers this exit path (and the other three) uniformly with no `tier_loop.rs` change
+/// required for them specifically.
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn magic_doc_registered_when_tool_result_is_final_message_of_max_iterations_exit() {
+    use crate::agent::agent_tests::*;
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::{ChatResponse, Message, MessageMetadata, Role, ToolUseRequest};
+
+    let tool_call = ToolUseRequest {
+        id: "tu_arch".into(),
+        name: "read".into(),
+        input: serde_json::json!({"file_path": "/docs/architecture.md"}),
+    };
+    // Only ONE ToolUse response is queued: with max_iterations = 1, the native loop calls
+    // chat_with_tools exactly once, processes the tool result, then exhausts its iteration
+    // budget and exits — the provider is never asked for a follow-up terminal response.
+    let (mock, call_count) =
+        MockProvider::with_responses(vec![]).with_tool_use(vec![ChatResponse::ToolUse {
+            text: None,
+            tool_calls: vec![tool_call],
+            thinking_blocks: vec![],
+        }]);
+    let provider = AnyProvider::Mock(mock);
+
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor =
+        MockToolExecutor::with_output("read", "# MAGIC DOC: architecture\nSome content.");
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+    agent.services.memory.subsystems.magic_docs_config.enabled = true;
+    agent.services.security.sanitizer =
+        zeph_sanitizer::ContentSanitizer::new(&zeph_sanitizer::ContentIsolationConfig {
+            enabled: false,
+            ..Default::default()
+        });
+    agent.tool_orchestrator.max_iterations = 1;
+
+    agent.msg.messages.push(Message {
+        role: Role::User,
+        content: "read /docs/architecture.md and summarize it".into(),
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    });
+
+    agent.process_response().await.unwrap();
+
+    assert_eq!(
+        *call_count.lock().unwrap(),
+        1,
+        "provider must be called exactly once: the loop must exit on max_iterations \
+         exhaustion without a follow-up call for a terminal response"
+    );
+
+    let last = agent.msg.messages.last().expect("at least one message");
+    assert_eq!(
+        last.role,
+        Role::User,
+        "the last message of the turn must be the ToolResult push itself, with no \
+         terminal Assistant push ever following; got role {:?}",
+        last.role
+    );
+    assert!(
+        last.parts
+            .iter()
+            .any(|p| matches!(p, zeph_llm::provider::MessagePart::ToolResult { .. })),
+        "last message must carry the ToolResult part; got: {:?}",
+        last.parts
+    );
+
+    assert!(
+        agent
+            .services
+            .memory
+            .subsystems
+            .magic_docs
+            .registered
+            .contains_key(&std::path::PathBuf::from("/docs/architecture.md")),
+        "magic doc must be registered even when the turn ends on the ToolResult push itself \
+         (max_iterations exhaustion, no further Assistant push); registered = {:?}",
+        agent.services.memory.subsystems.magic_docs.registered
+    );
+}

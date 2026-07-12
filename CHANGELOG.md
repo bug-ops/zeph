@@ -133,6 +133,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `split_messages`/`split_messages_structured` functions are no longer imported
   at the `claude` module's top level, so a future request path cannot easily
   split a history without the strip being applied.
+- MagicDocs registration (`crates/zeph-core/src/agent/magic_docs.rs`) never fired for a
+  turn's terminal assistant text response — the two sites in `tier_loop.rs` that push the
+  final response (`process_response_native_tools`'s semantic-cache-hit branch and
+  `process_single_native_turn`'s `ChatResponse::Text` branch) wrote directly to
+  `self.msg.messages` instead of calling `self.push_message(...)`, bypassing
+  `detect_magic_docs_in_messages()` entirely (#6127). Detection only ran retroactively, the
+  next time an `Assistant` message was pushed via `push_message` — typically a *further*
+  tool call later in the same conversation — so a single read-then-respond turn (the
+  canonical `--bare -p "read X"` usage) never registered a `# MAGIC DOC:` file, even though
+  the read call itself succeeded and returned the marked content. Not a `--bare`-conditional
+  gate: `with_bare_mode` was unaffected and required no change; this was a general tool-loop
+  message-push coverage gap that `--bare`'s single-shot invocation pattern exposed
+  deterministically, while interactive multi-tool-call sessions usually masked it. Both push
+  sites now route through `push_message`, matching the pattern already used correctly by
+  `push_assistant_tool_use_message` and `process_tool_result_batch`. As a side effect, both
+  paths now also update `cached_prompt_tokens` and `last_assistant_at`, which the raw pushes
+  were silently skipping — a pre-existing token-accounting gap on the semantic-cache-hit and
+  plain-text-response paths, corrected incidentally by the same fix.
+  `detect_magic_docs_in_messages()`'s own detection guard was the deeper defect underneath
+  the above: it only scanned when the *last* pushed message was `Role::Assistant`, so
+  detection for a magic-doc read was always deferred to the next assistant push — a turn
+  that instead exited the native tool loop via a shutdown/user-cancel/doom-loop break or
+  `max_iterations` exhaustion, leaving an unpaired `Role::User` tool-result as the last
+  message, would still silently drop the doc even after the two `push_message` routing
+  fixes above. The guard now also scans when the last message is a `Role::User` message
+  carrying `ToolResult`/`ToolOutput` parts, so detection fires uniformly at the point the
+  content actually arrives, covering all native-loop exit paths, not just the two terminal
+  push sites. `focus.rs`'s context-compression checkpoint re-push (a `ToolUse`-only
+  assistant message with no paired result yet present) is intentionally left as a raw push
+  and documented inline as such.
 - `.github/deny.toml`: the `cargo-deny` advisories gate scanned only the `candle`
   and `tui` features, excluding `pdf` and every other feature shipped by the
   blocking `bundle-check` (`full`) CI job and release builds — any RUSTSEC

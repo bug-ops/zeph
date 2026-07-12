@@ -164,6 +164,9 @@ impl<C: Channel> Agent<C> {
         };
         self.msg.messages.truncate(checkpoint_pos);
         if let Some(assistant_msg) = current_turn_assistant {
+            // TODO(critic): focus checkpoint re-pushes a ToolUse-only assistant message;
+            // no pairable ToolResult present, so magic-doc detection is intentionally
+            // skipped here.
             self.msg.messages.push(assistant_msg);
         }
         self.recompute_prompt_tokens();
