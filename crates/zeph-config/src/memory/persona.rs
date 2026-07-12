@@ -402,6 +402,32 @@ fn default_tra_signal_history_cap() -> usize {
     200
 }
 
+impl TrajectoryRiskAccumulatorConfig {
+    /// Validate threshold ordering after deserialization.
+    ///
+    /// Returns an error string if `escalation_threshold >= risk_threshold`. An
+    /// inverted/equal pair silently disables the soft-escalation tier (`should_escalate`'s
+    /// `[escalation_threshold, risk_threshold)` band becomes empty) — the hard block
+    /// (`is_blocked`) still works, so this is a degraded-but-safe misconfiguration, not a
+    /// security gap; validation exists to surface it instead of leaving it silent (critic
+    /// finding F4, spec 004-16).
+    ///
+    /// # Errors
+    ///
+    /// Returns a descriptive error string when the threshold ordering invariant is violated.
+    #[must_use = "validation result must be checked"]
+    pub fn validate(&self) -> Result<(), String> {
+        if self.escalation_threshold >= self.risk_threshold {
+            return Err(format!(
+                "memory.shadow_memory: escalation_threshold ({}) must be < risk_threshold ({}) \
+                 — otherwise the escalation band is empty and soft-escalation never fires",
+                self.escalation_threshold, self.risk_threshold
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Default for TrajectoryRiskAccumulatorConfig {
     fn default() -> Self {
         Self {

@@ -410,6 +410,103 @@ mod tests {
     }
 
     #[test]
+    fn should_escalate_true_within_band() {
+        // escalation_threshold=0.50, risk_threshold=0.75 (enabled_config()).
+        // PolicyViolation medium = 0.30 * 1.0 = 0.30 per signal; two signals ~0.6 lands
+        // inside [0.50, 0.75) without triggering is_blocked().
+        let mut acc = TrajectoryRiskAccumulator::new(enabled_config());
+        for _ in 0..2 {
+            acc.advance_turn();
+            acc.ingest(AuditSignalType::PolicyViolation, Severity::Medium);
+        }
+        assert!(
+            acc.current_risk() >= 0.50 && acc.current_risk() < 0.75,
+            "test precondition: risk={} must land inside the escalation band",
+            acc.current_risk()
+        );
+        assert!(acc.should_escalate(), "risk={}", acc.current_risk());
+        assert!(
+            !acc.is_blocked(),
+            "escalation band must not also trigger the hard block"
+        );
+    }
+
+    #[test]
+    fn should_escalate_false_below_band() {
+        let mut acc = TrajectoryRiskAccumulator::new(enabled_config());
+        acc.advance_turn();
+        // PolicyViolation medium = 0.30 < escalation_threshold (0.50).
+        acc.ingest(AuditSignalType::PolicyViolation, Severity::Medium);
+        assert!(acc.current_risk() < 0.50);
+        assert!(!acc.should_escalate());
+        assert!(!acc.is_blocked());
+    }
+
+    #[test]
+    fn should_escalate_false_at_or_above_risk_threshold() {
+        // Once trajectory_risk reaches risk_threshold, is_blocked() takes over and
+        // should_escalate() must report false — the two tiers are mutually exclusive.
+        let mut acc = TrajectoryRiskAccumulator::new(enabled_config());
+        for _ in 0..5 {
+            acc.advance_turn();
+            acc.ingest(AuditSignalType::PromptInjectionPattern, Severity::High);
+        }
+        assert!(acc.is_blocked(), "risk={}", acc.current_risk());
+        assert!(
+            !acc.should_escalate(),
+            "hard-blocked risk must not also report should_escalate: risk={}",
+            acc.current_risk()
+        );
+    }
+
+    #[test]
+    fn should_escalate_true_at_exact_escalation_threshold() {
+        // Tester feedback: exact-boundary coverage, not just mid-band. escalation_threshold's
+        // own doc comment ("risk is in [escalation_threshold, risk_threshold)") specifies an
+        // inclusive lower bound — construct the accumulator directly at that exact value
+        // (private-field access is valid here since `tests` is a descendant module of the
+        // type's defining module) rather than relying on a signal combination landing exactly
+        // on the boundary by coincidence.
+        let mut acc = TrajectoryRiskAccumulator::new(enabled_config());
+        acc.trajectory_risk = enabled_config().escalation_threshold;
+        assert!(
+            acc.should_escalate(),
+            "risk exactly at escalation_threshold must escalate (inclusive lower bound)"
+        );
+        assert!(!acc.is_blocked());
+    }
+
+    #[test]
+    fn should_escalate_false_at_exact_risk_threshold() {
+        // The escalation band's upper bound is exclusive — risk exactly at risk_threshold must
+        // hard-block instead, not escalate.
+        let mut acc = TrajectoryRiskAccumulator::new(enabled_config());
+        acc.trajectory_risk = enabled_config().risk_threshold;
+        assert!(
+            !acc.should_escalate(),
+            "risk exactly at risk_threshold must not escalate (exclusive upper bound)"
+        );
+        assert!(
+            acc.is_blocked(),
+            "risk exactly at risk_threshold must hard-block (inclusive lower bound of is_blocked)"
+        );
+    }
+
+    #[test]
+    fn should_escalate_false_when_disabled() {
+        let acc = TrajectoryRiskAccumulator::new_noop();
+        assert!(!acc.should_escalate());
+    }
+
+    #[test]
+    fn record_escalation_does_not_panic() {
+        // record_escalation() only increments a Prometheus counter; verify the call site
+        // is safe to invoke even without a recorder installed (no-op sink in tests).
+        let acc = TrajectoryRiskAccumulator::new(enabled_config());
+        acc.record_escalation();
+    }
+
+    #[test]
     fn fifty_clean_turns_zero_risk() {
         let mut acc = TrajectoryRiskAccumulator::new(enabled_config());
         for _ in 0..50 {

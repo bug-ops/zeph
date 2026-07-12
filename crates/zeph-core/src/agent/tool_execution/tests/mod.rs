@@ -4,6 +4,7 @@
 mod boundary_and_classifier_tests;
 mod focus_tests;
 mod hook_block_cap_tests;
+mod mage_escalation_tests;
 mod native_tests;
 mod parallel_and_handle_tests;
 mod pure_helpers_tests;

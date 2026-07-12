@@ -108,6 +108,12 @@ impl Config {
             .acon
             .validate()
             .map_err(ConfigError::Validation)?;
+        if self.memory.shadow_memory.enabled {
+            self.memory
+                .shadow_memory
+                .validate()
+                .map_err(ConfigError::Validation)?;
+        }
         Ok(())
     }
 
@@ -1258,6 +1264,43 @@ weight = 0.3
         assert!(
             err.contains("passthrough_threshold") && err.contains("summarize_threshold"),
             "expected acon threshold-ordering error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_shadow_memory_inverted_thresholds() {
+        let mut cfg = Config::default();
+        cfg.memory.shadow_memory.enabled = true;
+        cfg.memory.shadow_memory.escalation_threshold = 0.75;
+        cfg.memory.shadow_memory.risk_threshold = 0.50;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("escalation_threshold") && err.contains("risk_threshold"),
+            "expected shadow_memory threshold-ordering error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_shadow_memory_equal_thresholds() {
+        let mut cfg = Config::default();
+        cfg.memory.shadow_memory.enabled = true;
+        cfg.memory.shadow_memory.escalation_threshold = 0.6;
+        cfg.memory.shadow_memory.risk_threshold = 0.6;
+        assert!(
+            cfg.validate().is_err(),
+            "equal thresholds must be rejected — the escalation band would be empty"
+        );
+    }
+
+    #[test]
+    fn validate_ignores_shadow_memory_thresholds_when_disabled() {
+        let mut cfg = Config::default();
+        cfg.memory.shadow_memory.enabled = false;
+        cfg.memory.shadow_memory.escalation_threshold = 0.9;
+        cfg.memory.shadow_memory.risk_threshold = 0.1;
+        assert!(
+            cfg.validate().is_ok(),
+            "inverted thresholds on a disabled shadow_memory config must not fail validation"
         );
     }
 

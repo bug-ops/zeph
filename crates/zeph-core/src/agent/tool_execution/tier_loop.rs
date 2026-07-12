@@ -23,6 +23,37 @@ use crate::channel::{Channel, StopHint, ToolStartEvent};
 /// 1-second timeout that always failed, silently disabling the whole feature).
 const REFORMAT_DEFAULT_TIMEOUT_SECS: u64 = 30;
 
+/// Build MAGE hard-block tier results when `is_blocked()` fired at dispatch time.
+///
+/// Returns `Some(TierLoopData)` synthesizing `ToolError::TrajectoryRiskExceeded` for every
+/// call in the batch — bypassing `run_tier_execution_loop` entirely — when the hard-block
+/// tier (`mage_blocked`, spec 004-16 FR-005) fired. Returns `None` when it did not, so the
+/// caller runs the normal tier execution loop (this also covers the soft-escalation tier,
+/// spec 004-16 FR-006, which gates on a single batch-level confirmation but then falls
+/// through to the normal tier loop — see `Agent::confirm_mage_escalation` — so that
+/// `check_trust`/`PermissionPolicy`/shadow-probe still apply per call; critic finding F1
+/// caught an earlier version of this function that bypassed those gates for escalation too).
+/// Extracted from `handle_native_tool_calls` to stay under the clippy line limit.
+fn build_mage_bypass_tier_data(
+    mage_blocked: Option<(f64, Vec<String>)>,
+    calls: &[ToolCall],
+) -> Option<TierLoopData> {
+    let (score, top_signals) = mage_blocked?;
+    Some(TierLoopData {
+        tool_results: calls
+            .iter()
+            .map(|_| {
+                Err(zeph_tools::ToolError::TrajectoryRiskExceeded {
+                    score,
+                    top_signals: top_signals.clone(),
+                })
+            })
+            .collect(),
+        pending_focus_checkpoint: None,
+        pending_system_hints: Vec::new(),
+    })
+}
+
 fn make_tool_hook_env(
     tool_name: &str,
     tool_input: &serde_json::Value,
@@ -102,6 +133,38 @@ impl<C: Channel> Agent<C> {
             );
         }
         Ok(())
+    }
+
+    /// Single batch-level human confirmation for the MAGE soft-escalation tier (spec 004-16
+    /// FR-006).
+    ///
+    /// Returns `Ok(true)` if the user declined — the tombstone and `[Cancelled]` notice are
+    /// already persisted via `cancel_tool_batch`, matching every other cancellation checkpoint
+    /// in this file; the caller must return `Ok(false)` without running the tier loop. Returns
+    /// `Ok(false)` if the user approved — the caller must then run the *normal*
+    /// `run_tier_execution_loop` so `check_trust`/`PermissionPolicy`/shadow-probe still apply
+    /// per call. MAGE escalation gates *whether* execution proceeds at all; it must never
+    /// substitute for those per-call gates — an earlier version of this wiring synthesized
+    /// `ToolError::ConfirmationRequired` and dispatched approved calls through
+    /// `execute_tool_call_confirmed_erased`, which explicitly skips `check_trust`, letting a
+    /// policy-`Deny` tool execute under escalation (critic finding F1).
+    async fn confirm_mage_escalation(
+        &mut self,
+        tool_calls: &[zeph_llm::provider::ToolUseRequest],
+    ) -> Result<bool, crate::agent::error::AgentError> {
+        let score = self.services.security.mage_accumulator.current_risk();
+        let prompt = format!(
+            "Elevated trajectory risk detected (score {score:.3}) — allow tool execution to proceed?"
+        );
+        if self.channel.confirm(&prompt).await? {
+            return Ok(false);
+        }
+        self.cancel_tool_batch(
+            tool_calls,
+            "tool execution cancelled: MAGE trajectory risk escalation declined",
+        )
+        .await?;
+        Ok(true)
     }
 
     #[tracing::instrument(
@@ -720,6 +783,7 @@ impl<C: Channel> Agent<C> {
             cache_hits,
             mcp_tool_ids,
             mage_blocked,
+            mage_escalate,
             mut early_stop_hints,
             window_exhausted,
         } = self.prepare_tool_dispatch(tool_calls);
@@ -735,40 +799,35 @@ impl<C: Channel> Agent<C> {
         // Phase 1: Tiered parallel execution bounded by a shared semaphore.
         // Extracted to run_tier_execution_loop to satisfy the line-count limit.
         // Returns None when the user cancelled (caller must return Ok(())).
-        // MAGE override: if trajectory risk is exceeded, bypass the tier loop and build
-        // blocked results directly so process_tool_result_batch renders them normally.
-        let tier_data: TierLoopOutput = if let Some((score, top_signals)) = mage_blocked {
-            Some(TierLoopData {
-                tool_results: calls
-                    .iter()
-                    .map(|_| {
-                        Err(zeph_tools::ToolError::TrajectoryRiskExceeded {
-                            score,
-                            top_signals: top_signals.clone(),
-                        })
-                    })
-                    .collect(),
-                pending_focus_checkpoint: None,
-                pending_system_hints: Vec::new(),
-            })
-        } else {
-            self.run_tier_execution_loop(
-                tool_calls,
-                &calls,
-                &pre_exec_blocked,
-                &utility_actions,
-                quota_blocked,
-                &args_hashes,
-                &repeat_blocked,
-                &cache_hits,
-                &mcp_tool_ids,
-                max_parallel,
-                &cancel,
-                &tool_call_ids,
-                &mut tool_started_ats,
-            )
-            .await?
-        };
+        // MAGE hard block: bypass the tier loop and build TrajectoryRiskExceeded results
+        // directly so process_tool_result_batch renders them normally.
+        // MAGE soft escalation: gate on a single batch-level confirmation, then fall through
+        // to the normal tier loop below — check_trust/PermissionPolicy/shadow-probe must still
+        // run per call (critic finding F1: an earlier version bypassed those gates here).
+        let tier_data: TierLoopOutput =
+            if let Some(bypass) = build_mage_bypass_tier_data(mage_blocked, &calls) {
+                Some(bypass)
+            } else {
+                if mage_escalate && self.confirm_mage_escalation(tool_calls).await? {
+                    return Ok(false);
+                }
+                self.run_tier_execution_loop(
+                    tool_calls,
+                    &calls,
+                    &pre_exec_blocked,
+                    &utility_actions,
+                    quota_blocked,
+                    &args_hashes,
+                    &repeat_blocked,
+                    &cache_hits,
+                    &mcp_tool_ids,
+                    max_parallel,
+                    &cancel,
+                    &tool_call_ids,
+                    &mut tool_started_ats,
+                )
+                .await?
+            };
 
         // Unpack tier execution output. None means the user cancelled — return early.
         let Some(TierLoopData {
@@ -1055,6 +1114,10 @@ impl<C: Channel> Agent<C> {
         // MAGE trajectory risk gate (spec 004-16 FR-004, FR-005).
         // Extracted to keep prepare_tool_dispatch under the line limit.
         let mage_blocked = self.check_mage_block();
+        // Soft-escalation tier (spec 004-16 FR-006): only meaningful when the hard block
+        // above did not already fire — the two threshold ranges never overlap, but the
+        // guard keeps this call site independent of that invariant.
+        let mage_escalate = mage_blocked.is_none() && self.check_mage_escalation();
 
         ToolDispatchContext {
             calls,
@@ -1068,6 +1131,7 @@ impl<C: Channel> Agent<C> {
             cache_hits,
             mcp_tool_ids,
             mage_blocked,
+            mage_escalate,
             early_stop_hints,
             window_exhausted,
         }
@@ -1103,6 +1167,33 @@ impl<C: Channel> Agent<C> {
         );
         self.services.security.mage_accumulator.record_block();
         Some((score, top))
+    }
+
+    /// Check MAGE trajectory risk soft-escalation gate (spec 004-16 FR-006).
+    ///
+    /// Returns `true` when the accumulator's risk is in `[escalation_threshold,
+    /// risk_threshold)`. Emits a security event, increments `pre_execution_warnings`, and
+    /// calls `record_escalation()` on the accumulator so the caller gates the batch behind
+    /// a single `Agent::confirm_mage_escalation` confirmation before falling through to the
+    /// normal tier execution loop (see that method's doc comment for why this must not
+    /// bypass `check_trust`/`PermissionPolicy`).
+    fn check_mage_escalation(&mut self) -> bool {
+        if !self.services.security.mage_accumulator.should_escalate() {
+            return false;
+        }
+        let score = self.services.security.mage_accumulator.current_risk();
+        tracing::warn!(
+            score,
+            "MAGE trajectory risk accumulator escalating tool dispatch to human confirmation"
+        );
+        self.update_metrics(|m| m.pre_execution_warnings += 1);
+        self.push_security_event(
+            zeph_common::SecurityEventCategory::PreExecutionWarn,
+            "<mage>",
+            format!("trajectory risk {score:.3} in escalation band, requiring confirmation"),
+        );
+        self.services.security.mage_accumulator.record_escalation();
+        true
     }
 
     fn check_and_update_quota(&mut self, batch_len: usize) -> bool {

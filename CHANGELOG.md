@@ -78,6 +78,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     only — a `:memory:` database or a Postgres deployment has no derivable lock directory and
     degrades to unenforced exclusivity, matching `SessionEventLog::open_exclusive`'s existing
     non-Unix degrade.
+- `zeph-memory`/`zeph-core`: the MAGE trajectory-risk soft-escalation tier (spec 004-16
+  FR-006) is now wired into the agent loop (#5956). `TrajectoryRiskAccumulator::should_escalate()`
+  and `record_escalation()` existed but were never queried — only the hard-block tier
+  (`is_blocked()`) gated tool dispatch. When cumulative trajectory risk lands in
+  `[escalation_threshold, risk_threshold)`, the agent now requires a single batch-level human
+  confirmation before dispatching the tool batch through the *normal* tier execution loop —
+  so `check_trust`/`PermissionPolicy` (Ask/Deny rules) and the shadow-probe safety gate still
+  apply per call exactly as they would without escalation. Denial cancels the whole batch
+  (same tombstone path as any other user-cancelled turn). `record_escalation()` increments the
+  `shadow_memory_escalations_total` Prometheus counter (NFR-007). No new config surface —
+  `escalation_threshold` was already a `[memory.shadow_memory]` config field.
+  - An earlier version of this fix synthesized `ToolError::ConfirmationRequired` per call and
+    dispatched approved calls through `execute_tool_call_confirmed_erased`, which intentionally
+    bypasses `check_trust` for the already-approved call — that let a policy-`Deny` tool execute
+    under MAGE escalation (including unattended, under auto-approve/`-y`/`--bare`/non-TTY CLI
+    modes) precisely when accumulated risk signals made that the worst possible moment to drop
+    the gate. Caught in adversarial review before merge; fixed by gating on one up-front
+    confirmation and falling through to the unmodified, fully-gated tier execution loop.
+- `zeph-memory`: `classify_communities` (`graph/community.rs`) no longer lets `\n`/`\t` survive
+  into community `entity_names`/`intra_facts` (#6093). PR #6091 had replaced a local
+  `scrub_content` helper (stripped all control chars) with
+  `zeph_common::patterns::strip_format_chars`, which deliberately preserves `\t`/`\n` — an
+  entity name or fact containing an embedded newline (e.g. from untrusted tool output) could
+  break the single-line `Entities: ...` framing built by `generate_community_summary` and
+  inject prompt content into the downstream summarization LLM call. Both call sites now use
+  `zeph_common::sanitize::strip_control_chars` instead, per that function's own documented
+  guidance for single-line normalized values like entity names and dedup keys.
 - `zeph-subagent`: sub-agent vault secrets now re-validate their grant TTL live instead of
   only gating once at delivery time, and a targeted secret-request lookup no longer drops a
   concurrent sibling sub-agent's pending request (#5991, #5993).

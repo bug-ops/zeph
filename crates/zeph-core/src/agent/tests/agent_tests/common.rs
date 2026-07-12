@@ -91,6 +91,9 @@ pub(crate) struct MockChannel {
     pub(crate) sent: Arc<Mutex<Vec<String>>>,
     pub(crate) chunks: Arc<Mutex<Vec<String>>>,
     pub(crate) confirmations: Arc<Mutex<Vec<bool>>>,
+    /// Records the exact prompt text passed to every `Channel::confirm` call, in order — lets
+    /// tests assert on prompt content (e.g. that a real command is shown, not a generic string).
+    pub(crate) confirmed_prompts: Arc<Mutex<Vec<String>>>,
     pub(crate) statuses: Arc<Mutex<Vec<String>>>,
     pub(crate) tool_starts: Arc<Mutex<Vec<ToolStartEvent>>>,
     pub(crate) exit_supported: bool,
@@ -109,6 +112,7 @@ impl MockChannel {
             sent: Arc::new(Mutex::new(Vec::new())),
             chunks: Arc::new(Mutex::new(Vec::new())),
             confirmations: Arc::new(Mutex::new(Vec::new())),
+            confirmed_prompts: Arc::new(Mutex::new(Vec::new())),
             statuses: Arc::new(Mutex::new(Vec::new())),
             tool_starts: Arc::new(Mutex::new(Vec::new())),
             exit_supported: true,
@@ -142,6 +146,10 @@ impl MockChannel {
 
     pub(crate) fn sent_messages(&self) -> Vec<String> {
         self.sent.lock().unwrap().clone()
+    }
+
+    pub(crate) fn confirmed_prompts(&self) -> Vec<String> {
+        self.confirmed_prompts.lock().unwrap().clone()
     }
 }
 
@@ -204,7 +212,11 @@ impl Channel for MockChannel {
         Ok(())
     }
 
-    async fn confirm(&mut self, _prompt: &str) -> Result<bool, crate::channel::ChannelError> {
+    async fn confirm(&mut self, prompt: &str) -> Result<bool, crate::channel::ChannelError> {
+        self.confirmed_prompts
+            .lock()
+            .unwrap()
+            .push(prompt.to_owned());
         let mut confs = self.confirmations.lock().unwrap();
         Ok(if confs.is_empty() {
             true

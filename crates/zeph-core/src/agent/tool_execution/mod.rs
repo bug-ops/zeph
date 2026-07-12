@@ -61,6 +61,17 @@ struct ToolDispatchContext {
     /// When `Some((score, top_signals))`, all tool calls in this batch are blocked with
     /// `ToolError::TrajectoryRiskExceeded`. Set when `mage_accumulator.is_blocked()` at dispatch time.
     mage_blocked: Option<(f64, Vec<String>)>,
+    /// MAGE trajectory risk soft-escalation gate (spec 004-16 FR-006).
+    ///
+    /// When `true`, the batch requires a single up-front human confirmation
+    /// (`Agent::confirm_mage_escalation`) before the normal tier execution loop runs — approval
+    /// falls through to `run_tier_execution_loop` so `check_trust`/`PermissionPolicy`/
+    /// shadow-probe still apply per call; denial cancels the whole batch. Set when
+    /// `mage_accumulator.should_escalate()` at dispatch time — i.e. risk is in
+    /// `[escalation_threshold, risk_threshold)`. Mutually exclusive with `mage_blocked` (the
+    /// ranges never overlap). Must never bypass the per-call trust/policy gate (critic finding
+    /// F1 caught an earlier version that did).
+    mage_escalate: bool,
     /// System hints injected by the utility-window early-stop logic during `compute_utility_actions`.
     early_stop_hints: Vec<String>,
     /// Set when `compute_utility_actions` exhausted the consecutive-low window.
