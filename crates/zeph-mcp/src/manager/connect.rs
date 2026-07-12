@@ -386,7 +386,7 @@ impl McpManager {
     }
 
     #[tracing::instrument(name = "mcp.manager.spawn_oauth_connections", skip_all)]
-    async fn spawn_oauth_connections(
+    pub(super) async fn spawn_oauth_connections(
         &self,
         last_refresh: &Arc<DashMap<String, Instant>>,
     ) -> JoinSet<(String, Result<McpClient, String>)> {
@@ -437,6 +437,14 @@ impl McpManager {
             let status_tx = self.status_tx.clone();
             let last_refresh = Arc::clone(last_refresh);
 
+            // MF-2: register the lock BEFORE spawning the OAuth handshake task so there is
+            // no window between handshake completion and lock insertion — mirrors the
+            // non-OAuth path in `spawn_non_oauth_connections`. The lock entry is removed
+            // in `handle_connect_result`/`process_oauth_results` if the connection fails.
+            if self.lock_tool_list {
+                self.tool_list_locked.insert(server_id.clone(), ());
+            }
+
             join_set.spawn(run_oauth_handshake(
                 server_id,
                 url,
@@ -472,6 +480,10 @@ impl McpManager {
                     );
                 }
                 Err(error) => {
+                    // OAuth handshake failed before a client was ever established — remove
+                    // the lock inserted in spawn_oauth_connections so the server is not left
+                    // permanently locked (mirrors handle_connect_result's failure cleanup).
+                    self.tool_list_locked.remove(&server_id);
                     outputs.push(ConnectOutput {
                         client_entry: None,
                         tools_entry: None,

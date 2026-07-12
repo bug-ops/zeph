@@ -30,6 +30,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`zeph-a2a/src/server/router.rs`) so `rate_limit_middleware` wraps `auth_middleware`,
   guaranteeing every request — including failed-auth ones — increments the counter
   before the auth check runs.
+- `zeph-mcp`: `lock_tool_list` hardening silently exempted OAuth-transport MCP servers
+  from post-attestation tool-injection protection (#6118). `tool_list_locked` was only
+  populated by the two non-OAuth connection paths (`spawn_non_oauth_connections`,
+  `connect_and_list_tools`); `spawn_oauth_connections` — the sole connection path for
+  OAuth servers — never inserted the server ID, so `tools/list_changed` notifications
+  from an OAuth server were never rejected regardless of the `lock_tool_list` config
+  value. `spawn_oauth_connections` now inserts into `tool_list_locked` before the
+  handshake starts, mirroring the non-OAuth path (with matching cleanup on connection
+  failure in `process_oauth_results`), and the `lock_tool_list`/`tool_list_locked`
+  invariant now has test coverage for the first time.
 - `IndexMcpServer` registration (`apply_code_retrieval` in `src/agent_setup.rs`) hardcoded
   `std::env::current_dir()` and never read `[index] workspace_root`, unlike the sibling
   background-indexer path (`apply_code_indexer`), which resolved it correctly. Scoping

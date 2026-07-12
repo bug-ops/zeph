@@ -655,6 +655,131 @@ async fn refresh_task_populates_and_updates_fingerprints_when_expected_tools_con
     );
 }
 
+// lock_tool_list / tool_list_locked tests (#6118) — OAuth-transport servers must be
+// covered by the same MF-2 invariant as stdio/HTTP servers.
+
+fn make_oauth_entry(id: &str) -> ServerEntry {
+    ServerEntry {
+        id: id.into(),
+        // A loopback URL is rejected synchronously by the SSRF check for an Untrusted
+        // server, so the handshake fails fast without any real network I/O.
+        transport: McpTransport::OAuth {
+            url: "http://127.0.0.1:1/mcp".into(),
+            scopes: Vec::new(),
+            callback_port: 0,
+            client_name: "test-client".into(),
+        },
+        timeout: Duration::from_secs(5),
+        trust_level: McpTrustLevel::Untrusted,
+        tool_allowlist: None,
+        expected_tools: Vec::new(),
+        roots: Vec::new(),
+        tool_metadata: HashMap::new(),
+        elicitation_enabled: false,
+        elicitation_timeout_secs: 120,
+        env_isolation: false,
+    }
+}
+
+/// Regression for #6118: `spawn_oauth_connections` must insert the server ID into
+/// `tool_list_locked` before the handshake runs, exactly like `spawn_non_oauth_connections`
+/// does for stdio/HTTP servers — otherwise `lock_tool_list = true` silently exempts
+/// OAuth-transport servers from the post-attestation tool-injection protection.
+#[tokio::test]
+async fn spawn_oauth_connections_locks_tool_list_before_handshake() {
+    let entry = make_oauth_entry("oauth-srv");
+    let mgr = McpManager::new(vec![entry], vec![], PolicyEnforcer::new(vec![]))
+        .with_lock_tool_list(true)
+        .with_oauth_credential_store(
+            "oauth-srv",
+            Arc::new(rmcp::transport::auth::InMemoryCredentialStore::default())
+                as Arc<dyn rmcp::transport::auth::CredentialStore>,
+        );
+
+    let last_refresh = Arc::clone(&mgr.last_refresh);
+    // Not draining the returned JoinSet is intentional: the lock must already be in
+    // place as soon as spawn_oauth_connections returns, before the handshake — which
+    // runs concurrently in the background and will fail fast (SSRF-blocked) — completes.
+    let _join_set = mgr.spawn_oauth_connections(&last_refresh).await;
+
+    assert!(
+        mgr.tool_list_locked.contains_key("oauth-srv"),
+        "OAuth server must be locked before the handshake completes (MF-2)"
+    );
+}
+
+/// Regression for #6118: when `lock_tool_list` is disabled, OAuth servers must not be
+/// locked either — the lock is opt-in, not always-on.
+#[tokio::test]
+async fn spawn_oauth_connections_does_not_lock_when_disabled() {
+    let entry = make_oauth_entry("oauth-srv-unlocked");
+    let mgr = McpManager::new(vec![entry], vec![], PolicyEnforcer::new(vec![]))
+        .with_oauth_credential_store(
+            "oauth-srv-unlocked",
+            Arc::new(rmcp::transport::auth::InMemoryCredentialStore::default())
+                as Arc<dyn rmcp::transport::auth::CredentialStore>,
+        );
+
+    let last_refresh = Arc::clone(&mgr.last_refresh);
+    let _join_set = mgr.spawn_oauth_connections(&last_refresh).await;
+
+    assert!(
+        !mgr.tool_list_locked.contains_key("oauth-srv-unlocked"),
+        "lock_tool_list defaults to false — OAuth servers must not be locked"
+    );
+}
+
+/// Regression for #6118: a failed OAuth handshake must not leave the server permanently
+/// locked — `process_oauth_results` must remove the pre-inserted lock entry on failure,
+/// mirroring the cleanup `handle_connect_result` already does for the non-OAuth path.
+#[tokio::test]
+async fn connect_oauth_deferred_removes_lock_on_connection_failure() {
+    let entry = make_oauth_entry("oauth-fail");
+    let mgr = McpManager::new(vec![entry], vec![], PolicyEnforcer::new(vec![]))
+        .with_lock_tool_list(true)
+        .with_oauth_credential_store(
+            "oauth-fail",
+            Arc::new(rmcp::transport::auth::InMemoryCredentialStore::default())
+                as Arc<dyn rmcp::transport::auth::CredentialStore>,
+        );
+
+    mgr.connect_oauth_deferred().await;
+
+    assert!(
+        !mgr.tool_list_locked.contains_key("oauth-fail"),
+        "a failed OAuth connection must not leave a permanent lock entry behind"
+    );
+}
+
+/// Regression for #6118: once a server (OAuth or otherwise) is locked, the background
+/// refresh task must reject `tools/list_changed` notifications for it rather than
+/// silently ingesting smuggled tools. This exercises the same rejection branch
+/// (`connect.rs`'s `spawn_refresh_task`) that OAuth servers previously bypassed entirely
+/// because they were never inserted into `tool_list_locked` in the first place.
+#[tokio::test]
+async fn refresh_task_rejects_notification_for_locked_server() {
+    let mgr =
+        McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])).with_lock_tool_list(true);
+    let mut rx = mgr.subscribe_tool_changes();
+    // Simulate the state right after spawn_oauth_connections locks the server pre-handshake.
+    mgr.tool_list_locked.insert("oauth-srv".into(), ());
+    mgr.spawn_refresh_task(None);
+
+    let tx = mgr.clone_refresh_tx().unwrap();
+    tx.try_send(crate::client::ToolRefreshEvent {
+        server_id: "oauth-srv".into(),
+        tools: vec![make_tool("oauth-srv", "smuggled_tool")],
+    })
+    .unwrap();
+
+    // The refresh task must silently drop the event — the watch channel must never update.
+    let changed = tokio::time::timeout(Duration::from_millis(200), rx.changed()).await;
+    assert!(
+        changed.is_err(),
+        "tools/list_changed for a locked server must be rejected, not applied"
+    );
+}
+
 /// Regression for #6072 (critic follow-up): the sibling test above only proves the
 /// fingerprint *cache* is wired (previous fingerprint stored, new fingerprint differs) —
 /// it does not prove the drift-comparison branch in `attest_tools` actually receives that
