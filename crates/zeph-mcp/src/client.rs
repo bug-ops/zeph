@@ -14,6 +14,7 @@ use http::{HeaderName, HeaderValue};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::{ClientInitializeError, NotificationContext, RoleClient, RunningService};
+use rmcp::transport::IntoTransport;
 use rmcp::transport::TokioChildProcess;
 use rmcp::transport::auth::{
     AuthClient, AuthError, CredentialStore, InMemoryStateStore, OAuthState, StoredCredentials,
@@ -452,26 +453,8 @@ impl McpClient {
             })?
         };
 
-        let handler = ToolListChangedHandler::new(
-            server_id,
-            tx,
-            last_refresh,
-            handler_cfg.roots,
-            handler_cfg.max_description_bytes,
-            handler_cfg.elicitation_tx,
-            handler_cfg.elicitation_timeout,
-        );
-        let service = tokio::time::timeout(timeout, handler.serve(transport))
-            .await
-            .map_err(|_| McpError::Timeout {
-                server_id: server_id.into(),
-                tool_name: "initialize".into(),
-                timeout_secs: timeout.as_secs(),
-            })?
-            .map_err(|e| McpError::Connection {
-                server_id: server_id.into(),
-                message: e.to_string(),
-            })?;
+        let service =
+            finish_connect(server_id, timeout, transport, tx, last_refresh, handler_cfg).await?;
 
         Ok(Self {
             server_id: server_id.into(),
@@ -511,23 +494,8 @@ impl McpClient {
         let config = StreamableHttpClientTransportConfig::with_uri(url.to_owned());
         let transport = StreamableHttpClientTransport::with_client(client, config);
 
-        let handler = ToolListChangedHandler::new(
-            server_id,
-            tx,
-            last_refresh,
-            handler_cfg.roots,
-            handler_cfg.max_description_bytes,
-            handler_cfg.elicitation_tx,
-            handler_cfg.elicitation_timeout,
-        );
-        let service = tokio::time::timeout(timeout, handler.serve(transport))
-            .await
-            .map_err(|_| McpError::Timeout {
-                server_id: server_id.into(),
-                tool_name: "initialize".into(),
-                timeout_secs: timeout.as_secs(),
-            })?
-            .map_err(|e| classify_connect_error(server_id, &e))?;
+        let service =
+            finish_connect(server_id, timeout, transport, tx, last_refresh, handler_cfg).await?;
 
         Ok(Self {
             server_id: server_id.into(),
@@ -593,23 +561,8 @@ impl McpClient {
         let client = build_hardened_client(server_id, pinned.as_ref())?;
         let transport = StreamableHttpClientTransport::with_client(client, config);
 
-        let handler = ToolListChangedHandler::new(
-            server_id,
-            tx,
-            last_refresh,
-            handler_cfg.roots,
-            handler_cfg.max_description_bytes,
-            handler_cfg.elicitation_tx,
-            handler_cfg.elicitation_timeout,
-        );
-        let service = tokio::time::timeout(timeout, handler.serve(transport))
-            .await
-            .map_err(|_| McpError::Timeout {
-                server_id: server_id.into(),
-                tool_name: "initialize".into(),
-                timeout_secs: timeout.as_secs(),
-            })?
-            .map_err(|e| classify_connect_error(server_id, &e))?;
+        let service =
+            finish_connect(server_id, timeout, transport, tx, last_refresh, handler_cfg).await?;
 
         Ok(Self {
             server_id: server_id.into(),
@@ -698,23 +651,9 @@ impl McpClient {
             let config = StreamableHttpClientTransportConfig::with_uri(url);
             let transport = StreamableHttpClientTransport::with_client(auth_client, config);
 
-            let handler = ToolListChangedHandler::new(
-                server_id,
-                tx,
-                last_refresh,
-                handler_cfg.roots,
-                handler_cfg.max_description_bytes,
-                handler_cfg.elicitation_tx,
-                handler_cfg.elicitation_timeout,
-            );
-            let service = tokio::time::timeout(timeout, handler.serve(transport))
-                .await
-                .map_err(|_| McpError::Timeout {
-                    server_id: server_id.into(),
-                    tool_name: "initialize".into(),
-                    timeout_secs: timeout.as_secs(),
-                })?
-                .map_err(|e| classify_connect_error(server_id, &e))?;
+            let service =
+                finish_connect(server_id, timeout, transport, tx, last_refresh, handler_cfg)
+                    .await?;
 
             return Ok(OAuthConnectResult::Connected(McpClient {
                 server_id: server_id.into(),
@@ -827,23 +766,21 @@ impl McpClient {
         let config = StreamableHttpClientTransportConfig::with_uri(pending.url.as_str());
         let transport = StreamableHttpClientTransport::with_client(auth_client, config);
 
-        let handler = ToolListChangedHandler::new(
+        let handler_cfg = HandlerConfig {
+            roots: pending.roots,
+            max_description_bytes: pending.max_description_bytes,
+            elicitation_tx: pending.elicitation_tx,
+            elicitation_timeout: pending.elicitation_timeout,
+        };
+        let service = finish_connect(
             &pending.server_id,
+            pending.timeout,
+            transport,
             pending.tx,
             pending.last_refresh,
-            pending.roots,
-            pending.max_description_bytes,
-            pending.elicitation_tx,
-            pending.elicitation_timeout,
-        );
-        let service = tokio::time::timeout(pending.timeout, handler.serve(transport))
-            .await
-            .map_err(|_| McpError::Timeout {
-                server_id: pending.server_id.clone(),
-                tool_name: "initialize".into(),
-                timeout_secs: pending.timeout.as_secs(),
-            })?
-            .map_err(|e| classify_connect_error(&pending.server_id, &e))?;
+            handler_cfg,
+        )
+        .await?;
 
         Ok(McpClient {
             server_id: pending.server_id,
@@ -1073,6 +1010,39 @@ impl McpClient {
             }
         }
     }
+}
+
+/// Build the tool-refresh handler, run the timeout-bounded MCP handshake, and classify
+/// any resulting error uniformly — shared by every `McpClient` connect path.
+async fn finish_connect<T, E, A>(
+    server_id: &str,
+    timeout: Duration,
+    transport: T,
+    tx: Sender<ToolRefreshEvent>,
+    last_refresh: Arc<DashMap<String, Instant>>,
+    handler_cfg: HandlerConfig,
+) -> Result<ClientService, McpError>
+where
+    T: IntoTransport<RoleClient, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let handler = ToolListChangedHandler::new(
+        server_id,
+        tx,
+        last_refresh,
+        handler_cfg.roots,
+        handler_cfg.max_description_bytes,
+        handler_cfg.elicitation_tx,
+        handler_cfg.elicitation_timeout,
+    );
+    tokio::time::timeout(timeout, handler.serve(transport))
+        .await
+        .map_err(|_| McpError::Timeout {
+            server_id: server_id.into(),
+            tool_name: "initialize".into(),
+            timeout_secs: timeout.as_secs(),
+        })?
+        .map_err(|e| classify_connect_error(server_id, &e))
 }
 
 /// Classify a [`ClientInitializeError`] into the appropriate [`McpError`] variant.

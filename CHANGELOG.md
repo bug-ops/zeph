@@ -199,6 +199,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   test, which already called the real function); both now call the shared production function
   directly via `AppBuilder::for_test`, closing a test-realism gap left by #6170. No behavior
   change for any entry point.
+- **DRY**: `zeph-mcp` — extracted `McpManager::commit_pending` to replace the near-identical
+  `commit_connect_outputs`/`commit_oauth_outputs` pair in `manager/connect.rs`, and
+  `finish_connect` to replace the handler-build + timeout-wrapped-handshake + error-classify
+  scaffolding duplicated across all five `McpClient` connect paths (`connect`, `connect_url`,
+  `connect_url_with_headers`, `connect_url_oauth`'s cached-token branch, `complete_oauth`) in
+  `client.rs` (#6070, #6065). Pure internal refactor, no observable behavior change: the
+  never-hold-a-lock-across-an-`.await` invariant is preserved on every path, and
+  `finish_connect` now routes every site through `classify_connect_error` uniformly (verified
+  byte-for-byte equivalent to the prior inline mapping used by the stdio `connect` path). One
+  intrinsic side effect of unifying two helpers that committed `server_tools` and
+  `server_fingerprints` in opposite relative orders: `commit_pending` adopts the OAuth path's
+  order (`fingerprints` then `tools`) on `connect_all` too, where it was previously reversed.
+  Both are independent `RwLock`s never held simultaneously by any code in the module, so this
+  ordering swap has no observable effect.
 
 - **DRY**: extracted the `zeph worktree clean` reconcile → remove → prune pipeline and its
   removed/skipped/errored counting into a single `WorktreeManager::clean` method plus a

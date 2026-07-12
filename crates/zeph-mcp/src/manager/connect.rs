@@ -216,7 +216,7 @@ impl McpManager {
             instructions_bytes: self.max_instructions_bytes,
         };
         let outputs = self.process_connect_results(raw, limits).await;
-        let (all_tools, outcomes) = self.commit_connect_outputs(outputs).await;
+        let (all_tools, outcomes, _snapshot) = self.commit_pending(outputs).await;
         self.log_tool_collisions(&all_tools).await;
         (all_tools, outcomes)
     }
@@ -291,11 +291,15 @@ impl McpManager {
         outputs
     }
 
-    #[tracing::instrument(name = "mcp.manager.commit_connect_outputs", skip_all)]
-    async fn commit_connect_outputs(
+    /// Drain connect outputs into the shared maps and return everything callers need to
+    /// finish up: the output-order tool list (for collision logging), one outcome per
+    /// server, and a snapshot of all currently known tools (for publishing to
+    /// `tools_watch_tx`, when the caller wants that).
+    #[tracing::instrument(name = "mcp.manager.commit_pending", skip_all)]
+    async fn commit_pending(
         &self,
         outputs: Vec<ConnectOutput>,
-    ) -> (Vec<McpTool>, Vec<ServerConnectOutcome>) {
+    ) -> (Vec<McpTool>, Vec<ServerConnectOutcome>, Vec<McpTool>) {
         // All async work is done. Collect into vecs first, then commit each lock
         // in its own guarded block — never hold one lock across another .await.
         let mut pending_instructions: Vec<(String, String)> = Vec::new();
@@ -333,18 +337,19 @@ impl McpManager {
             }
         }
         {
-            let mut g = self.server_tools.write().await;
-            for (sid, tools) in pending_tools {
-                g.insert(sid, tools);
-            }
-        }
-        {
             let mut g = self.server_fingerprints.write().await;
             for (sid, fp) in pending_fingerprints {
                 g.insert(sid, fp);
             }
         }
-        (all_tools, outcomes)
+        let server_tools_snapshot = {
+            let mut g = self.server_tools.write().await;
+            for (sid, tools) in pending_tools {
+                g.insert(sid, tools);
+            }
+            g.values().flatten().cloned().collect::<Vec<McpTool>>()
+        };
+        (all_tools, outcomes, server_tools_snapshot)
     }
 
     /// Returns `true` if any configured server uses OAuth transport.
@@ -377,11 +382,10 @@ impl McpManager {
         let join_set = self.spawn_oauth_connections(&self.last_refresh).await;
         let raw = drain_oauth_results(join_set).await;
         let outputs = self.process_oauth_results(raw, limits).await;
-        let all_tools: Vec<McpTool> = outputs
-            .iter()
-            .flat_map(|o| o.tools.iter().cloned())
-            .collect();
-        self.commit_oauth_outputs(outputs).await;
+        let (all_tools, _outcomes, snapshot) = self.commit_pending(outputs).await;
+        if !snapshot.is_empty() {
+            let _ = self.tools_watch_tx.send(snapshot);
+        }
         self.log_tool_collisions(&all_tools).await;
     }
 
@@ -503,61 +507,6 @@ impl McpManager {
             }
         }
         outputs
-    }
-
-    #[tracing::instrument(name = "mcp.manager.commit_oauth_outputs", skip_all)]
-    async fn commit_oauth_outputs(&self, outputs: Vec<ConnectOutput>) {
-        // Batch-commit to shared maps in separate guarded blocks — never hold one
-        // lock across another .await (same pattern as connect_all).
-        let mut pending_instructions: Vec<(String, String)> = Vec::new();
-        let mut pending_clients: Vec<(String, McpClient)> = Vec::new();
-        let mut pending_tools: Vec<(String, Vec<McpTool>)> = Vec::new();
-        let mut pending_fingerprints: Vec<(
-            String,
-            HashMap<String, crate::attestation::ToolFingerprint>,
-        )> = Vec::new();
-        for output in outputs {
-            if let Some((sid, instr)) = output.instructions {
-                pending_instructions.push((sid, instr));
-            }
-            if let Some((sid, client)) = output.client_entry {
-                pending_clients.push((sid, client));
-            }
-            if let Some((sid, tools)) = output.tools_entry {
-                pending_tools.push((sid, tools));
-            }
-            if let Some((sid, fp)) = output.fingerprints {
-                pending_fingerprints.push((sid, fp));
-            }
-        }
-        {
-            let mut g = self.server_instructions.write().await;
-            for (sid, instr) in pending_instructions {
-                g.insert(sid, instr);
-            }
-        }
-        {
-            let mut g = self.clients.write().await;
-            for (sid, client) in pending_clients {
-                g.insert(sid, client);
-            }
-        }
-        {
-            let mut g = self.server_fingerprints.write().await;
-            for (sid, fp) in pending_fingerprints {
-                g.insert(sid, fp);
-            }
-        }
-        let updated = {
-            let mut g = self.server_tools.write().await;
-            for (sid, tools) in pending_tools {
-                g.insert(sid, tools);
-            }
-            g.values().flatten().cloned().collect::<Vec<McpTool>>()
-        };
-        if !updated.is_empty() {
-            let _ = self.tools_watch_tx.send(updated);
-        }
     }
 
     /// Log warnings for all `sanitized_id` collisions in `tools`.
