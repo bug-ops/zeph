@@ -4002,6 +4002,64 @@ fn step_79_idempotent_on_own_output() {
     );
 }
 
+#[test]
+fn step_79_still_adds_advisory_when_unsafe_topology_detected() {
+    // encrypt_payload = false + shared_db unset (#6042) triggers a warning as a side effect but
+    // must not change the pre-existing advisory-comment behavior or fail the migration.
+    let src = "[durable]\nenabled = true\nencrypt_payload = false\n";
+    let result = migrate_durable_shared_db(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# shared_db = false"));
+    assert_eq!(
+        result.sections_changed,
+        vec!["durable.shared_db".to_owned()]
+    );
+}
+
+// ── is_unsafe_shared_topology tests (#6042) ───────────────────────────────
+
+#[test]
+fn unsafe_topology_true_when_encrypt_disabled_and_shared_db_absent() {
+    let doc: DocumentMut = "[durable]\nencrypt_payload = false\n".parse().unwrap();
+    assert!(is_unsafe_shared_topology(&doc));
+}
+
+#[test]
+fn unsafe_topology_true_when_shared_db_only_commented() {
+    // A commented-out line doesn't set the value — still effectively unset.
+    let doc: DocumentMut = "[durable]\nencrypt_payload = false\n# shared_db = false\n"
+        .parse()
+        .unwrap();
+    assert!(is_unsafe_shared_topology(&doc));
+}
+
+#[test]
+fn unsafe_topology_false_when_shared_db_declared() {
+    let doc: DocumentMut = "[durable]\nencrypt_payload = false\nshared_db = true\n"
+        .parse()
+        .unwrap();
+    assert!(!is_unsafe_shared_topology(&doc));
+}
+
+#[test]
+fn unsafe_topology_false_when_encrypt_payload_true() {
+    let doc: DocumentMut = "[durable]\nencrypt_payload = true\n".parse().unwrap();
+    assert!(!is_unsafe_shared_topology(&doc));
+}
+
+#[test]
+fn unsafe_topology_false_when_encrypt_payload_absent() {
+    // Absent encrypt_payload defaults to `true` at the config layer, not the dangerous `false`.
+    let doc: DocumentMut = "[durable]\nenabled = true\n".parse().unwrap();
+    assert!(!is_unsafe_shared_topology(&doc));
+}
+
+#[test]
+fn unsafe_topology_false_when_durable_section_absent() {
+    let doc: DocumentMut = "[agent]\nname = \"zeph\"\n".parse().unwrap();
+    assert!(!is_unsafe_shared_topology(&doc));
+}
+
 // ── migrate_skill_trust_require_check tests (step 80, #6087) ─────────────────
 
 #[test]

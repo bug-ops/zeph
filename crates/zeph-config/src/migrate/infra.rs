@@ -623,6 +623,44 @@ pub fn migrate_durable_config(toml_src: &str) -> Result<MigrationResult, Migrate
     })
 }
 
+/// Whether `durable.encrypt_payload = false` is active while `shared_db` is left unset (#6042).
+///
+/// `shared_db` is purely operator-declared (INV-8 `encryption_gate` cannot infer it from the
+/// filesystem), so this combination silently satisfies the gate's local-only override even when
+/// the durable journal database actually lives on a network-shared mount. A commented-out
+/// `# shared_db = ...` line does not set the value, so this stays `true` until the operator
+/// declares the field explicitly.
+pub(crate) fn is_unsafe_shared_topology(doc: &DocumentMut) -> bool {
+    let durable = doc.get("durable").and_then(toml_edit::Item::as_table);
+    let encrypt_payload_disabled = durable
+        .and_then(|t| t.get("encrypt_payload"))
+        .and_then(toml_edit::Item::as_bool)
+        == Some(false);
+    let shared_db_declared = durable.is_some_and(|t| t.contains_key("shared_db"));
+    encrypt_payload_disabled && !shared_db_declared
+}
+
+/// Warns the operator when [`is_unsafe_shared_topology`] detects the dangerous combination.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if `toml_src` is not valid TOML.
+fn warn_if_unsafe_shared_topology(toml_src: &str) -> Result<(), MigrateError> {
+    let doc: DocumentMut = toml_src.parse()?;
+    if is_unsafe_shared_topology(&doc) {
+        let msg = "durable.encrypt_payload = false with shared_db unset: confirm your \
+            deployment topology before proceeding. If the durable journal database (see \
+            memory.sqlite_path / the durable db path) is reachable from more than one \
+            process or client (e.g. a network-shared mount), set shared_db = true explicitly — \
+            leaving it unset silently passes the INV-8 encryption_gate's local-only override \
+            even on unsafe shared storage (#6042).";
+        tracing::warn!("{msg}");
+        eprintln!("WARNING: {msg}");
+    }
+
+    Ok(())
+}
+
 /// Adds a commented `# shared_db = false` advisory line to an existing active `[durable]` table
 /// that lacks the field: the operator-declared flag the INV-8 `encryption_gate` uses to forbid
 /// `encrypt_payload = false` on a multi-process/client journal database (#5996).
@@ -648,6 +686,8 @@ pub fn migrate_durable_shared_db(toml_src: &str) -> Result<MigrationResult, Migr
             sections_changed: Vec::new(),
         });
     }
+
+    warn_if_unsafe_shared_topology(toml_src)?;
 
     let already_present = toml_src.lines().any(|l| {
         l.trim()

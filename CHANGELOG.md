@@ -108,6 +108,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `crates/zeph-durable/src/handle.rs`: `DurableContext::checked_step_id` and `run_step_at`
   repeated the identical per-execution step-cap condition verbatim. Extracted into a single
   `enforce_step_cap` helper called from both sites (#6082). Pure refactor, no behavior change.
+- `crates/zeph-config/src/migrate/infra.rs`: `--migrate-config`'s `migrate_durable_shared_db`
+  step silently left an unsafe combination undetected — `durable.encrypt_payload = false` with
+  `shared_db` unset passes the INV-8 `encryption_gate`'s local-only override even when the
+  durable journal database actually lives on a network-shared mount, since `shared_db` is
+  purely operator-declared and cannot be inferred from the filesystem (#6042). The migration
+  step now emits a `tracing::warn!`/stderr warning (matching the existing
+  `migrate_llm_to_providers` warning convention) asking the operator to confirm their
+  deployment topology whenever this combination is detected. Filesystem-type detection and
+  path-prefix heuristics remain explicitly out of scope, deferred to a future issue.
 
 ### Testing
 
