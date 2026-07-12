@@ -30,6 +30,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`zeph-a2a/src/server/router.rs`) so `rate_limit_middleware` wraps `auth_middleware`,
   guaranteeing every request — including failed-auth ones — increments the counter
   before the auth check runs.
+- `zeph-mcp`: `tool_list_locked` entries could outlive their server, leaking orphaned
+  locks (#6139, follow-up to #6118). `remove_server` and `shutdown_all_shared`
+  (`crates/zeph-mcp/src/manager/server.rs`) cleared `server_tools`, `server_trust`,
+  `server_fingerprints`, and `last_refresh` on disconnect but never removed the
+  corresponding `tool_list_locked` entry; and `handle_connect_result`
+  (`crates/zeph-mcp/src/manager/connect.rs`), used by the `connect_all`/
+  `connect_oauth_deferred` path, released the lock on connection or `list_tools`
+  failure but not when the pre-connect probe blocked the connection — asymmetric with
+  the equivalent `add_server` path (`probe_or_cleanup`), which already cleaned up
+  correctly. All four cleanup sites now release `tool_list_locked` consistently.
 - `zeph-mcp`: `lock_tool_list` hardening silently exempted OAuth-transport MCP servers
   from post-attestation tool-injection protection (#6118). `tool_list_locked` was only
   populated by the two non-OAuth connection paths (`spawn_non_oauth_connections`,

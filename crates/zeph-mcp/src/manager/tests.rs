@@ -452,6 +452,16 @@ impl McpManager {
     async fn has_server_tools_for_test(&self, server_id: &str) -> bool {
         self.server_tools.read().await.contains_key(server_id)
     }
+
+    /// Insert a lock entry directly, bypassing the real connect path.
+    fn inject_tool_list_locked_for_test(&self, server_id: &str) {
+        self.tool_list_locked.insert(server_id.to_owned(), ());
+    }
+
+    /// Return `true` if `tool_list_locked` still contains an entry for `server_id`.
+    fn is_tool_list_locked_for_test(&self, server_id: &str) -> bool {
+        self.tool_list_locked.contains_key(server_id)
+    }
 }
 
 // --- commit_added_server ---
@@ -1648,6 +1658,94 @@ async fn concurrent_remove_server_calls_are_serialized() {
     assert!(
         r1.is_err() && r2.is_err(),
         "both concurrent removes must return errors when no client exists"
+    );
+}
+
+// ── tool_list_locked orphan cleanup (#6139) ────────────────────────────────────────────────
+
+/// `remove_server` must clean up the `tool_list_locked` entry it may hold.
+///
+/// Before the fix, `remove_server` never removed the server from `tool_list_locked`,
+/// so a server connected with `lock_tool_list = true` and later removed at runtime
+/// stayed permanently locked if an ID with the same name was ever reconnected.
+#[tokio::test]
+async fn remove_server_cleans_up_tool_list_locked_when_client_present() {
+    let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+    let entry = make_entry("locked-srv");
+
+    // Simulate the post-connect state: a real client entry plus a lock, as
+    // `connect_and_list_tools` would have set up for a `lock_tool_list = true` server.
+    let client = McpClient::new_disconnected_for_test("locked-srv");
+    mgr.commit_added_server(&entry, client, vec![], None)
+        .await
+        .expect("commit must succeed");
+    mgr.inject_tool_list_locked_for_test("locked-srv");
+    assert!(
+        mgr.is_tool_list_locked_for_test("locked-srv"),
+        "precondition: lock entry must exist before removal"
+    );
+
+    mgr.remove_server("locked-srv")
+        .await
+        .expect("remove must succeed for a server with a real client entry");
+
+    assert!(
+        !mgr.is_tool_list_locked_for_test("locked-srv"),
+        "tool_list_locked entry must be removed by remove_server"
+    );
+}
+
+/// `shutdown_all_shared` must clear the entire `tool_list_locked` map.
+///
+/// Before the fix, `tool_list_locked` was never cleared on shutdown, so any locked
+/// server ID would appear pre-locked if the manager were rebuilt and reconnected
+/// with the same server IDs still tracked by a surviving `Arc<DashMap<_>>` clone.
+#[tokio::test]
+async fn shutdown_all_shared_clears_tool_list_locked() {
+    let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+    mgr.inject_tool_list_locked_for_test("srv1");
+    mgr.inject_tool_list_locked_for_test("srv2");
+    assert!(mgr.is_tool_list_locked_for_test("srv1"));
+    assert!(mgr.is_tool_list_locked_for_test("srv2"));
+
+    mgr.shutdown_all_shared().await;
+
+    assert!(
+        !mgr.is_tool_list_locked_for_test("srv1"),
+        "tool_list_locked must be cleared by shutdown_all_shared"
+    );
+    assert!(
+        !mgr.is_tool_list_locked_for_test("srv2"),
+        "tool_list_locked must be cleared by shutdown_all_shared"
+    );
+}
+
+/// `connect_all` must not leave an orphaned `tool_list_locked` entry when a
+/// `lock_tool_list = true` server fails to connect.
+///
+/// `spawn_non_oauth_connections` inserts the lock *before* spawning the connection
+/// task (MF-2: no window for a refresh event to slip through). `handle_connect_result`
+/// is responsible for removing it again on every failure branch — including the
+/// pre-connect-probe-blocked branch added by this fix (`connect.rs` `handle_connect_result`,
+/// "Probe blocked" arm). This test drives the connection-failure branch (nonexistent
+/// binary), which is reachable without a live MCP server and exercises the same
+/// insert-before-spawn / remove-on-any-failure invariant the probe-blocked arm relies on.
+#[tokio::test]
+async fn connect_all_does_not_orphan_tool_list_locked_on_connect_failure() {
+    let mgr = McpManager::new(
+        vec![make_entry("locked-fail")],
+        vec![],
+        PolicyEnforcer::new(vec![]),
+    )
+    .with_lock_tool_list(true);
+
+    let (tools, outcomes) = mgr.connect_all().await;
+
+    assert!(tools.is_empty());
+    assert!(outcomes.iter().all(|o| !o.connected));
+    assert!(
+        !mgr.is_tool_list_locked_for_test("locked-fail"),
+        "tool_list_locked must not retain a stale entry after connect_all fails to connect"
     );
 }
 

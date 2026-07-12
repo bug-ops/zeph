@@ -322,6 +322,7 @@ impl McpManager {
         self.server_trust.write().await.remove(server_id);
         self.server_fingerprints.write().await.remove(server_id);
         self.last_refresh.remove(server_id);
+        self.tool_list_locked.remove(server_id);
         // Release the serialization lock before the potentially slow shutdown call.
         drop(add_remove_guard);
         client.shutdown().await;
@@ -400,6 +401,7 @@ impl McpManager {
         self.server_tools.write().await.clear();
         self.server_fingerprints.write().await.clear();
         self.last_refresh.clear();
+        self.tool_list_locked.clear();
         for (id, client) in drained {
             tracing::info!(server_id = id, "shutting down MCP client");
             if tokio::time::timeout(Duration::from_secs(5), client.shutdown())

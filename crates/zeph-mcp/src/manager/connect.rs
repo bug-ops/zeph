@@ -626,6 +626,8 @@ impl McpManager {
                     // Phase 1: run pre-connect probe if configured.
                     if let Err(e) = self.run_probe(&server_id, &client).await {
                         client.shutdown().await;
+                        // Probe blocked — remove lock so the server is not left permanently locked.
+                        self.tool_list_locked.remove(&server_id);
                         return fail(format!("{e:#}"));
                     }
 
