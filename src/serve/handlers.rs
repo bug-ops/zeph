@@ -60,8 +60,12 @@ async fn reactivate_session(
     let meta = store.get(session_id.as_str()).await.ok().flatten()?;
     let conversation_id = meta.conversation_id.map(zeph_memory::ConversationId)?;
 
-    let build_agent =
-        build_agent_factory(state.deps.clone(), session_id.clone(), conversation_id).await;
+    let build_agent = Box::pin(build_agent_factory(
+        state.deps.clone(),
+        session_id.clone(),
+        conversation_id,
+    ))
+    .await;
     let (handle, _blocking_handle) = SessionActor::spawn(
         &state.supervisor,
         &state.registry,
@@ -127,8 +131,12 @@ pub(super) async fn create_session_handler(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    let build_agent =
-        build_agent_factory(state.deps.clone(), session_id.clone(), conversation_id).await;
+    let build_agent = Box::pin(build_agent_factory(
+        state.deps.clone(),
+        session_id.clone(),
+        conversation_id,
+    ))
+    .await;
     let (handle, _blocking_handle) = SessionActor::spawn(
         &state.supervisor,
         &state.registry,
@@ -418,8 +426,12 @@ pub(super) async fn fork_session_handler(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    let build_agent =
-        build_agent_factory(state.deps.clone(), new_id.clone(), conversation_id).await;
+    let build_agent = Box::pin(build_agent_factory(
+        state.deps.clone(),
+        new_id.clone(),
+        conversation_id,
+    ))
+    .await;
     let (handle, _blocking_handle) = SessionActor::spawn(
         &state.supervisor,
         &state.registry,
