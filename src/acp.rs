@@ -1199,6 +1199,7 @@ async fn build_acp_deps(
 /// a hand-reconstructed copy could never catch a broken or inverted `if config.memory.*.enabled`
 /// guard in production, since it would only prove the test's own copy of the condition was
 /// correct.
+#[cfg(feature = "acp")]
 #[allow(clippy::too_many_lines)]
 fn spawn_acp_memory_maintenance_loops(
     app: &AppBuilder,
