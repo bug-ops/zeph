@@ -62,6 +62,13 @@ pub enum DurableError {
     #[error("replay integrity check failed: sealed payload did not authenticate")]
     ReplayIntegrity,
 
+    /// A control entry's row-level HMAC (INV-8) did not verify against a recomputed value: the row
+    /// was forged, relocated to a different step/execution, or is missing its HMAC even though the
+    /// backend is keyed. Fails closed like [`ReplayIntegrity`](Self::ReplayIntegrity), but for
+    /// HMAC-authenticated control entries (`EffectIntent`) rather than AEAD-sealed payloads.
+    #[error("control-entry integrity check failed: row HMAC did not authenticate")]
+    ControlIntegrity,
+
     /// An execution exceeded the hard per-execution step cap and was aborted rather than allowed to
     /// grow unboundedly.
     #[error("execution exceeded the step cap of {cap} steps")]

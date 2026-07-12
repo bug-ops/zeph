@@ -18,8 +18,12 @@ use zeph_durable::{DurableBackendEnum, JournalWriterHandle, LocalBackend, Payloa
 use crate::agent::Agent;
 use crate::channel::Channel;
 
-/// Open a [`LocalBackend`] at `db_url`, initialise its schema, attach `cipher` if present, and
-/// spawn its [`JournalWriter`](zeph_durable::JournalWriter) actor via `task_supervisor`.
+/// Open a [`LocalBackend`] at `db_url`, initialise its schema, attach `cipher` and `hmac_key` if
+/// present, and spawn its [`JournalWriter`](zeph_durable::JournalWriter) actor via
+/// `task_supervisor`.
+///
+/// `hmac_key` is `None` for a single-user local, non-shared database (INV-8) — the documented
+/// stance where control entries carry no HMAC.
 ///
 /// Returns `None` (after logging a `tracing::warn!`) on any I/O failure so callers degrade to
 /// non-durable mode rather than fail session bootstrap (#5452 FR-004).
@@ -29,6 +33,7 @@ pub(crate) async fn open_durable_backend(
     cfg: &zeph_config::DurableConfig,
     db_url: &str,
     cipher: Option<Arc<dyn PayloadCipher>>,
+    hmac_key: Option<[u8; 32]>,
 ) -> Option<(
     Arc<DurableBackendEnum>,
     JournalWriterHandle,
@@ -47,6 +52,11 @@ pub(crate) async fn open_durable_backend(
     }
     let local = if let Some(c) = cipher {
         local.with_cipher(c)
+    } else {
+        local
+    };
+    let local = if let Some(k) = hmac_key {
+        local.with_hmac_key(k)
     } else {
         local
     };
@@ -100,6 +110,7 @@ impl<C: Channel> Agent<C> {
             return;
         };
         let cipher = self.services.session.durable_agent_turns_cipher.clone();
+        let hmac_key = self.services.session.durable_agent_turns_hmac_key;
 
         tracing::debug!("durable agent_turns: opening backend start");
         let backend_result = open_durable_backend(
@@ -108,6 +119,7 @@ impl<C: Channel> Agent<C> {
             &cfg,
             &db_url,
             cipher,
+            hmac_key,
         )
         .await;
         tracing::debug!("durable agent_turns: opening backend done");

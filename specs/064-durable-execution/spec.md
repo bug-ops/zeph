@@ -387,6 +387,27 @@ over `(execution_id, step_id, entry_kind, idem_key|promise_id|due_at)`. This clo
 `EffectIntent`-forgery attack vector (security HIGH-2b). For single-user SQLite the HMAC field is
 `None` (DB-file trust boundary is the documented, accepted stance).
 
+The HMAC key is not a second vault secret: it is a BLAKE3 `derive_key` subkey of the same
+`ZEPH_DURABLE_KEY` used for the AEAD payload cipher, domain-separated by a fixed context string so
+the two keys are cryptographically independent
+(`zeph_core::durable::derive_control_hmac_key_b64`). It is resolved and attached
+(`LocalBackend::with_hmac_key`) at the same production choke points and gated by the same
+`shared_db`/`postgres://`-detection policy as the AEAD `encryption_gate` (INV-8): a single-user
+local, non-shared database never resolves the key, and a declared/detected shared database fails
+closed if `ZEPH_DURABLE_KEY` cannot be resolved from the vault. Every read of an `EffectIntent`
+control entry recomputes the HMAC and compares it in constant time
+(`blake3::Hash` equality, mirroring the promise resolver-token check); a mismatch — including a
+missing HMAC on a keyed backend, or a *stamped* HMAC read by an unkeyed backend — fails closed with
+`DurableError::ControlIntegrity`. `PromiseCreated` and `TimerArmed` carry the same `hmac` field on
+the wire type but are not yet journaled by `LocalBackend` (promise/timer persistence lives in a
+separate layer, see `promise.rs`), so HMAC computation and verification currently applies only to
+`EffectIntent`.
+
+This forgery guarantee depends on `shared_db`/`postgres://` being declared consistently across the
+writer and every reader of a given journal file; a reader that disagrees (e.g. runs unkeyed against
+a keyed writer's file) now fails closed as soon as it encounters any row carrying a stamped HMAC,
+rather than silently trusting it as an ordinary unverified field.
+
 ### DurableContext (handle.rs) — `&self` API
 
 ```rust

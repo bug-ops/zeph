@@ -38,6 +38,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     pending request when it happened to pop first (#5993). Added
     `SubAgentManager::try_recv_secret_request_for(task_id)`, which polls only that sub-agent's
     own request channel, and switched the approve path to use it.
+- `zeph-durable`/`zeph-core`/`zeph`: the INV-8 control-entry row HMAC — documented in
+  `specs/064-durable-execution/spec.md` as closing the `EffectIntent`-forgery attack vector
+  (security HIGH-2b) for shared-DB/Restate deployments — was never wired to a production key or
+  verified on read (#6043, #6044). `LocalBackend::with_hmac_key` had no production caller, so
+  `hmac_key` was always `None`, every control entry's `hmac` column was always written `NULL`
+  regardless of deployment, and no code path recomputed or compared it on read. Added
+  `zeph_core::durable::derive_control_hmac_key_b64`, which derives the HMAC key as a BLAKE3
+  `derive_key` subkey of the same vault-resolved `ZEPH_DURABLE_KEY` used for the AEAD payload
+  cipher (domain-separated, so the two keys are cryptographically independent despite sharing one
+  vault secret — no new vault entry required). The key is now resolved and attached at every
+  production choke point that opens a `LocalBackend` — the P1/P2 agent-loop adapters
+  (`crates/zeph-core/src/agent/durable_bootstrap.rs`, `plan.rs`), the `zeph durable` CLI write and
+  read paths (`load_write_hmac_key`, `open_backend` in `src/commands/durable.rs`), and the
+  scheduler daemon (`src/commands/scheduler_daemon.rs`) — gated by the same
+  `shared_db`/`postgres://`-detection policy as the AEAD `encryption_gate`: a single-user local,
+  non-shared database never resolves the key (matching the documented stance that its control
+  entries carry no HMAC), and a declared/detected shared database fails closed if
+  `ZEPH_DURABLE_KEY` cannot be resolved. `LocalBackend` now also verifies every `EffectIntent` it
+  reads: `verify_control_hmac` recomputes the HMAC and constant-time-compares it (`blake3::Hash`
+  equality, mirroring the existing promise resolver-token check) against the stored value, and
+  fails closed with the new `DurableError::ControlIntegrity` variant on a mismatch or a missing
+  HMAC on a keyed backend — closing the actual forgery vector the spec claimed was already closed.
 - `zeph-channels`/`zeph-core`: hardened the channel send/retry/status path (#6094, #6106, #6095).
   - `Channel::send_status` was awaited inline on the agent turn hot path at ~45 call sites via
     `let _ = self.channel.send_status(...).await;`, with no outer timeout. Under sustained

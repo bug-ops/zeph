@@ -15,8 +15,10 @@
 //! injected [`PayloadCipher`] before they touch the database, with the entry's location bound as
 //! associated data so a sealed blob cannot be relocated to another step or execution. Control
 //! entries (currently [`EntryKind::EffectIntent`]) carry no payload; when an HMAC key is configured
-//! the backend stamps a keyed BLAKE3 row HMAC over their identity for shared-database deployments.
-//! When no cipher is injected the payload is stored verbatim — a development-only posture gated by
+//! the backend stamps a keyed BLAKE3 row HMAC over their identity for shared-database deployments,
+//! and every read recomputes and constant-time-verifies that HMAC, failing closed with
+//! [`DurableError::ControlIntegrity`] on a forged or relocated row. When no cipher is injected the
+//! payload is stored verbatim — a development-only posture gated by
 //! [`encryption_gate`](crate::encryption_gate) at startup.
 //!
 //! # Scope
@@ -168,7 +170,7 @@ impl LocalBackend {
     }
 
     /// Configure the keyed-BLAKE3 HMAC key stamped over control entries on shared-database
-    /// deployments.
+    /// deployments, and used to verify them again on every read (INV-8).
     #[must_use]
     pub fn with_hmac_key(mut self, key: [u8; 32]) -> Self {
         self.hmac_key = Some(key);
@@ -1021,15 +1023,73 @@ impl LocalBackend {
         entry: &JournalEntry,
         idem_key: Option<&IdempotencyKey>,
     ) -> Option<Vec<u8>> {
+        self.compute_control_hmac(
+            entry.execution_id,
+            entry.step_id,
+            entry.entry.tag(),
+            idem_key,
+        )
+        .map(|h| h.to_vec())
+    }
+
+    /// Core keyed-BLAKE3 computation shared by [`control_hmac`](Self::control_hmac) (write path,
+    /// takes a full [`JournalEntry`]) and [`verify_control_hmac`](Self::verify_control_hmac) (read
+    /// path, which has the row's identity fields but not yet a reconstructed entry). Returns `None`
+    /// when no HMAC key is configured (single-user local).
+    fn compute_control_hmac(
+        &self,
+        execution_id: ExecutionId,
+        step_id: StepId,
+        tag: &'static str,
+        idem_key: Option<&IdempotencyKey>,
+    ) -> Option<[u8; 32]> {
         let key = self.hmac_key.as_ref()?;
         let mut input = Vec::with_capacity(16 + 4 + 16 + 32);
-        input.extend_from_slice(entry.execution_id.as_bytes());
-        input.extend_from_slice(&entry.step_id.value().to_le_bytes());
-        input.extend_from_slice(entry.entry.tag().as_bytes());
+        input.extend_from_slice(execution_id.as_bytes());
+        input.extend_from_slice(&step_id.value().to_le_bytes());
+        input.extend_from_slice(tag.as_bytes());
         if let Some(k) = idem_key {
             input.extend_from_slice(k.as_bytes());
         }
-        Some(blake3::keyed_hash(key, &input).as_bytes().to_vec())
+        Some(*blake3::keyed_hash(key, &input).as_bytes())
+    }
+
+    /// Recompute and constant-time-verify a control entry's row HMAC read back from storage
+    /// (INV-8).
+    ///
+    /// A no-op only when no HMAC key is configured **and** the row carries no stored HMAC — the
+    /// documented single-user local stance where control entries carry no HMAC and none is
+    /// enforced. If this backend is unkeyed but the row *does* carry a stamped HMAC, that is
+    /// config drift between the writer and this reader (e.g. `shared_db` toggled, or a reader
+    /// whose config disagrees with the writer's over the same physical file) and is rejected
+    /// fail-closed rather than silently trusted, since an `EffectIntent`'s fields are plaintext
+    /// and an unkeyed reader has no way to tell a genuine stamped row from a forged one. When a
+    /// key *is* configured, every control row this backend reads must carry a matching HMAC: a
+    /// missing HMAC or a mismatch both indicate the row was forged, relocated, or written without
+    /// the configured key, and both fail closed with [`DurableError::ControlIntegrity`].
+    ///
+    /// The comparison uses [`blake3::Hash`] equality, which compares in constant time (the same
+    /// idiom used for the promise resolver-token check in `promise.rs`), so a forged HMAC reveals
+    /// no timing signal.
+    fn verify_control_hmac(
+        &self,
+        execution_id: ExecutionId,
+        step_id: StepId,
+        tag: &'static str,
+        idem_key: Option<&IdempotencyKey>,
+        stored: Option<[u8; 32]>,
+    ) -> Result<(), DurableError> {
+        let Some(expected) = self.compute_control_hmac(execution_id, step_id, tag, idem_key) else {
+            return if stored.is_some() {
+                Err(DurableError::ControlIntegrity)
+            } else {
+                Ok(())
+            };
+        };
+        match stored {
+            Some(stored) if blake3::Hash::from(expected) == blake3::Hash::from(stored) => Ok(()),
+            _ => Err(DurableError::ControlIntegrity),
+        }
     }
 
     /// Derive the persisted column values for an entry, sealing payloads and stamping HMACs.
@@ -1189,6 +1249,13 @@ impl LocalBackend {
                 let hmac = hmac
                     .map(|bytes| slice_to_array32(&bytes, "effect_intent hmac"))
                     .transpose()?;
+                self.verify_control_hmac(
+                    id,
+                    step_id,
+                    EntryKindTag::EffectIntent.as_str(),
+                    Some(&idem_key),
+                    hmac,
+                )?;
                 EntryKind::EffectIntent {
                     idempotency_key: idem_key,
                     effect,
@@ -1766,6 +1833,82 @@ mod tests {
             }
             other => panic!("unexpected entry kind: {other:?}"),
         }
+    }
+
+    /// Regression for #6043/#6044: a control entry written under one HMAC key must fail closed
+    /// with [`DurableError::ControlIntegrity`] when read back under a *different* key — the
+    /// forged/relocated-row rejection the row HMAC exists to provide. Both backends share the
+    /// same underlying pool (a second `LocalBackend` handle over the same connection), so this
+    /// exercises the read path's recompute-and-compare, not just a difference in whether a key is
+    /// configured at all.
+    #[tokio::test]
+    async fn read_execution_rejects_control_hmac_under_wrong_key() {
+        let writer = mem_backend(1_048_576).await.with_hmac_key([1u8; 32]);
+        let exec = ExecutionId::new();
+        writer
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        writer.append(effect_intent(exec, 0)).await.unwrap();
+
+        let wrong_key_reader =
+            LocalBackend::new(writer.pool().clone(), 1_048_576).with_hmac_key([2u8; 32]);
+        assert_matches!(
+            wrong_key_reader.read_execution(exec).await,
+            Err(DurableError::ControlIntegrity)
+        );
+
+        // Reading under the correct key still succeeds.
+        let right_key_reader =
+            LocalBackend::new(writer.pool().clone(), 1_048_576).with_hmac_key([1u8; 32]);
+        assert!(right_key_reader.read_execution(exec).await.is_ok());
+    }
+
+    /// Regression for #6043/#6044: a control entry written by an *unkeyed* backend (`hmac =
+    /// NULL`) must fail closed when later read by a keyed backend — a keyed backend enforces that
+    /// every control row it reads carries a matching HMAC, so a missing HMAC is treated the same
+    /// as a mismatched one rather than silently passing through unverified.
+    #[tokio::test]
+    async fn read_execution_rejects_missing_hmac_on_keyed_backend() {
+        let writer = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        writer
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        writer.append(effect_intent(exec, 0)).await.unwrap();
+
+        let keyed_reader =
+            LocalBackend::new(writer.pool().clone(), 1_048_576).with_hmac_key([3u8; 32]);
+        assert_matches!(
+            keyed_reader.read_execution(exec).await,
+            Err(DurableError::ControlIntegrity)
+        );
+    }
+
+    /// Regression for #6043/#6044 (review S1): a control entry written by a *keyed* backend must
+    /// fail closed when later read by an *unkeyed* backend, rather than silently trusting the
+    /// stamped HMAC as an ordinary (unverified) plaintext field. Before this fix,
+    /// `verify_control_hmac` returned `Ok(())` unconditionally whenever the reader had no HMAC
+    /// key, regardless of whether the stored row carried one — so config drift between a keyed
+    /// writer and an unkeyed reader over the same physical file (e.g. `shared_db` toggled, or a
+    /// reader whose config disagrees with the writer's) let a stamped row through unverified,
+    /// which is exactly the forgery-acceptance gap #6043 says the row HMAC closes.
+    #[tokio::test]
+    async fn read_execution_rejects_stamped_hmac_on_unkeyed_backend() {
+        let writer = mem_backend(1_048_576).await.with_hmac_key([4u8; 32]);
+        let exec = ExecutionId::new();
+        writer
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        writer.append(effect_intent(exec, 0)).await.unwrap();
+
+        let unkeyed_reader = LocalBackend::new(writer.pool().clone(), 1_048_576);
+        assert_matches!(
+            unkeyed_reader.read_execution(exec).await,
+            Err(DurableError::ControlIntegrity)
+        );
     }
 
     #[tokio::test]

@@ -189,6 +189,46 @@ impl XChaCha20Poly1305Cipher {
     }
 }
 
+/// Domain-separation context for deriving the control-entry HMAC key (INV-8) from
+/// `ZEPH_DURABLE_KEY` via BLAKE3 `derive_key`.
+const CONTROL_HMAC_CONTEXT: &str = "zeph-durable v1 control-entry HMAC key 2026";
+
+/// Derive the row-level control-entry HMAC key (INV-8) from the base64-encoded `ZEPH_DURABLE_KEY`
+/// vault value.
+///
+/// The HMAC key is not a separate vault secret: it is a BLAKE3 `derive_key` subkey of the same
+/// `ZEPH_DURABLE_KEY` used for the AEAD payload cipher, domain-separated by a fixed context string
+/// so the two keys are cryptographically independent even though they share one root secret —
+/// the same pattern used for the promise resolver-token hash in `zeph-durable`'s `promise.rs`.
+///
+/// # Errors
+///
+/// Returns [`CipherKeyError::MalformedEncoding`] when `b64_key` is not valid base64, or
+/// [`CipherKeyError::InvalidKeyLength`] when the decoded key is not exactly 32 bytes.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_core::durable::{derive_control_hmac_key_b64, generate_durable_key_b64};
+///
+/// let key = generate_durable_key_b64();
+/// assert!(derive_control_hmac_key_b64(&key).is_ok());
+/// assert!(derive_control_hmac_key_b64("not base64!").is_err());
+/// ```
+pub fn derive_control_hmac_key_b64(b64_key: &str) -> Result<[u8; KEY_LEN], CipherKeyError> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64_key.trim())
+        .map_err(|_| CipherKeyError::MalformedEncoding)?;
+    if bytes.len() != KEY_LEN {
+        return Err(CipherKeyError::InvalidKeyLength {
+            expected: KEY_LEN,
+            actual: bytes.len(),
+        });
+    }
+    Ok(blake3::derive_key(CONTROL_HMAC_CONTEXT, &bytes))
+}
+
 /// Generate a fresh random 32-byte durable payload key, base64-encoded for vault storage.
 ///
 /// Stored under `ZEPH_DURABLE_KEY` (never inline in TOML); decode it back with
@@ -407,6 +447,42 @@ mod tests {
             Err(CipherKeyError::InvalidKeyLength {
                 expected: 32,
                 actual: 5
+            })
+        ));
+    }
+
+    #[test]
+    fn control_hmac_key_derives_deterministically_and_independently_of_the_aead_key() {
+        use base64::Engine as _;
+
+        let vault_key = generate_durable_key_b64();
+        let hmac_key = derive_control_hmac_key_b64(&vault_key).unwrap();
+
+        // Deterministic: the same vault value always derives the same subkey.
+        assert_eq!(derive_control_hmac_key_b64(&vault_key).unwrap(), hmac_key);
+
+        // Cryptographically independent of the raw AEAD key material (domain separation via a
+        // fixed `derive_key` context distinct from the AEAD cipher's own use of the raw bytes).
+        let raw_aead_key = base64::engine::general_purpose::STANDARD
+            .decode(vault_key.trim())
+            .unwrap();
+        assert_ne!(hmac_key.as_slice(), raw_aead_key.as_slice());
+    }
+
+    #[test]
+    fn control_hmac_key_rejects_malformed_or_mislength_input() {
+        use base64::Engine as _;
+
+        assert!(matches!(
+            derive_control_hmac_key_b64("not base64!"),
+            Err(CipherKeyError::MalformedEncoding)
+        ));
+        let short = base64::engine::general_purpose::STANDARD.encode(b"too short");
+        assert!(matches!(
+            derive_control_hmac_key_b64(&short),
+            Err(CipherKeyError::InvalidKeyLength {
+                expected: 32,
+                actual: 9
             })
         ));
     }

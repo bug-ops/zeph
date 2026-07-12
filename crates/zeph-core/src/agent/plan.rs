@@ -286,6 +286,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             }
             let db_url = self.services.orchestration.durable_db_url.clone()?;
             let cipher = self.services.orchestration.durable_cipher.clone();
+            let hmac_key = self.services.orchestration.durable_hmac_key;
             let (backend, handle, task_handle) =
                 crate::agent::durable_bootstrap::open_durable_backend(
                     &self.runtime.lifecycle.task_supervisor,
@@ -293,6 +294,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     &cfg,
                     &db_url,
                     cipher,
+                    hmac_key,
                 )
                 .await?;
             self.services.orchestration.durable_backend = Some(backend);

@@ -2169,17 +2169,21 @@ impl<C: Channel> Agent<C> {
     }
 
     /// `db_url` is the `sqlite://…/durable.db` connection string (a sibling of the main DB).
-    /// The `cipher` is `None` when `config.encrypt_payload = false` (development mode only).
+    /// The `cipher` is `None` when `config.encrypt_payload = false` (development mode only). The
+    /// `hmac_key` is `None` for a single-user local, non-shared database (INV-8) — see
+    /// `crate::durable::derive_control_hmac_key_b64`.
     #[must_use]
     pub fn with_durable_orchestration(
         mut self,
         config: zeph_config::DurableConfig,
         db_url: String,
         cipher: Option<std::sync::Arc<dyn zeph_durable::PayloadCipher>>,
+        hmac_key: Option<[u8; 32]>,
     ) -> Self {
         self.services.orchestration.durable_config = Some(config);
         self.services.orchestration.durable_db_url = Some(db_url);
         self.services.orchestration.durable_cipher = cipher;
+        self.services.orchestration.durable_hmac_key = hmac_key;
         self
     }
 
@@ -2205,11 +2209,13 @@ impl<C: Channel> Agent<C> {
         db_url: String,
         sqlite_path: String,
         cipher: Option<std::sync::Arc<dyn zeph_durable::PayloadCipher>>,
+        hmac_key: Option<[u8; 32]>,
     ) -> Self {
         self.services.session.durable_agent_turns_config = Some(config);
         self.services.session.durable_agent_turns_db_url = Some(db_url);
         self.services.session.durable_agent_turns_sqlite_path = Some(sqlite_path);
         self.services.session.durable_agent_turns_cipher = cipher;
+        self.services.session.durable_agent_turns_hmac_key = hmac_key;
         self
     }
 

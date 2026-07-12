@@ -3239,7 +3239,8 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         let agent = if config.durable.enabled && config.durable.orchestration {
             let durable_url = crate::commands::durable::resolve_durable_db_url(config);
             let cipher = crate::commands::durable::load_write_cipher(config)?;
-            agent.with_durable_orchestration(config.durable.clone(), durable_url, cipher)
+            let hmac_key = crate::commands::durable::load_write_hmac_key(config)?;
+            agent.with_durable_orchestration(config.durable.clone(), durable_url, cipher, hmac_key)
         } else {
             agent
         };
@@ -3248,11 +3249,13 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         let agent = if config.durable.enabled && config.durable.agent_turns {
             let durable_url = crate::commands::durable::resolve_durable_db_url(config);
             let cipher = crate::commands::durable::load_write_cipher(config)?;
+            let hmac_key = crate::commands::durable::load_write_hmac_key(config)?;
             agent.with_durable_agent_turns(
                 config.durable.clone(),
                 durable_url,
                 config.memory.sqlite_path.clone(),
                 cipher,
+                hmac_key,
             )
         } else {
             agent

@@ -128,6 +128,48 @@ fn load_durable_cipher() -> anyhow::Result<XChaCha20Poly1305Cipher> {
         .map_err(|e| anyhow::anyhow!("invalid ZEPH_DURABLE_KEY: {e}"))
 }
 
+/// Resolve the control-entry row HMAC key (INV-8) for the durable journal at `url`, deriving it
+/// from the vault-stored `ZEPH_DURABLE_KEY` when this deployment is a declared/detected shared
+/// database ([`is_shared_db`]).
+///
+/// Returns `Ok(None)` for a single-user local, non-shared database — the documented stance where
+/// control entries carry no HMAC and none is enforced (INV-8). Fails closed (`Err`) when the
+/// deployment is shared but `ZEPH_DURABLE_KEY` cannot be resolved or decoded: a shared database
+/// must never silently run without the row-HMAC forgery defense.
+fn load_control_hmac_key(
+    config: &zeph_core::config::DurableConfig,
+    url: &str,
+) -> anyhow::Result<Option<[u8; 32]>> {
+    if !is_shared_db(config, url) {
+        return Ok(None);
+    }
+    let dir = zeph_core::vault::default_vault_dir();
+    let provider = AgeVaultProvider::load(&dir.join("vault-key.txt"), &dir.join("secrets.age"))
+        .map_err(|e| anyhow::anyhow!("failed to load vault: {e}"))?;
+    let key = provider.get("ZEPH_DURABLE_KEY").ok_or_else(|| {
+        anyhow::anyhow!(
+            "ZEPH_DURABLE_KEY not found in vault; required to compute the control-entry row HMAC \
+             on a shared database (INV-8)"
+        )
+    })?;
+    let hmac_key = zeph_core::durable::derive_control_hmac_key_b64(key).map_err(|e| {
+        anyhow::anyhow!("invalid ZEPH_DURABLE_KEY for control-entry HMAC derivation: {e}")
+    })?;
+    Ok(Some(hmac_key))
+}
+
+/// Resolve the control-entry HMAC key to attach on a durable *write* path (INV-8), mirroring
+/// [`load_write_cipher`]'s `config` → `url` resolution.
+///
+/// # Errors
+///
+/// Returns an error when this deployment is a shared database and `ZEPH_DURABLE_KEY` cannot be
+/// resolved from the vault.
+pub(crate) fn load_write_hmac_key(config: &Config) -> anyhow::Result<Option<[u8; 32]>> {
+    let url = resolve_durable_db_url(config);
+    load_control_hmac_key(&config.durable, &url)
+}
+
 /// Resolve the AEAD payload cipher to attach on a durable *write* path when
 /// `config.durable.encrypt_payload` is enabled (INV-5).
 ///
@@ -164,11 +206,17 @@ pub(crate) fn load_write_cipher(
 /// gate exists to reject, regardless of whether the read is via a write path or `--reveal`
 /// (#5996). The permitted single-user local override still emits a startup `WARN` and proceeds.
 ///
+/// Also attaches the control-entry HMAC key ([`load_control_hmac_key`]) whenever this deployment
+/// is a declared/detected shared database, unconditionally of `reveal` — HMAC verification guards
+/// every read of a control entry (`list`/`show`/`inspect`/`prune`/`resume`/`--reveal` alike), not
+/// just the decrypted view (#6043/#6044).
+///
 /// Returns `Ok(None)` when no journal file exists yet (a friendly signal that durable execution has
 /// not run on this deployment), so the caller can print guidance instead of creating an empty file.
 async fn open_backend(config: &Config, reveal: bool) -> anyhow::Result<Option<LocalBackend>> {
     let url = resolve_durable_db_url(config);
     enforce_encryption_gate(&config.durable, &url)?;
+    let hmac_key = load_control_hmac_key(&config.durable, &url)?;
     if url != ":memory:" && !Path::new(&url).exists() {
         println!(
             "No durable journal at {url}.\n\
@@ -183,6 +231,11 @@ async fn open_backend(config: &Config, reveal: bool) -> anyhow::Result<Option<Lo
         .init()
         .await
         .map_err(|e| anyhow::anyhow!("failed to initialize durable schema: {e}"))?;
+    let backend = if let Some(key) = hmac_key {
+        backend.with_hmac_key(key)
+    } else {
+        backend
+    };
     if reveal && config.durable.encrypt_payload {
         let cipher = load_durable_cipher()?;
         Ok(Some(backend.with_cipher(Arc::new(cipher))))
@@ -819,6 +872,95 @@ mod tests {
         assert!(
             load_write_cipher(&config).is_err(),
             "a postgres:// resolved URL must be treated as shared even without shared_db=true"
+        );
+    }
+
+    /// Regression for #6043/#6044: a single-user local, non-shared database must never resolve a
+    /// control-entry HMAC key — the documented INV-8 stance where such deployments' control
+    /// entries carry no HMAC. No vault access should even be attempted.
+    #[tokio::test]
+    async fn load_write_hmac_key_returns_none_for_single_user_local() {
+        let config = Config::default();
+        assert!(!config.durable.shared_db);
+        assert!(
+            load_write_hmac_key(&config).unwrap().is_none(),
+            "single-user local, non-shared database must not resolve an HMAC key"
+        );
+    }
+
+    /// Regression for #6043/#6044: a declared shared database must fail closed when
+    /// `ZEPH_DURABLE_KEY` cannot be resolved from the vault, mirroring
+    /// `open_backend_reveal_requires_key_when_encrypt_payload_enabled`'s pattern for the AEAD key.
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    #[serial]
+    async fn load_write_hmac_key_fails_closed_when_shared_db_declared_and_key_missing() {
+        let mut config = Config::default();
+        config.durable.shared_db = true;
+
+        let vault_dir = tempfile::tempdir().unwrap();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", vault_dir.path());
+        }
+
+        let result = load_write_hmac_key(&config);
+
+        unsafe {
+            match &prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+
+        assert!(
+            result.is_err(),
+            "a declared shared database must fail closed without ZEPH_DURABLE_KEY (INV-8)"
+        );
+    }
+
+    /// Regression for #6043/#6044: a declared shared database resolves a real 32-byte HMAC key
+    /// from a seeded vault, mirroring
+    /// `write_path_attaches_cipher_and_seals_payload_when_encrypt_payload_enabled`'s pattern for
+    /// the AEAD cipher — this exercises the exact glue `runner.rs` and `scheduler_daemon.rs` call.
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    #[serial]
+    async fn load_write_hmac_key_resolves_real_key_when_shared_db_declared() {
+        let mut config = Config::default();
+        config.durable.shared_db = true;
+
+        let vault_dir = tempfile::tempdir().unwrap();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", vault_dir.path());
+        }
+
+        let vault_root = zeph_core::vault::default_vault_dir();
+        zeph_core::vault::AgeVaultProvider::init_vault(&vault_root).unwrap();
+        let mut provider = zeph_core::vault::AgeVaultProvider::load(
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .unwrap();
+        provider.set_secret_mut(
+            "ZEPH_DURABLE_KEY".to_owned(),
+            zeph_core::durable::generate_durable_key_b64(),
+        );
+        provider.save().unwrap();
+
+        let result = load_write_hmac_key(&config);
+
+        unsafe {
+            match &prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+
+        assert!(
+            result.unwrap().is_some(),
+            "a declared shared database with a real vault key must resolve an HMAC key"
         );
     }
 }

@@ -173,7 +173,9 @@ async fn run_foreground(
 }
 
 /// Open the scheduler's durable backend, attach the write-path AEAD cipher when
-/// `[durable] encrypt_payload = true`, and spawn its journal-writer task under `sched_supervisor`.
+/// `[durable] encrypt_payload = true` and the control-entry HMAC key when this deployment is a
+/// declared/detected shared database (INV-8), then spawn its journal-writer task under
+/// `sched_supervisor`.
 ///
 /// Returns `Ok(None)` when durable execution is disabled for the scheduler
 /// (`[durable] enabled = false` or `[durable] scheduler = false`), so the caller runs without
@@ -181,9 +183,10 @@ async fn run_foreground(
 ///
 /// # Errors
 ///
-/// Returns an error if the durable backend cannot be opened or initialized, or if the AEAD
-/// cipher cannot be resolved when `encrypt_payload = true` — this fails closed instead of
-/// silently falling back to plaintext.
+/// Returns an error if the durable backend cannot be opened or initialized, if the AEAD cipher
+/// cannot be resolved when `encrypt_payload = true`, or if the control-entry HMAC key cannot be
+/// resolved for a shared database — every case fails closed instead of silently running with a
+/// weaker security posture.
 async fn build_durable_adapter(
     config: &zeph_core::config::Config,
     sched_supervisor: &zeph_common::TaskSupervisor,
@@ -191,10 +194,11 @@ async fn build_durable_adapter(
     if !(config.durable.enabled && config.durable.scheduler) {
         return Ok(None);
     }
-    // Resolve the write-path cipher (which evaluates the INV-8 encryption_gate, #5996) before
-    // opening the backend, so a forbidden config fails closed without creating a stray empty
-    // journal file on disk first.
+    // Resolve the write-path cipher (which evaluates the INV-8 encryption_gate, #5996) and the
+    // control-entry HMAC key (#6043/#6044) before opening the backend, so a forbidden config
+    // fails closed without creating a stray empty journal file on disk first.
     let cipher = crate::commands::durable::load_write_cipher(config)?;
+    let hmac_key = crate::commands::durable::load_write_hmac_key(config)?;
     let durable_url = crate::commands::durable::resolve_durable_db_url(config);
     let local = zeph_durable::LocalBackend::open(&durable_url, config.durable.max_payload_bytes)
         .await
@@ -205,6 +209,11 @@ async fn build_durable_adapter(
         .context("failed to init scheduler durable schema")?;
     let local = if let Some(cipher) = cipher {
         local.with_cipher(cipher)
+    } else {
+        local
+    };
+    let local = if let Some(key) = hmac_key {
+        local.with_hmac_key(key)
     } else {
         local
     };

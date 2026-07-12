@@ -72,6 +72,35 @@ network-shared volume, or any future Postgres-backed deployment). It defaults to
 journal URL is also treated as shared automatically, even if `shared_db` was left
 unset, as defense in depth.
 
+## Control-entry HMAC (`EffectIntent` forgery protection)
+
+Some journal entries carry no payload at all — an `EffectIntent` records the
+*intent* to run an exactly-once-guarded effect before it fires, so there is
+nothing to encrypt. On a shared database these "control" rows still need
+tamper-evidence: an attacker who can insert rows directly should not be able to
+forge or relocate an `EffectIntent` and trick a resumed execution into skipping
+or re-running a guarded effect.
+
+For a declared/detected shared database, every `EffectIntent` row is stamped
+with a row-level HMAC over its identity — `(execution_id, step_id, entry_kind,
+idempotency_key)` — keyed with a BLAKE3 subkey derived from `ZEPH_DURABLE_KEY`
+(domain-separated from the AEAD payload key, so the two keys are
+cryptographically independent even though they share one vault secret). Every
+read of an `EffectIntent` recomputes and constant-time-verifies this HMAC; a
+mismatch — including a row missing its HMAC on a keyed backend — is rejected
+fail-closed.
+
+This uses the same `shared_db`/`postgres://`-detection gate described above: a
+single-user local, non-shared database never computes or verifies this HMAC
+(the row's `hmac` column stays `NULL`), matching the accepted stance that the
+DB-file trust boundary already covers that deployment.
+
+This forgery guarantee depends on `shared_db`/`postgres://` being declared
+consistently across the writer and every reader of a given journal file; a
+reader that disagrees (e.g. runs unkeyed against a keyed writer's file) now
+fails closed as soon as it encounters any row carrying a stamped HMAC, rather
+than silently trusting it as an ordinary unverified field.
+
 ## Key rotation
 
 The `key_id` byte makes rotation possible without rewriting the journal:
