@@ -356,6 +356,91 @@ max_bot_chain_depth = 5
         assert!(json.contains("primary"));
         assert!(json.contains("REDACTED"));
     }
+
+    #[test]
+    fn telegram_config_serialize_omits_token() {
+        let cfg = TelegramConfig {
+            token: Some("real-secret-value".into()),
+            allowed_users: Vec::new(),
+            skills: ChannelSkillsConfig::default(),
+            allowed_tools: None,
+            stream_interval_ms: default_stream_interval_ms(),
+            guest_mode: false,
+            bot_to_bot: false,
+            allowed_bots: Vec::new(),
+            max_bot_chain_depth: default_max_bot_chain_depth(),
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(!json.contains("real-secret-value"));
+        assert!(!json.contains("\"token\""));
+    }
+
+    #[test]
+    fn discord_config_serialize_omits_token_but_keeps_application_id() {
+        let cfg = DiscordConfig {
+            token: Some("real-secret-value".into()),
+            application_id: Some("123456789".into()),
+            allowed_user_ids: Vec::new(),
+            allowed_role_ids: Vec::new(),
+            allowed_channel_ids: Vec::new(),
+            skills: ChannelSkillsConfig::default(),
+            allowed_tools: None,
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(!json.contains("real-secret-value"));
+        assert!(!json.contains("\"token\""));
+        // application_id is a public snowflake, not a secret — it must still serialize.
+        assert!(json.contains("123456789"));
+    }
+
+    #[test]
+    fn slack_config_serialize_omits_bot_token_and_signing_secret() {
+        let cfg = SlackConfig {
+            bot_token: Some("real-secret-value".into()),
+            signing_secret: Some("another-real-secret".into()),
+            webhook_host: default_slack_webhook_host(),
+            port: default_slack_port(),
+            allowed_user_ids: Vec::new(),
+            allowed_channel_ids: Vec::new(),
+            skills: ChannelSkillsConfig::default(),
+            allowed_tools: None,
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(!json.contains("real-secret-value"));
+        assert!(!json.contains("another-real-secret"));
+        assert!(!json.contains("\"bot_token\""));
+        assert!(!json.contains("\"signing_secret\""));
+    }
+
+    #[test]
+    fn a2a_server_config_toml_round_trip_keeps_auth_token_plaintext() {
+        // Guards against a future regression that redacts this Group-C field: `--init`
+        // persists the raw auth_token to config.toml today, so redacting it here would
+        // corrupt the config on reload.
+        let cfg = A2aServerConfig {
+            auth_token: Some("real-auth-token-value".into()),
+            ..A2aServerConfig::default()
+        };
+        let toml_str = toml::to_string(&cfg).unwrap();
+        assert!(toml_str.contains("real-auth-token-value"));
+    }
+
+    #[test]
+    fn group_a_configs_deserialize_missing_secret_field_as_none() {
+        // `#[serde(skip_serializing)]` only affects the output side; serde's built-in
+        // Option-defaulting already tolerates the key being absent on the input side. This
+        // pins that `skip_serializing` cannot break loading a config that never had the key
+        // (e.g. one written before this fix, or hand-edited without it).
+        let telegram: TelegramConfig = toml::from_str("").unwrap();
+        assert!(telegram.token.is_none());
+
+        let discord: DiscordConfig = toml::from_str("").unwrap();
+        assert!(discord.token.is_none());
+
+        let slack: SlackConfig = toml::from_str("").unwrap();
+        assert!(slack.bot_token.is_none());
+        assert!(slack.signing_secret.is_none());
+    }
 }
 
 fn default_slack_port() -> u16 {
@@ -437,6 +522,15 @@ fn default_max_bot_chain_depth() -> u32 {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct TelegramConfig {
     /// Bot token. Set to `None` and resolve from vault via `ZEPH_TELEGRAM_TOKEN`.
+    ///
+    /// # Security
+    ///
+    /// Never serialized: `--init` always persists this field as `None` (the real token
+    /// goes to the vault), but runtime config resolution hydrates the real value into this
+    /// field in memory. `#[serde(skip_serializing)]` keeps any future diagnostic `Serialize`
+    /// of a live `Config` from leaking it; `Deserialize` is untouched so inline tokens in a
+    /// hand-edited `config.toml` still load.
+    #[serde(skip_serializing)]
     pub token: Option<String>,
     /// Telegram usernames allowed to interact with the bot (empty = allow all).
     #[serde(default)]
@@ -502,7 +596,18 @@ impl std::fmt::Debug for TelegramConfig {
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct DiscordConfig {
+    /// Bot token. Set to `None` and resolve from vault via `ZEPH_DISCORD_TOKEN`.
+    ///
+    /// # Security
+    ///
+    /// Never serialized: `--init` always persists this field as `None` (the real token
+    /// goes to the vault), but runtime config resolution hydrates the real value into this
+    /// field in memory. `#[serde(skip_serializing)]` keeps any future diagnostic `Serialize`
+    /// of a live `Config` from leaking it; `Deserialize` is untouched so inline tokens in a
+    /// hand-edited `config.toml` still load.
+    #[serde(skip_serializing)]
     pub token: Option<String>,
+    /// Public Discord application snowflake — not a secret, safe to serialize.
     pub application_id: Option<String>,
     #[serde(default)]
     pub allowed_user_ids: Vec<String>,
@@ -533,7 +638,24 @@ impl std::fmt::Debug for DiscordConfig {
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct SlackConfig {
+    /// Bot token. Set to `None` and resolve from vault via `ZEPH_SLACK_BOT_TOKEN`.
+    ///
+    /// # Security
+    ///
+    /// Never serialized: `--init` always persists this field as `None` (the real token
+    /// goes to the vault), but runtime config resolution hydrates the real value into this
+    /// field in memory. `#[serde(skip_serializing)]` keeps any future diagnostic `Serialize`
+    /// of a live `Config` from leaking it; `Deserialize` is untouched so inline tokens in a
+    /// hand-edited `config.toml` still load.
+    #[serde(skip_serializing)]
     pub bot_token: Option<String>,
+    /// Request signing secret. Set to `None` and resolve from vault via
+    /// `ZEPH_SLACK_SIGNING_SECRET`.
+    ///
+    /// # Security
+    ///
+    /// Never serialized — same rationale as [`bot_token`](Self::bot_token).
+    #[serde(skip_serializing)]
     pub signing_secret: Option<String>,
     #[serde(default = "default_slack_webhook_host")]
     pub webhook_host: String,
@@ -642,6 +764,16 @@ pub struct A2aServerConfig {
     pub port: u16,
     #[serde(default)]
     pub public_url: String,
+    /// Bearer token required on inbound A2A requests. `None` disables auth.
+    ///
+    /// # Security
+    ///
+    /// Intentionally **not** redacted in `Serialize`: unlike the channel tokens above, the
+    /// `--init` wizard writes the raw value straight into `config.toml` (there is no vault
+    /// indirection for this field yet), so a redacting `Serialize` would corrupt the
+    /// persisted config on the next `--init`/save round-trip. The redacting `Debug` impl on
+    /// this struct is the approved representation for any log/dump/status output — never emit
+    /// this field's value via `Serialize` or any other non-`Debug` representation.
     #[serde(default)]
     pub auth_token: Option<String>,
     #[serde(default = "default_a2a_rate_limit")]
@@ -1141,6 +1273,16 @@ pub struct McpServerConfig {
     pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Environment variables for the spawned Stdio process. Values may hold vault
+    /// references (`${VAULT_KEY}`) or, in a hand-written config, raw secrets.
+    ///
+    /// # Security
+    ///
+    /// Intentionally **not** redacted in `Serialize`: `--init` persists this map to
+    /// `config.toml`, so a redacting `Serialize` would corrupt the round-trip. The
+    /// redacting `Debug` impl on this struct is the approved representation for any
+    /// log/dump/status output — never emit this field's values via `Serialize` or any other
+    /// non-`Debug` representation.
     #[serde(default)]
     pub env: HashMap<String, String>,
     /// HTTP transport: remote MCP server URL.
@@ -1152,6 +1294,13 @@ pub struct McpServerConfig {
     pub policy: McpPolicy,
     /// Static HTTP headers for the transport (e.g. `Authorization: Bearer <token>`).
     /// Values support vault references: `${VAULT_KEY}`.
+    ///
+    /// # Security
+    ///
+    /// Intentionally **not** redacted in `Serialize` — same rationale as
+    /// [`env`](Self::env): `--init` persists this map to `config.toml`, and the redacting
+    /// `Debug` impl is the approved representation for log/dump/status output — never emit
+    /// this field's values via `Serialize` or any other non-`Debug` representation.
     #[serde(default)]
     pub headers: HashMap<String, String>,
     /// OAuth 2.1 configuration for this server.

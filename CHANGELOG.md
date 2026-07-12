@@ -184,6 +184,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   actually unified with this crate's own feature of the same name (currently only `cocoon`)
   are excluded when that feature is off, so a feature-off build cannot show a dead command in
   autocomplete.
+- `zeph-config`: closed the sibling cohort of the #6006 Serialize-leak class for channel/A2A/MCP
+  config fields that have a redacting `Debug` (from #6004/#6005) but derived (plaintext)
+  `Serialize` (#6166). `TelegramConfig.token`, `DiscordConfig.token`, `SlackConfig.bot_token`,
+  and `SlackConfig.signing_secret` are always `None` at every `--init` persist point (the real
+  secret goes to the vault; runtime resolution hydrates it back into the field), so they now
+  carry `#[serde(skip_serializing)]` — the field is simply absent from any future diagnostic
+  `Serialize`, and `Deserialize`/config loading is unaffected. `DiscordConfig.application_id`
+  is a public Discord snowflake, not a secret, and is left untouched. `A2aServerConfig
+  .auth_token`, `McpServerConfig.env`, and `McpServerConfig.headers` legitimately hold raw
+  values that `--init` (or a hand-written config) persists to `config.toml`, so their derived
+  `Serialize` is intentionally kept plaintext — each now carries a `# Security` doc note
+  directing any log/dump/status output to the existing redacting `Debug` impl instead. No live
+  leak existed before this fix (same audit posture as #6006/#6165: no serialize-to-output path
+  reaches these types today). Noted below as follow-ups (not yet filed as GitHub issues): the
+  identical latent pattern on `GatewayConfig.auth_token` and `AcpConfig.auth_token`/
+  `auth_clients[].token`, and aligning the A2A wizard to the vault-backed pattern used by the
+  other channel tokens.
 - `zeph-orchestration`/`zeph-subagent`/`zeph-core`: `TaskNode::network_scope: Deny` was
   advisory-only — the field was never read at dispatch time, so a planner-emitted
   `network_scope: Deny` silently left a task's network egress unrestricted (spec
