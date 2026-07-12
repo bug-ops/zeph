@@ -45,6 +45,9 @@ pub struct MockProvider {
     pub models: Vec<RemoteModelInfo>,
     /// Optional name override for tests that require distinct provider names.
     pub name_override: Option<String>,
+    /// Optional model identifier override for tests that require `model_identifier()`
+    /// to return a specific value (e.g. a reasoning-model pattern like `"o3-mini"`).
+    pub model_identifier_override: Option<String>,
     /// When true, `embed()` returns `LlmError::InvalidInput` regardless of `supports_embeddings`.
     pub embed_invalid_input: bool,
     /// When true, `chat_with_tools()` returns `LlmError::InvalidInput`.
@@ -98,6 +101,7 @@ impl Default for MockProvider {
             tool_call_count: Arc::new(Mutex::new(0)),
             models: vec![],
             name_override: None,
+            model_identifier_override: None,
             embed_invalid_input: false,
             tool_chat_invalid_input: false,
             embed_call_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -137,6 +141,15 @@ impl MockProvider {
     #[must_use]
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name_override = Some(name.into());
+        self
+    }
+
+    /// Set a custom model identifier returned by `model_identifier()`. Useful for testing
+    /// model-identifier-driven heuristics (e.g. `is_reasoning_model()`) without spinning up
+    /// a real provider whose instance name differs from its model string.
+    #[must_use]
+    pub fn with_model_identifier(mut self, model: impl Into<String>) -> Self {
+        self.model_identifier_override = Some(model.into());
         self
     }
 
@@ -388,6 +401,10 @@ impl LlmProvider for MockProvider {
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
         self.name_override.as_deref().unwrap_or("mock")
+    }
+
+    fn model_identifier(&self) -> &str {
+        self.model_identifier_override.as_deref().unwrap_or("")
     }
 
     async fn chat(&self, messages: &[Message]) -> Result<String, crate::LlmError> {

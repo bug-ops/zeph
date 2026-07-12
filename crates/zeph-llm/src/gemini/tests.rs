@@ -27,6 +27,17 @@ fn gemini_with_provider_name_overrides_name() {
     assert_eq!(p.name(), "fast-gemini");
 }
 
+// Regression guard for #5909: `GeminiProvider` was missing a `model_identifier()` override,
+// so it fell back to the trait default (`""`), which broke any caller keying model-specific
+// heuristics (e.g. `is_reasoning_model()`) off the model string instead of the instance name.
+#[test]
+fn gemini_model_identifier_returns_model_not_name() {
+    let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
+        .with_provider_name("fast-gemini");
+    assert_eq!(p.model_identifier(), "gemini-2.0-flash");
+    assert_ne!(p.model_identifier(), p.name());
+}
+
 #[test]
 fn gemini_supports_streaming_true() {
     let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);

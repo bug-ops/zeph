@@ -1254,6 +1254,10 @@ impl LlmProvider for GeminiProvider {
         &self.provider_name
     }
 
+    fn model_identifier(&self) -> &str {
+        &self.model
+    }
+
     fn context_window(&self) -> Option<usize> {
         // Gemini 1.5 Pro has 2M token context; all other Gemini models default to 1M.
         if self.model.contains("1.5-pro") || self.model.contains("gemini-1.5-pro") {

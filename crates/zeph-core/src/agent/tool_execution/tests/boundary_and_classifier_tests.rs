@@ -1482,3 +1482,171 @@ async fn utility_window_exempt_tool_does_not_trigger_break() {
         "exempt tool invoke_skill must not trigger utility-window exhaustion"
     );
 }
+
+// --- #5909: reasoning-amplification anomaly must key off model_identifier(), not name() ---
+//
+// `classify_tool_result` (tool_result.rs) feeds `is_reasoning_model()` with the provider's
+// *model identifier* (e.g. "o3-mini") to decide whether a quality-failure tool error should be
+// classified as `AnomalyOutcome::ReasoningQualityFailure`. Before the fix it passed the
+// provider's *instance name* (e.g. "openai") instead, which never matches a reasoning-model
+// pattern, so the branch was permanently unreachable. These tests exercise the real call site
+// via `process_one_tool_result` (not `is_reasoning_model()` in isolation, which already has
+// coverage in `zeph-tools/src/anomaly.rs`) and assert on the `reasoning_amplification` tracing
+// event that only `record_reasoning_quality_failure` (in `zeph-tools`, a *different* crate)
+// emits.
+//
+// `tracing_test::traced_test` / `logs_contain` is deliberately NOT used here: it installs an
+// env filter equivalent to `RUST_LOG=zeph_core=trace`, silently dropping events from other
+// crates such as `zeph-tools` — the very event this regression needs to observe. Instead these
+// tests install a minimal `tracing_subscriber::Layer` that captures every event regardless of
+// origin crate, scoped to the test via a `set_default` guard.
+mod reasoning_amplification_call_site {
+    use std::fmt::Write as _;
+    use std::sync::{Arc, Mutex};
+
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::registry::{LookupSpan, Registry};
+
+    use crate::agent::agent_tests::{MockChannel, MockToolExecutor, create_test_registry};
+
+    use super::make_tool_use_request;
+
+    /// Captures every tracing event's fields (regardless of origin crate) into a shared buffer.
+    #[derive(Clone, Default)]
+    struct EventCapture(Arc<Mutex<String>>);
+
+    struct FieldWriter<'a>(&'a mut String);
+
+    impl Visit for FieldWriter<'_> {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            let _ = write!(self.0, "{}={value:?} ", field.name());
+        }
+    }
+
+    impl<S> Layer<S> for EventCapture
+    where
+        S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut line = String::new();
+            event.record(&mut FieldWriter(&mut line));
+            let mut buf = self.0.lock().unwrap();
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+    }
+
+    /// Runs `f` under a subscriber that records all tracing events, returning the captured text.
+    async fn capture_logs<F, Fut>(f: F) -> String
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let capture = EventCapture::default();
+        let subscriber = Registry::default().with(capture.clone());
+        let guard = tracing::subscriber::set_default(subscriber);
+        f().await;
+        drop(guard);
+        capture.0.lock().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn quality_failure_from_reasoning_model_identifier_is_flagged() {
+        // Instance name deliberately does NOT match a reasoning-model pattern; only
+        // model_identifier() does. Before the fix (which read provider.name()), this case
+        // could never reach the ReasoningQualityFailure branch.
+        let provider = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::with_responses(vec![])
+                .with_name("openai")
+                .with_model_identifier("o3-mini"),
+        );
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.runtime.debug.anomaly_detector = Some(zeph_tools::AnomalyDetector::new(10, 0.0, 1.0));
+        agent.runtime.debug.reasoning_model_warning = true;
+
+        let tc = make_tool_use_request("id-reasoning", "bash");
+        let err = zeph_tools::executor::ToolError::InvalidParams {
+            message: "missing required field 'command'".into(),
+        };
+
+        let logs = capture_logs(|| async {
+            agent
+                .process_one_tool_result(
+                    &tc,
+                    "id-reasoning",
+                    &std::time::Instant::now(),
+                    Err(err),
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &mut false,
+                    &mut None,
+                    &mut Vec::new(),
+                )
+                .await
+                .unwrap();
+        })
+        .await;
+
+        assert!(
+            logs.contains("reasoning_amplification"),
+            "quality failure from a provider whose model_identifier() is a reasoning-model \
+             pattern must emit the reasoning_amplification warning; captured logs:\n{logs}"
+        );
+        assert!(
+            logs.contains("o3-mini"),
+            "the emitted warning must carry the model identifier, not the provider instance \
+             name; captured logs:\n{logs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn quality_failure_is_not_flagged_when_only_provider_name_matches() {
+        // Instance name looks like a reasoning model, but model_identifier() does not
+        // (defaults to ""). This is the negative control for the fix: it proves the call
+        // site now reads model_identifier() and no longer falls back to name() by accident.
+        let provider = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::with_responses(vec![]).with_name("deepseek-r1"),
+        );
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.runtime.debug.anomaly_detector = Some(zeph_tools::AnomalyDetector::new(10, 0.0, 1.0));
+        agent.runtime.debug.reasoning_model_warning = true;
+
+        let tc = make_tool_use_request("id-name-only", "bash");
+        let err = zeph_tools::executor::ToolError::InvalidParams {
+            message: "missing required field 'command'".into(),
+        };
+
+        let logs = capture_logs(|| async {
+            agent
+                .process_one_tool_result(
+                    &tc,
+                    "id-name-only",
+                    &std::time::Instant::now(),
+                    Err(err),
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &mut false,
+                    &mut None,
+                    &mut Vec::new(),
+                )
+                .await
+                .unwrap();
+        })
+        .await;
+
+        assert!(
+            !logs.contains("reasoning_amplification"),
+            "a provider whose model_identifier() is empty must not be classified as a \
+             reasoning model just because its instance name matches a reasoning-model pattern; \
+             captured logs:\n{logs}"
+        );
+    }
+}

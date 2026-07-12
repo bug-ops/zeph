@@ -48,6 +48,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   instead of "plugin registry" (#5943). All four call sites now reuse
   `REGISTRY_NOT_CONFIGURED_MSG` for the bail as well, so stdout and the error both show
   the same, subsystem-neutral, actionable message.
+- `crates/zeph-core/src/agent/tool_execution/tool_result.rs`: the `reasoning_amplification`
+  anomaly (`AnomalyOutcome::ReasoningQualityFailure`, arXiv:2510.22977) fed `self.provider.name()`
+  — the provider *instance* name (e.g. `"openai"`, or a custom `[[llm.providers]]` name) — into
+  `is_reasoning_model()`, which pattern-matches *model identifiers* (`o3-mini`, `deepseek-r1`,
+  `claude-*-think`, ...). Instance names never match those patterns, so the branch was permanently
+  unreachable (#5909). Both the detection call and the stored `model:` field now use
+  `self.provider.model_identifier()`. Also added a missing `model_identifier()` override on
+  `GeminiProvider`, which fell back to the trait default (`""`) for the same reason.
 - `src/commands/db.rs`: `zeph db migrate` fell back to the raw, unredacted database URL
   in error messages and the migration-status line whenever `redact_url` returned `None`
   — which only means the URL didn't match a recognized credential-bearing shape, not that
