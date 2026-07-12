@@ -34,6 +34,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ttf-parser`), added to the advisories `ignore` list alongside the existing
   unmaintained-dependency entries, with a comment noting the suggested
   alternative (`skrifa`) for a future migration (#6085).
+- `zeph-llm`: Claude requests to the Sonnet 4.6+/Opus 4.7+/Sonnet 5 generation with
+  extended thinking disabled, and to legacy Sonnet 4.6 with thinking enabled, could
+  send a trailing assistant message ("prefill") that the API rejects with a 400
+  (#5903). The no-prefill gate was `cap.prefers_effort && thinking_param.is_some()`,
+  which conflated the effort-vs-`budget_tokens` conversion decision with prefill
+  rejection — the two only happened to align for Opus 4.7/4.8 and Sonnet 5 while
+  thinking was on. Added a `rejects_prefill` capability flag, independent of thinking
+  state, covering Sonnet 4.6+ and Opus 4.7+/Sonnet 5 unconditionally; Opus 4.6 keeps
+  its existing thinking-gated behavior via `prefers_effort`.
+- `book/src/advanced/context.md`: corrected an internally inconsistent example model
+  ID, `claude-sonnet-4-5-20250514` — `20250514` is the base-release date for
+  `claude-sonnet-4`, not `claude-sonnet-4-5` (#5902). Replaced with `claude-sonnet-5`,
+  matching the dateless convention used for the current Sonnet release elsewhere in
+  the book since #5901.
 - `zeph-gateway` and `zeph-a2a`: fixed a bearer-token brute-force bypass caused by
   middleware layer order (#6110, CWE-307). `auth_middleware` returns `401` directly
   without calling `next.run`, so with auth layered outside `rate_limit_middleware`,

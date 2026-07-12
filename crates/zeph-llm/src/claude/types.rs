@@ -15,6 +15,11 @@ pub(super) struct ThinkingCapability {
     /// Opus 4.6 and the 4.7+/5 generation use `effort` instead of `budget_tokens`
     /// (4.7+/5 reject `budget_tokens` outright); `Extended` config is auto-converted.
     pub prefers_effort: bool,
+    /// Rejects assistant prefill (trailing assistant message, HTTP 400) unconditionally,
+    /// independent of whether thinking is enabled. Covers Sonnet 4.6+ and the
+    /// Opus 4.7+/Sonnet 5 generation. Opus 4.6 is intentionally excluded: it only
+    /// rejects prefill while thinking is active, gated by `prefers_effort` instead.
+    pub rejects_prefill: bool,
 }
 
 pub(super) fn thinking_capability(model: &str) -> ThinkingCapability {
@@ -31,9 +36,19 @@ pub(super) fn thinking_capability(model: &str) -> ThinkingCapability {
         || model.contains("claude-opus-4-8")
         || model.contains("claude-sonnet-5");
 
+    // Sonnet 4.6+ and the entire Opus 4.7+/Sonnet 5 generation reject assistant
+    // prefill outright (400), regardless of thinking state. Opus 4.6 is excluded
+    // here on purpose: unlike the models below it only rejects prefill while
+    // thinking is enabled, which is already covered by `prefers_effort`.
+    let rejects_prefill = model.contains("claude-sonnet-4-6")
+        || model.contains("claude-opus-4-7")
+        || model.contains("claude-opus-4-8")
+        || model.contains("claude-sonnet-5");
+
     ThinkingCapability {
         needs_interleaved_beta,
         prefers_effort,
+        rejects_prefill,
     }
 }
 

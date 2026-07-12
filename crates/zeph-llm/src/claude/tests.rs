@@ -2819,7 +2819,8 @@ fn build_request_opus_thinking_strips_trailing_assistant() {
 }
 
 #[test]
-fn build_request_opus_no_thinking_keeps_trailing_assistant() {
+fn build_request_opus_4_8_no_thinking_strips_trailing_assistant() {
+    // #5903: Opus 4.8 rejects prefill unconditionally, even with thinking disabled.
     let provider = ClaudeProvider::new("key".into(), "claude-opus-4-8".into(), 32_000);
     let messages = vec![
         Message {
@@ -2839,15 +2840,48 @@ fn build_request_opus_no_thinking_keeps_trailing_assistant() {
     let body: serde_json::Value =
         serde_json::from_slice(req.body().and_then(|b| b.as_bytes()).unwrap()).unwrap();
     let msgs = body["messages"].as_array().unwrap();
-    assert_eq!(
-        msgs.last().and_then(|m| m["role"].as_str()),
-        Some("assistant"),
-        "trailing assistant message must be preserved when thinking is disabled"
+    assert!(
+        msgs.last()
+            .and_then(|m| m["role"].as_str())
+            .is_none_or(|r| r != "assistant"),
+        "trailing assistant message must be stripped for Opus 4.8 regardless of thinking state"
     );
 }
 
 #[test]
-fn build_request_sonnet_thinking_keeps_trailing_assistant() {
+fn build_request_sonnet_5_no_thinking_strips_trailing_assistant() {
+    // #5903: Sonnet 5 rejects prefill unconditionally, even with thinking disabled.
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-5".into(), 32_000);
+    let messages = vec![
+        Message {
+            role: Role::User,
+            content: "hello".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        },
+        Message {
+            role: Role::Assistant,
+            content: "world".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        },
+    ];
+    let req = provider.build_request(&messages, false).build().unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(req.body().and_then(|b| b.as_bytes()).unwrap()).unwrap();
+    let msgs = body["messages"].as_array().unwrap();
+    assert!(
+        msgs.last()
+            .and_then(|m| m["role"].as_str())
+            .is_none_or(|r| r != "assistant"),
+        "trailing assistant message must be stripped for Sonnet 5 regardless of thinking state"
+    );
+}
+
+#[test]
+fn build_request_sonnet_4_6_thinking_strips_trailing_assistant() {
+    // #5903: legacy Sonnet 4.6 rejects prefill unconditionally, even though it
+    // does not prefer effort-based thinking (`prefers_effort` is false for it).
     let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 32_000)
         .with_thinking(ThinkingConfig::Extended {
             budget_tokens: 5_000,
@@ -2871,11 +2905,133 @@ fn build_request_sonnet_thinking_keeps_trailing_assistant() {
     let body: serde_json::Value =
         serde_json::from_slice(req.body().and_then(|b| b.as_bytes()).unwrap()).unwrap();
     let msgs = body["messages"].as_array().unwrap();
+    assert!(
+        msgs.last()
+            .and_then(|m| m["role"].as_str())
+            .is_none_or(|r| r != "assistant"),
+        "Sonnet 4.6 must strip trailing assistant messages regardless of thinking state"
+    );
+}
+
+#[test]
+fn build_request_sonnet_4_6_no_thinking_strips_trailing_assistant() {
+    // #5903: rejection is independent of thinking being configured at all.
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 32_000);
+    let messages = vec![
+        Message {
+            role: Role::User,
+            content: "hello".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        },
+        Message {
+            role: Role::Assistant,
+            content: "world".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        },
+    ];
+    let req = provider.build_request(&messages, false).build().unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(req.body().and_then(|b| b.as_bytes()).unwrap()).unwrap();
+    let msgs = body["messages"].as_array().unwrap();
+    assert!(
+        msgs.last()
+            .and_then(|m| m["role"].as_str())
+            .is_none_or(|r| r != "assistant"),
+        "Sonnet 4.6 must strip trailing assistant messages even without thinking configured"
+    );
+}
+
+#[test]
+fn build_request_opus_4_6_no_thinking_keeps_trailing_assistant() {
+    // Opus 4.6 is intentionally excluded from unconditional `rejects_prefill`: it
+    // only rejects prefill while thinking is active (existing `prefers_effort` gate).
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-4-6".into(), 32_000);
+    let messages = vec![
+        Message {
+            role: Role::User,
+            content: "hello".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        },
+        Message {
+            role: Role::Assistant,
+            content: "world".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        },
+    ];
+    let req = provider.build_request(&messages, false).build().unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(req.body().and_then(|b| b.as_bytes()).unwrap()).unwrap();
+    let msgs = body["messages"].as_array().unwrap();
     assert_eq!(
         msgs.last().and_then(|m| m["role"].as_str()),
         Some("assistant"),
-        "Sonnet 4.6 must not strip trailing assistant messages"
+        "Opus 4.6 keeps trailing assistant message when thinking is disabled"
     );
+}
+
+#[test]
+fn build_request_opus_4_6_thinking_strips_trailing_assistant() {
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-4-6".into(), 32_000)
+        .with_thinking(ThinkingConfig::Adaptive { effort: None })
+        .unwrap();
+    let messages = vec![
+        Message {
+            role: Role::User,
+            content: "hello".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        },
+        Message {
+            role: Role::Assistant,
+            content: "world".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        },
+    ];
+    let req = provider.build_request(&messages, false).build().unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(req.body().and_then(|b| b.as_bytes()).unwrap()).unwrap();
+    let msgs = body["messages"].as_array().unwrap();
+    assert!(
+        msgs.last()
+            .and_then(|m| m["role"].as_str())
+            .is_none_or(|r| r != "assistant"),
+        "Opus 4.6 must still strip trailing assistant messages when thinking is enabled"
+    );
+}
+
+#[test]
+fn thinking_capability_sonnet_4_6_rejects_prefill() {
+    let cap = thinking_capability("claude-sonnet-4-6-20250514");
+    assert!(cap.rejects_prefill);
+}
+
+#[test]
+fn thinking_capability_opus_4_6_does_not_reject_prefill_unconditionally() {
+    let cap = thinking_capability("claude-opus-4-6");
+    assert!(!cap.rejects_prefill);
+}
+
+#[test]
+fn thinking_capability_opus_4_7_rejects_prefill() {
+    let cap = thinking_capability("claude-opus-4-7");
+    assert!(cap.rejects_prefill);
+}
+
+#[test]
+fn thinking_capability_opus_4_8_rejects_prefill() {
+    let cap = thinking_capability("claude-opus-4-8");
+    assert!(cap.rejects_prefill);
+}
+
+#[test]
+fn thinking_capability_sonnet_5_rejects_prefill() {
+    let cap = thinking_capability("claude-sonnet-5");
+    assert!(cap.rejects_prefill);
 }
 
 #[test]

@@ -508,7 +508,7 @@ and per-question score into a single object per question for easy inspection.
 **Frequent HardFail verdicts**
 
 - The summary model may be too small for the conversation complexity.
-  Try a larger model via `model = "claude-sonnet-4-5-20250514"` (higher cost).
+  Try a larger model via `model = "claude-sonnet-5"` (higher cost).
 - Lower `hard_fail_threshold` if false negatives are common (probe is too strict).
 - Increase `max_questions` to 5 for more statistical power (increases latency).
 

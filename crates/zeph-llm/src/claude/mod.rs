@@ -914,13 +914,12 @@ impl ClaudeProvider {
         let output_config = effort.map(|e| OutputConfig { effort: e }); // lgtm[rust/cleartext-logging]
 
         let cap = thinking_capability(&self.model);
-        // Models that prefer `effort` over `budget_tokens` also reject assistant
-        // prefill when thinking is enabled: strip trailing assistant messages so
-        // the conversation always ends with a user turn.
-        // TODO: `prefers_effort` conflates two independent capabilities (effort
-        // preference and no-prefill); they happen to align for every model in the
-        // current set but a future model could decouple them.
-        let no_prefill = cap.prefers_effort && thinking_param.is_some();
+        // Sonnet 4.6+ and the Opus 4.7+/Sonnet 5 generation reject assistant prefill
+        // unconditionally (`rejects_prefill`). Opus 4.6 only rejects it while thinking
+        // is enabled, which is why that case still checks `prefers_effort` alongside
+        // `thinking_param`. Either way, strip trailing assistant messages so the
+        // conversation always ends with a user turn.
+        let no_prefill = cap.rejects_prefill || (cap.prefers_effort && thinking_param.is_some());
 
         if Self::has_image_parts(messages) {
             let (system, mut chat_messages) = split_messages_structured(
