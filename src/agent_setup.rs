@@ -1807,6 +1807,11 @@ pub(crate) struct PolicyGatePieces {
     /// currently reads this, to abort startup fail-closed on a real compile failure while
     /// staying fail-open when policy is legitimately absent. All other call sites (`runner.rs`,
     /// `acp.rs`, `daemon.rs`) ignore this field and keep their existing fail-open behavior.
+    ///
+    /// Only read from `src/serve/deps.rs`, which is gated behind `#[cfg(feature = "session")]`
+    /// (`src/main.rs`) — feature bundles that don't pull in `session` (e.g. `ide`, `chat`,
+    /// `bench`) never compile that reader, so this field is otherwise genuinely dead code there.
+    #[cfg_attr(not(feature = "session"), allow(dead_code))]
     pub(crate) policy_configured: bool,
 }
 
