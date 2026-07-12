@@ -164,12 +164,19 @@ pub(crate) struct SharedCore {
     pub(crate) matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
     pub(crate) memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
     pub(crate) budget_tokens: usize,
-    /// Resolved `SkillOrchestra` RL routing head embedding dimension (#5921), pre-computed
-    /// once here — mirrors `src/runner.rs`/`src/daemon.rs`'s `rl_embed_dim_resolved` — so
-    /// every session built from this core (ACP, `/sessions`, or the combined transport) can
-    /// load/cold-start an `RL` head without re-probing the embedding provider per session.
-    /// `None` when `config.skills.rl_routing_enabled` is `false`.
-    pub(crate) rl_embed_dim_resolved: Option<usize>,
+    /// `SkillOrchestra` RL routing head (#5921), loaded/cold-started exactly once here —
+    /// mirrors `src/runner.rs`/`src/daemon.rs`'s single-load pattern — and shared (via
+    /// [`Clone`], which only clones the cheap `Arc` handle) by every session built from this
+    /// core (ACP, `/sessions`, or the combined transport). `None` when
+    /// `config.skills.rl_routing_enabled` is `false`.
+    ///
+    /// Fixes #5974: previously each session independently loaded its own in-memory
+    /// `RoutingHead` copy from the `routing_head_weights` singleton row and persisted back
+    /// independently, so concurrent ACP/serve sessions clobbered each other's learned REINFORCE
+    /// weights (lost update). Loading once and sharing the same `Arc<Mutex<..>>` across every
+    /// session sharing this core means updates from any session apply to the one true
+    /// in-process state instead of a disposable copy.
+    pub(crate) rl_head: Option<zeph_skills::rl_head::RoutingHead>,
 }
 
 /// Build the resources common to `zeph serve-sessions` and standalone ACP session
@@ -221,6 +228,22 @@ pub(crate) async fn build_shared_core(
         None
     };
 
+    // #5974: load/cold-start the RL routing head exactly once here, so every session built
+    // from this core clones the same Arc<Mutex<..>> handle (see SharedCore::rl_head doc)
+    // instead of each session independently loading its own copy from the DB row.
+    let rl_head = if let Some(dim) = rl_embed_dim_resolved {
+        Some(
+            crate::runner::load_rl_head(&memory)
+                .await
+                .unwrap_or_else(|| {
+                    tracing::info!(dim, "rl_head: cold start, initializing fresh routing head");
+                    zeph_skills::rl_head::RoutingHead::new(dim)
+                }),
+        )
+    } else {
+        None
+    };
+
     Ok(SharedCore {
         provider,
         embedding_provider,
@@ -228,7 +251,7 @@ pub(crate) async fn build_shared_core(
         matcher,
         memory,
         budget_tokens,
-        rl_embed_dim_resolved,
+        rl_head,
     })
 }
 
@@ -293,16 +316,18 @@ pub(crate) struct SharedAgentDeps {
     /// for ACP sessions, silently ignoring the operator's configured trust levels).
     trust_config: zeph_core::config::TrustConfig,
     /// `config.skills.rl_routing_enabled`/`rl_learning_rate`/`rl_weight`/`rl_persist_interval`/
-    /// `rl_warmup_updates`, wired into `Agent::with_rl_routing` per session, plus the resolved
-    /// embed dim (`SharedCore::rl_embed_dim_resolved`) used to load/cold-start an `RL` head via
-    /// `Agent::with_rl_head` — mirrors `src/runner.rs` and `src/daemon.rs` (#5921: previously
-    /// never wired for ACP sessions).
+    /// `rl_warmup_updates`, wired into `Agent::with_rl_routing` per session, plus the shared
+    /// `RL` head (`SharedCore::rl_head`) wired into `Agent::with_rl_head` — mirrors
+    /// `src/runner.rs` and `src/daemon.rs` (#5921: previously never wired for ACP sessions).
+    /// `rl_head` is cloned (cheap `Arc` clone) from the *same* `SharedCore` instance into every
+    /// session, fixing #5974 (concurrent ACP sessions previously each loaded/persisted an
+    /// independent in-memory copy, clobbering each other's learned weights).
     rl_routing_enabled: bool,
     rl_learning_rate: f32,
     rl_weight: f32,
     rl_persist_interval: u32,
     rl_warmup_updates: u32,
-    rl_embed_dim_resolved: Option<usize>,
+    rl_head: Option<zeph_skills::rl_head::RoutingHead>,
     /// Base tool composite (file/shell/scrape/diagnostics + MCP + `search_code`), *not*
     /// wrapped in any gate. `spawn_acp_agent` composites this further with `skill_loader`/
     /// `memory`/`overflow`/ACP-native fs/shell per session, then wraps the FULL per-session
@@ -571,7 +596,7 @@ async fn build_acp_deps(
             matcher,
             memory,
             budget_tokens,
-            rl_embed_dim_resolved,
+            rl_head,
         },
         acp_mem_supervisor,
     ) = if let Some(p) = prebuilt_core {
@@ -1121,7 +1146,7 @@ async fn build_acp_deps(
         rl_weight: config.skills.rl_weight,
         rl_persist_interval: config.skills.rl_persist_interval,
         rl_warmup_updates: config.skills.rl_warmup_updates,
-        rl_embed_dim_resolved,
+        rl_head,
         tool_executor,
         permission_policy,
         policy_gate_pieces,
@@ -1883,22 +1908,14 @@ async fn spawn_acp_agent(
         .with_trajectory_config(d.trajectory_sentinel_config.clone())
         .0;
 
-    // SkillOrchestra: load persisted RL routing head weights, if enabled (#5921) — mirrors
-    // `src/runner.rs`/`src/daemon.rs`'s cold-start/load pattern. `d.rl_embed_dim_resolved` is
-    // pre-computed once in `build_shared_core`, shared across every session from this core.
-    // NOTE (S3, known limitation, not fixed here): `routing_head_weights` is a single global
-    // row (`WHERE id = 1`, last-write-wins upsert — crates/zeph-memory/src/store/skills.rs).
-    // Concurrent ACP sessions each load their own in-memory head from that row and persist back
-    // independently, so concurrent multi-session RL routing can clobber each other's learned
-    // weights. Bounded risk: `rl_routing_enabled` defaults to `false`. See #5974 for
-    // per-conversation persistence keying or write serialization.
-    if let Some(dim) = d.rl_embed_dim_resolved {
-        let head = crate::runner::load_rl_head(&d.memory)
-            .await
-            .unwrap_or_else(|| {
-                tracing::info!(dim, "rl_head: cold start, initializing fresh routing head");
-                zeph_skills::rl_head::RoutingHead::new(dim)
-            });
+    // SkillOrchestra: wire the RL routing head, if enabled (#5921). `d.rl_head` is loaded/
+    // cold-started exactly once in `build_shared_core` and cloned (cheap `Arc` clone) into every
+    // session sharing this core — fixes #5974, where each ACP session previously loaded its own
+    // independent in-memory copy from the `routing_head_weights` singleton row and persisted
+    // back independently, letting concurrent sessions clobber each other's learned REINFORCE
+    // weights. All sessions now mutate the SAME `Arc<Mutex<..>>`, so updates serialize through
+    // that mutex instead of racing across independent copies.
+    if let Some(head) = d.rl_head.clone() {
         agent = agent.with_rl_head(head);
     }
 
@@ -4346,7 +4363,7 @@ mod tests {
     /// `skill_support_similarity_threshold`/`skill_min_injection_score`/
     /// `skill_generation_provider`/`skill_disambiguate_provider`/`semantic_scan`/
     /// `semantic_scan_provider`/`trust_config`/`rl_routing_enabled`/`rl_learning_rate`/
-    /// `rl_weight`/`rl_persist_interval`/`rl_warmup_updates`/`rl_embed_dim_resolved` from
+    /// `rl_weight`/`rl_persist_interval`/`rl_warmup_updates`/`rl_head` from
     /// `config.skills.*` — previously these fields did not exist on either deps struct at all,
     /// so neither `spawn_acp_agent` nor `build_agent_factory` could call
     /// `Agent::with_skill_matching_config`/`with_skill_group_config`/
@@ -4489,12 +4506,15 @@ mod tests {
             serve_deps.rl_warmup_updates, 3,
             "config.skills.rl_warmup_updates must flow into ServeAgentDeps"
         );
+        let serve_rl_head = serve_deps
+            .rl_head
+            .clone()
+            .expect("rl_head must be Some when rl_routing_enabled and rl_embed_dim resolves");
         assert_eq!(
-            serve_deps.rl_embed_dim_resolved,
-            Some(8),
-            "the resolved RL embed dim (SharedCore::rl_embed_dim_resolved) must flow into \
-             ServeAgentDeps, proving build_shared_core's pre-computation reaches both deps \
-             structs from one shared value"
+            serve_rl_head.embed_dim(),
+            8,
+            "the resolved RL embed dim (config.skills.rl_embed_dim) must flow into the \
+             SharedCore::rl_head loaded for ServeAgentDeps"
         );
 
         assert!(
@@ -4558,12 +4578,32 @@ mod tests {
             acp_deps.rl_warmup_updates, 3,
             "config.skills.rl_warmup_updates must flow into SharedAgentDeps"
         );
+        let acp_rl_head = acp_deps
+            .rl_head
+            .clone()
+            .expect("rl_head must be Some when rl_routing_enabled and rl_embed_dim resolves");
         assert_eq!(
-            acp_deps.rl_embed_dim_resolved,
-            Some(8),
-            "the resolved RL embed dim (SharedCore::rl_embed_dim_resolved) must flow into \
-             SharedAgentDeps, proving build_shared_core's pre-computation reaches both deps \
-             structs from one shared value"
+            acp_rl_head.embed_dim(),
+            8,
+            "the resolved RL embed dim (config.skills.rl_embed_dim) must flow into the \
+             SharedCore::rl_head loaded for SharedAgentDeps"
+        );
+
+        // #5974 regression: acp_deps.rl_head and serve_deps.rl_head must be the SAME shared
+        // RoutingHead handle (same Arc<Mutex<..>>), not two independent copies each loaded from
+        // the DB row — otherwise concurrent ACP and `/sessions` agents built from one
+        // SharedCore would silently clobber each other's learned REINFORCE weights. Proven
+        // behaviorally through the public API: an update applied via one handle must be
+        // observable through the other.
+        let q = vec![0.0f32; 8];
+        let s = vec![0.0f32; 8];
+        let _ = acp_rl_head.score(&q, &s, 0.5, 0.5, 1);
+        assert!(acp_rl_head.update(1.0, 0.01));
+        assert_eq!(
+            serve_rl_head.update_count(),
+            1,
+            "acp_deps.rl_head and serve_deps.rl_head must share the same in-memory RoutingHead \
+             instance loaded once by build_shared_core (#5974)"
         );
     }
 

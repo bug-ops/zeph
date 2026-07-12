@@ -42,10 +42,14 @@ impl<C: Channel> Agent<C> {
             if (persist_interval == 0 || update_count % persist_interval == 0)
                 && let Some(mem) = memory
             {
-                let bytes = rl_head.to_bytes();
-                let embed_dim = i64::try_from(rl_head.embed_dim()).unwrap_or(i64::MAX);
-                let baseline = f64::from(rl_head.baseline());
-                let count = i64::from(update_count);
+                // #5974: snapshot embed_dim/bytes/baseline/update_count under one lock
+                // acquisition — this handle may be shared with concurrent sessions, and a
+                // second `update()` landing between separate locked reads would otherwise
+                // desync the persisted `update_count` column from the blob's own copy.
+                let (embed_dim, bytes, baseline, count) = rl_head.persist_snapshot();
+                let embed_dim = i64::try_from(embed_dim).unwrap_or(i64::MAX);
+                let baseline = f64::from(baseline);
+                let count = i64::from(count);
                 if let Err(e) = mem
                     .sqlite()
                     .save_routing_head_weights(embed_dim, &bytes, baseline, count)

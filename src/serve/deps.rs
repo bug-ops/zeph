@@ -82,16 +82,19 @@ pub(crate) struct ServeAgentDeps {
     /// for `/sessions` agents, silently ignoring the operator's configured trust levels).
     pub(crate) trust_config: zeph_core::config::TrustConfig,
     /// `config.skills.rl_routing_enabled`/`rl_learning_rate`/`rl_weight`/`rl_persist_interval`/
-    /// `rl_warmup_updates`, wired into `Agent::with_rl_routing` per session, plus the resolved
-    /// embed dim (`crate::acp::SharedCore::rl_embed_dim_resolved`) used to load/cold-start an
-    /// `RL` head via `Agent::with_rl_head` — mirrors `src/runner.rs` and `src/daemon.rs`
-    /// (#5921: previously never wired for `/sessions` agents).
+    /// `rl_warmup_updates`, wired into `Agent::with_rl_routing` per session, plus the shared RL
+    /// head (`crate::acp::SharedCore::rl_head`) wired into `Agent::with_rl_head` — mirrors
+    /// `src/runner.rs` and `src/daemon.rs` (#5921: previously never wired for `/sessions`
+    /// agents). `rl_head` is cloned (cheap `Arc` clone) from the same `SharedCore` instance
+    /// shared with `SharedAgentDeps`, fixing #5974 (concurrent `/sessions` agents previously
+    /// each loaded/persisted an independent in-memory copy, clobbering each other's learned
+    /// weights).
     pub(crate) rl_routing_enabled: bool,
     pub(crate) rl_learning_rate: f32,
     pub(crate) rl_weight: f32,
     pub(crate) rl_persist_interval: u32,
     pub(crate) rl_warmup_updates: u32,
-    pub(crate) rl_embed_dim_resolved: Option<usize>,
+    pub(crate) rl_head: Option<zeph_skills::rl_head::RoutingHead>,
     /// Base tool composite (file/shell/scrape/cwd), *not* wrapped in any gate. Per SEC-H1
     /// (concurrent `/sessions` share this one `Arc`, but `TrustGateExecutor`/`PolicyGateExecutor`
     /// carry per-turn *mutable* trust state), `agent_factory::build_agent_factory` wraps a
@@ -439,7 +442,7 @@ pub(crate) async fn assemble_serve_deps(
         rl_weight: config.skills.rl_weight,
         rl_persist_interval: config.skills.rl_persist_interval,
         rl_warmup_updates: config.skills.rl_warmup_updates,
-        rl_embed_dim_resolved: core.rl_embed_dim_resolved,
+        rl_head: core.rl_head.clone(),
         tool_executor,
         capability_scopes_config,
         permission_policy,
@@ -749,7 +752,7 @@ mod tests {
             matcher: None,
             memory,
             budget_tokens: 4096,
-            rl_embed_dim_resolved: None,
+            rl_head: None,
         };
         let cancel = tokio_util::sync::CancellationToken::new();
         let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(cancel);
@@ -784,7 +787,7 @@ mod tests {
             matcher: None,
             memory,
             budget_tokens: 4096,
-            rl_embed_dim_resolved: None,
+            rl_head: None,
         }
     }
 

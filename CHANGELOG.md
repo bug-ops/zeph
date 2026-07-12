@@ -55,6 +55,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-skills`/`src/acp.rs`/`src/serve/`: `SkillOrchestra`'s RL routing head lost learned
+  updates under concurrent ACP/`/sessions` agents (#5974). `#5921` wired `RoutingHead`
+  persistence into `spawn_acp_agent` and `build_agent_factory`, but each session independently
+  loaded its own in-memory copy from the `routing_head_weights` singleton row and persisted
+  back independently — concurrent sessions clobbered each other's REINFORCE weights
+  (last-write-wins). The head is now loaded/cold-started exactly once in
+  `crate::acp::build_shared_core` and cloned (a cheap `Arc` clone) into every session sharing
+  that core, so all sessions mutate the same `Arc<Mutex<RoutingHeadInner>>` and updates
+  serialize through that mutex instead of racing across independent copies. Also added
+  `RoutingHead::persist_snapshot()`, capturing `embed_dim`/weights/baseline/`update_count`
+  under one lock acquisition, closing a related TOCTOU where a concurrent `update()` could land
+  between the previously-separate locked reads used to build the persisted DB row. No config or
+  behavior change for `rl_routing_enabled = false` (still the default) or single-session
+  (`runner`/`daemon`) deployments.
 - `.github/deny.toml`: the `cargo-deny` advisories gate scanned only the `candle`
   and `tui` features, excluding `pdf` and every other feature shipped by the
   blocking `bundle-check` (`full`) CI job and release builds — any RUSTSEC

@@ -20,11 +20,21 @@
 //! Training: REINFORCE with running baseline. Weights are shared via
 //! `Arc<std::sync::Mutex<RoutingHeadInner>>` for safe concurrent access.
 //!
-//! # Single-instance limitation
+//! # Single-process sharing (#5974)
 //!
-//! SQLite weight persistence is singleton-row based. Two agent instances sharing
-//! the same DB will silently overwrite each other's weights (last writer wins).
-//! This is documented and accepted for MVP single-instance deployments.
+//! SQLite weight persistence is singleton-row based (`routing_head_weights WHERE id = 1`,
+//! upsert semantics). Callers that build multiple concurrent sessions/agents from one process
+//! (ACP, `zeph serve-sessions`) MUST load one [`RoutingHead`] and share it — via [`Clone`], which
+//! clones only the cheap `Arc` handle — across every session, rather than having each session
+//! independently load its own copy from the DB row. Independent copies would each evolve their
+//! own REINFORCE weights and clobber each other on persist (last writer wins); a single shared
+//! handle serializes updates through the inner `Mutex` instead, so no update is lost.
+//!
+//! # Cross-process limitation
+//!
+//! Two separate OS processes (e.g. two `zeph` daemons) pointed at the same `SQLite` DB still
+//! silently overwrite each other's persisted weights (last writer wins) — this is accepted for
+//! MVP single-instance deployments.
 
 use std::sync::{Arc, Mutex};
 
@@ -429,6 +439,30 @@ impl RoutingHead {
             .to_bytes()
     }
 
+    /// Atomic snapshot of everything needed to persist the routing head: `(embed_dim,
+    /// weights_bytes, baseline, update_count)`, all read under a single lock acquisition.
+    ///
+    /// When a [`RoutingHead`] handle is shared across concurrent sessions (#5974), calling
+    /// `update_count()`, `to_bytes()`, and `baseline()` as three separate locked calls lets a
+    /// concurrent `update()` land between them, producing a DB row whose `update_count` column
+    /// doesn't match the `update_count` encoded inside the serialized blob. This method closes
+    /// that gap the same way [`RerankOutcome`] closes the analogous `blended`/`update_count`
+    /// TOCTOU (see #5846).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the mutex is poisoned.
+    #[must_use]
+    pub fn persist_snapshot(&self) -> (usize, Vec<u8>, f32, u32) {
+        let inner = self.inner.lock().expect("RoutingHead mutex poisoned");
+        (
+            inner.embed_dim,
+            inner.to_bytes(),
+            inner.baseline,
+            inner.update_count,
+        )
+    }
+
     /// Deserialize weights from bytes.
     #[must_use]
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
@@ -605,6 +639,41 @@ mod tests {
         assert!(
             (s1 - s2).abs() < 1e-5,
             "score mismatch after round-trip: {s1} vs {s2}"
+        );
+    }
+
+    #[test]
+    fn persist_snapshot_matches_individual_getters() {
+        let head = make_head();
+        let q = dummy_embed(0.3, 4);
+        let s = dummy_embed(0.7, 4);
+        let _ = head.score(&q, &s, 0.6, 0.8, 10);
+        let _ = head.update(1.0, 0.01);
+
+        let (embed_dim, bytes, baseline, update_count) = head.persist_snapshot();
+        assert_eq!(embed_dim, head.embed_dim());
+        assert_eq!(bytes, head.to_bytes());
+        assert!((baseline - head.baseline()).abs() < 1e-6);
+        assert_eq!(update_count, head.update_count());
+    }
+
+    #[test]
+    fn persist_snapshot_reflects_shared_updates_from_cloned_handle() {
+        // Regression test for #5974: a RoutingHead handle shared (via Clone) across concurrent
+        // sessions must observe updates applied through any clone, since all clones point at
+        // the same Arc<Mutex<RoutingHeadInner>>.
+        let head = make_head();
+        let shared = head.clone();
+        let q = dummy_embed(0.1, 4);
+        let s = dummy_embed(0.2, 4);
+        let _ = shared.score(&q, &s, 0.8, 0.9, 5);
+        assert!(shared.update(1.0, 0.01));
+
+        let (_, _, _, update_count) = head.persist_snapshot();
+        assert_eq!(
+            update_count, 1,
+            "update applied via a cloned handle must be visible through the original handle's \
+             persist_snapshot"
         );
     }
 

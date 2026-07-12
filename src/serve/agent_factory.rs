@@ -87,29 +87,15 @@ pub(crate) async fn build_agent_factory(
         (None, Vec::new())
     };
 
-    // SkillOrchestra: load persisted RL routing head weights, if enabled (#5921) — mirrors
-    // `src/runner.rs`/`src/daemon.rs`'s cold-start/load pattern. Must happen here, in the async
-    // prefix, since the returned closure is a plain synchronous `FnOnce` (see module docs) and
-    // cannot `.await`. `deps.rl_embed_dim_resolved` is pre-computed once in
-    // `crate::acp::build_shared_core`, shared across every session built from that core.
-    // NOTE (S3, known limitation, not fixed here): `routing_head_weights` is a single global
-    // row (`WHERE id = 1`, last-write-wins upsert — crates/zeph-memory/src/store/skills.rs).
-    // Concurrent `/sessions` agents each load their own in-memory head from that row and
-    // persist back independently, so concurrent multi-session RL routing can clobber each
-    // other's learned weights. Bounded risk: `rl_routing_enabled` defaults to `false`. See
-    // #5974 for per-conversation persistence keying or write serialization.
-    let rl_head = if let Some(dim) = deps.rl_embed_dim_resolved {
-        Some(
-            crate::runner::load_rl_head(&deps.memory)
-                .await
-                .unwrap_or_else(|| {
-                    tracing::info!(dim, "rl_head: cold start, initializing fresh routing head");
-                    zeph_skills::rl_head::RoutingHead::new(dim)
-                }),
-        )
-    } else {
-        None
-    };
+    // SkillOrchestra: wire the RL routing head, if enabled (#5921). `deps.rl_head` is loaded/
+    // cold-started exactly once in `crate::acp::build_shared_core` and cloned (cheap `Arc`
+    // clone) into every session built from that core — fixes #5974, where each `/sessions`
+    // agent previously loaded its own independent in-memory copy from the
+    // `routing_head_weights` singleton row and persisted back independently, letting
+    // concurrent sessions clobber each other's learned REINFORCE weights. All sessions now
+    // mutate the SAME `Arc<Mutex<..>>`, so updates serialize through that mutex instead of
+    // racing across independent copies.
+    let rl_head = deps.rl_head.clone();
 
     // #5958: shared trajectory risk slot — written by begin_turn(), read by PolicyGateExecutor —
     // and pending risk signal queue — executor layers push signal codes; begin_turn() drains.
@@ -840,7 +826,7 @@ mod tests {
             rl_weight: 0.0,
             rl_persist_interval: 0,
             rl_warmup_updates: 0,
-            rl_embed_dim_resolved: None,
+            rl_head: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
@@ -927,7 +913,7 @@ mod tests {
             rl_weight: 0.0,
             rl_persist_interval: 0,
             rl_warmup_updates: 0,
-            rl_embed_dim_resolved: None,
+            rl_head: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
@@ -1041,7 +1027,7 @@ mod tests {
             rl_weight: 0.0,
             rl_persist_interval: 0,
             rl_warmup_updates: 0,
-            rl_embed_dim_resolved: None,
+            rl_head: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
@@ -1140,7 +1126,7 @@ mod tests {
             rl_weight: 0.0,
             rl_persist_interval: 0,
             rl_warmup_updates: 0,
-            rl_embed_dim_resolved: None,
+            rl_head: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
@@ -1184,16 +1170,16 @@ mod tests {
 
     /// #5920/#5921 regression: `build_agent_factory` must call `Agent::with_trust_config` and
     /// `Agent::with_rl_routing`/`with_rl_head` so `ServeAgentDeps::trust_config`/
-    /// `rl_routing_enabled`/`rl_embed_dim_resolved` reach the built `Agent` — previously these
-    /// fields did not exist on `ServeAgentDeps` at all, so every `/sessions`-created agent
-    /// silently ran skill trust classification and `SkillOrchestra` RL routing on hardcoded
-    /// builder defaults regardless of config. Mirrors
-    /// `build_agent_factory_wires_skill_group_config` above for the same wire-X-into-
-    /// ACP/serve/daemon defect class, applied to trust config and RL routing this time. Asserts
-    /// the exact `/skills trust` `Display` output, not just "non-default", so a swapped
-    /// argument or a dropped `.with_trust_config(...)`/`.with_rl_routing(...)` call would also
-    /// be caught. `rl_embed_dim_resolved: Some(8)` also exercises the RL-head cold-start path
-    /// (`build_agent_factory`'s async prefix, since the returned closure cannot `.await`).
+    /// `rl_routing_enabled`/`rl_head` reach the built `Agent` — previously these fields did not
+    /// exist on `ServeAgentDeps` at all, so every `/sessions`-created agent silently ran skill
+    /// trust classification and `SkillOrchestra` RL routing on hardcoded builder defaults
+    /// regardless of config. Mirrors `build_agent_factory_wires_skill_group_config` above for
+    /// the same wire-X-into-ACP/serve/daemon defect class, applied to trust config and RL
+    /// routing this time. Asserts the exact `/skills trust` `Display` output, not just
+    /// "non-default", so a swapped argument or a dropped `.with_trust_config(...)`/
+    /// `.with_rl_routing(...)` call would also be caught. `rl_head: Some(..)` also exercises
+    /// the RL-head wiring path (`deps.rl_head.clone()`, see #5974: the head is now loaded once
+    /// in `crate::acp::build_shared_core` rather than per session here).
     #[tokio::test]
     async fn build_agent_factory_wires_trust_and_rl_config() {
         use zeph_commands::traits::agent::AgentAccess as _;
@@ -1238,7 +1224,7 @@ mod tests {
             rl_weight: 0.3,
             rl_persist_interval: 5,
             rl_warmup_updates: 3,
-            rl_embed_dim_resolved: Some(8),
+            rl_head: Some(zeph_skills::rl_head::RoutingHead::new(8)),
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
@@ -1275,9 +1261,8 @@ mod tests {
             "Skill trust config: default_level=Quarantined, local_level=Trusted, \
              bundled_level=Verified, hash_mismatch_level=Blocked | RL routing: enabled=true, \
              rl_head_loaded=true",
-            "ServeAgentDeps::trust_config/rl_routing_enabled/rl_embed_dim_resolved must reach \
-             the built Agent exactly via with_trust_config/with_rl_routing/with_rl_head; got: \
-             {output}"
+            "ServeAgentDeps::trust_config/rl_routing_enabled/rl_head must reach the built Agent \
+             exactly via with_trust_config/with_rl_routing/with_rl_head; got: {output}"
         );
     }
 
@@ -1334,7 +1319,7 @@ mod tests {
             rl_weight: 0.0,
             rl_persist_interval: 0,
             rl_warmup_updates: 0,
-            rl_embed_dim_resolved: None,
+            rl_head: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
@@ -1411,7 +1396,7 @@ mod tests {
             rl_weight: 0.0,
             rl_persist_interval: 0,
             rl_warmup_updates: 0,
-            rl_embed_dim_resolved: None,
+            rl_head: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default()
