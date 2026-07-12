@@ -161,6 +161,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   session's `blobs/` directory; the hash list is also deduped before copying so a hash referenced
   twice in one fork range hard-links once instead of falling into the cross-device copy fallback
   on the second occurrence.
+- `zeph-session`: `ForkEngine::fork`'s `copy_referenced_blobs` (added by #5982, see the entry
+  above) treated any `hard_link` failure other than a missing source as a genuine cross-device
+  (`EXDEV`) error and fell back to `fs::copy` (#6153). That fallback also caught the case where
+  the destination already exists as a hard-link to the same source — e.g. a fork retried against
+  the same `new_id` after a partial failure — and `fs::copy` onto an existing hard-link does not
+  "waste a copy", it silently truncates the shared inode to 0 bytes, corrupting the content for
+  every hard-link pointing at it, including the parent session's own blob. Currently dormant (no
+  production call site populates `image_refs` yet) but confirmed with a deterministic out-of-repo
+  repro during #6152's testing pass. `copy_referenced_blobs` now matches `AlreadyExists`
+  separately and treats it as a no-op (blobs are content-addressed by hash, so a pre-existing
+  entry at the hash-named path is assumed to already hold the right content), leaving the
+  `fs::copy` fallback to run only when the destination genuinely does not exist.
 - `zeph-gateway` and `zeph-a2a`: fixed a bearer-token brute-force bypass caused by
   middleware layer order (#6110, CWE-307). `auth_middleware` returns `401` directly
   without calling `next.run`, so with auth layered outside `rate_limit_middleware`,

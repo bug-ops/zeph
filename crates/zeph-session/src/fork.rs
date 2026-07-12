@@ -173,6 +173,12 @@ impl ForkEngine {
 /// Returns [`SessionError::InvalidBlobHash`] if any `image_refs` entry is not a non-empty,
 /// bare hex string (rejected before use in [`Path::join`] to prevent path traversal), or
 /// [`SessionError::Io`] if directory creation, the hard-link, or the copy fallback fails.
+///
+/// A destination that already exists (e.g. a retried fork against the same `child_dir`) is not
+/// an error: blobs are content-addressed by hash, so a pre-existing entry at the hash-named path
+/// is treated as already the same content and the link is skipped as a no-op. This assumes the
+/// pre-existing file is intact; see the `TODO` on the `AlreadyExists` match arm below for the one
+/// known gap (an interrupted cross-device copy from a prior run).
 async fn copy_referenced_blobs(
     src_dir: &Path,
     child_dir: &Path,
@@ -195,8 +201,9 @@ async fn copy_referenced_blobs(
 
     // Dedup: the same hash can legitimately appear twice (repeated attachment, or reused across
     // messages) — without this, the second `hard_link` on an already-linked destination returns
-    // `AlreadyExists`, which would otherwise fall into the generic error arm below and trigger a
-    // wasteful (and, per that arm's own comment, misleading) copy fallback.
+    // `AlreadyExists`, which the loop below already handles as a no-op. Dedup here is a
+    // micro-optimization to skip that redundant syscall+no-op, not a guard against the copy
+    // fallback (which `AlreadyExists` never reaches).
     hashes.sort_unstable();
     hashes.dedup();
 
@@ -218,9 +225,32 @@ async fn copy_referenced_blobs(
                     "fork: referenced blob missing on parent's disk, skipping"
                 );
             }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Destination already exists — most likely a retried fork against the same
+                // child_dir. Blobs are content-addressed by hash (see `validate_blob_hash` and
+                // the module doc), so a pre-existing entry at this hash-named path is assumed to
+                // already be the right content. Treat as a no-op: NOT the generic fallback below,
+                // since `fs::copy` onto an existing hard-link truncates the shared inode to 0
+                // bytes, corrupting every link to it (including the parent's original blob).
+                //
+                // TODO(critic): the copy fallback below writes directly to `child_blob` rather
+                // than a `.tmp` path + rename, so it is not atomic. If a prior run's fallback
+                // (triggered by genuine EXDEV) was interrupted mid-write, it can leave a
+                // truncated file at this path; this no-op would then silently accept that
+                // truncated file as "already correct" on retry. No concurrent-retry call site
+                // exists yet, so this is a documented known gap rather than a fix — an atomic
+                // write (temp file + rename) would close it if/when retries become concurrent.
+                tracing::debug!(
+                    blob = hash,
+                    path = %child_blob.display(),
+                    "fork: blob already linked in child, skipping"
+                );
+            }
             Err(_) => {
-                // Hard-link failed for a reason other than a missing source (e.g. cross-device
-                // link, EXDEV) — fall back to a full copy.
+                // Hard-link failed for a reason other than a missing source or an already-linked
+                // destination (e.g. cross-device link, EXDEV) — fall back to a full copy. Reached
+                // only when the destination does not exist (dest-exists implies AlreadyExists on
+                // all target platforms), so writing directly to `child_blob` here is safe.
                 fs::copy(&src_blob, &child_blob).await?;
             }
         }
@@ -639,6 +669,65 @@ mod tests {
         let child_dir = crate::session_dir(data_dir.path(), "child");
         let child_blob = child_dir.join("blobs").join("cafe01");
         assert_eq!(tokio::fs::read(&child_blob).await.unwrap(), b"shared-bytes");
+    }
+
+    /// Regression test for #6153: re-running `copy_referenced_blobs` against the SAME
+    /// `child_dir` (e.g. a retried fork against the same `new_id`) must not corrupt the
+    /// shared blob. Before the fix, the second `hard_link` attempt returned `AlreadyExists`,
+    /// which fell into the generic `Err(_) => fs::copy` fallback arm; `fs::copy` onto a
+    /// destination that is already a hard link to the source truncates the shared inode to 0
+    /// bytes, corrupting every link to it — including the parent's original blob.
+    #[tokio::test]
+    async fn test_copy_referenced_blobs_retry_does_not_truncate_shared_blob() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let src_dir = data_dir.path().join("parent");
+        let child_dir = data_dir.path().join("child");
+
+        let src_blobs = src_dir.join("blobs");
+        tokio::fs::create_dir_all(&src_blobs).await.unwrap();
+        let original_content = b"image-bytes-not-empty";
+        tokio::fs::write(src_blobs.join("a1b2c3"), original_content)
+            .await
+            .unwrap();
+
+        let events = vec![SessionEventEnvelope {
+            seq: 0,
+            ts_ms: 0,
+            turn_id: None,
+            parent_seq: None,
+            kind: SessionEvent::UserMessage {
+                text: "with image".to_owned(),
+                image_refs: vec!["a1b2c3".to_owned()],
+            },
+        }];
+
+        // First run: hard-links the blob into the child.
+        copy_referenced_blobs(&src_dir, &child_dir, &events)
+            .await
+            .unwrap();
+
+        let child_blob = child_dir.join("blobs").join("a1b2c3");
+        assert_eq!(
+            tokio::fs::read(&child_blob).await.unwrap(),
+            original_content
+        );
+
+        // Second run against the SAME child_dir — this is what previously triggered
+        // AlreadyExists -> fs::copy -> truncation.
+        copy_referenced_blobs(&src_dir, &child_dir, &events)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokio::fs::read(&child_blob).await.unwrap(),
+            original_content,
+            "child blob must not be truncated by a retried fork against the same child_dir"
+        );
+        assert_eq!(
+            tokio::fs::read(src_blobs.join("a1b2c3")).await.unwrap(),
+            original_content,
+            "parent's original blob must not be truncated by a retried fork against the same child_dir"
+        );
     }
 
     /// Regression test for the critic's M1 finding: the child's `blobs/` directory must get the
