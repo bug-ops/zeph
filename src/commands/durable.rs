@@ -747,10 +747,13 @@ mod tests {
             &vault_root.join("secrets.age"),
         )
         .unwrap();
-        provider.set_secret_mut(
-            "ZEPH_DURABLE_KEY".to_owned(),
-            zeph_core::durable::generate_durable_key_b64(),
-        );
+        provider
+            .set_secret_mut(
+                "ZEPH_DURABLE_KEY".to_owned(),
+                zeph_core::durable::generate_durable_key_b64(),
+                false,
+            )
+            .unwrap();
         provider.save().unwrap();
 
         // Exercise the exact glue the write paths (runner.rs, scheduler_daemon.rs) call.
@@ -943,10 +946,13 @@ mod tests {
             &vault_root.join("secrets.age"),
         )
         .unwrap();
-        provider.set_secret_mut(
-            "ZEPH_DURABLE_KEY".to_owned(),
-            zeph_core::durable::generate_durable_key_b64(),
-        );
+        provider
+            .set_secret_mut(
+                "ZEPH_DURABLE_KEY".to_owned(),
+                zeph_core::durable::generate_durable_key_b64(),
+                false,
+            )
+            .unwrap();
         provider.save().unwrap();
 
         let result = load_write_hmac_key(&config);

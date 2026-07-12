@@ -1139,6 +1139,10 @@ pub(crate) enum VaultCommand {
         key: String,
         #[arg()]
         value: String,
+        /// Overwrite an existing key. Without this flag, `vault set` refuses to replace
+        /// a key that is already present in the vault.
+        #[arg(long)]
+        force: bool,
     },
     /// Decrypt and print a secret value
     Get {

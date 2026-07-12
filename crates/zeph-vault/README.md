@@ -36,7 +36,7 @@ let mut vault = AgeVaultProvider::new(
 )?;
 
 // Store a secret, then persist the re-encrypted vault to disk.
-vault.set_secret_mut("ZEPH_CLAUDE_API_KEY".to_owned(), "sk-ant-...".to_owned());
+vault.set_secret_mut("ZEPH_CLAUDE_API_KEY".to_owned(), "sk-ant-...".to_owned(), false)?;
 vault.save()?;
 
 // Retrieve a secret synchronously via the direct getter.

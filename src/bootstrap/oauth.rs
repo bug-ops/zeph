@@ -69,7 +69,11 @@ impl CredentialStore for VaultCredentialStore {
             let mut guard = vault
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            guard.set_secret_mut(key, json);
+            // OAuth credential refresh is an intentional update of the store's own managed
+            // entry, not a user-facing secret set — always overwrite.
+            guard
+                .set_secret_mut(key, json, true)
+                .map_err(|e| AuthError::InternalError(format!("vault save: {e}")))?;
             guard
                 .save()
                 .map_err(|e| AuthError::InternalError(format!("vault save: {e}")))

@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use zeph_core::vault::AgeVaultProvider;
+use zeph_core::vault::{AgeVaultError, AgeVaultProvider};
 
 use crate::cli::VaultCommand;
 
@@ -25,10 +25,18 @@ pub(crate) fn handle_vault_command(
             AgeVaultProvider::init_vault(&dir)
                 .map_err(|e| anyhow::anyhow!("vault init failed: {e}"))?;
         }
-        VaultCommand::Set { key, value } => {
+        VaultCommand::Set { key, value, force } => {
             let mut provider = AgeVaultProvider::load(&key_path_owned, &vault_path_owned)
                 .map_err(|e| anyhow::anyhow!("failed to load vault: {e}"))?;
-            provider.set_secret_mut(key, value);
+            provider
+                .set_secret_mut(key.clone(), value, force)
+                .map_err(|e| match e {
+                    AgeVaultError::AlreadyExists(_) => anyhow::anyhow!(
+                        "key '{key}' already exists in the vault. Re-run with --force to \
+                         overwrite it."
+                    ),
+                    other => anyhow::anyhow!("failed to set secret: {other}"),
+                })?;
             provider
                 .save()
                 .map_err(|e| anyhow::anyhow!("failed to save vault: {e}"))?;
@@ -128,6 +136,7 @@ mod tests {
             VaultCommand::Set {
                 key: "FOO".into(),
                 value: "bar".into(),
+                force: false,
             },
             Some(&key_path),
             Some(&vault_path),
@@ -168,6 +177,75 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("key not found"));
+    }
+
+    // R-05: Set refuses to silently overwrite an existing key (#5955)
+    #[test]
+    fn handle_vault_command_set_existing_key_without_force_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+        zeph_core::vault::AgeVaultProvider::init_vault(dir.path()).unwrap();
+
+        handle_vault_command(
+            VaultCommand::Set {
+                key: "FOO".into(),
+                value: "original".into(),
+                force: false,
+            },
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap();
+
+        let err = handle_vault_command(
+            VaultCommand::Set {
+                key: "FOO".into(),
+                value: "clobbered".into(),
+                force: false,
+            },
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("--force"));
+
+        // The original value must survive the rejected overwrite attempt.
+        let provider = zeph_core::vault::AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        assert_eq!(provider.get("FOO"), Some("original"));
+    }
+
+    #[test]
+    fn handle_vault_command_set_existing_key_with_force_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+        zeph_core::vault::AgeVaultProvider::init_vault(dir.path()).unwrap();
+
+        handle_vault_command(
+            VaultCommand::Set {
+                key: "FOO".into(),
+                value: "original".into(),
+                force: false,
+            },
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap();
+
+        handle_vault_command(
+            VaultCommand::Set {
+                key: "FOO".into(),
+                value: "updated".into(),
+                force: true,
+            },
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap();
+
+        let provider = zeph_core::vault::AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        assert_eq!(provider.get("FOO"), Some("updated"));
     }
 
     #[test]

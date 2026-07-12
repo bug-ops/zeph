@@ -66,6 +66,10 @@ pub enum AgeVaultError {
     /// The key file could not be written to disk.
     #[error("failed to write key file: {0}")]
     KeyWrite(std::io::Error),
+    /// [`AgeVaultProvider::set_secret_mut`] was called with `overwrite: false` for a key that
+    /// already exists in the vault.
+    #[error("secret key already exists: {0} (pass overwrite=true to replace it)")]
+    AlreadyExists(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +253,7 @@ impl AgeVaultProvider {
     ///     Path::new("/etc/zeph/vault-key.txt"),
     ///     Path::new("/etc/zeph/secrets.age"),
     /// )?;
-    /// vault.set_secret_mut("MY_TOKEN".into(), "tok_abc123".into());
+    /// vault.set_secret_mut("MY_TOKEN".into(), "tok_abc123".into(), false)?;
     /// vault.save()?;
     /// # Ok::<_, zeph_vault::AgeVaultError>(())
     /// ```
@@ -282,7 +286,7 @@ impl AgeVaultProvider {
     ///     Path::new("/etc/zeph/vault-key.txt"),
     ///     Path::new("/etc/zeph/secrets.age"),
     /// )?;
-    /// vault.set_secret_mut("MY_TOKEN".into(), "tok_abc123".into());
+    /// vault.set_secret_mut("MY_TOKEN".into(), "tok_abc123".into(), false)?;
     /// vault.save_async().await?;
     /// # Ok(())
     /// # }
@@ -309,7 +313,18 @@ impl AgeVaultProvider {
 
     /// Insert or update a secret in the in-memory map.
     ///
+    /// Refuses to replace an existing key unless `overwrite` is `true`, so that callers cannot
+    /// silently destroy a previously-stored secret by accident — see #5955 (and the sibling
+    /// incident #5874, which hit the same gap in the `zeph init` durable-execution wizard before
+    /// this guard existed at the vault layer). Callers that intend an unconditional update (e.g.
+    /// OAuth token refresh) pass `overwrite: true` explicitly.
+    ///
     /// Call [`save`][Self::save] afterwards to persist the change to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AgeVaultError::AlreadyExists`] if `key` is already present and `overwrite` is
+    /// `false`. The in-memory map is left untouched in that case.
     ///
     /// # Examples
     ///
@@ -321,12 +336,21 @@ impl AgeVaultProvider {
     ///     Path::new("/etc/zeph/vault-key.txt"),
     ///     Path::new("/etc/zeph/secrets.age"),
     /// )?;
-    /// vault.set_secret_mut("API_KEY".into(), "sk-...".into());
+    /// vault.set_secret_mut("API_KEY".into(), "sk-...".into(), false)?;
     /// vault.save()?;
     /// # Ok::<_, zeph_vault::AgeVaultError>(())
     /// ```
-    pub fn set_secret_mut(&mut self, key: String, value: String) {
+    pub fn set_secret_mut(
+        &mut self,
+        key: String,
+        value: String,
+        overwrite: bool,
+    ) -> Result<(), AgeVaultError> {
+        if !overwrite && self.secrets.contains_key(&key) {
+            return Err(AgeVaultError::AlreadyExists(key));
+        }
         self.secrets.insert(key, Zeroizing::new(value));
+        Ok(())
     }
 
     /// Remove a secret from the in-memory map.
@@ -563,7 +587,9 @@ mod tests {
         let (key_path, vault_path) = init_temp_vault(dir.path());
 
         let mut vault = AgeVaultProvider::new(&key_path, &vault_path).unwrap();
-        vault.set_secret_mut("KEY".into(), "val".into());
+        vault
+            .set_secret_mut("KEY".into(), "val".into(), false)
+            .unwrap();
         vault.save().unwrap();
 
         let loaded = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
@@ -576,7 +602,9 @@ mod tests {
         let (key_path, vault_path) = init_temp_vault(dir.path());
 
         let mut vault = AgeVaultProvider::new(&key_path, &vault_path).unwrap();
-        vault.set_secret_mut("KEY".into(), "val".into());
+        vault
+            .set_secret_mut("KEY".into(), "val".into(), false)
+            .unwrap();
 
         assert!(vault.remove_secret_mut("KEY"));
         assert!(!vault.remove_secret_mut("KEY"));
@@ -656,11 +684,50 @@ mod tests {
         let (key_path, vault_path) = init_temp_vault(dir.path());
 
         let mut vault = AgeVaultProvider::new(&key_path, &vault_path).unwrap();
-        vault.set_secret_mut("TMP_TEST".into(), "value".into());
+        vault
+            .set_secret_mut("TMP_TEST".into(), "value".into(), false)
+            .unwrap();
         vault.save().unwrap();
 
         let tmp_path = vault_path.with_added_extension("tmp");
         assert!(!tmp_path.exists(), ".age.tmp must not exist after save()");
         assert!(vault_path.exists(), "secrets.age must exist after save()");
+    }
+
+    /// Regression for #5955: `set_secret_mut` must refuse to replace an existing key when
+    /// `overwrite` is `false`, and must leave the previous value untouched.
+    #[test]
+    fn set_secret_mut_rejects_overwrite_when_not_requested() {
+        let dir = tempdir().unwrap();
+        let (key_path, vault_path) = init_temp_vault(dir.path());
+
+        let mut vault = AgeVaultProvider::new(&key_path, &vault_path).unwrap();
+        vault
+            .set_secret_mut("KEY".into(), "original".into(), false)
+            .unwrap();
+
+        let result = vault.set_secret_mut("KEY".into(), "clobbered".into(), false);
+        assert!(
+            matches!(result, Err(AgeVaultError::AlreadyExists(ref k)) if k == "KEY"),
+            "expected AlreadyExists(\"KEY\"), got {result:?}",
+        );
+        assert_eq!(vault.get("KEY"), Some("original"));
+    }
+
+    /// Regression for #5955: `overwrite: true` must replace an existing value.
+    #[test]
+    fn set_secret_mut_replaces_when_overwrite_requested() {
+        let dir = tempdir().unwrap();
+        let (key_path, vault_path) = init_temp_vault(dir.path());
+
+        let mut vault = AgeVaultProvider::new(&key_path, &vault_path).unwrap();
+        vault
+            .set_secret_mut("KEY".into(), "original".into(), false)
+            .unwrap();
+        vault
+            .set_secret_mut("KEY".into(), "updated".into(), true)
+            .unwrap();
+
+        assert_eq!(vault.get("KEY"), Some("updated"));
     }
 }

@@ -170,7 +170,11 @@ pub(super) fn store_durable_key(state: &WizardState) -> anyhow::Result<()> {
     }
     let mut provider = zeph_core::vault::AgeVaultProvider::load(&key_path, &vault_path)
         .map_err(|e| anyhow::anyhow!("failed to load age vault: {e}"))?;
-    provider.set_secret_mut("ZEPH_DURABLE_KEY".to_owned(), key.to_owned());
+    // Reaching this point already implies the caller's own rotation gate approved an
+    // overwrite (no pre-existing key, or the user typed the "rotate" confirmation above).
+    provider
+        .set_secret_mut("ZEPH_DURABLE_KEY".to_owned(), key.to_owned(), true)
+        .map_err(|e| anyhow::anyhow!("failed to set ZEPH_DURABLE_KEY: {e}"))?;
     provider
         .save()
         .map_err(|e| anyhow::anyhow!("failed to save age vault: {e}"))?;
@@ -249,7 +253,13 @@ mod tests {
         let vault_path = vault_root.join("secrets.age");
         let mut provider =
             zeph_core::vault::AgeVaultProvider::load(&key_path, &vault_path).expect("load vault");
-        provider.set_secret_mut("ZEPH_DURABLE_KEY".to_owned(), "existing-key".to_owned());
+        provider
+            .set_secret_mut(
+                "ZEPH_DURABLE_KEY".to_owned(),
+                "existing-key".to_owned(),
+                false,
+            )
+            .expect("set secret");
         provider.save().expect("save vault");
 
         let state = durable_state(None);
@@ -273,7 +283,13 @@ mod tests {
         let vault_path = vault_root.join("secrets.age");
         let mut provider =
             zeph_core::vault::AgeVaultProvider::load(&key_path, &vault_path).expect("load vault");
-        provider.set_secret_mut("ZEPH_DURABLE_KEY".to_owned(), "existing-key".to_owned());
+        provider
+            .set_secret_mut(
+                "ZEPH_DURABLE_KEY".to_owned(),
+                "existing-key".to_owned(),
+                false,
+            )
+            .expect("set secret");
         provider.save().expect("save vault");
 
         let new_key = zeph_core::durable::generate_durable_key_b64();
@@ -355,7 +371,13 @@ mod tests {
         let vault_path = dir.path().join("secrets.age");
         let mut provider =
             zeph_core::vault::AgeVaultProvider::load(&key_path, &vault_path).expect("load vault");
-        provider.set_secret_mut("ZEPH_DURABLE_KEY".to_owned(), "existing-key".to_owned());
+        provider
+            .set_secret_mut(
+                "ZEPH_DURABLE_KEY".to_owned(),
+                "existing-key".to_owned(),
+                false,
+            )
+            .expect("set secret");
         provider.save().expect("save vault");
 
         assert!(vault_has_durable_key(dir.path()).expect("should not error"));
@@ -369,7 +391,9 @@ mod tests {
         let vault_path = dir.path().join("secrets.age");
         let mut provider =
             zeph_core::vault::AgeVaultProvider::load(&key_path, &vault_path).expect("load vault");
-        provider.set_secret_mut("ZEPH_OTHER_KEY".to_owned(), "value".to_owned());
+        provider
+            .set_secret_mut("ZEPH_OTHER_KEY".to_owned(), "value".to_owned(), false)
+            .expect("set secret");
         provider.save().expect("save vault");
 
         assert!(!vault_has_durable_key(dir.path()).expect("should not error"));

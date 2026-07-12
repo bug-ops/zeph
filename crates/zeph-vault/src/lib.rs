@@ -501,8 +501,12 @@ mod age_tests {
         let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
 
         let mut vault = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
-        vault.set_secret_mut("B".to_owned(), "2".to_owned());
-        vault.set_secret_mut("C".to_owned(), "3".to_owned());
+        vault
+            .set_secret_mut("B".to_owned(), "2".to_owned(), false)
+            .unwrap();
+        vault
+            .set_secret_mut("C".to_owned(), "3".to_owned(), false)
+            .unwrap();
 
         let keys = vault.list_keys();
         assert_eq!(keys, vec!["A", "B", "C"]);
@@ -529,7 +533,9 @@ mod age_tests {
         let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
 
         let mut vault = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
-        vault.set_secret_mut("NEW_KEY".to_owned(), "new_value".to_owned());
+        vault
+            .set_secret_mut("NEW_KEY".to_owned(), "new_value".to_owned(), false)
+            .unwrap();
         vault.save().unwrap();
 
         let reloaded = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
@@ -598,7 +604,9 @@ mod age_tests {
         let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
 
         let mut vault = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
-        vault.set_secret_mut("B_KEY".to_owned(), "b".to_owned());
+        vault
+            .set_secret_mut("B_KEY".to_owned(), "b".to_owned(), false)
+            .unwrap();
         vault.save().unwrap();
 
         let reloaded = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
@@ -654,7 +662,9 @@ mod age_tests {
         let mut vault = AgeVaultProvider::load_async(&key_path, &vault_path)
             .await
             .unwrap();
-        vault.set_secret_mut("ADDED".to_owned(), "added_val".to_owned());
+        vault
+            .set_secret_mut("ADDED".to_owned(), "added_val".to_owned(), false)
+            .unwrap();
         vault.save_async().await.unwrap();
 
         let reloaded = AgeVaultProvider::load_async(&key_path, &vault_path)

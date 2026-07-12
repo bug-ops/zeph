@@ -641,11 +641,24 @@ fn cli_parse_vault_set() {
     let cli = Cli::try_parse_from(["zeph", "vault", "set", "MY_KEY", "MY_VAL"]).unwrap();
     match cli.command {
         Some(Command::Vault {
-            command: VaultCommand::Set { key, value },
+            command: VaultCommand::Set { key, value, force },
         }) => {
             assert_eq!(key, "MY_KEY");
             assert_eq!(value, "MY_VAL");
+            assert!(!force, "force must default to false");
         }
+        _ => panic!("expected VaultCommand::Set"),
+    }
+}
+
+// Regression for #5955: `--force` must parse and set `force = true`.
+#[test]
+fn cli_parse_vault_set_force() {
+    let cli = Cli::try_parse_from(["zeph", "vault", "set", "MY_KEY", "MY_VAL", "--force"]).unwrap();
+    match cli.command {
+        Some(Command::Vault {
+            command: VaultCommand::Set { force, .. },
+        }) => assert!(force, "--force must set force = true"),
         _ => panic!("expected VaultCommand::Set"),
     }
 }

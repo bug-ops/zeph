@@ -91,7 +91,8 @@ mod tests {
         )
         .unwrap();
         for (k, v) in keys {
-            age.set_secret_mut((*k).to_owned(), (*v).to_owned());
+            age.set_secret_mut((*k).to_owned(), (*v).to_owned(), false)
+                .unwrap();
         }
         // Keep tempdir alive by leaking — tests are short-lived, no I/O after this.
         std::mem::forget(dir);

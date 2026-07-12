@@ -80,6 +80,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `crates/zeph-vault/src/age.rs`: `AgeVaultProvider::set_secret_mut` silently overwrote an
+  existing secret with no confirmation, diff, or backup — the same defect class as the
+  `ZEPH_DURABLE_KEY` incident fixed for the `zeph init` wizard in #5880/#5874, but one layer
+  down in the vault crate itself, so every caller (CLI, wizards, OAuth credential store)
+  inherited the same silent-overwrite risk (#5955). `set_secret_mut` now takes an explicit
+  `overwrite: bool` and returns `AgeVaultError::AlreadyExists` when a key already exists and
+  `overwrite` is `false`, leaving the previous value untouched. `zeph vault set <key> <value>`
+  gained a `--force` flag: without it, attempting to overwrite an existing key fails with a
+  clear error telling the operator to re-run with `--force`; the previous secret value is never
+  printed, only its presence. Call sites that intentionally always overwrite (OAuth token
+  refresh in `src/bootstrap/oauth.rs`, and `zeph init`'s durable-key wizard step, which already
+  gates rotation behind its own explicit "rotate" confirmation phrase) pass `overwrite: true`
+  explicitly.
 - `src/commands/skill.rs`/`src/commands/plugin.rs`: `zeph skill search`/`get` and
   `zeph plugin search`/`get` printed the correct, actionable FR-004 message
   (`REGISTRY_NOT_CONFIGURED_MSG`) to stdout when the registry is disabled, then
