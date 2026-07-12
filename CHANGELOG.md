@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Added
 
+- **Memory**: wired the five remaining memory-maintenance loops — guidelines
+  (`mem-guidelines`), tree-consolidation (`mem-tree-consolidation`), hebbian-consolidation
+  (`mem-hebbian-consolidation`), episodic-consolidation (`mem-episodic-consolidation`), and
+  optical-forgetting (`mem-optical-forgetting`) — into `src/acp.rs` (`build_acp_deps`),
+  `src/daemon.rs` (`run_daemon`), and `src/serve/deps.rs` (`spawn_memory_maintenance_loops`),
+  matching the CLI/TUI path (`src/runner.rs`) and the first five loops wired by #5978. Each new
+  loop is gated by its own `[memory.*] enabled` config flag, exactly as in `runner.rs`; ACP and
+  `/sessions*`-created agents pass `None` for the hebbian loop's status sender since neither
+  entry point has a status-sender handle in scope, while the daemon reuses its own
+  `status_tx` (#5979).
 - **Skills**: `[skills.trust] require_integrity_check_on_promote` (default `true`) automatically
   arms the per-invocation BLAKE3 integrity re-check (`requires_trust_check`) whenever a skill is
   promoted to `trusted`/`verified`, at both the CLI (`zeph skill trust`) and in-session

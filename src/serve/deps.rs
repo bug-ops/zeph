@@ -465,11 +465,12 @@ pub(crate) async fn assemble_serve_deps(
     })
 }
 
-/// Spawns the five ongoing memory-maintenance sweeps (#5914) shared by every `/sessions*` agent:
-/// eviction, tier-promotion, scene-consolidation, consolidation, and forgetting. Extracted from
-/// [`assemble_serve_deps`] to keep that function under clippy's `too_many_lines`; mirrors the
-/// equivalent block in `src/runner.rs`'s CLI/TUI path, `src/acp.rs`'s `build_acp_deps`, and
-/// `src/daemon.rs`'s `run_daemon`.
+/// Spawns the ten ongoing memory-maintenance sweeps shared by every `/sessions*` agent: eviction,
+/// tier-promotion, scene-consolidation, consolidation, forgetting (#5914), plus guidelines,
+/// tree-consolidation, hebbian-consolidation, episodic-consolidation, and optical-forgetting
+/// (#5979). Extracted from [`assemble_serve_deps`] to keep that function under clippy's
+/// `too_many_lines`; mirrors the equivalent block in `src/runner.rs`'s CLI/TUI path,
+/// `src/acp.rs`'s `build_acp_deps`, and `src/daemon.rs`'s `run_daemon`.
 #[allow(clippy::too_many_lines)]
 fn spawn_memory_maintenance_loops(
     app: &crate::bootstrap::AppBuilder,
@@ -604,6 +605,144 @@ fn spawn_memory_maintenance_loops(
             },
         });
     }
+    if config.memory.compression_guidelines.enabled {
+        let store = Arc::new(memory.sqlite().clone());
+        let guidelines_provider = app
+            .build_guidelines_provider()
+            .unwrap_or_else(|| provider.clone());
+        let token_counter = Arc::clone(&memory.token_counter);
+        let guidelines_cfg = config.memory.compression_guidelines.clone();
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "mem-guidelines",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_guidelines_updater(
+                    store.clone(),
+                    guidelines_provider.clone(),
+                    token_counter.clone(),
+                    guidelines_cfg.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+    if config.memory.tree.enabled {
+        let store = Arc::new(memory.sqlite().clone());
+        let tree_provider = app
+            .build_tree_consolidation_provider()
+            .unwrap_or_else(|| provider.clone());
+        let tree_cfg = zeph_memory::TreeConsolidationConfig {
+            enabled: config.memory.tree.enabled,
+            sweep_interval_secs: config.memory.tree.sweep_interval_secs,
+            batch_size: config.memory.tree.batch_size,
+            similarity_threshold: config.memory.tree.similarity_threshold,
+            max_level: config.memory.tree.max_level,
+            min_cluster_size: config.memory.tree.min_cluster_size,
+            embed_timeout_secs: config.memory.semantic.embed_timeout_secs,
+        };
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "mem-tree-consolidation",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_tree_consolidation_loop(
+                    store.clone(),
+                    tree_provider.clone(),
+                    tree_cfg.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+    if config.memory.hebbian.enabled && config.memory.hebbian.consolidation_interval_secs > 0 {
+        let store = Arc::new(memory.sqlite().clone());
+        let hebbian_consolidation_cfg = zeph_memory::HebbianConsolidationConfig {
+            consolidation_interval_secs: config.memory.hebbian.consolidation_interval_secs,
+            consolidation_threshold: config.memory.hebbian.consolidation_threshold,
+            max_candidates_per_sweep: config.memory.hebbian.max_candidates_per_sweep,
+            consolidation_cooldown_secs: config.memory.hebbian.consolidation_cooldown_secs,
+            consolidation_prompt_timeout_secs: config
+                .memory
+                .hebbian
+                .consolidation_prompt_timeout_secs,
+            consolidation_max_neighbors: config.memory.hebbian.consolidation_max_neighbors,
+        };
+        let hebbian_provider = app
+            .build_hebbian_consolidation_provider()
+            .unwrap_or_else(|| provider.clone());
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "mem-hebbian-consolidation",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::spawn_hebbian_consolidation_loop(
+                    store.clone(),
+                    hebbian_consolidation_cfg.clone(),
+                    hebbian_provider.clone(),
+                    None,
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+    if config.memory.episodic_consolidation.enabled {
+        let store = Arc::new(memory.sqlite().clone());
+        let ep_cfg = zeph_memory::EpisodicConsolidationConfig {
+            enabled: config.memory.episodic_consolidation.enabled,
+            consolidation_provider: config
+                .memory
+                .episodic_consolidation
+                .consolidation_provider
+                .clone(),
+            interval_secs: config.memory.episodic_consolidation.interval_secs,
+            batch_size: config.memory.episodic_consolidation.batch_size,
+            min_age_secs: config.memory.episodic_consolidation.min_age_secs,
+            dedup_jaccard_threshold: config.memory.episodic_consolidation.dedup_jaccard_threshold,
+        };
+        let ep_provider = app
+            .build_episodic_consolidation_provider()
+            .unwrap_or_else(|| provider.clone());
+        let ep_qdrant = memory.embedding_store().cloned();
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "mem-episodic-consolidation",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_episodic_consolidation_loop(
+                    store.clone(),
+                    ep_provider.clone(),
+                    ep_cfg.clone(),
+                    ep_qdrant.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+    if config.memory.optical_forgetting.enabled {
+        let store = Arc::new(memory.sqlite().clone());
+        let optical_provider = app
+            .build_optical_forgetting_provider()
+            .unwrap_or_else(|| provider.clone());
+        let optical_cfg = config.memory.optical_forgetting.clone();
+        let forgetting_floor = config.memory.forgetting.forgetting_floor;
+        let cancel = supervisor.cancellation_token();
+        tracing::info_span!("serve.memory.optical_forgetting.startup").in_scope(|| {
+            supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+                name: "mem-optical-forgetting",
+                restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+                factory: move || {
+                    zeph_memory::start_optical_forgetting_loop(
+                        store.clone(),
+                        optical_provider.clone(),
+                        optical_cfg.clone(),
+                        forgetting_floor,
+                        cancel.clone(),
+                    )
+                },
+            });
+        });
+    }
 }
 
 /// Resolves `[serve] auth_token_vault_key` from the vault. `None` when the key is empty
@@ -732,17 +871,26 @@ mod tests {
         )
     }
 
-    /// Regression test confirming the five #5914 memory-maintenance loops (eviction,
-    /// tier-promotion, scene-consolidation, consolidation, forgetting) are actually spawned by
-    /// `spawn_memory_maintenance_loops` (called from `assemble_serve_deps` at
-    /// `zeph serve-sessions` startup) on the supplied `TaskSupervisor`. Unlike the sibling
-    /// acp.rs/daemon.rs coverage — which must reconstruct the block inline since it isn't
-    /// extracted there — `spawn_memory_maintenance_loops` is already its own narrowly-scoped
-    /// function, and `AppBuilder::for_test` lets this test call the real, shipped production
-    /// code directly rather than a copy of it.
+    /// Regression test confirming all ten memory-maintenance loops (eviction, tier-promotion,
+    /// scene-consolidation, consolidation, forgetting — #5914; plus guidelines,
+    /// tree-consolidation, hebbian-consolidation, episodic-consolidation, optical-forgetting —
+    /// #5979) are actually spawned by `spawn_memory_maintenance_loops` (called from
+    /// `assemble_serve_deps` at `zeph serve-sessions` startup) on the supplied `TaskSupervisor`.
+    /// The five #5979 loops are config-gated (unlike the unconditional first five), so the test
+    /// config below explicitly enables each — mirrors production behavior with those settings
+    /// on. Unlike the sibling acp.rs/daemon.rs coverage — which must reconstruct the block
+    /// inline since it isn't extracted there — `spawn_memory_maintenance_loops` is already its
+    /// own narrowly-scoped function, and `AppBuilder::for_test` lets this test call the real,
+    /// shipped production code directly rather than a copy of it.
     #[tokio::test]
-    async fn spawn_memory_maintenance_loops_registers_all_five_tasks() {
-        let app = crate::bootstrap::AppBuilder::for_test(zeph_core::config::Config::default());
+    async fn spawn_memory_maintenance_loops_registers_all_ten_tasks() {
+        let mut config = zeph_core::config::Config::default();
+        config.memory.compression_guidelines.enabled = true;
+        config.memory.tree.enabled = true;
+        config.memory.hebbian.enabled = true;
+        config.memory.episodic_consolidation.enabled = true;
+        config.memory.optical_forgetting.enabled = true;
+        let app = crate::bootstrap::AppBuilder::for_test(config);
         let memory = make_memory().await;
         let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
         let core = crate::acp::SharedCore {
@@ -770,10 +918,66 @@ mod tests {
             "mem-scene-consolidation",
             "mem-consolidation",
             "mem-forgetting",
+            "mem-guidelines",
+            "mem-tree-consolidation",
+            "mem-hebbian-consolidation",
+            "mem-episodic-consolidation",
+            "mem-optical-forgetting",
         ] {
             assert!(
                 names.contains(expected),
                 "expected {expected} registered by spawn_memory_maintenance_loops, got {names:?}"
+            );
+        }
+    }
+
+    /// #5979 regression: with `Config::default()` (the five new `[memory.*] enabled` flags all
+    /// default to `false`), `spawn_memory_maintenance_loops` must NOT register any of the five
+    /// newly-gated loops, while the five unconditional loops from #5914 must still fire. Sibling
+    /// of `spawn_memory_maintenance_loops_registers_all_ten_tasks` above, which only exercises
+    /// the enabled-flags path — this closes the gap where an inverted or missing `if` guard
+    /// would otherwise slip through undetected, since this is the one file among the three
+    /// #5979 call sites where the test exercises the real production gating logic directly
+    /// rather than a hand-reconstructed copy of it.
+    #[tokio::test]
+    async fn spawn_memory_maintenance_loops_gates_the_five_new_tasks_off_by_default() {
+        let app = crate::bootstrap::AppBuilder::for_test(zeph_core::config::Config::default());
+        let memory = make_memory().await;
+        let core = make_test_core(memory);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let supervisor = zeph_common::task_supervisor::TaskSupervisor::new(cancel);
+
+        spawn_memory_maintenance_loops(&app, &core, &supervisor);
+
+        let names: std::collections::HashSet<String> = supervisor
+            .snapshot()
+            .into_iter()
+            .map(|s| s.name.to_string())
+            .collect();
+        for expected in [
+            "mem-eviction",
+            "mem-tier-promotion",
+            "mem-scene-consolidation",
+            "mem-consolidation",
+            "mem-forgetting",
+        ] {
+            assert!(
+                names.contains(expected),
+                "expected {expected} registered by spawn_memory_maintenance_loops even with \
+                 Config::default(), got {names:?}"
+            );
+        }
+        for absent in [
+            "mem-guidelines",
+            "mem-tree-consolidation",
+            "mem-hebbian-consolidation",
+            "mem-episodic-consolidation",
+            "mem-optical-forgetting",
+        ] {
+            assert!(
+                !names.contains(absent),
+                "expected {absent} NOT registered by spawn_memory_maintenance_loops under \
+                 Config::default() (all five new loops default to disabled), got {names:?}"
             );
         }
     }

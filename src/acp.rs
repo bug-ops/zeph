@@ -642,11 +642,13 @@ async fn build_acp_deps(
 
     let config = app.config();
 
-    // #5914: memory maintenance loops — mirrors src/runner.rs's CLI/TUI wiring so ACP sessions
-    // (standalone `--acp` and the ACP half of `serve-sessions --acp`) get the same ongoing
-    // eviction/tier-promotion/scene-consolidation/consolidation/forgetting sweeps instead of an
-    // ever-growing, never-maintained memory store. Spawned once per connection (shared across
-    // all sessions on `acp_mem_supervisor`), matching runner.rs's once-per-process cadence.
+    // #5914/#5979: memory maintenance loops — mirrors src/runner.rs's CLI/TUI wiring so ACP
+    // sessions (standalone `--acp` and the ACP half of `serve-sessions --acp`) get the same
+    // ongoing eviction/tier-promotion/scene-consolidation/consolidation/forgetting/guidelines/
+    // tree-consolidation/hebbian-consolidation/episodic-consolidation/optical-forgetting sweeps
+    // instead of an ever-growing, never-maintained memory store. Spawned once per connection
+    // (shared across all sessions on `acp_mem_supervisor`), matching runner.rs's
+    // once-per-process cadence.
     {
         let store = std::sync::Arc::new(memory.sqlite().clone());
         let embedding = memory.embedding_store().cloned();
@@ -769,6 +771,144 @@ async fn build_acp_deps(
                     cancel.clone(),
                 )
             },
+        });
+    }
+    if config.memory.compression_guidelines.enabled {
+        let store = std::sync::Arc::new(memory.sqlite().clone());
+        let guidelines_provider = app
+            .build_guidelines_provider()
+            .unwrap_or_else(|| provider.clone());
+        let token_counter = std::sync::Arc::clone(&memory.token_counter);
+        let guidelines_cfg = config.memory.compression_guidelines.clone();
+        let cancel = acp_mem_supervisor.cancellation_token();
+        acp_mem_supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "mem-guidelines",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_guidelines_updater(
+                    store.clone(),
+                    guidelines_provider.clone(),
+                    token_counter.clone(),
+                    guidelines_cfg.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+    if config.memory.tree.enabled {
+        let store = std::sync::Arc::new(memory.sqlite().clone());
+        let tree_provider = app
+            .build_tree_consolidation_provider()
+            .unwrap_or_else(|| provider.clone());
+        let tree_cfg = zeph_memory::TreeConsolidationConfig {
+            enabled: config.memory.tree.enabled,
+            sweep_interval_secs: config.memory.tree.sweep_interval_secs,
+            batch_size: config.memory.tree.batch_size,
+            similarity_threshold: config.memory.tree.similarity_threshold,
+            max_level: config.memory.tree.max_level,
+            min_cluster_size: config.memory.tree.min_cluster_size,
+            embed_timeout_secs: config.memory.semantic.embed_timeout_secs,
+        };
+        let cancel = acp_mem_supervisor.cancellation_token();
+        acp_mem_supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "mem-tree-consolidation",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_tree_consolidation_loop(
+                    store.clone(),
+                    tree_provider.clone(),
+                    tree_cfg.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+    if config.memory.hebbian.enabled && config.memory.hebbian.consolidation_interval_secs > 0 {
+        let store = std::sync::Arc::new(memory.sqlite().clone());
+        let hebbian_consolidation_cfg = zeph_memory::HebbianConsolidationConfig {
+            consolidation_interval_secs: config.memory.hebbian.consolidation_interval_secs,
+            consolidation_threshold: config.memory.hebbian.consolidation_threshold,
+            max_candidates_per_sweep: config.memory.hebbian.max_candidates_per_sweep,
+            consolidation_cooldown_secs: config.memory.hebbian.consolidation_cooldown_secs,
+            consolidation_prompt_timeout_secs: config
+                .memory
+                .hebbian
+                .consolidation_prompt_timeout_secs,
+            consolidation_max_neighbors: config.memory.hebbian.consolidation_max_neighbors,
+        };
+        let hebbian_provider = app
+            .build_hebbian_consolidation_provider()
+            .unwrap_or_else(|| provider.clone());
+        let cancel = acp_mem_supervisor.cancellation_token();
+        acp_mem_supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "mem-hebbian-consolidation",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::spawn_hebbian_consolidation_loop(
+                    store.clone(),
+                    hebbian_consolidation_cfg.clone(),
+                    hebbian_provider.clone(),
+                    None,
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+    if config.memory.episodic_consolidation.enabled {
+        let store = std::sync::Arc::new(memory.sqlite().clone());
+        let ep_cfg = zeph_memory::EpisodicConsolidationConfig {
+            enabled: config.memory.episodic_consolidation.enabled,
+            consolidation_provider: config
+                .memory
+                .episodic_consolidation
+                .consolidation_provider
+                .clone(),
+            interval_secs: config.memory.episodic_consolidation.interval_secs,
+            batch_size: config.memory.episodic_consolidation.batch_size,
+            min_age_secs: config.memory.episodic_consolidation.min_age_secs,
+            dedup_jaccard_threshold: config.memory.episodic_consolidation.dedup_jaccard_threshold,
+        };
+        let ep_provider = app
+            .build_episodic_consolidation_provider()
+            .unwrap_or_else(|| provider.clone());
+        let ep_qdrant = memory.embedding_store().cloned();
+        let cancel = acp_mem_supervisor.cancellation_token();
+        acp_mem_supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "mem-episodic-consolidation",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_episodic_consolidation_loop(
+                    store.clone(),
+                    ep_provider.clone(),
+                    ep_cfg.clone(),
+                    ep_qdrant.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+    if config.memory.optical_forgetting.enabled {
+        let store = std::sync::Arc::new(memory.sqlite().clone());
+        let optical_provider = app
+            .build_optical_forgetting_provider()
+            .unwrap_or_else(|| provider.clone());
+        let optical_cfg = config.memory.optical_forgetting.clone();
+        let forgetting_floor = config.memory.forgetting.forgetting_floor;
+        let cancel = acp_mem_supervisor.cancellation_token();
+        tracing::info_span!("acp.memory.optical_forgetting.startup").in_scope(|| {
+            acp_mem_supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+                name: "mem-optical-forgetting",
+                restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+                factory: move || {
+                    zeph_memory::start_optical_forgetting_loop(
+                        store.clone(),
+                        optical_provider.clone(),
+                        optical_cfg.clone(),
+                        forgetting_floor,
+                        cancel.clone(),
+                    )
+                },
+            });
         });
     }
 
@@ -3805,15 +3945,18 @@ mod tests {
         );
     }
 
-    /// Regression test confirming the five #5914 memory-maintenance loops (eviction,
-    /// tier-promotion, scene-consolidation, consolidation, forgetting) are actually
-    /// registered on the ACP connection's own `TaskSupervisor`: `build_acp_deps` previously
-    /// spawned none of them, unlike the CLI path (`src/runner.rs`). Reconstructs the same
-    /// `TaskDescriptor`/`supervisor.spawn` block `build_acp_deps` now runs (falling back
-    /// directly to the primary provider where production uses `app.build_scene_provider()`/
-    /// `app.build_consolidation_provider()`, since this test has no `AppBuilder` to resolve a
-    /// named override from) and asserts every expected task name is present in the connection
-    /// supervisor's snapshot.
+    /// Regression test confirming all ten memory-maintenance loops (eviction, tier-promotion,
+    /// scene-consolidation, consolidation, forgetting — #5914; plus guidelines,
+    /// tree-consolidation, hebbian-consolidation, episodic-consolidation, optical-forgetting —
+    /// #5979) are actually registered on the ACP connection's own `TaskSupervisor`:
+    /// `build_acp_deps` previously spawned none of them, unlike the CLI path (`src/runner.rs`).
+    /// Reconstructs the same `TaskDescriptor`/`supervisor.spawn` block `build_acp_deps` now runs
+    /// (falling back directly to the primary provider where production uses
+    /// `app.build_scene_provider()`/`app.build_consolidation_provider()`/etc., since this test
+    /// has no `AppBuilder` to resolve a named override from, and passing `None` for the hebbian
+    /// status sender since `build_acp_deps` has no status-sender handle in scope either) and
+    /// asserts every expected task name is present in the connection supervisor's snapshot. The
+    /// five #5979 loops are config-gated, so the config below explicitly enables each.
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
     async fn acp_memory_maintenance_loops_registered_on_connection_supervisor() {
@@ -3830,7 +3973,12 @@ mod tests {
             .await
             .unwrap(),
         );
-        let config = zeph_core::config::Config::default();
+        let mut config = zeph_core::config::Config::default();
+        config.memory.compression_guidelines.enabled = true;
+        config.memory.tree.enabled = true;
+        config.memory.hebbian.enabled = true;
+        config.memory.episodic_consolidation.enabled = true;
+        config.memory.optical_forgetting.enabled = true;
         let cancel = tokio_util::sync::CancellationToken::new();
         let supervisor = zeph_common::TaskSupervisor::new(cancel);
 
@@ -3954,6 +4102,137 @@ mod tests {
                 },
             });
         }
+        {
+            let store = std::sync::Arc::new(memory.sqlite().clone());
+            let guidelines_provider = mock_provider.clone();
+            let token_counter = std::sync::Arc::clone(&memory.token_counter);
+            let guidelines_cfg = config.memory.compression_guidelines.clone();
+            let cancel = supervisor.cancellation_token();
+            supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+                name: "mem-guidelines",
+                restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+                factory: move || {
+                    zeph_memory::start_guidelines_updater(
+                        store.clone(),
+                        guidelines_provider.clone(),
+                        token_counter.clone(),
+                        guidelines_cfg.clone(),
+                        cancel.clone(),
+                    )
+                },
+            });
+        }
+        {
+            let store = std::sync::Arc::new(memory.sqlite().clone());
+            let tree_provider = mock_provider.clone();
+            let tree_cfg = zeph_memory::TreeConsolidationConfig {
+                enabled: config.memory.tree.enabled,
+                sweep_interval_secs: config.memory.tree.sweep_interval_secs,
+                batch_size: config.memory.tree.batch_size,
+                similarity_threshold: config.memory.tree.similarity_threshold,
+                max_level: config.memory.tree.max_level,
+                min_cluster_size: config.memory.tree.min_cluster_size,
+                embed_timeout_secs: config.memory.semantic.embed_timeout_secs,
+            };
+            let cancel = supervisor.cancellation_token();
+            supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+                name: "mem-tree-consolidation",
+                restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+                factory: move || {
+                    zeph_memory::start_tree_consolidation_loop(
+                        store.clone(),
+                        tree_provider.clone(),
+                        tree_cfg.clone(),
+                        cancel.clone(),
+                    )
+                },
+            });
+        }
+        {
+            let store = std::sync::Arc::new(memory.sqlite().clone());
+            let hebbian_consolidation_cfg = zeph_memory::HebbianConsolidationConfig {
+                consolidation_interval_secs: config.memory.hebbian.consolidation_interval_secs,
+                consolidation_threshold: config.memory.hebbian.consolidation_threshold,
+                max_candidates_per_sweep: config.memory.hebbian.max_candidates_per_sweep,
+                consolidation_cooldown_secs: config.memory.hebbian.consolidation_cooldown_secs,
+                consolidation_prompt_timeout_secs: config
+                    .memory
+                    .hebbian
+                    .consolidation_prompt_timeout_secs,
+                consolidation_max_neighbors: config.memory.hebbian.consolidation_max_neighbors,
+            };
+            let hebbian_provider = mock_provider.clone();
+            let cancel = supervisor.cancellation_token();
+            supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+                name: "mem-hebbian-consolidation",
+                restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+                factory: move || {
+                    zeph_memory::spawn_hebbian_consolidation_loop(
+                        store.clone(),
+                        hebbian_consolidation_cfg.clone(),
+                        hebbian_provider.clone(),
+                        None,
+                        cancel.clone(),
+                    )
+                },
+            });
+        }
+        {
+            let store = std::sync::Arc::new(memory.sqlite().clone());
+            let ep_cfg = zeph_memory::EpisodicConsolidationConfig {
+                enabled: config.memory.episodic_consolidation.enabled,
+                consolidation_provider: config
+                    .memory
+                    .episodic_consolidation
+                    .consolidation_provider
+                    .clone(),
+                interval_secs: config.memory.episodic_consolidation.interval_secs,
+                batch_size: config.memory.episodic_consolidation.batch_size,
+                min_age_secs: config.memory.episodic_consolidation.min_age_secs,
+                dedup_jaccard_threshold: config
+                    .memory
+                    .episodic_consolidation
+                    .dedup_jaccard_threshold,
+            };
+            let ep_provider = mock_provider.clone();
+            let ep_qdrant = memory.embedding_store().cloned();
+            let cancel = supervisor.cancellation_token();
+            supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+                name: "mem-episodic-consolidation",
+                restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+                factory: move || {
+                    zeph_memory::start_episodic_consolidation_loop(
+                        store.clone(),
+                        ep_provider.clone(),
+                        ep_cfg.clone(),
+                        ep_qdrant.clone(),
+                        cancel.clone(),
+                    )
+                },
+            });
+        }
+        {
+            let store = std::sync::Arc::new(memory.sqlite().clone());
+            let optical_provider = mock_provider.clone();
+            let optical_cfg = config.memory.optical_forgetting.clone();
+            let forgetting_floor = config.memory.forgetting.forgetting_floor;
+            let cancel = supervisor.cancellation_token();
+            tracing::info_span!("acp.memory.optical_forgetting.startup").in_scope(|| {
+                supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+                    name: "mem-optical-forgetting",
+                    restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+                    factory: move || {
+                        zeph_memory::start_optical_forgetting_loop(
+                            store.clone(),
+                            optical_provider.clone(),
+                            optical_cfg.clone(),
+                            forgetting_floor,
+                            cancel.clone(),
+                        )
+                    },
+                });
+            });
+        }
 
         let names: std::collections::HashSet<String> = supervisor
             .snapshot()
@@ -3966,6 +4245,11 @@ mod tests {
             "mem-scene-consolidation",
             "mem-consolidation",
             "mem-forgetting",
+            "mem-guidelines",
+            "mem-tree-consolidation",
+            "mem-hebbian-consolidation",
+            "mem-episodic-consolidation",
+            "mem-optical-forgetting",
         ] {
             assert!(
                 names.contains(expected),
