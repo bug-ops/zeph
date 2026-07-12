@@ -294,7 +294,7 @@ impl App {
         has_graph: bool,
     ) {
         use ratatui::text::{Line, Span};
-        use ratatui::widgets::Paragraph;
+        use ratatui::widgets::{Clear, Paragraph};
 
         // When SubAgents panel is focused (`a` key), always show the interactive sidebar.
         // Otherwise: auto-show plan when graph active, security events, or subagents list.
@@ -355,6 +355,7 @@ impl App {
                     Span::styled("≈ ", theme.highlight),
                     Span::styled("tasks  supervisor not available", theme.system_message),
                 ]);
+                frame.render_widget(Clear, area);
                 frame.render_widget(Paragraph::new(header), area);
             }
         }
@@ -426,5 +427,60 @@ fn shrink_top(area: ratatui::layout::Rect, n: u16) -> ratatui::layout::Rect {
         y: area.y + n,
         width: area.width,
         height: area.height - n,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use tokio::sync::mpsc;
+
+    use super::App;
+
+    fn make_app() -> App {
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        App::new(user_tx, agent_rx)
+    }
+
+    /// Fills the whole area with a sentinel glyph before calling `render_subagents_slot`, in
+    /// the same frame — mirroring the real bug shape (#6061): the task-panel
+    /// supervisor-unavailable fallback shares its `Rect` with Fleet/Durable/task-registry
+    /// overlays but, before the fix, never called `Clear`, so stale glyphs from whatever
+    /// rendered underneath survived in every cell the fallback `Paragraph` didn't touch.
+    fn render_fallback_over_sentinel(app: &mut App) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                for y in area.top()..area.bottom() {
+                    for x in area.left()..area.right() {
+                        frame.buffer_mut()[(x, y)].set_symbol("#");
+                    }
+                }
+                app.render_subagents_slot(frame, area, 0, false, false, false);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn task_panel_fallback_clears_stale_glyphs_when_supervisor_unavailable() {
+        let mut app = make_app();
+        app.show_task_panel = true;
+        assert!(app.task_supervisor.is_none());
+
+        let buf = render_fallback_over_sentinel(&mut app);
+
+        for cell in &buf.content {
+            assert_ne!(
+                cell.symbol(),
+                "#",
+                "stray sentinel glyph survived render — Clear is missing or not applied \
+                 to the whole area"
+            );
+        }
     }
 }

@@ -21,6 +21,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-tui`: closed three independent dispatch/state gaps (#6061, #5984, #5983).
+  - The task-registry overlay's supervisor-unavailable fallback (`render_subagents_slot`)
+    drew its "supervisor not available" message directly into the shared subagents-slot
+    `Rect` without a preceding `Clear`, unlike every other overlay in the crate, letting
+    stale glyphs from whatever rendered underneath bleed through. More significantly,
+    `active_panel` (Fleet/Durable/SubAgents/Tasks) and `show_task_panel` were tracked as
+    independent fields with no mutual-exclusion invariant, so the task panel could render
+    simultaneously with Fleet, Durable, or the interactive sub-agent sidebar — the latter
+    case left `j`/`k`/`Enter` still routed to a sidebar hidden behind the task panel.
+    Added `App::set_active_panel`, a single method all `active_panel`-mutating call sites
+    (`Action::SetActivePanel`, `Action::CyclePanelFocus`/Tab, `Action::ToggleTaskPanel`,
+    `TuiCommand::TaskPanel`/`FleetPanel`/`DurablePanel`) now go through, keeping
+    `show_task_panel` in sync so only one of the shared-Rect panels renders per frame.
+  - Loading a user theme file (`apply_theme`) and loading a sub-agent transcript
+    (`start_transcript_load`) both offload to `spawn_blocking` without ever setting
+    `status_label`, violating the "every background operation shows a status indicator"
+    convention every other async path in the TUI follows. Both now set `status_label`
+    before dispatch and clear it in their poll handlers on completion — and also on
+    cancellation, which the first pass missed: applying a built-in theme preset while a
+    user-file load is still in flight, or pressing Esc out of a sub-agent transcript view
+    before its load resolves, previously left the "loading..." label stuck indefinitely.
+  - `TuiCommand::SandboxStatus`/`TafcStatus` were parsed from the command palette but never
+    reached their already-implemented handlers in `forward_tui_commands`
+    (`src/tui_bridge.rs`) because `execute_command` never forwarded them through
+    `command_tx` — both are now wired into the existing `command_tx`-forwarding arm
+    alongside `ViewConfig`/`ViewAutonomy`. `TuiCommand::WorktreeList`/`WorktreeClean` were
+    silent no-ops with no backing implementation reachable from a running TUI session (the
+    live `WorktreeManager` instance is private to the agent's `SubAgentManager`, and the
+    CLI's `zeph worktree` subcommands construct their own, disconnected manager per
+    invocation); both now push a system message pointing to the equivalent CLI command
+    (`zeph worktree list` / `zeph worktree clean [--force]`) instead of doing nothing.
 - `zeph-subagent`: sub-agent vault secrets now re-validate their grant TTL live instead of
   only gating once at delivery time, and a targeted secret-request lookup no longer drops a
   concurrent sibling sub-agent's pending request (#5991, #5993).

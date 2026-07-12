@@ -108,7 +108,7 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             vec![]
         }
         Action::CyclePanelFocus => {
-            app.active_panel = match app.active_panel {
+            let next = match app.active_panel {
                 Panel::Chat => Panel::Skills,
                 Panel::Skills => Panel::Memory,
                 Panel::Memory => Panel::Resources,
@@ -117,10 +117,13 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
                 Panel::Fleet => Panel::Durable,
                 Panel::Durable => Panel::Chat,
             };
+            // Routed through set_active_panel so cycling into SubAgents/Fleet/Durable
+            // clears show_task_panel the same way every other entry point does (#6061).
+            app.set_active_panel(next);
             vec![]
         }
         Action::SetActivePanel(p) => {
-            app.active_panel = p;
+            app.set_active_panel(p);
             if p == Panel::SubAgents
                 && app.subagent_sidebar.selected().is_none()
                 && !app.metrics.sub_agents.is_empty()
@@ -134,7 +137,12 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             vec![]
         }
         Action::ToggleTaskPanel => {
-            app.show_task_panel = !app.show_task_panel;
+            if app.show_task_panel {
+                app.show_task_panel = false;
+            } else {
+                // Claim active_panel so Fleet/Durable are displaced instead of stacking (#6061).
+                app.set_active_panel(Panel::Tasks);
+            }
             vec![]
         }
         Action::TogglePlanView => {
@@ -682,15 +690,21 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
                     return vec![];
                 }
                 TuiCommand::TaskPanel => {
-                    app.show_task_panel = !app.show_task_panel;
+                    if app.show_task_panel {
+                        app.show_task_panel = false;
+                    } else {
+                        // Claim active_panel so Fleet/Durable are displaced instead of
+                        // stacking on the task panel (#6061).
+                        app.set_active_panel(Panel::Tasks);
+                    }
                     return vec![];
                 }
                 TuiCommand::FleetPanel => {
-                    app.active_panel = Panel::Fleet;
+                    app.set_active_panel(Panel::Fleet);
                     return vec![];
                 }
                 TuiCommand::DurablePanel => {
-                    app.active_panel = Panel::Durable;
+                    app.set_active_panel(Panel::Durable);
                     return vec![];
                 }
                 TuiCommand::PlanToggleView => {
@@ -774,6 +788,23 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
                         "To ingest project artifacts: run \
                          `zeph knowledge ingest --source <specs|changelog|handoff|coverage|git-log>` \
                          from the CLI."
+                            .to_owned(),
+                    );
+                    return vec![];
+                }
+                TuiCommand::WorktreeList => {
+                    app.push_system_message_pub(
+                        "Worktree listing requires a fresh git scan and is not available \
+                         from a running TUI session.\n  Run from the CLI:\n  zeph worktree list"
+                            .to_owned(),
+                    );
+                    return vec![];
+                }
+                TuiCommand::WorktreeClean => {
+                    app.push_system_message_pub(
+                        "Worktree cleanup removes directories via git and is not available \
+                         from a running TUI session.\n  Run from the CLI:\n  zeph worktree clean \
+                         (add --force to remove entries git does not report as prunable)"
                             .to_owned(),
                     );
                     return vec![];
@@ -1067,6 +1098,56 @@ mod tests {
         assert_eq!(app.active_panel, Panel::Skills);
     }
 
+    // ── #6061 CyclePanelFocus (Tab key) must honor the mutual-exclusion invariant ──
+    //
+    // Flagged in the first coverage pass as untested: Tab-cycling into SubAgents/Fleet/
+    // Durable while the task panel is open used to leave both "active" simultaneously,
+    // since CyclePanelFocus assigned `active_panel` directly instead of going through
+    // set_active_panel like every other entry point. Now centralized — these confirm
+    // the fix closes that gap.
+
+    #[test]
+    fn cycle_panel_focus_into_subagents_clears_task_panel() {
+        let (mut app, _rx) = make_app();
+        app.active_panel = Panel::Resources;
+        app.show_task_panel = true;
+        reduce(&mut app, Action::CyclePanelFocus);
+        assert_eq!(app.active_panel, Panel::SubAgents);
+        assert!(!app.show_task_panel);
+    }
+
+    #[test]
+    fn cycle_panel_focus_into_fleet_clears_task_panel() {
+        let (mut app, _rx) = make_app();
+        app.active_panel = Panel::SubAgents;
+        app.show_task_panel = true;
+        reduce(&mut app, Action::CyclePanelFocus);
+        assert_eq!(app.active_panel, Panel::Fleet);
+        assert!(!app.show_task_panel);
+    }
+
+    #[test]
+    fn cycle_panel_focus_into_durable_clears_task_panel() {
+        let (mut app, _rx) = make_app();
+        app.active_panel = Panel::Fleet;
+        app.show_task_panel = true;
+        reduce(&mut app, Action::CyclePanelFocus);
+        assert_eq!(app.active_panel, Panel::Durable);
+        assert!(!app.show_task_panel);
+    }
+
+    #[test]
+    fn cycle_panel_focus_into_skills_does_not_clear_task_panel() {
+        // Negative case: cycling into a panel that does NOT share the subagents Rect
+        // must leave show_task_panel untouched.
+        let (mut app, _rx) = make_app();
+        app.active_panel = Panel::Chat;
+        app.show_task_panel = true;
+        reduce(&mut app, Action::CyclePanelFocus);
+        assert_eq!(app.active_panel, Panel::Skills);
+        assert!(app.show_task_panel);
+    }
+
     #[test]
     fn dispatch_toggle_mouse_flips_flag() {
         let (mut app, _rx) = make_app();
@@ -1129,6 +1210,137 @@ mod tests {
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::DurablePanel));
         assert!(effects.is_empty());
         assert_eq!(app.active_panel, Panel::Durable);
+    }
+
+    // ── #6061 active_panel / show_task_panel mutual exclusion ──────────────────
+
+    #[test]
+    fn dispatch_fleet_panel_clears_task_panel() {
+        let (mut app, _rx) = make_app();
+        app.show_task_panel = true;
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::FleetPanel));
+        assert!(effects.is_empty());
+        assert_eq!(app.active_panel, Panel::Fleet);
+        assert!(
+            !app.show_task_panel,
+            "activating Fleet must clear the task-panel overlay so it can't bleed \
+             through onto the shared Rect"
+        );
+    }
+
+    #[test]
+    fn dispatch_durable_panel_clears_task_panel() {
+        let (mut app, _rx) = make_app();
+        app.show_task_panel = true;
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::DurablePanel));
+        assert!(effects.is_empty());
+        assert_eq!(app.active_panel, Panel::Durable);
+        assert!(
+            !app.show_task_panel,
+            "activating Durable must clear the task-panel overlay so it can't bleed \
+             through onto the shared Rect"
+        );
+    }
+
+    #[test]
+    fn dispatch_task_panel_toggle_on_claims_active_panel() {
+        let (mut app, _rx) = make_app();
+        app.active_panel = Panel::Fleet;
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::TaskPanel));
+        assert!(effects.is_empty());
+        assert!(app.show_task_panel);
+        assert_eq!(
+            app.active_panel,
+            Panel::Tasks,
+            "toggling the task panel on must displace whatever panel (Fleet/Durable) \
+             previously owned the shared Rect"
+        );
+    }
+
+    #[test]
+    fn dispatch_task_panel_toggle_off_leaves_active_panel_untouched() {
+        let (mut app, _rx) = make_app();
+        app.show_task_panel = true;
+        app.active_panel = Panel::Tasks;
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::TaskPanel));
+        assert!(effects.is_empty());
+        assert!(!app.show_task_panel);
+        // Toggling off must not itself reassign active_panel — only the "on" transition claims it.
+        assert_eq!(app.active_panel, Panel::Tasks);
+    }
+
+    #[test]
+    fn action_set_active_panel_fleet_clears_task_panel() {
+        let (mut app, _rx) = make_app();
+        app.show_task_panel = true;
+        let effects = reduce(&mut app, Action::SetActivePanel(Panel::Fleet));
+        assert!(effects.is_empty());
+        assert_eq!(app.active_panel, Panel::Fleet);
+        assert!(
+            !app.show_task_panel,
+            "SetActivePanel(Fleet) must clear show_task_panel (covers the `f` keyboard \
+             shortcut path, distinct from the TuiCommand::FleetPanel command-palette path)"
+        );
+    }
+
+    #[test]
+    fn action_set_active_panel_durable_clears_task_panel() {
+        let (mut app, _rx) = make_app();
+        app.show_task_panel = true;
+        let effects = reduce(&mut app, Action::SetActivePanel(Panel::Durable));
+        assert!(effects.is_empty());
+        assert_eq!(app.active_panel, Panel::Durable);
+        assert!(
+            !app.show_task_panel,
+            "SetActivePanel(Durable) must clear show_task_panel (covers the `D` keyboard \
+             shortcut path)"
+        );
+    }
+
+    #[test]
+    fn action_set_active_panel_subagents_clears_task_panel() {
+        // S1: SubAgents renders as the interactive base layer of the same shared Rect as
+        // Fleet/Durable (not just an overlay), so it must also displace the task panel.
+        // Exercised through the full reduce() path (not just the App::set_active_panel
+        // unit test) since this arm has SubAgents-specific side effects (sidebar
+        // selection) that could theoretically interfere with the invariant.
+        let (mut app, _rx) = make_app();
+        app.show_task_panel = true;
+        let effects = reduce(&mut app, Action::SetActivePanel(Panel::SubAgents));
+        assert!(effects.is_empty());
+        assert_eq!(app.active_panel, Panel::SubAgents);
+        assert!(
+            !app.show_task_panel,
+            "SetActivePanel(SubAgents) must clear show_task_panel (covers the `a` keyboard \
+             shortcut path)"
+        );
+    }
+
+    #[test]
+    fn action_set_active_panel_chat_does_not_clear_task_panel() {
+        // Negative case: only Fleet/Durable share the subagents Rect with the task panel —
+        // switching to an unrelated panel must not incidentally clear show_task_panel.
+        let (mut app, _rx) = make_app();
+        app.show_task_panel = true;
+        let effects = reduce(&mut app, Action::SetActivePanel(Panel::Skills));
+        assert!(effects.is_empty());
+        assert_eq!(app.active_panel, Panel::Skills);
+        assert!(app.show_task_panel);
+    }
+
+    #[test]
+    fn action_toggle_task_panel_on_claims_active_panel() {
+        let (mut app, _rx) = make_app();
+        app.active_panel = Panel::Durable;
+        let effects = reduce(&mut app, Action::ToggleTaskPanel);
+        assert!(effects.is_empty());
+        assert!(app.show_task_panel);
+        assert_eq!(
+            app.active_panel,
+            Panel::Tasks,
+            "the `t` keyboard shortcut (Action::ToggleTaskPanel) must displace Fleet/Durable \
+             the same way TuiCommand::TaskPanel does"
+        );
     }
 
     #[test]
@@ -1225,6 +1437,26 @@ mod tests {
         );
         assert!(effects.is_empty());
         assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    // ── #5983 WorktreeList/WorktreeClean CLI-redirect (was silently dropped) ──
+
+    #[test]
+    fn dispatch_worktree_list_pushes_cli_redirect_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::WorktreeList));
+        assert!(effects.is_empty());
+        let msg = &app.sessions.current().messages.last().unwrap().content;
+        assert!(msg.contains("zeph worktree list"));
+    }
+
+    #[test]
+    fn dispatch_worktree_clean_pushes_cli_redirect_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::WorktreeClean));
+        assert!(effects.is_empty());
+        let msg = &app.sessions.current().messages.last().unwrap().content;
+        assert!(msg.contains("zeph worktree clean"));
     }
 
     // ── Group B tests ───────────────────────────────────────────────────────────

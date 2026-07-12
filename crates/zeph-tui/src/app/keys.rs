@@ -123,7 +123,10 @@ impl App {
     #[allow(clippy::too_many_lines)] // large match over all TuiCommand variants
     pub(super) fn execute_command(&mut self, cmd: TuiCommand) {
         match cmd {
-            TuiCommand::ViewConfig | TuiCommand::ViewAutonomy => {
+            TuiCommand::ViewConfig
+            | TuiCommand::ViewAutonomy
+            | TuiCommand::SandboxStatus
+            | TuiCommand::TafcStatus => {
                 if let Some(ref tx) = self.command_tx {
                     // try_send: capacity 16, user-triggered one at a time — overflow not possible in practice
                     let _ = tx.try_send(cmd);
@@ -1201,5 +1204,49 @@ mod tests {
             App::parse_session_slash("/theme "),
             Some(TuiCommand::ListThemes)
         );
+    }
+
+    // ── #5983 SandboxStatus/TafcStatus dispatch (was silently dropped) ──────────
+
+    #[test]
+    fn execute_command_forwards_sandbox_status_through_command_tx() {
+        let (mut app, _user_rx, _agent_tx) = make_app();
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        app.command_tx = Some(cmd_tx);
+
+        app.execute_command(TuiCommand::SandboxStatus);
+
+        let forwarded = cmd_rx.try_recv().expect("command must be forwarded");
+        assert_eq!(forwarded, TuiCommand::SandboxStatus);
+        assert!(
+            app.sessions.current().messages.is_empty(),
+            "must not fall back to a stub system message when command_tx is wired"
+        );
+    }
+
+    #[test]
+    fn execute_command_forwards_tafc_status_through_command_tx() {
+        let (mut app, _user_rx, _agent_tx) = make_app();
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        app.command_tx = Some(cmd_tx);
+
+        app.execute_command(TuiCommand::TafcStatus);
+
+        let forwarded = cmd_rx.try_recv().expect("command must be forwarded");
+        assert_eq!(forwarded, TuiCommand::TafcStatus);
+        assert!(app.sessions.current().messages.is_empty());
+    }
+
+    #[test]
+    fn execute_command_sandbox_status_falls_back_without_command_tx() {
+        // No command_tx wired (e.g. constructed without `with_command_tx`) — must report
+        // via a system message instead of silently dropping the command.
+        let (mut app, _user_rx, _agent_tx) = make_app();
+        assert!(app.command_tx.is_none());
+
+        app.execute_command(TuiCommand::SandboxStatus);
+
+        let msg = &app.sessions.current().messages.last().unwrap().content;
+        assert!(msg.contains("not available"));
     }
 }

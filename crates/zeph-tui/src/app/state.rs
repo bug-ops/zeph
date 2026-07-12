@@ -241,7 +241,14 @@ impl App {
         // Built-in presets are compile-time constants — no I/O, apply synchronously.
         if let Some(preset) = presets::Preset::from_name(name) {
             // Cancel any in-flight user-file load so it cannot revert this newer choice.
-            self.pending_theme = None;
+            if self.pending_theme.take().is_some() {
+                // Only clear if we actually had a load in flight — otherwise this could
+                // wipe an unrelated status_label (e.g. "indexing files..."). Its
+                // "loading theme..." label would otherwise never be cleared, since
+                // poll_pending_theme (the only other clearer) never runs once
+                // pending_theme is gone.
+                self.sessions.current_mut().status_label = None;
+            }
             self.pending_theme_name = None;
             let palette = preset.palette();
             let new_theme = Theme::from_palette_with_mode(&palette, self.effective_color_mode);
@@ -254,6 +261,7 @@ impl App {
 
         // User file: offload blocking I/O to a spawn_blocking thread.
         // The result is installed by `poll_pending_theme` on the next tick.
+        self.sessions.current_mut().status_label = Some("loading theme...".to_owned());
         let name_owned = name.to_owned();
         let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::task::spawn_blocking(move || {
@@ -276,6 +284,7 @@ impl App {
         match rx.try_recv() {
             Ok(result) => {
                 self.pending_theme = None;
+                self.sessions.current_mut().status_label = None;
                 let name = self.pending_theme_name.take().unwrap_or_default();
                 match result {
                     Ok(palette) => {
@@ -299,6 +308,7 @@ impl App {
                 // Sender dropped without sending (spawn_blocking panicked).
                 self.pending_theme = None;
                 self.pending_theme_name = None;
+                self.sessions.current_mut().status_label = None;
                 tracing::warn!("pending theme load task dropped without result");
             }
         }
@@ -1041,6 +1051,30 @@ impl App {
         eff
     }
 
+    /// Sets `active_panel`, keeping `show_task_panel` in sync so at most one
+    /// panel/overlay ever claims `render_subagents_slot`'s shared `Rect` per frame (#6061).
+    ///
+    /// `SubAgents`, `Fleet`, and `Durable` all render into that Rect (`SubAgents` as the
+    /// interactive base layer with live key routing, `Fleet`/`Durable` as overlays on top of
+    /// it) — activating any of them clears `show_task_panel` so the task-panel overlay can't
+    /// silently cover live content or a hidden-but-still-key-routed sub-agent sidebar.
+    /// `Tasks` is the task panel's own marker value and sets `show_task_panel` back on.
+    /// `Chat`/`Skills`/`Memory`/`Resources` render in unrelated areas and are left alone —
+    /// the task panel may keep overlaying the (non-interactive) default baseline there.
+    ///
+    /// All call sites that change `active_panel` (`Action::SetActivePanel`,
+    /// `Action::CyclePanelFocus`, `TuiCommand::FleetPanel`/`DurablePanel`) must go through
+    /// this method rather than assigning the field directly, so the invariant holds
+    /// regardless of which input path triggered the change.
+    pub(crate) fn set_active_panel(&mut self, p: Panel) {
+        self.active_panel = p;
+        match p {
+            Panel::Tasks => self.show_task_panel = true,
+            Panel::SubAgents | Panel::Fleet | Panel::Durable => self.show_task_panel = false,
+            Panel::Chat | Panel::Skills | Panel::Memory | Panel::Resources => {}
+        }
+    }
+
     /// Configure the animation budget from config.
     ///
     /// # Examples
@@ -1414,7 +1448,7 @@ impl App {
 mod tests {
     use tokio::sync::mpsc;
 
-    use super::App;
+    use super::{App, Panel};
 
     fn make_app() -> App {
         let (user_tx, _) = mpsc::channel(1);
@@ -1509,5 +1543,210 @@ mod tests {
     fn remote_daemon_url_defaults_to_none() {
         let app = make_app();
         assert_eq!(app.remote_daemon_url(), None);
+    }
+
+    // ── #5984 status_label lifecycle around theme load ─────────────────────────
+
+    #[test]
+    fn apply_theme_preset_does_not_touch_status_label() {
+        // Built-in presets apply synchronously — there is no background load, so no
+        // "loading theme..." indicator should ever appear for this path.
+        let mut app = make_app();
+        app.apply_theme("zephyr-light").expect("valid preset");
+        assert_eq!(app.status_label(), None);
+    }
+
+    #[tokio::test]
+    async fn apply_theme_user_file_sets_status_label_before_dispatch() {
+        // A name that is not a built-in preset takes the user-file branch, which offloads
+        // to spawn_blocking (requires a Tokio runtime). status_label must be set
+        // synchronously, before the background task can possibly complete, so the
+        // spinner is visible immediately (#5984).
+        let mut app = make_app();
+        let result = app.apply_theme("my-custom-theme");
+        assert!(
+            matches!(result, Ok(false)),
+            "user-file branch defers via Ok(false)"
+        );
+        assert_eq!(
+            app.status_label(),
+            Some("loading theme..."),
+            "status_label must be set before the async dispatch, not after"
+        );
+    }
+
+    #[test]
+    fn poll_pending_theme_clears_status_label_on_success() {
+        let mut app = make_app();
+        app.sessions.current_mut().status_label = Some("loading theme...".to_owned());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.pending_theme = Some(rx);
+        app.pending_theme_name = Some("custom".to_owned());
+        tx.send(Ok(crate::theme::presets::Preset::Zephyr.palette()))
+            .expect("receiver still open");
+
+        app.poll_pending_theme();
+
+        assert_eq!(app.status_label(), None);
+        assert!(app.pending_theme.is_none());
+    }
+
+    #[test]
+    fn poll_pending_theme_clears_status_label_on_load_error() {
+        // The Ok(result) branch covers both success and a load error inside the Result —
+        // status_label must be cleared in both sub-cases, not only on success.
+        let mut app = make_app();
+        app.sessions.current_mut().status_label = Some("loading theme...".to_owned());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.pending_theme = Some(rx);
+        app.pending_theme_name = Some("custom".to_owned());
+        tx.send(Err(crate::theme::ThemeLoadError::UnsafeName(
+            "custom".to_owned(),
+        )))
+        .expect("receiver still open");
+
+        app.poll_pending_theme();
+
+        assert_eq!(app.status_label(), None);
+        assert!(app.pending_theme.is_none());
+    }
+
+    #[test]
+    fn poll_pending_theme_clears_status_label_when_task_panics() {
+        // Closed branch: the spawn_blocking task dropped its sender without sending
+        // (e.g. panicked) — status_label must not be left stuck on "loading theme...".
+        let mut app = make_app();
+        app.sessions.current_mut().status_label = Some("loading theme...".to_owned());
+        let (tx, rx) = tokio::sync::oneshot::channel::<
+            Result<crate::theme::SemanticPalette, crate::theme::ThemeLoadError>,
+        >();
+        app.pending_theme = Some(rx);
+        app.pending_theme_name = Some("custom".to_owned());
+        drop(tx);
+
+        app.poll_pending_theme();
+
+        assert_eq!(app.status_label(), None);
+        assert!(app.pending_theme.is_none());
+        assert!(app.pending_theme_name.is_none());
+    }
+
+    #[test]
+    fn poll_pending_theme_is_noop_while_still_pending() {
+        let mut app = make_app();
+        app.sessions.current_mut().status_label = Some("loading theme...".to_owned());
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+        app.pending_theme = Some(rx);
+
+        app.poll_pending_theme();
+
+        // Not ready yet (TryRecvError::Empty) — status_label must remain set.
+        assert_eq!(app.status_label(), Some("loading theme..."));
+        assert!(app.pending_theme.is_some());
+    }
+
+    // ── #5984 apply_theme(preset) cancellation must not strand status_label ────
+
+    #[test]
+    fn apply_theme_preset_clears_status_label_when_cancelling_pending_user_load() {
+        // Reproduces the stuck-spinner bug: a user-file load is in flight (status_label =
+        // "loading theme..."), then the user picks a built-in preset before it resolves.
+        // The preset path cancels pending_theme, but poll_pending_theme (the only other
+        // clearer) will now never run again — apply_theme itself must clear the label.
+        let mut app = make_app();
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+        app.pending_theme = Some(rx);
+        app.pending_theme_name = Some("my-custom-theme".to_owned());
+        app.sessions.current_mut().status_label = Some("loading theme...".to_owned());
+
+        app.apply_theme("zephyr-light").expect("valid preset");
+
+        assert!(
+            app.pending_theme.is_none(),
+            "pending load must be cancelled"
+        );
+        assert_eq!(
+            app.status_label(),
+            None,
+            "cancelling the in-flight theme load must clear its status_label"
+        );
+    }
+
+    #[test]
+    fn apply_theme_preset_preserves_unrelated_status_label_when_nothing_pending() {
+        // Negative case for the same fix: if there is no pending_theme in flight, an
+        // unrelated status_label (e.g. from a concurrent file index) must survive a
+        // preset switch — the clear is conditioned on an actual cancellation happening.
+        let mut app = make_app();
+        assert!(app.pending_theme.is_none());
+        app.sessions.current_mut().status_label = Some("indexing files...".to_owned());
+
+        app.apply_theme("zephyr-light").expect("valid preset");
+
+        assert_eq!(
+            app.status_label(),
+            Some("indexing files..."),
+            "unrelated status_label must not be wiped by a preset switch with no \
+             in-flight theme load to cancel"
+        );
+    }
+
+    // ── #6061 set_active_panel is the single source of truth for the invariant ─
+
+    #[test]
+    fn set_active_panel_tasks_shows_task_panel() {
+        let mut app = make_app();
+        app.set_active_panel(Panel::Tasks);
+        assert_eq!(app.active_panel, Panel::Tasks);
+        assert!(app.show_task_panel);
+    }
+
+    #[test]
+    fn set_active_panel_subagents_hides_task_panel() {
+        // SubAgents renders as the interactive base layer of the shared Rect (not just an
+        // overlay like Fleet/Durable), so it must also displace the task panel.
+        let mut app = make_app();
+        app.show_task_panel = true;
+        app.set_active_panel(Panel::SubAgents);
+        assert_eq!(app.active_panel, Panel::SubAgents);
+        assert!(!app.show_task_panel);
+    }
+
+    #[test]
+    fn set_active_panel_fleet_hides_task_panel() {
+        let mut app = make_app();
+        app.show_task_panel = true;
+        app.set_active_panel(Panel::Fleet);
+        assert!(!app.show_task_panel);
+    }
+
+    #[test]
+    fn set_active_panel_durable_hides_task_panel() {
+        let mut app = make_app();
+        app.show_task_panel = true;
+        app.set_active_panel(Panel::Durable);
+        assert!(!app.show_task_panel);
+    }
+
+    #[test]
+    fn set_active_panel_unrelated_panels_leave_task_panel_untouched() {
+        // Chat/Skills/Memory/Resources render in unrelated areas — switching to them
+        // must not incidentally toggle show_task_panel in either direction.
+        let mut app = make_app();
+        for panel in [Panel::Chat, Panel::Skills, Panel::Memory, Panel::Resources] {
+            app.show_task_panel = true;
+            app.set_active_panel(panel);
+            assert!(
+                app.show_task_panel,
+                "{panel:?} must not clear show_task_panel"
+            );
+
+            app.show_task_panel = false;
+            app.set_active_panel(panel);
+            assert!(
+                !app.show_task_panel,
+                "{panel:?} must not set show_task_panel"
+            );
+        }
     }
 }

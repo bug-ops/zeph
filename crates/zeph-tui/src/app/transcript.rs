@@ -22,7 +22,20 @@ impl App {
         self.sessions.current_mut().render_cache.clear();
         self.sessions.current_mut().scroll_offset = 0;
         self.sessions.current_mut().transcript_cache = None;
-        self.sessions.current_mut().pending_transcript = None;
+        if self
+            .sessions
+            .current_mut()
+            .pending_transcript
+            .take()
+            .is_some()
+        {
+            // Only clear if a load was actually in flight — otherwise this could wipe an
+            // unrelated status_label. Its "loading transcript..." label would otherwise
+            // never be cleared, since poll_pending_transcript (the only other clearer)
+            // never runs once pending_transcript is gone (e.g. Esc back to Main before
+            // the load resolves).
+            self.sessions.current_mut().status_label = None;
+        }
         // Kick off transcript load if switching to a subagent.
         if let AgentViewTarget::SubAgent { ref id, .. } = self.sessions.current().view_target {
             let id = id.clone();
@@ -47,6 +60,7 @@ impl App {
 
         let (tx, rx) = oneshot::channel();
         self.sessions.current_mut().pending_transcript = Some(rx);
+        self.sessions.current_mut().status_label = Some("loading transcript...".to_owned());
         // Determine if the agent is still active (for C2: skip warning on partial last line).
         let is_active = self
             .metrics
@@ -70,6 +84,7 @@ impl App {
         match rx.try_recv() {
             Ok((entries, total)) => {
                 self.sessions.current_mut().pending_transcript = None;
+                self.sessions.current_mut().status_label = None;
                 let turns_at_load = self
                     .sessions
                     .current()
@@ -92,6 +107,7 @@ impl App {
             Err(oneshot::error::TryRecvError::Empty) => {}
             Err(oneshot::error::TryRecvError::Closed) => {
                 self.sessions.current_mut().pending_transcript = None;
+                self.sessions.current_mut().status_label = None;
             }
         }
     }
@@ -168,5 +184,157 @@ impl App {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::{mpsc, oneshot};
+    use zeph_core::metrics::SubAgentMetrics;
+
+    use super::*;
+
+    fn make_app() -> App {
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        App::new(user_tx, agent_rx)
+    }
+
+    fn sub_agent(id: &str, transcript_dir: Option<&str>) -> SubAgentMetrics {
+        SubAgentMetrics {
+            id: id.to_owned(),
+            name: "test-agent".to_owned(),
+            state: "completed".to_owned(),
+            transcript_dir: transcript_dir.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    // ── #5984 status_label lifecycle around transcript load ────────────────────
+
+    #[tokio::test]
+    async fn start_transcript_load_sets_status_label_before_dispatch() {
+        // start_transcript_load offloads to spawn_blocking, which requires a Tokio runtime.
+        let mut app = make_app();
+        app.metrics.sub_agents = vec![sub_agent("sa-1", Some("/tmp/zeph-test-nonexistent-dir"))];
+        app.start_transcript_load("sa-1");
+        assert_eq!(
+            app.status_label(),
+            Some("loading transcript..."),
+            "status_label must be set synchronously before the spawn_blocking dispatch"
+        );
+        assert!(app.sessions.current().pending_transcript.is_some());
+    }
+
+    #[test]
+    fn start_transcript_load_noop_when_no_transcript_dir() {
+        // No transcript_dir → transcript_path is None → early return, no dispatch at all.
+        let mut app = make_app();
+        app.metrics.sub_agents = vec![sub_agent("sa-1", None)];
+        app.start_transcript_load("sa-1");
+        assert_eq!(app.status_label(), None);
+        assert!(app.sessions.current().pending_transcript.is_none());
+    }
+
+    #[test]
+    fn poll_pending_transcript_clears_status_label_on_success() {
+        let mut app = make_app();
+        app.sessions.current_mut().status_label = Some("loading transcript...".to_owned());
+        app.sessions.current_mut().view_target = AgentViewTarget::SubAgent {
+            id: "sa-1".to_owned(),
+            name: "Planner".to_owned(),
+        };
+        let (tx, rx) = oneshot::channel();
+        app.sessions.current_mut().pending_transcript = Some(rx);
+        tx.send((Vec::new(), 0)).expect("receiver still open");
+
+        app.poll_pending_transcript();
+
+        assert_eq!(app.status_label(), None);
+        assert!(app.sessions.current().pending_transcript.is_none());
+    }
+
+    #[test]
+    fn poll_pending_transcript_clears_status_label_when_task_panics() {
+        // Closed branch: the spawn_blocking task dropped its sender without sending
+        // (e.g. panicked) — status_label must not be left stuck on "loading transcript...".
+        let mut app = make_app();
+        app.sessions.current_mut().status_label = Some("loading transcript...".to_owned());
+        let (tx, rx) = oneshot::channel::<(Vec<TuiTranscriptEntry>, usize)>();
+        app.sessions.current_mut().pending_transcript = Some(rx);
+        drop(tx);
+
+        app.poll_pending_transcript();
+
+        assert_eq!(app.status_label(), None);
+        assert!(app.sessions.current().pending_transcript.is_none());
+    }
+
+    #[test]
+    fn poll_pending_transcript_is_noop_while_still_pending() {
+        let mut app = make_app();
+        app.sessions.current_mut().status_label = Some("loading transcript...".to_owned());
+        let (_tx, rx) = oneshot::channel();
+        app.sessions.current_mut().pending_transcript = Some(rx);
+
+        app.poll_pending_transcript();
+
+        // Not ready yet (TryRecvError::Empty) — status_label must remain set.
+        assert_eq!(app.status_label(), Some("loading transcript..."));
+        assert!(app.sessions.current().pending_transcript.is_some());
+    }
+
+    // ── #5984 set_view_target cancellation must not strand status_label ────────
+
+    #[test]
+    fn set_view_target_cancels_pending_load_and_clears_status_label() {
+        // Reproduces the stuck-spinner bug: a transcript load is in flight
+        // (status_label = "loading transcript..."), then the user navigates away
+        // (e.g. Esc back to Main) before it resolves. The switch cancels
+        // pending_transcript, but poll_pending_transcript (the only other clearer)
+        // will now never run again — set_view_target itself must clear the label.
+        let mut app = make_app();
+        app.sessions.current_mut().view_target = AgentViewTarget::SubAgent {
+            id: "sa-1".to_owned(),
+            name: "Planner".to_owned(),
+        };
+        let (_tx, rx) = oneshot::channel();
+        app.sessions.current_mut().pending_transcript = Some(rx);
+        app.sessions.current_mut().status_label = Some("loading transcript...".to_owned());
+
+        app.set_view_target(AgentViewTarget::Main);
+
+        assert!(
+            app.sessions.current().pending_transcript.is_none(),
+            "pending load must be cancelled"
+        );
+        assert_eq!(
+            app.status_label(),
+            None,
+            "cancelling the in-flight transcript load must clear its status_label"
+        );
+    }
+
+    #[test]
+    fn set_view_target_preserves_unrelated_status_label_when_nothing_pending() {
+        // Negative case for the same fix: switching view targets with no pending_transcript
+        // in flight (e.g. no transcript_dir on record for the target agent, so
+        // start_transcript_load returns early) must not wipe an unrelated status_label.
+        let mut app = make_app();
+        assert!(app.metrics.sub_agents.is_empty());
+        app.sessions.current_mut().status_label = Some("indexing files...".to_owned());
+
+        app.set_view_target(AgentViewTarget::SubAgent {
+            id: "sa-1".to_owned(),
+            name: "Planner".to_owned(),
+        });
+
+        assert!(app.sessions.current().pending_transcript.is_none());
+        assert_eq!(
+            app.status_label(),
+            Some("indexing files..."),
+            "unrelated status_label must not be wiped when there was no in-flight \
+             transcript load to cancel"
+        );
     }
 }
