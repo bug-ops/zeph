@@ -89,6 +89,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     (`TuiCommand::ViewLatency`, following the same pattern as `/cost`'s `view:cost`) prints
     the full avg/max turn-latency breakdown plus classifier p50/p95/call-count via
     `App::format_latency_stats`.
+- `serve-sessions`: closed three follow-up gaps in `/sessions*` HTTP+SSE session wiring
+  (#6045, #6046, #6008).
+  - `ScopedToolExecutor` (`[security.capability_scopes]`) is no longer built once, eagerly, and
+    shared across every concurrent `/sessions*` agent — it is now wrapped fresh per session in
+    `agent_factory::build_agent_factory`, mirroring `src/acp.rs`'s per-connection wrap, so each
+    session's `OutOfScope` capability-scope denials feed that session's own `TrajectorySentinel`
+    risk-escalation signal queue instead of being invisible to it. `assemble_serve_deps` still
+    validates the configured scope compiles against the tool registry at server startup (fatal
+    on a bad config, unchanged), it just no longer keeps the compiled instance — that startup
+    validation and the per-session wrap now share one `compose_session_tool_tree` helper so
+    both compile against the identical tool-id surface (including the `skill_loader`/
+    `invoke_skill`/`memory`/`overflow` tools below), fixing a false-positive startup abort for
+    any scope pattern that referenced one of those tools.
+  - `/sessions*` agents now get `skill_loader`/`invoke_skill`/`memory`/`overflow` tool executors,
+    matching CLI/TUI/ACP/daemon's tool surface — previously these were entirely absent from
+    serve's composite tool chain. MCP tools, the scheduler executor, and skill/config hot-reload
+    broadcast forwarding remain a separately-tracked known gap.
+  - A `[tools.policy]`/`[tools.authorization]` compile failure now aborts `serve-sessions`
+    startup instead of silently starting with declarative policy enforcement disabled — serve is
+    an HTTP-facing entrypoint with potentially remote/less-trusted callers, unlike CLI/TUI/ACP/
+    daemon (which stay intentionally fail-open on the same failure, unchanged).
 - `zeph-tui`: closed three independent dispatch/state gaps (#6061, #5984, #5983).
   - The task-registry overlay's supervisor-unavailable fallback (`render_subagents_slot`)
     drew its "supervisor not available" message directly into the shared subagents-slot

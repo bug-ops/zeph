@@ -3638,6 +3638,7 @@ mod tests {
             adversarial_validator: None,
             adversarial_llm_client: None,
             adv_policy_info: None,
+            policy_configured: true,
         };
 
         let trajectory_risk_slot: zeph_tools::TrajectoryRiskSlot =

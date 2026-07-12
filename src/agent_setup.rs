@@ -1799,6 +1799,15 @@ pub(crate) struct PolicyGatePieces {
     /// populated unconditionally whenever the adversarial gate is enabled since it is plain
     /// data with no side effects, so entry points that ignore it are unaffected.
     pub(crate) adv_policy_info: Option<zeph_core::AdversarialPolicyInfo>,
+    /// `true` when `[tools.policy]`/`[tools.authorization]` was actually enabled by config
+    /// (the same `effective_policy.enabled` check `build_policy_gate_pieces` uses to decide
+    /// whether to attempt compilation at all) — regardless of whether that compile succeeded.
+    /// Lets a caller distinguish "`policy_enforcer` is None because compile failed" from
+    /// "`policy_enforcer` is None because no policy was configured" (#6008): only `serve/deps.rs`
+    /// currently reads this, to abort startup fail-closed on a real compile failure while
+    /// staying fail-open when policy is legitimately absent. All other call sites (`runner.rs`,
+    /// `acp.rs`, `daemon.rs`) ignore this field and keep their existing fail-open behavior.
+    pub(crate) policy_configured: bool,
 }
 
 /// Builds the adversarial-policy validator/LLM-client pair (and the `/adversarial-policy`
@@ -1944,6 +1953,7 @@ pub(crate) async fn build_policy_gate_pieces(
         } else {
             config.tools.policy.clone()
         };
+    let policy_configured = effective_policy.enabled;
     let policy_enforcer = if effective_policy.enabled {
         match zeph_tools::PolicyEnforcer::compile(&effective_policy) {
             Ok(enforcer) => Some(Arc::new(enforcer)),
@@ -1961,6 +1971,7 @@ pub(crate) async fn build_policy_gate_pieces(
         adversarial_validator,
         adversarial_llm_client,
         adv_policy_info,
+        policy_configured,
     }
 }
 
@@ -3390,6 +3401,7 @@ mod tests {
             adversarial_validator: None,
             adversarial_llm_client: None,
             adv_policy_info: None,
+            policy_configured: true,
         };
 
         let inner: Arc<dyn zeph_tools::ErasedToolExecutor> = Arc::new(NoopExec);
