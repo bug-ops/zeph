@@ -850,7 +850,7 @@ mod tests {
             quality_pipeline: None,
         };
 
-        let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
+        let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let _agent = build_agent(channel);
 
@@ -941,7 +941,7 @@ mod tests {
             quality_pipeline: None,
         };
 
-        let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
+        let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let mut agent = build_agent(channel);
 
@@ -1051,7 +1051,7 @@ mod tests {
             quality_pipeline: None,
         };
 
-        let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
+        let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let mut agent = build_agent(channel);
 
@@ -1150,7 +1150,7 @@ mod tests {
             quality_pipeline: None,
         };
 
-        let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
+        let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let mut agent = build_agent(channel);
 
@@ -1248,7 +1248,7 @@ mod tests {
             quality_pipeline: None,
         };
 
-        let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
+        let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let mut agent = build_agent(channel);
 
@@ -1343,7 +1343,7 @@ mod tests {
             quality_pipeline: None,
         };
 
-        let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
+        let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let mut agent = build_agent(channel);
 
@@ -1461,8 +1461,8 @@ mod tests {
             crate::agent_setup::PolicyGatePieces::default(),
         );
 
-        let build_agent_a = build_agent_factory(deps.clone(), session_id_a, cid_a).await;
-        let build_agent_b = build_agent_factory(deps, session_id_b, cid_b).await;
+        let build_agent_a = Box::pin(build_agent_factory(deps.clone(), session_id_a, cid_a)).await;
+        let build_agent_b = Box::pin(build_agent_factory(deps, session_id_b, cid_b)).await;
         let (channel_a, _handle_a) = zeph_core::LoopbackChannel::pair(8);
         let (channel_b, _handle_b) = zeph_core::LoopbackChannel::pair(8);
         let agent_a = build_agent_a(channel_a);
@@ -1534,7 +1534,7 @@ mod tests {
             policy_gate_pieces,
         );
 
-        let build_agent = build_agent_factory(deps, session_id, cid).await;
+        let build_agent = Box::pin(build_agent_factory(deps, session_id, cid)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let agent = build_agent(channel);
 
@@ -1704,7 +1704,7 @@ mod tests {
             ..Default::default()
         };
 
-        let build_agent = build_agent_factory(deps, session_id, cid).await;
+        let build_agent = Box::pin(build_agent_factory(deps, session_id, cid)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let agent = build_agent(channel);
         let executor = agent.tool_executor_arc();
@@ -1782,7 +1782,7 @@ mod tests {
             ..Default::default()
         };
 
-        let build_agent = build_agent_factory(deps, session_id, cid).await;
+        let build_agent = Box::pin(build_agent_factory(deps, session_id, cid)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let agent = build_agent(channel);
         let executor = agent.tool_executor_arc();
@@ -1845,7 +1845,7 @@ mod tests {
             crate::agent_setup::PolicyGatePieces::default(),
         );
 
-        let build_agent = build_agent_factory(deps, session_id, cid).await;
+        let build_agent = Box::pin(build_agent_factory(deps, session_id, cid)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let agent = build_agent(channel);
 
@@ -1901,7 +1901,7 @@ mod tests {
             crate::agent_setup::PolicyGatePieces::default(),
         );
 
-        let build_agent = build_agent_factory(deps, session_id, cid).await;
+        let build_agent = Box::pin(build_agent_factory(deps, session_id, cid)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let agent = build_agent(channel);
 
@@ -1976,7 +1976,7 @@ mod tests {
             .create_conversation()
             .await
             .unwrap();
-        let build_agent = build_agent_factory(serve_deps, session_id, cid).await;
+        let build_agent = Box::pin(build_agent_factory(serve_deps, session_id, cid)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let agent = build_agent(channel);
 

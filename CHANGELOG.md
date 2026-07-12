@@ -42,6 +42,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `warn_if_acp_enabled_but_unavailable` precedent but returning a hard error instead of a
   warning, since silently falling back to a different mode than requested is a materially
   different UX.
+- `src/serve`: boxed all 17 `build_agent_factory(...).await` call sites in `agent_factory.rs`
+  and `handlers.rs` with `Box::pin(...)` to resolve `clippy::large_futures` (16456-byte future,
+  over the 16384-byte threshold) that only triggered on macOS/aarch64 due to platform-specific
+  stack layout differences (#6163). Same fix pattern as #3521: move the large future onto the
+  heap rather than tuning its size. No behavior change.
 
 ### Testing
 
