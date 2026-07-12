@@ -162,6 +162,9 @@ Available commands:
 | `view:tools` | List available tools | |
 | `view:config` | Show active configuration | |
 | `view:autonomy` | Show autonomy/trust level | |
+| `view:latency` | Show classifier and turn-latency breakdown (avg/max per phase, p50/p95 per classifier) | |
+| `worktree:list` | List active and stale git worktrees (`/worktree list`) | |
+| `worktree:clean` | Remove stale git worktrees (`/worktree clean`) | |
 | `session:new` | Start new conversation | |
 | `session:switch-next` | Switch to next conversation | |
 | `session:switch-prev` | Switch to previous conversation | |
@@ -490,7 +493,7 @@ The TUI dashboard displays real-time metrics collected from the agent loop via `
 |-------|---------|
 | **Skills** | Active/total skill count, matched skill names per query |
 | **Memory** | SQLite message count, conversation ID, Qdrant status, embeddings generated, summaries count, tool output prunes, embed backfill progress |
-| **Resources** | Prompt/completion/total tokens, API calls, last LLM latency (ms), provider and model name, prompt cache read/write tokens, filter stats |
+| **Resources** | Prompt/completion/total tokens, API calls, last LLM latency (ms), provider and model name, prompt cache read/write tokens, filter stats, per-phase turn-latency breakdown, classifier p50 latency |
 | **Compaction** | Compaction probe verdicts (Pass/SoftFail/HardFail/Error counts), last probe score, subgoal registry state (when orchestration active) |
 | **Security** | Sanitizer runs/flags/truncations, quarantine calls/failures, exfiltration blocks (images/URLs/memory), recent event log. Shown in place of sub-agents panel when events are recent (< 60s) |
 
@@ -548,6 +551,41 @@ Each filter reports how confident it is in the result. The `Confidence: F/1 P/0 
 **Example:** `Confidence: F/1 P/0 B/3` means 1 command was filtered with Full confidence (e.g. `cargo test` — 99% savings) and 3 commands fell through to Fallback (e.g. `cargo audit`, `cargo doc`, `cargo tree` — matched the filter pattern but output was passed through as-is).
 
 When multiple filters compose in a [pipeline](tools.md#output-filter-pipeline), the worst confidence across stages is propagated. A `Full` + `Partial` composition yields `Partial`.
+
+### Turn Latency and Classifier Metrics
+
+Once at least one turn has completed, the Resources panel shows a compact per-phase latency line for the most recent turn:
+
+```
+latency  ctx:12ms llm:340ms tool:58ms save:4ms
+```
+
+`ctx`/`llm`/`tool`/`save` are the context-assembly, LLM round-trip, tool-execution, and message-persistence phases of the turn, respectively.
+
+If [PII, prompt-injection, or feedback classifiers](../reference/security/untrusted-content-isolation.md) are enabled and at least one has run, a `classify` line appears below it with each classifier's p50 latency:
+
+```
+classify inj:7ms pii:3ms fb:-
+```
+
+A classifier that hasn't recorded a sample yet (e.g. `fb` above) shows `-` instead of a duration.
+
+For the full breakdown — rolling average and maximum per phase over the last 10 turns, plus each classifier's call count and p50/p95 latency — open the command palette and select `view:latency`:
+
+```
+Turn latency (rolling avg/max over last 10 turn(s)):
+  phase            avg       max
+  context         14ms      22ms
+  llm            355ms     520ms
+  tool            61ms     110ms
+  persist          4ms       9ms
+
+Classifier latency (p50/p95):
+  injection  calls:12    p50:   7ms p95:  15ms
+  pii        calls:12    p50:   3ms p95:   6ms
+```
+
+Both surfaces are silent until there is data to show: the resources-panel lines only appear once a turn has completed (or a classifier has run), and `view:latency` reports "No turn-timing samples recorded yet." until then.
 
 ## Security Indicators
 
@@ -713,6 +751,18 @@ To manually switch back before the sub-agent completes, press `Esc` in the trans
 Pressing `Enter` on a sub-agent entry loads its JSONL execution transcript into the chat panel. The transcript shows all messages exchanged by that sub-agent, including tool calls and intermediate reasoning, rendered with the same markdown and diff highlighting as the main conversation. Press `Esc` to return to the normal view.
 
 The SubAgents panel is replaced by the Security panel when recent security events exist (< 60 seconds). Press `a` explicitly to bring the SubAgents panel back when security events are active.
+
+### Worktree Commands
+
+When [worktree isolation](../guides/worktree.md) is enabled, `/worktree list` and `/worktree clean [--force]` work in TUI mode via the input line, same as any other slash command. The command palette (`Ctrl+P`) provides quick access without typing the full command:
+
+| Command | Palette entry | Description |
+|---------|---------------|-------------|
+| `/worktree list` | `worktree:list` | List active and stale worktrees tracked by this session's live worktree manager — the same instance sub-agent spawning uses, so results reflect the running agent's actual state |
+| `/worktree clean` | `worktree:clean` | Remove stale worktrees (skips entries git does not report as prunable, matching a plain `zeph worktree clean`) |
+| `/worktree clean --force` | — | Remove stale worktrees, including ones git does not report as prunable (matches `zeph worktree clean --force`) |
+
+Unlike the [CLI's `zeph worktree list`/`clean`](../guides/worktree.md#4-manage-worktrees), which construct a fresh manager from a disk scan on every invocation, the TUI's `/worktree` command reads the same live worktree manager the running agent uses to isolate sub-agents — so `list` reflects this session's actual state instead of a point-in-time snapshot from a separate process. If the worktree subsystem is disabled (`worktree.enabled = false`), both subcommands respond with a message saying so rather than an error.
 
 ## Deferred Model Warmup
 

@@ -104,6 +104,16 @@ impl<R: GitRunner> WorktreeManager<R> {
         &self.repo_root
     }
 
+    /// Whether [`remove`][Self::remove] should also delete the branch, per the
+    /// `WorktreeConfig::prune_branch_on_remove` this manager was constructed with.
+    ///
+    /// Exposed so callers that only hold the manager (not the original config, e.g.
+    /// `/worktree clean` in `zeph-core`) don't need to thread the config separately.
+    #[must_use]
+    pub fn prune_branch_on_remove(&self) -> bool {
+        self.config.prune_branch_on_remove
+    }
+
     /// Creates a new worktree for `subagent_id` according to the configured
     /// `base_ref` strategy.
     ///
@@ -743,6 +753,30 @@ mod tests {
         runner.push_err(b"not a git repo\n" as &[u8]);
         let err = probe_capabilities(&runner, dir.path()).await.unwrap_err();
         assert_matches!(err, WorktreeError::NotAGitRepo);
+    }
+
+    // --- config accessors ---
+
+    #[tokio::test]
+    async fn prune_branch_on_remove_reflects_constructor_config() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let config = WorktreeConfig {
+            prune_branch_on_remove: true,
+            ..test_config()
+        };
+        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner)
+            .await
+            .unwrap();
+        assert!(mgr.prune_branch_on_remove());
+    }
+
+    #[tokio::test]
+    async fn prune_branch_on_remove_defaults_to_false() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let mgr = make_manager(&dir, runner).await;
+        assert!(!mgr.prune_branch_on_remove());
     }
 
     // --- create (Head mode) ---

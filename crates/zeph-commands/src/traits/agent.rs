@@ -609,6 +609,41 @@ pub trait AgentAccess: Send {
             Ok("Conversation-session persistence is not enabled in this context.".to_owned())
         })
     }
+
+    // ----- /worktree -----
+
+    /// Return a formatted list of active and stale git worktrees tracked by the live
+    /// session's worktree manager, or `None` when the worktree subsystem is disabled.
+    ///
+    /// Used by `/worktree` and `/worktree list`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the underlying git reconciliation fails.
+    fn list_worktrees<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Remove stale worktrees tracked by the live session's worktree manager.
+    ///
+    /// `force` mirrors `zeph worktree clean --force`: also removes worktrees whose
+    /// directory git does not report as prunable. Returns `None` when the worktree
+    /// subsystem is disabled.
+    ///
+    /// Used by `/worktree clean`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the underlying git reconciliation or registry pruning fails.
+    fn clean_worktrees<'a>(
+        &'a mut self,
+        force: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>> {
+        let _ = force;
+        Box::pin(async { Ok(None) })
+    }
 }
 
 /// A no-op [`AgentAccess`] implementation.
@@ -899,5 +934,39 @@ impl AgentAccess for NullAgent {
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async { Ok(String::new()) })
+    }
+
+    // ----- /worktree -----
+
+    /// Return a formatted list of active and stale git worktrees tracked by the live
+    /// session's worktree manager, or `None` when the worktree subsystem is disabled.
+    ///
+    /// Used by `/worktree` and `/worktree list`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the underlying git reconciliation fails.
+    fn list_worktrees<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Remove stale worktrees tracked by the live session's worktree manager.
+    ///
+    /// `force` mirrors `zeph worktree clean --force`: also removes worktrees whose
+    /// directory git does not report as prunable. Returns `None` when the worktree
+    /// subsystem is disabled.
+    ///
+    /// Used by `/worktree clean`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the underlying git reconciliation or registry pruning fails.
+    fn clean_worktrees<'a>(
+        &'a mut self,
+        _force: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
     }
 }

@@ -316,6 +316,11 @@ pub struct SubAgentManager {
     /// its full run so that plain agents cannot observe a stale cwd mutated by a worktree
     /// agent (INV-1). Only agents with `permissions.worktree = true` and a non-`None`
     /// `bg_isolation` actually get a dedicated worktree.
+    ///
+    /// This is the single live instance shared by the running agent's `/worktree`
+    /// slash command (see [`worktree_manager`][Self::worktree_manager]) — distinct from
+    /// the CLI's `zeph worktree list`/`clean`, which constructs its own fresh manager
+    /// per invocation (`src/commands/worktree.rs`).
     worktree_manager: Option<Arc<zeph_worktree::DefaultWorktreeManager>>,
     /// Process-level serialisation mutex for working-directory mutations (INV-1).
     ///
@@ -388,6 +393,19 @@ impl SubAgentManager {
     /// `permissions.worktree = true` receive a dedicated git worktree.
     pub fn set_worktree_manager(&mut self, wm: Arc<zeph_worktree::DefaultWorktreeManager>) {
         self.worktree_manager = Some(wm);
+    }
+
+    /// Returns the live worktree manager, if the worktree subsystem is enabled for this
+    /// session.
+    ///
+    /// This is the same instance [`spawn`][Self::spawn] uses to create per-subagent
+    /// worktrees, so callers (e.g. the `/worktree` slash command) observe this session's
+    /// actual live state rather than a fresh disk scan. Its own
+    /// `prune_branch_on_remove()` reflects `WorktreeConfig::prune_branch_on_remove` — no
+    /// need to retain a separate copy on `SubAgentManager`.
+    #[must_use]
+    pub fn worktree_manager(&self) -> Option<&Arc<zeph_worktree::DefaultWorktreeManager>> {
+        self.worktree_manager.as_ref()
     }
 
     /// Drain completed hook tasks and spawn a new one if below the limit.

@@ -5,8 +5,8 @@
 //!
 //! Shows a compact summary of LLM routing, session token usage, and API calls:
 //! `tokens`, `api`, `route` — matching design spec §4. Extra lines (cache,
-//! MCP, latency, background shell, classifiers) appear only when they carry
-//! non-zero data, so the panel stays quiet during idle sessions.
+//! MCP, background shell, turn latency, classifiers) appear only when they
+//! carry non-zero data, so the panel stays quiet during idle sessions.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -23,7 +23,8 @@ use crate::theme::Theme;
 /// Render the resources panel into `area`.
 ///
 /// Layout (spec §4): section title · tokens · api · route, with optional
-/// cache, MCP, background-shell, and turn-latency lines when non-zero.
+/// cache, MCP, background-shell, turn-latency, and classifier-latency lines
+/// when non-zero.
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
     let mut lines: Vec<Line<'_>> = vec![Line::from(Span::styled(
         "resources",
@@ -37,6 +38,7 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
     append_mcp_line(&mut lines, metrics, theme);
     append_shell_background_section(&mut lines, metrics);
     append_turn_latency_section(&mut lines, metrics);
+    append_classifier_latency_line(&mut lines, metrics);
 
     let resources = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
     frame.render_widget(resources, area);
@@ -151,9 +153,35 @@ fn append_turn_latency_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnaps
     }
     let last = &metrics.last_turn_timings;
     lines.push(Line::from(format!(
-        "  latency  ctx:{}ms llm:{}ms",
-        last.prepare_context_ms, last.llm_chat_ms,
+        "  latency  ctx:{}ms llm:{}ms tool:{}ms save:{}ms",
+        last.prepare_context_ms, last.llm_chat_ms, last.tool_exec_ms, last.persist_message_ms,
     )));
+}
+
+/// Classifier p50 latency (injection/PII/feedback) — only when at least one
+/// classifier has recorded a call. Full p50/p95/call-count breakdown is
+/// available via the `view:latency` command (see `App::format_latency_stats`).
+fn append_classifier_latency_line(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot) {
+    let c = &metrics.classifier;
+    if c.injection.call_count == 0 && c.pii.call_count == 0 && c.feedback.call_count == 0 {
+        return;
+    }
+    let mut detail = String::new();
+    for (label, task) in [("inj", &c.injection), ("pii", &c.pii), ("fb", &c.feedback)] {
+        if task.call_count == 0 {
+            continue;
+        }
+        if !detail.is_empty() {
+            detail.push(' ');
+        }
+        // "-" for a missing sample matches the placeholder used by the detailed
+        // `view:latency` breakdown (`App::format_latency_stats`).
+        let p50 = task
+            .p50_ms
+            .map_or_else(|| "-".to_owned(), |v| format!("{v}ms"));
+        let _ = write!(detail, "{label}:{p50}");
+    }
+    lines.push(Line::from(format!("  classify {detail}")));
 }
 
 #[cfg(test)]
@@ -299,6 +327,94 @@ mod tests {
         assert!(
             output.contains("01:15"),
             "must show elapsed mm:ss; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn resources_shows_turn_latency_breakdown_when_samples_exist() {
+        use zeph_core::metrics::TurnTimings;
+
+        let metrics = MetricsSnapshot {
+            timing_sample_count: 3,
+            last_turn_timings: TurnTimings {
+                prepare_context_ms: 12,
+                llm_chat_ms: 340,
+                tool_exec_ms: 58,
+                persist_message_ms: 4,
+            },
+            ..MetricsSnapshot::default()
+        };
+        let output = render_to_string(50, 10, |frame, area| {
+            super::render(&metrics, frame, area, &theme());
+        });
+        assert!(
+            output.contains("latency"),
+            "must show latency header; got: {output:?}"
+        );
+        assert!(
+            output.contains("ctx:12ms"),
+            "must show context latency; got: {output:?}"
+        );
+        assert!(
+            output.contains("tool:58ms"),
+            "must show tool exec latency; got: {output:?}"
+        );
+        assert!(
+            output.contains("save:4ms"),
+            "must show persist latency; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn resources_omits_turn_latency_when_no_samples() {
+        let metrics = MetricsSnapshot::default();
+        let output = render_to_string(50, 10, |frame, area| {
+            super::render(&metrics, frame, area, &theme());
+        });
+        assert!(
+            !output.contains("latency"),
+            "must not show latency when no samples; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn resources_shows_classifier_latency_when_calls_recorded() {
+        use zeph_core::metrics::{ClassifierMetricsSnapshot, TaskMetricsSnapshot};
+
+        let metrics = MetricsSnapshot {
+            classifier: ClassifierMetricsSnapshot {
+                injection: TaskMetricsSnapshot {
+                    call_count: 4,
+                    p50_ms: Some(7),
+                    p95_ms: Some(15),
+                },
+                pii: TaskMetricsSnapshot::default(),
+                feedback: TaskMetricsSnapshot::default(),
+            },
+            ..MetricsSnapshot::default()
+        };
+        let output = render_to_string(50, 10, |frame, area| {
+            super::render(&metrics, frame, area, &theme());
+        });
+        assert!(
+            output.contains("classify"),
+            "must show classify header; got: {output:?}"
+        );
+        assert!(
+            output.contains("inj:7ms"),
+            "must show injection p50; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn resources_omits_classifier_latency_when_no_calls() {
+        let metrics = MetricsSnapshot::default();
+        let output = render_to_string(50, 10, |frame, area| {
+            super::render(&metrics, frame, area, &theme());
+        });
+        assert!(
+            !output.contains("classify"),
+            "must not show classify when no calls; got: {output:?}"
         );
     }
 

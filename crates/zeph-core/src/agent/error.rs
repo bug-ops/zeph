@@ -121,6 +121,11 @@ pub enum AgentError {
     /// or `SessionStore` metadata read/write.
     #[error(transparent)]
     Session(#[from] zeph_session::SessionError),
+
+    /// A `/worktree list`/`/worktree clean` operation failed (git reconciliation, removal, or
+    /// registry pruning).
+    #[error(transparent)]
+    Worktree(#[from] zeph_worktree::WorktreeError),
 }
 
 impl AgentError {

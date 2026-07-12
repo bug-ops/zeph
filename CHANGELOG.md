@@ -63,6 +63,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   per turn, not once, so bridging it would report the wrong (last) call's duration instead of
   the first user-message persist that `TurnTimings::persist_message_ms` is meant to measure;
   that field stays manually-timed only.
+- `zeph-tui`: closed two metrics/data wiring gaps left by PR #6131 (#6132, #6059).
+  - `TuiCommand::WorktreeList`/`WorktreeClean` were CLI-redirect stubs pointing users at
+    `zeph worktree list`/`clean` because no path existed from `zeph-tui` to the running
+    agent's live `WorktreeManager` (private inside `zeph-subagent::SubAgentManager`). Added a
+    real `/worktree list`/`/worktree clean [--force]` slash command
+    (`zeph-commands::handlers::worktree::WorktreeCommand`, wired through a new
+    `AgentAccess::list_worktrees`/`clean_worktrees` pair and
+    `Agent::handle_worktree_list_as_string`/`handle_worktree_clean_as_string` in
+    `zeph-core`), backed by `SubAgentManager::worktree_manager()` — a new public getter for
+    the same live manager instance `spawn` already uses. The TUI reducer now forwards
+    `TuiCommand::WorktreeList`/`WorktreeClean` as `Effect::SendUserInput("/worktree list" /
+    "/worktree clean")` instead of pushing a static message, so results reflect this
+    session's actual worktree state, consistent with how `/skill`, `/mcp`, and `/scheduler`
+    already work. `WorktreeManager` gained a `prune_branch_on_remove()` getter so
+    `/worktree clean` can read `WorktreeConfig::prune_branch_on_remove` directly from the
+    manager it already holds, without `SubAgentManager` needing to duplicate it or
+    `zeph-core` needing to depend on the full worktree config.
+  - `MetricsSnapshot::classifier` (p50/p95 latency per classifier task) and
+    `avg_turn_timings`/`max_turn_timings` (rolling-window turn latency) were populated every
+    turn but had zero consumers in `zeph-tui` — only `last_turn_timings.{prepare_context_ms,
+    llm_chat_ms}` ever reached a widget. The resources side panel's latency line now also
+    shows `tool_exec_ms`/`persist_message_ms`, and a new classifier-latency line (p50 only,
+    compact) appears once any classifier has recorded a call. A new `view:latency` command
+    (`TuiCommand::ViewLatency`, following the same pattern as `/cost`'s `view:cost`) prints
+    the full avg/max turn-latency breakdown plus classifier p50/p95/call-count via
+    `App::format_latency_stats`.
 - `zeph-tui`: closed three independent dispatch/state gaps (#6061, #5984, #5983).
   - The task-registry overlay's supervisor-unavailable fallback (`render_subagents_slot`)
     drew its "supervisor not available" message directly into the shared subagents-slot

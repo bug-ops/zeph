@@ -1,5 +1,6 @@
 ---
 source: crates/zeph-tui/src/widgets/command_palette.rs
+assertion_line: 272
 expression: output
 ---
                                                                                 
@@ -14,6 +15,7 @@ expression: output
                 │view:tools            List available tools    │                
                 │view:config           Show active configuratio│                
                 │view:autonomy         Show autonomy/trust leve│                
+                │view:latency          Show classifier and turn│                
                 │tasks                 Toggle task registry pan│                
                 │fleet                 Fleet: show agent sessio│                
                 │durable               Durable: show durable ex│                
@@ -22,5 +24,4 @@ expression: output
                 │session:next          Switch to next session (│                
                 │session:prev          Switch to previous sessi│                
                 │session:close         Close current session (/│                
-                │session:undo          Undo last shell checkpoi│                
                 ╰──────────────────────────────────────────────╯

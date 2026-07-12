@@ -26,6 +26,7 @@ pub enum TuiCommand {
     ViewTools,
     ViewConfig,
     ViewAutonomy,
+    ViewLatency,
     // New action commands
     Quit,
     Help,
@@ -263,6 +264,13 @@ fn build_view_commands() -> Vec<CommandEntry> {
             category: "view",
             shortcut: None,
             command: TuiCommand::ViewAutonomy,
+        },
+        CommandEntry {
+            id: "view:latency",
+            label: "Show classifier and turn-latency breakdown",
+            category: "view",
+            shortcut: None,
+            command: TuiCommand::ViewLatency,
         },
         CommandEntry {
             id: "tasks",
@@ -1013,7 +1021,8 @@ mod tests {
 
     #[test]
     fn registry_has_correct_count() {
-        assert_eq!(command_registry().len(), 27);
+        // +1 view:latency (#6059)
+        assert_eq!(command_registry().len(), 28);
     }
 
     #[test]

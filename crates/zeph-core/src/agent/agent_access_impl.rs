@@ -1851,6 +1851,29 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
             ))
         })
     }
+
+    // ----- /worktree -----
+
+    fn list_worktrees<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.handle_worktree_list_as_string()
+                .await
+                .map_err(|e| CommandError::new(e.to_string()))
+        })
+    }
+
+    fn clean_worktrees<'a>(
+        &'a mut self,
+        force: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.handle_worktree_clean_as_string(force)
+                .await
+                .map_err(|e| CommandError::new(e.to_string()))
+        })
+    }
 }
 
 impl<C: Channel> Agent<C> {

@@ -40,3 +40,4 @@ pub mod status;
 pub mod test_helpers;
 pub mod think_tokens;
 pub mod trajectory;
+pub mod worktree;

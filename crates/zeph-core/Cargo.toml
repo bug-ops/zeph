@@ -86,6 +86,7 @@ zeph-skills = { workspace = true, features = ["qdrant"] }
 zeph-subagent.workspace = true
 zeph-tools.workspace = true
 zeph-vault.workspace = true
+zeph-worktree.workspace = true
 zeroize.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 

@@ -67,6 +67,7 @@ mod trust_commands;
 pub mod turn;
 mod utils;
 pub(crate) mod vigil;
+mod worktree_commands;
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
@@ -616,6 +617,7 @@ impl<C: Channel> Agent<C> {
                     status::{FocusCommand, GuardrailCommand, SideQuestCommand, StatusCommand},
                     think_tokens::ThinkTokensCommand,
                     trajectory::{ScopeCommand, TrajectoryCommand},
+                    worktree::WorktreeCommand,
                 };
 
                 let mut agent_reg = CommandRegistry::new();
@@ -663,6 +665,7 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(UndoCommand);
                 agent_reg.register(RedoCommand);
                 agent_reg.register(ConvCommand);
+                agent_reg.register(WorktreeCommand);
 
                 let mut ctx = zeph_commands::CommandContext {
                     sink: &mut agent_null_sink,

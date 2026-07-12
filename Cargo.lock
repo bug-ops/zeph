@@ -10682,6 +10682,7 @@ dependencies = [
  "zeph-subagent",
  "zeph-tools",
  "zeph-vault",
+ "zeph-worktree",
  "zeroize",
 ]
 

@@ -792,24 +792,6 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
                     );
                     return vec![];
                 }
-                TuiCommand::WorktreeList => {
-                    app.push_system_message_pub(
-                        "Worktree listing requires a fresh git scan and is not available \
-                         from a running TUI session.\n  Run from the CLI:\n  zeph worktree list"
-                            .to_owned(),
-                    );
-                    return vec![];
-                }
-                TuiCommand::WorktreeClean => {
-                    app.push_system_message_pub(
-                        "Worktree cleanup removes directories via git and is not available \
-                         from a running TUI session.\n  Run from the CLI:\n  zeph worktree clean \
-                         (add --force to remove entries git does not report as prunable)"
-                            .to_owned(),
-                    );
-                    return vec![];
-                }
-
                 // ── Group B — pure formatter reads ──────────────────────────────
                 TuiCommand::SkillList => {
                     let msg = app.format_skill_list();
@@ -833,6 +815,11 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
                 }
                 TuiCommand::ViewTools => {
                     let msg = app.format_tool_list();
+                    app.push_system_message_pub(msg);
+                    return vec![];
+                }
+                TuiCommand::ViewLatency => {
+                    let msg = app.format_latency_stats();
                     app.push_system_message_pub(msg);
                     return vec![];
                 }
@@ -888,6 +875,12 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
                 }
                 TuiCommand::TrajectoryStats => {
                     return vec![Effect::SendUserInput("/memory trajectory".to_owned())];
+                }
+                TuiCommand::WorktreeList => {
+                    return vec![Effect::SendUserInput("/worktree list".to_owned())];
+                }
+                TuiCommand::WorktreeClean => {
+                    return vec![Effect::SendUserInput("/worktree clean".to_owned())];
                 }
                 TuiCommand::MemoryTreeStats => {
                     return vec![Effect::SendUserInput("/memory tree".to_owned())];
@@ -1439,26 +1432,6 @@ mod tests {
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
-    // ── #5983 WorktreeList/WorktreeClean CLI-redirect (was silently dropped) ──
-
-    #[test]
-    fn dispatch_worktree_list_pushes_cli_redirect_message() {
-        let (mut app, _rx) = make_app();
-        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::WorktreeList));
-        assert!(effects.is_empty());
-        let msg = &app.sessions.current().messages.last().unwrap().content;
-        assert!(msg.contains("zeph worktree list"));
-    }
-
-    #[test]
-    fn dispatch_worktree_clean_pushes_cli_redirect_message() {
-        let (mut app, _rx) = make_app();
-        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::WorktreeClean));
-        assert!(effects.is_empty());
-        let msg = &app.sessions.current().messages.last().unwrap().content;
-        assert!(msg.contains("zeph worktree clean"));
-    }
-
     // ── Group B tests ───────────────────────────────────────────────────────────
 
     #[test]
@@ -1497,6 +1470,14 @@ mod tests {
     fn dispatch_view_tools_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ViewTools));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_view_latency_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ViewLatency));
         assert!(effects.is_empty());
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
@@ -1696,6 +1677,29 @@ mod tests {
         assert_eq!(
             effects,
             vec![Effect::SendUserInput("/memory trajectory".to_owned())]
+        );
+    }
+
+    // ── #6132 WorktreeList/WorktreeClean now forward to the real /worktree
+    //    slash command instead of the static CLI-redirect message from #6131 ──
+
+    #[test]
+    fn dispatch_worktree_list_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::WorktreeList));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/worktree list".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_worktree_clean_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::WorktreeClean));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/worktree clean".to_owned())]
         );
     }
 

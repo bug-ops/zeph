@@ -561,6 +561,57 @@ impl App {
         out
     }
 
+    pub(crate) fn format_latency_stats(&self) -> String {
+        use std::fmt::Write as _;
+
+        if self.metrics.timing_sample_count == 0 {
+            return "No turn-timing samples recorded yet.".to_owned();
+        }
+        let avg = &self.metrics.avg_turn_timings;
+        let max = &self.metrics.max_turn_timings;
+        let mut out = format!(
+            "Turn latency (rolling avg/max over last {} turn(s)):\n  {:<10} {:>9} {:>9}",
+            self.metrics.timing_sample_count, "phase", "avg", "max"
+        );
+        for (label, avg_ms, max_ms) in [
+            ("context", avg.prepare_context_ms, max.prepare_context_ms),
+            ("llm", avg.llm_chat_ms, max.llm_chat_ms),
+            ("tool", avg.tool_exec_ms, max.tool_exec_ms),
+            ("persist", avg.persist_message_ms, max.persist_message_ms),
+        ] {
+            let _ = write!(out, "\n  {label:<10} {avg_ms:>7}ms {max_ms:>7}ms");
+        }
+
+        let c = &self.metrics.classifier;
+        let tasks = [
+            ("injection", &c.injection),
+            ("pii", &c.pii),
+            ("feedback", &c.feedback),
+        ];
+        if tasks.iter().any(|(_, t)| t.call_count > 0) {
+            let _ = write!(out, "\n\nClassifier latency (p50/p95):");
+            for (label, task) in tasks {
+                if task.call_count == 0 {
+                    continue;
+                }
+                let p50 = task
+                    .p50_ms
+                    .map_or_else(|| "-".to_owned(), |v| format!("{v}ms"));
+                let p95 = task
+                    .p95_ms
+                    .map_or_else(|| "-".to_owned(), |v| format!("{v}ms"));
+                let _ = write!(
+                    out,
+                    "\n  {label:<10} calls:{:<5} p50:{p50:>6} p95:{p95:>6}",
+                    task.call_count
+                );
+            }
+        } else {
+            out.push_str("\n\nClassifier latency: no samples recorded yet.");
+        }
+        out
+    }
+
     pub(crate) fn format_tool_list(&self) -> String {
         if self.metrics.active_mcp_tools.is_empty() {
             return "No tools available.".to_owned();
