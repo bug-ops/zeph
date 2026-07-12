@@ -334,7 +334,16 @@ impl Scheduler {
                 }
                 continue;
             };
-            let hydrated_provenance = TaskProvenance::from_provenance_str(&job.provenance);
+            // #6114: rows reaching this loop are, by construction, not from this process's
+            // trusted in-session path (static `add_task` upserts are skipped via `static_names`
+            // above; control-channel adds live in `self.tasks` for their whole session and are
+            // never hydrated in the same session that created them). The `provenance` column is
+            // writer-controllable (direct SQL / out-of-process CLI), so it cannot be trusted as
+            // read — force the most restrictive tier regardless of the stored label. This hardens
+            // a latent trust-model gap (defense-in-depth); it does not patch an active bypass,
+            // since hydration only ever loads periodic rows with `Value::Null` config, which
+            // never reach a provenance-gated decision point today.
+            let hydrated_provenance = TaskProvenance::External;
             match ScheduledTask::periodic_with_provenance(
                 job.name.clone(),
                 cron_expr.as_ref(),
@@ -939,11 +948,12 @@ impl Scheduler {
         // stricter handling than `TaskProvenance::UserAdded`, matching the tier's documented
         // contract (see `TaskProvenance::is_external`), without weakening the existing baseline.
         //
-        // Caveat: `provenance` is trusted as read from the DB (`from_provenance_str`, task.rs) —
-        // a direct-SQL writer can self-label a row `"static"` or `"user_added"` to dodge this
-        // check entirely. Not a regression (pre-fix was equally bypassable, and the default
-        // `injection_pattern_check = true` closes the practical gap for `UserAdded` too); tracked
-        // as a follow-up to force `External` on all DB-hydrated rows regardless of stored label.
+        // Note: DB-hydrated rows (`init()` in scheduler.rs) are always forced to
+        // `TaskProvenance::External` regardless of the stored `provenance` column (#6114) — a
+        // direct-SQL writer cannot self-label a row to dodge this check. That said, this path is
+        // reached only by `OneShot` + `TaskKind::Custom` tasks, and hydration only ever loads
+        // periodic rows, so a hydrated row can never reach `inject_custom_task` in the first
+        // place; the forced-External hardening matters for future code paths, not this one.
         let apply_injection_check = self.reentry_defense_enabled
             && task.provenance != TaskProvenance::Static
             && (self.injection_pattern_check || task.provenance.is_external());
@@ -1431,6 +1441,72 @@ mod tests {
         );
     }
 
+    /// `init()` forces `TaskProvenance::External` on every DB-hydrated row, ignoring the
+    /// stored `provenance` column label entirely.
+    ///
+    /// Regression test for #6114: a direct-SQL / out-of-process writer could self-label a row
+    /// `"static"` or `"user_added"` to dodge the RTW-A re-entry defenses at hydration. This test
+    /// writes rows stamped `"static"` and `"user_added"` directly to the store — as a writer
+    /// bypassing the trusted in-session path would — and asserts both hydrate as `External`.
+    #[tokio::test]
+    async fn init_forces_external_provenance_on_hydrated_rows_regardless_of_stored_label() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        store.init().await.unwrap();
+
+        store
+            .upsert_job_with_provenance(
+                "spoofed-static",
+                "0 * * * * *",
+                "health_check",
+                "periodic",
+                None,
+                "",
+                "static",
+            )
+            .await
+            .unwrap();
+        store
+            .upsert_job_with_provenance(
+                "spoofed-user-added",
+                "0 * * * * *",
+                "health_check",
+                "periodic",
+                None,
+                "",
+                "user_added",
+            )
+            .await
+            .unwrap();
+
+        let store2 = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store2, rx);
+        scheduler.init().await.unwrap();
+
+        let spoofed_static = scheduler
+            .tasks
+            .iter()
+            .find(|t| t.name == "spoofed-static")
+            .expect("spoofed-static must be hydrated");
+        assert_eq!(
+            spoofed_static.provenance,
+            TaskProvenance::External,
+            "stored 'static' label must not be trusted — hydrated rows are always External"
+        );
+
+        let spoofed_user_added = scheduler
+            .tasks
+            .iter()
+            .find(|t| t.name == "spoofed-user-added")
+            .expect("spoofed-user-added must be hydrated");
+        assert_eq!(
+            spoofed_user_added.provenance,
+            TaskProvenance::External,
+            "stored 'user_added' label must not be trusted — hydrated rows are always External"
+        );
+    }
+
     /// `init()` does NOT re-add jobs that are already present in `self.tasks` — avoids
     /// duplicates when both `add_task()` and a DB record exist for the same name.
     #[tokio::test]
@@ -1818,15 +1894,17 @@ mod tests {
         );
     }
 
-    /// RTW-A Mechanism 2: tasks hydrated from DB during `init()` get External provenance
-    /// when the DB row has no provenance column value.
+    /// RTW-A Mechanism 2: tasks hydrated from DB during `init()` always get External
+    /// provenance, regardless of the stored `provenance` column value (#6114).
     #[tokio::test]
     async fn reentry_mech2_hydrated_jobs_get_external_provenance() {
         let pool = test_pool().await;
         let store = JobStore::new(pool.clone());
         store.init().await.unwrap();
 
-        // Insert a DB row without explicit provenance (defaults to 'external').
+        // upsert_job_with_mode writes 'static' provenance (the trusted-path default) — this
+        // deliberately exercises the case where the stored label is NOT External, to confirm
+        // the hydration loop ignores it and forces External regardless (#6114).
         store
             .upsert_job_with_mode(
                 "hydrated-job",
@@ -1850,16 +1928,10 @@ mod tests {
             .find(|t| t.name == "hydrated-job")
             .expect("hydrated job must appear in tasks after init()");
 
-        // upsert_job_with_mode writes 'static' provenance by default (trusted path).
-        // The DB row was written with the trusted upsert path, so it will carry 'static'.
-        // This verifies the provenance field round-trips through the store.
-        assert!(
-            matches!(
-                task.provenance,
-                crate::task::TaskProvenance::Static | crate::task::TaskProvenance::External
-            ),
-            "hydrated job must have a valid provenance (got {:?})",
-            task.provenance
+        assert_eq!(
+            task.provenance,
+            crate::task::TaskProvenance::External,
+            "DB-hydrated jobs must always be External, even when the stored label is 'static'"
         );
     }
 

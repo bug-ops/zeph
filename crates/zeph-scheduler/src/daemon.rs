@@ -270,22 +270,21 @@ pub async fn daemon_status(
     let store = crate::store::JobStore::open(store_url).await?;
     store.init().await?;
 
-    let mut jobs = store.list_jobs_full().await?;
-    let task_count = jobs.len();
+    let task_count = store.count_active_jobs().await?;
 
-    // Sort by last_run descending (never-run jobs sort last) so `recent_runs` actually
-    // reflects recency rather than the alphabetical order returned by list_jobs_full.
-    jobs.sort_by(|a, b| b.last_run.cmp(&a.last_run));
-
-    let recent_runs: Vec<TaskRunSummary> = jobs
+    // Ordering and truncation are pushed into SQL (`list_recent_runs`) rather than fetching
+    // every active job and sorting in Rust — see `JobStore::list_recent_runs` for the
+    // dual-backend-safe `ORDER BY ... LIMIT` approach.
+    let recent_runs: Vec<TaskRunSummary> = store
+        .list_recent_runs(recent_n)
+        .await?
         .into_iter()
-        .take(recent_n)
-        .map(|j| TaskRunSummary {
-            name: j.name,
-            mode: j.task_mode,
-            last_run: j.last_run.unwrap_or_default(),
-            next_run: j.next_run,
-            status: j.status,
+        .map(|r| TaskRunSummary {
+            name: r.name,
+            mode: r.task_mode,
+            last_run: r.last_run.unwrap_or_default(),
+            next_run: r.next_run,
+            status: r.status,
         })
         .collect();
 

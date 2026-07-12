@@ -11015,7 +11015,6 @@ dependencies = [
 name = "zeph-scheduler"
 version = "0.22.0"
 dependencies = [
- "blake3",
  "chrono",
  "cron",
  "reqwest 0.13.4",
@@ -11028,7 +11027,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "uuid",
  "wiremock",
  "zeph-common",
  "zeph-config",

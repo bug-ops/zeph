@@ -194,6 +194,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a private address — it can still be attacker-controlled, so credentials must not
   follow it cross-origin), and `Content-Length`/`Content-Type`/`Content-Encoding` are
   dropped whenever the body is emptied by a method downgrade.
+- `zeph-scheduler`: `Scheduler::init()`'s DB-hydration loop read `TaskProvenance` verbatim from
+  the writer-controllable `scheduled_jobs.provenance` column, so a direct-SQL / out-of-process
+  writer could self-label a row `"static"` or `"user_added"` to dodge the RTW-A re-entry defenses
+  (#6114). This is latent hardening, not an active bypass fix — hydration only ever loads
+  periodic rows with `Value::Null` config, and the provenance-gated injection check only fires
+  for oneshot+`Custom` tasks, so no hydrated row reaches it today. `init()` now forces
+  `TaskProvenance::External` on every hydrated row regardless of the stored label, latching the
+  invariant that a row not written by this process's trusted in-session path is untrusted.
 - `zeph-mcp`: closed three gaps in the MCP tool trust pipeline (#6071, #6072, #6073).
   - `sanitize_tools`'s depth-cap drop path (see #6068 below) dropped unsanitizable
     `input_schema`/`output_schema` content beyond `MAX_SCHEMA_DEPTH` but never incremented
@@ -1077,6 +1085,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `refactor(session)`: extracted a shared `finish_torn_tail` helper in
   `crates/zeph-session/src/log.rs` for the identical torn-tail warn+repair epilogue duplicated
   between `read_events` and `read_events_chunked` (#5852).
+- `perf(scheduler)`: `daemon_status()`'s `recent_runs` fetched every active job via
+  `list_jobs_full()` and sorted/truncated in Rust rather than pushing the ordering and limit
+  into SQL (#6115). Added `JobStore::list_recent_runs`/`count_active_jobs`; ordering uses
+  `ORDER BY last_run IS NULL, last_run DESC LIMIT ?`, which evaluates to a sortable `0`/`1`
+  (`SQLite`) or `false`/`true` (`PostgreSQL`) value on both backends without relying on
+  `PostgreSQL`-only `NULLS LAST` syntax.
+- `chore(scheduler)`: removed the unused `blake3` and `uuid` dependencies from
+  `crates/zeph-scheduler/Cargo.toml` — neither was referenced anywhere in the crate's source
+  (#6098).
 
 ### Fixed
 

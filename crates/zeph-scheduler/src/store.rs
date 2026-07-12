@@ -72,6 +72,21 @@ pub struct ScheduledTaskInfo {
     pub last_run: Option<String>,
 }
 
+/// A single row returned by [`JobStore::list_recent_runs`], ordered by recency.
+#[derive(Debug, Clone)]
+pub struct RecentRunRecord {
+    /// Unique task name.
+    pub name: String,
+    /// Execution mode: `"periodic"` or `"oneshot"`.
+    pub task_mode: String,
+    /// Last recorded run time (RFC 3339), or `None` if the task has never run.
+    pub last_run: Option<String>,
+    /// Next scheduled run time as an ISO 8601 / RFC 3339 string, or empty if unknown.
+    pub next_run: String,
+    /// Current job status: `"pending"`, `"completed"`, `"done"`, or `"error"`.
+    pub status: String,
+}
+
 /// Persistent storage layer for scheduled jobs.
 ///
 /// All job definitions and run history are stored in a `SQLite` database managed by
@@ -480,6 +495,58 @@ impl JobStore {
             .collect())
     }
 
+    /// Count active (non-done) jobs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL query fails.
+    #[tracing::instrument(name = "sched.store.count_active_jobs", skip_all, err)]
+    pub async fn count_active_jobs(&self) -> Result<usize, SchedulerError> {
+        let (count,): (i64,) = zeph_db::query_as(sql!(
+            "SELECT COUNT(*) FROM scheduled_jobs WHERE status != 'done'"
+        ))
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(usize::try_from(count).unwrap_or(0))
+    }
+
+    /// List the `n` most recently run (non-done) jobs, ordered by `last_run` descending.
+    ///
+    /// Never-run jobs (`last_run IS NULL`) sort last. Ordering and truncation are pushed into
+    /// SQL via `ORDER BY last_run IS NULL, last_run DESC LIMIT ?` rather than fetched-then-sorted
+    /// in Rust: `last_run IS NULL` evaluates to a sortable `0`/`1` (`SQLite`) or `false`/`true`
+    /// (`PostgreSQL`) value, giving "`NULLS LAST`" semantics on both backends without relying on
+    /// `PostgreSQL`-only `NULLS LAST` syntax, which `SQLite` does not support.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL query fails.
+    #[tracing::instrument(name = "sched.store.list_recent_runs", skip_all, err)]
+    pub async fn list_recent_runs(&self, n: usize) -> Result<Vec<RecentRunRecord>, SchedulerError> {
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(String, String, Option<String>, Option<String>, String)> =
+            zeph_db::query_as(sql!(
+                "SELECT name, task_mode, last_run, COALESCE(next_run, run_at), status \
+                 FROM scheduled_jobs WHERE status != 'done' \
+                 ORDER BY last_run IS NULL, last_run DESC LIMIT ?"
+            ))
+            .bind(i64::try_from(n).unwrap_or(i64::MAX))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(name, task_mode, last_run, next_run, status)| RecentRunRecord {
+                    name,
+                    task_mode,
+                    last_run,
+                    next_run: next_run.unwrap_or_default(),
+                    status,
+                },
+            )
+            .collect())
+    }
+
     /// Returns a reference to the underlying connection pool.
     ///
     /// Primarily used in tests that need to execute raw SQL against the same database.
@@ -806,6 +873,60 @@ mod tests {
             matches!(result, Err(SchedulerError::DuplicateJob(ref n)) if n == "dup_job"),
             "expected DuplicateJob, got {result:?}"
         );
+    }
+
+    /// `list_recent_runs` orders by `last_run` descending with never-run jobs sorted last, and
+    /// respects the `n` limit — verifies the SQL `ORDER BY last_run IS NULL, last_run DESC LIMIT ?`
+    /// approach (#6115) matches the previous fetch-then-sort-in-Rust behavior.
+    #[tokio::test]
+    async fn list_recent_runs_orders_by_recency_with_nulls_last_and_respects_limit() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+
+        let now = chrono::Utc::now();
+        let older_ts = (now - chrono::Duration::days(200)).to_rfc3339();
+        let newer_ts = (now - chrono::Duration::days(10)).to_rfc3339();
+
+        store
+            .upsert_job("older", "0 * * * * *", "health_check")
+            .await
+            .unwrap();
+        store
+            .record_run("older", &older_ts, "2026-01-02T00:00:00Z")
+            .await
+            .unwrap();
+
+        store
+            .upsert_job("newer", "0 * * * * *", "health_check")
+            .await
+            .unwrap();
+        store
+            .record_run("newer", &newer_ts, "2026-06-02T00:00:00Z")
+            .await
+            .unwrap();
+
+        store
+            .upsert_job("never_run", "0 * * * * *", "health_check")
+            .await
+            .unwrap();
+
+        assert_eq!(store.count_active_jobs().await.unwrap(), 3);
+
+        let recent = store.list_recent_runs(10).await.unwrap();
+        let names: Vec<&str> = recent.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["newer", "older", "never_run"],
+            "list_recent_runs must order by last_run descending, never-run last"
+        );
+        assert_eq!(recent[0].last_run.as_deref(), Some(newer_ts.as_str()));
+        assert_eq!(recent[1].last_run.as_deref(), Some(older_ts.as_str()));
+        assert_eq!(recent[2].last_run, None);
+
+        let limited = store.list_recent_runs(1).await.unwrap();
+        assert_eq!(limited.len(), 1, "limit must be applied in SQL");
+        assert_eq!(limited[0].name, "newer");
     }
 
     #[tokio::test]
