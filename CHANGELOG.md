@@ -89,6 +89,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   entries `reconcile()` discovered. Also fixed `WorktreeManager::reconcile()`'s doc comment,
   which claimed it was "used at startup" — its only callers are the `zeph worktree list`/`clean`
   CLI subcommands; there is no startup caller.
+- `zeph-common`: `TaskSupervisor::shutdown_all(timeout)` could silently drop clean task
+  completions and misreport them `Aborted` (#5926). The reap driver's post-cancel drain
+  phase enforced its own hardcoded 5s `SHUTDOWN_DRAIN_TIMEOUT`, independent of the
+  caller's `timeout` — it gave up and stopped listening for completions before
+  `shutdown_all`'s real deadline, since the shared `CancellationToken` is cancelled
+  out-of-band by a shutdown bridge/signal handler well before `shutdown_all` is ever
+  invoked at every real call site (`src/runner.rs`, `src/serve/mod.rs`). A task that
+  finished cleanly after the 5s fallback but before the caller's actual timeout had its
+  completion dropped and was force-aborted and marked `Aborted` in the registry instead
+  of `Completed`. Removed the reap driver's independent deadline entirely — it now
+  drains until no tasks remain active, and `shutdown_all`'s own `sleep(timeout)` +
+  force-abort is the sole deadline authority for the whole shutdown sequence.
 - `zeph-gateway` and `zeph-a2a`: fixed a bearer-token brute-force bypass caused by
   middleware layer order (#6110, CWE-307). `auth_middleware` returns `401` directly
   without calling `next.run`, so with auth layered outside `rate_limit_middleware`,

@@ -93,12 +93,6 @@ pub enum RestartPolicy {
 /// Maximum delay between restart attempts (caps exponential backoff).
 pub const MAX_RESTART_DELAY: Duration = Duration::from_mins(1);
 
-/// Safety cap on how long the reap driver drains completions after cancellation.
-///
-/// INVARIANT: must be less than the runner shutdown grace period (runner.rs:2387,
-/// currently 10s). If that constant is reduced, this must be reduced proportionally.
-const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// Configuration passed to [`TaskSupervisor::spawn`] to describe a supervised task.
 ///
 /// `F` must be `Fn` (not `FnOnce`) to support restarts: the factory is called once on
@@ -831,9 +825,16 @@ impl TaskSupervisor {
     /// Spawn the reap driver. The driver processes completion events from the mpsc channel.
     ///
     /// After the cancellation token fires, the driver continues draining the channel
-    /// until it is empty — this ensures that tasks which completed just before cancel
-    /// have their registry entries updated, allowing `shutdown_all` to observe
-    /// `active_count() == 0` correctly.
+    /// until the registry reports no active tasks (or the channel closes) — this
+    /// ensures that tasks which complete after cancel, however long that takes,
+    /// still have their registry entries updated, allowing `shutdown_all` to observe
+    /// `active_count() == 0` correctly and wake early. The driver enforces no
+    /// deadline of its own: [`TaskSupervisor::shutdown_all`]'s own `sleep(timeout)`
+    /// is the sole authority for giving up on a stuck task, regardless of how long
+    /// the gap is between the token being cancelled (typically out-of-band, by a
+    /// shutdown bridge or signal handler — see `src/runner.rs`, `src/serve/mod.rs`)
+    /// and `shutdown_all` actually being invoked. See the Phase 2 comment below for
+    /// why this is correct and terminates.
     fn start_reap_driver(
         inner: Arc<Inner>,
         mut completion_rx: mpsc::UnboundedReceiver<Completion>,
@@ -852,25 +853,41 @@ impl TaskSupervisor {
             }
 
             // Phase 2: post-cancel drain — keep receiving completions until the
-            // registry reports no active tasks, or the channel closes, or the safety
-            // deadline expires. This prevents losing completions that arrive after
-            // tasks observe cancellation (#3161).
-            let drain_deadline = tokio::time::Instant::now() + SHUTDOWN_DRAIN_TIMEOUT;
+            // registry reports no active tasks, or the channel closes. This prevents
+            // losing completions that arrive after tasks observe cancellation
+            // (#3161), for however long that takes.
+            //
+            // Deliberately no independent deadline here (#5926): an earlier version
+            // of this drain phase enforced its own short fallback timeout, which
+            // could — and at every real call site, reliably did — expire before
+            // `shutdown_all` was ever invoked (the shared `CancellationToken` is
+            // cancelled out-of-band by a shutdown bridge/signal handler well before
+            // `shutdown_all` runs; see `src/runner.rs`, `src/serve/mod.rs`), causing
+            // the driver to exit and silently drop any later completion. There is
+            // exactly one deadline authority for the whole shutdown sequence:
+            // `shutdown_all`'s own `sleep(timeout)` (below), which force-aborts any
+            // task still `Running`/`Restarting` under the registry lock directly —
+            // that abort itself generates a `Cancelled` completion for `spawn`/
+            // `spawn_oneshot` tasks via `wire_completion_reporter`, waking this loop
+            // promptly. The one exception is a `spawn_blocking` task force-aborted
+            // while its outer wrapper is still parked on the concurrency semaphore
+            // (see `spawn_blocking`, below) — no completion is sent in that case, but
+            // `shutdown_all` has already marked the entry `Aborted` directly under the
+            // state lock and returned correctly; only this now-idle reap-driver task
+            // may linger parked until process/test teardown, which is not a hang. This
+            // task holds its own `Arc<Inner>` (which also owns a `completion_tx`
+            // clone) for as long as it runs, so `completion_rx.recv()` can only
+            // resolve via a real completion or the channel genuinely closing — never a
+            // stale timeout.
             let active = Self::has_active_tasks(&inner);
             tracing::debug!(active, "reap driver entered post-cancel drain phase");
             loop {
                 if !Self::has_active_tasks(&inner) {
                     break;
                 }
-                let remaining =
-                    drain_deadline.saturating_duration_since(tokio::time::Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                match tokio::time::timeout(remaining, completion_rx.recv()).await {
-                    Ok(Some(completion)) => Self::handle_completion(&inner, completion).await,
-                    // channel closed (unreachable in practice — senders live in Inner), or deadline elapsed
-                    Ok(None) | Err(_) => break,
+                match completion_rx.recv().await {
+                    Some(completion) => Self::handle_completion(&inner, completion).await,
+                    None => break, // channel closed — unreachable in practice
                 }
             }
             tracing::debug!(
@@ -1653,6 +1670,179 @@ mod tests {
             0,
             "all tasks must be reaped after shutdown (#3161)"
         );
+    }
+
+    /// Regression test for #5926: `shutdown_all` must wait for a task that is
+    /// still running when the caller-supplied `timeout` has not yet elapsed,
+    /// rather than giving up on any independent, shorter deadline.
+    ///
+    /// `spawn_blocking` tasks don't observe the cancellation token — unlike
+    /// `spawn`-based tasks, whose futures are dropped immediately by `do_spawn`'s
+    /// `tokio::select!` against `cancel.cancelled()` — so a `spawn_blocking` task is
+    /// the only way to have a task genuinely keep running past cancel and exercise
+    /// the drain phase.
+    #[tokio::test]
+    async fn test_shutdown_all_reaps_blocking_task_finishing_after_cancel() {
+        let (sup, _cancel) = make_supervisor();
+
+        let handle = sup.spawn_blocking(Arc::from("slow-blocking"), || {
+            std::thread::sleep(Duration::from_millis(300));
+        });
+
+        // Let the blocking task actually start before triggering shutdown.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let start = tokio::time::Instant::now();
+        sup.shutdown_all(Duration::from_secs(2)).await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "shutdown_all must wake as soon as the blocking task actually finishes \
+             (~300ms), not wait out the full 2s caller timeout; elapsed={elapsed:?}"
+        );
+
+        // Successfully reaped tasks are removed from the registry entirely (see
+        // `handle_completion`'s post-cancel short-circuit); only force-aborted tasks
+        // remain with `TaskStatus::Aborted`. Absence here means the completion was
+        // processed before shutdown_all's own timeout forced an abort.
+        let snapshot = sup.snapshot();
+        assert!(
+            snapshot.iter().all(|t| t.name.as_ref() != "slow-blocking"),
+            "task that completed cleanly after cancel must be reaped from the \
+             registry, not left behind and force-aborted: {snapshot:?}"
+        );
+
+        // `join` returns `Ok` only when the closure ran to completion and the
+        // outer task wasn't aborted — the `BlockingHandle` equivalent of
+        // `TaskStatus::Completed` vs `TaskStatus::Aborted`.
+        handle
+            .join()
+            .await
+            .expect("blocking task must complete, not be reported as aborted (#5926)");
+    }
+
+    /// Regression test for #5926, critical topology (out-of-band cancel):
+    /// production call sites (`src/runner.rs`, `src/serve/mod.rs`) always cancel
+    /// the shared `CancellationToken` *before* calling `shutdown_all` — a
+    /// separate shutdown bridge/signal handler owns the cancel, and `shutdown_all`
+    /// is only invoked afterward as a waiter. A fix that only works when
+    /// `shutdown_all` is the sole canceller would pass a naive test but stay
+    /// broken in production. This test replicates the real topology explicitly:
+    /// cancel first, let the reap driver start draining, *then* call
+    /// `shutdown_all`, and confirm the caller's real timeout still governs the
+    /// wait.
+    #[tokio::test]
+    async fn test_shutdown_all_reaps_task_after_out_of_band_cancel() {
+        let cancel = CancellationToken::new();
+        let sup = TaskSupervisor::new(cancel.clone());
+
+        let handle = sup.spawn_blocking(Arc::from("slow-blocking-oob"), || {
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Out-of-band cancel — nothing to do with shutdown_all, mirrors a shutdown
+        // bridge/signal handler cancelling the shared token directly.
+        cancel.cancel();
+        // Give the reap driver time to observe cancellation and enter Phase 2
+        // before shutdown_all ever runs.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let start = tokio::time::Instant::now();
+        sup.shutdown_all(Duration::from_secs(2)).await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "shutdown_all must wake once the blocking task actually finishes even \
+             though the token was cancelled out-of-band before shutdown_all was \
+             called; elapsed={elapsed:?}"
+        );
+
+        handle.join().await.expect(
+            "blocking task must complete, not be reported as aborted, even under \
+             the out-of-band-cancel topology (#5926)",
+        );
+    }
+
+    /// Regression test for #5926 residual (critic finding S1): the reap driver's
+    /// drain phase must never give up on a still-active, non-cooperative task on
+    /// its own — only `shutdown_all`'s own `sleep(timeout)` may do that. An
+    /// earlier version of the fix gave the drain phase its own short fallback
+    /// deadline; if the gap between the out-of-band cancel and `shutdown_all`
+    /// being invoked exceeded that fallback, the reap driver exited *before*
+    /// `shutdown_all` ever ran, silently dropping the eventual completion and
+    /// misreporting the task `Aborted`. This is realistic in production: e.g.
+    /// `serve/mod.rs`'s `axum::serve(...).with_graceful_shutdown(...)` drains
+    /// in-flight connections with no timeout of its own before `shutdown_all(30s)`
+    /// is ever reached, and a long-running agent-turn request can hold that gap
+    /// open well past any short fallback.
+    ///
+    /// Uses paused virtual time (`tokio::time::advance`) to jump the cancel-to-
+    /// `shutdown_all` gap arbitrarily far forward without a real multi-second
+    /// test. A `spawn_blocking` task runs on a real OS thread (unaffected by
+    /// paused tokio time) and is held open via a channel until explicitly
+    /// released, so its completion stays under exact manual control relative to
+    /// the virtual-time advance and to when `shutdown_all` is actually called.
+    #[tokio::test(start_paused = true)]
+    async fn test_shutdown_all_reaps_task_after_long_pre_invocation_gap() {
+        let cancel = CancellationToken::new();
+        let sup = TaskSupervisor::new(cancel.clone());
+
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let handle: BlockingHandle<()> = sup.spawn_blocking(Arc::from("held-task"), move || {
+            let _ = release_rx.recv();
+        });
+
+        // Out-of-band cancel — before shutdown_all is ever called.
+        cancel.cancel();
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+
+        // Advance virtual time by a large margin — deliberately larger than any
+        // fallback window a naive fix might reintroduce — with `shutdown_all`
+        // still not called and the task still held open. A drain phase with any
+        // independent deadline of its own would have already exited by now.
+        tokio::time::advance(Duration::from_mins(2)).await;
+
+        // *Now* the real caller shows up.
+        let sup2 = sup.clone();
+        let shutdown_jh =
+            tokio::spawn(async move { sup2.shutdown_all(Duration::from_secs(30)).await });
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+
+        // Let the real OS thread actually finish.
+        let _ = release_tx.send(());
+
+        // Await directly (no wrapping virtual-time timeout): under `start_paused`,
+        // an artificial timeout here would itself be subject to auto-advance and
+        // cannot reliably distinguish outcomes. The real signal is the registry
+        // state checked below, not how long this await took.
+        shutdown_jh.await.expect("shutdown_all task must not panic");
+
+        // NOTE: `handle.join()` reflects `spawn_blocking`'s own internal oneshot
+        // completion channel, which is fed directly by the real OS thread finishing
+        // — entirely independent of the reap driver / registry path this test is
+        // targeting. It succeeds either way and cannot distinguish the bug, so the
+        // real assertion is the supervisor's registry state, not `handle.join()`.
+        let snapshot = sup.snapshot();
+        let entry = snapshot.iter().find(|t| t.name.as_ref() == "held-task");
+        assert!(
+            entry.is_none(),
+            "a task finishing after shutdown_all was (belatedly) invoked must be \
+             reaped from the registry (the post-cancel path removes completed \
+             entries rather than marking them), not force-aborted, no matter how \
+             long the cancel-to-shutdown_all gap was: {snapshot:?} (#5926 S1)"
+        );
+
+        handle
+            .join()
+            .await
+            .expect("blocking task must complete without panicking");
     }
 
     #[tokio::test]
