@@ -1309,6 +1309,17 @@ pub(crate) fn apply_debug_dumper<C: Channel>(
     }
 }
 
+/// Resolve the workspace root to index: `config.workspace_root` when set (canonicalized,
+/// falling back to the raw path if canonicalization fails), otherwise the process's current
+/// working directory. Shared by the background indexer and the `IndexMcpServer` retrieval path
+/// so both honor `index.workspace_root` identically.
+fn resolve_workspace_root(config: &IndexConfig) -> PathBuf {
+    config.workspace_root.as_deref().map_or_else(
+        || std::env::current_dir().unwrap_or_default(),
+        |p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()),
+    )
+}
+
 pub(crate) async fn apply_code_indexer(
     full_config: &Config,
     qdrant_ops: Option<QdrantOps>,
@@ -1367,10 +1378,7 @@ pub(crate) async fn apply_code_indexer(
         Ok(indexer) => {
             let (progress_tx, progress_rx) =
                 tokio::sync::watch::channel(zeph_index::IndexProgress::default());
-            let workspace_root = config.workspace_root.as_deref().map_or_else(
-                || std::env::current_dir().unwrap_or_default(),
-                |p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()),
-            );
+            let workspace_root = resolve_workspace_root(config);
             if cli_mode {
                 spawn_index_progress_printer(progress_tx.subscribe());
             }
@@ -1564,8 +1572,7 @@ pub(crate) fn apply_code_retrieval<C: Channel>(agent: Agent<C>, config: &IndexCo
                  static repo-map injection is disabled; use IndexMcpServer tools instead"
             );
         }
-        let cwd = std::env::current_dir().unwrap_or_default();
-        agent.with_index_mcp_server(cwd)
+        agent.with_index_mcp_server(resolve_workspace_root(config))
     } else if config.repo_map_tokens > 0 {
         agent.with_repo_map(config.repo_map_tokens, config.repo_map_ttl_secs)
     } else {
@@ -2915,6 +2922,31 @@ mod tests {
         )
         .await;
         assert!(watcher.is_none()); // watch = false
+    }
+
+    #[test]
+    fn resolve_workspace_root_none_uses_current_dir() {
+        let config = IndexConfig {
+            workspace_root: None,
+            ..IndexConfig::default()
+        };
+        assert_eq!(
+            resolve_workspace_root(&config),
+            std::env::current_dir().unwrap_or_default()
+        );
+    }
+
+    #[test]
+    fn resolve_workspace_root_some_path_is_used() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let config = IndexConfig {
+            workspace_root: Some(tmp_dir.path().to_path_buf()),
+            ..IndexConfig::default()
+        };
+        assert_eq!(
+            resolve_workspace_root(&config),
+            tmp_dir.path().canonicalize().unwrap()
+        );
     }
 
     /// `spawn_index_progress_status_forwarder` must forward each `IndexProgress` update as a

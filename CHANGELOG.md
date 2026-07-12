@@ -21,6 +21,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `IndexMcpServer` registration (`apply_code_retrieval` in `src/agent_setup.rs`) hardcoded
+  `std::env::current_dir()` and never read `[index] workspace_root`, unlike the sibling
+  background-indexer path (`apply_code_indexer`), which resolved it correctly. Scoping
+  `workspace_root` to a subdirectory had no effect whenever `index.mcp_enabled = true`;
+  `IndexMcpServer` always walked the full process working directory instead (#6129).
+  Extracted the existing resolution logic into a shared `resolve_workspace_root` helper so
+  both call sites resolve `workspace_root` identically.
 - `zeph-tui`: closed three independent dispatch/state gaps (#6061, #5984, #5983).
   - The task-registry overlay's supervisor-unavailable fallback (`render_subagents_slot`)
     drew its "supervisor not available" message directly into the shared subagents-slot
