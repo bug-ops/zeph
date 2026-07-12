@@ -83,7 +83,7 @@ pub struct PackageArchive {
     /// `validate_skill_name` requires the source directory's own basename to equal the
     /// declared skill name, and `extracted_dir`'s basename is an OS-assigned random string that
     /// will never satisfy that by chance. Without this indirection, `SkillManager::install_from_path`
-    /// would fail with "skill name '<x>' does not match directory name '<random-tmp-name>'" for
+    /// would fail with "skill name '`<x>`' does not match directory name '`<random-tmp-name>`'" for
     /// every real registry fetch — found via this crate's own test suite, not a live session
     /// (fix accompanying review issue #4's testability work).
     ///

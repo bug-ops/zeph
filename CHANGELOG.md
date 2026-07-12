@@ -17,6 +17,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to `main` without a single PR-gating job catching it (#6176). Added `registry` to the
   feature strings at all five call sites above; `.claude/rules/branching.md`'s documented
   local commands are updated to match so they still mirror CI exactly.
+- **Rustdoc**: enabling `registry` in the `rustdoc` CI job (above) surfaced two pre-existing
+  rustdoc lint failures, both in code documented for the first time by that job:
+  - `crates/zeph-plugins/src/marketplace/skills_sh.rs`'s module-level doc comment linked to
+    `` [`SkillSummary`] `` and `` [`parse_files`] ``, both genuinely private items — the paths
+    resolve fine, but `rustdoc::private_intra_doc_links` rejects a public doc comment linking to
+    a private item. Both are correctly private (internal deserialization details, not public
+    API), so the fix drops the link brackets and keeps plain inline code instead of qualifying a
+    path or widening visibility.
+  - `crates/zeph-plugins/src/marketplace/mod.rs:86`'s doc comment contained the literal strings
+    `<x>` and `<random-tmp-name>` outside of backticks, which `rustdoc::invalid_html_tags`
+    misparses as unclosed HTML tags. Wrapped both in backticks so they render as inline code
+    instead.
+  (#6176)
 
 ### Added
 

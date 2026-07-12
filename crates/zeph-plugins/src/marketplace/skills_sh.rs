@@ -44,14 +44,14 @@
 //! ## NOT independently verified — flagged, not guessed silently
 //!
 //! - The exact JSON shape of an individual **search result** object (`data[]` entries) beyond
-//!   the detail-endpoint field names above. [`SkillSummary`] deserializes `name`/`description`/
+//!   the detail-endpoint field names above. `SkillSummary` deserializes `name`/`description`/
 //!   `tags`/`author`/`installs` as `#[serde(default)]` so a shape mismatch degrades to an empty
 //!   value instead of a hard parse failure; `id`/`source`/`slug` are treated as required since
 //!   the docs page named them explicitly.
 //! - The exact shape of the detail endpoint's `files` field. The docs page states responses
 //!   "contain file contents as strings within JSON" but does not show a worked example. This
 //!   client accepts **both** a JSON array of `{"path": ..., "content": ...}` objects and a flat
-//!   JSON object mapping `path -> content`, via [`parse_files`], to hedge against either shape.
+//!   JSON object mapping `path -> content`, via `parse_files`, to hedge against either shape.
 //! - `security_audit_status` is served by the separate `/audit/{source}/{skill}` endpoint
 //!   (fields: `audits: [{provider, slug, status: "pass"|"warn"|"fail", summary, auditedAt,
 //!   riskLevel}]`), not embedded in search or detail responses. Calling it per search result
