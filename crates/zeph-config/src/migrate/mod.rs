@@ -618,14 +618,15 @@ use steps::{
     MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
     MigrateSecretMaskingConfig, MigrateServeConfig, MigrateSessionPersistProviderOverrides,
     MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
-    MigrateShellCheckpointsConfig, MigrateShellTransactional, MigrateSkillTrustRequireCheck,
-    MigrateSkillsRegistry, MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
-    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
-    MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateUtilityHighGainTools,
-    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
+    MigrateShadowSentinelConfig, MigrateShellCheckpointsConfig, MigrateShellTransactional,
+    MigrateSkillTrustRequireCheck, MigrateSkillsRegistry, MigrateSttToProvider,
+    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
+    MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig,
+    MigrateTuiThemeDefaults, MigrateUtilityHighGainTools, MigrateVigilConfig,
+    MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–78).
+/// Ordered registry of all sequential migration steps (steps 1–81).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -770,6 +771,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 80 — add require_integrity_check_on_promote advisory to an existing active
             // [skills.trust] table (#6087)
             Box::new(MigrateSkillTrustRequireCheck),
+            // Step 81 — add [security.shadow_sentinel] advisory block (spec 050, #5934)
+            Box::new(MigrateShadowSentinelConfig),
         ]
     });
 

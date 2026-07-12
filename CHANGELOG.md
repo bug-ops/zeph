@@ -33,6 +33,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Config**: documented `[security.shadow_sentinel]` (`ShadowSentinelConfig`) as a commented
+  advisory block in `config/default.toml`, and added migration step 81
+  (`migrate_shadow_sentinel_config`) so existing configs gain the same discoverable block via
+  `zeph --migrate-config`. The section was previously implemented and wired through
+  `SecurityConfig`/`validate_provider_names` but absent from both the shipped default config and
+  the migration registry (#5934).
 - **Security**: added `.gitleaks.toml` allowlisting the 31 known-benign gitleaks
   findings from a full git-history scan — all fake/example secrets in test
   fixtures, doctests, and documentation (`secret_mask.rs`, `redact.rs`,
@@ -68,6 +74,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   commented advisory for the new key to existing configs that already declare `[skills.trust]`.
   Self-learning/heuristic auto-promotion and reload trust-assignment are intentionally out of
   scope for this change — see the PR description.
+
+### Changed
+
+- **Config**: replaced hand-rolled TOML section-header idempotency checks (raw
+  `toml_src.contains("[name]")` substring matches and unanchored exact-line comparisons) across
+  `crates/zeph-config/src/migrate/{features,memory,tools,session,serve,infra,llm}.rs` with the
+  shared `section_header_present()` helper, which correctly recognizes inline-commented headers
+  (`[name]  # note`) and excludes fully commented-out headers (`# [name]`) — a stricter, more
+  correct check than the substring/exact-line patterns it replaces. Per-key idempotency checks
+  (e.g. detecting a specific field inside a section) and array-of-tables headers (`[[name]]`,
+  unsupported by `section_header_present()`) were left as-is. Behavior is unchanged for all
+  existing migration test expectations except five now-corrected/narrowed guards:
+  `migrate_goals_config` and `migrate_memory_graph_config`'s `[memory.graph.beam_search]` check
+  now also explicitly recognize a fully commented-out header instead of relying on substring
+  coincidence; `migrate_egress_config`, `migrate_vigil_config`, and
+  `migrate_tools_compression_config` previously used a broad, bracket-less substring guard
+  (e.g. `contains("[tools.egress]") || contains("tools.egress")`, effectively just
+  `contains("tools.egress")`) that also suppressed re-injection for unrelated matches such as an
+  inline table (`compression = { enabled = true }`) or a root dotted key (`tools.egress.enabled
+  = ...`) — this was the exact copy-paste anti-pattern #5933 targets, not a deliberate design
+  choice, so the guard is now narrowed to the real header-only check. The narrowing only affects
+  which configs receive a commented advisory block on `--migrate-config`; it never touches active
+  config values and remains fully idempotent (#5933).
 
 ### Removed
 

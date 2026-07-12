@@ -3,7 +3,7 @@
 
 //! `[serve]` config migration step (spec-068 §9, #5343).
 
-use super::{MigrateError, MigrationResult};
+use super::{MigrateError, MigrationResult, section_header_present};
 
 /// Append a commented-out `[serve]` block if the config lacks it (spec-068 §9, #5343).
 ///
@@ -18,9 +18,8 @@ use super::{MigrateError, MigrationResult};
 ///
 /// Infallible in practice; `Result` matches the migration convention.
 pub fn migrate_serve_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src
-        .lines()
-        .any(|l| l.trim() == "[serve]" || l.trim() == "# [serve]")
+    if section_header_present(toml_src, "serve")
+        || toml_src.lines().any(|l| l.trim() == "# [serve]")
     {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),

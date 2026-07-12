@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        80,
-        "MIGRATIONS registry must contain all 80 sequential steps"
+        81,
+        "MIGRATIONS registry must contain all 81 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1753,7 +1753,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 80);
+    assert_eq!(MIGRATIONS.len(), 81);
 }
 
 #[test]
@@ -1791,7 +1791,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–79).
+    // Names must follow the documented step order (steps 1–81).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1873,6 +1873,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_skills_registry",
         "migrate_durable_shared_db",
         "migrate_skill_trust_require_check",
+        "migrate_shadow_sentinel_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -4137,5 +4138,97 @@ fn step_80_idempotent_on_own_output() {
     assert_eq!(
         second.output, first.output,
         "output unchanged on second run"
+    );
+}
+
+// ── migrate_shadow_sentinel_config tests (step 81, spec 050, #5934) ──────────
+
+#[test]
+fn step_81_adds_shadow_sentinel_block_when_absent() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_shadow_sentinel_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# [security.shadow_sentinel]"));
+    assert!(result.output.contains("# enabled = false"));
+    assert_eq!(
+        result.sections_changed,
+        vec!["security.shadow_sentinel".to_owned()]
+    );
+}
+
+#[test]
+fn step_81_noop_when_shadow_sentinel_section_already_active() {
+    let src = "[security.shadow_sentinel]\nenabled = true\n";
+    let result = migrate_shadow_sentinel_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_81_noop_when_shadow_sentinel_comment_already_present() {
+    let src = "# [security.shadow_sentinel]\n# enabled = false\n";
+    let result = migrate_shadow_sentinel_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_81_idempotent_on_own_output() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let first = migrate_shadow_sentinel_config(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_shadow_sentinel_config(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
+    );
+}
+
+// ── M1 regression tests: narrower `section_header_present`-based guards (#5933) ─────────
+//
+// `migrate_egress_config`, `migrate_vigil_config`, and `migrate_tools_compression_config`
+// previously used a broad, bracket-less substring guard (e.g.
+// `contains("[tools.egress]") || contains("tools.egress")`, effectively just
+// `contains("tools.egress")`) that also suppressed re-injection for unrelated matches such as a
+// root dotted key (`tools.egress.enabled = ...`) or an inline table
+// (`compression = { enabled = true }`). The guards now correctly recognize only real section
+// headers (active or commented), so these inputs trigger the commented advisory block — this is
+// the intended, narrower behavior (not a bug): the old broad match was the exact copy-paste
+// anti-pattern #5933 targets, not a deliberate design choice. These tests pin the new behavior.
+
+#[test]
+fn migrate_egress_config_injects_on_dotted_key_form_not_a_real_section_header() {
+    // A root dotted key mentioning "tools.egress" is not a `[tools.egress]` header — the old
+    // broad `contains("tools.egress")` guard used to suppress this input; the new
+    // `section_header_present`-based guard does not.
+    let src = "tools.egress.enabled = true\n";
+    let result = migrate_egress_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# [tools.egress]"));
+    assert_eq!(result.sections_changed, vec!["tools.egress".to_owned()]);
+}
+
+#[test]
+fn migrate_vigil_config_injects_on_dotted_key_form_not_a_real_section_header() {
+    let src = "security.vigil.enabled = true\n";
+    let result = migrate_vigil_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# [security.vigil]"));
+    assert_eq!(result.sections_changed, vec!["security.vigil".to_owned()]);
+}
+
+#[test]
+fn migrate_tools_compression_config_injects_on_inline_table_form_not_a_real_section_header() {
+    // An inline table under `[tools]` satisfies the old broad
+    // `contains("[tools]\n") && contains("compression")` guard without ever declaring a real
+    // `[tools.compression]` header — the new guard correctly treats this as absent.
+    let src = "[tools]\ncompression = { enabled = true }\n";
+    let result = migrate_tools_compression_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# [tools.compression]"));
+    assert_eq!(
+        result.sections_changed,
+        vec!["tools.compression".to_owned()]
     );
 }

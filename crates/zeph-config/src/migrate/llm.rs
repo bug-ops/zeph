@@ -1162,7 +1162,7 @@ pub fn migrate_llm_stream_limits(toml_src: &str) -> Result<MigrationResult, Migr
         .any(|l| l.trim() == "# [llm.stream_limits]");
     if section_header_present(toml_src, "llm.stream_limits")
         || commented_present
-        || !toml_src.contains("[llm]")
+        || !section_header_present(toml_src, "llm")
     {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),

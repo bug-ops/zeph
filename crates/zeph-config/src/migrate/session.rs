@@ -7,7 +7,7 @@
 //! the [`Migration`](super::Migration) trait, and the [`MIGRATIONS`](super::MIGRATIONS)
 //! registry remain in the parent module.
 
-use super::{MigrateError, MigrationResult};
+use super::{MigrateError, MigrationResult, section_header_present};
 
 /// Add commented-out `[session.recap]` block if absent (#3064).
 ///
@@ -18,7 +18,7 @@ use super::{MigrateError, MigrationResult};
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
 pub fn migrate_session_recap_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     // Idempotency: check both active and commented forms.
-    if toml_src.contains("[session.recap]") || toml_src.contains("# [session.recap]") {
+    if section_header_present(toml_src, "session.recap") || toml_src.contains("# [session.recap]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -53,9 +53,8 @@ pub fn migrate_session_recap_config(toml_src: &str) -> Result<MigrationResult, M
 /// This function is infallible in practice; the `Result` return type matches the
 /// migration function convention for use in chained pipelines.
 pub fn migrate_acp_subagents_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src
-        .lines()
-        .any(|l| l.trim() == "[acp.subagents]" || l.trim() == "# [acp.subagents]")
+    if section_header_present(toml_src, "acp.subagents")
+        || toml_src.lines().any(|l| l.trim() == "# [acp.subagents]")
     {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
@@ -219,9 +218,8 @@ pub fn migrate_hooks_turn_complete_config(toml_src: &str) -> Result<MigrationRes
 pub fn migrate_session_provider_persistence(
     toml_src: &str,
 ) -> Result<MigrationResult, MigrateError> {
-    if toml_src
-        .lines()
-        .any(|l| l.trim() == "[session]" || l.trim() == "# [session]")
+    if section_header_present(toml_src, "session")
+        || toml_src.lines().any(|l| l.trim() == "# [session]")
     {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
@@ -268,7 +266,10 @@ pub fn migrate_session_persist_provider_overrides(
             sections_changed: Vec::new(),
         });
     }
-    if !toml_src.lines().any(|l| l.trim() == "[session]") {
+    // Also require the literal `"[session]\n"` anchor used by `replacen` below — guards
+    // against an inline-commented header (`[session]  # note`) passing `section_header_present`
+    // but not matching the anchor, which would otherwise report a change that never happened.
+    if !section_header_present(toml_src, "session") || !toml_src.contains("[session]\n") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -309,7 +310,10 @@ pub fn migrate_session_persistence_config(toml_src: &str) -> Result<MigrationRes
             sections_changed: Vec::new(),
         });
     }
-    if !toml_src.lines().any(|l| l.trim() == "[session]") {
+    // Also require the literal `"[session]\n"` anchor used by `replacen` below — guards
+    // against an inline-commented header (`[session]  # note`) passing `section_header_present`
+    // but not matching the anchor, which would otherwise report a change that never happened.
+    if !section_header_present(toml_src, "session") || !toml_src.contains("[session]\n") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,

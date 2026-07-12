@@ -42,7 +42,8 @@
 //! step 79 adds a commented `shared_db = false` advisory to an existing active `[durable]`
 //! table (INV-8 `encryption_gate`, #5996);
 //! step 80 adds a commented `require_integrity_check_on_promote = true` advisory to an
-//! existing active `[skills.trust]` table (#6087).
+//! existing active `[skills.trust]` table (#6087);
+//! step 81 adds a commented `[security.shadow_sentinel]` advisory block (spec 050, #5934).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -74,7 +75,7 @@ use super::{
     migrate_scheduler_daemon_config, migrate_secret_masking_config, migrate_serve_config,
     migrate_session_persist_provider_overrides, migrate_session_persistence_config,
     migrate_session_provider_persistence, migrate_session_recap_config,
-    migrate_shell_checkpoints_config, migrate_shell_transactional,
+    migrate_shadow_sentinel_config, migrate_shell_checkpoints_config, migrate_shell_transactional,
     migrate_skill_trust_require_check, migrate_skills_registry, migrate_stt_to_provider,
     migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
     migrate_trace_metadata, migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config,
@@ -981,5 +982,17 @@ impl Migration for MigrateSkillTrustRequireCheck {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_skill_trust_require_check(toml_src)
+    }
+}
+
+/// Step 81 — adds a commented `[security.shadow_sentinel]` advisory block (spec 050, #5934).
+pub(super) struct MigrateShadowSentinelConfig;
+impl Migration for MigrateShadowSentinelConfig {
+    fn name(&self) -> &'static str {
+        "migrate_shadow_sentinel_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_shadow_sentinel_config(toml_src)
     }
 }

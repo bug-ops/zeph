@@ -150,7 +150,9 @@ pub fn migrate_telemetry_config(toml_src: &str) -> Result<MigrationResult, Migra
 /// Returns `MigrateError::Parse` if `toml_src` is not valid TOML.
 pub fn migrate_supervisor_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     // Idempotency: skip if already present (either as real section or commented-out block).
-    if toml_src.contains("[agent.supervisor]") || toml_src.contains("# [agent.supervisor]") {
+    if section_header_present(toml_src, "agent.supervisor")
+        || toml_src.contains("# [agent.supervisor]")
+    {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -238,7 +240,7 @@ pub fn migrate_otel_filter(toml_src: &str) -> Result<MigrationResult, MigrateErr
 ///
 /// Returns [`MigrateError`] if the TOML source cannot be parsed.
 pub fn migrate_egress_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src.contains("[tools.egress]") || toml_src.contains("tools.egress") {
+    if section_header_present(toml_src, "tools.egress") || toml_src.contains("# [tools.egress]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -269,7 +271,8 @@ pub fn migrate_egress_config(toml_src: &str) -> Result<MigrationResult, MigrateE
 ///
 /// Returns [`MigrateError`] if the TOML source cannot be parsed.
 pub fn migrate_vigil_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src.contains("[security.vigil]") || toml_src.contains("security.vigil") {
+    if section_header_present(toml_src, "security.vigil") || toml_src.contains("# [security.vigil]")
+    {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -353,7 +356,7 @@ pub fn migrate_sandbox_config(toml_src: &str) -> Result<MigrationResult, Migrate
 /// Returns [`MigrateError`] if the TOML document cannot be parsed.
 pub fn migrate_sandbox_egress_filter(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     // Only inject when [tools.sandbox] already exists.
-    if !toml_src.contains("[tools.sandbox]") {
+    if !section_header_present(toml_src, "tools.sandbox") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -411,9 +414,8 @@ pub fn migrate_sandbox_egress_filter(toml_src: &str) -> Result<MigrationResult, 
 /// This function is infallible in practice; the `Result` return type matches the
 /// migration function convention for use in chained pipelines.
 pub fn migrate_scheduler_daemon_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src
-        .lines()
-        .any(|l| l.trim() == "[scheduler.daemon]" || l.trim() == "# [scheduler.daemon]")
+    if section_header_present(toml_src, "scheduler.daemon")
+        || toml_src.lines().any(|l| l.trim() == "# [scheduler.daemon]")
     {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
@@ -859,5 +861,47 @@ pub fn migrate_pii_filter_names(toml_src: &str) -> Result<MigrationResult, Migra
         } else {
             Vec::new()
         },
+    })
+}
+
+/// Adds a commented-out `[security.shadow_sentinel]` section to configs that predate the
+/// `ShadowSentinel` Phase 2 defence-in-depth safety probe (spec 050, #5934). Idempotent: no-op
+/// when the real or commented `[security.shadow_sentinel]` header is already present, so running
+/// `--migrate-config` twice does not duplicate it. Existing configs gain the section as comments
+/// (no behavior change — `enabled = false`).
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the source is not valid TOML.
+pub fn migrate_shadow_sentinel_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let commented_present = toml_src
+        .lines()
+        .any(|l| l.trim() == "# [security.shadow_sentinel]");
+    if section_header_present(toml_src, "security.shadow_sentinel") || commented_present {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let _doc = toml_src.parse::<DocumentMut>()?;
+
+    let block = "\n# ShadowSentinel Phase 2: persistent safety event stream + LLM pre-execution probe\n\
+         # (spec 050, #5934). Defence-in-depth only — PolicyGateExecutor and TrajectorySentinel\n\
+         # remain the primary enforcement mechanisms. Opt-in, default-off.\n\
+         # [security.shadow_sentinel]\n\
+         # enabled = false\n\
+         # probe_provider = \"\"\n\
+         # max_context_events = 50\n\
+         # probe_timeout_ms = 2000\n\
+         # max_probes_per_turn = 3\n\
+         # probe_patterns = [\"builtin:shell\", \"builtin:write\", \"builtin:edit\", \"*write*\", \"*edit*\", \"*delete*\", \"*exec*\"]\n\
+         # deny_on_timeout = false\n";
+    let output = format!("{}{}", toml_src.trim_end(), block);
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["security.shadow_sentinel".to_owned()],
     })
 }

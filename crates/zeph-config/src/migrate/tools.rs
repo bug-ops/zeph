@@ -7,7 +7,7 @@
 //! the [`Migration`](super::Migration) trait, and the [`MIGRATIONS`](super::MIGRATIONS)
 //! registry remain in the parent module.
 
-use super::{MigrateError, MigrationResult};
+use super::{MigrateError, MigrationResult, section_header_present};
 
 /// Migrate `[agent].max_tool_retries` → `[tools.retry].max_attempts` and
 /// `[agent].max_retry_duration_secs` → `[tools.retry].budget_secs`.
@@ -153,9 +153,8 @@ pub fn migrate_agent_budget_hint(toml_src: &str) -> Result<MigrationResult, Migr
 /// migration function convention for use in chained pipelines.
 pub fn migrate_quality_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     // Idempotency: line-anchored check avoids false-positives on [quality.foo] subtables.
-    if toml_src
-        .lines()
-        .any(|l| l.trim() == "[quality]" || l.trim() == "# [quality]")
+    if section_header_present(toml_src, "quality")
+        || toml_src.lines().any(|l| l.trim() == "# [quality]")
     {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
@@ -193,8 +192,10 @@ pub fn migrate_quality_config(toml_src: &str) -> Result<MigrationResult, Migrate
 ///
 /// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
 pub fn migrate_tools_compression_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src.contains("tools.compression")
-        || toml_src.contains("[tools]\n") && toml_src.contains("compression")
+    if section_header_present(toml_src, "tools.compression")
+        || toml_src
+            .lines()
+            .any(|l| l.trim() == "# [tools.compression]")
     {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),

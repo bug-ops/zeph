@@ -19,7 +19,9 @@ use super::{MigrateError, MigrationResult, insert_after_section, section_header_
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
 pub fn migrate_forgetting_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     // Idempotency: comments are invisible to toml_edit, so check the raw source.
-    if toml_src.contains("[memory.forgetting]") || toml_src.contains("# [memory.forgetting]") {
+    if section_header_present(toml_src, "memory.forgetting")
+        || toml_src.contains("# [memory.forgetting]")
+    {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -67,7 +69,7 @@ pub fn migrate_forgetting_config(toml_src: &str) -> Result<MigrationResult, Migr
 /// migration function convention for use in chained pipelines.
 pub fn migrate_memory_graph_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     if toml_src.contains("retrieval_strategy")
-        || toml_src.contains("[memory.graph.beam_search]")
+        || section_header_present(toml_src, "memory.graph.beam_search")
         || toml_src.contains("# [memory.graph.beam_search]")
     {
         return Ok(MigrationResult {
@@ -111,9 +113,8 @@ pub fn migrate_memory_graph_config(toml_src: &str) -> Result<MigrationResult, Mi
 /// This function is infallible in practice; the `Result` return type matches the migration
 /// function convention for use in chained pipelines.
 pub fn migrate_memory_retrieval_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src
-        .lines()
-        .any(|l| l.trim() == "[memory.retrieval]" || l.trim() == "# [memory.retrieval]")
+    if section_header_present(toml_src, "memory.retrieval")
+        || toml_src.lines().any(|l| l.trim() == "# [memory.retrieval]")
     {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
@@ -152,9 +153,8 @@ pub fn migrate_memory_retrieval_config(toml_src: &str) -> Result<MigrationResult
 /// This function is infallible in practice; the `Result` return type matches the migration
 /// function convention for use in chained pipelines.
 pub fn migrate_memory_reasoning_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src
-        .lines()
-        .any(|l| l.trim() == "[memory.reasoning]" || l.trim() == "# [memory.reasoning]")
+    if section_header_present(toml_src, "memory.reasoning")
+        || toml_src.lines().any(|l| l.trim() == "# [memory.reasoning]")
     {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
@@ -199,7 +199,7 @@ pub fn migrate_memory_reasoning_config(toml_src: &str) -> Result<MigrationResult
 pub fn migrate_memory_reasoning_judge_config(
     toml_src: &str,
 ) -> Result<MigrationResult, MigrateError> {
-    let has_section = toml_src.lines().any(|l| l.trim() == "[memory.reasoning]");
+    let has_section = section_header_present(toml_src, "memory.reasoning");
     if !has_section {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
@@ -481,7 +481,7 @@ pub fn migrate_focus_auto_consolidate_min_window(
     }
 
     // Only inject when [agent.focus] exists as a live section (not a comment).
-    if !toml_src.lines().any(|l| l.trim() == "[agent.focus]") {
+    if !section_header_present(toml_src, "agent.focus") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -563,9 +563,8 @@ pub fn migrate_memory_retrieval_query_bias(
 ///
 /// Infallible in practice; `Result` matches the migration convention.
 pub fn migrate_memory_persona_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src
-        .lines()
-        .any(|l| l.trim() == "[memory.persona]" || l.trim() == "# [memory.persona]")
+    if section_header_present(toml_src, "memory.persona")
+        || toml_src.lines().any(|l| l.trim() == "# [memory.persona]")
     {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
@@ -605,7 +604,7 @@ pub fn migrate_memory_graph_recall_include_imported(
     toml_src: &str,
 ) -> Result<MigrationResult, MigrateError> {
     // Only inject when [memory.graph] exists as a live section.
-    if !toml_src.lines().any(|l| l.trim() == "[memory.graph]") {
+    if !section_header_present(toml_src, "memory.graph") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -755,7 +754,7 @@ pub fn migrate_fidelity_timeout_defaults(toml_src: &str) -> Result<MigrationResu
     let has_embed = toml_src.contains("embed_timeout_secs");
     let has_compress = toml_src.contains("compress_timeout_secs");
 
-    if (has_embed && has_compress) || !toml_src.contains("[memory.fidelity]") {
+    if (has_embed && has_compress) || !section_header_present(toml_src, "memory.fidelity") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,

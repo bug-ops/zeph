@@ -953,6 +953,19 @@ subagent_inheritance_factor = 0.5
 # [security.capability_scopes.general]
 # patterns = ["*"]
 
+# ShadowSentinel Phase 2: persistent safety event stream + LLM pre-execution probe (spec 050).
+# Defence-in-depth only — PolicyGateExecutor and TrajectorySentinel remain the primary gate.
+# Disabled by default.
+# [security.shadow_sentinel]
+# enabled = false
+# provider name from [[llm.providers]]; empty = primary. Prefer a fast/cheap model.
+# probe_provider = ""
+# max_context_events = 50
+# probe_timeout_ms = 2000
+# max_probes_per_turn = 3
+# probe_patterns = ["builtin:shell", "builtin:write", "builtin:edit", "*write*", "*edit*", "*delete*", "*exec*"]
+# deny_on_timeout = false
+
 # [telegram]
 # token = "your-bot-token"
 # Allowed usernames (empty = allow all except for /start command)

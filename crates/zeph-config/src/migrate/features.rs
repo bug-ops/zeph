@@ -26,7 +26,7 @@ static TUI_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
 /// Returns `MigrateError::TomlParse` if the input is not valid TOML; infallible otherwise.
 pub fn migrate_tui_delights(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     // No [tui] section → no-op.
-    if !toml_src.contains("[tui]") {
+    if !section_header_present(toml_src, "tui") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -35,10 +35,8 @@ pub fn migrate_tui_delights(toml_src: &str) -> Result<MigrationResult, MigrateEr
     }
 
     // Idempotency: scan for [tui.delights] already present (active or commented-out).
-    let already_present = toml_src.lines().any(|l| {
-        let t = l.trim().trim_start_matches('#').trim();
-        t == "[tui.delights]" || t.starts_with("[tui.delights]")
-    });
+    let already_present = section_header_present(toml_src, "tui.delights")
+        || toml_src.lines().any(|l| l.trim() == "# [tui.delights]");
     if already_present {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
@@ -101,7 +99,7 @@ pub fn migrate_tui_delights(toml_src: &str) -> Result<MigrationResult, MigrateEr
 ///
 /// Returns `MigrateError::TomlParse` if the input is not valid TOML; infallible otherwise.
 pub fn migrate_tui_mouse(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if !toml_src.contains("[tui]") {
+    if !section_header_present(toml_src, "tui") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -171,7 +169,7 @@ pub fn migrate_compression_predictor_config(
 ) -> Result<MigrationResult, MigrateError> {
     // Strip any [memory.compression.predictor] section (active or commented-out) that
     // prior migrate-config runs may have injected. The feature is removed (#3251).
-    let has_active = toml_src.contains("[memory.compression.predictor]");
+    let has_active = section_header_present(toml_src, "memory.compression.predictor");
     let has_commented = toml_src.contains("# [memory.compression.predictor]");
     if !has_active && !has_commented {
         return Ok(MigrationResult {
@@ -223,7 +221,9 @@ pub fn migrate_compression_predictor_config(
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
 pub fn migrate_microcompact_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     // Idempotency: comments are invisible to toml_edit, so check the raw source.
-    if toml_src.contains("[memory.microcompact]") || toml_src.contains("# [memory.microcompact]") {
+    if section_header_present(toml_src, "memory.microcompact")
+        || toml_src.contains("# [memory.microcompact]")
+    {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -262,7 +262,9 @@ pub fn migrate_microcompact_config(toml_src: &str) -> Result<MigrationResult, Mi
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
 pub fn migrate_autodream_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     // Idempotency: comments are invisible to toml_edit, so check the raw source.
-    if toml_src.contains("[memory.autodream]") || toml_src.contains("# [memory.autodream]") {
+    if section_header_present(toml_src, "memory.autodream")
+        || toml_src.contains("# [memory.autodream]")
+    {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -367,7 +369,7 @@ pub fn migrate_orchestration_persistence(toml_src: &str) -> Result<MigrationResu
     }
 
     // Only inject under an existing [orchestration] section.
-    if !toml_src.contains("[orchestration]") {
+    if !section_header_present(toml_src, "orchestration") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -403,7 +405,7 @@ pub fn migrate_orchestration_persistence(toml_src: &str) -> Result<MigrationResu
 ///
 /// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
 pub fn migrate_goals_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src.contains("[goals]") {
+    if section_header_present(toml_src, "goals") || toml_src.contains("# [goals]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -435,7 +437,7 @@ pub fn migrate_goals_config(toml_src: &str) -> Result<MigrationResult, MigrateEr
 /// This function is infallible in practice; the `Result` return type matches the
 /// migration function convention for use in chained pipelines.
 pub fn migrate_caveman_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src.contains("[caveman]") || toml_src.contains("# [caveman]") {
+    if section_header_present(toml_src, "caveman") || toml_src.contains("# [caveman]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -466,7 +468,7 @@ pub fn migrate_caveman_config(toml_src: &str) -> Result<MigrationResult, Migrate
 /// This function is infallible in practice; the `Result` return type matches the migration
 /// function convention.
 pub fn migrate_deep_link_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src.contains("[deep_link]") || toml_src.contains("# [deep_link]") {
+    if section_header_present(toml_src, "deep_link") || toml_src.contains("# [deep_link]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -498,7 +500,9 @@ pub fn migrate_deep_link_config(toml_src: &str) -> Result<MigrationResult, Migra
 ///
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
 pub fn migrate_five_signal_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src.contains("[memory.five_signal]") || toml_src.contains("# [memory.five_signal]") {
+    if section_header_present(toml_src, "memory.five_signal")
+        || toml_src.contains("# [memory.five_signal]")
+    {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -552,7 +556,7 @@ pub fn migrate_five_signal_config(toml_src: &str) -> Result<MigrationResult, Mig
 ///
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
 pub fn migrate_knowledge_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src.contains("[knowledge]") || toml_src.contains("# [knowledge]") {
+    if section_header_present(toml_src, "knowledge") || toml_src.contains("# [knowledge]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -578,6 +582,10 @@ pub fn migrate_knowledge_config(toml_src: &str) -> Result<MigrationResult, Migra
     })
 }
 
+// `migrate_tui_theme_defaults` below relies on this exact-header regex (not
+// `section_header_present`) to place active `name`/`color_mode` keys correctly on
+// subtable-only configs (e.g. `[tui.theme.colors]` without a bare `[tui.theme]`) — do not
+// simplify that guard to `section_header_present` alone without preserving this regex check.
 static TUI_THEME_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     Regex::new(r"(?m)^[ \t]*\[tui\.theme\][ \t]*(?:#[^\r\n]*)?\r?\n").expect("static pattern")
 });
@@ -627,7 +635,7 @@ pub fn migrate_tui_theme_defaults(toml_src: &str) -> Result<MigrationResult, Mig
     let has_color_mode = key_in_tui_theme("color_mode");
 
     // If [tui.theme] is absent, step 65 handles it — this step is a no-op.
-    let has_section = toml_src.contains("[tui.theme]");
+    let has_section = section_header_present(toml_src, "tui.theme");
     if !has_section || (has_name && has_color_mode) {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
@@ -719,7 +727,10 @@ pub fn migrate_tui_theme_config(toml_src: &str) -> Result<MigrationResult, Migra
         })
     };
 
-    if in_tui_section || toml_src.contains("[tui.theme]") {
+    if in_tui_section
+        || section_header_present(toml_src, "tui.theme")
+        || toml_src.lines().any(|l| l.trim() == "# [tui.theme]")
+    {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -773,7 +784,7 @@ pub fn migrate_orchestration_asset_sensitivity(
         });
     }
 
-    if !toml_src.contains("[orchestration]") {
+    if !section_header_present(toml_src, "orchestration") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -819,7 +830,7 @@ pub fn migrate_orchestration_asset_sensitivity(
 /// Returns [`MigrateError::Parse`] if the TOML cannot be parsed.
 pub fn migrate_skills_registry(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     let commented_present = toml_src.lines().any(|l| l.trim() == "# [skills.registry]");
-    if toml_src.contains("[skills.registry]") || commented_present {
+    if section_header_present(toml_src, "skills.registry") || commented_present {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
