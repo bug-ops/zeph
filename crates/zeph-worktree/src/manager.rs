@@ -38,6 +38,10 @@ use crate::{
 pub struct WorktreeManager<R: GitRunner> {
     /// Canonical absolute path to the repository root.
     repo_root: PathBuf,
+    /// Canonicalised, validated worktree root — computed once in [`Self::new`]
+    /// and reused by [`Self::create`] on every call, since `config.root` and
+    /// `repo_root` never change for the lifetime of the manager.
+    worktree_root: PathBuf,
     /// Resolved config for this manager instance.
     config: WorktreeConfig,
     /// Abstraction over `git` invocations (swapped for fakes in tests).
@@ -82,16 +86,18 @@ impl<R: GitRunner> WorktreeManager<R> {
         config: WorktreeConfig,
         runner: R,
     ) -> Result<Self, WorktreeError> {
-        // Validate the root now so bootstrap fails fast rather than at first spawn.
+        // Validate the root now so bootstrap fails fast rather than at first spawn,
+        // and cache the result for reuse by `create()` on every subsequent call.
         // Offload blocking I/O (create_dir_all + canonicalize) to a dedicated thread.
         let root = PathBuf::from(&config.root);
         let repo = repo_root.clone();
-        tokio::task::spawn_blocking(move || canonicalize_root(&root, &repo))
+        let worktree_root = tokio::task::spawn_blocking(move || canonicalize_root(&root, &repo))
             .await
             .map_err(|e| WorktreeError::Io(std::io::Error::other(e)))??;
 
         Ok(Self {
             repo_root,
+            worktree_root,
             config,
             runner,
             handles: std::sync::Mutex::new(Vec::new()),
@@ -147,12 +153,7 @@ impl<R: GitRunner> WorktreeManager<R> {
         validate_branch_component(subagent_id)?;
 
         let branch_name = format!("{}{}", self.config.branch_prefix, subagent_id);
-        let root = PathBuf::from(&self.config.root);
-        let repo = self.repo_root.clone();
-        let worktree_root = tokio::task::spawn_blocking(move || canonicalize_root(&root, &repo))
-            .await
-            .map_err(|e| WorktreeError::Io(std::io::Error::other(e)))??;
-        let path = worktree_root.join(subagent_id);
+        let path = self.worktree_root.join(subagent_id);
 
         if path.exists() {
             return Err(WorktreeError::PathExists(path));
@@ -913,6 +914,34 @@ mod tests {
             Ok(_) | Err(WorktreeError::GitCommand { .. }) => {}
             Err(e) => panic!("unexpected error: {e}"),
         }
+    }
+
+    /// Regression test for #5940: `create()` must reuse the `worktree_root` cached on
+    /// `self` at construction time rather than recomputing it on every call. Every
+    /// other `create()` test in this module calls `create()` at most once per manager,
+    /// so none of them would fail if `create()` accidentally recomputed a stale or
+    /// diverged root each time — only calling `create()` twice on the same manager and
+    /// checking both handles resolve under the identical cached parent actually
+    /// exercises the caching behavior.
+    #[tokio::test]
+    async fn create_reuses_cached_worktree_root_across_calls() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        // First create(): status --porcelain (dirty check), then worktree add.
+        runner.push_ok(b"" as &[u8]);
+        runner.push_ok(b"" as &[u8]);
+        // Second create(): status --porcelain, then worktree add.
+        runner.push_ok(b"" as &[u8]);
+        runner.push_ok(b"" as &[u8]);
+
+        let mgr = make_manager(&dir, runner).await;
+        let cached_root = mgr.worktree_root.clone();
+
+        let handle_a = mgr.create("agent-a").await.unwrap();
+        let handle_b = mgr.create("agent-b").await.unwrap();
+
+        assert_eq!(handle_a.path.parent(), Some(cached_root.as_path()));
+        assert_eq!(handle_b.path.parent(), Some(cached_root.as_path()));
     }
 
     #[tokio::test]

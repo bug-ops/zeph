@@ -61,8 +61,11 @@ pub fn validate_branch_component(s: &str) -> Result<(), WorktreeError> {
 /// The resulting canonical path must have `repo_root`'s canonical path as a
 /// prefix; paths that resolve outside emit [`WorktreeError::RootOutsideRepo`].
 ///
-/// The directory is created with [`std::fs::create_dir_all`] before
-/// canonicalisation so that `canonicalize` does not fail on a not-yet-existing
+/// Containment is validated against the nearest existing ancestor of the
+/// candidate path *before* any directory is created — a path that would
+/// escape the repository is rejected without mutating the filesystem. Only
+/// once containment is confirmed is [`std::fs::create_dir_all`] called so
+/// that the final `canonicalize` does not fail on a not-yet-existing
 /// worktree root.
 ///
 /// # Errors
@@ -87,17 +90,48 @@ pub fn canonicalize_root(root: &Path, repo_root: &Path) -> Result<PathBuf, Workt
         root.to_path_buf()
     };
 
-    // Create the directory so canonicalize doesn't fail for non-existent paths.
-    std::fs::create_dir_all(&candidate)?;
-
-    let canonical_root = std::fs::canonicalize(&candidate)?;
     let canonical_repo = std::fs::canonicalize(repo_root)?;
+
+    // Validate containment against the nearest existing ancestor first, so a
+    // candidate that would escape the repository is rejected before
+    // `create_dir_all` mutates the filesystem below.
+    let existing_ancestor = nearest_existing_ancestor(&candidate);
+    let canonical_ancestor = std::fs::canonicalize(&existing_ancestor)?;
+    if !canonical_ancestor.starts_with(&canonical_repo) {
+        let suffix = candidate
+            .strip_prefix(&existing_ancestor)
+            .unwrap_or_else(|_| Path::new(""));
+        return Err(WorktreeError::RootOutsideRepo(
+            canonical_ancestor.join(suffix),
+        ));
+    }
+
+    std::fs::create_dir_all(&candidate)?;
+    let canonical_root = std::fs::canonicalize(&candidate)?;
 
     if !canonical_root.starts_with(&canonical_repo) {
         return Err(WorktreeError::RootOutsideRepo(canonical_root));
     }
 
     Ok(canonical_root)
+}
+
+/// Walks up from `path` until an existing directory or file is found.
+///
+/// Used by [`canonicalize_root`] to find a real, canonicalisable ancestor of
+/// a not-yet-created candidate path so containment can be validated before
+/// any directory is created.
+fn nearest_existing_ancestor(path: &Path) -> PathBuf {
+    let mut current = path;
+    loop {
+        if current.exists() {
+            return current.to_path_buf();
+        }
+        match current.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => current = parent,
+            _ => return current.to_path_buf(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -179,5 +213,31 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         let result = canonicalize_root(&sub, repo);
         assert!(result.is_ok());
+    }
+
+    /// Regression test for #5940: `root_outside_repo_is_rejected` uses `dir.path()` —
+    /// the tempdir root, which already exists — as the escaping candidate, so
+    /// `nearest_existing_ancestor` never has to walk past a non-existent segment and
+    /// the test passes identically whether containment is checked before or after
+    /// `create_dir_all`. This test uses a multi-level *non-existent* escaping path
+    /// (`escaped/nested/deep`, none of which exist under the tempdir) to prove
+    /// rejection happens *before* any directory is created — the pre-fix code
+    /// unconditionally called `create_dir_all` on the full candidate first, so it
+    /// would have created `escaped/nested/deep` on disk even though the path was
+    /// ultimately rejected as outside the repo.
+    #[test]
+    fn root_outside_repo_rejected_before_any_directory_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("inner");
+        std::fs::create_dir_all(&repo).unwrap();
+        // Escapes confinement (sibling of `repo`, not a descendant) and none of its
+        // segments exist yet.
+        let escaping_candidate = dir.path().join("escaped/nested/deep");
+        let err = canonicalize_root(&escaping_candidate, &repo).unwrap_err();
+        assert_matches!(err, WorktreeError::RootOutsideRepo(_));
+        assert!(
+            !dir.path().join("escaped").exists(),
+            "containment check must reject before create_dir_all mutates the filesystem"
+        );
     }
 }

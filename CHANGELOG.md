@@ -160,6 +160,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `migrate_llm_to_providers` warning convention) asking the operator to confirm their
   deployment topology whenever this combination is detected. Filesystem-type detection and
   path-prefix heuristics remain explicitly out of scope, deferred to a future issue.
+- `crates/zeph-worktree/src/manager.rs`: `WorktreeManager::create()` redundantly
+  re-canonicalised the worktree root (`spawn_blocking` + `create_dir_all` + two
+  `canonicalize` syscalls) on every call even though it is identical to the value
+  `WorktreeManager::new()` already validated once at construction and discarded
+  (#5940). `new()` now caches the canonicalised root on `self` and `create()` reuses
+  it directly, removing the redundant blocking round-trip from the subagent-spawn hot
+  path. Also reordered `crates/zeph-worktree/src/sanitize.rs::canonicalize_root` to
+  validate containment against the nearest existing ancestor before calling
+  `create_dir_all`, so a configured root that resolves outside the repository is
+  rejected without mutating the filesystem first.
 
 ### Testing
 
