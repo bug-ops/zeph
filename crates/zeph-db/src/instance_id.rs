@@ -52,7 +52,6 @@ mod tests {
     async fn setup_pool() -> DbPool {
         let pool = DbConfig {
             url: ":memory:".to_string(),
-            max_connections: 1,
             pool_size: 1,
         }
         .connect()

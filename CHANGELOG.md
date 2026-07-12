@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Changed
+
+- **BREAKING**: `zeph-db`'s `DbConfig` collapses `max_connections` and `pool_size` into a
+  single `pool_size: u32` field, used as `sqlx`'s `.max_connections()` for both `SQLite` and
+  `PostgreSQL` (#5970). Previously `pool_size` was documented "`SQLite` only" but was actually
+  what `connect_postgres` passed to `PgPoolOptions::max_connections()` (`max_connections` was
+  never read under Postgres), and `SQLite` combined the two fields as
+  `max_connections.max(pool_size)` — the larger value won, not a cap. Every call site already
+  set both fields to the same value by convention; this removes the redundant, contradictory
+  field. All in-tree `DbConfig` construction sites (`zeph-scheduler`, `zeph-memory`, `zeph-mcp`,
+  `zeph-durable`, `zeph-orchestration`, `zeph-index`, `src/bootstrap/mod.rs`,
+  `src/commands/db.rs`) are updated; `max_connections` was never exposed as a user-facing
+  `config.toml` key, so no config migration step is needed.
+
 ### Fixed
 
 - `zeph-channels`/`zeph-core`: hardened the channel send/retry/status path (#6094, #6106, #6095).
@@ -76,6 +90,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Reconciling those span names, and `persist_message`'s multi-call-per-turn semantics (which
   don't map 1:1 to the single-span-instance model `MetricsBridge` assumes), is tracked
   separately in #6111.
+- `zeph-db`/`zeph-session`/`zeph-memory`: `SessionStore::list`, `list_acp_sessions`,
+  `list_acp_sessions_for_owner`, and `list_agent_sessions` bound `LIMIT ?` with `-1` as their
+  `limit == 0` ("unlimited") sentinel — a `SQLite`-only convenience that `PostgreSQL` rejects at
+  execution time (`ERROR: LIMIT must not be negative`) (#5980). Any caller passing `limit = 0`
+  against a Postgres-backed deployment got a hard SQL error instead of "all rows". Added a
+  shared `zeph_db::limit_clause` helper that omits the `LIMIT` clause entirely when unlimited
+  (the only cross-backend-safe encoding — binding `NULL` in its place is separately rejected by
+  `SQLite`) and applied it at all four call sites. Also fixed a related, previously-uncovered
+  defect surfaced while adding Postgres test coverage: `SessionStore::get`/`list`/
+  `get_by_conversation_id` decoded `created_at`/`updated_at` straight into `String`, which fails
+  against Postgres's `TIMESTAMPTZ` columns regardless of `limit` — every `zeph-session` query
+  was broken on Postgres, caught only because the crate previously had no Postgres integration
+  test file at all. Added Postgres integration tests for `zeph-session` (new
+  `crates/zeph-session/tests/postgres_integration.rs`, `test-utils` feature) and extended
+  `crates/zeph-memory/tests/postgres_integration.rs` to cover the `limit = 0` path.
 - `zeph-core`: removed two blocking-I/O sites from the async agent turn loop (#6020, #6029).
   - `rebuild_system_prompt` called `project::discover_project_configs`/`load_project_context`
     directly on every turn — a filesystem walk from cwd to the root plus a `read_to_string`

@@ -108,11 +108,7 @@ mod pg {
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
         let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-        let config = DbConfig {
-            url,
-            max_connections: 5,
-            pool_size: 5,
-        };
+        let config = DbConfig { url, pool_size: 5 };
         let pool = config.connect().await.expect("failed to connect to PG");
         (pool, container)
     }
@@ -1218,6 +1214,34 @@ mod pg {
         assert!(!info.updated_at.is_empty());
     }
 
+    // Regression coverage for issue #5980: `list_acp_sessions`/`list_acp_sessions_for_owner`
+    // bound `LIMIT ?` with `-1` as a `limit == 0` ("unlimited") sentinel. `LIMIT -1` is a
+    // `SQLite`-only convenience; `PostgreSQL` rejects a negative `LIMIT` at execution time
+    // (`ERROR: LIMIT must not be negative`), so `limit = 0` against Postgres previously errored
+    // instead of returning every row.
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn acp_sessions_list_unlimited_when_zero_postgres() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool).await.unwrap();
+
+        for i in 0..5u8 {
+            store
+                .create_acp_session(&format!("sess-{i}"), Some("owner-a"))
+                .await
+                .unwrap();
+        }
+
+        let all = store.list_acp_sessions(0).await.unwrap();
+        assert_eq!(all.len(), 5);
+
+        let for_owner = store
+            .list_acp_sessions_for_owner(0, "owner-a")
+            .await
+            .unwrap();
+        assert_eq!(for_owner.len(), 5);
+    }
+
     // ── acp_sessions: session_config snapshot (#5373/#5384) ─────────────────────
     //
     // `thinking_enabled` is `INTEGER` on SQLite vs `BOOLEAN` on Postgres (migration
@@ -1795,6 +1819,17 @@ mod pg {
             .await
             .unwrap();
         assert!(none_active.is_empty());
+
+        // Regression coverage for issue #5980: `limit = 0` ("unlimited") previously bound
+        // `LIMIT -1`, which Postgres rejects (`ERROR: LIMIT must not be negative`), in both
+        // the filtered and unfiltered branches of this query.
+        let unlimited = store.list_agent_sessions(0, None).await.unwrap();
+        assert_eq!(unlimited.len(), 1);
+        let unlimited_filtered = store
+            .list_agent_sessions(0, Some(SessionStatus::Completed))
+            .await
+            .unwrap();
+        assert_eq!(unlimited_filtered.len(), 1);
     }
 
     // ── episodic_consolidation: full sweep (fetch_candidates → compute_cognitive_weight →

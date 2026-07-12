@@ -104,7 +104,6 @@ impl SqliteStore {
     pub async fn with_pool_size(path: &str, pool_size: u32) -> Result<Self, MemoryError> {
         let pool = DbConfig {
             url: path.to_string(),
-            max_connections: pool_size,
             pool_size,
         }
         .connect()

@@ -43,7 +43,6 @@ pub(crate) async fn handle_db_migrate(config_path: Option<&std::path::Path>) -> 
 
     let db_config = DbConfig {
         url: db_url.to_owned(),
-        max_connections: 1,
         pool_size: 1,
     };
 

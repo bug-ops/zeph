@@ -152,7 +152,6 @@ impl LocalBackend {
     pub async fn open(path: &str, max_payload_bytes: u64) -> Result<Self, DurableError> {
         let pool = zeph_db::DbConfig {
             url: path.to_string(),
-            max_connections: 5,
             pool_size: 5,
         }
         .connect()

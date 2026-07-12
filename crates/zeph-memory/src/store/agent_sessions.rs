@@ -311,8 +311,7 @@ impl SqliteStore {
         limit: u32,
         status_filter: Option<SessionStatus>,
     ) -> Result<Vec<AgentSessionRow>, MemoryError> {
-        #[allow(clippy::cast_possible_wrap)]
-        let sql_limit: i64 = if limit == 0 { -1 } else { i64::from(limit) };
+        let (limit_clause, limit_bind) = zeph_db::limit_clause(u64::from(limit));
 
         type SessionRow = (
             String,
@@ -344,26 +343,27 @@ impl SqliteStore {
                 "SELECT id, kind, status, channel, model, {created_at_sel}, {last_active_at_sel}, \
                  turns, prompt_tokens, completion_tokens, reasoning_tokens, cost_cents, goal_text \
                  FROM agent_sessions WHERE status = ? \
-                 ORDER BY last_active_at DESC LIMIT ?"
+                 ORDER BY last_active_at DESC{limit_clause}"
             );
             let query_sql = zeph_db::rewrite_placeholders(&raw);
-            zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
-                .bind(sf.as_str())
-                .bind(sql_limit)
-                .fetch_all(&self.pool)
-                .await?
+            let mut query = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql)).bind(sf.as_str());
+            if let Some(lim) = limit_bind {
+                query = query.bind(lim);
+            }
+            query.fetch_all(&self.pool).await?
         } else {
             let raw = format!(
                 "SELECT id, kind, status, channel, model, {created_at_sel}, {last_active_at_sel}, \
                  turns, prompt_tokens, completion_tokens, reasoning_tokens, cost_cents, goal_text \
                  FROM agent_sessions \
-                 ORDER BY last_active_at DESC LIMIT ?"
+                 ORDER BY last_active_at DESC{limit_clause}"
             );
             let query_sql = zeph_db::rewrite_placeholders(&raw);
-            zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
-                .bind(sql_limit)
-                .fetch_all(&self.pool)
-                .await?
+            let mut query = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql));
+            if let Some(lim) = limit_bind {
+                query = query.bind(lim);
+            }
+            query.fetch_all(&self.pool).await?
         };
 
         Ok(rows
@@ -513,6 +513,29 @@ mod tests {
         }
         let rows = store.list_agent_sessions(3, None).await.unwrap();
         assert_eq!(rows.len(), 3);
+    }
+
+    /// Regression test (#5980): `limit = 0` ("unlimited") used to bind `LIMIT ?` with `-1`, a
+    /// `SQLite`-only convenience `PostgreSQL` rejects at execution time. Exercises both the
+    /// filtered and unfiltered query branches on `SQLite`; Postgres coverage lives in
+    /// `tests/postgres_integration.rs::agent_sessions_upsert_and_list_postgres`.
+    #[tokio::test]
+    async fn list_unlimited_when_zero() {
+        let store = make_store().await;
+        for i in 0..5u8 {
+            store
+                .upsert_agent_session(&sample(&format!("s{i}")))
+                .await
+                .unwrap();
+        }
+        let rows = store.list_agent_sessions(0, None).await.unwrap();
+        assert_eq!(rows.len(), 5);
+
+        let filtered = store
+            .list_agent_sessions(0, Some(SessionStatus::Active))
+            .await
+            .unwrap();
+        assert_eq!(filtered.len(), 5);
     }
 
     #[tokio::test]

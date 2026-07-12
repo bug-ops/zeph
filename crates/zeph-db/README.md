@@ -77,7 +77,6 @@ use zeph_db::{DbConfig, DbPool};
 
 let config = DbConfig {
     url: "path/to/zeph.db".into(),
-    max_connections: 5,
     pool_size: 5,
 };
 

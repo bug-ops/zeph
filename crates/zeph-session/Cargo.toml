@@ -16,12 +16,16 @@ readme = "README.md"
 default = ["sqlite"]
 sqlite = ["zeph-db/sqlite"]
 postgres = ["zeph-db/postgres"]
+# Enables test utilities and testcontainers for PostgreSQL integration tests.
+test-utils = ["dep:testcontainers", "dep:testcontainers-modules", "postgres"]
 
 [dependencies]
 rustix = { workspace = true, features = ["fs", "std"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sqlx = { workspace = true, features = ["macros"] }
+testcontainers = { workspace = true, features = ["watchdog"], optional = true }
+testcontainers-modules = { workspace = true, features = ["postgres"], optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "sync", "time"] }
 tracing.workspace = true

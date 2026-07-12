@@ -821,6 +821,28 @@ impl DbConfig {
         Ok(pool)
     }
 }
+```
+
+**Amendment 3 [2026-07-12]** (#5970): The `max_connections`/`write_pool_size` two-field design
+above was never actually implemented this way — the real `DbConfig` (see
+`crates/zeph-db/src/pool.rs`) shipped with `max_connections` and `pool_size` fields whose
+semantics contradicted both their names and this spec: `pool_size` (documented "SQLite only")
+was what `connect_postgres` actually passed to `.max_connections()`, and `SQLite` combined the
+two as `max_connections.max(pool_size)` — the larger value won, not a cap. `DbConfig` now has a
+single `pool_size: u32` field, applied as `.max_connections()` for both backends. `max_connections`
+is removed entirely (pre-v1.0.0, no deprecation shim). It was never a user-facing `config.toml`
+key, so this is an internal-API-only breaking change.
+
+```rust
+/// Configuration for database pool construction.
+pub struct DbConfig {
+    /// Database URL. SQLite: file path or `:memory:`. Postgres: connection URL.
+    pub url: String,
+    /// Maximum number of connections in the pool, applied uniformly to both backends'
+    /// `.max_connections()` builder call. Default 5.
+    pub pool_size: u32,
+}
+```
 
 /// Strip password from a database URL for safe logging.
 ///

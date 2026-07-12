@@ -8,12 +8,13 @@ use crate::error::DbError;
 pub struct DbConfig {
     /// Database URL. `SQLite`: file path or `:memory:`. `PostgreSQL`: connection URL.
     pub url: String,
-    /// Maximum number of connections in the pool.
-    pub max_connections: u32,
-    /// `SQLite` only: connection pool size. Default 5.
+    /// Maximum number of connections in the pool, passed to `sqlx`'s
+    /// `.max_connections()` builder call for both backends. Default 5.
     ///
-    /// `BEGIN IMMEDIATE` serializes concurrent writers at the `SQLite` level;
-    /// the pool size controls read concurrency only.
+    /// `SQLite`: `BEGIN IMMEDIATE` serializes concurrent writers at the `SQLite` level,
+    /// so this bound controls read concurrency only. In-memory databases are always
+    /// forced to a single connection regardless of this value, since each new
+    /// `:memory:` connection opens an isolated, unmigrated database.
     pub pool_size: u32,
 }
 
@@ -21,7 +22,6 @@ impl Default for DbConfig {
     fn default() -> Self {
         Self {
             url: String::new(),
-            max_connections: 5,
             pool_size: 5,
         }
     }
@@ -37,7 +37,7 @@ impl DbConfig {
     pub async fn connect(&self) -> Result<DbPool, DbError> {
         #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
         {
-            Self::connect_sqlite(&self.url, self.max_connections, self.pool_size).await
+            Self::connect_sqlite(&self.url, self.pool_size).await
         }
         #[cfg(feature = "postgres")]
         {
@@ -46,11 +46,7 @@ impl DbConfig {
     }
 
     #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
-    async fn connect_sqlite(
-        path: &str,
-        max_connections: u32,
-        pool_size: u32,
-    ) -> Result<DbPool, DbError> {
+    async fn connect_sqlite(path: &str, pool_size: u32) -> Result<DbPool, DbError> {
         use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
         use std::str::FromStr;
 
@@ -87,15 +83,11 @@ impl DbConfig {
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
-        // BEGIN IMMEDIATE serializes concurrent writers at the SQLite level.
-        // pool_size controls the connection count; max_connections is the upper bound.
-        // In-memory databases are connection-scoped: each new connection is a separate
-        // empty DB. Force a single connection so all queries share the migrated schema.
-        let effective_max = if path == ":memory:" {
-            1
-        } else {
-            max_connections.max(pool_size)
-        };
+        // BEGIN IMMEDIATE serializes concurrent writers at the SQLite level; pool_size
+        // controls read concurrency only. In-memory databases are connection-scoped:
+        // each new connection is a separate empty DB. Force a single connection so all
+        // queries share the migrated schema.
+        let effective_max = if path == ":memory:" { 1 } else { pool_size };
         let pool = SqlitePoolOptions::new()
             .max_connections(effective_max)
             .min_connections(1)
@@ -357,7 +349,6 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let cfg = DbConfig {
             url: db_path.to_str().unwrap().to_owned(),
-            max_connections: 1,
             pool_size: 1,
         };
         cfg.connect().await.unwrap();

@@ -138,9 +138,6 @@ impl SqliteStore {
         &self,
         limit: usize,
     ) -> Result<Vec<AcpSessionInfo>, MemoryError> {
-        // LIMIT -1 in SQLite means no limit; cast limit=0 sentinel to -1.
-        #[allow(clippy::cast_possible_wrap)]
-        let sql_limit: i64 = if limit == 0 { -1 } else { limit as i64 };
         // spec-068 §12.3 / D-2: `acp_sessions.event_count` (migration 106, kept current by
         // `SessionStore::update_seq` on every turn flush per INV-SP-1) replaces the subquery
         // against `acp_session_events`, which the P1 write cutover leaves permanently empty for
@@ -152,20 +149,21 @@ impl SqliteStore {
             <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
         let updated_at_sel =
             <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("updated_at");
+        let (limit_clause, limit_bind) = zeph_db::limit_clause(limit as u64);
         let raw = format!(
             "SELECT s.id, s.title, s.{created_at_sel}, s.{updated_at_sel}, \
              s.event_count AS message_count \
              FROM acp_sessions s \
-             ORDER BY s.updated_at DESC \
-             LIMIT ?"
+             ORDER BY s.updated_at DESC{limit_clause}"
         );
         let query_sql = zeph_db::rewrite_placeholders(&raw);
-        let rows = zeph_db::query_as::<_, (String, Option<String>, String, String, i64)>(
+        let mut query = zeph_db::query_as::<_, (String, Option<String>, String, String, i64)>(
             sqlx::AssertSqlSafe(query_sql),
-        )
-        .bind(sql_limit)
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        if let Some(lim) = limit_bind {
+            query = query.bind(lim);
+        }
+        let rows = query.fetch_all(&self.pool).await?;
 
         Ok(rows
             .into_iter()
@@ -382,28 +380,27 @@ impl SqliteStore {
         limit: usize,
         owner: &str,
     ) -> Result<Vec<AcpSessionInfo>, MemoryError> {
-        #[allow(clippy::cast_possible_wrap)]
-        let sql_limit: i64 = if limit == 0 { -1 } else { limit as i64 };
         let created_at_sel =
             <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
         let updated_at_sel =
             <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("updated_at");
+        let (limit_clause, limit_bind) = zeph_db::limit_clause(limit as u64);
         let raw = format!(
             "SELECT s.id, s.title, s.{created_at_sel}, s.{updated_at_sel}, \
              s.event_count AS message_count \
              FROM acp_sessions s \
              WHERE s.owner_key = ? \
-             ORDER BY s.updated_at DESC \
-             LIMIT ?"
+             ORDER BY s.updated_at DESC{limit_clause}"
         );
         let query_sql = zeph_db::rewrite_placeholders(&raw);
-        let rows = zeph_db::query_as::<_, (String, Option<String>, String, String, i64)>(
+        let mut query = zeph_db::query_as::<_, (String, Option<String>, String, String, i64)>(
             sqlx::AssertSqlSafe(query_sql),
         )
-        .bind(owner)
-        .bind(sql_limit)
-        .fetch_all(&self.pool)
-        .await?;
+        .bind(owner);
+        if let Some(lim) = limit_bind {
+            query = query.bind(lim);
+        }
+        let rows = query.fetch_all(&self.pool).await?;
 
         Ok(rows
             .into_iter()

@@ -197,14 +197,22 @@ impl SessionStore {
     /// Returns [`SessionError::Db`] if the query fails.
     #[tracing::instrument(name = "session.store.get", skip_all, level = "debug")]
     pub async fn get(&self, session_id: &str) -> Result<Option<SessionMetadata>, SessionError> {
-        let row = zeph_db::query_as::<_, SessionRow>(sql!(
-            "SELECT id, title, created_at, updated_at, conversation_id, last_seq, event_count, \
-             forked_from, forked_at_seq, status, last_condensed_seq \
+        // `created_at`/`updated_at` are `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project
+        // both through `Dialect::select_as_text` so they decode into `SessionRow`'s `String`
+        // fields, mirroring `zeph-memory`'s `list_acp_sessions`/`list_agent_sessions` fix for
+        // the same mismatch.
+        let created_at_sel = <ActiveDialect as Dialect>::select_as_text("created_at");
+        let updated_at_sel = <ActiveDialect as Dialect>::select_as_text("updated_at");
+        let raw = format!(
+            "SELECT id, title, {created_at_sel}, {updated_at_sel}, conversation_id, last_seq, \
+             event_count, forked_from, forked_at_seq, status, last_condensed_seq \
              FROM acp_sessions WHERE id = ?"
-        ))
-        .bind(session_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let row = zeph_db::query_as::<_, SessionRow>(sqlx::AssertSqlSafe(query_sql))
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await?;
         row.map(TryInto::try_into).transpose()
     }
 
@@ -215,26 +223,27 @@ impl SessionStore {
     /// Returns [`SessionError::Db`] if the query fails.
     #[tracing::instrument(name = "session.store.list", skip_all, level = "debug")]
     pub async fn list(&self, filter: &SessionFilter) -> Result<Vec<SessionMetadata>, SessionError> {
-        #[allow(clippy::cast_possible_wrap)]
-        let sql_limit: i64 = if filter.limit == 0 {
-            -1
-        } else {
-            filter.limit as i64
-        };
         let status_filter = filter.status.map(SessionStatus::as_str);
+        let (limit_clause, limit_bind) = zeph_db::limit_clause(filter.limit as u64);
+        // `created_at`/`updated_at` are `TIMESTAMPTZ` on Postgres — see `Self::get`.
+        let created_at_sel = <ActiveDialect as Dialect>::select_as_text("created_at");
+        let updated_at_sel = <ActiveDialect as Dialect>::select_as_text("updated_at");
 
-        let rows = zeph_db::query_as::<_, SessionRow>(sql!(
-            "SELECT id, title, created_at, updated_at, conversation_id, last_seq, event_count, \
-             forked_from, forked_at_seq, status, last_condensed_seq \
+        let raw = format!(
+            "SELECT id, title, {created_at_sel}, {updated_at_sel}, conversation_id, last_seq, \
+             event_count, forked_from, forked_at_seq, status, last_condensed_seq \
              FROM acp_sessions \
              WHERE (? IS NULL OR status = ?) \
-             ORDER BY updated_at DESC LIMIT ?"
-        ))
-        .bind(status_filter)
-        .bind(status_filter)
-        .bind(sql_limit)
-        .fetch_all(&self.pool)
-        .await?;
+             ORDER BY updated_at DESC{limit_clause}"
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let mut query = zeph_db::query_as::<_, SessionRow>(sqlx::AssertSqlSafe(query_sql))
+            .bind(status_filter)
+            .bind(status_filter);
+        if let Some(lim) = limit_bind {
+            query = query.bind(lim);
+        }
+        let rows = query.fetch_all(&self.pool).await?;
 
         rows.into_iter().map(TryInto::try_into).collect()
     }
@@ -281,14 +290,19 @@ impl SessionStore {
         &self,
         conversation_id: i64,
     ) -> Result<Option<SessionMetadata>, SessionError> {
-        let row = zeph_db::query_as::<_, SessionRow>(sql!(
-            "SELECT id, title, created_at, updated_at, conversation_id, last_seq, event_count, \
-             forked_from, forked_at_seq, status, last_condensed_seq \
+        // `created_at`/`updated_at` are `TIMESTAMPTZ` on Postgres — see `Self::get`.
+        let created_at_sel = <ActiveDialect as Dialect>::select_as_text("created_at");
+        let updated_at_sel = <ActiveDialect as Dialect>::select_as_text("updated_at");
+        let raw = format!(
+            "SELECT id, title, {created_at_sel}, {updated_at_sel}, conversation_id, last_seq, \
+             event_count, forked_from, forked_at_seq, status, last_condensed_seq \
              FROM acp_sessions WHERE conversation_id = ?"
-        ))
-        .bind(conversation_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let row = zeph_db::query_as::<_, SessionRow>(sqlx::AssertSqlSafe(query_sql))
+            .bind(conversation_id)
+            .fetch_optional(&self.pool)
+            .await?;
         row.map(TryInto::try_into).transpose()
     }
 
@@ -523,6 +537,28 @@ mod tests {
 
         let all = store.list(&SessionFilter::default()).await.unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    /// Regression test (#5980): `SessionStore::list` used to bind `LIMIT ?` with `-1` for the
+    /// `limit == 0` ("unlimited") sentinel — a `SQLite`-only convenience that `PostgreSQL`
+    /// rejects at execution time. This exercises the non-zero limit branch on `SQLite`; the
+    /// Postgres-specific `limit == 0` regression is covered by
+    /// `tests/postgres_integration.rs::list_unlimited_when_zero_postgres`.
+    #[tokio::test]
+    async fn list_respects_nonzero_limit() {
+        let store = SessionStore::new(make_pool().await);
+        for i in 0..5u8 {
+            store.create(&format!("s{i}")).await.unwrap();
+        }
+
+        let limited = store
+            .list(&SessionFilter {
+                status: None,
+                limit: 3,
+            })
+            .await
+            .unwrap();
+        assert_eq!(limited.len(), 3);
     }
 
     #[tokio::test]

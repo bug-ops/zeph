@@ -38,11 +38,7 @@ async fn start_pg() -> (zeph_db::DbPool, impl Drop) {
     let host = container.get_host().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-    let config = DbConfig {
-        url,
-        max_connections: 5,
-        pool_size: 5,
-    };
+    let config = DbConfig { url, pool_size: 5 };
     let pool = config.connect().await.expect("failed to connect to PG");
     (pool, container)
 }

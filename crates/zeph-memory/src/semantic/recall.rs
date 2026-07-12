@@ -2393,14 +2393,10 @@ mod tests {
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
         let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-        let pool = zeph_db::DbConfig {
-            url,
-            max_connections: 5,
-            pool_size: 5,
-        }
-        .connect()
-        .await
-        .expect("failed to connect to PG");
+        let pool = zeph_db::DbConfig { url, pool_size: 5 }
+            .connect()
+            .await
+            .expect("failed to connect to PG");
 
         let pg_store = crate::store::SqliteStore::from_pool(pool.clone())
             .await

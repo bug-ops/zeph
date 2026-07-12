@@ -583,7 +583,6 @@ impl AppBuilder {
         // (pool_size=5), causing pool.acquire() cancellation and semaphore drift in sqlx 0.8.
         let graph_pool = zeph_db::DbConfig {
             url: db_path.to_string(),
-            max_connections: self.config.memory.graph.pool_size,
             pool_size: self.config.memory.graph.pool_size,
         }
         .connect()

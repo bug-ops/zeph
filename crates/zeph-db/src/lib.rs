@@ -217,9 +217,53 @@ pub fn placeholder_list(start: usize, count: usize) -> String {
         .join(", ")
 }
 
+/// Builds the `LIMIT` clause fragment (with leading space) and its bind value for the
+/// "`0` means unlimited" convention used across list-style queries (`SessionStore::list`,
+/// `list_acp_sessions`, `list_owned_sessions`, `list_agent_sessions`, ...).
+///
+/// `limit == 0` returns `("", None)`: the caller omits the `LIMIT` clause entirely.
+/// This is the only cross-backend-safe way to express "unlimited" — `LIMIT -1`, the
+/// `SQLite`-only convenience sentinel used before this helper existed, is rejected by
+/// `PostgreSQL` at execution time (`ERROR: LIMIT must not be negative`), and binding a
+/// `NULL` in its place is rejected by `SQLite` (`SQLITE_MISMATCH`), so neither backend
+/// accepts a single placeholder value that means "no limit".
+///
+/// Any other value returns `(" LIMIT ?", Some(limit))`; the caller appends the fragment
+/// to the query text and, only when the returned bind value is `Some`, adds a matching
+/// `.bind()` call.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_db::limit_clause;
+///
+/// assert_eq!(limit_clause(0), ("", None));
+/// assert_eq!(limit_clause(10), (" LIMIT ?", Some(10)));
+/// ```
+#[must_use]
+pub fn limit_clause(limit: u64) -> (&'static str, Option<i64>) {
+    if limit == 0 {
+        ("", None)
+    } else {
+        #[allow(clippy::cast_possible_wrap)]
+        (" LIMIT ?", Some(limit as i64))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn limit_clause_zero_is_unlimited() {
+        assert_eq!(limit_clause(0), ("", None));
+    }
+
+    #[test]
+    fn limit_clause_nonzero_binds_value() {
+        assert_eq!(limit_clause(1), (" LIMIT ?", Some(1)));
+        assert_eq!(limit_clause(42), (" LIMIT ?", Some(42)));
+    }
 
     #[test]
     fn rewrite_placeholders_basic() {

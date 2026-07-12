@@ -356,7 +356,6 @@ mod tests {
     async fn test_pool() -> DbPool {
         zeph_db::DbConfig {
             url: ":memory:".to_string(),
-            max_connections: 5,
             pool_size: 5,
         }
         .connect()

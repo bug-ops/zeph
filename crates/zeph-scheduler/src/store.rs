@@ -120,7 +120,6 @@ impl JobStore {
     pub async fn open(path: &str) -> Result<Self, SchedulerError> {
         let pool = zeph_db::DbConfig {
             url: path.to_string(),
-            max_connections: 5,
             pool_size: 5,
         }
         .connect()
@@ -500,7 +499,6 @@ mod tests {
     async fn test_pool() -> DbPool {
         zeph_db::DbConfig {
             url: ":memory:".to_string(),
-            max_connections: 5,
             pool_size: 5,
         }
         .connect()
