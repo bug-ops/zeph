@@ -1299,6 +1299,168 @@ async fn open_session_log_or_notify_locked(
     }
 }
 
+/// Dependencies for [`build_acp_agent`] (#6221): packages the exact inputs
+/// `spawn_acp_agent`'s `AgentBuilder` construction chain closes over — the self-contained
+/// skill-config/session-config wiring expression, already isolated from the surrounding
+/// per-session tool-executor assembly and session-persistence hydration — so it is
+/// unit-testable without running a full ACP session. Mirrors
+/// `crate::daemon::BuildDaemonAgentDeps`/`crate::runner::BuildAgentDeps`.
+///
+/// Deliberately its own struct, not shared with those siblings: `spawn_acp_agent` has no
+/// whole `Config` in scope (only `Arc<SharedAgentDeps>` plus a per-session `SessionContext`),
+/// so every field here is an owned scalar/handle already extracted from `SharedAgentDeps`,
+/// not a `&Config` borrow.
+#[cfg(feature = "acp")]
+#[allow(clippy::struct_excessive_bools)]
+struct BuildAcpAgentParams<F>
+where
+    F: Fn() -> Vec<PathBuf> + Send + Sync + 'static,
+{
+    provider: zeph_llm::any::AnyProvider,
+    embedding_provider: zeph_llm::any::AnyProvider,
+    registry: std::sync::Arc<RwLock<zeph_skills::registry::SkillRegistry>>,
+    matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
+    max_active_skills: usize,
+    tool_executor: zeph_tools::DynExecutor,
+    session_config: zeph_core::AgentSessionConfig,
+    skill_disambiguation_threshold: f32,
+    skill_two_stage_matching: bool,
+    skill_confusability_threshold: f32,
+    skill_group_structured: bool,
+    skill_support_similarity_threshold: f32,
+    skill_min_injection_score: f32,
+    skill_generation_provider: String,
+    skill_disambiguate_provider: String,
+    semantic_scan: bool,
+    semantic_scan_provider: String,
+    trust_config: zeph_core::config::TrustConfig,
+    trust_snapshot:
+        std::sync::Arc<RwLock<std::collections::HashMap<String, zeph_core::SkillTrustSnapshot>>>,
+    quality_pipeline: Option<std::sync::Arc<zeph_core::quality::SelfCheckPipeline>>,
+    rl_routing_enabled: bool,
+    rl_learning_rate: f32,
+    rl_weight: f32,
+    rl_persist_interval: u32,
+    rl_warmup_updates: u32,
+    working_dir: PathBuf,
+    skill_paths: Vec<PathBuf>,
+    reload_rx: tokio::sync::mpsc::Receiver<zeph_skills::watcher::SkillEvent>,
+    plugin_dirs_supplier: F,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    config_path: PathBuf,
+    config_reload_rx: tokio::sync::mpsc::Receiver<zeph_core::config_watcher::ConfigEvent>,
+    startup_shell_overlay: zeph_core::ShellOverlaySnapshot,
+    shell_policy_handle: zeph_tools::ShellPolicyHandle,
+    mcp_tools: Vec<zeph_mcp::McpTool>,
+    mcp_registry: Option<zeph_mcp::McpToolRegistry>,
+    mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
+    mcp_shared_tools: std::sync::Arc<RwLock<Vec<zeph_mcp::McpTool>>>,
+    mcp_config: zeph_core::config::McpConfig,
+    focus_config: zeph_core::config::FocusConfig,
+    sidequest_config: zeph_core::config::SidequestConfig,
+    trajectory_config: zeph_core::config::TrajectoryConfig,
+    category_config: zeph_core::config::CategoryConfig,
+    provider_pool: Vec<zeph_core::config::ProviderEntry>,
+    provider_config_snapshot: zeph_core::ProviderConfigSnapshot,
+    shutdown_summary: bool,
+    shutdown_summary_min_messages: usize,
+    shutdown_summary_max_messages: usize,
+    shutdown_summary_timeout_secs: u64,
+    shutdown_summary_provider: String,
+    channel_provider_persistence: bool,
+    channel_persist_provider_overrides: bool,
+    safe_mode: bool,
+    cwd_allowed_paths: Vec<PathBuf>,
+    tool_filter_config: zeph_core::config::ToolFilterConfig,
+}
+
+/// Build the `Agent` from the `AgentBuilder` construction chain used by `spawn_acp_agent`,
+/// extracted verbatim so it is unit-testable without running a full ACP session (#6221).
+/// Mirrors `crate::daemon::build_daemon_agent`/`crate::runner::build_agent`'s `Deps`-taking
+/// shape — see [`BuildAcpAgentParams`] for why the field set is not shared.
+///
+/// Only the core `Agent::new_with_registry_arc(...)...await` wiring lives here — the
+/// per-session tool-executor assembly, session-persistence hydration, and every
+/// post-`.await` `agent.with_...` mutation stay in `spawn_acp_agent`, matching where
+/// `build_daemon_agent`'s scope ends in `run_daemon`.
+#[cfg(feature = "acp")]
+async fn build_acp_agent<C, F>(deps: BuildAcpAgentParams<F>, channel: C) -> Agent<C>
+where
+    C: zeph_core::channel::Channel,
+    F: Fn() -> Vec<PathBuf> + Send + Sync + 'static,
+{
+    Agent::new_with_registry_arc(
+        deps.provider.clone(),
+        deps.embedding_provider.clone(),
+        channel,
+        deps.registry,
+        deps.matcher,
+        deps.max_active_skills,
+        deps.tool_executor,
+    )
+    .apply_session_config(deps.session_config)
+    .with_skill_config(zeph_core::SkillConfigParams {
+        disambiguation_threshold: deps.skill_disambiguation_threshold,
+        two_stage_matching: deps.skill_two_stage_matching,
+        confusability_threshold: deps.skill_confusability_threshold,
+        group_structured: deps.skill_group_structured,
+        support_similarity_threshold: deps.skill_support_similarity_threshold,
+        min_injection_score: deps.skill_min_injection_score,
+        generation_provider_name: deps.skill_generation_provider,
+        disambiguate_provider_name: deps.skill_disambiguate_provider,
+        semantic_scan: deps.semantic_scan,
+        semantic_scan_provider_name: deps.semantic_scan_provider,
+    })
+    .with_trust_config(deps.trust_config)
+    .with_trust_snapshot(deps.trust_snapshot)
+    .with_quality_pipeline(deps.quality_pipeline)
+    .with_rl_routing(
+        deps.rl_routing_enabled,
+        deps.rl_learning_rate,
+        deps.rl_weight,
+        deps.rl_persist_interval,
+        deps.rl_warmup_updates,
+    )
+    .with_working_dir(deps.working_dir)
+    .with_skill_coldstart(
+        deps.skill_paths,
+        deps.reload_rx,
+        deps.plugin_dirs_supplier,
+        crate::bootstrap::managed_skills_dir(),
+    )
+    .with_shutdown(deps.shutdown_rx)
+    .with_config_reload(deps.config_path, deps.config_reload_rx)
+    .with_plugins_dir(crate::bootstrap::plugins_dir(), deps.startup_shell_overlay)
+    .with_shell_policy_handle(deps.shell_policy_handle)
+    .with_mcp(
+        deps.mcp_tools,
+        deps.mcp_registry,
+        Some(deps.mcp_manager),
+        &deps.mcp_config,
+    )
+    .with_mcp_shared_tools(deps.mcp_shared_tools)
+    .with_focus_and_sidequest_config(deps.focus_config, deps.sidequest_config)
+    .with_trajectory_and_category_config(deps.trajectory_config, deps.category_config)
+    .with_provider_pool(deps.provider_pool, deps.provider_config_snapshot)
+    .with_embedding_provider(deps.embedding_provider)
+    .with_shutdown_summary_config(
+        deps.shutdown_summary,
+        deps.shutdown_summary_min_messages,
+        deps.shutdown_summary_max_messages,
+        deps.shutdown_summary_timeout_secs,
+    )
+    .with_shutdown_summary_provider(deps.shutdown_summary_provider)
+    .with_channel_identity(
+        "acp",
+        deps.channel_provider_persistence,
+        deps.channel_persist_provider_overrides,
+    )
+    .with_safe_mode(deps.safe_mode)
+    .with_allowed_paths(deps.cwd_allowed_paths)
+    .maybe_init_tool_schema_filter(deps.tool_filter_config, deps.provider)
+    .await
+}
+
 /// Spawn an `Agent` from shared deps and per-session context, then run its loop.
 ///
 /// Called once per ACP session. Each invocation creates independent per-session state:
@@ -1381,7 +1543,6 @@ async fn spawn_acp_agent(
     let session_persistence_config = d.session_persistence_config.clone();
     let provider_pool = d.provider_pool.clone();
     let provider_config_snapshot = d.provider_config_snapshot.clone();
-    let managed_skills_dir = crate::bootstrap::managed_skills_dir();
     let skill_reload_tx = d.skill_reload_tx.clone();
     let config_reload_tx = d.config_reload_tx.clone();
     #[cfg(feature = "scheduler")]
@@ -1745,81 +1906,64 @@ async fn spawn_acp_agent(
         }
     }
 
-    let mut agent = Box::pin(
-        Agent::new_with_registry_arc(
-            provider.clone(),
-            d.embedding_provider.clone(),
-            channel,
-            Arc::clone(&registry),
-            matcher,
-            max_active_skills,
-            tool_executor,
-        )
-        .apply_session_config(session_config)
-        .with_skill_config(zeph_core::SkillConfigParams {
-            disambiguation_threshold: skill_disambiguation_threshold,
-            two_stage_matching: skill_two_stage_matching,
-            confusability_threshold: skill_confusability_threshold,
-            group_structured: skill_group_structured,
-            support_similarity_threshold: skill_support_similarity_threshold,
-            min_injection_score: skill_min_injection_score,
-            generation_provider_name: skill_generation_provider,
-            disambiguate_provider_name: skill_disambiguate_provider,
-            semantic_scan,
-            semantic_scan_provider_name: semantic_scan_provider,
-        })
-        .with_trust_config(d.trust_config.clone())
-        .with_trust_snapshot(Arc::clone(&trust_snapshot))
-        .with_quality_pipeline(d.quality_pipeline.clone())
-        .with_rl_routing(
-            d.rl_routing_enabled,
-            d.rl_learning_rate,
-            d.rl_weight,
-            d.rl_persist_interval,
-            d.rl_warmup_updates,
-        )
-        .with_working_dir(session_ctx.working_dir.clone())
-        .with_skill_coldstart(
-            skill_paths,
-            reload_rx,
-            move || plugin_dirs_supplier(),
-            managed_skills_dir,
-        )
-        .with_shutdown(shutdown_rx)
-        .with_config_reload(config_path, config_reload_rx)
-        .with_plugins_dir(
-            crate::bootstrap::plugins_dir(),
-            d.startup_shell_overlay.clone(),
-        )
-        .with_shell_policy_handle(d.shell_policy_handle.clone())
-        .with_mcp(
-            mcp_tools,
-            mcp_registry,
-            Some(Arc::clone(&mcp_manager)),
-            &mcp_config,
-        )
-        .with_mcp_shared_tools(mcp_shared_tools)
-        .with_focus_and_sidequest_config(d.focus_config.clone(), d.sidequest_config.clone())
-        .with_trajectory_and_category_config(d.trajectory_config.clone(), d.category_config.clone())
-        .with_provider_pool(provider_pool, provider_config_snapshot)
-        .with_embedding_provider(d.embedding_provider.clone())
-        .with_shutdown_summary_config(
-            shutdown_summary,
-            shutdown_summary_min_messages,
-            shutdown_summary_max_messages,
-            shutdown_summary_timeout_secs,
-        )
-        .with_shutdown_summary_provider(shutdown_summary_provider)
-        .with_channel_identity(
-            "acp",
-            channel_provider_persistence,
-            channel_persist_provider_overrides,
-        )
-        .with_safe_mode(safe_mode)
-        .with_allowed_paths(cwd_allowed_paths)
-        .maybe_init_tool_schema_filter(tool_filter_config, provider.clone()),
-    )
-    .await;
+    let build_params = BuildAcpAgentParams {
+        provider: provider.clone(),
+        embedding_provider: d.embedding_provider.clone(),
+        registry: Arc::clone(&registry),
+        matcher,
+        max_active_skills,
+        tool_executor,
+        session_config,
+        skill_disambiguation_threshold,
+        skill_two_stage_matching,
+        skill_confusability_threshold,
+        skill_group_structured,
+        skill_support_similarity_threshold,
+        skill_min_injection_score,
+        skill_generation_provider,
+        skill_disambiguate_provider,
+        semantic_scan,
+        semantic_scan_provider,
+        trust_config: d.trust_config.clone(),
+        trust_snapshot: Arc::clone(&trust_snapshot),
+        quality_pipeline: d.quality_pipeline.clone(),
+        rl_routing_enabled: d.rl_routing_enabled,
+        rl_learning_rate: d.rl_learning_rate,
+        rl_weight: d.rl_weight,
+        rl_persist_interval: d.rl_persist_interval,
+        rl_warmup_updates: d.rl_warmup_updates,
+        working_dir: session_ctx.working_dir.clone(),
+        skill_paths,
+        reload_rx,
+        plugin_dirs_supplier: move || plugin_dirs_supplier(),
+        shutdown_rx,
+        config_path,
+        config_reload_rx,
+        startup_shell_overlay: d.startup_shell_overlay.clone(),
+        shell_policy_handle: d.shell_policy_handle.clone(),
+        mcp_tools,
+        mcp_registry,
+        mcp_manager: Arc::clone(&mcp_manager),
+        mcp_shared_tools,
+        mcp_config,
+        focus_config: d.focus_config.clone(),
+        sidequest_config: d.sidequest_config.clone(),
+        trajectory_config: d.trajectory_config.clone(),
+        category_config: d.category_config.clone(),
+        provider_pool,
+        provider_config_snapshot,
+        shutdown_summary,
+        shutdown_summary_min_messages,
+        shutdown_summary_max_messages,
+        shutdown_summary_timeout_secs,
+        shutdown_summary_provider,
+        channel_provider_persistence,
+        channel_persist_provider_overrides,
+        safe_mode,
+        cwd_allowed_paths,
+        tool_filter_config,
+    };
+    let mut agent = Box::pin(build_acp_agent(build_params, channel)).await;
 
     agent = agent.with_acp_session(true);
 
@@ -4678,5 +4822,134 @@ mod tests {
             }
             other => panic!("expected AgentThoughtChunk, got {other:?}"),
         }
+    }
+
+    // ── build_acp_agent (#6221) ───────────────────────────────────────────────
+
+    fn build_acp_agent_test_embed_fn(text: &str) -> zeph_skills::matcher::EmbedFuture {
+        let _ = text;
+        Box::pin(async { Ok(vec![1.0_f32, 0.0]) })
+    }
+
+    /// #6221 regression: `build_acp_agent` must call `Agent::with_skill_config` so
+    /// `config.skills.confusability_threshold` reaches the real, constructed `Agent` via the
+    /// same `AgentBuilder` chain `spawn_acp_agent` actually uses per ACP session — the ACP-path
+    /// counterpart to `build_agent_wires_skill_matching_config` (`src/runner.rs`) and
+    /// `build_daemon_agent_wires_skill_matching_config` (`src/daemon.rs`), for the
+    /// `BuildAcpAgentParams`/`build_acp_agent` seam extracted from `spawn_acp_agent` (previously
+    /// the only one of the four `Agent`-construction entry points with no such seam or
+    /// regression test at all). Asserts the *exact* threshold value echoed by
+    /// `ConfusabilityReport`'s `Display` output, not just "non-default", so a swapped field in
+    /// `SkillConfigParams` would also be caught.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // exhaustive BuildAcpAgentParams literal — one field per line
+    async fn build_acp_agent_wires_skill_matching_config() {
+        use zeph_commands::traits::agent::AgentAccess as _;
+
+        let mut config = zeph_core::config::Config::default();
+        config.skills.disambiguation_threshold = 0.77;
+        config.skills.two_stage_matching = true;
+        config.skills.confusability_threshold = 0.42;
+
+        let skill_meta = zeph_skills::loader::SkillMeta {
+            name: "solo-skill".to_owned(),
+            description: "a lone skill with no confusable sibling".to_owned(),
+            ..Default::default()
+        };
+        let inner_matcher =
+            zeph_skills::matcher::SkillMatcher::new(&[&skill_meta], build_acp_agent_test_embed_fn)
+                .await
+                .expect("single-skill matcher construction must succeed with a constant embed_fn");
+
+        let (_reload_tx, reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_config_reload_tx, config_reload_rx) = tokio::sync::mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let shell_policy_handle =
+            zeph_tools::ShellExecutor::new(&zeph_tools::ShellConfig::default()).policy_handle();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let mcp_manager = Arc::new(crate::bootstrap::create_mcp_manager_with_vault(
+            &config, false, None,
+        ));
+        let mock_provider =
+            zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+
+        let params = BuildAcpAgentParams {
+            provider: mock_provider.clone(),
+            embedding_provider: mock_provider,
+            registry: Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::empty())),
+            matcher: Some(zeph_skills::matcher::SkillMatcherBackend::InMemory(
+                inner_matcher,
+            )),
+            max_active_skills: 5,
+            tool_executor: zeph_tools::DynExecutor(Arc::new(zeph_tools::SetCwdExecutor::new(
+                vec![],
+            ))),
+            session_config,
+            skill_disambiguation_threshold: config.skills.disambiguation_threshold,
+            skill_two_stage_matching: config.skills.two_stage_matching,
+            skill_confusability_threshold: config.skills.confusability_threshold,
+            skill_group_structured: config.skills.group_structured,
+            skill_support_similarity_threshold: config.skills.support_similarity_threshold,
+            skill_min_injection_score: config.skills.min_injection_score,
+            skill_generation_provider: config.skills.generation_provider.as_str().to_owned(),
+            skill_disambiguate_provider: config.skills.disambiguate_provider.as_str().to_owned(),
+            semantic_scan: config.skills.semantic_scan,
+            semantic_scan_provider: config.skills.semantic_scan_provider.as_str().to_owned(),
+            trust_config: config.skills.trust.clone(),
+            trust_snapshot: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            quality_pipeline: None,
+            rl_routing_enabled: config.skills.rl_routing_enabled,
+            rl_learning_rate: config.skills.rl_learning_rate,
+            rl_weight: config.skills.rl_weight,
+            rl_persist_interval: config.skills.rl_persist_interval,
+            rl_warmup_updates: config.skills.rl_warmup_updates,
+            working_dir: PathBuf::from("."),
+            skill_paths: Vec::new(),
+            reload_rx,
+            plugin_dirs_supplier: || Vec::<PathBuf>::new(),
+            shutdown_rx,
+            config_path: PathBuf::new(),
+            config_reload_rx,
+            startup_shell_overlay: zeph_core::ShellOverlaySnapshot {
+                blocked: vec![],
+                allowed: vec![],
+            },
+            shell_policy_handle,
+            mcp_tools: Vec::new(),
+            mcp_registry: None,
+            mcp_manager,
+            mcp_shared_tools: Arc::new(RwLock::new(Vec::new())),
+            mcp_config: zeph_core::config::McpConfig::default(),
+            focus_config: zeph_core::config::FocusConfig::default(),
+            sidequest_config: zeph_core::config::SidequestConfig::default(),
+            trajectory_config: zeph_core::config::TrajectoryConfig::default(),
+            category_config: zeph_core::config::CategoryConfig::default(),
+            provider_pool: Vec::new(),
+            provider_config_snapshot: zeph_core::ProviderConfigSnapshot::default(),
+            shutdown_summary: false,
+            shutdown_summary_min_messages: 0,
+            shutdown_summary_max_messages: 0,
+            shutdown_summary_timeout_secs: 0,
+            shutdown_summary_provider: String::new(),
+            channel_provider_persistence: false,
+            channel_persist_provider_overrides: false,
+            safe_mode: false,
+            cwd_allowed_paths: Vec::new(),
+            tool_filter_config: zeph_core::config::ToolFilterConfig::default(),
+        };
+
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let mut agent = Box::pin(build_acp_agent(params, channel)).await;
+
+        let output = agent
+            .handle_skills("confusability")
+            .await
+            .expect("handle_skills(\"confusability\") must not error");
+        assert!(
+            output.contains("above 0.42"),
+            "config.skills.confusability_threshold = 0.42 must reach the built Agent's \
+             ConfusabilityReport exactly (not e.g. 0.77, disambiguation_threshold's value, from a \
+             swapped SkillConfigParams field); got: {output}"
+        );
     }
 }
