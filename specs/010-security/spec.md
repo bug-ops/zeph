@@ -18,6 +18,7 @@ related:
   - "[[025-classifiers/spec]]"
   - "[[008-mcp/spec]]"
   - "[[010-7-shadow-memory-guardrail]]"
+  - "[[014-a2a/spec]]"
 ---
 
 # Spec: Security (Parent Index)
@@ -361,25 +362,28 @@ When an MCP tool result triggers an ACP action (e.g., an MCP server result instr
 
 ### IBCT: Invocation-Bound Capability Tokens
 
-IBCT (Invocation-Bound Capability Tokens) are short-lived HMAC-SHA256 tokens bound to a specific tool invocation. They prevent capability reuse or replay across different invocations.
+IBCT (Invocation-Bound Capability Tokens, `crates/zeph-a2a/src/ibct.rs`, feature: `ibct`) are short-lived tokens that scope an A2A delegation request to a specific `task_id` + `endpoint`. See `014-a2a/spec.md` §"IBCT: Invocation-Bound Capability Tokens" for the authoritative wire-format description; this section covers the security posture only.
 
-Token format: `HMAC-SHA256(key_id + ":" + invocation_id + ":" + capability_name + ":" + timestamp)`. Tokens are sent via `X-Zeph-IBCT` header on A2A calls (feature: `ibct`).
+Signature: HMAC-SHA256 over `{key_id}|{task_id}|{endpoint}|{issued_at}|{expires_at}`, hex-encoded. The full token (`key_id`, `task_id`, `endpoint`, `issued_at`, `expires_at`, `signature`) is JSON-serialized, base64-encoded, and sent as a single opaque blob via the `X-Zeph-IBCT` header (feature: `ibct`).
 
-Key rotation: `key_id` field allows multiple active keys during rotation windows.
+Key rotation: `ibct_keys` is a `Vec<IbctKeyConfig>` of `{key_id, key_hex}` entries (inline hex-encoded keys, legacy path) allowing multiple active keys during rotation windows; `ibct_signing_key_vault_ref` resolves the vault-backed primary signing key and takes precedence over `ibct_keys[0]` when both are set.
 
 ### Config
 
 ```toml
 [a2a]
-ibct_enabled = false       # feature: ibct
-ibct_key_rotation_secs = 3600
+ibct_keys = [
+  { key_id = "k1", key_hex = "68656c6c6f2d7365637265742d6b6579" },  # legacy: inline hex key
+]
+ibct_signing_key_vault_ref = "ZEPH_A2A_IBCT_KEY"  # vault-resolved primary key; takes precedence over ibct_keys[0]
+ibct_ttl_secs = 300   # default; token time-to-live in seconds
 ```
 
 ### Key Invariants
 
-- IBCT tokens are single-use — replay detected by `invocation_id` deduplication
-- Token validity window is bounded — expired tokens are always rejected regardless of signature validity
-- `key_id` rotation must maintain a grace window for in-flight requests during rotation
+- IBCT tokens are **NOT single-use** — `Ibct::verify` has no `invocation_id`/nonce dedup. A captured, still-valid token can be replayed against the same `task_id` + `endpoint` until it expires. This is a known limitation of the current implementation, not a documentation gap — do not assume single-use replay protection exists until this is implemented and this invariant is updated
+- Token validity window is bounded — expired tokens are always rejected regardless of signature validity, with a `CLOCK_SKEW_GRACE_SECS` (30s) grace window applied on top of `ibct_ttl_secs`
+- `key_id` rotation must maintain a grace window for in-flight requests during rotation — retired keys stay in `ibct_keys` until all tokens signed with them expire
 - NEVER use IBCT for MCP calls — IBCT applies to A2A calls only (see `014-a2a/spec.md`)
 
 ---

@@ -176,26 +176,29 @@ error type instead.
 ## IBCT: Invocation-Bound Capability Tokens
 
 
-IBCT binds each A2A tool invocation to a short-lived capability token carried in the `X-Zeph-IBCT` HTTP header. The token is an HMAC-SHA256 MAC over the invocation identity (task ID + method + timestamp), signed with a key from the vault. This prevents replay attacks and capability escalation across invocations.
+IBCT binds each A2A tool invocation to a short-lived capability token carried in the `X-Zeph-IBCT` HTTP header. The token is an HMAC-SHA256 MAC over its own fields — `key_id`, `task_id`, `endpoint`, `issued_at`, `expires_at` — signed with a key from the vault. This scopes the token to a specific task and endpoint and bounds its validity window. It does **not** provide single-use replay protection: there is no `invocation_id`/nonce dedup, so a captured, still-valid token can be replayed against the same `task_id` + `endpoint` until expiry (see Key Invariants).
 
 ### Token Structure
 
 - Algorithm: HMAC-SHA256
-- Inputs: task ID, method name, UTC timestamp (seconds), key ID
-- Header: `X-Zeph-IBCT: <base64-encoded-mac>.<key_id>.<timestamp>`
-- TTL: `ibct_ttl_secs` (default 60 seconds) — tokens older than TTL are rejected by the server
+- Signed fields: MAC computed over `{key_id}|{task_id}|{endpoint}|{issued_at}|{expires_at}`, hex-encoded into the token's `signature` field
+- Wire format: the full token (`key_id`, `task_id`, `endpoint`, `issued_at`, `expires_at`, `signature`) is JSON-serialized, then base64-encoded as a single opaque blob — not a dot-separated triplet
+- Header: `X-Zeph-IBCT: <base64-encoded-json>`
+- TTL: `ibct_ttl_secs` (default 300 seconds) — tokens older than TTL are rejected by the server, with an additional `CLOCK_SKEW_GRACE_SECS` (30s) grace window on verification
 
 ### Key Rotation
 
-`ibct_keys` holds a map of `key_id → vault_ref`. The signing key is selected by `ibct_signing_key_vault_ref`. Key rotation is performed by adding a new entry to `ibct_keys` and updating `ibct_signing_key_vault_ref` — old tokens signed with retired keys are rejected after their TTL expires.
+`ibct_keys` is a `Vec<IbctKeyConfig>` of `{key_id, key_hex}` entries — `key_hex` is an inline hex-encoded HMAC-SHA256 key (legacy path). `ibct_signing_key_vault_ref` resolves the primary signing key from the vault at startup, constructing an `IbctKey` with `key_id = "primary"`; it takes precedence over `ibct_keys[0]` when both are set. Key rotation is performed by adding a new entry to `ibct_keys` (or rotating the vault-referenced secret) — old tokens signed with retired keys are rejected once their TTL expires.
 
 ### Config
 
 ```toml
 [a2a]
-ibct_keys = { "k1" = "VAULT_A2A_IBCT_KEY_1" }   # key_id → vault secret ref
-ibct_signing_key_vault_ref = "VAULT_A2A_IBCT_KEY_1"  # active signing key vault ref
-ibct_ttl_secs = 60   # token time-to-live in seconds
+ibct_keys = [
+  { key_id = "k1", key_hex = "68656c6c6f2d7365637265742d6b6579" },  # legacy: inline hex key
+]
+ibct_signing_key_vault_ref = "ZEPH_A2A_IBCT_KEY"  # vault-resolved primary key; takes precedence over ibct_keys[0]
+ibct_ttl_secs = 300   # default; token time-to-live in seconds
 ```
 
 The `ibct` feature flag must be enabled for IBCT to be compiled in.
@@ -204,11 +207,12 @@ The `ibct` feature flag must be enabled for IBCT to be compiled in.
 
 - IBCT is opt-in via the `ibct` feature flag — NEVER enable it by default in builds without the flag
 - Token TTL must be enforced at the server side — expired tokens are always rejected, regardless of signature validity
+- IBCT tokens are **NOT single-use** — `Ibct::verify` performs no `invocation_id`/nonce dedup. A captured, still-valid token can be replayed against the same `task_id` + `endpoint` until it expires. This is a known limitation, not a documentation gap
 - `ibct_signing_key_vault_ref` must resolve to a vault key — startup fails if the ref is set but the vault key is absent
 - Key IDs are included in the token header — the verifier must select the correct key by ID, not by position
 - NEVER log or dump raw IBCT tokens — they are bearer credentials
 - `X-Zeph-IBCT` header must be stripped from any request before forwarding to MCP servers or external tools
-- HMAC-SHA256 comparison must use constant-time equality (`subtle::ConstantTimeEq`) — not `==`
+- HMAC-SHA256 comparison must use constant-time equality — not `==` (enforced via `Mac::verify_slice`, not `subtle::ConstantTimeEq`)
 
 ---
 

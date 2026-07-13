@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- **Docs**: `specs/010-security/spec.md` and `specs/014-a2a/spec.md` described two different IBCT
+  (Invocation-Bound Capability Token) wire formats, and neither fully matched the actual
+  implementation in `crates/zeph-a2a/src/ibct.rs`. Reconciled both specs against `ibct.rs` and
+  `crates/zeph-config/src/channels.rs` ground truth: the token is a single base64-encoded JSON
+  blob (not a dot-separated triplet) signed over `{key_id}|{task_id}|{endpoint}|{issued_at}|
+  {expires_at}`, default TTL is 300s (not 60s), and `ibct_keys` is an array of `{key_id, key_hex}`
+  entries (not a `key_id → vault_ref` map) with `ibct_signing_key_vault_ref` as the separate
+  vault-resolved primary-key path. Also corrected both specs' claim that IBCT prevents replay
+  attacks — `Ibct::verify` performs no `invocation_id`/nonce dedup, so a captured, still-valid
+  token is replayable against the same `task_id` + `endpoint` until it expires; this is now
+  documented as a known implementation limitation. Documentation-only change, no source code
+  modified (#6197).
+
 - **LLM**: the Claude request funnel's no-prefill gate (`ClaudeProvider::structured_history`/
   `plain_history`) was convention-enforced only — `request::split_messages`/
   `split_messages_structured` stayed reachable from anywhere inside `crate::claude`, so a new
