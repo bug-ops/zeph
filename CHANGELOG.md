@@ -347,6 +347,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     misparses as unclosed HTML tags. Wrapped both in backticks so they render as inline code
     instead.
   (#6176)
+- **zeph-worktree**: `WorktreeManager::create()` enforced `config.max_worktrees` with a
+  check-then-act sequence that was not atomic — no lock was held across the `reconcile()`/
+  `git worktree add` `.await`s between the quota read and the final in-memory registration,
+  so two concurrent in-process `create()` calls could both pass the `current >= max` check and
+  both proceed, silently exceeding `max_worktrees`. Added an internal `admission_lock:
+  tokio::sync::Mutex<()>`, held across the full quota-check-through-registration sequence,
+  making in-process admission a hard guarantee. The existing cross-process soft cap (no locking
+  across separate zeph sessions sharing the same `root`) is unchanged (#6250).
 
 ### Added
 

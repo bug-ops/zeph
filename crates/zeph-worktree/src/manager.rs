@@ -27,9 +27,16 @@ use crate::{
 ///
 /// ## Concurrency
 ///
-/// The internal handle list is guarded by a [`std::sync::Mutex`].  All
-/// methods acquire this lock for the minimum necessary duration —
-/// they never hold the lock across an `.await` on an external resource.
+/// The internal handle list is guarded by a [`std::sync::Mutex`].  Most
+/// methods acquire this lock for the minimum necessary duration — they
+/// never hold it across an `.await` on an external resource.
+///
+/// [`create`][Self::create] is the exception: its quota-check-through-
+/// registration sequence is additionally guarded end-to-end by a
+/// [`tokio::sync::Mutex`] (`admission_lock`), held across every `.await` in
+/// that sequence. This makes admission to `max_worktrees` safe against
+/// concurrent in-process `create()` calls without relying on caller-side
+/// locking — see `create`'s `# Concurrency` section for details.
 ///
 /// ## TODO
 ///
@@ -53,6 +60,13 @@ pub struct WorktreeManager<R: GitRunner> {
     /// (without a filesystem walk) via [`Self::cached_disk_usage`]. `None` until
     /// the first `disk_usage()` call.
     usage_cache: parking_lot::Mutex<Option<(Instant, WorktreeDiskUsage)>>,
+    /// Serialises [`Self::create`]'s quota-check-through-registration
+    /// sequence so concurrent in-process calls cannot both observe the same
+    /// pre-admission count and both proceed past the `max_worktrees` check.
+    /// Held across `.await` points for that entire sequence, so this must be
+    /// a [`tokio::sync::Mutex`] rather than [`std::sync::Mutex`] — see
+    /// `create`'s `# Concurrency` section.
+    admission_lock: tokio::sync::Mutex<()>,
 }
 
 impl<R: GitRunner> WorktreeManager<R> {
@@ -107,6 +121,7 @@ impl<R: GitRunner> WorktreeManager<R> {
             runner,
             handles: std::sync::Mutex::new(Vec::new()),
             usage_cache: parking_lot::Mutex::new(None),
+            admission_lock: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -151,12 +166,28 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// [`WorktreeError::QuotaExceeded`] if that count is already `>= max`. The
     /// count includes worktrees created by *other*, concurrently running zeph
     /// sessions over the same `root`, since they consume the same disk budget
-    /// `max_worktrees` is meant to bound. This is a best-effort **soft** cap, not
-    /// a hard guarantee: the count-then-`git worktree add` sequence is not atomic
-    /// across processes, so two concurrent `create()` calls on different sessions
-    /// can both pass the check and briefly push the total above `max`. No
-    /// cross-process locking is used to close this gap — it is out of scope for
-    /// the size of this feature.
+    /// `max_worktrees` is meant to bound. This is a best-effort **soft** cap
+    /// across *processes*: the count-then-`git worktree add` sequence is not
+    /// atomic across separate zeph sessions, so two concurrent `create()`
+    /// calls in different processes can both pass the check and briefly push
+    /// the total above `max`. No cross-process locking is used to close that
+    /// gap — it is out of scope for the size of this feature. Within a single
+    /// process, admission is a **hard** guarantee — see `# Concurrency` below.
+    ///
+    /// ## Concurrency
+    ///
+    /// The quota-check-through-registration sequence (the count read, the
+    /// `max` comparison, `git worktree add`, and the final push onto the
+    /// in-memory handle list) is serialised end-to-end by an internal
+    /// `tokio::sync::Mutex`, held across every `.await` in that span. Two
+    /// concurrent in-process `create()` calls on the same `WorktreeManager`
+    /// can therefore never both observe the same pre-admission count and
+    /// both proceed past the `max_worktrees` check — the second call's count
+    /// read always reflects the first call's completed registration. Callers
+    /// do not need to replicate external locking for quota-safety purposes;
+    /// any locking they hold (e.g. `zeph-subagent`'s `cwd_lock`) exists for
+    /// unrelated invariants and is not load-bearing for `max_worktrees`
+    /// enforcement.
     ///
     /// ## TODO
     ///
@@ -185,6 +216,12 @@ impl<R: GitRunner> WorktreeManager<R> {
     #[instrument(name = "worktree.create", skip(self), fields(subagent_id = %subagent_id))]
     pub async fn create(&self, subagent_id: &str) -> Result<WorktreeHandle, WorktreeError> {
         validate_branch_component(subagent_id)?;
+
+        // Serialises the quota-check-through-registration sequence below so
+        // two concurrent in-process `create()` calls can never both observe
+        // the same pre-admission count and both proceed past the
+        // `max_worktrees` check (see `# Concurrency` above).
+        let _admission_guard = self.admission_lock.lock().await;
 
         if let Some(max) = self.config.max_worktrees {
             let current = self.reconcile().await?.len() + self.list().len();
@@ -1947,6 +1984,92 @@ mod tests {
 
         let err = mgr.create("agent-b").await.unwrap_err();
         assert_matches!(err, WorktreeError::QuotaExceeded { current: 1, max: 1 });
+    }
+
+    /// Test-only [`GitRunner`] wrapper that sleeps before delegating a
+    /// `worktree list --porcelain` call (the git call `reconcile` issues as
+    /// part of `create`'s quota check). This widens the check-then-act window
+    /// enough for a multi-threaded runtime to reliably interleave concurrent
+    /// `create()` calls — without it, `FakeGitRunner::run` never actually
+    /// suspends, so two tasks racing through `create()` would just run
+    /// sequentially to completion and the test would prove nothing.
+    struct DelayedListRunner {
+        inner: Arc<FakeGitRunner>,
+        delay: std::time::Duration,
+    }
+
+    impl GitRunner for DelayedListRunner {
+        async fn run(&self, args: &[&str], cwd: &Path) -> Result<Output, WorktreeError> {
+            if args.first() == Some(&"worktree") && args.get(1) == Some(&"list") {
+                tokio::time::sleep(self.delay).await;
+            }
+            self.inner.run(args, cwd).await
+        }
+    }
+
+    /// Regression test for #6250: two or more in-process `create()` calls
+    /// racing on a `WorktreeManager` configured with `max_worktrees = 1` must
+    /// never both observe the same pre-admission count and both proceed past
+    /// the quota check. Spawns `CONCURRENCY` tasks that all start as close to
+    /// simultaneously as possible (via a barrier) on a real multi-thread
+    /// runtime, with the quota-check git call artificially delayed to widen
+    /// the TOCTOU window `admission_lock` closes. Every `run()` response is
+    /// an empty-stdout success — `reconcile` parses `""` as zero stale
+    /// entries, `check_dirty_tree` ignores its result entirely, and
+    /// `git_worktree_add` only needs a zero exit code — so the response
+    /// content is agnostic to which task ends up winning the race; only the
+    /// call *count* (3 for the winner, 1 for each loser) matters, and that
+    /// count is fixed regardless of interleaving order.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn create_admission_is_race_free_under_concurrent_calls() {
+        const CONCURRENCY: usize = 8;
+
+        let dir = make_repo();
+        let inner = Arc::new(FakeGitRunner::new());
+        for _ in 0..CONCURRENCY * 3 {
+            inner.push_ok(b"" as &[u8]);
+        }
+        let runner = DelayedListRunner {
+            inner,
+            delay: std::time::Duration::from_millis(20),
+        };
+
+        let config = WorktreeConfig {
+            max_worktrees: Some(1),
+            ..test_config()
+        };
+        let mgr = Arc::new(
+            WorktreeManager::new(dir.path().to_path_buf(), config, runner)
+                .await
+                .unwrap(),
+        );
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(CONCURRENCY));
+        let mut tasks = Vec::with_capacity(CONCURRENCY);
+        for i in 0..CONCURRENCY {
+            let mgr = Arc::clone(&mgr);
+            let barrier = Arc::clone(&barrier);
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                mgr.create(&format!("agent-{i}")).await
+            }));
+        }
+
+        let mut ok_count = 0;
+        let mut quota_exceeded_count = 0;
+        for task in tasks {
+            match task.await.unwrap() {
+                Ok(_) => ok_count += 1,
+                Err(WorktreeError::QuotaExceeded { max: 1, .. }) => quota_exceeded_count += 1,
+                Err(e) => panic!("unexpected error from concurrent create(): {e}"),
+            }
+        }
+
+        assert_eq!(
+            ok_count, 1,
+            "exactly one concurrent create() must be admitted under max_worktrees=1"
+        );
+        assert_eq!(quota_exceeded_count, CONCURRENCY - 1);
     }
 
     // --- disk_usage / cached_disk_usage ---
