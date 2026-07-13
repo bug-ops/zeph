@@ -293,6 +293,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Architecture**: `zeph-agent-context` — refactored the graph-retrieval-strategy call
+  chain in `helpers.rs` (`dispatch_graph_strategy`, `run_graph_strategy`,
+  `run_synapse_strategy`, `run_hybrid_strategy`, `recall_by_classified_strategy`,
+  `fetch_semantic_recall_raw`, `append_graph_facts`) away from the "parameter bag"
+  anti-pattern — each function threaded 8-14 positional arguments and individually
+  suppressed `clippy::too_many_arguments`. Introduced `GraphStrategyParams` (per-call
+  query state), `GraphRecallConfig` (shared immutable config), `GraphRecallBudget`
+  (mutable token-budget accumulator), and `SemanticRecallRawParams`, grouped by
+  mutability/ownership rather than bundled arbitrarily. Removed all six
+  `clippy::too_many_arguments` allows and the crate's `#![recursion_limit = "256"]`
+  override, which the refactor's reduced Future-nesting depth no longer requires. Pure
+  internal signature refactor — no behavior change (#5992).
 - **DRY**: consolidated the four near-identical memory-maintenance-loop spawn blocks in
   `src/runner.rs` (CLI/TUI, previously inline), `src/acp.rs` (`build_acp_deps`, previously
   inline), `src/daemon.rs` (`run_daemon`, previously inline), and `src/serve/deps.rs`

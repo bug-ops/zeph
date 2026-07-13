@@ -359,12 +359,14 @@ impl ContextService {
         } else {
             let (msg, _score) = crate::helpers::fetch_semantic_recall_raw(
                 memory,
-                params.recall_limit,
-                params.context_format,
-                params.query,
-                params.token_budget,
-                &window.token_counter,
-                None,
+                crate::helpers::SemanticRecallRawParams {
+                    recall_limit: params.recall_limit,
+                    context_format: params.context_format,
+                    query: params.query,
+                    token_budget: params.token_budget,
+                    tc: &window.token_counter,
+                    low_confidence_threshold: None,
+                },
                 None,
             )
             .await?;

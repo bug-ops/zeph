@@ -114,24 +114,64 @@ pub async fn fetch_graph_facts(
     .map_err(ContextError::Memory)
 }
 
-/// Append graph facts to `body` respecting the token budget; returns result count.
+/// Read-only inputs threaded through the graph-retrieval-strategy call chain
+/// (`dispatch_graph_strategy` → `run_graph_strategy` / `run_synapse_strategy` →
+/// `run_hybrid_strategy` → `recall_by_classified_strategy`).
+///
+/// Bundles the query and its graph-traversal tuning knobs so they don't have to be
+/// threaded positionally through every hop of the chain. `edge_types_json` is kept as a
+/// separate argument alongside this struct because its ownership (moved on its last use,
+/// cloned when a call site needs it again afterward) varies per call site — folding it in
+/// here would force every caller to clone it even when a move would do.
+#[derive(Clone, Copy)]
+struct GraphStrategyParams<'a> {
+    query: &'a str,
+    recall_limit: usize,
+    max_hops: u32,
+    temporal_decay_rate: f64,
+    edge_types: &'a [zeph_memory::graph::EdgeType],
+    strategy_str: &'a str,
+}
+
+/// Graph-config references shared by the strategy-classification and per-strategy recall
+/// calls in the graph-retrieval chain (see [`GraphStrategyParams`]).
+///
+/// Kept separate from `GraphStrategyParams` because it is config, not per-call query state,
+/// and separate from [`GraphRecallBudget`] because it is never mutated.
+#[derive(Clone, Copy)]
+struct GraphRecallConfig<'a> {
+    graph_config: &'a zeph_config::GraphConfig,
+    sa_config: &'a zeph_config::memory::SpreadingActivationConfig,
+}
+
+/// Token-budget accumulator state shared across graph-retrieval calls: the in-progress
+/// system-message body, tokens consumed so far, the total budget, and the token counter
+/// used to measure both.
+///
+/// Threaded by unique `&mut` reference (reborrowed at each call) instead of `body`/
+/// `tokens_so_far` as separate positional `&mut` arguments.
+struct GraphRecallBudget<'a> {
+    body: &'a mut String,
+    tokens_so_far: &'a mut usize,
+    budget_tokens: usize,
+    tc: &'a TokenCounter,
+}
+
+/// Append graph facts to `budget.body` respecting the token budget; returns result count.
 fn append_graph_facts(
     facts: &[zeph_memory::graph::types::GraphFact],
-    body: &mut String,
-    tokens_so_far: &mut usize,
-    budget_tokens: usize,
-    tc: &TokenCounter,
+    budget: &mut GraphRecallBudget<'_>,
 ) -> usize {
     let mut count = 0;
     for f in facts {
         let fact_text = f.fact.replace(['\n', '\r', '<', '>'], " ");
         let line = format!("- {} (confidence: {:.2})\n", fact_text, f.confidence);
-        let line_tokens = tc.count_tokens(&line);
-        if *tokens_so_far + line_tokens > budget_tokens {
+        let line_tokens = budget.tc.count_tokens(&line);
+        if *budget.tokens_so_far + line_tokens > budget.budget_tokens {
             break;
         }
-        body.push_str(&line);
-        *tokens_so_far += line_tokens;
+        budget.body.push_str(&line);
+        *budget.tokens_so_far += line_tokens;
         count += 1;
     }
     count
@@ -156,18 +196,13 @@ fn append_graph_facts(
 /// classification + recall, since by the time it hands off an already-resolved
 /// `std::future::ready(...)` here, starting a fresh clock would measure only the time
 /// to poll an already-completed future instead of real recall latency.
-#[allow(clippy::too_many_arguments)]
 async fn run_graph_strategy<F>(
     memory: &zeph_memory::semantic::SemanticMemory,
-    strategy_str: &str,
-    query: &str,
+    params: GraphStrategyParams<'_>,
     edge_types_json: Option<String>,
     start: Instant,
     recall: F,
-    body: &mut String,
-    tokens_so_far: &mut usize,
-    budget_tokens: usize,
-    tc: &TokenCounter,
+    budget: &mut GraphRecallBudget<'_>,
 ) -> Result<(), zeph_memory::MemoryError>
 where
     F: Future<Output = Result<Vec<zeph_memory::graph::types::GraphFact>, zeph_memory::MemoryError>>,
@@ -180,9 +215,9 @@ where
                 conversation_id: None,
                 turn_index: 0,
                 failure_type: RetrievalFailureType::Error,
-                retrieval_strategy: strategy_str.to_owned(),
-                query_text: query.to_owned(),
-                query_len: query.len(),
+                retrieval_strategy: params.strategy_str.to_owned(),
+                query_text: params.query.to_owned(),
+                query_len: params.query.len(),
                 top_score: None,
                 confidence_threshold: None,
                 result_count: 0,
@@ -199,9 +234,9 @@ where
             conversation_id: None,
             turn_index: 0,
             failure_type: RetrievalFailureType::NoHit,
-            retrieval_strategy: strategy_str.to_owned(),
-            query_text: query.to_owned(),
-            query_len: query.len(),
+            retrieval_strategy: params.strategy_str.to_owned(),
+            query_text: params.query.to_owned(),
+            query_len: params.query.len(),
             top_score: None,
             confidence_threshold: None,
             result_count: 0,
@@ -211,7 +246,7 @@ where
         });
         return Ok(());
     }
-    append_graph_facts(&facts, body, tokens_so_far, budget_tokens, tc);
+    append_graph_facts(&facts, budget);
     Ok(())
 }
 
@@ -225,20 +260,12 @@ where
 /// On success, appends facts to `body`/`tokens_so_far`. On an empty result, logs a
 /// `NoHit` failure record and leaves `body` unchanged — the caller's tail check
 /// (`body == GRAPH_FACTS_PREFIX`) turns this into `Ok(None)`.
-#[allow(clippy::too_many_arguments)]
 async fn run_synapse_strategy(
     memory: &zeph_memory::semantic::SemanticMemory,
     sa_config: &zeph_config::memory::SpreadingActivationConfig,
-    strategy_str: &str,
-    query: &str,
-    recall_limit: usize,
-    temporal_decay_rate: f64,
-    edge_types: &[zeph_memory::graph::EdgeType],
+    params: GraphStrategyParams<'_>,
     edge_types_json: Option<String>,
-    body: &mut String,
-    tokens_so_far: &mut usize,
-    budget_tokens: usize,
-    tc: &TokenCounter,
+    budget: &mut GraphRecallBudget<'_>,
 ) {
     let sa_params = zeph_memory::graph::SpreadingActivationParams {
         decay_lambda: sa_config.decay_lambda,
@@ -246,7 +273,7 @@ async fn run_synapse_strategy(
         activation_threshold: sa_config.activation_threshold,
         inhibition_threshold: sa_config.inhibition_threshold,
         max_activated_nodes: sa_config.max_activated_nodes,
-        temporal_decay_rate,
+        temporal_decay_rate: params.temporal_decay_rate,
         seed_structural_weight: sa_config.seed_structural_weight,
         seed_community_cap: sa_config.seed_community_cap,
         alpha: sa_config.alpha,
@@ -255,7 +282,12 @@ async fn run_synapse_strategy(
     let t0 = Instant::now();
     let activated_facts = match tokio::time::timeout(
         std::time::Duration::from_millis(timeout_ms),
-        memory.recall_graph_activated(query, recall_limit, sa_params, edge_types),
+        memory.recall_graph_activated(
+            params.query,
+            params.recall_limit,
+            sa_params,
+            params.edge_types,
+        ),
     )
     .await
     {
@@ -270,9 +302,9 @@ async fn run_synapse_strategy(
                 conversation_id: None,
                 turn_index: 0,
                 failure_type: RetrievalFailureType::Error,
-                retrieval_strategy: strategy_str.to_owned(),
-                query_text: query.to_owned(),
-                query_len: query.len(),
+                retrieval_strategy: params.strategy_str.to_owned(),
+                query_text: params.query.to_owned(),
+                query_len: params.query.len(),
                 top_score: None,
                 confidence_threshold: None,
                 result_count: 0,
@@ -289,9 +321,9 @@ async fn run_synapse_strategy(
                 conversation_id: None,
                 turn_index: 0,
                 failure_type: RetrievalFailureType::Timeout,
-                retrieval_strategy: strategy_str.to_owned(),
-                query_text: query.to_owned(),
-                query_len: query.len(),
+                retrieval_strategy: params.strategy_str.to_owned(),
+                query_text: params.query.to_owned(),
+                query_len: params.query.len(),
                 top_score: None,
                 confidence_threshold: None,
                 result_count: 0,
@@ -308,9 +340,9 @@ async fn run_synapse_strategy(
             conversation_id: None,
             turn_index: 0,
             failure_type: RetrievalFailureType::NoHit,
-            retrieval_strategy: strategy_str.to_owned(),
-            query_text: query.to_owned(),
-            query_len: query.len(),
+            retrieval_strategy: params.strategy_str.to_owned(),
+            query_text: params.query.to_owned(),
+            query_len: params.query.len(),
             top_score: None,
             confidence_threshold: None,
             result_count: 0,
@@ -326,12 +358,12 @@ async fn run_synapse_strategy(
             "- {} (confidence: {:.2}, activation: {:.2})\n",
             fact_text, f.edge.confidence, f.activation_score
         );
-        let line_tokens = tc.count_tokens(&line);
-        if *tokens_so_far + line_tokens > budget_tokens {
+        let line_tokens = budget.tc.count_tokens(&line);
+        if *budget.tokens_so_far + line_tokens > budget.budget_tokens {
             break;
         }
-        body.push_str(&line);
-        *tokens_so_far += line_tokens;
+        budget.body.push_str(&line);
+        *budget.tokens_so_far += line_tokens;
     }
 }
 
@@ -392,70 +424,69 @@ async fn classify_hybrid_strategy(
 /// carry their own copy of the error-logging block; here they only need to produce a
 /// `Result`, and the shared `Error`/`NoHit` logging happens once in the caller via
 /// [`run_graph_strategy`].
-#[allow(clippy::too_many_arguments)]
 async fn recall_by_classified_strategy(
     classified: &str,
     memory: &zeph_memory::semantic::SemanticMemory,
-    graph_config: &zeph_config::GraphConfig,
-    sa_config: &zeph_config::memory::SpreadingActivationConfig,
-    query: &str,
-    recall_limit: usize,
-    max_hops: u32,
-    temporal_decay_rate: f64,
-    edge_types: &[zeph_memory::graph::EdgeType],
+    config: GraphRecallConfig<'_>,
+    params: GraphStrategyParams<'_>,
 ) -> Result<Vec<zeph_memory::graph::types::GraphFact>, zeph_memory::MemoryError> {
     match classified {
         "astar" => {
             memory
                 .recall_graph_astar(
-                    query,
-                    recall_limit,
-                    max_hops,
-                    temporal_decay_rate,
-                    edge_types,
+                    params.query,
+                    params.recall_limit,
+                    params.max_hops,
+                    params.temporal_decay_rate,
+                    params.edge_types,
                 )
                 .await
         }
         "watercircles" => {
-            let ring_limit = graph_config.watercircles.ring_limit;
+            let ring_limit = config.graph_config.watercircles.ring_limit;
             memory
                 .recall_graph_watercircles(
-                    query,
-                    recall_limit,
-                    max_hops,
+                    params.query,
+                    params.recall_limit,
+                    params.max_hops,
                     ring_limit,
-                    temporal_decay_rate,
-                    edge_types,
+                    params.temporal_decay_rate,
+                    params.edge_types,
                 )
                 .await
         }
         "beam_search" => {
-            let beam_width = graph_config.beam_search.beam_width;
+            let beam_width = config.graph_config.beam_search.beam_width;
             memory
                 .recall_graph_beam(
-                    query,
-                    recall_limit,
+                    params.query,
+                    params.recall_limit,
                     beam_width,
-                    max_hops,
-                    temporal_decay_rate,
-                    edge_types,
+                    params.max_hops,
+                    params.temporal_decay_rate,
+                    params.edge_types,
                 )
                 .await
         }
         _ => {
             let sa_params = zeph_memory::graph::SpreadingActivationParams {
-                decay_lambda: sa_config.decay_lambda,
-                max_hops: sa_config.max_hops,
-                activation_threshold: sa_config.activation_threshold,
-                inhibition_threshold: sa_config.inhibition_threshold,
-                max_activated_nodes: sa_config.max_activated_nodes,
-                temporal_decay_rate,
-                seed_structural_weight: sa_config.seed_structural_weight,
-                seed_community_cap: sa_config.seed_community_cap,
-                alpha: sa_config.alpha,
+                decay_lambda: config.sa_config.decay_lambda,
+                max_hops: config.sa_config.max_hops,
+                activation_threshold: config.sa_config.activation_threshold,
+                inhibition_threshold: config.sa_config.inhibition_threshold,
+                max_activated_nodes: config.sa_config.max_activated_nodes,
+                temporal_decay_rate: params.temporal_decay_rate,
+                seed_structural_weight: config.sa_config.seed_structural_weight,
+                seed_community_cap: config.sa_config.seed_community_cap,
+                alpha: config.sa_config.alpha,
             };
             memory
-                .recall_graph_activated(query, recall_limit, sa_params, edge_types)
+                .recall_graph_activated(
+                    params.query,
+                    params.recall_limit,
+                    sa_params,
+                    params.edge_types,
+                )
                 .await
                 .map(|activated| {
                     activated
@@ -531,22 +562,32 @@ pub async fn fetch_graph_facts_raw(
     let strategy_str = format!("{effective_strategy:?}").to_lowercase();
     let edge_types_json = serde_json::to_string(&edge_types).ok();
 
-    dispatch_graph_strategy(
-        effective_strategy,
-        memory,
-        graph_config,
-        sa_config,
-        &strategy_str,
+    let params = GraphStrategyParams {
         query,
         recall_limit,
         max_hops,
         temporal_decay_rate,
-        &edge_types,
-        edge_types_json,
-        &mut body,
-        &mut tokens_so_far,
+        edge_types: &edge_types,
+        strategy_str: &strategy_str,
+    };
+    let config = GraphRecallConfig {
+        graph_config,
+        sa_config,
+    };
+    let mut budget = GraphRecallBudget {
+        body: &mut body,
+        tokens_so_far: &mut tokens_so_far,
         budget_tokens,
         tc,
+    };
+
+    dispatch_graph_strategy(
+        effective_strategy,
+        memory,
+        config,
+        params,
+        edge_types_json,
+        &mut budget,
     )
     .await?;
 
@@ -568,150 +609,95 @@ pub async fn fetch_graph_facts_raw(
 /// splitting each arm into its own one-call wrapper function would trade this for five
 /// near-identical trivial functions without reducing complexity, so the length lint is
 /// suppressed instead.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)]
 async fn dispatch_graph_strategy(
     effective_strategy: zeph_config::memory::GraphRetrievalStrategy,
     memory: &zeph_memory::semantic::SemanticMemory,
-    graph_config: &zeph_config::GraphConfig,
-    sa_config: &zeph_config::memory::SpreadingActivationConfig,
-    strategy_str: &str,
-    query: &str,
-    recall_limit: usize,
-    max_hops: u32,
-    temporal_decay_rate: f64,
-    edge_types: &[zeph_memory::graph::EdgeType],
+    config: GraphRecallConfig<'_>,
+    params: GraphStrategyParams<'_>,
     edge_types_json: Option<String>,
-    body: &mut String,
-    tokens_so_far: &mut usize,
-    budget_tokens: usize,
-    tc: &TokenCounter,
+    budget: &mut GraphRecallBudget<'_>,
 ) -> Result<(), zeph_memory::MemoryError> {
     use zeph_config::memory::GraphRetrievalStrategy;
     match effective_strategy {
         GraphRetrievalStrategy::Synapse => {
-            run_synapse_strategy(
-                memory,
-                sa_config,
-                strategy_str,
-                query,
-                recall_limit,
-                temporal_decay_rate,
-                edge_types,
-                edge_types_json,
-                body,
-                tokens_so_far,
-                budget_tokens,
-                tc,
-            )
-            .await;
+            run_synapse_strategy(memory, config.sa_config, params, edge_types_json, budget).await;
         }
         GraphRetrievalStrategy::Bfs => {
             run_graph_strategy(
                 memory,
-                strategy_str,
-                query,
+                params,
                 edge_types_json,
                 Instant::now(),
                 memory.recall_graph(
-                    query,
-                    recall_limit,
-                    max_hops,
+                    params.query,
+                    params.recall_limit,
+                    params.max_hops,
                     None,
-                    temporal_decay_rate,
-                    edge_types,
+                    params.temporal_decay_rate,
+                    params.edge_types,
                 ),
-                body,
-                tokens_so_far,
-                budget_tokens,
-                tc,
+                budget,
             )
             .await?;
         }
         GraphRetrievalStrategy::AStar => {
             run_graph_strategy(
                 memory,
-                strategy_str,
-                query,
+                params,
                 edge_types_json,
                 Instant::now(),
                 memory.recall_graph_astar(
-                    query,
-                    recall_limit,
-                    max_hops,
-                    temporal_decay_rate,
-                    edge_types,
+                    params.query,
+                    params.recall_limit,
+                    params.max_hops,
+                    params.temporal_decay_rate,
+                    params.edge_types,
                 ),
-                body,
-                tokens_so_far,
-                budget_tokens,
-                tc,
+                budget,
             )
             .await?;
         }
         GraphRetrievalStrategy::WaterCircles => {
-            let ring_limit = graph_config.watercircles.ring_limit;
+            let ring_limit = config.graph_config.watercircles.ring_limit;
             run_graph_strategy(
                 memory,
-                strategy_str,
-                query,
+                params,
                 edge_types_json,
                 Instant::now(),
                 memory.recall_graph_watercircles(
-                    query,
-                    recall_limit,
-                    max_hops,
+                    params.query,
+                    params.recall_limit,
+                    params.max_hops,
                     ring_limit,
-                    temporal_decay_rate,
-                    edge_types,
+                    params.temporal_decay_rate,
+                    params.edge_types,
                 ),
-                body,
-                tokens_so_far,
-                budget_tokens,
-                tc,
+                budget,
             )
             .await?;
         }
         GraphRetrievalStrategy::BeamSearch => {
-            let beam_width = graph_config.beam_search.beam_width;
+            let beam_width = config.graph_config.beam_search.beam_width;
             run_graph_strategy(
                 memory,
-                strategy_str,
-                query,
+                params,
                 edge_types_json,
                 Instant::now(),
                 memory.recall_graph_beam(
-                    query,
-                    recall_limit,
+                    params.query,
+                    params.recall_limit,
                     beam_width,
-                    max_hops,
-                    temporal_decay_rate,
-                    edge_types,
+                    params.max_hops,
+                    params.temporal_decay_rate,
+                    params.edge_types,
                 ),
-                body,
-                tokens_so_far,
-                budget_tokens,
-                tc,
+                budget,
             )
             .await?;
         }
         GraphRetrievalStrategy::Hybrid => {
-            run_hybrid_strategy(
-                memory,
-                graph_config,
-                sa_config,
-                strategy_str,
-                query,
-                recall_limit,
-                max_hops,
-                temporal_decay_rate,
-                edge_types,
-                edge_types_json,
-                body,
-                tokens_so_far,
-                budget_tokens,
-                tc,
-            )
-            .await?;
+            run_hybrid_strategy(memory, config, params, edge_types_json, budget).await?;
         }
         _ => {}
     }
@@ -720,69 +706,66 @@ async fn dispatch_graph_strategy(
 
 /// Run the `Hybrid` graph retrieval strategy: classify the query into a concrete
 /// sub-strategy, run recall for it, then apply the shared failure-logging/append path.
-#[allow(clippy::too_many_arguments)]
 async fn run_hybrid_strategy(
     memory: &zeph_memory::semantic::SemanticMemory,
-    graph_config: &zeph_config::GraphConfig,
-    sa_config: &zeph_config::memory::SpreadingActivationConfig,
-    strategy_str: &str,
-    query: &str,
-    recall_limit: usize,
-    max_hops: u32,
-    temporal_decay_rate: f64,
-    edge_types: &[zeph_memory::graph::EdgeType],
+    config: GraphRecallConfig<'_>,
+    params: GraphStrategyParams<'_>,
     edge_types_json: Option<String>,
-    body: &mut String,
-    tokens_so_far: &mut usize,
-    budget_tokens: usize,
-    tc: &TokenCounter,
+    budget: &mut GraphRecallBudget<'_>,
 ) -> Result<(), zeph_memory::MemoryError> {
-    let classified = classify_hybrid_strategy(memory, query, edge_types_json.clone()).await;
+    let classified = classify_hybrid_strategy(memory, params.query, edge_types_json.clone()).await;
     // Capture the start instant here, before the real recall work, rather than inside
     // run_graph_strategy: by the time facts_result is ready, the future handed to
     // run_graph_strategy below is already resolved (`std::future::ready`), so starting
     // a fresh clock there would measure only the time to poll an already-done future
     // instead of actual recall latency.
     let recall_t0 = Instant::now();
-    let facts_result = recall_by_classified_strategy(
-        &classified,
-        memory,
-        graph_config,
-        sa_config,
-        query,
-        recall_limit,
-        max_hops,
-        temporal_decay_rate,
-        edge_types,
-    )
-    .await;
+    let facts_result = recall_by_classified_strategy(&classified, memory, config, params).await;
 
     run_graph_strategy(
         memory,
-        strategy_str,
-        query,
+        params,
         edge_types_json,
         recall_t0,
         std::future::ready(facts_result),
-        body,
-        tokens_so_far,
-        budget_tokens,
-        tc,
+        budget,
     )
     .await
 }
 
+/// Read-only inputs for [`fetch_semantic_recall_raw`]: the query, its retrieval
+/// limits/format, and the confidence threshold used to flag low-confidence recall for
+/// telemetry.
+///
+/// Distinct from [`crate::service::SemanticRecallParams`] (the service-level façade
+/// struct, which additionally carries tiered-retrieval provider/config fields) — this is
+/// the smaller subset of fields actually read by the flat (non-tiered) recall path.
+/// `memory` and `router` are kept as separate arguments on the function since they are
+/// resource handles rather than per-call query configuration.
+pub struct SemanticRecallRawParams<'a> {
+    /// Maximum number of memories to retrieve.
+    pub recall_limit: usize,
+    /// Format applied when serialising recalled memories.
+    pub context_format: ContextFormat,
+    /// Query string used for retrieval.
+    pub query: &'a str,
+    /// Maximum number of tokens the injected recall may consume.
+    pub token_budget: usize,
+    /// Token counter used to enforce `token_budget`.
+    pub tc: &'a TokenCounter,
+    /// When `Some(t)`, results with a top score below `t` are classified as
+    /// low-confidence and logged via the memory's retrieval failure logger.
+    pub low_confidence_threshold: Option<f32>,
+}
+
 /// Fetch semantically recalled messages using individual field arguments.
 ///
-/// Raw-args variant used by `zeph-core` test bridge methods and by [`fetch_semantic_recall`].
-///
-/// When `low_confidence_threshold` is `Some(t)`, results with a top score below `t` are
-/// classified as low-confidence and logged via the memory's retrieval failure logger.
+/// Raw-args variant used by [`fetch_semantic_recall`] and by
+/// [`crate::service::ContextService`]'s flat (non-tiered) recall path.
 ///
 /// # Errors
 ///
 /// Returns [`zeph_memory::MemoryError`] when the memory backend returns an error.
-#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(
     name = "agent_context.helpers.fetch_semantic_recall_raw",
     skip_all,
@@ -790,28 +773,25 @@ async fn run_hybrid_strategy(
 )]
 pub async fn fetch_semantic_recall_raw(
     memory: Option<&zeph_memory::semantic::SemanticMemory>,
-    recall_limit: usize,
-    context_format: ContextFormat,
-    query: &str,
-    token_budget: usize,
-    tc: &TokenCounter,
+    params: SemanticRecallRawParams<'_>,
     router: Option<&dyn zeph_memory::AsyncMemoryRouter>,
-    low_confidence_threshold: Option<f32>,
 ) -> Result<(Option<Message>, Option<f32>), zeph_memory::MemoryError> {
     let Some(memory) = memory else {
         return Ok((None, None));
     };
-    if recall_limit == 0 || token_budget == 0 {
+    if params.recall_limit == 0 || params.token_budget == 0 {
         return Ok((None, None));
     }
 
     let t0 = Instant::now();
     let recalled = if let Some(r) = router {
         memory
-            .recall_routed_async(query, recall_limit, None, r, None)
+            .recall_routed_async(params.query, params.recall_limit, None, r, None)
             .await?
     } else {
-        memory.recall(query, recall_limit, None).await?
+        memory
+            .recall(params.query, params.recall_limit, None)
+            .await?
     };
     let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
 
@@ -821,10 +801,10 @@ pub async fn fetch_semantic_recall_raw(
             turn_index: 0,
             failure_type: RetrievalFailureType::NoHit,
             retrieval_strategy: "semantic".to_owned(),
-            query_text: query.to_owned(),
-            query_len: query.len(),
+            query_text: params.query.to_owned(),
+            query_len: params.query.len(),
             top_score: None,
-            confidence_threshold: low_confidence_threshold,
+            confidence_threshold: params.low_confidence_threshold,
             result_count: 0,
             latency_ms,
             edge_types: None,
@@ -835,7 +815,7 @@ pub async fn fetch_semantic_recall_raw(
 
     let top_score = recalled.first().map(|r| r.score);
 
-    if let (Some(score), Some(threshold)) = (top_score, low_confidence_threshold)
+    if let (Some(score), Some(threshold)) = (top_score, params.low_confidence_threshold)
         && score < threshold
     {
         memory.log_retrieval_failure(RetrievalFailureRecord {
@@ -843,8 +823,8 @@ pub async fn fetch_semantic_recall_raw(
             turn_index: 0,
             failure_type: RetrievalFailureType::LowConfidence,
             retrieval_strategy: "semantic".to_owned(),
-            query_text: query.to_owned(),
-            query_len: query.len(),
+            query_text: params.query.to_owned(),
+            query_len: params.query.len(),
             top_score: Some(score),
             confidence_threshold: Some(threshold),
             result_count: recalled.len(),
@@ -853,10 +833,10 @@ pub async fn fetch_semantic_recall_raw(
             error_context: None,
         });
     }
-    let initial_cap = (recall_limit * 512).min(token_budget * 3);
+    let initial_cap = (params.recall_limit * 512).min(params.token_budget * 3);
     let mut recall_text = String::with_capacity(initial_cap);
     recall_text.push_str(RECALL_PREFIX);
-    let mut tokens_used = tc.count_tokens(&recall_text);
+    let mut tokens_used = params.tc.count_tokens(&recall_text);
 
     for item in &recalled {
         if item.message.content.starts_with("[skipped]")
@@ -864,19 +844,19 @@ pub async fn fetch_semantic_recall_raw(
         {
             continue;
         }
-        let entry = match context_format {
+        let entry = match params.context_format {
             ContextFormat::Structured => format_structured_recall_entry(item),
             _ => format_plain_recall_entry(item),
         };
-        let entry_tokens = tc.count_tokens(&entry);
-        if tokens_used + entry_tokens > token_budget {
+        let entry_tokens = params.tc.count_tokens(&entry);
+        if tokens_used + entry_tokens > params.token_budget {
             break;
         }
         recall_text.push_str(&entry);
         tokens_used += entry_tokens;
     }
 
-    if tokens_used > tc.count_tokens(RECALL_PREFIX) {
+    if tokens_used > params.tc.count_tokens(RECALL_PREFIX) {
         Ok((
             Some(Message::from_parts(
                 Role::System,
@@ -1019,13 +999,15 @@ pub async fn fetch_semantic_recall(
 ) -> Result<(Option<Message>, Option<f32>), ContextError> {
     fetch_semantic_recall_raw(
         view.memory.as_deref(),
-        view.recall_limit,
-        view.context_format,
-        query,
-        token_budget,
-        tc,
+        SemanticRecallRawParams {
+            recall_limit: view.recall_limit,
+            context_format: view.context_format,
+            query,
+            token_budget,
+            tc,
+            low_confidence_threshold: None,
+        },
         router,
-        None,
     )
     .await
     .map_err(ContextError::Memory)
@@ -1297,6 +1279,7 @@ mod run_graph_strategy_latency_tests {
         let mut body = String::from(GRAPH_FACTS_PREFIX);
         let mut tokens_so_far = 0usize;
         let tc = TokenCounter::new();
+        let edge_types: Vec<zeph_memory::graph::EdgeType> = Vec::new();
 
         // Simulate the real recall work `recall_by_classified_strategy` performs inside
         // `run_hybrid_strategy` before it hands off an already-resolved future.
@@ -1307,17 +1290,28 @@ mod run_graph_strategy_latency_tests {
             zeph_memory::MemoryError,
         > = Ok(Vec::new());
 
+        let params = GraphStrategyParams {
+            query: "test query",
+            recall_limit: 0,
+            max_hops: 0,
+            temporal_decay_rate: 0.0,
+            edge_types: &edge_types,
+            strategy_str: "hybrid",
+        };
+        let mut budget = GraphRecallBudget {
+            body: &mut body,
+            tokens_so_far: &mut tokens_so_far,
+            budget_tokens: 1000,
+            tc: &tc,
+        };
+
         run_graph_strategy(
             &memory,
-            "hybrid",
-            "test query",
+            params,
             None,
             start,
             std::future::ready(facts_result),
-            &mut body,
-            &mut tokens_so_far,
-            1000,
-            &tc,
+            &mut budget,
         )
         .await
         .unwrap();
