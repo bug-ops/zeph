@@ -130,6 +130,10 @@ pub enum TuiCommand {
     FleetPanel,
     // Durable execution journal (spec-064, #4949)
     DurablePanel,
+    // Read-only settings view: LLM providers, MCP servers, agent definitions (#6024)
+    Settings,
+    // Ctrl+F in-transcript search overlay (#6023)
+    TranscriptSearch,
     // Worktree subsystem (#4679)
     WorktreeList,
     WorktreeClean,
@@ -308,6 +312,20 @@ fn build_view_commands() -> Vec<CommandEntry> {
             category: "view",
             shortcut: Some("D"),
             command: TuiCommand::DurablePanel,
+        },
+        CommandEntry {
+            id: "settings",
+            label: "Settings: browse providers, MCP servers, and agents",
+            category: "view",
+            shortcut: Some("S"),
+            command: TuiCommand::Settings,
+        },
+        CommandEntry {
+            id: "search:transcript",
+            label: "Find in conversation (Ctrl+F)",
+            category: "view",
+            shortcut: Some("Ctrl+F"),
+            command: TuiCommand::TranscriptSearch,
         },
     ]
 }
@@ -1150,8 +1168,8 @@ mod tests {
 
     #[test]
     fn registry_has_correct_count() {
-        // +1 view:latency (#6059)
-        assert_eq!(command_registry().len(), 28);
+        // +1 view:latency (#6059); +2 settings + search:transcript (#6024/#6023)
+        assert_eq!(command_registry().len(), 30);
     }
 
     #[test]

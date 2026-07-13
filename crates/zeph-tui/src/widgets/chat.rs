@@ -57,7 +57,27 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     };
     let flash_style = app.theme.tool_accent;
 
-    let (mut lines, all_md_links) = collect_message_lines_from(
+    // While transcript search (Ctrl+F, issue #6023) is active, bypass the render cache
+    // so highlight spans always reflect the current query, and thread the match set
+    // through for span-splitting. `TranscriptHighlight` borrows the query/matches for
+    // the duration of this call only — no state is stored beyond this frame.
+    let search_query_lower = app
+        .transcript_search
+        .as_ref()
+        .map(|s| s.query_lower().to_owned());
+    let search_matches = app
+        .transcript_search
+        .as_ref()
+        .map(|s| s.matches.clone())
+        .unwrap_or_default();
+    let highlight = search_query_lower.as_deref().and_then(|q| {
+        (!q.is_empty()).then_some(TranscriptHighlight {
+            query_lower: q,
+            matches: &search_matches,
+        })
+    });
+
+    let (mut lines, all_md_links, _message_line_starts) = collect_message_lines_from(
         &messages,
         truncation_info.as_deref(),
         cache,
@@ -72,6 +92,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
         app.theme_generation(),
         &flash_groups,
         flash_style,
+        highlight.as_ref(),
     );
 
     let total = lines.len();
@@ -115,6 +136,25 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     max_scroll
 }
 
+/// A frozen, borrowed view of the active transcript search (issue #6023) passed into
+/// [`collect_message_lines_from`] for highlight span-splitting. Built fresh from
+/// `App.transcript_search` on every call to [`render`] — no state is retained beyond
+/// the current frame.
+pub(crate) struct TranscriptHighlight<'a> {
+    /// The already-lowercased search query (lowercased once by the caller, not
+    /// per-message — see `TranscriptSearchState::query_lower`).
+    pub query_lower: &'a str,
+    /// Original message indices (into the slice passed to `collect_message_lines_from`)
+    /// that matched the query.
+    pub matches: &'a [usize],
+}
+
+impl TranscriptHighlight<'_> {
+    fn is_match(&self, idx: usize) -> bool {
+        self.matches.contains(&idx)
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
 fn collect_message_lines_from(
     messages: &[crate::app::ChatMessage],
@@ -131,9 +171,14 @@ fn collect_message_lines_from(
     theme_generation: u64,
     flash_groups: &std::collections::HashSet<usize>,
     flash_style: ratatui::style::Style,
-) -> (Vec<Line<'static>>, Vec<MdLink>) {
+    search: Option<&TranscriptHighlight<'_>>,
+) -> (Vec<Line<'static>>, Vec<MdLink>, Vec<usize>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut all_md_links: Vec<MdLink> = Vec::new();
+    // First rendered line index of each original message, parallel to `messages`.
+    // Grouped tool-cell members (see `MessageGroup::Grouped`) all share their group's
+    // start line, since they render as one folded visual block.
+    let mut message_line_starts: Vec<usize> = vec![0; messages.len()];
 
     // Show truncation marker at the top when transcript was truncated (W4).
     if let Some(info) = truncation_info {
@@ -150,6 +195,7 @@ fn collect_message_lines_from(
     for (group_pos, group) in groups.iter().enumerate() {
         match group {
             MessageGroup::Single { idx, msg } => {
+                message_line_starts[*idx] = lines.len();
                 let accent = match msg.role {
                     MessageRole::User => theme.user_message,
                     MessageRole::Assistant => theme.assistant_accent,
@@ -193,25 +239,50 @@ fn collect_message_lines_from(
                 // Note: tool messages with streaming=true use throbber_idx for the braille
                 // spinner. Between content chunks the spinner freezes, but tool output
                 // typically arrives in one batch, making this trade-off acceptable.
-                let (msg_lines, msg_md_links) =
-                    if let Some((cached_lines, cached_links)) = cache.get(*idx, &cache_key) {
-                        (cached_lines.to_vec(), cached_links.to_vec())
-                    } else {
-                        let (rendered, extracted) = render_message_lines(
-                            msg,
-                            tool_expanded,
-                            tool_density,
-                            throbber_idx,
-                            ascii,
-                            theme,
-                            wrap_width,
-                            show_labels,
-                        );
-                        cache.put(*idx, cache_key, rendered.clone(), extracted.clone());
-                        (rendered, extracted)
-                    };
+                //
+                // While transcript search is active, the cache is bypassed only for
+                // messages that actually match the query (NFR-001/SC-003 — a
+                // transcript-wide bypass would reintroduce full markdown/tree-sitter
+                // reparsing for every message on every redraw while search is open, the
+                // exact cost `RenderCache` exists to eliminate; matched messages must
+                // still bypass so a stale plain-rendered cache entry can never be reused
+                // in place of the highlighted variant under the same `RenderCacheKey`).
+                let (msg_lines, msg_md_links) = if search.is_some_and(|hl| hl.is_match(*idx)) {
+                    render_message_lines(
+                        msg,
+                        tool_expanded,
+                        tool_density,
+                        throbber_idx,
+                        ascii,
+                        theme,
+                        wrap_width,
+                        show_labels,
+                    )
+                } else if let Some((cached_lines, cached_links)) = cache.get(*idx, &cache_key) {
+                    (cached_lines.to_vec(), cached_links.to_vec())
+                } else {
+                    let (rendered, extracted) = render_message_lines(
+                        msg,
+                        tool_expanded,
+                        tool_density,
+                        throbber_idx,
+                        ascii,
+                        theme,
+                        wrap_width,
+                        show_labels,
+                    );
+                    cache.put(*idx, cache_key, rendered.clone(), extracted.clone());
+                    (rendered, extracted)
+                };
 
                 all_md_links.extend(msg_md_links);
+
+                let msg_lines = match search {
+                    Some(hl) if hl.is_match(*idx) => {
+                        highlight_matches_in_lines(msg_lines, hl.query_lower, theme.highlight)
+                    }
+                    _ => msg_lines,
+                };
 
                 let is_user = msg.role == MessageRole::User;
                 let user_bg = theme.user_message_bg;
@@ -233,6 +304,12 @@ fn collect_message_lines_from(
                 start_idx,
                 members,
             } => {
+                // Grouped members render as one folded cell — every member's original
+                // index shares the same anchor line (the group's start), since that is
+                // the closest visible anchor for a match inside any one of them.
+                for member_offset in 0..members.len() {
+                    message_line_starts[*start_idx + member_offset] = lines.len();
+                }
                 let role_changed = prev_role != Some(MessageRole::Tool);
                 if role_changed {
                     if group_pos > 0 {
@@ -286,7 +363,97 @@ fn collect_message_lines_from(
             }
         }
     }
-    (lines, all_md_links)
+    (lines, all_md_links, message_line_starts)
+}
+
+/// Split matching substrings out of `lines` into their own [`Span`]s styled with
+/// `highlight_style`, using the same span-splitting technique `SyntaxHighlighter` uses
+/// for token spans (`highlight.rs`). Matching is case-insensitive against `query_lower`
+/// (already lowercased once by the caller — see `TranscriptHighlight::query_lower`).
+fn highlight_matches_in_lines(
+    lines: Vec<Line<'static>>,
+    query_lower: &str,
+    highlight_style: Style,
+) -> Vec<Line<'static>> {
+    if query_lower.is_empty() {
+        return lines;
+    }
+    let query_chars: Vec<char> = query_lower.chars().collect();
+    lines
+        .into_iter()
+        .map(|line| {
+            let spans = line
+                .spans
+                .into_iter()
+                .flat_map(|span| highlight_span(span, &query_chars, highlight_style))
+                .collect::<Vec<_>>();
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// Case-insensitive substring highlighter for one span.
+///
+/// Slices `span.content` only at byte offsets sourced from its own `char_indices()`, so
+/// every produced sub-slice is guaranteed to land on a char boundary — this cannot panic
+/// regardless of query or content. Matching compares each candidate char's
+/// [`char::to_lowercase`] iterator against the query char's, which correctly handles the
+/// rare one-to-many lowercasing case (e.g. `İ` → `i̇`) without needing to align byte
+/// lengths between a lowercased copy and the original string.
+fn highlight_span(
+    span: Span<'static>,
+    query_chars: &[char],
+    highlight_style: Style,
+) -> Vec<Span<'static>> {
+    if query_chars.is_empty() {
+        return vec![span];
+    }
+    let content = span.content.as_ref();
+    let positions: Vec<(usize, char)> = content.char_indices().collect();
+    let n = positions.len();
+    let qlen = query_chars.len();
+    if n < qlen {
+        return vec![span];
+    }
+
+    let mut out = Vec::new();
+    let mut seg_start = 0usize;
+    let mut i = 0usize;
+    while i + qlen <= n {
+        let is_match = (0..qlen).all(|k| {
+            positions[i + k]
+                .1
+                .to_lowercase()
+                .eq(query_chars[k].to_lowercase())
+        });
+        if is_match {
+            let match_start = positions[i].0;
+            let match_end = positions
+                .get(i + qlen)
+                .map_or(content.len(), |(byte, _)| *byte);
+            if match_start > seg_start {
+                out.push(Span::styled(
+                    content[seg_start..match_start].to_string(),
+                    span.style,
+                ));
+            }
+            out.push(Span::styled(
+                content[match_start..match_end].to_string(),
+                span.style.patch(highlight_style),
+            ));
+            seg_start = match_end;
+            i += qlen;
+        } else {
+            i += 1;
+        }
+    }
+    if seg_start < content.len() {
+        out.push(Span::styled(content[seg_start..].to_string(), span.style));
+    }
+    if out.is_empty() {
+        out.push(Span::styled(content.to_string(), span.style));
+    }
+    out
 }
 
 #[allow(clippy::too_many_arguments)] // structured inputs; a Params struct would not reduce complexity
@@ -1340,6 +1507,70 @@ fn wrap_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Line<'static>>
     result
 }
 
+impl App {
+    /// Compute the `scroll_offset` that brings message `msg_idx`'s rendered block to
+    /// the top of the chat viewport (issue #6023, transcript search next/prev/accept).
+    ///
+    /// **S4 (mandatory):** derives the offset from the exact same render inputs the live
+    /// renderer uses this frame — current chat-area width and the active
+    /// collapse/expand (`e`), tool-density (`c`), and source-label flags — via the same
+    /// [`collect_message_lines_from`] the frame renderer calls. A match whose text lives
+    /// inside a currently-collapsed or filtered tool-output block therefore scrolls to
+    /// that message's visible anchor (the collapsed cell), not to a position computed
+    /// against a different, always-expanded layout where the match text would not
+    /// actually be on screen.
+    ///
+    /// Returns `None` before the first frame has been drawn (`last_layout` unset, so the
+    /// chat area's width/height are not yet known) or when `msg_idx` is out of range.
+    pub(crate) fn line_offset_of_message(&mut self, msg_idx: usize) -> Option<usize> {
+        let area = self.last_layout.as_ref()?.chat;
+        if area.width == 0 || area.height == 0 {
+            return None;
+        }
+        let inner_height = area.height as usize;
+        let wrap_width = area.width.saturating_sub(2) as usize;
+
+        let messages = self.visible_messages();
+        if msg_idx >= messages.len() {
+            return None;
+        }
+        let truncation_info = self.transcript_truncation_info();
+        let tool_expanded = self.tool_expanded();
+        let tool_density = self.tool_density();
+        let show_labels = self.show_source_labels();
+        let ascii = self.is_ascii_only();
+        let theme_generation = self.theme_generation();
+
+        let mut cache = std::mem::take(&mut self.sessions.current_mut().render_cache);
+        let (lines, _links, starts) = collect_message_lines_from(
+            &messages,
+            truncation_info.as_deref(),
+            &mut cache,
+            area.width,
+            wrap_width,
+            &self.theme,
+            tool_expanded,
+            tool_density,
+            show_labels,
+            0,
+            ascii,
+            theme_generation,
+            &std::collections::HashSet::new(),
+            self.theme.tool_accent,
+            None,
+        );
+        self.sessions.current_mut().render_cache = cache;
+
+        // Mirror render()'s top-padding when the transcript is shorter than the viewport.
+        let content_total = lines.len();
+        let padded_total = content_total.max(inner_height);
+        let padding = padded_total - content_total;
+        let start = starts[msg_idx] + padding;
+        let max_scroll = padded_total.saturating_sub(inner_height);
+        Some(max_scroll.saturating_sub(start))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1714,7 +1945,7 @@ mod tests {
             make_chat_msg(crate::app::MessageRole::Assistant, "Hi"),
         ];
         let mut cache = crate::app::RenderCache::default();
-        let (lines, _) = collect_message_lines_from(
+        let (lines, _, _) = collect_message_lines_from(
             &messages,
             None,
             &mut cache,
@@ -1729,6 +1960,7 @@ mod tests {
             0,
             &std::collections::HashSet::new(),
             ratatui::style::Style::default(),
+            None,
         );
         let all_text: String = lines
             .iter()
@@ -1775,7 +2007,7 @@ mod tests {
         let theme = Theme::default();
         let messages = vec![make_chat_msg(crate::app::MessageRole::User, "Hello world")];
         let mut cache = crate::app::RenderCache::default();
-        let (lines, _) = collect_message_lines_from(
+        let (lines, _, _) = collect_message_lines_from(
             &messages,
             None,
             &mut cache,
@@ -1790,6 +2022,7 @@ mod tests {
             0,
             &std::collections::HashSet::new(),
             ratatui::style::Style::default(),
+            None,
         );
         let has_bg = lines
             .iter()
@@ -2285,7 +2518,7 @@ mod tests {
             .map(|i| make_read_msg(&format!("src/f{i}.rs")))
             .collect();
         let mut cache = crate::app::RenderCache::default();
-        let (lines, _) = collect_message_lines_from(
+        let (lines, _, _) = collect_message_lines_from(
             &messages,
             None,
             &mut cache,
@@ -2300,6 +2533,7 @@ mod tests {
             0,
             &std::collections::HashSet::new(),
             ratatui::style::Style::default(),
+            None,
         );
         let text: String = lines
             .iter()
@@ -2538,5 +2772,156 @@ mod tests {
             tagged.iter().any(|(k, _)| *k == LineKind::CodeBlock),
             "streaming-incomplete block must have at least one CodeBlock-tagged line"
         );
+    }
+
+    // ── Transcript search: highlighting + line_offset_of_message (issue #6023) ─────
+
+    #[test]
+    fn highlight_span_splits_matching_substring() {
+        let span = Span::styled("hello world".to_owned(), Style::default());
+        let query: Vec<char> = "world".chars().collect();
+        let out = highlight_span(
+            span,
+            &query,
+            Style::default().bg(ratatui::style::Color::Yellow),
+        );
+        let text: String = out.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "hello world");
+        assert!(
+            out.iter()
+                .any(|s| s.content == "world" && s.style.bg == Some(ratatui::style::Color::Yellow))
+        );
+    }
+
+    #[test]
+    fn highlight_span_case_insensitive() {
+        let span = Span::styled("Hello WORLD".to_owned(), Style::default());
+        let query: Vec<char> = "world".chars().collect();
+        let out = highlight_span(
+            span,
+            &query,
+            Style::default().bg(ratatui::style::Color::Yellow),
+        );
+        assert!(out.iter().any(|s| s.content.eq_ignore_ascii_case("world")
+            && s.style.bg == Some(ratatui::style::Color::Yellow)));
+    }
+
+    #[test]
+    fn highlight_span_no_match_returns_original() {
+        let span = Span::styled("hello".to_owned(), Style::default());
+        let query: Vec<char> = "xyz".chars().collect();
+        let out = highlight_span(span, &query, Style::default());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].content, "hello");
+    }
+
+    #[test]
+    fn highlight_span_never_panics_on_unicode() {
+        // Regression guard: must not panic when a multi-byte-lowering character (e.g.
+        // Turkish dotted capital İ) appears near a match boundary.
+        let span = Span::styled("İstanbul world İstanbul".to_owned(), Style::default());
+        let query: Vec<char> = "world".chars().collect();
+        let out = highlight_span(span, &query, Style::default());
+        let text: String = out.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "İstanbul world İstanbul");
+    }
+
+    fn make_app_with_messages(count: usize, tool_output_lines: usize) -> (crate::App, usize) {
+        use std::fmt::Write as _;
+
+        let (user_tx, _user_rx) = tokio::sync::mpsc::channel(16);
+        let (_agent_tx, agent_rx) = tokio::sync::mpsc::channel(16);
+        let mut app = crate::App::new(user_tx, agent_rx);
+        app.sessions.current_mut().messages.clear();
+        app.sessions.current_mut().show_splash = false;
+        for i in 0..count {
+            app.sessions.current_mut().messages.push(make_chat_msg(
+                crate::app::MessageRole::Assistant,
+                &format!("filler message {i}"),
+            ));
+        }
+        let mut output = "$ big-command".to_owned();
+        for i in 0..tool_output_lines {
+            let _ = write!(output, "\nline{i}");
+        }
+        let tool_idx = app.sessions.current().messages.len();
+        app.sessions
+            .current_mut()
+            .messages
+            .push(make_tool_msg(&output));
+        for i in 0..count {
+            app.sessions.current_mut().messages.push(make_chat_msg(
+                crate::app::MessageRole::Assistant,
+                &format!("trailer message {i}"),
+            ));
+        }
+        (app, tool_idx)
+    }
+
+    #[test]
+    fn line_offset_of_message_none_before_first_draw() {
+        let (mut app, tool_idx) = make_app_with_messages(5, 20);
+        assert_eq!(app.line_offset_of_message(tool_idx), None);
+    }
+
+    #[test]
+    fn line_offset_of_message_scrolls_collapsed_tool_anchor_into_view() {
+        // S4 (mandatory): a match inside a currently-collapsed tool-output block must
+        // scroll to the message's visible anchor (its header row, always rendered),
+        // not a position computed as if the block were expanded.
+        let (mut app, tool_idx) = make_app_with_messages(30, 20);
+        assert!(!app.tool_expanded(), "tool output starts collapsed");
+
+        // Populate app.last_layout via a real draw pass.
+        let _ = crate::test_utils::render_to_string(100, 20, |frame, _area| {
+            app.draw(frame);
+        });
+
+        let offset_collapsed = app
+            .line_offset_of_message(tool_idx)
+            .expect("layout is populated after draw()");
+
+        // Toggle to expanded and recompute — since the collapsed cell renders far fewer
+        // lines (head+tail+ellipsis) than the fully expanded 21-line block, the two
+        // computed offsets must differ; this proves the helper reads the live
+        // tool_expanded flag rather than a hardcoded always-expanded layout.
+        app.sessions.current_mut().render_cache.clear();
+        let effects =
+            crate::app::reducer::reduce(&mut app, crate::app::action::Action::ToggleToolExpanded);
+        crate::app::reducer::run_effects(&mut app, effects);
+        assert!(app.tool_expanded());
+        let offset_expanded = app
+            .line_offset_of_message(tool_idx)
+            .expect("layout still populated");
+
+        assert_ne!(
+            offset_collapsed, offset_expanded,
+            "collapsed and expanded layouts must scroll to different offsets for the same message"
+        );
+
+        // Applying the collapsed-state offset must bring the tool message's header
+        // (its always-visible anchor, e.g. the tool name) into the rendered viewport.
+        app.sessions.current_mut().render_cache.clear();
+        let effects =
+            crate::app::reducer::reduce(&mut app, crate::app::action::Action::ToggleToolExpanded);
+        crate::app::reducer::run_effects(&mut app, effects);
+        assert!(!app.tool_expanded());
+        app.sessions.current_mut().scroll_offset = offset_collapsed;
+        let output = crate::test_utils::render_to_string(100, 20, |frame, _area| {
+            app.draw(frame);
+        });
+        assert!(
+            output.contains("bash"),
+            "scrolling to the collapsed tool message's offset must show its header anchor; got: {output}"
+        );
+    }
+
+    #[test]
+    fn line_offset_of_message_out_of_range_returns_none() {
+        let (mut app, _tool_idx) = make_app_with_messages(2, 5);
+        let _ = crate::test_utils::render_to_string(100, 20, |frame, _area| {
+            app.draw(frame);
+        });
+        assert_eq!(app.line_offset_of_message(9999), None);
     }
 }

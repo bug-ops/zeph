@@ -187,6 +187,9 @@ fn tab_cycles_panels() {
     assert_eq!(app.active_panel, Panel::Durable);
 
     app.handle_event(AppEvent::Key(tab));
+    assert_eq!(app.active_panel, Panel::Settings);
+
+    app.handle_event(AppEvent::Key(tab));
     assert_eq!(app.active_panel, Panel::Chat);
 }
 

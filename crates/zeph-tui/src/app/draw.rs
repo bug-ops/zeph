@@ -108,6 +108,10 @@ impl App {
             widgets::reverse_search::render(state, &history, frame, layout.input, &self.theme);
         }
 
+        if let Some(state) = &self.transcript_search {
+            widgets::transcript_search::render(state, frame, layout.input, &self.theme);
+        }
+
         // Render toasts above the input, below modal overlays.
         if self.motion != zeph_config::Motion::Off && self.delights.toasts {
             widgets::toast::render(&self.toasts, frame, layout.chat, &self.theme, now);
@@ -336,6 +340,12 @@ impl App {
                 &mut self.durable_list_state,
                 &self.theme,
             );
+        }
+
+        // Overlay the read-only settings view over the subagents slot when `S` is
+        // active (issue #6024), mirroring the Fleet/Durable overlay precedent.
+        if self.active_panel == Panel::Settings {
+            widgets::settings::render(&self.metrics, &mut self.settings, frame, area, &self.theme);
         }
 
         // Overlay task registry over the subagents slot when `/tasks` is toggled.

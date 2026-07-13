@@ -762,6 +762,52 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Populate the TUI settings view's `providers` and `agent_definitions` metrics
+    /// fields (issue #6024) from the current provider pool and sub-agent definitions.
+    ///
+    /// Must be called after [`with_provider_pool`][Self::with_provider_pool],
+    /// [`with_orchestration`][Self::with_orchestration] (if sub-agent definitions are
+    /// used), and [`with_metrics`][Self::with_metrics] — it is a `send_modify` against
+    /// the already-wired metrics channel, mirroring [`with_static_metrics`][Self::with_static_metrics].
+    /// Re-run the same population at the two other sites documented on
+    /// [`crate::metrics::MetricsSnapshot::providers`]: `/provider` switch and config
+    /// hot-reload — this call only covers the unconditional startup population.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called before [`with_metrics`][Self::with_metrics] (no sender is wired yet).
+    #[must_use]
+    pub fn with_settings_metrics(self) -> Self {
+        let active_provider_name = if self.runtime.config.active_provider_name.is_empty() {
+            self.provider.name().to_owned()
+        } else {
+            self.runtime.config.active_provider_name.clone()
+        };
+        let providers = crate::metrics::ProviderSummary::build_pool(
+            &self.runtime.providers.provider_pool,
+            &active_provider_name,
+        );
+        let agent_definitions = self
+            .services
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .map(|mgr| crate::metrics::AgentDefSummary::build_all(mgr.definitions()))
+            .unwrap_or_default();
+        let tx = self
+            .runtime
+            .metrics
+            .metrics_tx
+            .as_ref()
+            .expect("with_settings_metrics must be called after with_metrics");
+        let _span = tracing::info_span!("core.metrics.settings_snapshot").entered();
+        tx.send_modify(|m| {
+            m.providers = providers;
+            m.agent_definitions = agent_definitions;
+        });
+        self
+    }
+
     /// Inject a shared provider override slot for runtime model switching (e.g. via ACP
     /// `set_session_config_option`). The agent checks and swaps the provider before each turn.
     #[must_use]
@@ -3777,6 +3823,51 @@ mod tests {
                 "cache_enabled must equal semantic_cache_enabled when false"
             );
         }
+    }
+
+    /// Issue #6024, startup call site: `with_settings_metrics()` must populate
+    /// `MetricsSnapshot.providers`/`agent_definitions` from whatever provider pool /
+    /// subagent manager were wired earlier in the chain, using the running provider's
+    /// own name as the active marker when `active_provider_name` is unset (mirrors the
+    /// same fallback `provider_cmd.rs`'s `provider_list_as_string` uses).
+    #[test]
+    fn with_settings_metrics_populates_providers_from_pool() {
+        let (tx, rx) = tokio::sync::watch::channel(MetricsSnapshot::default());
+        let snapshot = crate::agent::state::ProviderConfigSnapshot {
+            claude_api_key: None,
+            openai_api_key: None,
+            gemini_api_key: None,
+            compatible_api_keys: std::collections::HashMap::new(),
+            llm_request_timeout_secs: 30,
+            embedding_model: String::new(),
+            gonka_private_key: None,
+            gonka_address: None,
+            cocoon_access_hash: None,
+        };
+        let _ = make_agent()
+            .with_metrics(tx)
+            .with_provider_pool(
+                vec![ProviderEntry {
+                    name: Some("mock".into()),
+                    default: true,
+                    ..Default::default()
+                }],
+                snapshot,
+            )
+            .with_settings_metrics();
+
+        let s = rx.borrow();
+        assert_eq!(s.providers.len(), 1);
+        assert_eq!(s.providers[0].name, "mock");
+        assert!(
+            s.providers[0].active,
+            "active_provider_name is unset, so the running MockProvider's own name (\"mock\") \
+             must be used as the active marker fallback"
+        );
+        assert!(
+            s.agent_definitions.is_empty(),
+            "no subagent_manager was wired, so agent_definitions must be empty, not panic"
+        );
     }
 
     #[test]

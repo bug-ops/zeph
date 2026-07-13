@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Added
 
+- **TUI**: added a read-only settings view (`S` key or the `settings` command-palette
+  entry) listing configured LLM providers, MCP servers, and sub-agent definitions in
+  three tabs, sourced as a live snapshot from `MetricsSnapshot` (never re-parsed from
+  disk). Provider entries are built by explicit whitelist field-copy so secret fields
+  (API keys, Cocoon access hash, Candle HF token) can never leak into the view; the
+  agents tab shows configured definitions, distinct from the runtime subagent sidebar's
+  spawned instances. Read/list only in this release — edit-in-place is deferred (#6024).
+- **TUI**: added `Ctrl+F` in-transcript search — search the currently visible
+  conversation by message content or tool name, with match highlighting and
+  scroll-to-match, `Ctrl+F`/`Up`/`Down` to cycle matches, `Esc` to cancel (restoring the
+  prior scroll position), and `Enter` to accept. Independent of the existing `Ctrl+R`
+  input-history search; a match inside a currently-collapsed tool-output block scrolls
+  to the message's visible anchor rather than a position that assumes the block is
+  expanded (#6023).
 - **Memory**: added MemGuard-inspired type-aware retrieval composition (`[memory.type_aware_compose]`,
   spec 064, #6086). Retrieval-only, fetch-time gate on `schedule_context_fetchers`: a new
   `FunctionalType` enum (`episodic` / `user_fact` / `behavioral_rule` / `reasoning_strategy` /

@@ -64,6 +64,16 @@ impl App {
             return Self::decode_file_picker_key(key);
         }
 
+        // Transcript search (issue #6023): routed mode-agnostically at the top level
+        // (unlike reverse-search, which is Insert-only) so Ctrl+F works whether it was
+        // opened from Normal or Insert mode, and so the two overlays are mutually
+        // exclusive — while this one is open, all keys route here, so Ctrl+R cannot
+        // open reverse-search underneath it (the inverse is guarded by the Ctrl+F
+        // open-arms' `reverse_search.is_none()` check).
+        if self.transcript_search.is_some() {
+            return Self::decode_transcript_search_key(key);
+        }
+
         match self.sessions.current().input_mode {
             InputMode::Normal => self.decode_normal_key(key),
             InputMode::Insert => self.decode_insert_key(key),
@@ -748,9 +758,30 @@ impl App {
         None
     }
 
+    /// Decode a key event while the read-only `Settings` panel has focus (issue #6024).
+    /// Mirrors [`decode_subagent_panel_key`]: `Left`/`Right`/`h`/`l` switch tabs,
+    /// `j`/`k`/`Down`/`Up` move the row selection, `Esc` returns to `Chat`. No mutation
+    /// keys — v1 is read-only.
+    fn decode_settings_panel_key(&self, key: KeyEvent) -> Option<Action> {
+        if self.active_panel != Panel::Settings {
+            return None;
+        }
+        match key.code {
+            KeyCode::Left | KeyCode::Char('h') => Some(Action::SettingsTabPrev),
+            KeyCode::Right | KeyCode::Char('l') => Some(Action::SettingsTabNext),
+            KeyCode::Down | KeyCode::Char('j') => Some(Action::SettingsSelectMove(VertDir::Down)),
+            KeyCode::Up | KeyCode::Char('k') => Some(Action::SettingsSelectMove(VertDir::Up)),
+            KeyCode::Esc => Some(Action::SetActivePanel(Panel::Chat)),
+            _ => None,
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     fn decode_normal_key(&self, key: KeyEvent) -> Option<Action> {
         if let Some(a) = self.decode_subagent_panel_key(key) {
+            return Some(a);
+        }
+        if let Some(a) = self.decode_settings_panel_key(key) {
             return Some(a);
         }
         match key.code {
@@ -772,10 +803,22 @@ impl App {
             KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Action::ClearTranscript)
             }
+            // Ctrl+F (transcript search, issue #6023) must be checked BEFORE the plain
+            // `f`->Fleet arm below, which is itself guarded with `!CONTROL` so it no
+            // longer swallows Ctrl+F (mirrors the Ctrl+L precedent above).
+            KeyCode::Char('f')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && self.reverse_search.is_none() =>
+            {
+                Some(Action::OpenTranscriptSearch)
+            }
             KeyCode::Char('?') => Some(Action::SetHelp(true)),
             KeyCode::Char('p') => Some(Action::TogglePlanView),
-            KeyCode::Char('f') => Some(Action::SetActivePanel(Panel::Fleet)),
+            KeyCode::Char('f') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::SetActivePanel(Panel::Fleet))
+            }
             KeyCode::Char('D') => Some(Action::SetActivePanel(Panel::Durable)),
+            KeyCode::Char('S') => Some(Action::SetActivePanel(Panel::Settings)),
             KeyCode::Char('a') => Some(Action::SetActivePanel(Panel::SubAgents)),
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Action::CopyLastAssistant)
@@ -998,6 +1041,17 @@ impl App {
                     None
                 }
             }
+            // Ctrl+F (transcript search, issue #6023): must precede the `Char(c)`
+            // catch-all below, which has no modifier guard and would otherwise insert
+            // a literal 'f' into the input. Mutual exclusion with Ctrl+R mirrors the
+            // arm above.
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.slash_autocomplete.is_none() {
+                    Some(Action::OpenTranscriptSearch)
+                } else {
+                    None
+                }
+            }
             KeyCode::Char('@') => Some(Action::OpenFilePicker),
             KeyCode::Char(c) => Some(Action::InsertChar(c)),
             _ => None,
@@ -1031,6 +1085,26 @@ impl App {
             KeyCode::Backspace => Some(Action::ReverseSearchInput(PaletteEdit::PopChar)),
             KeyCode::Char(c) if !is_ctrl && !is_alt => {
                 Some(Action::ReverseSearchInput(PaletteEdit::PushChar(c)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Decode a key event while the transcript-search overlay is open (issue #6023).
+    /// Mirrors [`decode_reverse_search_key`]: `Esc` cancels, `Enter` accepts,
+    /// `Ctrl+F`/`Down` advance to the next match, `Up` moves to the previous match.
+    fn decode_transcript_search_key(key: KeyEvent) -> Option<Action> {
+        let is_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let is_alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Esc => Some(Action::CloseTranscriptSearch),
+            KeyCode::Enter => Some(Action::TranscriptSearchAccept),
+            KeyCode::Char('f') if is_ctrl => Some(Action::TranscriptSearchNext),
+            KeyCode::Down => Some(Action::TranscriptSearchNext),
+            KeyCode::Up => Some(Action::TranscriptSearchPrev),
+            KeyCode::Backspace => Some(Action::TranscriptSearchInput(PaletteEdit::PopChar)),
+            KeyCode::Char(c) if !is_ctrl && !is_alt => {
+                Some(Action::TranscriptSearchInput(PaletteEdit::PushChar(c)))
             }
             _ => None,
         }
@@ -1299,5 +1373,112 @@ mod tests {
 
         let msg = &app.sessions.current().messages.last().unwrap().content;
         assert!(msg.contains("not available"));
+    }
+
+    // ── Ctrl+F / Ctrl+R key-decode routing (issue #6023) ────────────────────────
+    //
+    // SC-001 of spec 060 explicitly asks for a regression test proving Ctrl+R is
+    // unaffected by the new Ctrl+F binding, plus the edge case of the two overlays
+    // being mutually exclusive. These decode `KeyEvent`s directly through the private
+    // `decode_key` entry point (accessible from this submodule) rather than the full
+    // `handle_key` -> `reduce` -> `run_effects` pipeline, isolating the routing logic.
+
+    fn ctrl_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn plain_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn ctrl_f_in_normal_mode_opens_transcript_search_not_fleet() {
+        let (mut app, _user_rx, _agent_tx) = make_app();
+        app.sessions.current_mut().input_mode = InputMode::Normal;
+
+        let action = app.decode_key(ctrl_key('f'));
+
+        assert_eq!(action, Some(Action::OpenTranscriptSearch));
+    }
+
+    #[test]
+    fn plain_f_in_normal_mode_still_opens_fleet() {
+        // Regression: the `!CONTROL` guard added to the plain-`f` arm must not affect
+        // unmodified `f` — it must still open the Fleet panel exactly as before #6023.
+        let (mut app, _user_rx, _agent_tx) = make_app();
+        app.sessions.current_mut().input_mode = InputMode::Normal;
+
+        let action = app.decode_key(plain_key('f'));
+
+        assert_eq!(action, Some(Action::SetActivePanel(Panel::Fleet)));
+    }
+
+    #[test]
+    fn ctrl_f_in_insert_mode_opens_transcript_search_not_literal_char() {
+        let (mut app, _user_rx, _agent_tx) = make_app();
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+
+        let action = app.decode_key(ctrl_key('f'));
+
+        assert_eq!(
+            action,
+            Some(Action::OpenTranscriptSearch),
+            "must not fall through to the InsertChar('f') catch-all"
+        );
+    }
+
+    #[test]
+    fn ctrl_r_in_insert_mode_still_opens_reverse_search() {
+        // SC-001 regression: Ctrl+R behavior must be completely unaffected by #6023.
+        let (mut app, _user_rx, _agent_tx) = make_app();
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+
+        let action = app.decode_key(ctrl_key('r'));
+
+        assert_eq!(action, Some(Action::OpenReverseSearch));
+    }
+
+    #[test]
+    fn ctrl_f_is_noop_while_reverse_search_is_open() {
+        // Mutual exclusion (spec 060 edge-case table): opening transcript search while
+        // ReverseSearchState is already open must not succeed.
+        let (mut app, _user_rx, _agent_tx) = make_app();
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.reverse_search = Some(crate::widgets::reverse_search::ReverseSearchState::new(&[]));
+
+        let action = app.decode_key(ctrl_key('f'));
+
+        assert_eq!(
+            action, None,
+            "Ctrl+F must not open transcript search while reverse-search is active"
+        );
+    }
+
+    #[test]
+    fn ctrl_r_is_noop_while_transcript_search_is_open() {
+        // Inverse of the above: once transcript search is open, ALL keys route to its
+        // own decoder (top-level `decode_key` short-circuit), so Ctrl+R cannot open
+        // reverse-search underneath it.
+        let (mut app, _user_rx, _agent_tx) = make_app();
+        app.transcript_search =
+            Some(crate::widgets::transcript_search::TranscriptSearchState::new(0));
+
+        let action = app.decode_key(ctrl_key('r'));
+
+        assert_eq!(
+            action, None,
+            "Ctrl+R must not open reverse-search while transcript search is active"
+        );
+    }
+
+    #[test]
+    fn esc_closes_transcript_search_when_open() {
+        let (mut app, _user_rx, _agent_tx) = make_app();
+        app.transcript_search =
+            Some(crate::widgets::transcript_search::TranscriptSearchState::new(0));
+
+        let action = app.decode_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert_eq!(action, Some(Action::CloseTranscriptSearch));
     }
 }

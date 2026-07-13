@@ -19,7 +19,8 @@
 pub use zeph_common::SecurityEventCategory;
 pub use zeph_core::goal::{GoalSnapshot, GoalStatus};
 pub use zeph_core::metrics::{
-    CategoryScore, ClassifierMetricsSnapshot, McpServerConnectionStatus, McpServerStatus,
-    MetricsCollector, MetricsSnapshot, ProbeCategory, ProbeVerdict, SecurityEvent, SkillConfidence,
-    SubAgentMetrics, TaskGraphSnapshot, TaskMetricsSnapshot, TaskSnapshotRow,
+    AgentDefSummary, CategoryScore, ClassifierMetricsSnapshot, McpServerConnectionStatus,
+    McpServerStatus, MetricsCollector, MetricsSnapshot, ProbeCategory, ProbeVerdict,
+    ProviderSummary, SecurityEvent, SkillConfidence, SubAgentMetrics, TaskGraphSnapshot,
+    TaskMetricsSnapshot, TaskSnapshotRow,
 };

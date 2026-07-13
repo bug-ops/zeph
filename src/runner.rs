@@ -3423,6 +3423,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         .with_static_metrics(static_metrics_init)
         .with_status_tx(agent_status_tx)
         .with_provider_pool(config.llm.providers.clone(), provider_config_snapshot)
+        .with_settings_metrics()
         .with_channel_identity(
             active_channel_name.clone(),
             config.session.provider_persistence,

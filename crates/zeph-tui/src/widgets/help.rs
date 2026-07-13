@@ -9,8 +9,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Clear, Row, Table};
 use crate::layout::centered_rect;
 use crate::theme::Theme;
 
-// 33 data rows + 1 header row + 2 border lines
-const POPUP_HEIGHT: u16 = 36;
+// 47 data rows + 1 header row + 2 border lines
+const POPUP_HEIGHT: u16 = 50;
 
 pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
     let popup = centered_rect(70, POPUP_HEIGHT, area);
@@ -34,6 +34,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
             "cycle panels (Chat/Skills/Memory/Resources/SubAgents)",
         ),
         keybind_row("a", "focus Sub-Agents panel"),
+        keybind_row("S", "settings: browse providers, MCP servers, agents"),
         keybind_row("?", "toggle this help"),
         Row::new([Cell::from(""), Cell::from("")]),
         Row::new([
@@ -52,6 +53,14 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
             Cell::from(""),
         ]),
         keybind_row("Esc", "return to main conversation"),
+        Row::new([Cell::from(""), Cell::from("")]),
+        Row::new([
+            Cell::from(Span::styled("Settings panel (focused)", theme.panel_title)),
+            Cell::from(""),
+        ]),
+        keybind_row("h / l", "switch tab (Providers/MCP/Agents)"),
+        keybind_row("j / k", "move selection"),
+        keybind_row("Esc", "close panel focus"),
         Row::new([
             Cell::from(Span::styled("Insert mode", theme.panel_title)),
             Cell::from(""),
@@ -63,6 +72,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
         keybind_row("Ctrl+U", "clear input"),
         keybind_row("Ctrl+K", "clear queue"),
         keybind_row("Up / Down", "navigate history"),
+        keybind_row("Ctrl+F", "find in conversation (also works in Normal mode)"),
         Row::new([Cell::from(""), Cell::from("")]),
         Row::new([
             Cell::from(Span::styled("Confirm mode", theme.panel_title)),

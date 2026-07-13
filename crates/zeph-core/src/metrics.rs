@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use tokio::sync::watch;
 use zeph_common::SecurityEventCategory;
@@ -127,6 +128,170 @@ pub struct McpServerStatus {
     pub input_schemas_dropped: usize,
     /// Number of `output_schema`s dropped for injection or exceeding the depth cap.
     pub output_schemas_dropped: usize,
+}
+
+/// Read-only, secret-free summary of a single `[[llm.providers]]` entry for the TUI
+/// settings view (issue #6024).
+///
+/// Built by **explicit whitelist-copying** of safe fields from `ProviderEntry` — never
+/// by cloning the entry and redacting afterward — so a future secret field added to
+/// `ProviderEntry` cannot silently leak through this struct (NFR-002/FR-010 of
+/// `/specs/061-tui-settings-editor-parity/spec.md`). Secret-bearing fields
+/// (`api_key`, `cocoon_access_hash`, `candle.hf_token`) are intentionally absent.
+#[derive(Debug, Clone, Default)]
+pub struct ProviderSummary {
+    /// Effective provider name (`ProviderEntry::effective_name`).
+    pub name: String,
+    /// Provider backend type as a lowercase string (e.g. `"claude"`, `"openai"`).
+    pub provider_type: String,
+    /// Configured model identifier, if any.
+    pub model: Option<String>,
+    /// API base URL with any embedded userinfo credentials redacted.
+    pub base_url: Option<String>,
+    /// Configured max output tokens, if any.
+    pub max_tokens: Option<u32>,
+    /// Configured embedding model, if any.
+    pub embedding_model: Option<String>,
+    /// Configured STT model, if any.
+    pub stt_model: Option<String>,
+    /// Whether this entry is the configured default chat provider.
+    pub default: bool,
+    /// Whether this entry is the currently active provider for the running agent.
+    pub active: bool,
+}
+
+impl ProviderSummary {
+    /// Build the whitelist-copied, secret-free summary list for the settings view.
+    ///
+    /// Explicitly copies only the safe field whitelist from each `ProviderEntry` rather
+    /// than cloning the entry and redacting it afterward, so a future secret field added
+    /// to `ProviderEntry` cannot silently leak through this struct — see the type-level
+    /// doc for the full rationale. `base_url` has any embedded userinfo credentials
+    /// (`https://user:pass@host`) stripped via [`zeph_db::redact_url`].
+    ///
+    /// `active_provider_name` should already be resolved to the effective active name
+    /// (callers typically fall back to the running provider's own name when the config's
+    /// `active_provider_name` field is empty, mirroring `provider_cmd.rs`'s own pattern).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_config::ProviderEntry;
+    /// use zeph_core::metrics::ProviderSummary;
+    ///
+    /// let entry = ProviderEntry {
+    ///     name: Some("fast".to_owned()),
+    ///     model: Some("gpt-4o-mini".to_owned()),
+    ///     default: true,
+    ///     api_key: Some("sk-should-never-appear".to_owned()),
+    ///     ..ProviderEntry::default()
+    /// };
+    /// let summaries = ProviderSummary::build_pool(&[entry], "fast");
+    /// assert_eq!(summaries[0].name, "fast");
+    /// assert!(summaries[0].active);
+    /// ```
+    #[must_use]
+    pub fn build_pool(
+        pool: &[zeph_config::ProviderEntry],
+        active_provider_name: &str,
+    ) -> Arc<[Self]> {
+        pool.iter()
+            .map(|entry| {
+                let name = entry.effective_name();
+                let active = name.eq_ignore_ascii_case(active_provider_name);
+                Self {
+                    provider_type: entry.provider_type.as_str().to_owned(),
+                    model: entry.model.clone(),
+                    base_url: entry
+                        .base_url
+                        .as_ref()
+                        .map(|u| zeph_db::redact_url(u).unwrap_or_else(|| u.clone())),
+                    max_tokens: entry.max_tokens,
+                    embedding_model: entry.embedding_model.clone(),
+                    stt_model: entry.stt_model.clone(),
+                    default: entry.default,
+                    active,
+                    name,
+                }
+            })
+            .collect()
+    }
+}
+
+/// Read-only summary of a sub-agent **definition** (template) for the TUI settings
+/// view (issue #6024), distinct from a runtime spawned instance ([`SubAgentMetrics`]).
+#[derive(Debug, Clone, Default)]
+pub struct AgentDefSummary {
+    /// Agent definition name.
+    pub name: String,
+    /// Human-readable description from the definition's frontmatter.
+    pub description: String,
+    /// Effective model spec as a string (`"inherit"` or a named provider), if any.
+    pub model: Option<String>,
+    /// Definition source, e.g. `"project/my-agent.md"`.
+    pub source: Option<String>,
+    /// Stringified memory scope (`"user"`, `"project"`, `"local"`), if any.
+    pub memory_scope: Option<String>,
+    /// Human-readable summary of the tool access policy (e.g. `"allow: shell, Read"`).
+    pub tools_summary: String,
+}
+
+impl AgentDefSummary {
+    /// Build the summary list for the settings view's Agents tab from the loaded
+    /// sub-agent **definitions** (`.zeph/agents/*.md` templates), not runtime instances.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_subagent::SubAgentDef;
+    /// use zeph_core::metrics::AgentDefSummary;
+    ///
+    /// let def = SubAgentDef::for_test("reviewer");
+    /// let summaries = AgentDefSummary::build_all(&[def]);
+    /// assert_eq!(summaries[0].name, "reviewer");
+    /// ```
+    #[must_use]
+    pub fn build_all(defs: &[zeph_subagent::SubAgentDef]) -> Arc<[Self]> {
+        defs.iter().map(Self::from_def).collect()
+    }
+
+    fn from_def(def: &zeph_subagent::SubAgentDef) -> Self {
+        Self {
+            name: def.name.clone(),
+            description: def.description.clone(),
+            model: def.model.as_ref().map(|m| m.as_str().to_owned()),
+            source: def.source.clone(),
+            memory_scope: def.memory.map(|scope| {
+                match scope {
+                    zeph_config::MemoryScope::User => "user",
+                    zeph_config::MemoryScope::Project => "project",
+                    zeph_config::MemoryScope::Local => "local",
+                    // MemoryScope is #[non_exhaustive]; fall back to Debug for any future variant.
+                    other => return format!("{other:?}").to_lowercase(),
+                }
+                .to_owned()
+            }),
+            tools_summary: tools_summary(&def.tools, &def.disallowed_tools),
+        }
+    }
+}
+
+/// Render a [`zeph_config::ToolPolicy`] plus its extra denylist as a short human-readable
+/// string for the settings view (e.g. `"allow: shell, Read (except: Write)"`).
+fn tools_summary(policy: &zeph_config::ToolPolicy, disallowed: &[String]) -> String {
+    use std::fmt::Write as _;
+
+    let mut summary = match policy {
+        zeph_config::ToolPolicy::InheritAll => "inherit all".to_owned(),
+        zeph_config::ToolPolicy::AllowList(list) => format!("allow: {}", list.join(", ")),
+        zeph_config::ToolPolicy::DenyList(list) => format!("deny: {}", list.join(", ")),
+        // ToolPolicy is #[non_exhaustive]; fall back to Debug for any future variant.
+        other => format!("{other:?}"),
+    };
+    if !disallowed.is_empty() {
+        let _ = write!(summary, " (except: {})", disallowed.join(", "));
+    }
+    summary
 }
 
 /// Bayesian confidence data for a single skill, used by TUI confidence bar.
@@ -432,6 +597,16 @@ pub struct MetricsSnapshot {
     pub cocoon_model_count: usize,
     /// TON wallet balance in TON units. `None` when unknown or Cocoon not configured.
     pub cocoon_ton_balance: Option<f64>,
+    /// Secret-free summaries of configured `[[llm.providers]]` entries, for the TUI
+    /// settings view's Providers tab (issue #6024). Refreshed at startup, on `/provider`
+    /// switch, and on config hot-reload — never derived from `update_mcp_metrics`, whose
+    /// MCP-lifecycle-only trigger would leave this stale or empty when no MCP servers are
+    /// configured. `Arc<[T]>` keeps this snapshot cheap to clone on the metrics watch channel.
+    pub providers: Arc<[ProviderSummary]>,
+    /// Summaries of configured sub-agent **definitions** (templates), for the TUI settings
+    /// view's Agents tab (issue #6024) — distinct from `sub_agents` (runtime instances).
+    /// Refreshed at the same sites as `providers`.
+    pub agent_definitions: Arc<[AgentDefSummary]>,
 }
 
 /// Snapshot of a single in-flight background shell run for TUI display.
@@ -1115,5 +1290,66 @@ mod tests {
         recorder.observe_llm_latency(Duration::from_millis(500));
         recorder.observe_turn_duration(Duration::from_secs(3));
         recorder.observe_tool_execution(Duration::from_millis(100));
+    }
+
+    // ── ProviderSummary / AgentDefSummary whitelist-copy (issue #6024) ─────────────
+
+    #[test]
+    fn provider_summary_never_carries_secret_fields() {
+        // SC-003: seed a provider with every secret-bearing field and assert none of
+        // their values are reachable anywhere on the resulting ProviderSummary — the
+        // struct has no fields that could hold them, by construction.
+        let entry = zeph_config::ProviderEntry {
+            name: Some("leaky".to_owned()),
+            api_key: Some("sk-SUPERSECRET".to_owned()),
+            cocoon_access_hash: Some("hash-SUPERSECRET".to_owned()),
+            candle: Some(zeph_config::CandleInlineConfig {
+                hf_token: Some("hf_SUPERSECRET".to_owned()),
+                ..Default::default()
+            }),
+            ..zeph_config::ProviderEntry::default()
+        };
+        let summaries = ProviderSummary::build_pool(&[entry], "leaky");
+        assert_eq!(summaries.len(), 1);
+        let debug = format!("{:?}", summaries[0]);
+        assert!(!debug.contains("SUPERSECRET"));
+    }
+
+    #[test]
+    fn provider_summary_marks_active_case_insensitively() {
+        let entry = zeph_config::ProviderEntry {
+            name: Some("Fast".to_owned()),
+            ..zeph_config::ProviderEntry::default()
+        };
+        let summaries = ProviderSummary::build_pool(&[entry], "fast");
+        assert!(summaries[0].active);
+    }
+
+    #[test]
+    fn provider_summary_redacts_base_url_userinfo() {
+        let entry = zeph_config::ProviderEntry {
+            name: Some("compat".to_owned()),
+            base_url: Some("https://user:secret@example.com/v1".to_owned()),
+            ..zeph_config::ProviderEntry::default()
+        };
+        let summaries = ProviderSummary::build_pool(&[entry], "compat");
+        let base_url = summaries[0].base_url.as_deref().unwrap_or_default();
+        assert!(!base_url.contains("secret"));
+        assert!(base_url.contains("example.com"));
+    }
+
+    #[test]
+    fn provider_summary_empty_pool_produces_empty_slice() {
+        let summaries = ProviderSummary::build_pool(&[], "");
+        assert!(summaries.is_empty());
+    }
+
+    #[test]
+    fn agent_def_summary_maps_definition_fields() {
+        let def = zeph_subagent::SubAgentDef::for_test("reviewer");
+        let summaries = AgentDefSummary::build_all(&[def]);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "reviewer");
+        assert_eq!(summaries[0].tools_summary, "inherit all");
     }
 }

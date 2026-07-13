@@ -15,6 +15,7 @@ expression: output
             │c                   compact tools                     │            
             │Tab                 cycle panels (Chat/Skills/Memory/R│            
             │a                   focus Sub-Agents panel            │            
+            │S                   settings: browse providers, MCP se│            
             │?                   toggle this help                  │            
             │                                                      │            
             │Sub-Agents panel (f                                   │            
@@ -24,11 +25,10 @@ expression: output
             │                                                      │            
             │Subagent transcript                                   │            
             │Esc                 return to main conversation       │            
+            │                                                      │            
+            │Settings panel (foc                                   │            
+            │h / l               switch tab (Providers/MCP/Agents) │            
+            │j / k               move selection                    │            
+            │Esc                 close panel focus                 │            
             │Insert mode                                           │            
-            │Enter               send message                      │            
-            │Shift+Enter         insert newline                    │            
-            │Ctrl+J              insert newline                    │            
-            │Esc                 return to normal mode             │            
-            │Ctrl+U              clear input                       │            
-            │Ctrl+K              clear queue                       │            
             ╰──────────────────────────────────────────────────────╯

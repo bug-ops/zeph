@@ -75,6 +75,8 @@ impl App {
             file_index: None,
             slash_autocomplete: None,
             reverse_search: None,
+            transcript_search: None,
+            settings: crate::widgets::settings::SettingsViewState::default(),
             should_quit: false,
             user_input_tx,
             agent_event_rx,
@@ -1037,7 +1039,7 @@ impl App {
         // Force-expand slot 3 whenever an overlay is rendering into the subagents rect.
         let slot3_has_overlay = matches!(
             self.active_panel,
-            Panel::SubAgents | Panel::Fleet | Panel::Durable
+            Panel::SubAgents | Panel::Fleet | Panel::Durable | Panel::Settings
         ) || self.show_task_panel
             || self
                 .metrics
@@ -1049,6 +1051,16 @@ impl App {
             eff[3] = false;
         }
         eff
+    }
+
+    /// Returns the number of rows in the settings view's currently active tab
+    /// (issue #6024), used to clamp `Action::SettingsSelectMove` navigation.
+    pub(crate) fn settings_active_tab_len(&self) -> usize {
+        match self.settings.tab {
+            crate::widgets::settings::SettingsTab::Providers => self.metrics.providers.len(),
+            crate::widgets::settings::SettingsTab::Mcp => self.metrics.mcp_servers.len(),
+            crate::widgets::settings::SettingsTab::Agents => self.metrics.agent_definitions.len(),
+        }
     }
 
     /// Sets `active_panel`, keeping `show_task_panel` in sync so at most one
@@ -1070,7 +1082,9 @@ impl App {
         self.active_panel = p;
         match p {
             Panel::Tasks => self.show_task_panel = true,
-            Panel::SubAgents | Panel::Fleet | Panel::Durable => self.show_task_panel = false,
+            Panel::SubAgents | Panel::Fleet | Panel::Durable | Panel::Settings => {
+                self.show_task_panel = false;
+            }
             Panel::Chat | Panel::Skills | Panel::Memory | Panel::Resources => {}
         }
     }

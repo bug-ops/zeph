@@ -183,6 +183,28 @@ pub(crate) enum Action {
     /// Close the reverse-search overlay.
     CloseReverseSearch,
 
+    // ── Transcript search (issue #6023) ────────────────────────────────────────
+    /// Open the `Ctrl+F` transcript-search overlay.
+    OpenTranscriptSearch,
+    /// Type in the transcript-search query field.
+    TranscriptSearchInput(PaletteEdit),
+    /// Advance to the next match, wrapping.
+    TranscriptSearchNext,
+    /// Move to the previous match, wrapping.
+    TranscriptSearchPrev,
+    /// Accept the current match: close the overlay, leaving the scroll position.
+    TranscriptSearchAccept,
+    /// Close the overlay without accepting, restoring the pre-search scroll position.
+    CloseTranscriptSearch,
+
+    // ── Settings view (issue #6024) ─────────────────────────────────────────────
+    /// Switch the settings view to the next tab (Providers → MCP → Agents), wrapping.
+    SettingsTabNext,
+    /// Switch the settings view to the previous tab, wrapping.
+    SettingsTabPrev,
+    /// Move the active tab's row selection up or down.
+    SettingsSelectMove(VertDir),
+
     // ── Confirm dialog ─────────────────────────────────────────────────────────
     /// Respond to the current confirm dialog (true = yes, false = no).
     ConfirmRespond(bool),

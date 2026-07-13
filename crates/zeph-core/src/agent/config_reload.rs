@@ -11,6 +11,7 @@ use super::{Agent, resolve_context_budget};
 use crate::channel::Channel;
 use crate::config::Config;
 use crate::context::ContextBudget;
+use zeph_llm::provider::LlmProvider as _;
 
 impl<C: Channel> Agent<C> {
     #[allow(clippy::too_many_lines)]
@@ -153,6 +154,32 @@ impl<C: Channel> Agent<C> {
             .turn_complete
             .clone_from(&config.hooks.turn_complete);
         // file_changed_hooks require watcher restart to take effect — skipped here.
+
+        // Re-derive the settings-view provider/agent-definition lists (issue #6024): a
+        // hot-reload can add, remove, or edit `[[llm.providers]]` entries or sub-agent
+        // definitions, and — per the same rationale as `apply_provider_switch_metrics`
+        // — `providers`/`agent_definitions` are never refreshed by the MCP-lifecycle-driven
+        // `update_mcp_metrics`, so they must be re-emitted explicitly here.
+        let active_provider_name = if self.runtime.config.active_provider_name.is_empty() {
+            self.provider.name().to_owned()
+        } else {
+            self.runtime.config.active_provider_name.clone()
+        };
+        let providers = crate::metrics::ProviderSummary::build_pool(
+            &self.runtime.providers.provider_pool,
+            &active_provider_name,
+        );
+        let agent_definitions = self
+            .services
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .map(|mgr| crate::metrics::AgentDefSummary::build_all(mgr.definitions()))
+            .unwrap_or_default();
+        self.update_metrics(|m| {
+            m.providers = providers;
+            m.agent_definitions = agent_definitions;
+        });
 
         tracing::info!("config reloaded");
     }
@@ -341,5 +368,31 @@ mod tests {
             agent.services.skill.max_active_skills, 999,
             "prior runtime state must be preserved when the reloaded config fails validate()"
         );
+    }
+
+    // ── Settings-view metrics refresh on hot-reload (issue #6024) ──────────────────
+
+    #[test]
+    fn reload_config_repopulates_settings_metrics() {
+        let config = Config::default();
+        let (_dir, path) = write_config(&config);
+
+        let mut agent = QuickTestAgent::minimal("ok").agent;
+        agent.runtime.lifecycle.plugins_dir = std::path::PathBuf::new();
+        agent.runtime.lifecycle.config_path = Some(path);
+        agent.runtime.providers.provider_pool = vec![zeph_config::ProviderEntry {
+            name: Some("fast".to_owned()),
+            default: true,
+            ..zeph_config::ProviderEntry::default()
+        }];
+        let (tx, rx) = tokio::sync::watch::channel(crate::metrics::MetricsSnapshot::default());
+        agent.runtime.metrics.metrics_tx = Some(tx);
+
+        agent.reload_config();
+
+        let snapshot = rx.borrow();
+        assert_eq!(snapshot.providers.len(), 1);
+        assert_eq!(snapshot.providers[0].name, "fast");
+        assert!(snapshot.providers[0].default);
     }
 }

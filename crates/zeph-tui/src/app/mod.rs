@@ -71,6 +71,8 @@ pub enum Panel {
     Fleet,
     /// The durable execution journal panel (side column).
     Durable,
+    /// The read-only settings view: LLM providers, MCP servers, and agent definitions.
+    Settings,
 }
 
 /// Discriminates what the main chat area is currently displaying.
@@ -400,6 +402,13 @@ pub struct App {
     file_index: Option<FileIndex>,
     slash_autocomplete: Option<SlashAutocompleteState>,
     reverse_search: Option<crate::widgets::reverse_search::ReverseSearchState>,
+    /// `Ctrl+F` transcript-search overlay state (issue #6023). `None` when closed.
+    ///
+    /// Fully independent of `reverse_search` — no shared mutable state — but the two
+    /// overlays are mutually exclusive at the key-routing level (`decode_key`).
+    pub(crate) transcript_search: Option<crate::widgets::transcript_search::TranscriptSearchState>,
+    /// Read-only settings view state: active tab and per-tab selection (issue #6024).
+    pub(crate) settings: crate::widgets::settings::SettingsViewState,
     pub should_quit: bool,
     user_input_tx: mpsc::Sender<String>,
     agent_event_rx: mpsc::Receiver<AgentEvent>,

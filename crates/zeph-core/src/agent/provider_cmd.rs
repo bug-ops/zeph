@@ -367,11 +367,21 @@ impl<C: Channel> Agent<C> {
             .and_then(|c| c.generation.top_p.map(|v| v as f32));
         let switched_model = self.runtime.config.model_name.clone();
         let name = configured_name.to_owned();
+        // Re-derive the settings-view provider list (issue #6024) so its `active` marker
+        // reflects the new provider — `providers` is populated at dedicated call sites
+        // (startup, here, config reload), never from the MCP-lifecycle-driven
+        // `update_mcp_metrics`, so it stays correct even when the switch happens before
+        // any MCP event ever fires.
+        let providers = crate::metrics::ProviderSummary::build_pool(
+            &self.runtime.providers.provider_pool,
+            &name,
+        );
         self.update_metrics(|m| {
             m.provider_name.clone_from(&name);
             m.model_name = switched_model;
             m.provider_temperature = provider_temperature;
             m.provider_top_p = provider_top_p;
+            m.providers = providers;
         });
     }
 
@@ -715,6 +725,46 @@ mod tests {
             "must be reset on switch"
         );
         assert_eq!(agent.runtime.config.model_name, "llama3.2");
+    }
+
+    /// Issue #6024 (S2 regression scenario): after a `/provider` switch, the settings
+    /// view's `providers` list must re-derive with the `active` marker moved to the
+    /// newly-selected provider, not stay stale on the previously-active one. This is
+    /// the exact wiring `apply_provider_switch_metrics` exists to keep correct.
+    #[tokio::test]
+    async fn provider_switch_updates_settings_metrics_active_marker() {
+        let entry_a = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
+        let entry_b = make_entry("ollama2", ProviderKind::Ollama, Some("llama3.2"));
+        let snapshot = ollama_snapshot();
+        let provider_a =
+            crate::provider_factory::build_provider_for_switch(&entry_a, &snapshot, None).unwrap();
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider_a, channel, registry, None, 5, executor);
+        agent.runtime.providers.provider_pool = vec![entry_a, entry_b];
+        agent.runtime.providers.provider_config_snapshot = Some(snapshot);
+
+        let (tx, rx) = tokio::sync::watch::channel(crate::metrics::MetricsSnapshot::default());
+        agent.runtime.metrics.metrics_tx = Some(tx);
+
+        let out = agent.handle_provider_command_as_string("ollama2").await;
+        assert!(out.contains("Switched to provider:"), "unexpected: {out}");
+
+        let snapshot = rx.borrow();
+        assert_eq!(snapshot.providers.len(), 2);
+        let active_names: Vec<&str> = snapshot
+            .providers
+            .iter()
+            .filter(|p| p.active)
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(
+            active_names,
+            vec!["ollama2"],
+            "exactly the newly-switched-to provider must be marked active"
+        );
     }
 
     #[tokio::test]

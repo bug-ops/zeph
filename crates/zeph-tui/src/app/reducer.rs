@@ -115,10 +115,12 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
                 Panel::Resources => Panel::SubAgents,
                 Panel::SubAgents | Panel::Tasks => Panel::Fleet,
                 Panel::Fleet => Panel::Durable,
-                Panel::Durable => Panel::Chat,
+                Panel::Durable => Panel::Settings,
+                Panel::Settings => Panel::Chat,
             };
-            // Routed through set_active_panel so cycling into SubAgents/Fleet/Durable
-            // clears show_task_panel the same way every other entry point does (#6061).
+            // Routed through set_active_panel so cycling into SubAgents/Fleet/Durable/
+            // Settings clears show_task_panel the same way every other entry point does
+            // (#6061).
             app.set_active_panel(next);
             vec![]
         }
@@ -570,6 +572,92 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             vec![]
         }
 
+        // ── Transcript search (issue #6023) ─────────────────────────────────────
+        Action::OpenTranscriptSearch => {
+            let pre_search_scroll_offset = app.scroll_offset();
+            app.transcript_search = Some(
+                crate::widgets::transcript_search::TranscriptSearchState::new(
+                    pre_search_scroll_offset,
+                ),
+            );
+            vec![]
+        }
+        Action::TranscriptSearchInput(edit) => {
+            let messages = app.visible_messages();
+            if let Some(ref mut s) = app.transcript_search {
+                match edit {
+                    PaletteEdit::PushChar(c) => s.push_char(c, &messages),
+                    PaletteEdit::PopChar => s.pop_char(&messages),
+                }
+            }
+            if let Some(target) = app.transcript_search.as_ref().and_then(
+                crate::widgets::transcript_search::TranscriptSearchState::selected_message_index,
+            ) && let Some(offset) = app.line_offset_of_message(target)
+            {
+                app.begin_scroll(offset);
+            }
+            vec![]
+        }
+        Action::TranscriptSearchNext => {
+            if let Some(ref mut s) = app.transcript_search {
+                s.select_next();
+            }
+            if let Some(target) = app.transcript_search.as_ref().and_then(
+                crate::widgets::transcript_search::TranscriptSearchState::selected_message_index,
+            ) && let Some(offset) = app.line_offset_of_message(target)
+            {
+                app.begin_scroll(offset);
+            }
+            vec![]
+        }
+        Action::TranscriptSearchPrev => {
+            if let Some(ref mut s) = app.transcript_search {
+                s.select_previous();
+            }
+            if let Some(target) = app.transcript_search.as_ref().and_then(
+                crate::widgets::transcript_search::TranscriptSearchState::selected_message_index,
+            ) && let Some(offset) = app.line_offset_of_message(target)
+            {
+                app.begin_scroll(offset);
+            }
+            vec![]
+        }
+        Action::TranscriptSearchAccept => {
+            // Leave the transcript scrolled at the accepted match (FR-007) — only the
+            // overlay closes, scroll_offset is left as-is.
+            app.transcript_search = None;
+            vec![]
+        }
+        Action::CloseTranscriptSearch => {
+            let restore = app
+                .transcript_search
+                .as_ref()
+                .map(|s| s.pre_search_scroll_offset);
+            app.transcript_search = None;
+            if let Some(offset) = restore {
+                app.begin_scroll(offset);
+            }
+            vec![]
+        }
+
+        // ── Settings view (issue #6024) ─────────────────────────────────────────
+        Action::SettingsTabNext => {
+            app.settings.next_tab();
+            vec![]
+        }
+        Action::SettingsTabPrev => {
+            app.settings.previous_tab();
+            vec![]
+        }
+        Action::SettingsSelectMove(dir) => {
+            let count = app.settings_active_tab_len();
+            match dir {
+                VertDir::Down => app.settings.select_next(count),
+                VertDir::Up => app.settings.select_previous(count),
+            }
+            vec![]
+        }
+
         // ── Confirm dialog ──────────────────────────────────────────────────────
         Action::ConfirmRespond(answer) => {
             if let Some(mut state) = app.confirm_state.take()
@@ -706,6 +794,13 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
                 TuiCommand::DurablePanel => {
                     app.set_active_panel(Panel::Durable);
                     return vec![];
+                }
+                TuiCommand::Settings => {
+                    app.set_active_panel(Panel::Settings);
+                    return vec![];
+                }
+                TuiCommand::TranscriptSearch => {
+                    return reduce(app, Action::OpenTranscriptSearch);
                 }
                 TuiCommand::PlanToggleView => {
                     app.sessions.current_mut().plan_view_active =
@@ -1938,5 +2033,258 @@ mod tests {
         assert!(effects.is_empty());
         let msg = rx.try_recv().expect("channel must have one message");
         assert_eq!(msg, "/subagent spawn review the diff");
+    }
+
+    // ── Transcript search reducer wiring (issue #6023) ──────────────────────────
+    //
+    // These exercise `reduce()` end-to-end through the public `Action` surface — not
+    // the underlying `TranscriptSearchState`/`line_offset_of_message` helpers directly
+    // (those have their own unit tests in `widgets/transcript_search.rs` and
+    // `widgets/chat.rs`) — so a wiring regression (e.g. a handler that stops calling
+    // `begin_scroll`, or stops restoring `pre_search_scroll_offset`) would be caught
+    // here even if the underlying helpers stay individually correct.
+
+    /// Build an app with a populated transcript, splash disabled, and a real
+    /// `last_layout` (via `AppLayout::compute`, no `Frame` needed) so
+    /// `App::line_offset_of_message` — and therefore the reducer's `begin_scroll`
+    /// calls — actually resolve to `Some` instead of short-circuiting on `None`.
+    fn make_app_with_transcript() -> (App, mpsc::Receiver<String>) {
+        let (mut app, rx) = make_app();
+        app.sessions.current_mut().show_splash = false;
+        // Disable smooth-scroll so begin_scroll writes scroll_offset synchronously
+        // instead of an animated scroll_anim that only resolves over several ticks —
+        // these tests assert on scroll_offset directly.
+        app.delights.smooth_scroll = false;
+        for i in 0..30 {
+            app.sessions
+                .current_mut()
+                .messages
+                .push(crate::ChatMessage::new(
+                    crate::MessageRole::Assistant,
+                    format!("filler message number {i}"),
+                ));
+        }
+        app.sessions
+            .current_mut()
+            .messages
+            .push(crate::ChatMessage::new(
+                crate::MessageRole::Assistant,
+                "the needle is here".to_owned(),
+            ));
+        for i in 0..30 {
+            app.sessions
+                .current_mut()
+                .messages
+                .push(crate::ChatMessage::new(
+                    crate::MessageRole::Assistant,
+                    format!("trailer message number {i}"),
+                ));
+        }
+        let area = ratatui::layout::Rect::new(0, 0, 100, 20);
+        app.last_layout = Some(crate::layout::AppLayout::compute(
+            area,
+            app.show_side_panels(),
+            app.desired_input_height(),
+            app.effective_collapsed(),
+        ));
+        (app, rx)
+    }
+
+    #[test]
+    fn open_transcript_search_captures_pre_search_scroll_offset() {
+        let (mut app, _rx) = make_app_with_transcript();
+        app.sessions.current_mut().scroll_offset = 7;
+
+        let effects = reduce(&mut app, Action::OpenTranscriptSearch);
+
+        assert!(effects.is_empty());
+        let state = app
+            .transcript_search
+            .as_ref()
+            .expect("overlay must be open");
+        assert_eq!(state.pre_search_scroll_offset, 7);
+        assert!(state.matches.is_empty(), "no query typed yet");
+    }
+
+    #[test]
+    fn transcript_search_input_scrolls_to_off_screen_match() {
+        // SC-002: a query matching text in an off-screen earlier message must scroll
+        // the transcript so that message becomes visible.
+        let (mut app, _rx) = make_app_with_transcript();
+        reduce(&mut app, Action::OpenTranscriptSearch);
+        let before_scroll = app.sessions.current().scroll_offset;
+
+        for c in "needle".chars() {
+            reduce(
+                &mut app,
+                Action::TranscriptSearchInput(PaletteEdit::PushChar(c)),
+            );
+        }
+
+        let state = app.transcript_search.as_ref().expect("overlay stays open");
+        assert_eq!(
+            state.matches.len(),
+            1,
+            "exactly one message contains 'needle'"
+        );
+        assert_ne!(
+            app.sessions.current().scroll_offset,
+            before_scroll,
+            "matching a message must move the scroll position (begin_scroll was invoked)"
+        );
+    }
+
+    #[test]
+    fn transcript_search_next_and_prev_move_scroll_between_matches() {
+        let (mut app, _rx) = make_app_with_transcript();
+        app.sessions
+            .current_mut()
+            .messages
+            .push(crate::ChatMessage::new(
+                crate::MessageRole::Assistant,
+                "needle again near the bottom".to_owned(),
+            ));
+        reduce(&mut app, Action::OpenTranscriptSearch);
+        for c in "needle".chars() {
+            reduce(
+                &mut app,
+                Action::TranscriptSearchInput(PaletteEdit::PushChar(c)),
+            );
+        }
+        let state = app.transcript_search.as_ref().unwrap();
+        assert_eq!(state.matches.len(), 2);
+        let offset_after_input = app.sessions.current().scroll_offset;
+
+        reduce(&mut app, Action::TranscriptSearchNext);
+        let offset_after_next = app.sessions.current().scroll_offset;
+        assert_ne!(
+            offset_after_next, offset_after_input,
+            "advancing to the next match must move the scroll target"
+        );
+
+        reduce(&mut app, Action::TranscriptSearchPrev);
+        let offset_after_prev = app.sessions.current().scroll_offset;
+        assert_eq!(
+            offset_after_prev, offset_after_input,
+            "stepping back must return to the first match's scroll target"
+        );
+    }
+
+    #[test]
+    fn close_transcript_search_restores_pre_search_scroll_offset() {
+        // FR-006: Esc cancels search and restores the scroll position from before it
+        // was opened, discarding any scroll movement search performed while active.
+        let (mut app, _rx) = make_app_with_transcript();
+        app.sessions.current_mut().scroll_offset = 3;
+        reduce(&mut app, Action::OpenTranscriptSearch);
+        for c in "needle".chars() {
+            reduce(
+                &mut app,
+                Action::TranscriptSearchInput(PaletteEdit::PushChar(c)),
+            );
+        }
+        assert_ne!(
+            app.sessions.current().scroll_offset,
+            3,
+            "search must have moved the scroll position for this test to be meaningful"
+        );
+
+        let effects = reduce(&mut app, Action::CloseTranscriptSearch);
+
+        assert!(effects.is_empty());
+        assert!(app.transcript_search.is_none(), "overlay must close");
+        assert_eq!(
+            app.sessions.current().scroll_offset,
+            3,
+            "Esc must restore the pre-search scroll_offset"
+        );
+    }
+
+    #[test]
+    fn transcript_search_accept_closes_overlay_and_leaves_scroll_at_match() {
+        // FR-007: Enter accepts the current match, closes the overlay, and leaves the
+        // transcript scrolled at the match — it must NOT restore the pre-search offset.
+        let (mut app, _rx) = make_app_with_transcript();
+        app.sessions.current_mut().scroll_offset = 3;
+        reduce(&mut app, Action::OpenTranscriptSearch);
+        for c in "needle".chars() {
+            reduce(
+                &mut app,
+                Action::TranscriptSearchInput(PaletteEdit::PushChar(c)),
+            );
+        }
+        let scroll_at_match = app.sessions.current().scroll_offset;
+        assert_ne!(scroll_at_match, 3);
+
+        let effects = reduce(&mut app, Action::TranscriptSearchAccept);
+
+        assert!(effects.is_empty());
+        assert!(app.transcript_search.is_none(), "overlay must close");
+        assert_eq!(
+            app.sessions.current().scroll_offset,
+            scroll_at_match,
+            "Enter must leave the transcript scrolled at the accepted match, not restore pre-search state"
+        );
+    }
+
+    #[test]
+    fn transcript_search_dispatch_command_opens_overlay() {
+        let (mut app, _rx) = make_app_with_transcript();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::TranscriptSearch));
+        assert!(effects.is_empty());
+        assert!(app.transcript_search.is_some());
+    }
+
+    // ── Settings view reducer wiring (issue #6024) ──────────────────────────────
+
+    #[test]
+    fn settings_tab_next_and_prev_cycle_through_reducer() {
+        let (mut app, _rx) = make_app();
+        assert_eq!(
+            app.settings.tab,
+            crate::widgets::settings::SettingsTab::Providers
+        );
+
+        reduce(&mut app, Action::SettingsTabNext);
+        assert_eq!(app.settings.tab, crate::widgets::settings::SettingsTab::Mcp);
+
+        reduce(&mut app, Action::SettingsTabNext);
+        assert_eq!(
+            app.settings.tab,
+            crate::widgets::settings::SettingsTab::Agents
+        );
+
+        reduce(&mut app, Action::SettingsTabPrev);
+        assert_eq!(app.settings.tab, crate::widgets::settings::SettingsTab::Mcp);
+    }
+
+    #[test]
+    fn settings_select_move_advances_and_clamps_via_settings_active_tab_len() {
+        let (mut app, _rx) = make_app();
+        app.metrics.providers = vec![
+            zeph_core::metrics::ProviderSummary::default(),
+            zeph_core::metrics::ProviderSummary::default(),
+        ]
+        .into();
+
+        reduce(&mut app, Action::SettingsSelectMove(VertDir::Down));
+        assert_eq!(app.settings.selected_index(), 1);
+
+        // Clamped at count - 1 (2 providers => max index 1), proving the reducer wires
+        // the live provider count through settings_active_tab_len rather than an
+        // unbounded increment.
+        reduce(&mut app, Action::SettingsSelectMove(VertDir::Down));
+        assert_eq!(app.settings.selected_index(), 1);
+
+        reduce(&mut app, Action::SettingsSelectMove(VertDir::Up));
+        assert_eq!(app.settings.selected_index(), 0);
+    }
+
+    #[test]
+    fn settings_dispatch_command_opens_settings_panel() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::Settings));
+        assert!(effects.is_empty());
+        assert_eq!(app.active_panel, Panel::Settings);
     }
 }
