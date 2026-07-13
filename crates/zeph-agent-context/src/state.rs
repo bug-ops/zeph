@@ -231,6 +231,16 @@ pub struct ContextAssemblyView<'a> {
     /// `None` means validation is skipped (evidence accepted as-is).
     pub tiered_retrieval_validator: Option<Arc<zeph_llm::any::AnyProvider>>,
 
+    // ── MemGuard type-aware retrieval composition (spec 064, #6086) ───────────────────
+    /// Type-aware retrieval composition configuration (`[memory.type_aware_compose]`).
+    ///
+    /// When `enabled = true`, `schedule_context_fetchers` composes only the functional memory
+    /// types in the active set (resolved from `default_compose_types` and, when
+    /// `intent_scoped`, a static per-intent widening) instead of every source unconditionally.
+    /// Retrieval-only: no write-path or storage change. `enabled = false` (default) is a
+    /// byte-for-byte no-op.
+    pub type_aware_compose_config: zeph_config::memory::TypeAwareComposeConfig,
+
     // ── CAM: Context-Adaptive Memory (#4547) ─────────────────────────────────
     /// Fidelity scoring configuration resolved from `[memory.fidelity]`.
     ///

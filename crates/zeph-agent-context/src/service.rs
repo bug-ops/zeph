@@ -657,6 +657,14 @@ impl ContextService {
 
         let router = crate::memory_backend::build_memory_router(view.context_manager);
 
+        // Type-aware retrieval composition (spec 064, #6086): resolve once per turn from
+        // config; `enabled = false` (default) resolves to an empty slice, which
+        // `schedule_context_fetchers` treats identically to today's unfiltered composition.
+        let active_types = crate::type_aware_compose::resolve_active_functional_types(
+            &view.type_aware_compose_config,
+            query,
+        );
+
         let input = zeph_context::input::ContextAssemblyInput {
             memory: &memory_view,
             context_manager: view.context_manager,
@@ -669,6 +677,7 @@ impl ContextService {
             query,
             scrub: view.scrub,
             active_levels,
+            active_types: &active_types,
             router,
             planned_next_tools: view.planned_next_tools,
         };
@@ -2029,6 +2038,7 @@ mod tests {
                 },
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
+                type_aware_compose_config: zeph_config::memory::TypeAwareComposeConfig::default(),
                 fidelity_config: None,
                 fidelity_semantic_provider: None,
                 fidelity_compress_provider: None,
@@ -2192,6 +2202,7 @@ mod tests {
                 },
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
+                type_aware_compose_config: zeph_config::memory::TypeAwareComposeConfig::default(),
                 fidelity_config: None,
                 fidelity_semantic_provider: None,
                 fidelity_compress_provider: None,
@@ -2273,6 +2284,7 @@ mod tests {
                 },
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
+                type_aware_compose_config: zeph_config::memory::TypeAwareComposeConfig::default(),
                 fidelity_config: None,
                 fidelity_semantic_provider: None,
                 fidelity_compress_provider: None,
@@ -2361,6 +2373,7 @@ mod tests {
                 },
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
+                type_aware_compose_config: zeph_config::memory::TypeAwareComposeConfig::default(),
                 fidelity_config: None,
                 fidelity_semantic_provider: None,
                 fidelity_compress_provider: None,
@@ -2600,6 +2613,7 @@ mod tests {
                 },
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
+                type_aware_compose_config: zeph_config::memory::TypeAwareComposeConfig::default(),
                 fidelity_config: None,
                 fidelity_semantic_provider: None,
                 fidelity_compress_provider: None,

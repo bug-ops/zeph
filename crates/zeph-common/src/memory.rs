@@ -330,6 +330,95 @@ impl FromStr for EdgeType {
     }
 }
 
+// ── FunctionalType ────────────────────────────────────────────────────────────
+
+/// MemGuard-inspired functional-role classification of a memory source (spec 064, #6086).
+///
+/// Each variant names one of the memory sources composed during context assembly
+/// (`schedule_context_fetchers` in `zeph-context`) — not a storage tier
+/// ([`CompressionLevel`]) and not a routing backend ([`MemoryRoute`]). The two axes are
+/// orthogonal: a `zeph_conversations` vector is `Episodic`-tier *and* the `Episodic`
+/// functional type, while a `Semantic`-tier consolidated fact lives under the `UserFact`
+/// functional type. Placed here (rather than in `zeph-memory`) because `zeph-context` — the
+/// crate that gates fetchers by this type — deliberately has no `zeph-memory` dependency
+/// (see the module doc above and issue #3665); `zeph-memory` re-exports this type at its
+/// crate root for taxonomy discoverability.
+///
+/// `#[non_exhaustive]`: additional functional sources may be added later without a breaking
+/// change; an unrecognised variant is always-composed until explicitly gated (never silently
+/// dropped).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum FunctionalType {
+    /// Raw episodic conversation recall (`fetch_semantic_recall` → `zeph_conversations`).
+    Episodic,
+    /// User preference/attribute facts (`fetch_persona_facts` → SQL `persona_memory`,
+    /// **not** the `zeph_key_facts` collection — that surface is out of scope, see spec 064 §4).
+    UserFact,
+    /// Past user corrections (`fetch_corrections` → `zeph_corrections`).
+    ///
+    /// Safety-critical: this type is never gated out by type-aware composition — context
+    /// assembly always schedules `fetch_corrections` regardless of the active set.
+    BehavioralRule,
+    /// Distilled `ReasoningBank` strategies (`fetch_reasoning_strategies` → `reasoning_strategies`).
+    ReasoningStrategy,
+    /// Cross-session summaries (`fetch_summaries` / `fetch_cross_session` → `zeph_session_summaries`).
+    CrossSessionSummary,
+    /// Knowledge graph facts (`fetch_graph_facts` → `zeph_graph_entities`).
+    GraphFact,
+}
+
+impl FunctionalType {
+    /// Return the canonical lowercase string for this functional type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::memory::FunctionalType;
+    ///
+    /// assert_eq!(FunctionalType::UserFact.as_str(), "user_fact");
+    /// assert_eq!(FunctionalType::BehavioralRule.as_str(), "behavioral_rule");
+    /// ```
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Episodic => "episodic",
+            Self::UserFact => "user_fact",
+            Self::BehavioralRule => "behavioral_rule",
+            Self::ReasoningStrategy => "reasoning_strategy",
+            Self::CrossSessionSummary => "cross_session_summary",
+            Self::GraphFact => "graph_fact",
+        }
+    }
+}
+
+impl fmt::Display for FunctionalType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
+impl FromStr for FunctionalType {
+    type Err = String;
+
+    /// Strict parse: an unrecognised string is a hard error, never a silent fallback.
+    ///
+    /// This is deliberate (spec 064 §4, critic finding S4): a config typo in
+    /// `default_compose_types` must fail config load, not silently widen to "all types".
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "episodic" => Ok(Self::Episodic),
+            "user_fact" => Ok(Self::UserFact),
+            "behavioral_rule" => Ok(Self::BehavioralRule),
+            "reasoning_strategy" => Ok(Self::ReasoningStrategy),
+            "cross_session_summary" => Ok(Self::CrossSessionSummary),
+            "graph_fact" => Ok(Self::GraphFact),
+            other => Err(format!("unknown functional memory type: {other}")),
+        }
+    }
+}
+
 // ── Marker constants ──────────────────────────────────────────────────────────
 
 /// MAGMA causal edge markers used by `classify_graph_subgraph`.
@@ -761,7 +850,8 @@ pub trait ContextMemoryBackend: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::{EdgeType, MemoryRoute};
+    use super::{EdgeType, FunctionalType, MemoryRoute};
+    use std::str::FromStr;
 
     /// Locks in the `f.pad` fix (#6066): `f.write_str` ignores width/fill/align flags.
     /// `f.pad` must reproduce the same padding a plain `&str` would get under an
@@ -799,5 +889,63 @@ mod tests {
     #[test]
     fn memory_route_default_is_hybrid() {
         assert_eq!(MemoryRoute::default(), MemoryRoute::Hybrid);
+    }
+
+    #[test]
+    fn functional_type_from_str_round_trips_every_variant() {
+        let all = [
+            FunctionalType::Episodic,
+            FunctionalType::UserFact,
+            FunctionalType::BehavioralRule,
+            FunctionalType::ReasoningStrategy,
+            FunctionalType::CrossSessionSummary,
+            FunctionalType::GraphFact,
+        ];
+        for variant in all {
+            assert_eq!(FunctionalType::from_str(variant.as_str()), Ok(variant));
+        }
+    }
+
+    #[test]
+    fn functional_type_from_str_rejects_unknown_string() {
+        // S4: unknown/typo'd type strings must fail closed, not silently widen.
+        assert!(FunctionalType::from_str("user_facts").is_err());
+        assert!(FunctionalType::from_str("").is_err());
+    }
+
+    #[test]
+    fn functional_type_serde_roundtrip() {
+        let cases = [
+            ("\"episodic\"", FunctionalType::Episodic),
+            ("\"user_fact\"", FunctionalType::UserFact),
+            ("\"behavioral_rule\"", FunctionalType::BehavioralRule),
+            ("\"reasoning_strategy\"", FunctionalType::ReasoningStrategy),
+            (
+                "\"cross_session_summary\"",
+                FunctionalType::CrossSessionSummary,
+            ),
+            ("\"graph_fact\"", FunctionalType::GraphFact),
+        ];
+        for (json_str, expected) in cases {
+            let got: FunctionalType = serde_json::from_str(json_str).unwrap();
+            assert_eq!(got, expected);
+            let serialized = serde_json::to_string(&got).unwrap();
+            let roundtrip: FunctionalType = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(roundtrip, expected);
+        }
+    }
+
+    #[test]
+    fn functional_type_serde_rejects_unknown_variant() {
+        let result: Result<FunctionalType, _> = serde_json::from_str("\"user_facts\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn functional_type_display_respects_width() {
+        assert_eq!(
+            format!("{:<12}", FunctionalType::UserFact),
+            format!("{:<12}", "user_fact")
+        );
     }
 }

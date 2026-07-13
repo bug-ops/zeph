@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        84,
-        "MIGRATIONS registry must contain all 84 sequential steps"
+        85,
+        "MIGRATIONS registry must contain all 85 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1083,6 +1083,34 @@ fn migrate_forgetting_config_idempotent_on_commented_output() {
 }
 
 #[test]
+fn migrate_memory_type_aware_compose_config_idempotent_on_commented_output() {
+    let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
+    let first = migrate_memory_type_aware_compose_config(base).unwrap();
+    assert_eq!(first.changed_count, 1);
+    assert!(first.output.contains("# [memory.type_aware_compose]"));
+    assert!(first.output.contains("# enabled = false"));
+    let second = migrate_memory_type_aware_compose_config(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0, "second run must not double-append");
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_memory_type_aware_compose_config_noop_when_memory_section_absent() {
+    let base = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_memory_type_aware_compose_config(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
+#[test]
+fn migrate_memory_type_aware_compose_config_noop_when_active_section_present() {
+    let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n\n[memory.type_aware_compose]\nenabled = true\n";
+    let result = migrate_memory_type_aware_compose_config(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
+#[test]
 fn migrate_microcompact_config_idempotent_on_commented_output() {
     let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
     let first = migrate_microcompact_config(base).unwrap();
@@ -1753,7 +1781,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 84);
+    assert_eq!(MIGRATIONS.len(), 85);
 }
 
 #[test]
@@ -1877,6 +1905,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_a2a_card_trust_config",
         "migrate_worktree_quota_fields",
         "migrate_a2a_server_remove_inert_fields",
+        "migrate_memory_type_aware_compose_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

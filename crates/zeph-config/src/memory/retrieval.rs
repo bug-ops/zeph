@@ -8,7 +8,7 @@
 
 use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
-use zeph_common::memory::MemoryRoute;
+use zeph_common::memory::{FunctionalType, MemoryRoute};
 
 use super::default_embed_timeout_secs;
 
@@ -291,6 +291,46 @@ impl Default for TieredRetrievalConfig {
             deep_reasoning_query_conditioned: false,
         }
     }
+}
+
+// ── MemGuard type-aware retrieval-composition config (spec 064, issue #6086) ──────────────────
+
+/// `MemGuard`-inspired type-aware memory retrieval composition (spec 064, issue #6086).
+///
+/// Retrieval-only, fetch-time gate: it does **not** touch write paths, does not add a new
+/// Qdrant collection, and does not migrate stored data. When `enabled = false` (the default),
+/// `schedule_context_fetchers` in `zeph-context` composes exactly the same memory sources it
+/// does today — the empty active-type set produced by `enabled = false` is treated identically
+/// to an empty `default_compose_types`, both meaning "all types" (byte-for-byte no-op).
+///
+/// `BehavioralRule` (past-correction) recall is deliberately excluded from gating: it is
+/// safety-critical and is always composed regardless of this config.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory.type_aware_compose]
+/// enabled = false
+/// default_compose_types = []
+/// intent_scoped = false
+/// ```
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TypeAwareComposeConfig {
+    /// Master switch. When `false` (default), context assembly composes all memory types
+    /// exactly as today. When `true`, only the types in the active set (`default_compose_types`
+    /// plus, when `intent_scoped`, the classified-intent widening) are composed.
+    pub enabled: bool,
+    /// Functional types composed under an un-specialized retrieval need.
+    ///
+    /// Empty (default) means *all types* — the same composition as today. Strict parse:
+    /// an unknown/typo'd type string is a hard config-load error, never a silent fallback
+    /// to "all types" (spec 064 §4, critic finding S4).
+    pub default_compose_types: Vec<FunctionalType>,
+    /// When `true`, additionally widen the active set per classified query intent using the
+    /// static `IntentClass -> FunctionalType[]` table (reuses the existing heuristic memory
+    /// router; adds no new LLM call). Default: `false`.
+    pub intent_scoped: bool,
 }
 
 fn default_retrieval_failures_low_confidence_threshold() -> f32 {

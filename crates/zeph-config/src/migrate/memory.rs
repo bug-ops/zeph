@@ -801,3 +801,51 @@ pub fn migrate_fidelity_timeout_defaults(toml_src: &str) -> Result<MigrationResu
         })
     }
 }
+
+/// Add a commented-out `[memory.type_aware_compose]` section if absent (spec 064, #6086).
+///
+/// All `TypeAwareComposeConfig` fields have `#[serde(default)]` so existing configs parse
+/// unchanged. This step surfaces the new section for users upgrading from older configs.
+/// Retrieval-only feature — no stored-data migration is needed, only the config advisory.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_memory_type_aware_compose_config(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if section_header_present(toml_src, "memory.type_aware_compose")
+        || toml_src.contains("# [memory.type_aware_compose]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("memory") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# MemGuard-inspired type-aware retrieval composition — off by default (#6086)\n\
+         # Retrieval-only: no new Qdrant collection, no write-path or stored-data change.\n\
+         # [memory.type_aware_compose]\n\
+         # enabled = false\n\
+         # default_compose_types = []          # empty = all types; unknown strings are a hard config error\n\
+         # intent_scoped = false               # widen active set per classified intent (no new LLM call)\n";
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.type_aware_compose".to_owned()],
+    })
+}

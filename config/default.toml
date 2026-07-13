@@ -1468,6 +1468,17 @@ sweep_batch_size = 100
 # self_judge_window = 2    # max recent messages to self-judge evaluator (#3383)
 # min_assistant_chars = 50 # skip self-judge for short replies (#3383)
 #
+# [memory.type_aware_compose]
+# # MemGuard-inspired type-aware retrieval composition — off by default (#6086)
+# # Retrieval-only: no new Qdrant collection, no write-path or stored-data change.
+# enabled = false
+# # Functional types composed under an un-specialized retrieval need. Empty = all types.
+# # Values: "episodic" | "user_fact" | "behavioral_rule" | "reasoning_strategy"
+# #       | "cross_session_summary" | "graph_fact". Unknown strings are a hard config error.
+# default_compose_types = []
+# # Widen the active set per classified query intent (no new LLM call; reuses HeuristicRouter).
+# intent_scoped = false
+#
 # [learning]
 # feedback_provider = "fast" # SLM: three-class classification
 #

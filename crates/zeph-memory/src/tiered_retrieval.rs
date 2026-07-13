@@ -58,7 +58,25 @@ pub enum IntentClass {
 }
 
 impl IntentClass {
-    fn from_route(route: MemoryRoute) -> Self {
+    /// Classify a routing decision into an intent tier.
+    ///
+    /// Pure function, no I/O — reused by `zeph-agent-context`'s type-aware retrieval
+    /// composition (spec 064, #6086) to widen the active `FunctionalType` set per classified
+    /// intent without adding a new LLM call: pass the result of `HeuristicRouter::route`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::memory::MemoryRoute;
+    /// use zeph_memory::IntentClass;
+    ///
+    /// assert_eq!(
+    ///     IntentClass::from_route(MemoryRoute::Graph),
+    ///     IntentClass::DeepReasoning
+    /// );
+    /// ```
+    #[must_use]
+    pub fn from_route(route: MemoryRoute) -> Self {
         match route {
             MemoryRoute::Keyword | MemoryRoute::Episodic => Self::ProfileLookup,
             MemoryRoute::Graph => Self::DeepReasoning,

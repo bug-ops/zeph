@@ -659,6 +659,12 @@ impl<C: Channel> Agent<C> {
                 .persistence
                 .tiered_retrieval_validator
                 .clone(),
+            type_aware_compose_config: self
+                .services
+                .memory
+                .persistence
+                .type_aware_compose_config
+                .clone(),
             fidelity_config: self.services.memory.compaction.fidelity_config.as_ref(),
             fidelity_semantic_provider: self
                 .services

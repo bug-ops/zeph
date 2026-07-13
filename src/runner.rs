@@ -361,6 +361,7 @@ where
         deps.tiered_retrieval_classifier_provider,
         deps.tiered_retrieval_validator_provider,
     )
+    .with_type_aware_compose_config(config.memory.type_aware_compose.clone())
     .with_focus_and_sidequest_config(config.agent.focus.clone(), config.memory.sidequest.clone())
     .with_trajectory_and_category_config(
         config.memory.trajectory.clone(),

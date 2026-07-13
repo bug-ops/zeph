@@ -49,7 +49,9 @@
 //! step 83 adds commented `max_worktrees`/`disk_quota_mb`/`auto_reconcile_secs`/
 //! `reconcile_on_startup` fields to an existing active `[worktree]` table (#5924);
 //! step 84 drops the inert `require_tls`/`ssrf_protection` keys from an existing active
-//! `[a2a]` table (#5885).
+//! `[a2a]` table (#5885);
+//! step 85 adds a commented `[memory.type_aware_compose]` advisory block for `MemGuard`
+//! type-aware retrieval composition (spec 064, #6086).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -73,13 +75,14 @@ use super::{
     migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
     migrate_memory_persona_config, migrate_memory_reasoning_config,
     migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
-    migrate_memory_retrieval_query_bias, migrate_microcompact_config, migrate_nli_config,
-    migrate_orchestration_asset_sensitivity, migrate_orchestration_orchestrator_provider,
-    migrate_orchestration_persistence, migrate_otel_filter, migrate_pii_filter_names,
-    migrate_planner_model_to_provider, migrate_policy_provider_and_utility_window,
-    migrate_provider_max_concurrent, migrate_qdrant_api_key, migrate_qdrant_timeout_secs,
-    migrate_quality_config, migrate_sandbox_config, migrate_sandbox_egress_filter,
-    migrate_scheduler_daemon_config, migrate_secret_masking_config, migrate_serve_config,
+    migrate_memory_retrieval_query_bias, migrate_memory_type_aware_compose_config,
+    migrate_microcompact_config, migrate_nli_config, migrate_orchestration_asset_sensitivity,
+    migrate_orchestration_orchestrator_provider, migrate_orchestration_persistence,
+    migrate_otel_filter, migrate_pii_filter_names, migrate_planner_model_to_provider,
+    migrate_policy_provider_and_utility_window, migrate_provider_max_concurrent,
+    migrate_qdrant_api_key, migrate_qdrant_timeout_secs, migrate_quality_config,
+    migrate_sandbox_config, migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
+    migrate_secret_masking_config, migrate_serve_config,
     migrate_session_persist_provider_overrides, migrate_session_persistence_config,
     migrate_session_provider_persistence, migrate_session_recap_config,
     migrate_shadow_sentinel_config, migrate_shell_checkpoints_config, migrate_shell_transactional,
@@ -1040,5 +1043,18 @@ impl Migration for MigrateA2aServerRemoveInertFields {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_a2a_server_remove_inert_fields(toml_src)
+    }
+}
+
+/// Step 85 — adds a commented `[memory.type_aware_compose]` advisory block for `MemGuard`
+/// type-aware retrieval composition (spec 064, #6086).
+pub(super) struct MigrateMemoryTypeAwareCompose;
+impl Migration for MigrateMemoryTypeAwareCompose {
+    fn name(&self) -> &'static str {
+        "migrate_memory_type_aware_compose_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_memory_type_aware_compose_config(toml_src)
     }
 }

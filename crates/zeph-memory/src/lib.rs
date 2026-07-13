@@ -229,7 +229,8 @@ pub use vector_store::{
     VectorStoreError,
 };
 pub use zeph_common::config::memory::HebbianConsolidationConfig;
-pub use zeph_common::memory::TokenCounting;
+pub use zeph_common::memory::{FunctionalType, TokenCounting};
 pub use zeph_config::memory::CompressionGuidelinesConfig;
 pub use zeph_config::memory::EvictionConfig;
+pub use zeph_config::memory::TypeAwareComposeConfig;
 pub use zeph_config::memory::{CompactionProbeConfig, ProbeCategory};

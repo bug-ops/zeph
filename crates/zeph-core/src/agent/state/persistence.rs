@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use zeph_config::ContextFormat;
-use zeph_config::memory::TieredRetrievalConfig;
+use zeph_config::memory::{TieredRetrievalConfig, TypeAwareComposeConfig};
 use zeph_llm::any::AnyProvider;
 use zeph_memory::semantic::SemanticMemory;
 
@@ -63,6 +63,14 @@ pub(crate) struct MemoryPersistenceState {
     /// `None` when `tiered_retrieval.validator_provider` is empty. Resolved at agent
     /// construction, never changed at runtime.
     pub(crate) tiered_retrieval_validator: Option<Arc<AnyProvider>>,
+
+    // ── MemGuard type-aware retrieval composition (spec 064, #6086) ──────────────
+    /// Type-aware retrieval composition configuration snapshot (`[memory.type_aware_compose]`).
+    ///
+    /// Stored here so `ContextAssemblyView` can read it without accessing the full config
+    /// tree. Set by `with_type_aware_compose_config`. No LLM providers are involved (v1 has
+    /// no LLM classifier — see spec 064 §5).
+    pub(crate) type_aware_compose_config: TypeAwareComposeConfig,
 }
 
 impl Default for MemoryPersistenceState {
@@ -82,6 +90,7 @@ impl Default for MemoryPersistenceState {
             tiered_retrieval_config: TieredRetrievalConfig::default(),
             tiered_retrieval_classifier: None,
             tiered_retrieval_validator: None,
+            type_aware_compose_config: TypeAwareComposeConfig::default(),
         }
     }
 }

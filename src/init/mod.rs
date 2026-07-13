@@ -286,6 +286,11 @@ pub(crate) struct WizardState {
     // CAM fidelity (#4547)
     /// Enable heuristic fidelity scoring (Full/Compressed/Placeholder).
     pub(crate) fidelity_enabled: bool,
+    // MemGuard type-aware retrieval composition (spec 064, #6086)
+    /// Enable type-aware retrieval composition (`[memory.type_aware_compose]`).
+    pub(crate) type_aware_compose_enabled: bool,
+    /// Widen the active set per classified query intent when type-aware composition is enabled.
+    pub(crate) type_aware_compose_intent_scoped: bool,
     // Worktree isolation for sub-agents (#4656)
     pub(crate) worktree_enabled: bool,
     pub(crate) worktree_bg_isolation: BgIsolation,
@@ -522,6 +527,8 @@ impl Default for WizardState {
             cocoon_wants_access_hash: false,
             cocoon_show_balance: true,
             fidelity_enabled: false,
+            type_aware_compose_enabled: false,
+            type_aware_compose_intent_scoped: false,
             worktree_enabled: false,
             worktree_bg_isolation: BgIsolation::Worktree,
             worktree_base_ref: WorktreeBaseRef::Head,
@@ -957,6 +964,10 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             ..Default::default()
         });
     }
+
+    config.memory.type_aware_compose.enabled = state.type_aware_compose_enabled;
+    config.memory.type_aware_compose.intent_scoped =
+        state.type_aware_compose_enabled && state.type_aware_compose_intent_scoped;
 
     // MM-F1/F2/F5 retrieval tuning defaults — no interactive question needed;
     // all fields have sensible defaults. Surfaced here per CLAUDE.md rule #4.
@@ -2333,6 +2344,41 @@ mod tests {
         let config = build_config(&state);
         assert_eq!(config.llm.providers.len(), 1);
         assert_eq!(config.llm.providers[0].provider_type, ProviderKind::Ollama);
+    }
+
+    #[test]
+    fn build_config_type_aware_compose_disabled_by_default() {
+        let state = single_provider_state();
+        let config = build_config(&state);
+        assert!(!config.memory.type_aware_compose.enabled);
+        assert!(!config.memory.type_aware_compose.intent_scoped);
+    }
+
+    #[test]
+    fn build_config_type_aware_compose_enabled_wires_intent_scoped() {
+        let state = WizardState {
+            type_aware_compose_enabled: true,
+            type_aware_compose_intent_scoped: true,
+            ..single_provider_state()
+        };
+        let config = build_config(&state);
+        assert!(config.memory.type_aware_compose.enabled);
+        assert!(config.memory.type_aware_compose.intent_scoped);
+    }
+
+    #[test]
+    fn build_config_type_aware_compose_intent_scoped_ignored_when_disabled() {
+        // intent_scoped must not leak true when the master switch is off — the wizard only
+        // asks the intent_scoped question when enabled is confirmed, but build_config must be
+        // defensive against stale WizardState too.
+        let state = WizardState {
+            type_aware_compose_enabled: false,
+            type_aware_compose_intent_scoped: true,
+            ..single_provider_state()
+        };
+        let config = build_config(&state);
+        assert!(!config.memory.type_aware_compose.enabled);
+        assert!(!config.memory.type_aware_compose.intent_scoped);
     }
 
     #[test]

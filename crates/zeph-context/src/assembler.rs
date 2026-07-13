@@ -19,7 +19,9 @@ use std::pin::Pin;
 use futures::StreamExt as _;
 use futures::stream::FuturesUnordered;
 
-use zeph_common::memory::{AsyncMemoryRouter, CompressionLevel, GraphRecallParams, TokenCounting};
+use zeph_common::memory::{
+    AsyncMemoryRouter, CompressionLevel, FunctionalType, GraphRecallParams, TokenCounting,
+};
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
 use crate::error::AssemblerError;
@@ -41,6 +43,18 @@ pub(crate) fn levels_to_flags(levels: &[CompressionLevel]) -> (bool, bool, bool)
     let procedural = levels.contains(&CompressionLevel::Procedural);
     let declarative = levels.contains(&CompressionLevel::Declarative);
     (episodic, procedural, declarative)
+}
+
+/// Whether `t` is in the active `FunctionalType` set (spec 064, `MemGuard` type-aware retrieval,
+/// #6086).
+///
+/// An empty `active` slice means "no type filtering": every type is active. This mirrors
+/// [`levels_to_flags`]'s empty-slice-is-permissive default and is what makes both
+/// `type_aware_compose.enabled = false` and `default_compose_types = []` resolve to today's
+/// unfiltered composition — `zeph-agent-context` maps both cases to an empty slice, so this
+/// function only needs one code path to be behavior-preserving for either.
+pub(crate) fn type_active(active: &[FunctionalType], t: FunctionalType) -> bool {
+    active.is_empty() || active.contains(&t)
 }
 
 /// Prefix for past-session summary injections.
@@ -150,7 +164,7 @@ fn correction_params(cfg: Option<&crate::input::CorrectionConfig>) -> (usize, f3
 /// lifetime `'r` for `router_ref` avoids tying it to `'a` (the input lifetime), which would
 /// require `router` to outlive `input`. All `usize` budget values are passed by copy so the
 /// returned futures do not borrow from `alloc`.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn schedule_context_fetchers<'r>(
     memory: &'r crate::input::ContextMemoryView,
     tc: &'r dyn TokenCounting,
@@ -166,47 +180,69 @@ fn schedule_context_fetchers<'r>(
     recall_limit: usize,
     min_sim: f32,
     active_levels: &[CompressionLevel],
+    active_types: &[FunctionalType],
 ) -> FuturesUnordered<CtxFuture<'r>> {
-    // TODO(critic): episodic_active currently gates summaries + cross-session + recall + doc_rag
-    // together. If future RetrievalPolicy variants ever drop Episodic, the cheap summary fetchers
-    // will be silently disabled — split into raw vs compressed sub-tiers. (#3455 follow-up)
+    // episodic_active gates summaries + cross-session + recall + doc_rag together at the
+    // compression-tier level. If future RetrievalPolicy variants ever drop Episodic, the cheap
+    // summary fetchers will be silently disabled — split into raw vs compressed sub-tiers
+    // (#3455 follow-up; unrelated to the FunctionalType gate below).
+    //
+    // The semantic-recall vs document-RAG bundling that this TODO originally flagged has been
+    // split (#6086, spec 064 N2): the FunctionalType::Episodic gate below applies only to the
+    // semantic-recall push, so doc_rag stays scheduled whenever `episodic_active` is true
+    // regardless of whether Episodic is in the active functional-type set.
     let (episodic_active, procedural_active, declarative_active) = levels_to_flags(active_levels);
 
     let fetchers: FuturesUnordered<CtxFuture<'r>> = FuturesUnordered::new();
 
-    if episodic_active && summaries_budget > 0 {
+    if episodic_active
+        && summaries_budget > 0
+        && type_active(active_types, FunctionalType::CrossSessionSummary)
+    {
         fetchers.push(Box::pin(async move {
             fetch_summaries(memory, summaries_budget, tc)
                 .await
                 .map(ContextSlot::Summaries)
         }));
     }
-    if episodic_active && cross_session_budget > 0 {
+    if episodic_active
+        && cross_session_budget > 0
+        && type_active(active_types, FunctionalType::CrossSessionSummary)
+    {
         fetchers.push(Box::pin(async move {
             fetch_cross_session(memory, query, cross_session_budget, tc)
                 .await
                 .map(ContextSlot::CrossSession)
         }));
     }
-    if episodic_active && semantic_recall_budget > 0 {
+    if episodic_active
+        && semantic_recall_budget > 0
+        && type_active(active_types, FunctionalType::Episodic)
+    {
         fetchers.push(Box::pin(async move {
             fetch_semantic_recall(memory, query, semantic_recall_budget, tc, Some(router_ref))
                 .await
                 .map(|(msg, score)| ContextSlot::SemanticRecall(msg, score))
         }));
+    }
+    // Document RAG is not yet a gated FunctionalType (spec 064 §4: v2 extension) — it stays
+    // always-composed within its existing `episodic_active` activity gate, independent of
+    // whether FunctionalType::Episodic is in the active set (N2: must not be silently disabled
+    // by the Episodic gate above).
+    if episodic_active && semantic_recall_budget > 0 {
         fetchers.push(Box::pin(async move {
             fetch_document_rag(memory, query, semantic_recall_budget, tc)
                 .await
                 .map(ContextSlot::DocumentRag)
         }));
     }
-    // Corrections are safety-critical and never budget-gated or tier-gated.
+    // Corrections are safety-critical and never budget-gated, tier-gated, or type-gated.
     fetchers.push(Box::pin(async move {
         fetch_corrections(memory, query, recall_limit, min_sim, scrub)
             .await
             .map(ContextSlot::Corrections)
     }));
-    // Code RAG is request-driven, not memory-tier; exempt from tier filtering.
+    // Code RAG is request-driven, not memory-tier; exempt from tier and type filtering.
     if code_context_budget > 0
         && let Some(idx) = index
     {
@@ -226,14 +262,20 @@ fn schedule_context_fetchers<'r>(
             result.map(ContextSlot::CodeContext)
         }));
     }
-    if declarative_active && graph_facts_budget > 0 {
+    if declarative_active
+        && graph_facts_budget > 0
+        && type_active(active_types, FunctionalType::GraphFact)
+    {
         fetchers.push(Box::pin(async move {
             fetch_graph_facts(memory, query, graph_facts_budget, tc)
                 .await
                 .map(ContextSlot::GraphFacts)
         }));
     }
-    if declarative_active && memory.persona_config.context_budget_tokens > 0 {
+    if declarative_active
+        && memory.persona_config.context_budget_tokens > 0
+        && type_active(active_types, FunctionalType::UserFact)
+    {
         fetchers.push(Box::pin(async move {
             let persona_budget = memory.persona_config.context_budget_tokens;
             fetch_persona_facts(memory, persona_budget, tc)
@@ -241,6 +283,8 @@ fn schedule_context_fetchers<'r>(
                 .map(ContextSlot::PersonaFacts)
         }));
     }
+    // Trajectory hints are not yet a gated FunctionalType (spec 064 §4: v2 extension) — stays
+    // always-composed within its existing `procedural_active` activity gate.
     if procedural_active && memory.trajectory_config.context_budget_tokens > 0 {
         fetchers.push(Box::pin(async move {
             let tbudget = memory.trajectory_config.context_budget_tokens;
@@ -249,6 +293,8 @@ fn schedule_context_fetchers<'r>(
                 .map(ContextSlot::TrajectoryHints)
         }));
     }
+    // Tree memory is not yet a gated FunctionalType (spec 064 §4: v2 extension) — stays
+    // always-composed within its existing `declarative_active` activity gate.
     if declarative_active && memory.tree_config.context_budget_tokens > 0 {
         fetchers.push(Box::pin(async move {
             let tbudget = memory.tree_config.context_budget_tokens;
@@ -260,6 +306,7 @@ fn schedule_context_fetchers<'r>(
     if procedural_active
         && memory.reasoning_config.enabled
         && memory.reasoning_config.context_budget_tokens > 0
+        && type_active(active_types, FunctionalType::ReasoningStrategy)
     {
         fetchers.push(Box::pin(async move {
             let rbudget = memory.reasoning_config.context_budget_tokens;
@@ -314,7 +361,11 @@ impl ContextAssembler {
     /// # Errors
     ///
     /// Propagates errors from any async fetch operation.
-    #[tracing::instrument(name = "context.assembler.gather", skip_all)]
+    #[tracing::instrument(
+        name = "context.assembler.gather",
+        skip_all,
+        fields(active_types = ?input.active_types)
+    )]
     pub async fn gather(
         input: &ContextAssemblyInput<'_>,
     ) -> Result<PreparedContext, AssemblerError> {
@@ -373,6 +424,7 @@ impl ContextAssembler {
             recall_limit,
             min_sim,
             input.active_levels,
+            input.active_types,
         );
 
         let mut prepared = empty_prepared_context();
@@ -1333,6 +1385,214 @@ mod tests {
         assert!(!e, "episodic should be inactive");
         assert!(!p, "procedural should be inactive");
         assert!(d);
+    }
+
+    // ── type_active (spec 064, MemGuard type-aware retrieval, #6086) ───────────
+
+    #[test]
+    fn type_active_empty_active_set_means_all_types() {
+        assert!(type_active(&[], FunctionalType::Episodic));
+        assert!(type_active(&[], FunctionalType::GraphFact));
+        assert!(type_active(&[], FunctionalType::BehavioralRule));
+    }
+
+    #[test]
+    fn type_active_nonempty_set_gates_by_membership() {
+        let active = [FunctionalType::UserFact];
+        assert!(type_active(&active, FunctionalType::UserFact));
+        assert!(!type_active(&active, FunctionalType::Episodic));
+        assert!(!type_active(&active, FunctionalType::GraphFact));
+    }
+
+    // ── schedule_context_fetchers type gating (spec 064, #6086) ────────────────
+
+    struct NoopRouter;
+    impl zeph_common::memory::MemoryRouter for NoopRouter {
+        fn route(&self, _query: &str) -> zeph_common::memory::MemoryRoute {
+            zeph_common::memory::MemoryRoute::default()
+        }
+    }
+    impl AsyncMemoryRouter for NoopRouter {
+        fn route_async<'a>(
+            &'a self,
+            _query: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = zeph_common::memory::RoutingDecision> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                zeph_common::memory::RoutingDecision {
+                    route: zeph_common::memory::MemoryRoute::default(),
+                    confidence: 1.0,
+                    reasoning: None,
+                }
+            })
+        }
+    }
+
+    /// View with every budget-gated fetcher's own config enabled, so that whether a fetcher is
+    /// *scheduled* depends only on the tier/type gate under test, not on the fetcher's own
+    /// budget/enabled guard. Mirrors `empty_view` but flips every relevant flag on.
+    fn full_active_view() -> ContextMemoryView {
+        let mut view = empty_view();
+        view.persona_config.context_budget_tokens = 100;
+        view.trajectory_config.context_budget_tokens = 100;
+        view.tree_config.context_budget_tokens = 100;
+        view.reasoning_config.enabled = true;
+        view.reasoning_config.context_budget_tokens = 100;
+        view.document_config.rag_enabled = true;
+        view
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn schedule_all_budgeted<'r>(
+        view: &'r ContextMemoryView,
+        tc: &'r NaiveTokenCounter,
+        router: &'r NoopRouter,
+        active_types: &'r [FunctionalType],
+    ) -> FuturesUnordered<CtxFuture<'r>> {
+        schedule_context_fetchers(
+            view,
+            tc,
+            "query",
+            |s| s.into(),
+            None,
+            router,
+            100,
+            100,
+            100,
+            100,
+            100,
+            10,
+            0.5,
+            &[],
+            active_types,
+        )
+    }
+
+    #[test]
+    fn schedule_context_fetchers_schedules_everything_when_active_types_empty() {
+        let view = full_active_view();
+        let tc = NaiveTokenCounter;
+        let router = NoopRouter;
+        let fetchers = schedule_all_budgeted(&view, &tc, &router, &[]);
+        // summaries, cross_session, semantic_recall, document_rag, corrections, graph_facts,
+        // persona_facts, trajectory_hints, tree_memory, reasoning_strategies (code RAG excluded:
+        // no IndexAccess passed).
+        assert_eq!(fetchers.len(), 10);
+    }
+
+    #[test]
+    fn schedule_context_fetchers_gates_to_user_fact_only_sc1() {
+        // SC#1: with an active set of [UserFact], only fetch_persona_facts (plus the always-on
+        // fetch_corrections) should be scheduled among the type-gated sources. Un-type-gated v2
+        // slots (trajectory_hints, tree_memory, document_rag) still schedule under their own
+        // existing activity/budget gate — they are not yet a FunctionalType axis (spec 064 §4).
+        let view = full_active_view();
+        let tc = NaiveTokenCounter;
+        let router = NoopRouter;
+        let active = [FunctionalType::UserFact];
+        let fetchers = schedule_all_budgeted(&view, &tc, &router, &active);
+        // persona_facts + corrections + trajectory_hints + tree_memory + document_rag.
+        assert_eq!(fetchers.len(), 5);
+    }
+
+    #[test]
+    fn schedule_context_fetchers_document_rag_survives_episodic_exclusion_n2() {
+        // N2 regression: excluding Episodic from the active set must not silently disable
+        // document_rag — it shares a budget gate with semantic_recall but is not yet a gated
+        // FunctionalType. Use GraphFact as the sole active type so Episodic is excluded.
+        let view = full_active_view();
+        let tc = NaiveTokenCounter;
+        let router = NoopRouter;
+        let active = [FunctionalType::GraphFact];
+        let fetchers = schedule_all_budgeted(&view, &tc, &router, &active);
+        // graph_facts + corrections + trajectory_hints + tree_memory + document_rag.
+        // Crucially: semantic_recall is absent (Episodic excluded) while document_rag is present.
+        assert_eq!(fetchers.len(), 5);
+    }
+
+    #[test]
+    fn schedule_context_fetchers_gates_cross_session_summary_both_slots() {
+        // CrossSessionSummary gates both fetch_summaries and fetch_cross_session (spec 064 §4).
+        let view = full_active_view();
+        let tc = NaiveTokenCounter;
+        let router = NoopRouter;
+        let active = [FunctionalType::CrossSessionSummary];
+        let fetchers = schedule_all_budgeted(&view, &tc, &router, &active);
+        // summaries + cross_session + corrections + trajectory_hints + tree_memory + document_rag.
+        assert_eq!(fetchers.len(), 6);
+    }
+
+    // ── ContextAssembler::gather (SC#4, spec 064 §12.4) ─────────────────────────
+    //
+    // SC#4 requires the type-exclusion half to be measured at the PreparedContext/token layer,
+    // not re-derived from `schedule_context_fetchers`'s scheduling counts alone (round-1 critic
+    // finding S3: a count-proxy would stay green even if the gate scheduled the wrong fetcher).
+    // This test drives the real `gather()` entry point end-to-end and asserts on the resulting
+    // `PreparedContext` slots directly.
+
+    #[tokio::test]
+    async fn gather_with_user_fact_active_type_excludes_other_slots_sc4() {
+        let mock = MockMemoryBackend {
+            persona_facts: vec![MemPersonaFact {
+                category: "preference".to_string(),
+                content: "prefers concise answers".to_string(),
+            }],
+            ..Default::default()
+        };
+        let mut memory = mock_view(mock);
+        memory.persona_config.enabled = true;
+        memory.persona_config.context_budget_tokens = 1000;
+        memory.graph_config.enabled = true;
+        memory.reasoning_config.enabled = true;
+        memory.reasoning_config.context_budget_tokens = 500;
+        memory.document_config.rag_enabled = false;
+
+        let mut context_manager = crate::manager::ContextManager::new();
+        context_manager.budget = Some(crate::budget::ContextBudget::new(128_000, 0.1));
+
+        let tc = NaiveTokenCounter;
+        let active_types = [FunctionalType::UserFact];
+
+        let input = crate::input::ContextAssemblyInput {
+            memory: &memory,
+            context_manager: &context_manager,
+            token_counter: &tc,
+            skills_prompt: "",
+            index: None,
+            correction_config: None,
+            sidequest_turn_counter: 0,
+            messages: &[],
+            query: "what do you know about me?",
+            scrub: |s| s.into(),
+            active_levels: &[],
+            active_types: &active_types,
+            router: Box::new(NoopRouter),
+            planned_next_tools: &[],
+        };
+
+        let prepared = ContextAssembler::gather(&input).await.unwrap();
+
+        assert!(
+            prepared.recall.is_none(),
+            "Episodic excluded from active set: recall must be None"
+        );
+        assert!(
+            prepared.reasoning_hints.is_none(),
+            "ReasoningStrategy excluded from active set: reasoning_hints must be None"
+        );
+        assert!(
+            prepared.graph_facts.is_none(),
+            "GraphFact excluded from active set: graph_facts must be None"
+        );
+        assert!(
+            prepared.summaries.is_none(),
+            "CrossSessionSummary excluded from active set: summaries must be None"
+        );
+        assert!(
+            prepared.persona_facts.is_some(),
+            "UserFact is in the active set: persona_facts must be Some"
+        );
     }
 
     // ── fetch_reasoning_strategies ────────────────────────────────────────────

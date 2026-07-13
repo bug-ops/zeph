@@ -45,6 +45,7 @@ pub mod retrieved;
 pub mod service;
 pub mod state;
 pub mod summarization;
+pub mod type_aware_compose;
 
 pub use compaction::{
     BlockScore, ContentDensity, SubgoalExtractionResult, SubgoalId, SubgoalRegistry, SubgoalState,

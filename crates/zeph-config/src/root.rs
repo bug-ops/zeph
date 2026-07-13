@@ -337,6 +337,7 @@ impl Default for Config {
                 retrieval_failures: crate::memory::RetrievalFailuresConfig::default(),
                 quality_gate: crate::memory::WriteQualityGateConfig::default(),
                 tiered_retrieval: crate::memory::TieredRetrievalConfig::default(),
+                type_aware_compose: crate::memory::TypeAwareComposeConfig::default(),
                 optical_forgetting: crate::memory::OpticalForgettingConfig::default(),
                 em_graph: crate::memory::EmGraphConfig::default(),
                 episodic_consolidation: crate::memory::EpisodicConsolidationConfig::default(),

@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Added
 
+- **Memory**: added MemGuard-inspired type-aware retrieval composition (`[memory.type_aware_compose]`,
+  spec 064, #6086). Retrieval-only, fetch-time gate on `schedule_context_fetchers`: a new
+  `FunctionalType` enum (`episodic` / `user_fact` / `behavioral_rule` / `reasoning_strategy` /
+  `cross_session_summary` / `graph_fact`) names each functional memory source composed during
+  context assembly. When `enabled = true`, only the types in `default_compose_types` (optionally
+  widened per classified query intent via `intent_scoped`, reusing the existing heuristic memory
+  router — no new LLM call) are fetched; an unrequested type is not retrieved at all, so the
+  cost is genuinely avoided, not just hidden from injection. Past-correction recall
+  (`behavioral_rule`) stays always-composed regardless of the active set — safety-critical,
+  never gated. No new Qdrant collection, no write-path or stored-data change; `enabled = false`
+  (the default) and an empty `default_compose_types` are both byte-for-byte no-ops identical to
+  pre-#6086 behaviour. Config-only `--init` wizard prompt and `--migrate-config` step added.
 - **CLI**: added `--safe-mode` (and `ZEPH_SAFE_MODE` environment variable) — starts a session
   with `ZEPH.md`/`CLAUDE.md`/`AGENTS.md` project instructions, plugins, skills, hooks, and MCP
   servers all disabled at once, so a user can quickly confirm whether one of those

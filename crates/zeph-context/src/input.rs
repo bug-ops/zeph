@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use zeph_common::PlannedToolHint;
-use zeph_common::memory::{CompressionLevel, ContextMemoryBackend};
+use zeph_common::memory::{CompressionLevel, ContextMemoryBackend, FunctionalType};
 use zeph_config::{
     DocumentConfig, GraphConfig, PersonaConfig, ReasoningConfig, TrajectoryConfig, TreeConfig,
 };
@@ -57,6 +57,15 @@ pub struct ContextAssemblyInput<'a> {
     /// A caller computing this from a config-driven policy must guarantee non-empty intent or
     /// accept that an empty slice disables tier-based filtering entirely.
     pub active_levels: &'a [CompressionLevel],
+    /// Active functional memory types for this turn's type-aware retrieval composition
+    /// (spec 064, #6086), resolved by `zeph-agent-context` from `TypeAwareComposeConfig`.
+    ///
+    /// An empty slice means "no type gating" — every gated fetcher runs subject to its
+    /// existing activity/budget guard, identical to pre-#6086 behaviour. This is both the
+    /// `enabled = false` no-op case and the `default_compose_types = []` ("all types") case;
+    /// resolving both to an empty slice keeps `schedule_context_fetchers`'s gate a single
+    /// `active.is_empty() || active.contains(&type)` check.
+    pub active_types: &'a [FunctionalType],
     /// Pre-built memory router for this turn. Built by `zeph-core` via `build_memory_router()`
     /// and passed in to avoid a `zeph-memory` dependency inside `zeph-context`.
     pub router: Box<dyn zeph_common::memory::AsyncMemoryRouter + Send + Sync>,

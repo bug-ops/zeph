@@ -200,6 +200,26 @@ pub(super) fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         .default(false)
         .interact()?;
 
+    state.type_aware_compose_enabled = Confirm::new()
+        .with_prompt(
+            "Enable MemGuard-inspired type-aware retrieval composition? (retrieval-only: gates \
+             which functional memory types — facts, corrections, reasoning strategies, etc. — \
+             are composed per turn instead of injecting all of them; #6086)",
+        )
+        .default(false)
+        .interact()?;
+
+    if state.type_aware_compose_enabled {
+        state.type_aware_compose_intent_scoped = Confirm::new()
+            .with_prompt(
+                "Widen the composed type set per classified query intent? (no new LLM call — \
+                 reuses the existing heuristic memory router; advanced per-type selection via \
+                 default_compose_types remains config-file-only)",
+            )
+            .default(false)
+            .interact()?;
+    }
+
     println!();
     Ok(())
 }

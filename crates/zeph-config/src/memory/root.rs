@@ -19,7 +19,7 @@ use super::{
     OpticalForgettingConfig, PersonaConfig, ReasoningConfig, RetrievalConfig,
     RetrievalFailuresConfig, SemanticConfig, SessionsConfig, SidequestConfig, StoreRoutingConfig,
     TierConfig, TieredRetrievalConfig, TrajectoryConfig, TrajectoryRiskAccumulatorConfig,
-    TreeConfig, WriteQualityGateConfig,
+    TreeConfig, TypeAwareComposeConfig, WriteQualityGateConfig,
 };
 
 fn default_sqlite_pool_size() -> u32 {
@@ -455,6 +455,14 @@ pub struct MemoryConfig {
     /// `DeepReasoning`) with optional validation and tier escalation.
     #[serde(default)]
     pub tiered_retrieval: TieredRetrievalConfig,
+    /// `MemGuard`-inspired type-aware retrieval composition (spec 064, issue #6086).
+    ///
+    /// When `type_aware_compose.enabled = true`, `schedule_context_fetchers` composes only the
+    /// functional memory types in the active set instead of unconditionally injecting all of
+    /// them. Retrieval-only: no new Qdrant collection, no write-path change. Default: disabled
+    /// (byte-for-byte no-op).
+    #[serde(default)]
+    pub type_aware_compose: TypeAwareComposeConfig,
     /// `ScrapMem` optical forgetting (issue #3713).
     ///
     /// When `optical_forgetting.enabled = true`, a background sweep progressively compresses

@@ -611,8 +611,8 @@ use steps::{
     MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
     MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
     MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
-    MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateNliConfig,
-    MigrateOrchestrationAssetSensitivity, MigrateOrchestrationPersistence,
+    MigrateMemoryRetrievalQueryBias, MigrateMemoryTypeAwareCompose, MigrateMicrocompactConfig,
+    MigrateNliConfig, MigrateOrchestrationAssetSensitivity, MigrateOrchestrationPersistence,
     MigrateOrchestratorProvider, MigrateOtelFilter, MigratePiiFilterNames,
     MigratePlannerModelToProvider, MigratePolicyProviderAndUtilityWindow,
     MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQdrantTimeoutSecs,
@@ -783,6 +783,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 84 — drop the inert require_tls/ssrf_protection keys from an existing
             // active [a2a] table (#5885)
             Box::new(MigrateA2aServerRemoveInertFields),
+            // Step 85 — add [memory.type_aware_compose] advisory block for MemGuard
+            // type-aware retrieval composition (spec 064, #6086)
+            Box::new(MigrateMemoryTypeAwareCompose),
         ]
     });
 

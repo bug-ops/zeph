@@ -302,6 +302,19 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Wire `MemGuard` type-aware retrieval composition config snapshot (spec 064, #6086).
+    ///
+    /// No LLM providers involved — v1 resolves the active `FunctionalType` set from static
+    /// config plus, when `intent_scoped`, the existing no-LLM `HeuristicRouter` (spec 064 §5).
+    #[must_use]
+    pub fn with_type_aware_compose_config(
+        mut self,
+        config: zeph_config::memory::TypeAwareComposeConfig,
+    ) -> Self {
+        self.services.memory.persistence.type_aware_compose_config = config;
+        self
+    }
+
     /// Configure memory formatting: compression guidelines, digest, and context strategy.
     #[must_use]
     pub fn with_memory_formatting_config(
