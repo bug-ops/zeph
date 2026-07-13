@@ -18,10 +18,14 @@ http-middleware = ["dep:axum", "dep:subtle"]
 jsonschema = ["dep:schemars"]
 treesitter = [
     "dep:tree-sitter",
+    "dep:tree-sitter-bash",
     "dep:tree-sitter-go",
     "dep:tree-sitter-javascript",
+    "dep:tree-sitter-json",
+    "dep:tree-sitter-md",
     "dep:tree-sitter-python",
     "dep:tree-sitter-rust",
+    "dep:tree-sitter-toml-ng",
     "dep:tree-sitter-typescript",
 ]
 
@@ -40,10 +44,14 @@ tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread"
 tokio-util.workspace = true
 tracing.workspace = true
 tree-sitter = { workspace = true, optional = true }
+tree-sitter-bash = { workspace = true, optional = true }
 tree-sitter-go = { workspace = true, optional = true }
 tree-sitter-javascript = { workspace = true, optional = true }
+tree-sitter-json = { workspace = true, optional = true }
+tree-sitter-md = { workspace = true, optional = true }
 tree-sitter-python = { workspace = true, optional = true }
 tree-sitter-rust = { workspace = true, optional = true }
+tree-sitter-toml-ng = { workspace = true, optional = true }
 tree-sitter-typescript = { workspace = true, optional = true }
 url.workspace = true
 uuid = { workspace = true, features = ["v4"] }

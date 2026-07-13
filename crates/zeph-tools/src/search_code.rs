@@ -24,7 +24,7 @@ use crate::registry::{InvocationHint, ToolDef};
 // ---------------------------------------------------------------------------
 
 use zeph_common::treesitter::{
-    GO_SYM_Q, JS_SYM_Q, PYTHON_SYM_Q, RUST_SYM_Q, TS_SYM_Q, compile_query,
+    GO_SYM_Q, JS_SYM_Q, PYTHON_SYM_Q, RUST_SYM_Q, TS_SYM_Q, compile_query, lang_for_ext,
 };
 
 struct LangInfo {
@@ -34,36 +34,28 @@ struct LangInfo {
 
 fn lang_info_for_path(path: &Path) -> Option<LangInfo> {
     let ext = path.extension()?.to_str()?;
-    match ext {
+    let grammar = lang_for_ext(ext)?;
+    let symbol_query = match ext {
         "rs" => {
             static Q: LazyLock<Option<Query>> = LazyLock::new(|| {
                 let lang: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
                 compile_query(&lang, RUST_SYM_Q, "rust")
             });
-            Some(LangInfo {
-                grammar: tree_sitter_rust::LANGUAGE.into(),
-                symbol_query: Q.as_ref(),
-            })
+            Q.as_ref()
         }
         "py" | "pyi" => {
             static Q: LazyLock<Option<Query>> = LazyLock::new(|| {
                 let lang: tree_sitter::Language = tree_sitter_python::LANGUAGE.into();
                 compile_query(&lang, PYTHON_SYM_Q, "python")
             });
-            Some(LangInfo {
-                grammar: tree_sitter_python::LANGUAGE.into(),
-                symbol_query: Q.as_ref(),
-            })
+            Q.as_ref()
         }
         "js" | "jsx" | "mjs" | "cjs" => {
             static Q: LazyLock<Option<Query>> = LazyLock::new(|| {
                 let lang: tree_sitter::Language = tree_sitter_javascript::LANGUAGE.into();
                 compile_query(&lang, JS_SYM_Q, "javascript")
             });
-            Some(LangInfo {
-                grammar: tree_sitter_javascript::LANGUAGE.into(),
-                symbol_query: Q.as_ref(),
-            })
+            Q.as_ref()
         }
         "ts" | "tsx" | "mts" | "cts" => {
             static Q: LazyLock<Option<Query>> = LazyLock::new(|| {
@@ -71,39 +63,21 @@ fn lang_info_for_path(path: &Path) -> Option<LangInfo> {
                     tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
                 compile_query(&lang, TS_SYM_Q, "typescript")
             });
-            Some(LangInfo {
-                grammar: tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-                symbol_query: Q.as_ref(),
-            })
+            Q.as_ref()
         }
         "go" => {
             static Q: LazyLock<Option<Query>> = LazyLock::new(|| {
                 let lang: tree_sitter::Language = tree_sitter_go::LANGUAGE.into();
                 compile_query(&lang, GO_SYM_Q, "go")
             });
-            Some(LangInfo {
-                grammar: tree_sitter_go::LANGUAGE.into(),
-                symbol_query: Q.as_ref(),
-            })
+            Q.as_ref()
         }
-        "sh" | "bash" | "zsh" => Some(LangInfo {
-            grammar: tree_sitter_bash::LANGUAGE.into(),
-            symbol_query: None,
-        }),
-        "toml" => Some(LangInfo {
-            grammar: tree_sitter_toml_ng::LANGUAGE.into(),
-            symbol_query: None,
-        }),
-        "json" | "jsonc" => Some(LangInfo {
-            grammar: tree_sitter_json::LANGUAGE.into(),
-            symbol_query: None,
-        }),
-        "md" | "markdown" => Some(LangInfo {
-            grammar: tree_sitter_md::LANGUAGE.into(),
-            symbol_query: None,
-        }),
         _ => None,
-    }
+    };
+    Some(LangInfo {
+        grammar,
+        symbol_query,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -890,6 +864,55 @@ mod tests {
         > {
             Box::pin(async move { Ok(vec![]) })
         }
+    }
+
+    /// `lang_info_for_path` (#5971) now resolves its `grammar` field via the
+    /// shared `lang_for_ext`, and only the symbol-query match is left local to
+    /// this file. Before this test the only extension exercised through
+    /// `lang_info_for_path` was `.rs` (via `search_code_finds_structural_symbol`);
+    /// the other eight groups compiled but had no direct coverage at all in
+    /// this crate. Also checks that formats with no symbol query (bash, toml,
+    /// json, markdown) still resolve a grammar but leave `symbol_query` unset.
+    #[test]
+    fn lang_info_for_path_covers_all_extension_groups() {
+        let with_symbol_query = [
+            "main.rs",
+            "script.py",
+            "app.js",
+            "app.jsx",
+            "app.ts",
+            "app.tsx",
+            "main.go",
+        ];
+        for path in with_symbol_query {
+            let info = lang_info_for_path(Path::new(path))
+                .unwrap_or_else(|| panic!("expected grammar for {path}"));
+            assert!(
+                info.symbol_query.is_some(),
+                "expected symbol_query for {path}"
+            );
+        }
+
+        let without_symbol_query = [
+            "script.sh",
+            "script.bash",
+            "script.zsh",
+            "Cargo.toml",
+            "data.json",
+            "data.jsonc",
+            "README.md",
+            "README.markdown",
+        ];
+        for path in without_symbol_query {
+            let info = lang_info_for_path(Path::new(path))
+                .unwrap_or_else(|| panic!("expected grammar for {path}"));
+            assert!(
+                info.symbol_query.is_none(),
+                "expected no symbol_query for {path}"
+            );
+        }
+
+        assert!(lang_info_for_path(Path::new("file.xyz")).is_none());
     }
 
     #[tokio::test]

@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 // ts-query source strings for symbol and method extraction.
 // Shared symbol queries are sourced from zeph-common::treesitter.
 use zeph_common::treesitter::{
-    GO_SYM_Q, JS_SYM_Q, PYTHON_SYM_Q, RUST_SYM_Q, TS_SYM_Q, compile_query,
+    GO_SYM_Q, JS_SYM_Q, PYTHON_SYM_Q, RUST_SYM_Q, TS_SYM_Q, compile_query, lang_for_ext,
 };
 
 const RUST_METHOD_Q: &str = "
@@ -153,17 +153,21 @@ impl Lang {
     /// ```
     #[must_use]
     pub fn grammar(self) -> Option<tree_sitter::Language> {
-        match self {
-            Self::Rust => Some(tree_sitter_rust::LANGUAGE.into()),
-            Self::Python => Some(tree_sitter_python::LANGUAGE.into()),
-            Self::JavaScript => Some(tree_sitter_javascript::LANGUAGE.into()),
-            Self::TypeScript => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-            Self::Go => Some(tree_sitter_go::LANGUAGE.into()),
-            Self::Bash => Some(tree_sitter_bash::LANGUAGE.into()),
-            Self::Toml => Some(tree_sitter_toml_ng::LANGUAGE.into()),
-            Self::Json => Some(tree_sitter_json::LANGUAGE.into()),
-            Self::Markdown => Some(tree_sitter_md::LANGUAGE.into()),
-        }
+        // Delegate to the shared extension-to-grammar mapping via each variant's
+        // canonical extension, instead of re-listing every `tree_sitter_*::LANGUAGE`
+        // construction here (that list already lives in `lang_for_ext`).
+        let ext = match self {
+            Self::Rust => "rs",
+            Self::Python => "py",
+            Self::JavaScript => "js",
+            Self::TypeScript => "ts",
+            Self::Go => "go",
+            Self::Bash => "sh",
+            Self::Toml => "toml",
+            Self::Json => "json",
+            Self::Markdown => "md",
+        };
+        lang_for_ext(ext)
     }
 
     /// Compiled ts-query for extracting top-level symbols (name + visibility capture).
@@ -319,6 +323,10 @@ impl std::fmt::Display for Lang {
 #[must_use]
 pub fn detect_language(path: &Path) -> Option<Lang> {
     let ext = path.extension()?.to_str()?;
+    // `lang_for_ext` is the single source of truth for which extensions have
+    // tree-sitter support; gating on it here means this match can never accept
+    // an extension the shared grammar lookup would reject.
+    lang_for_ext(ext)?;
     match ext {
         "rs" => Some(Lang::Rust),
         "py" | "pyi" => Some(Lang::Python),
@@ -400,6 +408,56 @@ mod tests {
     }
 
     #[test]
+    fn detect_language_go() {
+        assert_eq!(detect_language(Path::new("main.go")), Some(Lang::Go));
+    }
+
+    /// Covers the four extension groups added to `lang_for_ext` by #5971
+    /// (bash, toml, json, markdown) — previously only exercised indirectly
+    /// via `grammar_returns_some_for_all_langs`, never through `detect_language`
+    /// itself, leaving the extension-string match arms without direct coverage.
+    #[test]
+    fn detect_language_bash_variants() {
+        for ext in &["sh", "bash", "zsh"] {
+            let path = format!("file.{ext}");
+            assert_eq!(
+                detect_language(Path::new(&path)),
+                Some(Lang::Bash),
+                "failed for .{ext}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_language_toml() {
+        assert_eq!(detect_language(Path::new("Cargo.toml")), Some(Lang::Toml));
+    }
+
+    #[test]
+    fn detect_language_json_variants() {
+        for ext in &["json", "jsonc"] {
+            let path = format!("file.{ext}");
+            assert_eq!(
+                detect_language(Path::new(&path)),
+                Some(Lang::Json),
+                "failed for .{ext}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_language_markdown_variants() {
+        for ext in &["md", "markdown"] {
+            let path = format!("file.{ext}");
+            assert_eq!(
+                detect_language(Path::new(&path)),
+                Some(Lang::Markdown),
+                "failed for .{ext}"
+            );
+        }
+    }
+
+    #[test]
     fn entity_node_kinds_rust_includes_function_item() {
         let kinds = Lang::Rust.entity_node_kinds();
         assert!(kinds.contains(&"function_item"));
@@ -425,6 +483,37 @@ mod tests {
         assert!(Lang::Toml.grammar().is_some());
         assert!(Lang::Json.grammar().is_some());
         assert!(Lang::Markdown.grammar().is_some());
+    }
+
+    /// `Lang::grammar()` was rewritten (#5971) to delegate to `lang_for_ext` via
+    /// each variant's canonical extension instead of constructing the
+    /// `tree_sitter_*::LANGUAGE` directly. `is_some()` alone cannot catch a
+    /// wrong-but-non-empty mapping (e.g. a variant accidentally wired to a
+    /// sibling extension's grammar); this asserts each variant's grammar is
+    /// identical to what `detect_language` + `lang_for_ext` resolve for that
+    /// variant's own extension, i.e. the delegation is wired correctly, not
+    /// just non-empty.
+    #[test]
+    fn grammar_matches_detect_language_for_canonical_extension() {
+        let cases = [
+            (Lang::Rust, "main.rs"),
+            (Lang::Python, "script.py"),
+            (Lang::JavaScript, "app.js"),
+            (Lang::TypeScript, "app.ts"),
+            (Lang::Go, "main.go"),
+            (Lang::Bash, "script.sh"),
+            (Lang::Toml, "Cargo.toml"),
+            (Lang::Json, "data.json"),
+            (Lang::Markdown, "README.md"),
+        ];
+        for (lang, path) in cases {
+            assert_eq!(detect_language(Path::new(path)), Some(lang));
+            assert_eq!(
+                lang.grammar(),
+                lang_for_ext(Path::new(path).extension().unwrap().to_str().unwrap()),
+                "grammar() mismatch for {lang:?}"
+            );
+        }
     }
 
     #[test]

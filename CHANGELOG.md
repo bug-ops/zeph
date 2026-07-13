@@ -26,6 +26,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **zeph-common**: extended `treesitter::lang_for_ext` to cover the full extension set
+  (`bash`/`sh`/`zsh`, `toml`, `json`/`jsonc`, `md`/`markdown` in addition to the existing
+  `rs`, `py`/`pyi`, `js`/`jsx`/`mjs`/`cjs`, `ts`/`tsx`/`mts`/`cts`, `go`) and made it the single
+  source of truth for extension-to-grammar mapping; `zeph-index::languages::{Lang::grammar,
+  detect_language}` and `zeph-tools::search_code::lang_info_for_path` now delegate to it
+  instead of each hand-rolling its own copy of the mapping (closes #5971).
 - **BREAKING**: `CommandHandler::requires_auth()` now defaults to `true` (fail-closed),
   reversing the previous fail-open default. This is the 4th recurrence of a slash-command
   handler silently exposing privileged behavior to remote channels (Telegram/Discord/Slack)
