@@ -244,6 +244,7 @@ status: moc
 | 068 | [[068-session-persistence/spec\|Session Persistence]] | specify | draft |
 | 069 | [[069-threat-model/spec\|MATRA Threat Model]] | specify | approved |
 | 072 | [[072-multimodal-mcp-passthrough/spec\|Multimodal MCP Passthrough]] | specify | draft |
+| 073 | [[073-orch-ensemble-merge/spec\|ORCH Ensemble-Merge]] | specify | approved |
 
 ---
 
