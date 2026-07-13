@@ -455,6 +455,11 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// CLI, `` `/worktree clean --force` `` for the slash command) — the only piece of
     /// UX text that legitimately differs between the two surfaces.
     ///
+    /// This is a thin wrapper around an internal `clean_from_stale` helper —
+    /// [`sweep`][Self::sweep] calls that helper directly with an already-fetched
+    /// `stale` list so a single `sweep()` tick only ever issues one `reconcile()`
+    /// subprocess call (#6205).
+    ///
     /// # Errors
     ///
     /// Returns [`WorktreeError::GitCommand`] only if the initial [`reconcile`][Self::reconcile] call
@@ -478,7 +483,33 @@ impl<R: GitRunner> WorktreeManager<R> {
         force_hint: &str,
     ) -> Result<CleanOutcome, WorktreeError> {
         let stale = self.reconcile().await?;
+        let (outcome, _remaining) = self
+            .clean_from_stale(stale, force, prune_branch_on_remove, force_hint)
+            .await;
+        Ok(outcome)
+    }
+
+    /// Removal-and-prune half of the `clean` pipeline, operating on an already-fetched
+    /// `stale` list rather than calling [`reconcile`][Self::reconcile] itself.
+    ///
+    /// For each entry, removes it via [`remove`][Self::remove] when it is either
+    /// `prunable` or covered by `force`; otherwise leaves it in place with a skip
+    /// warning. Always runs [`prune`][Self::prune] afterward (FR-CLEANUP-04), recording
+    /// a failure as a warning rather than aborting.
+    ///
+    /// Returns the [`CleanOutcome`] alongside the "remaining" stale entries — the
+    /// entries from `stale` that were *not* successfully removed (skipped or
+    /// errored) — so a caller like [`sweep`][Self::sweep] can derive a post-clean
+    /// worktree count purely in-memory, without a second `reconcile()` subprocess call.
+    async fn clean_from_stale(
+        &self,
+        stale: Vec<StaleWorktree>,
+        force: bool,
+        prune_branch_on_remove: bool,
+        force_hint: &str,
+    ) -> (CleanOutcome, Vec<StaleWorktree>) {
         let mut outcome = CleanOutcome::default();
+        let mut remaining = Vec::new();
         for stale_wt in stale {
             if !force && !stale_wt.is_safe_to_force_remove() {
                 outcome.warnings.push(format!(
@@ -488,6 +519,7 @@ impl<R: GitRunner> WorktreeManager<R> {
                     stale_wt.handle.path.display()
                 ));
                 outcome.skipped += 1;
+                remaining.push(stale_wt);
                 continue;
             }
             if let Err(e) = self.remove(&stale_wt.handle, prune_branch_on_remove).await {
@@ -496,6 +528,7 @@ impl<R: GitRunner> WorktreeManager<R> {
                     stale_wt.handle.path.display()
                 ));
                 outcome.errored += 1;
+                remaining.push(stale_wt);
             } else {
                 outcome.removed += 1;
             }
@@ -507,7 +540,7 @@ impl<R: GitRunner> WorktreeManager<R> {
                 .warnings
                 .push(format!("warning: failed to prune worktree registry: {e}"));
         }
-        Ok(outcome)
+        (outcome, remaining)
     }
 
     /// Computes total and per-worktree disk usage across every worktree under
@@ -531,6 +564,11 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// [`cached_disk_usage`][Self::cached_disk_usage] call can read it without
     /// re-walking the filesystem.
     ///
+    /// This is a thin wrapper around an internal `disk_usage_from_paths` helper —
+    /// [`sweep`][Self::sweep] calls that helper directly with the stale paths left
+    /// over from its own internal `clean_from_stale` call, so a single `sweep()` tick
+    /// only ever issues one `reconcile()` subprocess call (#6205).
+    ///
     /// # Errors
     ///
     /// Returns [`WorktreeError::GitCommand`] if the underlying
@@ -548,12 +586,25 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// ```
     #[instrument(name = "worktree.disk_usage", skip(self))]
     pub async fn disk_usage(&self) -> Result<WorktreeDiskUsage, WorktreeError> {
-        let mut paths: Vec<PathBuf> = self
+        let paths: Vec<PathBuf> = self
             .reconcile()
             .await?
             .into_iter()
             .map(|stale| stale.handle.path)
             .collect();
+        self.disk_usage_from_paths(paths).await
+    }
+
+    /// Filesystem-walk half of [`disk_usage`][Self::disk_usage], operating on an
+    /// already-fetched list of stale worktree paths rather than calling
+    /// [`reconcile`][Self::reconcile] itself.
+    ///
+    /// `paths` is merged with this session's own [`list`][Self::list] paths before the
+    /// walk, matching [`disk_usage`][Self::disk_usage]'s behavior exactly.
+    async fn disk_usage_from_paths(
+        &self,
+        mut paths: Vec<PathBuf>,
+    ) -> Result<WorktreeDiskUsage, WorktreeError> {
         paths.extend(self.list().into_iter().map(|h| h.path));
 
         let usage = tokio::task::spawn_blocking(move || walk_worktree_sizes(&paths))
@@ -586,28 +637,51 @@ impl<R: GitRunner> WorktreeManager<R> {
             .map(|(_, usage)| usage.clone())
     }
 
-    /// Runs one reconcile-and-quota sweep: [`reconcile`][Self::reconcile] +
-    /// prunable-only auto-reclaim (the same `clean(force=false, ..)` pipeline as
-    /// `zeph worktree clean`), then evaluates `config.max_worktrees` and, when
-    /// `config.disk_quota_mb` is set, [`disk_usage`][Self::disk_usage].
+    /// Runs one reconcile-and-quota sweep: a single [`reconcile`][Self::reconcile]
+    /// call feeds prunable-only auto-reclaim (the same removal-and-prune pipeline as
+    /// `zeph worktree clean`'s `clean(force=false, ..)`), then the resulting
+    /// post-clean worktree count is evaluated against `config.max_worktrees` and,
+    /// when `config.disk_quota_mb` is set, against a disk-usage walk.
     ///
-    /// Never force-removes an intact worktree — reclamation is delegated entirely
-    /// to [`clean`][Self::clean] with `force = false`, which only removes entries
-    /// git itself reports as `prunable` (spec-063 INV-5/INV-6). An over-quota
-    /// state with only intact worktrees is reported via
-    /// [`QuotaStatus::is_over_quota`], never resolved by deleting anything.
+    /// Unlike calling [`clean`][Self::clean] and [`disk_usage`][Self::disk_usage]
+    /// directly (which each perform their own `reconcile()`), `sweep()` fetches the
+    /// stale worktree list once and threads it through the internal
+    /// `clean_from_stale` and `disk_usage_from_paths` helpers — the "remaining" stale
+    /// entries `clean_from_stale` returns (i.e. `stale` minus what it just removed) are
+    /// exactly the post-clean stale state, computed in-memory rather than by
+    /// re-invoking `git worktree list --porcelain` (#6205). This makes every `sweep()`
+    /// tick issue exactly one `reconcile()` subprocess call instead of three.
+    ///
+    /// Never force-removes an intact worktree — reclamation only removes entries git
+    /// itself reports as `prunable` (spec-063 INV-5/INV-6). An over-quota state with
+    /// only intact worktrees is reported via [`QuotaStatus::is_over_quota`], never
+    /// resolved by deleting anything.
     ///
     /// The disk-usage walk is skipped entirely (and [`QuotaStatus::total_bytes`]
     /// is left at `0` with [`QuotaStatus::disk_quota_bytes`] as `None`) when
     /// `config.disk_quota_mb` is unset, avoiding the filesystem walk's cost when
     /// there is no threshold to evaluate it against.
     ///
+    /// ## Concurrency note
+    ///
+    /// `count` and the disk-usage figures both derive from the single
+    /// [`reconcile`][Self::reconcile] snapshot taken at the start of this call, not from
+    /// re-querying git afterward. `WorktreeManager` is typically shared (e.g. `Arc`'d
+    /// between a subagent spawn/teardown path and a periodic sweep loop), so a
+    /// worktree registry mutation that lands *during* this call (a concurrent
+    /// [`create`][Self::create]/[`remove`][Self::remove] from another task) will not be
+    /// reflected in this tick's result — the next `sweep()` tick picks it up instead.
+    /// This is a narrower staleness window than calling [`clean`][Self::clean] and
+    /// [`disk_usage`][Self::disk_usage] separately (each would re-snapshot git at its own
+    /// call time), but it does not weaken any safety invariant: reclamation still never
+    /// force-removes an intact worktree (see below), and [`disk_usage`][Self::disk_usage]
+    /// is already documented as an approximation suitable only for a soft warn threshold.
+    ///
     /// # Errors
     ///
     /// Returns [`WorktreeError::GitCommand`] if the initial
-    /// [`reconcile`][Self::reconcile]/[`clean`][Self::clean] call fails, or an
-    /// error from [`disk_usage`][Self::disk_usage] when disk accounting is
-    /// enabled.
+    /// [`reconcile`][Self::reconcile] call fails, or [`WorktreeError::Io`] from the
+    /// disk-usage walk when disk accounting is enabled.
     ///
     /// # Examples
     ///
@@ -622,21 +696,27 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// ```
     #[instrument(name = "worktree.sweep", skip(self))]
     pub async fn sweep(&self) -> Result<QuotaStatus, WorktreeError> {
-        let outcome = self
-            .clean(
+        let stale = self.reconcile().await?;
+        let (outcome, remaining_stale) = self
+            .clean_from_stale(
+                stale,
                 false,
                 self.config.prune_branch_on_remove,
                 "`zeph worktree clean --force`",
             )
-            .await?;
+            .await;
 
-        let count = self.reconcile().await?.len() + self.list().len();
+        let count = remaining_stale.len() + self.list().len();
         let max_worktrees = self.config.max_worktrees;
         let over_count = max_worktrees.is_some_and(|max| count >= max);
 
         let (total_bytes, disk_quota_bytes, over_disk) =
             if let Some(quota_mb) = self.config.disk_quota_mb {
-                let usage = self.disk_usage().await?;
+                let paths: Vec<PathBuf> = remaining_stale
+                    .into_iter()
+                    .map(|stale| stale.handle.path)
+                    .collect();
+                let usage = self.disk_usage_from_paths(paths).await?;
                 let quota_bytes = quota_mb.saturating_mul(1_048_576);
                 let over_disk = usage.total_bytes >= quota_bytes;
                 (usage.total_bytes, Some(quota_bytes), over_disk)
@@ -1957,18 +2037,12 @@ mod tests {
              prunable gitdir file points to non-existent location\n\n",
             dir.path().display()
         );
-        // clean(): reconcile
+        // sweep()'s single reconcile() call, shared by the clean and count steps.
         runner.push_ok(porcelain_with_prunable.into_bytes());
-        // clean(): remove prunable-1
+        // clean_from_stale(): remove prunable-1
         runner.push_ok(b"" as &[u8]);
-        // clean(): prune
+        // clean_from_stale(): prune
         runner.push_ok(b"" as &[u8]);
-        // sweep(): reconcile() for post-clean count
-        let porcelain_after = format!(
-            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n",
-            dir.path().display()
-        );
-        runner.push_ok(porcelain_after.into_bytes());
 
         let mgr = make_manager(&dir, runner).await;
         let status = mgr.sweep().await.unwrap();
@@ -1995,14 +2069,10 @@ mod tests {
             "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n",
             dir.path().display()
         );
-        // clean(): reconcile (no prunable entries)
-        runner.push_ok(porcelain.clone().into_bytes());
-        // clean(): prune
-        runner.push_ok(b"" as &[u8]);
-        // sweep(): reconcile() for count
-        runner.push_ok(porcelain.clone().into_bytes());
-        // sweep(): disk_usage() -> reconcile()
+        // sweep()'s single reconcile() call (no prunable entries — nothing removed).
         runner.push_ok(porcelain.into_bytes());
+        // clean_from_stale(): prune
+        runner.push_ok(b"" as &[u8]);
 
         let config = WorktreeConfig {
             disk_quota_mb: Some(1),
@@ -2044,12 +2114,10 @@ mod tests {
              worktree {0}/worktrees/agent-2\nHEAD ghi789\nbranch refs/heads/agent/agent-2\n\n",
             dir.path().display()
         );
-        // clean(): reconcile (no prunable entries — nothing removed)
-        runner.push_ok(porcelain.clone().into_bytes());
-        // clean(): prune
-        runner.push_ok(b"" as &[u8]);
-        // sweep(): reconcile() for post-clean count
+        // sweep()'s single reconcile() call (no prunable entries — both skipped, nothing removed).
         runner.push_ok(porcelain.into_bytes());
+        // clean_from_stale(): prune
+        runner.push_ok(b"" as &[u8]);
 
         let config = WorktreeConfig {
             max_worktrees: Some(1),
@@ -2080,14 +2148,10 @@ mod tests {
             "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n",
             dir.path().display()
         );
-        // clean(): reconcile (no prunable entries)
-        runner.push_ok(porcelain.clone().into_bytes());
-        // clean(): prune
-        runner.push_ok(b"" as &[u8]);
-        // sweep(): reconcile() for count
-        runner.push_ok(porcelain.clone().into_bytes());
-        // sweep(): disk_usage() -> reconcile()
+        // sweep()'s single reconcile() call (no prunable entries — nothing removed).
         runner.push_ok(porcelain.into_bytes());
+        // clean_from_stale(): prune
+        runner.push_ok(b"" as &[u8]);
 
         let config = WorktreeConfig {
             max_worktrees: Some(5),
@@ -2118,5 +2182,123 @@ mod tests {
         );
         assert!(status.over_disk, "disk usage over quota must be flagged");
         assert!(status.is_over_quota());
+    }
+
+    /// Regression test for #6205 (review finding #1 / critic finding #4): a single
+    /// `sweep()` tick with a MIX of removed + skipped + errored stale entries must
+    /// retain in `remaining_stale` exactly the skipped and errored ones, excluding only
+    /// the successfully-removed one. Every other sweep test has stale entries that are
+    /// either all-removed or all-skipped, so none of them can distinguish "`remaining`
+    /// correctly excludes removed entries" from "`remaining` happens to equal all stale
+    /// entries" as a coincidence of the fixtures used — this test is the one that can.
+    ///
+    /// Asserts both `status.count` (derived from `remaining_stale.len()`) and
+    /// `status.total_bytes` (derived from the paths handed to `disk_usage_from_paths`,
+    /// which come from the same `remaining_stale`): each worktree directory is seeded
+    /// with a distinct file size, so if the removed entry's path leaked into
+    /// `remaining_stale` the total would be wrong by exactly its size (100 bytes).
+    #[tokio::test]
+    async fn sweep_retains_only_skipped_and_errored_entries_when_outcomes_are_mixed() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
+             worktree {0}/worktrees/removed-1\nHEAD def456\nbranch refs/heads/agent/removed-1\n\
+             prunable gitdir file points to non-existent location\n\n\
+             worktree {0}/worktrees/skipped-1\nHEAD ghi789\nbranch refs/heads/agent/skipped-1\n\n\
+             worktree {0}/worktrees/errored-1\nHEAD jkl012\nbranch refs/heads/agent/errored-1\n\
+             prunable gitdir file points to non-existent location\n\n",
+            dir.path().display()
+        );
+        // sweep()'s single reconcile() call, covering all 3 stale entries.
+        runner.push_ok(porcelain.into_bytes());
+        // clean_from_stale(): remove removed-1 -> succeeds.
+        runner.push_ok(b"" as &[u8]);
+        // clean_from_stale(): remove errored-1 -> fails (e.g. a locked worktree).
+        runner.push_err(b"error: unable to remove worktree: it is locked\n" as &[u8]);
+        // clean_from_stale(): prune.
+        runner.push_ok(b"" as &[u8]);
+
+        let config = WorktreeConfig {
+            disk_quota_mb: Some(1),
+            ..test_config()
+        };
+        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner)
+            .await
+            .unwrap();
+
+        // Seed all 3 directories with distinct sizes so a leaked/missing path in
+        // `remaining_stale` shows up as a wrong `total_bytes`, not just a wrong count.
+        for (name, size) in [("removed-1", 100), ("skipped-1", 10), ("errored-1", 1)] {
+            let wt_path = dir.path().join("worktrees").join(name);
+            std::fs::create_dir_all(&wt_path).unwrap();
+            std::fs::write(wt_path.join("file.bin"), vec![0u8; size]).unwrap();
+        }
+
+        let status = mgr.sweep().await.unwrap();
+
+        assert_eq!(
+            status.reclaimed, 1,
+            "only removed-1 was successfully removed"
+        );
+        assert_eq!(
+            status.count, 2,
+            "count must reflect exactly the skipped + errored entries, not the removed one"
+        );
+        assert_eq!(
+            status.total_bytes, 11,
+            "disk usage must walk exactly skipped-1 (10 bytes) + errored-1 (1 byte); \
+             100 would mean removed-1 leaked into remaining_stale, 1 or 10 alone would mean \
+             one of skipped/errored was dropped"
+        );
+    }
+
+    /// Regression test for #6205: before the dedup fix, a `sweep()` tick with
+    /// `disk_quota_mb` configured issued `worktree list --porcelain` three times
+    /// (once inside `clean()`, once directly in `sweep()` for the post-clean count,
+    /// once inside `disk_usage()`) — all three reflect the same git state, so the
+    /// last two were pure duplicates. `sweep()` must now issue exactly one.
+    #[tokio::test]
+    async fn sweep_issues_exactly_one_reconcile_call_per_tick() {
+        let dir = make_repo();
+        let runner = Arc::new(FakeGitRunner::new());
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
+             worktree {0}/worktrees/prunable-1\nHEAD def456\nbranch refs/heads/agent/prunable-1\n\
+             prunable gitdir file points to non-existent location\n\n",
+            dir.path().display()
+        );
+        // The single reconcile() call shared by the clean and disk-usage halves.
+        runner.push_ok(porcelain.into_bytes());
+        // clean_from_stale(): remove prunable-1
+        runner.push_ok(b"" as &[u8]);
+        // clean_from_stale(): prune
+        runner.push_ok(b"" as &[u8]);
+
+        let config = WorktreeConfig {
+            disk_quota_mb: Some(1),
+            ..test_config()
+        };
+        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, Arc::clone(&runner))
+            .await
+            .unwrap();
+
+        mgr.sweep().await.unwrap();
+
+        let calls = runner.calls.lock().unwrap();
+        let reconcile_calls = calls
+            .iter()
+            .filter(|(args, _)| {
+                args == &vec![
+                    "worktree".to_string(),
+                    "list".to_string(),
+                    "--porcelain".to_string(),
+                ]
+            })
+            .count();
+        assert_eq!(
+            reconcile_calls, 1,
+            "sweep() must call `worktree list --porcelain` exactly once per tick, got calls: {calls:?}"
+        );
     }
 }

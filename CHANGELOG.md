@@ -38,6 +38,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   explicit `false` override, so their behavior is unchanged. Out-of-tree `CommandHandler`
   implementors relying on the previous `false` default will have their commands rejected on
   untrusted channels until they add the explicit override (#6034).
+- **zeph-worktree**: `WorktreeManager::sweep()` now issues exactly one `git worktree list
+  --porcelain` subprocess call per tick instead of three. The prior implementation called
+  `reconcile()` once inside `clean()` for the pre-removal snapshot, then again directly in
+  `sweep()` for the post-clean worktree count, then a third time inside `disk_usage()` — the
+  latter two always reflected the same post-`clean()` git state and were pure duplicates.
+  `sweep()` now fetches the stale worktree list once and threads it through new private
+  helpers (`clean_from_stale`, `disk_usage_from_paths`), deriving the post-clean stale state
+  in-memory (the original stale list minus successfully removed entries) instead of
+  re-invoking git. `reconcile()`, `clean()`, and `disk_usage()` keep their exact public
+  signatures and behavior for direct callers — this is a pure internal call-graph refactor
+  with no observable behavior change (#6205).
 
 ### Docs
 
