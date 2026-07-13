@@ -107,6 +107,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bespoke wrapper to drift. `DynSchedulerExecutor` was `pub(crate)`, not a public API, so this
   is an internal refactor with no behavior change (#6000).
 
+- **zeph-tools**: removed `impl ToolExecutor for Arc<ShellExecutor>`, a hand-maintained
+  forwarding wrapper structurally identical to the `DynSchedulerExecutor` anti-pattern above and
+  the direct cause of #5985. The shell executor's production composition slot
+  (`agent_setup.rs`) now wraps it as `zeph_tools::DynExecutor(Arc<ShellExecutor>)` and flows
+  through the same `ErasedToolExecutor` erasure path, which forwards all 13 methods by
+  construction. Removing the wrapper exposed a real gap it had been masking: `impl ToolExecutor
+  for ShellExecutor` itself never overrode `execute_confirmed`, so any caller reaching it
+  through a generic `T: ToolExecutor`/`dyn ToolExecutor`/erasure path (rather than the
+  concrete inherent `ShellExecutor::execute_confirmed` method) fell through to the trait
+  default (`self.execute(..)`, no bypass) — reintroducing #6012 for the production shell slot.
+  `ShellExecutor`'s `ToolExecutor` impl now explicitly overrides `execute_confirmed` to forward
+  to the same `execute_inner(response, true)` the inherent method already uses, closing the gap
+  for every dispatch path. `shell_executor_handle` (used only for TUI background-run metrics via
+  the concrete `ShellExecutor::background_runs_snapshot()` inherent method) is unaffected (#6224).
+
 ### Docs
 
 - **LLM**: `AnyProvider`/`Router`/`Triage`'s `capability_delegation_advisory()` rustdoc comments

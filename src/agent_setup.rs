@@ -599,7 +599,7 @@ pub(crate) async fn build_tool_setup(
     let diagnostics_executor = build_diagnostics_executor(config);
     let base_executor = build_base_executor_chain(
         file_executor,
-        shell_executor,
+        zeph_tools::DynExecutor(shell_executor),
         scrape_executor,
         diagnostics_executor,
         config

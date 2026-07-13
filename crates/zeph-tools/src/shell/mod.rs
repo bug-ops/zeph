@@ -1740,66 +1740,18 @@ impl ShellExecutor {
     }
 }
 
-impl ToolExecutor for std::sync::Arc<ShellExecutor> {
-    async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        self.as_ref().execute(response).await
-    }
-
-    async fn execute_confirmed(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        self.as_ref().execute_confirmed(response).await
-    }
-
-    fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
-        self.as_ref().tool_definitions()
-    }
-
-    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        self.as_ref().execute_tool_call(call).await
-    }
-
-    async fn execute_tool_call_confirmed(
-        &self,
-        call: &ToolCall,
-    ) -> Result<Option<ToolOutput>, ToolError> {
-        self.as_ref().execute_tool_call_confirmed(call).await
-    }
-
-    fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
-        self.as_ref().set_skill_env(env);
-    }
-
-    fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
-        self.as_ref().set_effective_trust(level);
-    }
-
-    fn is_tool_retryable(&self, tool_id: &str) -> bool {
-        self.as_ref().is_tool_retryable(tool_id)
-    }
-
-    fn is_tool_speculatable(&self, tool_id: &str) -> bool {
-        self.as_ref().is_tool_speculatable(tool_id)
-    }
-
-    fn requires_confirmation(&self, call: &ToolCall) -> bool {
-        self.as_ref().requires_confirmation(call)
-    }
-
-    fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
-        self.as_ref().checkpoint_undo(n)
-    }
-
-    fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
-        self.as_ref().checkpoint_redo()
-    }
-
-    fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
-        self.as_ref().checkpoint_list()
-    }
-}
-
 impl ToolExecutor for ShellExecutor {
     async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
         self.execute_inner(response, false).await
+    }
+
+    // Overrides the trait default (`self.execute(response)`, i.e. no bypass) explicitly:
+    // the inherent `execute_confirmed` above is a separate method, invisible to callers that
+    // only hold a `&dyn ToolExecutor`/generic `T: ToolExecutor` handle (e.g. through
+    // `DynExecutor`'s erasure path). Without this override, dynamic dispatch silently loses
+    // the confirmation bypass — the exact regression #6012 was filed for.
+    async fn execute_confirmed(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        self.execute_inner(response, true).await
     }
 
     fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {

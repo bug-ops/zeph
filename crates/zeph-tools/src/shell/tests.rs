@@ -750,7 +750,8 @@ async fn execute_confirmed_skips_confirmation() {
 
 /// Calls `execute_confirmed` through the `ToolExecutor` trait bound (not as an inherent
 /// method on a concrete `ShellExecutor`), forcing dynamic-style dispatch identical to how
-/// `Arc<ShellExecutor>` is invoked when composed under other wrapper executors.
+/// a `DynExecutor`-wrapped `ShellExecutor` is invoked when composed under other wrapper
+/// executors.
 async fn call_execute_confirmed_via_trait<T: ToolExecutor>(
     executor: &T,
     response: &str,
@@ -758,32 +759,34 @@ async fn call_execute_confirmed_via_trait<T: ToolExecutor>(
     executor.execute_confirmed(response).await
 }
 
-/// Regression test for #6012: `Arc<ShellExecutor>`'s `ToolExecutor` impl did not override
-/// `execute_confirmed`, so dispatch through the trait fell through to the base default
-/// (`self.execute(..)`, i.e. `skip_confirm = false`) instead of forwarding to
-/// `ShellExecutor::execute_confirmed`'s bypass logic — silently reintroducing the
-/// confirmation prompt for any caller that only holds a generic `T: ToolExecutor` handle.
+/// Regression test for #6012: the (now-removed) hand-written `Arc<ShellExecutor>`
+/// `ToolExecutor` impl did not override `execute_confirmed`, so dispatch through the trait
+/// fell through to the base default (`self.execute(..)`, i.e. `skip_confirm = false`) instead
+/// of forwarding to `ShellExecutor::execute_confirmed`'s bypass logic — silently
+/// reintroducing the confirmation prompt for any caller that only holds a generic
+/// `T: ToolExecutor` handle. The erasure path (`DynExecutor`/`ErasedToolExecutor`) forwards
+/// all methods by construction, so this pins the same invariant through that path instead.
 #[tokio::test]
-async fn arc_shell_executor_execute_confirmed_bypasses_confirmation() {
+async fn dyn_executor_execute_confirmed_bypasses_confirmation() {
     let config = ShellConfig {
         confirm_patterns: vec!["echo".into()],
         ..default_config()
     };
-    let executor = std::sync::Arc::new(ShellExecutor::new(&config));
+    let executor = crate::executor::DynExecutor(std::sync::Arc::new(ShellExecutor::new(&config)));
     let response = "```bash\necho confirmed\n```";
 
     let result = call_execute_confirmed_via_trait(&executor, response).await;
     assert!(
         result.is_ok(),
-        "execute_confirmed via Arc<ShellExecutor>'s ToolExecutor impl must bypass confirmation"
+        "execute_confirmed via DynExecutor's ToolExecutor impl must bypass confirmation"
     );
     let output = result.unwrap().unwrap();
     assert!(output.summary.contains("confirmed"));
 }
 
 /// Calls the trio of boolean cross-cutting methods through the `ToolExecutor` trait bound,
-/// used to compare `Arc<ShellExecutor>`'s trait dispatch against calling the same methods
-/// directly on the wrapped `ShellExecutor`.
+/// used to compare `DynExecutor`'s trait dispatch against calling the same methods directly
+/// on the wrapped `ShellExecutor`.
 fn call_cross_cutting_bools<T: ToolExecutor>(executor: &T, call: &ToolCall) -> (bool, bool, bool) {
     (
         executor.requires_confirmation(call),
@@ -795,14 +798,16 @@ fn call_cross_cutting_bools<T: ToolExecutor>(executor: &T, call: &ToolCall) -> (
 /// Forward-looking consistency guard for #6012, not a regression test that can currently
 /// distinguish fixed-vs-broken: `ShellExecutor` itself never overrides `requires_confirmation`,
 /// `is_tool_speculatable`, or `is_tool_retryable` (both sides always equal the trait's default),
-/// so this passes identically whether or not `Arc<ShellExecutor>` forwards them. Its value is
-/// pinning that dispatching these methods through `Arc<ShellExecutor>`'s `ToolExecutor` impl
-/// stays behaviorally identical to calling them directly on the wrapped `ShellExecutor` — if
-/// `ShellExecutor` ever gains a real override for one of these methods without the `Arc` impl
-/// being updated to forward it, this test will start failing.
+/// so this passes identically regardless of erasure. Its value is pinning that dispatching
+/// these methods through the `DynExecutor`/`ErasedToolExecutor` erasure path stays
+/// behaviorally identical to calling them directly on the wrapped `ShellExecutor` — if
+/// `ShellExecutor` ever gains a real override for one of these methods without the erasure
+/// path forwarding it, this test will start failing.
 #[tokio::test]
-async fn arc_shell_executor_forwards_remaining_cross_cutting_methods() {
-    let executor = std::sync::Arc::new(ShellExecutor::new(&default_config()));
+async fn dyn_executor_forwards_remaining_cross_cutting_methods() {
+    let inner = std::sync::Arc::new(ShellExecutor::new(&default_config()));
+    let inner_clone = std::sync::Arc::clone(&inner);
+    let executor = crate::executor::DynExecutor(inner_clone);
     let call = ToolCall {
         tool_id: ToolName::new("bash"),
         params: serde_json::Map::new(),
@@ -812,14 +817,14 @@ async fn arc_shell_executor_forwards_remaining_cross_cutting_methods() {
         skill_name: None,
     };
 
-    let (via_arc_confirm, via_arc_speculatable, via_arc_retryable) =
+    let (via_dyn_confirm, via_dyn_speculatable, via_dyn_retryable) =
         call_cross_cutting_bools(&executor, &call);
     let (via_inner_confirm, via_inner_speculatable, via_inner_retryable) =
-        call_cross_cutting_bools(executor.as_ref(), &call);
+        call_cross_cutting_bools(inner.as_ref(), &call);
 
-    assert_eq!(via_arc_confirm, via_inner_confirm);
-    assert_eq!(via_arc_speculatable, via_inner_speculatable);
-    assert_eq!(via_arc_retryable, via_inner_retryable);
+    assert_eq!(via_dyn_confirm, via_inner_confirm);
+    assert_eq!(via_dyn_speculatable, via_inner_speculatable);
+    assert_eq!(via_dyn_retryable, via_inner_retryable);
 }
 
 // --- default confirm patterns test ---
@@ -3494,11 +3499,11 @@ async fn supervised_background_run_limit_still_enforced() {
     cancel.cancel();
 }
 
-// --- Arc<ShellExecutor> checkpoint forwarding (regression for #5985) ---
+// --- DynExecutor-wrapped ShellExecutor checkpoint forwarding (regression for #5985) ---
 
 #[tokio::test]
 #[cfg(not(target_os = "windows"))]
-async fn arc_wrapped_executor_forwards_checkpoint_methods() {
+async fn dyn_executor_forwards_checkpoint_methods() {
     let dir = tempfile::tempdir().unwrap();
     // Canonicalize so path comparisons don't trip on macOS's /var -> /private/var symlink.
     let dir_path = dir.path().canonicalize().unwrap();
@@ -3510,7 +3515,7 @@ async fn arc_wrapped_executor_forwards_checkpoint_methods() {
         ..default_config()
     };
     // Wrapped exactly as agent_setup.rs wires the shell slot in the executor chain.
-    let executor: Arc<ShellExecutor> = Arc::new(ShellExecutor::new(&config));
+    let executor = crate::executor::DynExecutor(Arc::new(ShellExecutor::new(&config)));
 
     let command = format!("echo hello > {}", file_path.display());
     let response = format!("```bash\n{command}\n```");
@@ -3519,7 +3524,7 @@ async fn arc_wrapped_executor_forwards_checkpoint_methods() {
     let list = executor.checkpoint_list();
     assert!(
         list.supported,
-        "Arc<ShellExecutor>::checkpoint_list must forward to the real impl, not the trait default"
+        "DynExecutor::checkpoint_list must forward to the real impl, not the trait default"
     );
     assert_eq!(list.entries.len(), 1);
     assert!(file_path.exists());
@@ -3527,7 +3532,7 @@ async fn arc_wrapped_executor_forwards_checkpoint_methods() {
     let undo = executor.checkpoint_undo(1);
     assert!(
         undo.supported,
-        "Arc<ShellExecutor>::checkpoint_undo must forward to the real impl, not the trait default"
+        "DynExecutor::checkpoint_undo must forward to the real impl, not the trait default"
     );
     assert_eq!(undo.deleted, 1);
     assert!(!file_path.exists());
@@ -3535,7 +3540,7 @@ async fn arc_wrapped_executor_forwards_checkpoint_methods() {
     let redo = executor.checkpoint_redo();
     assert!(
         redo.supported,
-        "Arc<ShellExecutor>::checkpoint_redo must forward to the real impl, not the trait default"
+        "DynExecutor::checkpoint_redo must forward to the real impl, not the trait default"
     );
     assert!(file_path.exists());
 }
