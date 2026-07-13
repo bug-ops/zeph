@@ -623,7 +623,7 @@ use steps::{
     MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
     MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig,
     MigrateTuiThemeDefaults, MigrateUtilityHighGainTools, MigrateVigilConfig,
-    MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
+    MigrateWorktreeConfig, MigrateWorktreeGitTimeout, MigrateWorktreeQuotaFields,
 };
 
 /// Ordered registry of all sequential migration steps (steps 1–82).
@@ -775,6 +775,10 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateShadowSentinelConfig),
             // Step 82 — add [a2a_client] card_trust_policy/trusted_agent_keys advisory block (#5928)
             Box::new(MigrateA2aCardTrustConfig),
+            // Step 83 — add max_worktrees/disk_quota_mb/auto_reconcile_secs/
+            // reconcile_on_startup advisory comments to an existing active [worktree]
+            // table (#5924)
+            Box::new(MigrateWorktreeQuotaFields),
         ]
     });
 

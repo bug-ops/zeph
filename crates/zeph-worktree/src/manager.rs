@@ -4,7 +4,7 @@
 use std::{
     path::{Path, PathBuf},
     process::Output,
-    time::SystemTime,
+    time::{Instant, SystemTime},
 };
 
 use tracing::instrument;
@@ -15,6 +15,7 @@ use crate::{
     git_runner::GitRunner,
     handle::{BARE_WORKTREE_SENTINEL, DETACHED_BRANCH_SENTINEL, StaleWorktree, WorktreeHandle},
     sanitize::{canonicalize_root, validate_branch_component},
+    usage::{QuotaStatus, WorktreeDiskUsage},
 };
 
 /// Manages the full lifecycle of per-subagent git worktrees.
@@ -48,6 +49,10 @@ pub struct WorktreeManager<R: GitRunner> {
     runner: R,
     /// In-memory list of live worktree handles for the current session.
     handles: std::sync::Mutex<Vec<WorktreeHandle>>,
+    /// Last computed disk usage, populated by [`Self::disk_usage`]. Read cheaply
+    /// (without a filesystem walk) via [`Self::cached_disk_usage`]. `None` until
+    /// the first `disk_usage()` call.
+    usage_cache: parking_lot::Mutex<Option<(Instant, WorktreeDiskUsage)>>,
 }
 
 impl<R: GitRunner> WorktreeManager<R> {
@@ -101,6 +106,7 @@ impl<R: GitRunner> WorktreeManager<R> {
             config,
             runner,
             handles: std::sync::Mutex::new(Vec::new()),
+            usage_cache: parking_lot::Mutex::new(None),
         })
     }
 
@@ -108,6 +114,16 @@ impl<R: GitRunner> WorktreeManager<R> {
     #[must_use]
     pub fn repo_root(&self) -> &Path {
         &self.repo_root
+    }
+
+    /// Returns the [`WorktreeConfig`] this manager was constructed with.
+    ///
+    /// Exposed so callers that only hold the manager (not the original config, e.g.
+    /// `/worktree list` in `zeph-core`) can read `max_worktrees`/`disk_quota_mb` for
+    /// quota-status formatting without threading the config separately.
+    #[must_use]
+    pub fn config(&self) -> &WorktreeConfig {
+        &self.config
     }
 
     /// Whether [`remove`][Self::remove] should also delete the branch, per the
@@ -126,6 +142,22 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// The branch name is `"{branch_prefix}{subagent_id}"`.  The path on disk is
     /// `"{root}/{subagent_id}"`.
     ///
+    /// ## Admission cap
+    ///
+    /// When `config.max_worktrees` is `Some(max)`, this call first counts all
+    /// git-registered secondary worktrees under `root` — via
+    /// [`reconcile`][Self::reconcile] (stale/foreign entries) plus
+    /// [`list`][Self::list] (this session's own) — and fails with
+    /// [`WorktreeError::QuotaExceeded`] if that count is already `>= max`. The
+    /// count includes worktrees created by *other*, concurrently running zeph
+    /// sessions over the same `root`, since they consume the same disk budget
+    /// `max_worktrees` is meant to bound. This is a best-effort **soft** cap, not
+    /// a hard guarantee: the count-then-`git worktree add` sequence is not atomic
+    /// across processes, so two concurrent `create()` calls on different sessions
+    /// can both pass the check and briefly push the total above `max`. No
+    /// cross-process locking is used to close this gap — it is out of scope for
+    /// the size of this feature.
+    ///
     /// ## TODO
     ///
     /// TODO(critic D2): head worktree does not include parent uncommitted changes
@@ -134,6 +166,8 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// # Errors
     ///
     /// - [`WorktreeError::InvalidBranchName`] when `subagent_id` fails validation.
+    /// - [`WorktreeError::QuotaExceeded`] when `config.max_worktrees` would be
+    ///   reached or exceeded (see "Admission cap" above).
     /// - [`WorktreeError::PathExists`] when the worktree path already exists.
     /// - [`WorktreeError::BaseRefUnresolved`] when `base_ref = Fresh` and the
     ///   default branch cannot be resolved.
@@ -151,6 +185,13 @@ impl<R: GitRunner> WorktreeManager<R> {
     #[instrument(name = "worktree.create", skip(self), fields(subagent_id = %subagent_id))]
     pub async fn create(&self, subagent_id: &str) -> Result<WorktreeHandle, WorktreeError> {
         validate_branch_component(subagent_id)?;
+
+        if let Some(max) = self.config.max_worktrees {
+            let current = self.reconcile().await?.len() + self.list().len();
+            if current >= max {
+                return Err(WorktreeError::QuotaExceeded { current, max });
+            }
+        }
 
         let branch_name = format!("{}{}", self.config.branch_prefix, subagent_id);
         let path = self.worktree_root.join(subagent_id);
@@ -467,6 +508,183 @@ impl<R: GitRunner> WorktreeManager<R> {
                 .push(format!("warning: failed to prune worktree registry: {e}"));
         }
         Ok(outcome)
+    }
+
+    /// Computes total and per-worktree disk usage across every worktree under
+    /// `root` — both this session's own ([`list`][Self::list]) and any discovered
+    /// via [`reconcile`][Self::reconcile] (stale/foreign entries).
+    ///
+    /// The recursive filesystem walk runs on [`tokio::task::spawn_blocking`], so
+    /// it never stalls the async executor — but it is still an O(files-under-root)
+    /// operation that can be slow against multi-gigabyte `target/` directories.
+    /// Callers on a hot or interactive path should prefer
+    /// [`cached_disk_usage`][Self::cached_disk_usage] and only call this method
+    /// from a deliberate, infrequent trigger (a [`sweep`][Self::sweep] tick or an
+    /// explicit CLI invocation) — **never** from [`create`][Self::create].
+    ///
+    /// The reported total is a sum of logical file sizes
+    /// (`std::fs::Metadata::len`), not on-disk block usage — content shared via
+    /// hardlinks across worktrees (e.g. zeph-session blobs) can be double-counted.
+    /// Treat the result as an approximation suitable for a soft warn threshold.
+    ///
+    /// On success, the result is stored so a subsequent
+    /// [`cached_disk_usage`][Self::cached_disk_usage] call can read it without
+    /// re-walking the filesystem.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorktreeError::GitCommand`] if the underlying
+    /// [`reconcile`][Self::reconcile] call fails, or [`WorktreeError::Io`] if the
+    /// blocking walk task itself panics or is cancelled.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(mgr: &zeph_worktree::DefaultWorktreeManager) -> Result<(), zeph_worktree::WorktreeError> {
+    /// let usage = mgr.disk_usage().await?;
+    /// println!("total: {} bytes across {} worktree(s)", usage.total_bytes, usage.per_worktree.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[instrument(name = "worktree.disk_usage", skip(self))]
+    pub async fn disk_usage(&self) -> Result<WorktreeDiskUsage, WorktreeError> {
+        let mut paths: Vec<PathBuf> = self
+            .reconcile()
+            .await?
+            .into_iter()
+            .map(|stale| stale.handle.path)
+            .collect();
+        paths.extend(self.list().into_iter().map(|h| h.path));
+
+        let usage = tokio::task::spawn_blocking(move || walk_worktree_sizes(&paths))
+            .await
+            .map_err(|e| WorktreeError::Io(std::io::Error::other(e)))?;
+
+        *self.usage_cache.lock() = Some((Instant::now(), usage.clone()));
+        Ok(usage)
+    }
+
+    /// Returns the disk usage computed by the most recent
+    /// [`disk_usage`][Self::disk_usage] call, without performing a filesystem
+    /// walk. Returns `None` if `disk_usage()` has never been called on this
+    /// manager instance.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn example(mgr: &zeph_worktree::DefaultWorktreeManager) {
+    /// if let Some(usage) = mgr.cached_disk_usage() {
+    ///     println!("last known total: {} bytes", usage.total_bytes);
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn cached_disk_usage(&self) -> Option<WorktreeDiskUsage> {
+        self.usage_cache
+            .lock()
+            .as_ref()
+            .map(|(_, usage)| usage.clone())
+    }
+
+    /// Runs one reconcile-and-quota sweep: [`reconcile`][Self::reconcile] +
+    /// prunable-only auto-reclaim (the same `clean(force=false, ..)` pipeline as
+    /// `zeph worktree clean`), then evaluates `config.max_worktrees` and, when
+    /// `config.disk_quota_mb` is set, [`disk_usage`][Self::disk_usage].
+    ///
+    /// Never force-removes an intact worktree — reclamation is delegated entirely
+    /// to [`clean`][Self::clean] with `force = false`, which only removes entries
+    /// git itself reports as `prunable` (spec-063 INV-5/INV-6). An over-quota
+    /// state with only intact worktrees is reported via
+    /// [`QuotaStatus::is_over_quota`], never resolved by deleting anything.
+    ///
+    /// The disk-usage walk is skipped entirely (and [`QuotaStatus::total_bytes`]
+    /// is left at `0` with [`QuotaStatus::disk_quota_bytes`] as `None`) when
+    /// `config.disk_quota_mb` is unset, avoiding the filesystem walk's cost when
+    /// there is no threshold to evaluate it against.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorktreeError::GitCommand`] if the initial
+    /// [`reconcile`][Self::reconcile]/[`clean`][Self::clean] call fails, or an
+    /// error from [`disk_usage`][Self::disk_usage] when disk accounting is
+    /// enabled.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(mgr: &zeph_worktree::DefaultWorktreeManager) -> Result<(), zeph_worktree::WorktreeError> {
+    /// let status = mgr.sweep().await?;
+    /// if status.is_over_quota() {
+    ///     eprintln!("worktrees over quota: {}/{:?}", status.count, status.max_worktrees);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[instrument(name = "worktree.sweep", skip(self))]
+    pub async fn sweep(&self) -> Result<QuotaStatus, WorktreeError> {
+        let outcome = self
+            .clean(
+                false,
+                self.config.prune_branch_on_remove,
+                "`zeph worktree clean --force`",
+            )
+            .await?;
+
+        let count = self.reconcile().await?.len() + self.list().len();
+        let max_worktrees = self.config.max_worktrees;
+        let over_count = max_worktrees.is_some_and(|max| count >= max);
+
+        let (total_bytes, disk_quota_bytes, over_disk) =
+            if let Some(quota_mb) = self.config.disk_quota_mb {
+                let usage = self.disk_usage().await?;
+                let quota_bytes = quota_mb.saturating_mul(1_048_576);
+                let over_disk = usage.total_bytes >= quota_bytes;
+                (usage.total_bytes, Some(quota_bytes), over_disk)
+            } else {
+                (0, None, false)
+            };
+
+        Ok(QuotaStatus {
+            count,
+            max_worktrees,
+            total_bytes,
+            disk_quota_bytes,
+            reclaimed: outcome.removed,
+            over_count,
+            over_disk,
+        })
+    }
+}
+
+/// Recursively sums regular-file sizes under each path in `paths`.
+///
+/// Runs on a blocking thread (see [`WorktreeManager::disk_usage`]). Entries that
+/// cannot be read (permission errors, races with concurrent removal) are silently
+/// skipped rather than failing the whole walk — a best-effort accounting is more
+/// useful than an aborted one for a soft warn threshold.
+fn walk_worktree_sizes(paths: &[PathBuf]) -> WorktreeDiskUsage {
+    let mut per_worktree = Vec::with_capacity(paths.len());
+    let mut total_bytes: u64 = 0;
+
+    for path in paths {
+        let mut size: u64 = 0;
+        for entry in walkdir::WalkDir::new(path)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            if entry.file_type().is_file()
+                && let Ok(metadata) = entry.metadata()
+            {
+                size = size.saturating_add(metadata.len());
+            }
+        }
+        total_bytes = total_bytes.saturating_add(size);
+        per_worktree.push((path.clone(), size));
+    }
+
+    WorktreeDiskUsage {
+        total_bytes,
+        per_worktree,
     }
 }
 
@@ -1591,5 +1809,314 @@ mod tests {
             matches!(result, Err(WorktreeError::GitCommand { .. })),
             "expected GitCommand error from fake runner, not an early abort: {result:?}"
         );
+    }
+
+    // --- max_worktrees admission cap ---
+
+    #[tokio::test]
+    async fn create_succeeds_when_under_max_worktrees_cap() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain.into_bytes()); // reconcile for quota check
+        runner.push_ok(b"" as &[u8]); // status --porcelain (dirty check)
+        runner.push_ok(b"" as &[u8]); // worktree add
+
+        let config = WorktreeConfig {
+            max_worktrees: Some(5),
+            ..test_config()
+        };
+        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner)
+            .await
+            .unwrap();
+        assert!(mgr.create("agent-a").await.is_ok());
+    }
+
+    /// Regression test for #5924: `create()` must refuse admission once the
+    /// git-registered secondary worktree count reaches `max_worktrees`, without
+    /// issuing any further git calls (only `FakeGitRunner`'s queued reconcile
+    /// response is consumed for the rejected call).
+    #[tokio::test]
+    async fn create_fails_with_quota_exceeded_when_max_worktrees_reached() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n",
+            dir.path().display()
+        );
+        // First create(): reconcile (quota check), status --porcelain, worktree add.
+        runner.push_ok(porcelain.clone().into_bytes());
+        runner.push_ok(b"" as &[u8]);
+        runner.push_ok(b"" as &[u8]);
+        // Second create(): reconcile (quota check) only — QuotaExceeded short-circuits
+        // before any further git call.
+        runner.push_ok(porcelain.into_bytes());
+
+        let config = WorktreeConfig {
+            max_worktrees: Some(1),
+            ..test_config()
+        };
+        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner)
+            .await
+            .unwrap();
+
+        mgr.create("agent-a").await.unwrap();
+
+        let err = mgr.create("agent-b").await.unwrap_err();
+        assert_matches!(err, WorktreeError::QuotaExceeded { current: 1, max: 1 });
+    }
+
+    // --- disk_usage / cached_disk_usage ---
+
+    #[tokio::test]
+    async fn disk_usage_returns_zero_for_no_worktrees() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain.into_bytes());
+
+        let mgr = make_manager(&dir, runner).await;
+        let usage = mgr.disk_usage().await.unwrap();
+        assert_eq!(usage.total_bytes, 0);
+        assert!(usage.per_worktree.is_empty());
+    }
+
+    #[tokio::test]
+    async fn disk_usage_sums_file_sizes_under_registered_worktree() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain.into_bytes());
+
+        let mgr = make_manager(&dir, runner).await;
+
+        let wt_path = dir.path().join("worktrees/agent-1");
+        std::fs::create_dir_all(&wt_path).unwrap();
+        std::fs::write(wt_path.join("file.txt"), b"hello world").unwrap();
+
+        mgr.handles.lock().unwrap().push(WorktreeHandle {
+            path: wt_path.clone(),
+            branch_name: "agent/agent-1".to_string(),
+            base_ref_resolved: "HEAD".to_string(),
+            subagent_id: "agent-1".to_string(),
+            created_at: SystemTime::now(),
+        });
+
+        let usage = mgr.disk_usage().await.unwrap();
+        assert_eq!(usage.total_bytes, 11);
+        assert_eq!(usage.per_worktree.len(), 1);
+        assert_eq!(usage.per_worktree[0].0, wt_path);
+        assert_eq!(usage.per_worktree[0].1, 11);
+    }
+
+    #[tokio::test]
+    async fn cached_disk_usage_none_before_first_call() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let mgr = make_manager(&dir, runner).await;
+        assert!(mgr.cached_disk_usage().is_none());
+    }
+
+    #[tokio::test]
+    async fn cached_disk_usage_populated_after_disk_usage_call() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain.into_bytes());
+        let mgr = make_manager(&dir, runner).await;
+
+        assert!(mgr.cached_disk_usage().is_none());
+        mgr.disk_usage().await.unwrap();
+        assert!(mgr.cached_disk_usage().is_some());
+    }
+
+    // --- sweep ---
+
+    /// Regression test for #5924: `sweep()` reclaims only `prunable` entries (via the
+    /// same `clean(force=false, ..)` pipeline as `zeph worktree clean`) and, with no
+    /// `disk_quota_mb` configured, never performs the filesystem walk.
+    #[tokio::test]
+    async fn sweep_reclaims_prunable_and_reports_count_without_disk_check() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain_with_prunable = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
+             worktree {0}/worktrees/prunable-1\nHEAD def456\nbranch refs/heads/agent/prunable-1\n\
+             prunable gitdir file points to non-existent location\n\n",
+            dir.path().display()
+        );
+        // clean(): reconcile
+        runner.push_ok(porcelain_with_prunable.into_bytes());
+        // clean(): remove prunable-1
+        runner.push_ok(b"" as &[u8]);
+        // clean(): prune
+        runner.push_ok(b"" as &[u8]);
+        // sweep(): reconcile() for post-clean count
+        let porcelain_after = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain_after.into_bytes());
+
+        let mgr = make_manager(&dir, runner).await;
+        let status = mgr.sweep().await.unwrap();
+
+        assert_eq!(status.reclaimed, 1);
+        assert_eq!(status.count, 0);
+        assert_eq!(status.max_worktrees, None);
+        assert!(!status.over_count);
+        assert_eq!(status.total_bytes, 0);
+        assert_eq!(status.disk_quota_bytes, None);
+        assert!(!status.over_disk);
+        assert!(!status.is_over_quota());
+    }
+
+    /// Regression test for #5924 (critic M1): `sweep()` must evaluate `disk_quota_mb`
+    /// when configured — this is what makes the quota knob non-inert even when
+    /// `auto_reconcile_secs = 0` (periodic sweep disabled) and only the startup sweep
+    /// runs `sweep()` once.
+    #[tokio::test]
+    async fn sweep_evaluates_disk_quota_when_configured() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n",
+            dir.path().display()
+        );
+        // clean(): reconcile (no prunable entries)
+        runner.push_ok(porcelain.clone().into_bytes());
+        // clean(): prune
+        runner.push_ok(b"" as &[u8]);
+        // sweep(): reconcile() for count
+        runner.push_ok(porcelain.clone().into_bytes());
+        // sweep(): disk_usage() -> reconcile()
+        runner.push_ok(porcelain.into_bytes());
+
+        let config = WorktreeConfig {
+            disk_quota_mb: Some(1),
+            ..test_config()
+        };
+        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner)
+            .await
+            .unwrap();
+
+        let wt_path = dir.path().join("worktrees/agent-1");
+        std::fs::create_dir_all(&wt_path).unwrap();
+        std::fs::write(wt_path.join("big.bin"), vec![0u8; 2 * 1024 * 1024]).unwrap();
+
+        mgr.handles.lock().unwrap().push(WorktreeHandle {
+            path: wt_path.clone(),
+            branch_name: "agent/agent-1".to_string(),
+            base_ref_resolved: "HEAD".to_string(),
+            subagent_id: "agent-1".to_string(),
+            created_at: SystemTime::now(),
+        });
+
+        let status = mgr.sweep().await.unwrap();
+        assert_eq!(status.disk_quota_bytes, Some(1_048_576));
+        assert!(status.total_bytes >= 2 * 1024 * 1024);
+        assert!(status.over_disk);
+        assert!(status.is_over_quota());
+    }
+
+    /// Regression test (tester gap G1): `sweep()`'s `over_count = true` branch — the only
+    /// user-visible signal when an operator lowers `max_worktrees` below the existing worktree
+    /// count (which does not evict anything, only blocks new admissions).
+    #[tokio::test]
+    async fn sweep_reports_over_count_when_max_worktrees_exceeded() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
+             worktree {0}/worktrees/agent-1\nHEAD def456\nbranch refs/heads/agent/agent-1\n\n\
+             worktree {0}/worktrees/agent-2\nHEAD ghi789\nbranch refs/heads/agent/agent-2\n\n",
+            dir.path().display()
+        );
+        // clean(): reconcile (no prunable entries — nothing removed)
+        runner.push_ok(porcelain.clone().into_bytes());
+        // clean(): prune
+        runner.push_ok(b"" as &[u8]);
+        // sweep(): reconcile() for post-clean count
+        runner.push_ok(porcelain.into_bytes());
+
+        let config = WorktreeConfig {
+            max_worktrees: Some(1),
+            ..test_config()
+        };
+        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner)
+            .await
+            .unwrap();
+
+        let status = mgr.sweep().await.unwrap();
+        assert_eq!(status.count, 2);
+        assert_eq!(status.max_worktrees, Some(1));
+        assert!(status.over_count);
+        assert!(status.is_over_quota());
+        assert_eq!(
+            status.reclaimed, 0,
+            "over_count must never trigger removal of intact worktrees"
+        );
+    }
+
+    /// Regression test (tester gap G2): `max_worktrees` and `disk_quota_mb` set together must
+    /// report `over_count`/`over_disk` independently — one breached, the other not.
+    #[tokio::test]
+    async fn sweep_reports_independent_over_count_and_over_disk_flags() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n",
+            dir.path().display()
+        );
+        // clean(): reconcile (no prunable entries)
+        runner.push_ok(porcelain.clone().into_bytes());
+        // clean(): prune
+        runner.push_ok(b"" as &[u8]);
+        // sweep(): reconcile() for count
+        runner.push_ok(porcelain.clone().into_bytes());
+        // sweep(): disk_usage() -> reconcile()
+        runner.push_ok(porcelain.into_bytes());
+
+        let config = WorktreeConfig {
+            max_worktrees: Some(5),
+            disk_quota_mb: Some(1),
+            ..test_config()
+        };
+        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner)
+            .await
+            .unwrap();
+
+        let wt_path = dir.path().join("worktrees/agent-1");
+        std::fs::create_dir_all(&wt_path).unwrap();
+        std::fs::write(wt_path.join("big.bin"), vec![0u8; 2 * 1024 * 1024]).unwrap();
+
+        mgr.handles.lock().unwrap().push(WorktreeHandle {
+            path: wt_path.clone(),
+            branch_name: "agent/agent-1".to_string(),
+            base_ref_resolved: "HEAD".to_string(),
+            subagent_id: "agent-1".to_string(),
+            created_at: SystemTime::now(),
+        });
+
+        let status = mgr.sweep().await.unwrap();
+        assert_eq!(status.count, 1, "only the registered handle counts");
+        assert!(
+            !status.over_count,
+            "count (1) is under max_worktrees (5) — must not be flagged over"
+        );
+        assert!(status.over_disk, "disk usage over quota must be flagged");
+        assert!(status.is_over_quota());
     }
 }

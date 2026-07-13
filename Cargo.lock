@@ -11489,11 +11489,13 @@ dependencies = [
 name = "zeph-worktree"
 version = "0.22.0"
 dependencies = [
+ "parking_lot",
  "serde",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "walkdir",
  "zeph-config",
 ]
 

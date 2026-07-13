@@ -53,4 +53,24 @@ pub enum WorktreeError {
     /// An I/O error propagated from the OS or `std::fs`.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+
+    /// A `create()` call was refused because `worktree.max_worktrees` would be
+    /// reached or exceeded.
+    ///
+    /// `current` is the number of git-registered secondary worktrees under `root`
+    /// at the time of the check (including worktrees owned by other, concurrently
+    /// running zeph sessions); `max` is the configured `max_worktrees` limit. This
+    /// is a soft, best-effort cap — see
+    /// [`WorktreeManager::create`](crate::WorktreeManager::create)'s doc comment
+    /// for the TOCTOU caveat under concurrent sessions.
+    #[error(
+        "worktree limit reached ({current}/{max}); run `zeph worktree clean` or raise \
+         `worktree.max_worktrees`"
+    )]
+    QuotaExceeded {
+        /// Number of git-registered secondary worktrees under `root` at check time.
+        current: usize,
+        /// The configured `worktree.max_worktrees` limit.
+        max: usize,
+    },
 }

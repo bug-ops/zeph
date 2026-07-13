@@ -3090,8 +3090,19 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             )
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-            mgr.set_worktree_manager(std::sync::Arc::new(wm));
+            let wm = std::sync::Arc::new(wm);
+            mgr.set_worktree_manager(std::sync::Arc::clone(&wm));
             tracing::info!("worktree subsystem initialised");
+            // #5924: startup reconcile-and-quota sweep + optional periodic sweep, via the
+            // shared `agent_setup::spawn_worktree_reconcile` helper (also the wiring seam
+            // for any future ACP/daemon/serve worktree support).
+            crate::agent_setup::spawn_worktree_reconcile(
+                &wm,
+                &agents_config.worktree,
+                &supervisor,
+                Some(&agent_status_tx),
+            )
+            .await;
         }
 
         let agent = agent.with_orchestration(config.orchestration.clone(), agents_config, mgr);

@@ -90,6 +90,19 @@ verdict (the worktree's directory or `.git` gitdir-link is gone/broken) and is t
 to force-remove on by default. `zeph worktree clean` MUST skip and warn on any stale entry that is
 not `prunable`, unless the operator explicitly passes `--force` (#6055).
 
+**INV-6 — Automatic reclamation (startup sweep + periodic task) MUST remove only worktrees
+where `StaleWorktree::is_safe_to_force_remove()` is true.**  
+`WorktreeManager::sweep()` — invoked at bootstrap when `reconcile_on_startup = true` (default)
+and, when `auto_reconcile_secs > 0`, on that interval via a supervised `TaskSupervisor` task —
+MUST NOT force-remove an intact worktree even when the sweep finds the count or disk-usage
+threshold (`max_worktrees` / `disk_quota_mb`) exceeded. `sweep()` reuses the exact
+`clean(force=false, ..)` pipeline INV-5 governs, so this invariant is a direct consequence of
+INV-5 applied to the automatic path, not a separate removal mechanism (#5924). An over-quota
+state with only intact (non-`prunable`) worktrees present MUST surface a warning status
+indicator — never a deletion. `max_worktrees` is instead enforced as a creation-time admission
+cap (`WorktreeError::QuotaExceeded`) that blocks new spawns rather than evicting existing
+worktrees.
+
 ---
 
 ## NEVER
@@ -104,6 +117,9 @@ not `prunable`, unless the operator explicitly passes `--force` (#6055).
 - **NEVER** skip the capability probe when `worktree.enabled = true`; a missing `git` must be caught at bootstrap, not at first spawn.
 - **NEVER** allow `git_timeout_secs = 0`; the value is clamped to `max(1, configured_value)` in `DefaultGitRunner`.
 - **NEVER** force-remove a `reconcile()`-discovered worktree whose directory is intact and not reported `prunable` by git without an explicit operator `--force` (INV-5, #6055).
+- **NEVER** let the automatic startup or periodic reconcile sweep force-remove an intact (non-`prunable`) worktree to satisfy `max_worktrees`/`disk_quota_mb` — over-quota-with-only-intact-worktrees is a warning, never a deletion (INV-6, #5924).
+- **NEVER** perform the `disk_usage()` filesystem walk synchronously on the `create()` hot path; it MUST run off the async executor (`spawn_blocking`) and only from a deliberate trigger (sweep tick, explicit CLI call) (#5924).
+- **NEVER** spawn the periodic reconcile task via raw `tokio::spawn`; it MUST go through `TaskSupervisor::spawn` (spec-039 binding, #5924).
 
 ---
 
@@ -119,7 +135,21 @@ branch_prefix = "agent/"           # branch = "{prefix}{subagent_id}"
 prune_branch_on_remove = false     # delete the branch after removing the worktree
 cleanup_on_completion = true       # remove worktree when agent completes or is cancelled
 git_timeout_secs = 30              # per-git-invocation timeout; clamped to ≥ 1 (#4784)
+# max_worktrees = 10               # cap on concurrent worktrees under root; unset = unlimited (#5924)
+# disk_quota_mb = 5120             # soft total-disk-usage threshold (MB); unset = no accounting (#5924)
+auto_reconcile_secs = 0            # periodic reconcile+quota sweep interval; 0 = disabled (#5924)
+reconcile_on_startup = true        # run one reconcile+quota sweep at bootstrap (#5924)
 ```
+
+`Config::validate` rejects three additional self-contradictory combinations at config-validation
+time (not runtime), so the misconfiguration is caught at load rather than silently doing nothing:
+- `max_worktrees = Some(0)` — would block all worktree creation.
+- `disk_quota_mb = Some(0)` — would leave every non-empty worktree permanently over quota.
+- `disk_quota_mb.is_some() && auto_reconcile_secs == 0 && !reconcile_on_startup` — the quota would
+  be evaluated nowhere automatically (no startup sweep, no periodic sweep); a manual
+  `zeph worktree list` still shows it, but the headline knob has no automatic effect.
+- `1 <= auto_reconcile_secs < 60` — a short interval runs a full filesystem walk in a tight loop;
+  must be `0` (disabled) or `>= 60`. The `--init` wizard applies the same floor to its prompt.
 
 Per-agent opt-in in subagent definition frontmatter:
 ```yaml
@@ -155,8 +185,17 @@ impl WorktreeManager {
     pub async fn remove(&self, handle: &WorktreeHandle, prune_branch: bool) -> Result<(), WorktreeError>;
     pub fn list(&self) -> &[WorktreeHandle];           // live-session in-RAM only
     pub async fn reconcile(&self) -> Result<Vec<StaleWorktree>, WorktreeError>; // reads git registry
+    // #5924 — disk-quota + auto-reconcile:
+    pub async fn disk_usage(&self) -> Result<WorktreeDiskUsage, WorktreeError>; // spawn_blocking FS walk
+    pub fn cached_disk_usage(&self) -> Option<WorktreeDiskUsage>;               // no FS walk
+    pub async fn sweep(&self) -> Result<QuotaStatus, WorktreeError>;            // reconcile + prunable-only reclaim + quota check
 }
 ```
+
+`create()` additionally enforces the `max_worktrees` admission cap (see INV-6) before issuing any
+`git` call: when the git-registered secondary worktree count (`reconcile().len() + list().len()`)
+is already `>= max_worktrees`, `create()` fails with `WorktreeError::QuotaExceeded` instead of
+proceeding. This is a best-effort soft cap — not atomic across concurrently running zeph sessions.
 
 ### `WorktreeError` Variants
 
@@ -169,6 +208,7 @@ pub enum WorktreeError {
     InvalidBranchName(String),
     RootOutsideRepo(PathBuf),
     Io(#[from] std::io::Error),
+    QuotaExceeded { current: usize, max: usize },  // #5924 — max_worktrees admission cap reached
 }
 ```
 
@@ -303,6 +343,10 @@ New file `crates/zeph-config/src/worktree.rs`:
 - `WorktreeConfig` struct with `#[serde(default)]` on all fields
 - `WorktreeBaseRef` enum: `#[non_exhaustive]`, `#[default] Head`, serde `rename_all = "snake_case"`
 - Add `pub worktree: WorktreeConfig` to root config struct (alongside `agents: SubAgentConfig`)
+- `max_worktrees: Option<usize>`, `disk_quota_mb: Option<u64>`, `auto_reconcile_secs: u64`,
+  `reconcile_on_startup: bool` (#5924) — `Config::validate` rejects `Some(0)` for the first two
+- `crates/zeph-config/src/migrate/infra.rs`: `migrate_worktree_quota_fields` (step 83) surfaces
+  the four new fields as commented advisory text on an existing active `[worktree]` table
 
 ### `zeph-subagent`
 
@@ -310,33 +354,50 @@ New file `crates/zeph-config/src/worktree.rs`:
 - `SubAgentManager` gains `Option<Arc<WorktreeManager>>` (set at bootstrap when enabled)
 - `spawn` path: if `worktree_manager.is_some()` AND `def.permissions.worktree` → acquire `CwdGuard`, create worktree, set cwd, build system prompt using worktree path, run agent, restore on teardown
 - `build_filtered_executor`: when `def.permissions.worktree`, append `"set_working_directory"` to `disallowed_tools`
+- `manager/spawn.rs`'s `wm.create(&task_id).await.map_err(|e| SubAgentError::WorktreeSetup(e.to_string()))?`
+  is the INV-4 hard-fail path; `WorktreeError::QuotaExceeded`'s `Display` message reaches the
+  user through this conversion like every other `WorktreeError` variant already does (#5924)
 
 ### Binary Bootstrap
 
 - Construct `WorktreeManager` during agent setup from `config.worktree` + detected repo root
 - Run capability probe when `worktree.enabled = true`
 - Inject `WorktreeManager` into `SubAgentManager`
+- Call `agent_setup::spawn_worktree_reconcile` immediately after injection (#5924): runs the
+  startup sweep inline (if `reconcile_on_startup`) and registers the periodic sweep task via
+  `TaskSupervisor` (if `auto_reconcile_secs > 0`). `src/runner.rs` is currently the only
+  construction site for the worktree manager; any future ACP/daemon/serve worktree wiring calls
+  the same helper rather than duplicating the sequencing
 
 ### CLI
 
 - Add `WorktreeCommand { List, Clean }` under `zeph worktree` (or extend `zeph agents`)
 - `--worktree-base-ref <fresh|head>` session override flag
+- `zeph worktree list` additionally prints a `format_usage_summary` footer line (worktree count,
+  total MB, `max_worktrees`/`disk_quota_mb` status) computed via a fresh `disk_usage()` call
+  (#5924)
 
-### `--init` Wizard (#4656, #4847)
+### `--init` Wizard (#4656, #4847, #5924)
 
 `step_worktree()` is added to the interactive configuration wizard. The step asks the user:
 1. Whether to enable worktree isolation (`worktree.enabled`)
 2. Which background isolation mode to use (`bg_isolation: None | Worktree`) — deferred child-process isolation knob
 3. Which base ref to use (`base_ref: head | fresh`)
+4. Maximum concurrent worktrees (blank = unlimited)
+5. Disk quota across all worktrees in MB (blank = no accounting)
+6. Periodic reconcile+quota sweep interval in seconds (`0` = disabled)
 
 `build_config()` maps the wizard state to `WorktreeConfig`. The `[worktree]` section is emitted
-only when the user opts in (`enabled = true`). Two unit tests cover the disabled-default path
-and the enabled+None+Fresh path.
+only when the user opts in (`enabled = true`). Unit tests cover the disabled-default path, the
+enabled+None+Fresh path, and the enabled-with-quota-fields path.
 
 ### TUI
 
 - Command palette: `/worktree list`, `/worktree clean`
 - Status spinner during worktree create/remove: "Creating worktree for {agent_id}…"
+- Sweep status line surfaced through the same status channel the memory-maintenance loops use,
+  gated to fire only when a sweep actually reclaimed a worktree or found a breached quota — a
+  clean sweep is silent (#5924)
 
 ---
 
@@ -351,6 +412,7 @@ and the enabled+None+Fresh path.
 | Root outside repo | `RootOutsideRepo` | "Worktree root resolves outside the repository: {path}" |
 | Worktree path exists | `PathExists` | "Worktree path already exists: {path}" |
 | `git` not on PATH or too old | Detected in probe | "git ≥ 2.5 is required; found: {version}" |
+| `max_worktrees` reached | `QuotaExceeded` | "Worktree limit reached ({current}/{max}); run `zeph worktree clean` or raise `worktree.max_worktrees`" |
 
 ---
 
@@ -380,3 +442,9 @@ See `.local/testing/playbooks/worktree.md` for concrete scenarios:
 - Cancellation mid-run (expect cwd restored, worktree removed)
 - Crash simulation (worktree clean reconciles stale entries)
 - Concurrent plain agent during active worktree agent (expect serialisation)
+
+See `.local/testing/playbooks/worktree-disk-quota.md` (#5924) for the disk-quota +
+auto-reconcile scenarios: admission rejection at `max_worktrees`, `disk_quota_mb` evaluated on
+the startup sweep even with the periodic task disabled, prunable-only startup reclaim, the
+periodic `TaskSupervisor` task, status-indicator firing/silence, and config migration of
+existing `[worktree]` tables.

@@ -73,6 +73,19 @@ impl<C: Channel> Agent<C> {
                 }
             }
         }
+        // Always forces a fresh walk (never reads `cached_disk_usage()`), matching the CLI's
+        // `zeph worktree list` (`src/commands/worktree.rs`) exactly — this is a deliberate,
+        // infrequent, user-triggered command, not the `create()` hot path, so the walk cost is
+        // acceptable here (see `WorktreeManager::disk_usage`'s doc comment). Reading the cache
+        // instead previously made this command silently omit the usage footer under the default
+        // config (review N2 / cross-mode divergence).
+        let usage = wm.disk_usage().await?;
+        let count = active.len() + stale.len();
+        let _ = write!(
+            out,
+            "\n{}",
+            zeph_worktree::format_usage_summary(&usage, count, wm.config())
+        );
         Ok(Some(out.trim_end().to_owned()))
     }
 

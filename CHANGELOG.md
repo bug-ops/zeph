@@ -164,6 +164,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     is not yet discoverable. `A2A_PROTOCOL_VERSION` stays `"0.2.1"` — this change is one additive
     1.0.0 feature, not full 1.0.0 conformance. `jku`/JWKS auto-fetch, EdDSA/RS256, and signing
     our own served card are all deferred.
+- **Worktree**: added disk-quota and automatic reconciliation to the `zeph-worktree` subsystem
+  (#5924). Four new `[worktree]` config fields: `max_worktrees` (creation-time admission cap,
+  enforced as `WorktreeError::QuotaExceeded`), `disk_quota_mb` (soft total-disk-usage threshold),
+  `auto_reconcile_secs` (periodic reconcile+quota sweep interval via `TaskSupervisor`, `0` =
+  disabled), and `reconcile_on_startup` (default `true` — one reconcile+quota sweep at bootstrap).
+  Automatic reclamation only ever removes worktrees git itself reports as `prunable` — an intact
+  worktree is never force-removed to satisfy either threshold (spec-063 INV-6, extends INV-5).
+  `WorktreeManager` gains `disk_usage()`/`cached_disk_usage()` (filesystem walk, offloaded to
+  `spawn_blocking`, never called on the `create()` hot path) and `sweep()` (reconcile +
+  prunable-only reclaim + quota evaluation). `zeph worktree list` and the agent-side
+  `/worktree list` slash command both always print a fresh usage/quota summary footer (no
+  cross-mode divergence). `Config::validate` rejects `Some(0)` for `max_worktrees`/
+  `disk_quota_mb`, rejects `disk_quota_mb` being set with no automatic evaluation path enabled
+  (neither `reconcile_on_startup` nor `auto_reconcile_secs`), and rejects a sub-60-second
+  `auto_reconcile_secs` (too short an interval would run a filesystem walk in a tight loop).
+  `--migrate-config` step 83 surfaces the four new fields as commented advisories on existing
+  `[worktree]` tables; the `--init` wizard gained matching prompts with the same validation.
 - **Config**: documented `[security.shadow_sentinel]` (`ShadowSentinelConfig`) as a commented
   advisory block in `config/default.toml`, and added migration step 81
   (`migrate_shadow_sentinel_config`) so existing configs gain the same discoverable block via

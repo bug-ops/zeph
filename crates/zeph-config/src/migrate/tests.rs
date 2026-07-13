@@ -1791,7 +1791,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–81).
+    // Names must follow the documented step order (steps 1–82).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1875,6 +1875,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_skill_trust_require_check",
         "migrate_shadow_sentinel_config",
         "migrate_a2a_card_trust_config",
+        "migrate_worktree_quota_fields",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -2829,6 +2830,62 @@ fn step_55_value_substring_is_noop() {
         "value substring must not trigger replacement"
     );
     assert_eq!(result.output, input);
+}
+
+// ── migrate_worktree_quota_fields tests (#5924) ──────────────────────────
+
+#[test]
+fn step_82_inserts_quota_comments_when_worktree_present() {
+    let input = "[worktree]\nenabled = true\n";
+    let result = migrate_worktree_quota_fields(input).unwrap();
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("max_worktrees"));
+    assert!(result.output.contains("disk_quota_mb"));
+    assert!(result.output.contains("auto_reconcile_secs"));
+    assert!(result.output.contains("reconcile_on_startup"));
+    assert_eq!(result.sections_changed, vec!["worktree"]);
+}
+
+#[test]
+fn step_82_is_noop_when_no_worktree_section() {
+    let input = "[agent]\nmax_turns = 10\n";
+    let result = migrate_worktree_quota_fields(input).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, input);
+}
+
+#[test]
+fn step_82_is_idempotent_when_auto_reconcile_secs_already_present() {
+    let input = "[worktree]\nauto_reconcile_secs = 3600\n";
+    let result = migrate_worktree_quota_fields(input).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, input);
+}
+
+#[test]
+fn step_82_is_idempotent_when_quota_fields_commented() {
+    let input = "[worktree]\n# auto_reconcile_secs = 3600\n";
+    let result = migrate_worktree_quota_fields(input).unwrap();
+    assert_eq!(result.changed_count, 0);
+}
+
+#[test]
+fn step_82_subtable_only_is_noop() {
+    let input = "[worktree.git]\ntimeout = 30\n";
+    let result = migrate_worktree_quota_fields(input).unwrap();
+    assert_eq!(
+        result.changed_count, 0,
+        "subtable-only header must be a no-op"
+    );
+    assert_eq!(result.output, input);
+}
+
+#[test]
+fn step_82_handles_crlf_line_endings() {
+    let input = "[worktree]\r\nenabled = true\r\n";
+    let result = migrate_worktree_quota_fields(input).unwrap();
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("auto_reconcile_secs"));
 }
 
 // ── Step 59 — migrate_caveman_config (#5027) ─────────────────────────────────────────────────

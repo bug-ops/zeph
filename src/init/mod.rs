@@ -290,6 +290,13 @@ pub(crate) struct WizardState {
     pub(crate) worktree_enabled: bool,
     pub(crate) worktree_bg_isolation: BgIsolation,
     pub(crate) worktree_base_ref: WorktreeBaseRef,
+    // Worktree disk-quota + auto-reconcile (#5924)
+    /// `None` = unlimited concurrent worktrees.
+    pub(crate) worktree_max_worktrees: Option<usize>,
+    /// `None` = no disk-usage accounting.
+    pub(crate) worktree_disk_quota_mb: Option<u64>,
+    /// `0` = periodic reconcile sweep disabled.
+    pub(crate) worktree_auto_reconcile_secs: u64,
     // Durable execution layer (spec-064, #4949)
     /// The durable section as configured by the wizard (the AEAD key is stored separately in the
     /// vault, never inline).
@@ -518,6 +525,9 @@ impl Default for WizardState {
             worktree_enabled: false,
             worktree_bg_isolation: BgIsolation::Worktree,
             worktree_base_ref: WorktreeBaseRef::Head,
+            worktree_max_worktrees: None,
+            worktree_disk_quota_mb: None,
+            worktree_auto_reconcile_secs: 0,
             durable: zeph_core::config::DurableConfig::default(),
             durable_key_b64: None,
             caveman_default_on: false,
@@ -1050,6 +1060,10 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         config.worktree.enabled = true;
         config.worktree.bg_isolation = state.worktree_bg_isolation;
         config.worktree.base_ref = state.worktree_base_ref.clone();
+        // Worktree disk-quota + auto-reconcile (#5924)
+        config.worktree.max_worktrees = state.worktree_max_worktrees;
+        config.worktree.disk_quota_mb = state.worktree_disk_quota_mb;
+        config.worktree.auto_reconcile_secs = state.worktree_auto_reconcile_secs;
     }
 
     // Durable execution layer (spec-064, #4949). The AEAD key lives only in the vault.
@@ -3266,6 +3280,32 @@ mod tests {
         assert!(config.worktree.enabled);
         assert_eq!(config.worktree.bg_isolation, BgIsolation::None);
         assert!(matches!(config.worktree.base_ref, WorktreeBaseRef::Fresh));
+    }
+
+    /// Regression test for #5924: disabled state leaves the quota fields at their
+    /// `WorktreeConfig::default()` values (unlimited / no accounting / sweep off).
+    #[test]
+    fn build_config_worktree_disabled_leaves_quota_fields_default() {
+        let state = WizardState::default();
+        let config = build_config(&state);
+        assert_eq!(config.worktree.max_worktrees, None);
+        assert_eq!(config.worktree.disk_quota_mb, None);
+        assert_eq!(config.worktree.auto_reconcile_secs, 0);
+    }
+
+    #[test]
+    fn build_config_worktree_enabled_with_quota_fields() {
+        let state = WizardState {
+            worktree_enabled: true,
+            worktree_max_worktrees: Some(5),
+            worktree_disk_quota_mb: Some(2048),
+            worktree_auto_reconcile_secs: 3600,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.worktree.max_worktrees, Some(5));
+        assert_eq!(config.worktree.disk_quota_mb, Some(2048));
+        assert_eq!(config.worktree.auto_reconcile_secs, 3600);
     }
 
     // ── #4981: api_key_env_var sanitization edge cases ──────────────────────

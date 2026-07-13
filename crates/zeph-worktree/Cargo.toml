@@ -16,10 +16,12 @@ readme = "README.md"
 default = []
 
 [dependencies]
+parking_lot.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "process", "sync"] }
 tracing.workspace = true
+walkdir.workspace = true
 zeph-config.workspace = true
 
 [dev-dependencies]

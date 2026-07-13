@@ -163,6 +163,38 @@ impl Config {
                 "tool_call_cutoff must be >= 1".into(),
             ));
         }
+        if self.worktree.max_worktrees == Some(0) {
+            return Err(ConfigError::Validation(
+                "worktree.max_worktrees must be > 0 or unset (unlimited); 0 would block all \
+                 worktree creation"
+                    .into(),
+            ));
+        }
+        if self.worktree.disk_quota_mb == Some(0) {
+            return Err(ConfigError::Validation(
+                "worktree.disk_quota_mb must be > 0 or unset (no accounting); 0 would leave \
+                 every non-empty worktree permanently over quota"
+                    .into(),
+            ));
+        }
+        if self.worktree.disk_quota_mb.is_some()
+            && self.worktree.auto_reconcile_secs == 0
+            && !self.worktree.reconcile_on_startup
+        {
+            return Err(ConfigError::Validation(
+                "worktree.disk_quota_mb is set but neither reconcile_on_startup nor \
+                 auto_reconcile_secs is enabled — the quota will only be checked when you run \
+                 `zeph worktree list` manually, never automatically"
+                    .into(),
+            ));
+        }
+        if (1..60).contains(&self.worktree.auto_reconcile_secs) {
+            return Err(ConfigError::Validation(format!(
+                "worktree.auto_reconcile_secs must be 0 (disabled) or >= 60, got {}; a short \
+                 interval runs a full filesystem walk in a tight loop",
+                self.worktree.auto_reconcile_secs
+            )));
+        }
         Ok(())
     }
 
@@ -1357,6 +1389,104 @@ weight = 0.3
             cfg.validate().is_ok(),
             "inverted thresholds on a disabled shadow_memory config must not fail validation"
         );
+    }
+
+    #[test]
+    fn validate_rejects_worktree_max_worktrees_zero() {
+        let mut cfg = Config::default();
+        cfg.worktree.max_worktrees = Some(0);
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("max_worktrees"),
+            "expected max_worktrees in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_worktree_max_worktrees_positive_or_unset() {
+        let mut cfg = Config::default();
+        cfg.worktree.max_worktrees = Some(1);
+        assert!(cfg.validate().is_ok());
+        cfg.worktree.max_worktrees = None;
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_worktree_disk_quota_mb_zero() {
+        let mut cfg = Config::default();
+        cfg.worktree.disk_quota_mb = Some(0);
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("disk_quota_mb"),
+            "expected disk_quota_mb in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_worktree_disk_quota_mb_positive_or_unset() {
+        let mut cfg = Config::default();
+        cfg.worktree.disk_quota_mb = Some(1);
+        assert!(cfg.validate().is_ok());
+        cfg.worktree.disk_quota_mb = None;
+        assert!(cfg.validate().is_ok());
+    }
+
+    /// Review N1 / critic M1(b): `disk_quota_mb` set with neither the startup sweep nor the
+    /// periodic sweep enabled means the quota is evaluated nowhere automatically — must be a
+    /// hard config error, not a silent no-op.
+    #[test]
+    fn validate_rejects_worktree_disk_quota_mb_with_no_evaluation_path_enabled() {
+        let mut cfg = Config::default();
+        cfg.worktree.disk_quota_mb = Some(100);
+        cfg.worktree.auto_reconcile_secs = 0;
+        cfg.worktree.reconcile_on_startup = false;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("disk_quota_mb") && err.contains("never automatically"),
+            "expected inert-path error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_worktree_disk_quota_mb_when_startup_sweep_enabled() {
+        let mut cfg = Config::default();
+        cfg.worktree.disk_quota_mb = Some(100);
+        cfg.worktree.auto_reconcile_secs = 0;
+        cfg.worktree.reconcile_on_startup = true;
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_worktree_disk_quota_mb_when_periodic_sweep_enabled() {
+        let mut cfg = Config::default();
+        cfg.worktree.disk_quota_mb = Some(100);
+        cfg.worktree.auto_reconcile_secs = 3600;
+        cfg.worktree.reconcile_on_startup = false;
+        assert!(cfg.validate().is_ok());
+    }
+
+    /// Review perf#3: a short `auto_reconcile_secs` runs a full filesystem walk in a tight
+    /// loop — must be rejected, matching the `Some(0)` rejection style for the sibling fields.
+    #[test]
+    fn validate_rejects_worktree_auto_reconcile_secs_short_interval() {
+        let mut cfg = Config::default();
+        cfg.worktree.auto_reconcile_secs = 1;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("auto_reconcile_secs"),
+            "expected auto_reconcile_secs in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_worktree_auto_reconcile_secs_zero_or_at_least_60() {
+        let mut cfg = Config::default();
+        cfg.worktree.auto_reconcile_secs = 0;
+        assert!(cfg.validate().is_ok());
+        cfg.worktree.auto_reconcile_secs = 60;
+        assert!(cfg.validate().is_ok());
+        cfg.worktree.auto_reconcile_secs = 3600;
+        assert!(cfg.validate().is_ok());
     }
 
     /// Regression test (critic S1): `Config::default()` must itself satisfy `validate_pool`

@@ -49,11 +49,13 @@ pub mod git_runner;
 pub mod handle;
 pub mod manager;
 pub mod sanitize;
+pub mod usage;
 
 pub use error::WorktreeError;
 pub use git_runner::{DefaultGitRunner, GitRunner};
 pub use handle::{BARE_WORKTREE_SENTINEL, DETACHED_BRANCH_SENTINEL, StaleWorktree, WorktreeHandle};
 pub use manager::{CleanOutcome, WorktreeManager, format_clean_summary, probe_capabilities};
+pub use usage::{QuotaStatus, WorktreeDiskUsage, format_usage_summary};
 
 /// A [`WorktreeManager`] using the production [`DefaultGitRunner`].
 ///

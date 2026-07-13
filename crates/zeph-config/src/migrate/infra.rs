@@ -571,6 +571,58 @@ pub fn migrate_worktree_git_timeout(toml_src: &str) -> Result<MigrationResult, M
     })
 }
 
+/// Add commented-out `max_worktrees`, `disk_quota_mb`, `auto_reconcile_secs`, and
+/// `reconcile_on_startup` fields to `[worktree]` when the section is present but the
+/// keys are absent (#5924).
+///
+/// Mirrors [`migrate_worktree_git_timeout`]'s idempotency guard and header-anchored
+/// insertion. `reconcile_on_startup` defaults to `true` in code even though the
+/// migration surfaces it as a comment — the comment documents the value so upgrading
+/// operators can discover and override it, without the migration itself silently
+/// changing already-loaded behavior (all four fields are `#[serde(default)]`, so an
+/// existing config without them already resolves to the code defaults before and
+/// after this migration runs). Only runs when `[worktree]` is present — configs
+/// without the section are unchanged.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the
+/// migration function convention for use in chained pipelines.
+pub fn migrate_worktree_quota_fields(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    static WORKTREE_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?m)^[ \t]*\[worktree\][ \t]*(?:#[^\r\n]*)?\r?\n").expect("static pattern")
+    });
+
+    if toml_src.contains("auto_reconcile_secs") || !WORKTREE_HEADER_RE.is_match(toml_src) {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "# max_worktrees = 10  # cap on concurrent worktrees under root; unset = unlimited\n\
+        # disk_quota_mb = 5120  # soft total-disk-usage threshold (MB) across all worktrees; unset = no accounting\n\
+        # auto_reconcile_secs = 3600  # periodic reconcile+quota sweep interval; 0 = disabled\n\
+        # reconcile_on_startup = true  # run one reconcile+quota sweep at bootstrap (default: true)\n";
+    let output = WORKTREE_HEADER_RE
+        .replacen(toml_src, 1, |caps: &regex::Captures| {
+            format!("{}{comment}", &caps[0])
+        })
+        .into_owned();
+
+    let changed = output != toml_src;
+    Ok(MigrationResult {
+        output,
+        changed_count: usize::from(changed),
+        sections_changed: if changed {
+            vec!["worktree".to_owned()]
+        } else {
+            Vec::new()
+        },
+    })
+}
+
 /// Add the `[durable]` execution-layer section with all defaults, commented out and default-off.
 ///
 /// Purely additive and idempotent: skips if either an active or a previously-injected commented

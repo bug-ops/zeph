@@ -2711,6 +2711,138 @@ pub(crate) fn spawn_memory_maintenance_loops(
     }
 }
 
+/// Runs the optional startup reconcile-and-quota sweep and, when enabled, registers the
+/// periodic reconcile task through `TaskSupervisor` (#5924). This is the single wiring
+/// seam for the `zeph-worktree` disk-quota + auto-reconcile feature: `src/runner.rs` is
+/// currently the only construction site for the worktree manager (`acp.rs`, `daemon.rs`,
+/// and `serve/` have no worktree references today), so calling this helper right after
+/// `SubAgentManager::set_worktree_manager` keeps a future ACP/daemon/serve wiring a
+/// one-line addition rather than a fourth near-identical copy — the "wire-X-into-
+/// acp/serve/daemon" defect class this project has hit 19+ times (see
+/// `.claude/rules/continuous-improvement.md`).
+///
+/// The startup sweep (`cfg.reconcile_on_startup`, default `true`) is awaited inline so a
+/// crash-recovered reclaim or a breached quota is visible before the caller proceeds —
+/// mirroring `probe_capabilities`/`WorktreeManager::new`, which are already awaited at
+/// this point in `runner.rs`. It only ever removes worktrees git itself reports as
+/// `prunable` (spec-063 INV-5/INV-6), so it is safe to run unconditionally at every
+/// launch.
+///
+/// The periodic task (`cfg.auto_reconcile_secs > 0`) is registered under the
+/// `worktree_reconcile` name with `RestartPolicy::Restart { max: 5, base_delay: 30s }` so
+/// a transient git failure inside one tick does not permanently kill the loop.
+///
+/// `status_tx`, when `Some`, receives a short status line **only** when a sweep actually
+/// reclaims a worktree or detects a breached quota — a clean sweep stays silent, per the
+/// TUI Rule against surfacing noise on every clean launch (critic gap M7).
+pub(crate) async fn spawn_worktree_reconcile(
+    wm: &Arc<zeph_worktree::DefaultWorktreeManager>,
+    cfg: &zeph_config::WorktreeConfig,
+    supervisor: &zeph_common::TaskSupervisor,
+    status_tx: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
+) {
+    if cfg.reconcile_on_startup {
+        run_worktree_sweep(wm, status_tx, "startup").await;
+    }
+
+    if cfg.auto_reconcile_secs > 0 {
+        let wm = Arc::clone(wm);
+        let interval_secs = cfg.auto_reconcile_secs;
+        let status_tx = status_tx.cloned();
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(zeph_common::TaskDescriptor {
+            name: "worktree_reconcile",
+            restart: zeph_common::RestartPolicy::Restart {
+                max: 5,
+                base_delay: std::time::Duration::from_secs(30),
+            },
+            factory: move || {
+                worktree_reconcile_loop(
+                    Arc::clone(&wm),
+                    interval_secs,
+                    status_tx.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+}
+
+/// Periodic reconcile-and-quota sweep loop, supervised via [`spawn_worktree_reconcile`].
+///
+/// Skips the immediate first tick — the startup sweep (if enabled) already covered
+/// launch-time recovery; the periodic task's job is the *next* `interval_secs` boundary.
+async fn worktree_reconcile_loop(
+    wm: Arc<zeph_worktree::DefaultWorktreeManager>,
+    interval_secs: u64,
+    status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+    ticker.tick().await;
+
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => {
+                tracing::debug!("worktree reconcile loop shutting down");
+                return;
+            }
+            _ = ticker.tick() => {}
+        }
+        run_worktree_sweep(&wm, status_tx.as_ref(), "periodic").await;
+    }
+}
+
+/// Runs one [`WorktreeManager::sweep`][zeph_worktree::WorktreeManager::sweep] pass and
+/// surfaces a status line only when something was actually reclaimed or a quota is
+/// actually breached (critic gap M7) — a clean sweep logs at `debug` only.
+async fn run_worktree_sweep(
+    wm: &zeph_worktree::DefaultWorktreeManager,
+    status_tx: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
+    trigger: &str,
+) {
+    match wm.sweep().await {
+        Ok(status) if status.reclaimed > 0 || status.is_over_quota() => {
+            let msg = format_quota_status_message(&status);
+            tracing::warn!(trigger, %msg, "worktree sweep: action needed");
+            if let Some(tx) = status_tx {
+                let _ = tx.send(msg);
+            }
+        }
+        Ok(_) => {
+            tracing::debug!(trigger, "worktree sweep: clean, nothing to report");
+        }
+        Err(e) => {
+            tracing::warn!(trigger, error = %e, "worktree sweep failed");
+        }
+    }
+}
+
+/// Formats a [`zeph_worktree::QuotaStatus`] into the one-line status message shown to the
+/// user (TUI status channel and CLI/log warning).
+fn format_quota_status_message(status: &zeph_worktree::QuotaStatus) -> String {
+    let mut parts = Vec::new();
+    if status.reclaimed > 0 {
+        parts.push(format!("reclaimed {} stale worktree(s)", status.reclaimed));
+    }
+    if status.over_count {
+        parts.push(format!(
+            "count over quota ({}/{})",
+            status.count,
+            status.max_worktrees.unwrap_or_default()
+        ));
+    }
+    if status.over_disk {
+        let used_mb = status.total_bytes / 1_048_576;
+        let quota_mb = status.disk_quota_bytes.unwrap_or_default() / 1_048_576;
+        parts.push(format!("disk usage over quota ({used_mb}MB/{quota_mb}MB)"));
+    }
+    format!(
+        "Worktrees: {} — run `zeph worktree clean`",
+        parts.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;

@@ -44,6 +44,7 @@ use serde::{Deserialize, Serialize};
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct WorktreeConfig {
     /// Enable per-subagent git worktrees. When `false`, no worktrees are created
     /// regardless of other settings.
@@ -83,6 +84,62 @@ pub struct WorktreeConfig {
     /// [`DefaultGitRunner`](https://docs.rs/zeph-worktree/latest/zeph_worktree/git_runner/struct.DefaultGitRunner.html),
     /// not by any call site.
     pub git_timeout_secs: u64,
+    /// Maximum number of concurrent worktrees under `root`. `None` (default) means
+    /// unlimited.
+    ///
+    /// Enforced as a creation-time admission cap: a `create()` call that would push
+    /// the count of git-registered secondary worktrees to `max_worktrees` or beyond
+    /// fails with `WorktreeError::QuotaExceeded` instead of silently growing disk
+    /// usage. The count includes worktrees created by *other*, concurrently running
+    /// zeph sessions over the same `root` — `max_worktrees` bounds total disk-safe
+    /// usage under the repository, not just this session's own worktrees. The check
+    /// is a best-effort soft cap: it is not atomic across processes, so two
+    /// concurrent `create()` calls can both pass and briefly exceed the configured
+    /// maximum by a small margin. Lowering this value below the current worktree
+    /// count does not evict existing worktrees; it only blocks new admissions until
+    /// an operator runs `zeph worktree clean` or raises the limit. A value of
+    /// `Some(0)` is rejected at config-validation time (it would block all worktree
+    /// creation).
+    pub max_worktrees: Option<usize>,
+    /// Soft total-disk-usage threshold, in megabytes, across all worktrees under
+    /// `root`. `None` (default) disables disk accounting.
+    ///
+    /// When exceeded, the reconcile sweep (startup and/or periodic, see
+    /// `auto_reconcile_secs` / `reconcile_on_startup`) emits a warning status
+    /// indicator and auto-reclaims only git-`prunable` entries — an intact worktree
+    /// is never force-removed to satisfy this threshold. The reported total is a sum
+    /// of logical file sizes (`metadata().len()`), not on-disk block usage; content
+    /// shared via hardlinks across worktrees (e.g. zeph-session blobs) can be
+    /// double-counted, so treat the total as an approximation, not exact `du`
+    /// output. A value of `Some(0)` is rejected at config-validation time (it would
+    /// leave every non-empty worktree permanently over quota).
+    pub disk_quota_mb: Option<u64>,
+    /// Interval, in seconds, for the supervised background reconcile-and-quota
+    /// sweep. `0` (default) disables the periodic sweep.
+    ///
+    /// When greater than zero, one task is registered with the session
+    /// `TaskSupervisor` that, on this cadence, reconciles the git worktree
+    /// registry, auto-reclaims `prunable` entries via the same path as
+    /// `zeph worktree clean` (non-force), and evaluates `max_worktrees` /
+    /// `disk_quota_mb`. Each tick may perform a filesystem walk of every worktree
+    /// (potentially multi-gigabyte `target/` directories), so a short interval is
+    /// wasteful; an hourly cadence (`3600`) is a reasonable default when enabling
+    /// this. `Config::validate` rejects any value in `1..60` — a sub-minute interval
+    /// would run a full filesystem walk in a tight loop.
+    pub auto_reconcile_secs: u64,
+    /// Run one reconcile-and-quota sweep at bootstrap, immediately after the
+    /// worktree manager is constructed. Default `true`.
+    ///
+    /// Recovers from a crash that left `prunable` worktrees behind without waiting
+    /// for the first periodic tick, and evaluates `disk_quota_mb` / `max_worktrees`
+    /// once per launch even when `auto_reconcile_secs = 0` — without this, a
+    /// `disk_quota_mb` set by itself would never be evaluated at all. `Config::validate`
+    /// rejects `disk_quota_mb.is_some()` combined with both this field `false` and
+    /// `auto_reconcile_secs == 0`, so that exact inert combination cannot reach a running
+    /// session. Safe by construction: the startup sweep only ever removes entries git itself
+    /// reports as `prunable` (directory or gitdir-link already gone), identical to
+    /// `zeph worktree clean` without `--force`.
+    pub reconcile_on_startup: bool,
 }
 
 fn default_git_timeout_secs() -> u64 {
@@ -101,6 +158,10 @@ impl Default for WorktreeConfig {
             cleanup_on_completion: true,
             bg_isolation: BgIsolation::default(),
             git_timeout_secs: default_git_timeout_secs(),
+            max_worktrees: None,
+            disk_quota_mb: None,
+            auto_reconcile_secs: 0,
+            reconcile_on_startup: true,
         }
     }
 }
@@ -180,6 +241,10 @@ mod tests {
         assert!(cfg.cleanup_on_completion);
         assert_eq!(cfg.bg_isolation, BgIsolation::Worktree);
         assert_eq!(cfg.git_timeout_secs, 30);
+        assert_eq!(cfg.max_worktrees, None);
+        assert_eq!(cfg.disk_quota_mb, None);
+        assert_eq!(cfg.auto_reconcile_secs, 0);
+        assert!(cfg.reconcile_on_startup);
     }
 
     #[test]
@@ -192,6 +257,10 @@ mod tests {
         assert_eq!(deserialized.branch_prefix, cfg.branch_prefix);
         assert_eq!(deserialized.bg_isolation, cfg.bg_isolation);
         assert_eq!(deserialized.git_timeout_secs, 30);
+        assert_eq!(deserialized.max_worktrees, cfg.max_worktrees);
+        assert_eq!(deserialized.disk_quota_mb, cfg.disk_quota_mb);
+        assert_eq!(deserialized.auto_reconcile_secs, cfg.auto_reconcile_secs);
+        assert_eq!(deserialized.reconcile_on_startup, cfg.reconcile_on_startup);
     }
 
     #[test]
@@ -279,5 +348,33 @@ bg_isolation = "none"
         let toml_src = "enabled = false\n";
         let cfg: WorktreeConfig = toml::from_str(toml_src).expect("deserialize");
         assert_eq!(cfg.git_timeout_secs, 30);
+    }
+
+    #[test]
+    fn worktree_config_quota_fields_default_when_absent() {
+        // Configs written before max_worktrees/disk_quota_mb/auto_reconcile_secs/
+        // reconcile_on_startup were added must parse without error and resolve to
+        // their defaults (unlimited, no accounting, no periodic sweep, startup
+        // sweep on).
+        let toml_src = "enabled = true\n";
+        let cfg: WorktreeConfig = toml::from_str(toml_src).expect("deserialize");
+        assert_eq!(cfg.max_worktrees, None);
+        assert_eq!(cfg.disk_quota_mb, None);
+        assert_eq!(cfg.auto_reconcile_secs, 0);
+        assert!(cfg.reconcile_on_startup);
+    }
+
+    #[test]
+    fn worktree_config_quota_fields_custom_values_roundtrip() {
+        let toml_src = "enabled = true\n\
+             max_worktrees = 5\n\
+             disk_quota_mb = 2048\n\
+             auto_reconcile_secs = 3600\n\
+             reconcile_on_startup = false\n";
+        let cfg: WorktreeConfig = toml::from_str(toml_src).expect("deserialize");
+        assert_eq!(cfg.max_worktrees, Some(5));
+        assert_eq!(cfg.disk_quota_mb, Some(2048));
+        assert_eq!(cfg.auto_reconcile_secs, 3600);
+        assert!(!cfg.reconcile_on_startup);
     }
 }

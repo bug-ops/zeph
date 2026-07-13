@@ -45,7 +45,9 @@
 //! existing active `[skills.trust]` table (#6087);
 //! step 81 adds a commented `[security.shadow_sentinel]` advisory block (spec 050, #5934);
 //! step 82 adds a commented `[a2a_client]` `card_trust_policy`/`trusted_agent_keys` advisory
-//! block (#5928).
+//! block (#5928);
+//! step 83 adds commented `max_worktrees`/`disk_quota_mb`/`auto_reconcile_secs`/
+//! `reconcile_on_startup` fields to an existing active `[worktree]` table (#5924).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -83,7 +85,7 @@ use super::{
     migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
     migrate_trace_metadata, migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config,
     migrate_tui_theme_defaults, migrate_utility_high_gain_tools, migrate_vigil_config,
-    migrate_worktree_config, migrate_worktree_git_timeout,
+    migrate_worktree_config, migrate_worktree_git_timeout, migrate_worktree_quota_fields,
 };
 
 // ── Wrapper structs for all 73 sequential migration steps ───────────────────────────────────────
@@ -1010,5 +1012,18 @@ impl Migration for MigrateA2aCardTrustConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_a2a_card_trust_config(toml_src)
+    }
+}
+
+/// Step 83 — adds commented `max_worktrees`/`disk_quota_mb`/`auto_reconcile_secs`/
+/// `reconcile_on_startup` fields to an existing active `[worktree]` table (#5924).
+pub(super) struct MigrateWorktreeQuotaFields;
+impl Migration for MigrateWorktreeQuotaFields {
+    fn name(&self) -> &'static str {
+        "migrate_worktree_quota_fields"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_worktree_quota_fields(toml_src)
     }
 }

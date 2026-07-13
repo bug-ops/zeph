@@ -69,6 +69,12 @@ pub(crate) async fn handle_worktree_command(
                         }
                     }
                 }
+                let count = active.len() + stale.len();
+                let usage = wm.disk_usage().await?;
+                println!(
+                    "\n{}",
+                    zeph_worktree::format_usage_summary(&usage, count, &config.worktree)
+                );
             }
         }
         WorktreeCommand::Clean { force } => {
