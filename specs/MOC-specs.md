@@ -243,6 +243,7 @@ status: moc
 | 067 | [[067-knowledge-ingest/spec\|Knowledge Ingest]] | specify | draft |
 | 068 | [[068-session-persistence/spec\|Session Persistence]] | specify | draft |
 | 069 | [[069-threat-model/spec\|MATRA Threat Model]] | specify | approved |
+| 072 | [[072-multimodal-mcp-passthrough/spec\|Multimodal MCP Passthrough]] | specify | draft |
 
 ---
 
