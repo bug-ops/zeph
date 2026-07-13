@@ -265,7 +265,7 @@ Add an `[experiments]` section to `config.toml`:
 ```toml
 [experiments]
 enabled = true
-# eval_model = "claude-sonnet-4-20250514"  # Model for LLM-as-judge evaluation (default: agent's model)
+# eval_model = "claude-sonnet-5"  # Model for LLM-as-judge evaluation (default: agent's model)
 # benchmark_file = "benchmarks/eval.toml"  # Prompt set for A/B comparison
 max_experiments = 20                       # Max variations per session (default: 20, range: 1-1000)
 max_wall_time_secs = 3600                  # Wall-clock budget per session in seconds (default: 3600, range: 60-86400)
@@ -386,7 +386,7 @@ Only one experiment session can run at a time. Starting a new session while one 
 The `zeph init` wizard includes an experiments step (after the scheduler section). It prompts:
 
 1. **Enable autonomous experiments** — master switch (`enabled` field, default: no).
-2. **Judge model** — model used for LLM-as-judge evaluation (`eval_model`, default: `claude-sonnet-4-20250514`).
+2. **Judge model** — model used for LLM-as-judge evaluation (`eval_model`, default: `claude-sonnet-5`).
 3. **Schedule automatic runs** — enable cron-based experiment sessions (`schedule.enabled`, default: no).
 4. **Cron schedule** — 5-field cron expression (`schedule.cron`, default: `0 3 * * *`).
 

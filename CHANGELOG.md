@@ -50,6 +50,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Docs**: fixed 11 stale Claude model ID examples across 5 mdBook pages (`acp.md`,
+  `sub-agents.md`, `experiments.md`, `wizard.md`, `configuration.md`) that still used the
+  outdated `claude-sonnet-4-5`/`claude-sonnet-4-20250514` naming (incorrectly pairing the
+  Sonnet 4.5 generation name with the Sonnet 4 base-release date) — missed by the #5901/#5902
+  sweeps, which only covered `book/src/advanced/context.md`. Replaced with the dateless
+  `claude-sonnet-5` convention established there. Documentation-only change, no source code
+  modified (#6147).
 - **Dependencies**: `Cargo.lock` had drifted — `rmcp` was pinned to `2.0.0` while crates.io's
   latest release within the existing `^2.0.0` manifest range (`Cargo.toml` unchanged) had moved to
   `2.2.0`. Updated the lockfile to `rmcp 2.2.0` / `rmcp-macros 2.2.0`; `sse-stream` also bumped to

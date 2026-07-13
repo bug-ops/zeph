@@ -139,7 +139,7 @@ max_sessions = 4
 session_idle_timeout_secs = 1800
 terminal_timeout_secs = 120
 # permission_file = "~/.config/zeph/acp-permissions.toml"
-# available_models = ["claude:claude-sonnet-4-5", "ollama:llama3"]
+# available_models = ["claude:claude-sonnet-5", "ollama:llama3"]
 # transport = "stdio"             # "stdio", "http", or "both"
 # http_bind = "127.0.0.1:8080"
 ```
@@ -589,7 +589,7 @@ Each config option is assigned a category for IDE grouping:
 
 | Option | Category | Values |
 |--------|----------|--------|
-| `model` | `Model` | Model identifiers (e.g., `claude:claude-sonnet-4-5`, `ollama:llama2`) |
+| `model` | `Model` | Model identifiers (e.g., `claude:claude-sonnet-5`, `ollama:llama2`) |
 | `temperature` | `Model` | Presets: `precise` (0.2), `balanced` (0.7), `creative` (1.0) |
 | `thinking` | `ThoughtLevel` | Extended thinking mode (if supported by the model) |
 | `auto_approve` | `Other` | Boolean approval for automated actions |
@@ -660,7 +660,7 @@ If you configure `available_models`, the IDE can switch between LLM providers at
 ```toml
 [acp]
 available_models = [
-  "claude:claude-sonnet-4-5",
+  "claude:claude-sonnet-5",
   "openai:gpt-4o",
   "ollama:qwen3:14b",
 ]

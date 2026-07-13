@@ -138,7 +138,7 @@ Configure the Thompson Sampling model router (requires `router` feature):
 Configure autonomous self-experimentation:
 
 - **Enable autonomous experiments** — toggle the experiment engine on/off (default: disabled)
-- **Judge model** — model used for LLM-as-judge evaluation (default: `claude-sonnet-4-20250514`)
+- **Judge model** — model used for LLM-as-judge evaluation (default: `claude-sonnet-5`)
 - **Schedule automatic runs** — enable cron-based experiment sessions (default: disabled)
 - **Cron schedule** — 5-field cron expression for scheduled runs (default: `0 3 * * *`, daily at 03:00)
 

@@ -150,7 +150,7 @@ You are a helpful assistant. Complete the given task concisely.
 ---
 name: code-reviewer
 description: Reviews code changes for correctness and style
-model: claude-sonnet-4-20250514
+model: claude-sonnet-5
 background: false
 max_turns: 10
 memory: project
@@ -300,7 +300,7 @@ Use the `zeph agents` subcommand to list, inspect, create, edit, and delete sub-
 ```
 $ zeph agents list
 NAME             SCOPE                    DESCRIPTION                       MODEL
-code-reviewer    project/code-reviewer…   Reviews code for correctness      claude-sonnet-4-20250514
+code-reviewer    project/code-reviewer…   Reviews code for correctness      claude-sonnet-5
 test-writer      user/test-writer.md      Generates unit tests              -
 ```
 
@@ -311,7 +311,7 @@ $ zeph agents show code-reviewer
 Name:        code-reviewer
 Description: Reviews code for correctness
 Source:      project/code-reviewer.md
-Model:       claude-sonnet-4-20250514
+Model:       claude-sonnet-5
 Mode:        Default
 Max turns:   10
 Background:  false
@@ -327,7 +327,7 @@ You are a code reviewer...
 $ zeph agents create reviewer --description "Code review helper"
 Created .zeph/agents/reviewer.md
 
-$ zeph agents create reviewer --description "Code review helper" --model claude-sonnet-4-20250514
+$ zeph agents create reviewer --description "Code review helper" --model claude-sonnet-5
 Created .zeph/agents/reviewer.md
 
 $ zeph agents create reviewer --description "Global helper" --dir ~/.config/zeph/agents/

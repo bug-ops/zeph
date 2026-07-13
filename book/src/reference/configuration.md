@@ -695,7 +695,7 @@ broadcast_capacity = 256           # Skill/config reload broadcast backlog share
 # permission_file = "~/.config/zeph/acp-permissions.toml"  # Path to persisted permission decisions
 # auth_bearer_token = ""           # Bearer token for ACP HTTP/WS auth (env: ZEPH_ACP_AUTH_TOKEN); omit for open mode (local use only)
 discovery_enabled = true           # Expose GET /.well-known/acp.json manifest endpoint (default: true)
-available_models = []              # Models advertised to IDE for switching: ["claude:claude-sonnet-4-5", "ollama:llama3"] (default: [])
+available_models = []              # Models advertised to IDE for switching: ["claude:claude-sonnet-5", "ollama:llama3"] (default: [])
 additional_directories = []        # Extra workspace directories ACP clients may reference (default: [])
 auth_methods = ["agent"]           # Auth methods advertised in initialize (currently only "agent" supported) (default: ["agent"])
 message_ids_enabled = true         # Echo PromptRequest.message_id onto responses (requires unstable-message-id feature) (default: true)
@@ -804,7 +804,7 @@ output_dir = "/absolute/path/to/debug"  # Optional override; omit to use the pla
 # Requires `experiments` feature.
 # [experiments]
 # enabled = false
-# eval_model = "claude-sonnet-4-20250514"  # Model for LLM-as-judge (default: agent's model)
+# eval_model = "claude-sonnet-5"  # Model for LLM-as-judge (default: agent's model)
 # benchmark_file = "benchmarks/eval.toml"  # Prompt set for A/B comparison
 # max_experiments = 20                     # Max variations per session (default: 20)
 # max_wall_time_secs = 3600               # Wall-clock budget per session (default: 3600)
