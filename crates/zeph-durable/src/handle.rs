@@ -248,7 +248,7 @@ impl DurableContext {
         fields(execution_id = %self.execution_id.as_uuid())
     )]
     pub async fn promise<T>(&self) -> Result<DurablePromise<T>, DurableError> {
-        let step_id = self.checked_step_id()?;
+        let step_id = self.checked_step_id().await?;
         let promise_id = PromiseId::derive(self.execution_id, step_id);
 
         // Replay/resume: a row at this position means the promise was already created in a prior run.
@@ -378,7 +378,7 @@ impl DurableContext {
         fields(execution_id = %self.execution_id.as_uuid())
     )]
     pub async fn sleep_until(&self, due: SystemTime) -> Result<(), DurableError> {
-        let step_id = self.checked_step_id()?;
+        let step_id = self.checked_step_id().await?;
         let timer_id = TimerId::derive(self.execution_id, step_id);
         let due_ms = system_time_to_millis(due);
 
@@ -451,6 +451,43 @@ impl DurableContext {
         crate::promise::DurableHandle::new(self.backend.clone())
     }
 
+    /// Transition this execution to a terminal status (FR-DE / retention section).
+    ///
+    /// Consumers call this on the two production terminal transitions the journal itself never
+    /// observes: `Completed` when the unit of work this execution represents finishes
+    /// successfully, and `Failed` on an unrecoverable (non-retryable) error. `Aborted` is reserved
+    /// for the replay-divergence guard ([`DurableError::ReplayDivergence`]) and is set internally,
+    /// not by consumers.
+    ///
+    /// Idempotent: calling this more than once, or racing it against an internal `Aborted`
+    /// transition, is safe — only the first call to observe the execution as `running` applies
+    /// (see [`crate::journal::Journal::finalize`]). The retention sweep only reclaims a finalized execution after
+    /// its configured TTL, so a finalized-then-reopened execution (e.g. a resumed conversation)
+    /// automatically un-finalizes back to `running` on the next [`DurableContext::new`] with
+    /// `is_resume = true`, protecting it from a stale `finalized_at`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if the transition cannot be committed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn run(ctx: &zeph_durable::DurableContext) -> Result<(), zeph_durable::DurableError> {
+    /// use zeph_durable::ExecutionStatus;
+    ///
+    /// ctx.finalize(ExecutionStatus::Completed).await?;
+    /// # Ok(()) }
+    /// ```
+    #[tracing::instrument(
+        name = "durable.context.finalize",
+        skip(self),
+        fields(execution_id = %self.execution_id.as_uuid(), status = status.as_str())
+    )]
+    pub async fn finalize(&self, status: ExecutionStatus) -> Result<(), DurableError> {
+        self.backend.finalize(self.execution_id, status).await
+    }
+
     /// Await any in-flight background checkpoint folds — a turn-boundary / test barrier.
     ///
     /// The soft step-cap fold runs on a spawned task so it never blocks step dispatch; call this at
@@ -473,15 +510,30 @@ impl DurableContext {
     }
 
     /// Assign the next step id, rejecting it if it exceeds the per-execution step cap.
-    fn checked_step_id(&self) -> Result<StepId, DurableError> {
+    async fn checked_step_id(&self) -> Result<StepId, DurableError> {
         let step_id = self.assign_step_id();
-        self.enforce_step_cap(step_id)?;
+        self.enforce_step_cap(step_id).await?;
         Ok(step_id)
     }
 
     /// Reject `step_id` if it exceeds the per-execution step cap (`0` means uncapped).
-    fn enforce_step_cap(&self, step_id: StepId) -> Result<(), DurableError> {
+    ///
+    /// A hard-cap rejection finalizes the execution as `Aborted` (best-effort, its own failure
+    /// only logs) — the retention spec describes the hard cap as aborting the execution, so this
+    /// is the one terminal transition the durable crate fully owns and can finalize internally,
+    /// rather than leaving the execution `running` forever with no reclamation path (#6251 critic
+    /// S2). Idempotent per [`Journal::finalize`]'s `running`-only guard, so a caller that keeps
+    /// calling `step`/`promise`/`sleep_until` after the cap trips (each hitting this same path)
+    /// only finalizes once.
+    async fn enforce_step_cap(&self, step_id: StepId) -> Result<(), DurableError> {
         if self.max_steps_per_execution != 0 && step_id.value() >= self.max_steps_per_execution {
+            if let Err(error) = self
+                .backend
+                .finalize(self.execution_id, ExecutionStatus::Aborted)
+                .await
+            {
+                tracing::warn!(%error, "failed to mark step-cap-exceeded execution aborted");
+            }
             return Err(DurableError::StepCapExceeded {
                 cap: self.max_steps_per_execution,
             });
@@ -542,7 +594,7 @@ impl DurableContext {
         F: FnOnce(StepHandle) -> Fut + Send,
         Fut: Future<Output = Result<T, StepError>> + Send,
     {
-        self.enforce_step_cap(step_id)?;
+        self.enforce_step_cap(step_id).await?;
         // Soft cap (90%): fold a checkpoint on a background task, once per execution.
         self.maybe_checkpoint(step_id);
         let effect = desc.effect();
@@ -1279,6 +1331,28 @@ mod tests {
         h.shutdown().await;
     }
 
+    #[tokio::test]
+    async fn finalize_transitions_the_execution_to_the_given_status() {
+        // #6251: DurableContext::finalize is the ergonomic entry point production consumers use to
+        // reach the terminal transition the journal itself never observes.
+        let exec = ExecutionId::new();
+        let h = Harness::open(exec, false).await;
+        h.ctx
+            .finalize(ExecutionStatus::Completed)
+            .await
+            .expect("finalize succeeds");
+
+        let (status,): (String,) = zeph_db::query_as(zeph_db::sql!(
+            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(h.backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(status, "completed");
+        h.shutdown().await;
+    }
+
     /// Build a fresh context over a shared in-memory backend with a custom config (e.g. a small cap).
     fn context_with(
         local: &Arc<LocalBackend>,
@@ -1578,6 +1652,27 @@ mod tests {
             .await
             .unwrap_err();
         assert_matches!(err, DurableError::StepCapExceeded { cap: 1 });
+
+        // #6251 critic S2: the hard cap is the one terminal transition the durable crate fully
+        // owns — it must finalize the execution as Aborted itself rather than leaving it
+        // `running` forever with no reclamation path.
+        let (status, finalized_at): (String, Option<i64>) = zeph_db::query_as(zeph_db::sql!(
+            "SELECT status, finalized_at FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(local.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            status, "aborted",
+            "a step-cap-exceeded execution must finalize as aborted"
+        );
+        assert!(
+            finalized_at.is_some(),
+            "finalize must stamp finalized_at too, not just flip status — otherwise the \
+             retention sweep (gated on finalized_at, not status alone) still can't reclaim it"
+        );
+
         drop(ctx);
         drop(handle);
         task.await.unwrap();

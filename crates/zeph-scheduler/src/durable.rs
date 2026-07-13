@@ -27,7 +27,7 @@ use tracing::Instrument as _;
 use zeph_config::DurableConfig;
 use zeph_durable::{
     DurableBackendEnum, DurableContext, EffectIntentSubClass, ExecutionId, ExecutionKind,
-    JournalWriterHandle, LocalBackend, StepDescriptor, StepError,
+    ExecutionStatus, JournalWriterHandle, LocalBackend, StepDescriptor, StepError,
 };
 
 use crate::error::SchedulerError;
@@ -98,8 +98,12 @@ impl SchedulerDurableAdapter {
 /// crashed after `EffectIntent` was committed but before `StepResult`, `OnAmbiguous::Skip`
 /// documents the skip in the audit log without re-firing.
 ///
-/// When `fire` succeeds its `()` result is journaled. On error no `StepResult` is committed, so a
-/// future restart retries the fire.
+/// When `fire` succeeds its `()` result is journaled and the execution finalizes as `Completed`.
+/// On error no `StepResult` is committed and the execution finalizes as `Failed` — but if the
+/// caller's scheduler loop retries the same `(job_name, slot_ms)` on a later tick (`next_run` was
+/// never advanced), reopening the execution automatically un-finalizes it back to `running`
+/// ([`LocalBackend::open_execution`](zeph_durable::LocalBackend::open_execution)), so the retry is
+/// journaled onto the same row rather than orphaning a `Failed` one.
 ///
 /// # Errors
 ///
@@ -170,11 +174,31 @@ where
         )
         .map_err(|e| SchedulerError::TaskFailed(format!("durable descriptor error: {e}")))?;
 
-        ctx.step(desc, |_handle| async move {
-            fire().await.map_err(|e| StepError::new(e.to_string()))
-        })
-        .await
-        .map_err(|e| SchedulerError::TaskFailed(format!("durable step failed: {e}")))
+        let step_result = ctx
+            .step(desc, |_handle| async move {
+                fire().await.map_err(|e| StepError::new(e.to_string()))
+            })
+            .await;
+
+        // One execution per fire (keyed on job+slot, never revisited once the slot has passed),
+        // so it is finalized right after the step settles — otherwise the retention sweep could
+        // never reclaim these rows (#6251): `finalized_at` would stay NULL forever. Finalizing is
+        // best-effort: its own failure only logs and does not shadow the step's own error.
+        let terminal_status = if step_result.is_ok() {
+            ExecutionStatus::Completed
+        } else {
+            ExecutionStatus::Failed
+        };
+        if let Err(finalize_err) = ctx.finalize(terminal_status).await {
+            tracing::warn!(
+                error = %finalize_err,
+                job = job_name,
+                slot_ms,
+                "sched.durable.fire: failed to finalize scheduled-job execution"
+            );
+        }
+
+        step_result.map_err(|e| SchedulerError::TaskFailed(format!("durable step failed: {e}")))
     }
     .instrument(span)
     .await
@@ -264,13 +288,42 @@ mod tests {
         }
 
         async fn make_adapter() -> (SchedulerDurableAdapter, tokio::task::JoinHandle<()>) {
+            let (_local, adapter, task) = make_adapter_with_local(fast_config()).await;
+            (adapter, task)
+        }
+
+        /// Like `make_adapter`, but also returns the raw `LocalBackend` (so a test can read
+        /// `durable_executions` directly) and accepts a config, so a test can force a step to fail
+        /// by capping `max_payload_bytes` below the encoded step-result size.
+        async fn make_adapter_with_local(
+            config: DurableConfig,
+        ) -> (
+            Arc<LocalBackend>,
+            SchedulerDurableAdapter,
+            tokio::task::JoinHandle<()>,
+        ) {
             let local = Arc::new(LocalBackend::open(":memory:", 1_048_576).await.unwrap());
             local.init().await.unwrap();
             let backend = Arc::new(DurableBackendEnum::Local(local.clone()));
-            let cfg = Arc::new(fast_config());
-            let (writer, handle) = JournalWriter::new(local, &cfg);
+            let cfg = Arc::new(config);
+            let (writer, handle) = JournalWriter::new(local.clone(), &cfg);
             let task = tokio::spawn(writer.run()); // EXEMPT: test-only helper
-            (SchedulerDurableAdapter::new(backend, handle, cfg), task)
+            (
+                local,
+                SchedulerDurableAdapter::new(backend, handle, cfg),
+                task,
+            )
+        }
+
+        async fn execution_status(local: &LocalBackend, exec: ExecutionId) -> String {
+            let (status,): (String,) = zeph_db::query_as(zeph_db::sql!(
+                "SELECT status FROM durable_executions WHERE execution_id = ?"
+            ))
+            .bind(exec.as_uuid().to_string())
+            .fetch_one(local.pool())
+            .await
+            .unwrap();
+            status
         }
 
         /// First fire executes the closure and journals the result.
@@ -332,6 +385,43 @@ mod tests {
                 2,
                 "different slot_ms must produce a separate execution and run"
             );
+        }
+
+        #[tokio::test]
+        async fn fire_with_durable_finalizes_the_execution_as_completed() {
+            // #6251: fire_with_durable must finalize its one-shot execution on success, otherwise
+            // the retention sweep can never reclaim it (`finalized_at` stays NULL forever).
+            let (local, adapter, _task) = make_adapter_with_local(fast_config()).await;
+
+            fire_with_durable(&adapter, "test-job", 1_000, || async { Ok(()) })
+                .await
+                .unwrap();
+
+            let exec = derive_execution_id("test-job", 1_000);
+            assert_eq!(execution_status(&local, exec).await, "completed");
+        }
+
+        #[tokio::test]
+        async fn fire_with_durable_finalizes_the_execution_as_failed_on_fire_error() {
+            // #6251: when the caller's fire body itself fails, the execution must finalize as
+            // `Failed` rather than being left `running` forever, while the original error is still
+            // propagated to the caller.
+            let (local, adapter, _task) = make_adapter_with_local(fast_config()).await;
+
+            let err = fire_with_durable(&adapter, "test-job", 1_000, || async {
+                Err(SchedulerError::TaskFailed("boom".to_string()))
+            })
+            .await
+            .expect_err("the fire body's error must propagate");
+            // The step-failure message is metadata-only by design (INV-5) — the closure's own
+            // error detail is attached as the `source`, not inlined into `Display`.
+            assert!(
+                matches!(&err, SchedulerError::TaskFailed(_)),
+                "unexpected error: {err:?}"
+            );
+
+            let exec = derive_execution_id("test-job", 1_000);
+            assert_eq!(execution_status(&local, exec).await, "failed");
         }
     }
 }

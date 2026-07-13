@@ -183,6 +183,13 @@ fn build_budget_ctx(
 /// being wrapped into a `DurableBackendEnum`.  When encryption is disabled, pass a backend
 /// without a cipher; the journal will store plaintext payloads (development mode only).
 ///
+/// A budget execution is a one-shot write: it opens fresh, writes its single step, and is never
+/// revisited (the next pause derives a new `ExecutionId` from the incremented generation), so the
+/// execution is finalized immediately after the step settles — `Completed` on success, `Failed` on
+/// a step-write error (the error is still propagated to the caller; finalizing is best-effort and
+/// its own failure is only logged, per [`DurableContext::finalize`]). Without this the retention
+/// sweep could never reclaim these rows (#6251): `finalized_at` would stay `NULL` forever.
+///
 /// # Errors
 ///
 /// Returns [`DurableError`] if the backend cannot be opened or the step write fails.
@@ -220,12 +227,27 @@ pub async fn journal_budget(
     let ctx = build_budget_ctx(exec_id, false, backend, writer, config);
 
     let desc = StepDescriptor::idempotent(BUDGET_STEP_NAME, BUDGET_STEP_FP.to_vec());
-    ctx.step(desc, move |_handle| async move {
-        Ok::<ReplanBudgetSnapshot, zeph_durable::step::StepError>(snapshot)
-    })
-    .await?;
+    let result = ctx
+        .step(desc, move |_handle| async move {
+            Ok::<ReplanBudgetSnapshot, zeph_durable::step::StepError>(snapshot)
+        })
+        .await;
 
-    Ok(())
+    let terminal_status = if result.is_ok() {
+        zeph_durable::ExecutionStatus::Completed
+    } else {
+        zeph_durable::ExecutionStatus::Failed
+    };
+    if let Err(finalize_err) = ctx.finalize(terminal_status).await {
+        tracing::warn!(
+            error = %finalize_err,
+            graph_id = %graph_id,
+            generation,
+            "orch.durable.budget_journal: failed to finalize budget execution"
+        );
+    }
+
+    result.map(|_| ())
 }
 
 /// Restore the replan budget for a graph that is being resumed.
@@ -381,13 +403,35 @@ mod tests {
         }
 
         async fn make_backend() -> (Arc<DurableBackendEnum>, JournalWriterHandle) {
+            let (_local, backend, handle) = make_backend_with_local().await;
+            (backend, handle)
+        }
+
+        /// Like `make_backend`, but also returns the raw `LocalBackend` so tests can read
+        /// `durable_executions` directly.
+        async fn make_backend_with_local() -> (
+            Arc<LocalBackend>,
+            Arc<DurableBackendEnum>,
+            JournalWriterHandle,
+        ) {
             let local = LocalBackend::open(":memory:", 1_048_576).await.unwrap();
             local.init().await.unwrap();
             let local = Arc::new(local);
             let backend = Arc::new(DurableBackendEnum::Local(local.clone()));
-            let (writer, handle) = JournalWriter::new(local, &test_config());
+            let (writer, handle) = JournalWriter::new(local.clone(), &test_config());
             tokio::spawn(async move { writer.run().await }); // EXEMPT: test-only helper
-            (backend, handle)
+            (local, backend, handle)
+        }
+
+        async fn execution_status(local: &LocalBackend, exec: ExecutionId) -> String {
+            let (status,): (String,) = zeph_db::query_as(zeph_db::sql!(
+                "SELECT status FROM durable_executions WHERE execution_id = ?"
+            ))
+            .bind(exec.as_uuid().to_string())
+            .fetch_one(local.pool())
+            .await
+            .unwrap();
+            status
         }
 
         #[tokio::test]
@@ -482,6 +526,63 @@ mod tests {
                 restored.global_replan_count, 2,
                 "restore should pick the latest generation"
             );
+        }
+
+        #[tokio::test]
+        async fn journal_budget_finalizes_the_execution_as_completed() {
+            // #6251: journal_budget must finalize its one-shot execution on success, otherwise the
+            // retention sweep can never reclaim it (`finalized_at` stays NULL forever).
+            let (local, backend, writer) = make_backend_with_local().await;
+            let config = test_config();
+            let graph_id = GraphId::new();
+            let generation: u32 = 0;
+
+            journal_budget(
+                &graph_id,
+                generation,
+                backend,
+                writer.clone(),
+                &config,
+                ReplanBudgetSnapshot::default(),
+            )
+            .await
+            .unwrap();
+            writer.flush().await.unwrap();
+
+            let exec = budget_exec_id(&graph_id, generation);
+            assert_eq!(execution_status(&local, exec).await, "completed");
+        }
+
+        #[tokio::test]
+        async fn journal_budget_finalizes_the_execution_as_failed_on_step_error() {
+            // #6251: when the step write itself fails (e.g. the encoded snapshot exceeds
+            // `max_payload_bytes`), the execution must finalize as `Failed` rather than being left
+            // `running` forever, while the original error is still propagated to the caller.
+            let (local, backend, writer) = make_backend_with_local().await;
+            let config = DurableConfig {
+                max_payload_bytes: 1,
+                ..test_config()
+            };
+            let graph_id = GraphId::new();
+            let generation: u32 = 0;
+
+            let err = journal_budget(
+                &graph_id,
+                generation,
+                backend,
+                writer.clone(),
+                &config,
+                ReplanBudgetSnapshot::default(),
+            )
+            .await
+            .expect_err("a 1-byte payload cap must reject the encoded snapshot");
+            assert!(
+                matches!(err, DurableError::PayloadTooLarge { .. }),
+                "unexpected error: {err:?}"
+            );
+
+            let exec = budget_exec_id(&graph_id, generation);
+            assert_eq!(execution_status(&local, exec).await, "failed");
         }
     }
 }

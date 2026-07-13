@@ -355,6 +355,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tokio::sync::Mutex<()>`, held across the full quota-check-through-registration sequence,
   making in-process admission a hard guarantee. The existing cross-process soft cap (no locking
   across separate zeph sessions sharing the same `root`) is unchanged (#6250).
+- **Durable execution**: `finalize(Completed/Failed)` was never called in production — every
+  consumer (`zeph-orchestration`'s budget journal, `zeph-scheduler`'s job fire, `zeph-core`'s
+  per-conversation `AgentTurn`) drove steps through the durable journal but never marked the
+  execution row terminal, so `durable_executions.status` stayed `'running'` forever and the
+  TTL-based retention prune sweep could never reclaim any row. Wired `finalize(Completed)` on
+  success and `finalize(Failed)` on unrecoverable step failure into all three production execution
+  models, plus `finalize(Aborted)` on the hard step-cap (`DurableError::StepCapExceeded`), matching
+  the already-documented retention contract (`specs/064-durable-execution/spec.md`). Made
+  `finalize` idempotent against a race with the internal replay-divergence `Aborted` transition, and
+  made reopening a finalized execution (e.g. a resumed conversation, a same-slot scheduler retry)
+  automatically un-finalize it back to `running` so the retention sweep can never prune a row that's
+  actively being reused — closed a TOCTOU window between the prune sweep's candidate selection and
+  a concurrent reopen by moving the selection inside the same write transaction as the deletes.
+  Known residual gap, intentionally not addressed here: an execution that ends via an ungraceful
+  process exit (crash, OOM, `SIGKILL`) still has no reclamation path if never resumed — this needs a
+  separate periodic staleness-sweep mechanism, tracked in a follow-up issue (#6251).
 
 ### Added
 

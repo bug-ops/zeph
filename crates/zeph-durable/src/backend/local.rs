@@ -357,11 +357,29 @@ impl LocalBackend {
     /// row for a resumed one (returning `true`). The journal's foreign key requires this row before
     /// any entry is appended, so callers open the execution first.
     ///
+    /// Reopening a row previously [`finalize`](Journal::finalize)d as `completed` or `failed`
+    /// un-finalizes it: status resets to `running` and `finalized_at` clears. A caller reopening an
+    /// execution is, by definition, still using it, so the retention sweep (gated on
+    /// `finalized_at`) must not consider it prunable while it does — without this, a long-lived
+    /// execution finalized at one process's graceful shutdown and legitimately resumed by a later
+    /// process (e.g. a per-conversation `AgentTurn` execution) would keep a stale `finalized_at`
+    /// and could be pruned out from under its still-active journal. `aborted` rows are left
+    /// untouched: divergence recovery reopens the same row on purpose and starts a fresh replay
+    /// cursor without needing the status reset.
+    ///
+    /// The un-finalize is attempted as a single guarded `UPDATE` (no preceding `SELECT`) so there
+    /// is no read-then-write window against a concurrent prune sweep (#6251 critic S1): if the row
+    /// was deleted by `prune` between an earlier observation and this call, the `UPDATE` simply
+    /// matches zero rows rather than silently resurrecting a half-deleted row. A zero-row `UPDATE`
+    /// falls back to checking whether the row exists at all (already `running`/`aborted`, or
+    /// genuinely gone) before deciding between reporting a resume or inserting a fresh execution —
+    /// so this never reports `is_resume = true` for a row that turned out not to exist.
+    ///
     /// Span: `durable.backend.open`.
     ///
     /// # Errors
     ///
-    /// Returns [`DurableError::Storage`] if the lookup or insert fails.
+    /// Returns [`DurableError::Storage`] if the lookup, reset, or insert fails.
     pub async fn open_execution(
         &self,
         id: ExecutionId,
@@ -375,6 +393,28 @@ impl LocalBackend {
         );
         async move {
             let exec = id.as_uuid().to_string();
+
+            // Attempt the un-finalize directly, with no preceding SELECT: this is the only write
+            // this call needs to make for an existing terminal row, so there is no window between
+            // "observe completed/failed" and "reset to running" for a concurrent prune to act in.
+            let reopened = zeph_db::query(sql!(
+                "UPDATE durable_executions SET status = 'running', updated_at = ?, finalized_at = NULL
+                 WHERE execution_id = ? AND status IN ('completed', 'failed')"
+            ))
+            .bind(now_unix_millis())
+            .bind(&exec)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("open", e))?;
+            if reopened.rows_affected() > 0 {
+                tracing::Span::current().record("is_resume", true);
+                return Ok(true);
+            }
+
+            // Zero rows: either the row doesn't exist, or it exists but wasn't terminal (already
+            // `running`/`aborted`, no reset needed). Distinguish the two — if a concurrent prune
+            // deleted a terminal row between any earlier observation and this check, this SELECT
+            // sees the authoritative post-delete state instead of a stale belief that it's there.
             let existing: Option<(String,)> = zeph_db::query_as(sql!(
                 "SELECT status FROM durable_executions WHERE execution_id = ?"
             ))
@@ -1041,11 +1081,46 @@ impl LocalBackend {
     /// and execution rows in a single transaction (children first, to respect the foreign keys).
     /// Returns the number of executions removed; the retention loop stops once a batch returns fewer
     /// than `batch`.
+    ///
+    /// The candidate-selection `SELECT` runs *inside* the same `begin_write` transaction as the
+    /// deletes (not on the autocommit pool beforehand), closing the race where a concurrent
+    /// `open_execution` reopen (un-finalize, #6251) lands between "select prunable ids" and
+    /// "delete them" — without this, a legitimately-resumed execution could be deleted out from
+    /// under its own reopen. `SQLite`'s `BEGIN IMMEDIATE` (via `begin_write`) already serializes
+    /// writers at the file level, so the `SELECT` alone is enough there; `PostgreSQL` needs an
+    /// explicit `SELECT ... FOR UPDATE` first to take row locks on the same candidates before
+    /// they're read, since a plain `BEGIN` does not otherwise block a concurrent `UPDATE` on those
+    /// rows (mirrors the `BEGIN IMMEDIATE` / `SELECT FOR UPDATE` split in `goal/store.rs`).
     async fn delete_prune_batch(
         &self,
         cutoffs: crate::retention::PruneCutoffs,
         batch: u64,
     ) -> Result<u64, DurableError> {
+        let mut tx = zeph_db::begin_write(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("prune", e))?;
+
+        // Postgres only: lock the same candidate rows before reading them, so a concurrent
+        // `open_execution` reopen UPDATE on one of these rows blocks until this transaction
+        // commits (and then no longer matches, since the SELECT below re-reads post-commit) or
+        // this transaction rolls back. Bounded by the same ORDER BY/LIMIT as the real read below
+        // so the lock's blast radius matches the batch, not the whole prunable backlog.
+        #[cfg(feature = "postgres")]
+        zeph_db::query(sql!(
+            "SELECT execution_id FROM durable_executions
+             WHERE finalized_at IS NOT NULL
+               AND ( (status = 'completed' AND finalized_at <= ?)
+                  OR (status IN ('failed', 'aborted') AND finalized_at <= ?) )
+             ORDER BY finalized_at LIMIT ?
+             FOR UPDATE"
+        ))
+        .bind(cutoffs.completed_before_ms)
+        .bind(cutoffs.failed_before_ms)
+        .bind(i64::try_from(batch).unwrap_or(i64::MAX))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DurableError::storage("prune", e))?;
+
         let ids: Vec<(String,)> = zeph_db::query_as(sql!(
             "SELECT execution_id FROM durable_executions
              WHERE finalized_at IS NOT NULL
@@ -1056,32 +1131,49 @@ impl LocalBackend {
         .bind(cutoffs.completed_before_ms)
         .bind(cutoffs.failed_before_ms)
         .bind(i64::try_from(batch).unwrap_or(i64::MAX))
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| DurableError::storage("prune", e))?;
         if ids.is_empty() {
+            tx.commit()
+                .await
+                .map_err(|e| DurableError::storage("prune", e))?;
             return Ok(0);
         }
         let journal = sql!("DELETE FROM durable_journal WHERE execution_id = ?");
         let promises = sql!("DELETE FROM durable_promises WHERE execution_id = ?");
         let timers = sql!("DELETE FROM durable_timers WHERE execution_id = ?");
-        let executions = sql!("DELETE FROM durable_executions WHERE execution_id = ?");
-        let mut tx = zeph_db::begin_write(&self.pool)
-            .await
-            .map_err(|e| DurableError::storage("prune", e))?;
+        // Re-guarded by the same status/finalized_at predicate as the SELECT above (not just
+        // `execution_id = ?`) — belt and suspenders alongside the transactional read above.
+        let executions = sql!(
+            "DELETE FROM durable_executions
+             WHERE execution_id = ?
+               AND finalized_at IS NOT NULL
+               AND ( (status = 'completed' AND finalized_at <= ?)
+                  OR (status IN ('failed', 'aborted') AND finalized_at <= ?) )"
+        );
+        let mut removed = 0u64;
         for (id,) in &ids {
-            for stmt in [journal, promises, timers, executions] {
+            for stmt in [journal, promises, timers] {
                 zeph_db::query(stmt)
                     .bind(id)
                     .execute(&mut *tx)
                     .await
                     .map_err(|e| DurableError::storage("prune", e))?;
             }
+            let result = zeph_db::query(executions)
+                .bind(id)
+                .bind(cutoffs.completed_before_ms)
+                .bind(cutoffs.failed_before_ms)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| DurableError::storage("prune", e))?;
+            removed += result.rows_affected();
         }
         tx.commit()
             .await
             .map_err(|e| DurableError::storage("prune", e))?;
-        Ok(ids.len() as u64)
+        Ok(removed)
     }
 
     /// Seal a plaintext payload, or pass it through verbatim when no cipher is configured.
@@ -1508,9 +1600,13 @@ impl Journal for LocalBackend {
             let mut tx = zeph_db::begin_write(&self.pool)
                 .await
                 .map_err(|e| DurableError::storage("finalize", e))?;
+            // `AND status = 'running'` makes this a one-shot transition: whichever of a concurrent
+            // divergence-triggered `Aborted` or a caller's `Completed`/`Failed` commits first wins,
+            // and the loser's UPDATE affects zero rows instead of clobbering the winner's terminal
+            // status (finalize is otherwise safe to call more than once per execution).
             zeph_db::query(sql!(
                 "UPDATE durable_executions SET status = ?, updated_at = ?, finalized_at = ?
-                 WHERE execution_id = ?"
+                 WHERE execution_id = ? AND status = 'running'"
             ))
             .bind(status.as_str())
             .bind(now)
@@ -2170,6 +2266,354 @@ mod tests {
         .unwrap();
         assert_eq!(status, "completed");
         assert!(finalized.is_some(), "a terminal status stamps finalized_at");
+    }
+
+    #[tokio::test]
+    async fn finalize_is_a_noop_once_already_terminal() {
+        // #6251: finalize must be safe to call more than once (e.g. a caller's own `Completed`
+        // racing the divergence guard's `Aborted`) — whichever status lands first wins.
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend
+            .finalize(exec, ExecutionStatus::Completed)
+            .await
+            .unwrap();
+
+        // A later call with a different terminal status must not overwrite the first.
+        backend
+            .finalize(exec, ExecutionStatus::Failed)
+            .await
+            .unwrap();
+
+        let (status,): (String,) = zeph_db::query_as(sql!(
+            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            status, "completed",
+            "the first terminal status must stick; a later finalize call is a no-op"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_after_abort_is_a_noop() {
+        // #6251: the reverse direction of the divergence race — the internal `Aborted` transition
+        // (replay-divergence guard) commits first, so a consumer's later own `Completed`/`Failed`
+        // call must be a no-op rather than resurrecting the row out of its aborted state.
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend
+            .finalize(exec, ExecutionStatus::Aborted)
+            .await
+            .unwrap();
+
+        backend
+            .finalize(exec, ExecutionStatus::Completed)
+            .await
+            .unwrap();
+
+        let (status,): (String,) = zeph_db::query_as(sql!(
+            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            status, "aborted",
+            "an aborted execution must not be overwritten by a later Completed/Failed call"
+        );
+    }
+
+    #[tokio::test]
+    async fn reopening_a_finalized_execution_resets_it_to_running() {
+        // #6251: a finalized execution that is legitimately reopened (e.g. a resumed conversation)
+        // must not keep a stale `finalized_at` — otherwise the retention sweep could prune a row
+        // that is still receiving new journal writes.
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend
+            .finalize(exec, ExecutionStatus::Completed)
+            .await
+            .unwrap();
+
+        let is_resume = backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        assert!(is_resume, "the row already existed, so this is a resume");
+
+        let (status, finalized): (String, Option<i64>) = zeph_db::query_as(sql!(
+            "SELECT status, finalized_at FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            status, "running",
+            "reopening a completed execution must un-finalize it"
+        );
+        assert!(
+            finalized.is_none(),
+            "reopening must clear the stale finalized_at"
+        );
+    }
+
+    #[tokio::test]
+    async fn reopening_a_failed_execution_resets_it_to_running() {
+        // #6251: same guarantee as `reopening_a_finalized_execution_resets_it_to_running`, but for
+        // the `Failed` terminal status — e.g. a scheduler retry of the same (job_name, slot_ms)
+        // after the previous fire failed must not orphan a `Failed` row.
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend
+            .finalize(exec, ExecutionStatus::Failed)
+            .await
+            .unwrap();
+
+        let is_resume = backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        assert!(is_resume, "the row already existed, so this is a resume");
+
+        let (status, finalized): (String, Option<i64>) = zeph_db::query_as(sql!(
+            "SELECT status, finalized_at FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            status, "running",
+            "reopening a failed execution must un-finalize it"
+        );
+        assert!(
+            finalized.is_none(),
+            "reopening must clear the stale finalized_at"
+        );
+    }
+
+    #[tokio::test]
+    async fn reopening_an_aborted_execution_leaves_it_untouched() {
+        // Divergence recovery reopens the same row on purpose (a fresh replay cursor, not a status
+        // reset) — only `completed`/`failed` rows are un-finalized on reopen, `aborted` is not.
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend
+            .finalize(exec, ExecutionStatus::Aborted)
+            .await
+            .unwrap();
+
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+
+        let (status,): (String,) = zeph_db::query_as(sql!(
+            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            status, "aborted",
+            "reopening must not un-finalize an aborted execution"
+        );
+    }
+
+    #[tokio::test]
+    async fn reopen_of_a_row_deleted_out_from_under_it_starts_fresh() {
+        // #6251 critic S1: simulates the tail of the prune-vs-reopen race — a concurrent prune
+        // sweep deletes the row entirely before the reopen's guarded UPDATE runs. The guarded
+        // UPDATE must match zero rows (not resurrect a half-deleted row), and the existence
+        // fallback must see the row is genuinely gone and start a fresh execution rather than
+        // falsely reporting `is_resume = true` for a row that no longer exists.
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend
+            .finalize(exec, ExecutionStatus::Completed)
+            .await
+            .unwrap();
+
+        // Simulate the prune sweep's delete completing before the reopen runs.
+        zeph_db::query(sql!(
+            "DELETE FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .execute(backend.pool())
+        .await
+        .unwrap();
+
+        let is_resume = backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        assert!(
+            !is_resume,
+            "a row deleted by a concurrent prune must be reported as a fresh execution, not a resume"
+        );
+
+        let (status,): (String,) = zeph_db::query_as(sql!(
+            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(status, "running", "the fresh row starts running");
+    }
+
+    #[tokio::test]
+    async fn prune_does_not_delete_a_row_reopened_since_it_was_finalized() {
+        // #6251 critic S1: a row finalized, then legitimately reopened (un-finalized back to
+        // running) before prune runs, must not be deleted even though prune's cutoff would have
+        // matched its now-stale-if-it-were-still-finalized state.
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend.append(step_result(exec, 0, b"x")).await.unwrap();
+        zeph_db::query(sql!(
+            "UPDATE durable_executions SET status = 'completed', finalized_at = 1000 WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .execute(backend.pool())
+        .await
+        .unwrap();
+
+        // A legitimate resume reopens and un-finalizes it before the prune sweep runs.
+        let is_resume = backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        assert!(is_resume);
+
+        let policy = RetentionPolicy {
+            ttl_completed_secs: 1,
+            prune_batch_size: 10,
+            ..RetentionPolicy::default()
+        };
+        let deleted = backend.prune(&policy).await.unwrap();
+        assert_eq!(
+            deleted, 0,
+            "a reopened (un-finalized) execution must not be pruned"
+        );
+        assert_eq!(
+            backend.read_execution(exec).await.unwrap().len(),
+            1,
+            "the execution's journal must survive"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_prune_and_reopen_never_lose_or_corrupt_the_row() {
+        // #6251 critic S1: the deterministic tests above exercise each ordering of the prune-vs-
+        // reopen race one step at a time; this test drives the two operations as genuinely
+        // concurrent tasks against a real multi-connection pool (file-backed — `:memory:` forces
+        // a single connection, per `zeph-db/src/pool.rs`'s `connect_sqlite`, which would serialize
+        // the two calls trivially and prove nothing about the locking fix). Runs many trials with
+        // fresh executions so the two tasks' actual scheduling order varies across iterations,
+        // covering both "prune's tx starts first" and "reopen's UPDATE starts first" without
+        // needing artificial delay injection into the DB layer.
+        //
+        // Invariant checked every trial, regardless of which task wins: neither operation errors,
+        // and the row is never lost — it either stays `running` (reopen won, or ran after prune's
+        // read already excluded it) or is deleted and then reinserted fresh by reopen's
+        // does-not-exist fallback (prune won). It must never end up half-deleted (FK violation on
+        // a later journal append) or stuck `completed` with a live journal.
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+        let backend = Arc::new(LocalBackend::open(&db_url, 1_048_576).await.unwrap());
+        backend.init().await.unwrap();
+
+        let policy = RetentionPolicy {
+            ttl_completed_secs: 1,
+            prune_batch_size: 10,
+            ..RetentionPolicy::default()
+        };
+
+        for _ in 0..20 {
+            let exec = ExecutionId::new();
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+            backend.append(step_result(exec, 0, b"x")).await.unwrap();
+            // Backdate finalized_at so this row is immediately prune-eligible.
+            zeph_db::query(sql!(
+                "UPDATE durable_executions SET status = 'completed', finalized_at = 1000 WHERE execution_id = ?"
+            ))
+            .bind(exec.as_uuid().to_string())
+            .execute(backend.pool())
+            .await
+            .unwrap();
+
+            let reopen_backend = backend.clone();
+            let reopen = tokio::spawn(async move {
+                reopen_backend
+                    .open_execution(exec, ExecutionKind::AgentTurn)
+                    .await
+            });
+            let prune_backend = backend.clone();
+            let policy_for_task = policy.clone();
+            let prune = tokio::spawn(async move { prune_backend.prune(&policy_for_task).await });
+
+            let (reopen_result, prune_result) = tokio::join!(reopen, prune);
+            reopen_result
+                .expect("reopen task must not panic")
+                .expect("reopen must not error under concurrent prune");
+            prune_result
+                .expect("prune task must not panic")
+                .expect("prune must not error under a concurrent reopen");
+
+            let (status,): (String,) = zeph_db::query_as(sql!(
+                "SELECT status FROM durable_executions WHERE execution_id = ?"
+            ))
+            .bind(exec.as_uuid().to_string())
+            .fetch_one(backend.pool())
+            .await
+            .expect(
+                "the row must exist under either race outcome — reopened-running, or \
+                 deleted-then-reinserted-fresh-running by reopen's fallback",
+            );
+            assert_eq!(
+                status, "running",
+                "whichever task wins, the row must end up running — never left completed \
+                 (orphaned from a live journal) or absent"
+            );
+        }
     }
 
     #[tokio::test]

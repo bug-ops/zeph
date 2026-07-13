@@ -206,15 +206,17 @@ impl<C: Channel> Agent<C> {
     /// `durable_ctx_init_attempted` so it never re-derives the execution again. Without this
     /// reset, every turn after a conversation switch would keep journaling under the *old*
     /// conversation's execution — silently mixing two conversations' turn state and defeating the
-    /// per-conversation crash-resume the keying is meant to provide. Flushes and aborts the old
-    /// writer (best-effort, same 2s deadline as `flush_durable_writer` on shutdown) before
-    /// clearing the session's durable fields — including `durable_execution_lock` (INV-15,
+    /// per-conversation crash-resume the keying is meant to provide. Flushes the old writer,
+    /// finalizes the old execution as `Completed` (best-effort — this session is done with it, but
+    /// per #6251 a later `/conv resume` back to it reopens and un-finalizes the row, so nothing is
+    /// lost), then aborts the writer task (same 2s deadline as `flush_durable_writer` on shutdown)
+    /// before clearing the session's durable fields — including `durable_execution_lock` (INV-15,
     /// #6122), releasing the old execution's advisory lock so another process (or a later switch
     /// back in this same process) may open it — so the next durable-gated call re-derives a fresh
     /// execution for the new `conversation_id`.
     pub(in crate::agent) async fn reset_durable_ctx_for_conversation_switch(&mut self) {
+        let flush_deadline = std::time::Duration::from_secs(2);
         if let Some(ref writer) = self.services.session.durable_writer {
-            let flush_deadline = std::time::Duration::from_secs(2);
             match tokio::time::timeout(flush_deadline, writer.flush()).await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
@@ -226,6 +228,27 @@ impl<C: Channel> Agent<C> {
                 Err(_) => tracing::warn!(
                     "durable agent_turns writer: flush timed out on conversation switch"
                 ),
+            }
+        }
+        if let Some(ref ctx) = self.services.session.durable_ctx {
+            match tokio::time::timeout(
+                flush_deadline,
+                ctx.finalize(zeph_durable::ExecutionStatus::Completed),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        error = %e,
+                        "durable agent_turns: failed to finalize execution on conversation switch"
+                    );
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "durable agent_turns: finalize timed out on conversation switch"
+                    );
+                }
             }
         }
         if let Some(h) = self.services.session.durable_writer_task.take() {
@@ -376,6 +399,50 @@ mod tests {
         assert_ne!(
             first_exec_id, second_exec_id,
             "a conversation switch must rebind the P1 execution to the new conversation_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_switch_finalizes_the_old_execution_as_completed() {
+        // #6251: a conversation switch must finalize the *old* conversation's P1 execution as
+        // `Completed`, otherwise it stays `running` forever and the retention sweep can never
+        // reclaim it. `:memory:` can't be re-opened from a second connection to verify this, so
+        // this test uses a real file-backed sqlite db instead (same pattern as
+        // `legacy_shared_durable_db_upgrade_path_does_not_collide` below).
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+
+        let mut agent = agent_with_conversation();
+        agent.services.session.durable_agent_turns_config = Some(zeph_config::DurableConfig {
+            enabled: true,
+            agent_turns: true,
+            ..zeph_config::DurableConfig::default()
+        });
+        agent.services.session.durable_agent_turns_db_url = Some(db_url.clone());
+
+        agent.ensure_session_durable_ctx().await;
+        let old_exec_id = agent
+            .services
+            .session
+            .durable_ctx
+            .as_ref()
+            .expect("durable_ctx should be populated")
+            .execution_id();
+
+        agent.reset_durable_ctx_for_conversation_switch().await;
+
+        let backend = zeph_durable::LocalBackend::open(&db_url, 1_048_576)
+            .await
+            .unwrap();
+        let summaries = backend.list_executions(None, None, 10).await.unwrap();
+        let old = summaries
+            .iter()
+            .find(|s| s.execution_id == old_exec_id)
+            .expect("the old execution's row must still exist");
+        assert_eq!(
+            old.status,
+            zeph_durable::ExecutionStatus::Completed,
+            "the old conversation's execution must finalize as Completed on switch"
         );
     }
 

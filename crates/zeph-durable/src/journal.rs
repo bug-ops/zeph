@@ -273,6 +273,11 @@ pub trait Journal: Send + Sync {
 
     /// Transition an execution to a terminal status.
     ///
+    /// Idempotent and safe to race: the transition only applies while the execution is still
+    /// `running`, so calling this more than once for the same execution (e.g. a divergence-driven
+    /// `Aborted` racing a caller's own `Completed`/`Failed`) is a no-op after the first call commits
+    /// — whichever status lands first wins and is never overwritten by a later one.
+    ///
     /// # Errors
     ///
     /// Returns [`DurableError::JournalUnavailable`] if the transition cannot be committed.

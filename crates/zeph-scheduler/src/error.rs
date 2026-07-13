@@ -36,7 +36,7 @@ pub enum SchedulerError {
     /// Another `zeph serve` instance is already running with the given PID.
     ///
     /// Returned by [`crate::PidFile::acquire`] when the pid file is locked by another process.
-    #[cfg(unix)]
+    #[cfg(all(unix, feature = "daemon"))]
     #[error(
         "daemon pid file is locked: another zeph serve instance appears to be running (pid {pid})"
     )]

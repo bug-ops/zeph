@@ -433,8 +433,9 @@ impl<C: Channel> Agent<C> {
         tracing::info!("agent shutdown complete");
     }
 
-    /// Flush buffered durable journal entries then abort the writer task, for both the P2
-    /// (orchestration) and P1 (agent-turn, #5452) durable adapters.
+    /// Flush buffered durable journal entries, finalize the P1 agent-turn execution, then abort
+    /// the writer tasks, for both the P2 (orchestration) and P1 (agent-turn, #5452) durable
+    /// adapters.
     ///
     /// `flush()` has a built-in ack timeout; the outer 2 s cap ensures shutdown never
     /// hangs beyond that. Errors are logged as warnings — shutdown must not fail.
@@ -461,8 +462,181 @@ impl<C: Channel> Agent<C> {
                 Err(_) => tracing::warn!("durable agent_turns writer: flush timed out on shutdown"),
             }
         }
+        // Finalize the P1 execution as Completed now that its last turn's steps are flushed. The
+        // execution spans the whole conversation (keyed on ConversationId, #5452), not a single
+        // turn, so this is not "the conversation is over" — it just makes the row eligible for
+        // the TTL prune sweep if the conversation is never resumed. A later resume of the *same*
+        // conversation reopens this row and automatically un-finalizes it back to `running`
+        // (`LocalBackend::open_execution`, #6251), so nothing is lost if the user comes back.
+        // Bounded by the same 2 s deadline as the flush calls above, so this doc comment's "never
+        // hangs beyond that" claim stays accurate.
+        if let Some(ref ctx) = self.services.session.durable_ctx {
+            match tokio::time::timeout(
+                flush_deadline,
+                ctx.finalize(zeph_durable::ExecutionStatus::Completed),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        error = %e,
+                        "durable agent_turns: failed to finalize execution on shutdown"
+                    );
+                }
+                Err(_) => tracing::warn!("durable agent_turns: finalize timed out on shutdown"),
+            }
+        }
         if let Some(h) = self.services.session.durable_writer_task.take() {
             h.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::agent::agent_tests::*;
+
+    fn agent_with_conversation() -> crate::agent::Agent<MockChannel> {
+        let provider = mock_provider(vec!["ok".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.memory.persistence.conversation_id = Some(zeph_memory::ConversationId(1));
+        agent
+    }
+
+    #[tokio::test]
+    async fn flush_durable_writer_finalizes_the_p1_execution_as_completed() {
+        // #6251: graceful shutdown must finalize the P1 agent-turn execution as `Completed`,
+        // otherwise it stays `running` forever and the retention sweep can never reclaim it.
+        // `:memory:` can't be re-opened from a second connection to verify this, so this test uses
+        // a real file-backed sqlite db (same pattern as
+        // `durable_bootstrap::tests::conversation_switch_finalizes_the_old_execution_as_completed`).
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+
+        let mut agent = agent_with_conversation();
+        agent.services.session.durable_agent_turns_config = Some(zeph_config::DurableConfig {
+            enabled: true,
+            agent_turns: true,
+            ..zeph_config::DurableConfig::default()
+        });
+        agent.services.session.durable_agent_turns_db_url = Some(db_url.clone());
+
+        agent.ensure_session_durable_ctx().await;
+        let exec_id = agent
+            .services
+            .session
+            .durable_ctx
+            .as_ref()
+            .expect("durable_ctx should be populated")
+            .execution_id();
+
+        agent.flush_durable_writer().await;
+
+        let backend = zeph_durable::LocalBackend::open(&db_url, 1_048_576)
+            .await
+            .unwrap();
+        let summaries = backend.list_executions(None, None, 10).await.unwrap();
+        let row = summaries
+            .iter()
+            .find(|s| s.execution_id == exec_id)
+            .expect("the execution's row must still exist");
+        assert_eq!(
+            row.status,
+            zeph_durable::ExecutionStatus::Completed,
+            "the P1 execution must finalize as Completed on graceful shutdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_durable_writer_finalize_is_bounded_by_the_2s_timeout() {
+        // #6251 critic M1: the shutdown finalize call must not hang indefinitely (or for the full
+        // 5s sqlite `busy_timeout`, zeph-db/src/pool.rs) when it can't immediately acquire the
+        // write lock. Holds a write transaction open on a second connection to the same
+        // file-backed db (BEGIN IMMEDIATE takes the write lock upfront, per
+        // `zeph_db::begin_write`'s doc comment) so `ctx.finalize`'s own `begin_write` blocks, then
+        // asserts `flush_durable_writer` still returns well within the 2s bound rather than
+        // waiting out the 5s busy_timeout or hanging forever.
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+
+        let mut agent = agent_with_conversation();
+        agent.services.session.durable_agent_turns_config = Some(zeph_config::DurableConfig {
+            enabled: true,
+            agent_turns: true,
+            ..zeph_config::DurableConfig::default()
+        });
+        agent.services.session.durable_agent_turns_db_url = Some(db_url.clone());
+
+        agent.ensure_session_durable_ctx().await;
+        let exec_id = agent
+            .services
+            .session
+            .durable_ctx
+            .as_ref()
+            .expect("durable_ctx should be populated")
+            .execution_id();
+
+        // A second, independent connection to the same file holds the write lock throughout the
+        // finalize attempt below, without ever committing or rolling back until after the timing
+        // assertion.
+        let lock_holder = zeph_durable::LocalBackend::open(&db_url, 1_048_576)
+            .await
+            .unwrap();
+        let blocking_tx = zeph_db::begin_write(lock_holder.pool()).await.unwrap();
+
+        let start = std::time::Instant::now();
+        agent.flush_durable_writer().await;
+        let elapsed = start.elapsed();
+
+        drop(blocking_tx); // release the write lock
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(4),
+            "flush_durable_writer must return well within its 2s finalize timeout \
+             (plus the writer.flush() call's own bound), not the 5s sqlite busy_timeout; took \
+             {elapsed:?}"
+        );
+
+        let backend = zeph_durable::LocalBackend::open(&db_url, 1_048_576)
+            .await
+            .unwrap();
+        let summaries = backend.list_executions(None, None, 10).await.unwrap();
+        let row = summaries
+            .iter()
+            .find(|s| s.execution_id == exec_id)
+            .expect("the execution's row must still exist");
+        assert_eq!(
+            row.status,
+            zeph_durable::ExecutionStatus::Running,
+            "finalize must not have committed while the write lock was held elsewhere"
+        );
+
+        // Sanity check: with the lock released, a direct finalize succeeds normally — proving the
+        // earlier non-completion was purely lock contention, not a latent bug. (Not calling
+        // `flush_durable_writer` again: its first call already aborted `durable_writer_task`, so a
+        // second `writer.flush()` would just time out waiting for a reply from a dead task.)
+        agent
+            .services
+            .session
+            .durable_ctx
+            .as_ref()
+            .unwrap()
+            .finalize(zeph_durable::ExecutionStatus::Completed)
+            .await
+            .unwrap();
+        let summaries = backend.list_executions(None, None, 10).await.unwrap();
+        let row = summaries
+            .iter()
+            .find(|s| s.execution_id == exec_id)
+            .expect("the execution's row must still exist");
+        assert_eq!(
+            row.status,
+            zeph_durable::ExecutionStatus::Completed,
+            "finalize succeeds once the write lock is free"
+        );
     }
 }
