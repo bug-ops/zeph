@@ -188,7 +188,6 @@ impl PersistenceService {
             return PersistMessageOutcome {
                 message_id: None,
                 embedded: false,
-                redaction_applied: false,
                 bytes_written: 0,
             };
         };
@@ -197,7 +196,6 @@ impl PersistenceService {
             return PersistMessageOutcome {
                 message_id: None,
                 embedded: false,
-                redaction_applied: false,
                 bytes_written: 0,
             };
         };
@@ -237,7 +235,6 @@ impl PersistenceService {
             return PersistMessageOutcome {
                 message_id: None,
                 embedded: false,
-                redaction_applied: false,
                 bytes_written: 0,
             };
         };
@@ -256,7 +253,6 @@ impl PersistenceService {
         PersistMessageOutcome {
             message_id: Some(message_id),
             embedded: embedding_stored,
-            redaction_applied: false,
             bytes_written: request.content.len() + parts_json.len(),
         }
     }

@@ -19,6 +19,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   token is replayable against the same `task_id` + `endpoint` until it expires; this is now
   documented as a known implementation limitation. Documentation-only change, no source code
   modified (#6197).
+- **Persistence**: `PersistMessageRequest`'s doc comment carried a stale TODO describing an
+  unimplemented R3 batching design and a pending-request-loss risk that does not exist —
+  persistence is inline and synchronous today (`Agent::persist_message` builds the request and
+  immediately awaits `PersistenceService::persist_message`, with no queue/buffer layer). Replaced
+  the TODO with a doc comment describing the actual inline/synchronous behavior (#5962).
+- **Persistence**: removed the dead `PersistMessageOutcome::redaction_applied` field — it was
+  hardcoded to `false` at all four construction sites in `PersistenceService::persist_message` and
+  read by nothing, since no redaction logic exists in the service. Breaking change to a `pub`
+  struct, acceptable pre-v1.0.0 (#5995).
 
 - **LLM**: the Claude request funnel's no-prefill gate (`ClaudeProvider::structured_history`/
   `plain_history`) was convention-enforced only — `request::split_messages`/

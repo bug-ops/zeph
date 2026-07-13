@@ -14,9 +14,10 @@ use zeph_llm::provider::{MessagePart, Role};
 /// Clone cost is small: typical message content is less than 10 KB; allocation count
 /// is two (one for `content`, one for `parts`) per persist request.
 ///
-/// # TODO(critic): R3 batches persist requests until end of `process_response`.
-/// On panic/cancel mid-response, pending requests are LOST, unlike today's inline
-/// persist. See critic-3515-3516.md F2. File follow-up issue if observed in live testing.
+/// Persistence is inline and synchronous today: the sole caller
+/// (`Agent::persist_message`) builds this request and immediately awaits
+/// [`crate::service::PersistenceService::persist_message`]. There is no
+/// batching/queue layer, so no pending-request-loss window exists.
 #[derive(Debug, Clone)]
 pub struct PersistMessageRequest {
     /// Message role: `User`, `Assistant`, or `System`.
@@ -74,8 +75,6 @@ pub struct PersistMessageOutcome {
     pub message_id: Option<i64>,
     /// Whether the message was embedded into Qdrant (as opposed to saved to `SQLite` only).
     pub embedded: bool,
-    /// Whether a redaction was applied to the content before persistence.
-    pub redaction_applied: bool,
     /// Number of bytes written to the persistence layer.
     pub bytes_written: usize,
 }
