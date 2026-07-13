@@ -61,6 +61,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   block redirect header leaks (2.1.0, #936), make `AsyncRwTransport::receive` cancel-safe
   (#941/#947), fail orphaned streamable HTTP responses on reinit (#914), and negotiate protocol
   version in the handler (#930). No source changes required in `crates/zeph-mcp` (#5897).
+- **A2A**: `AgentRegistry` (JWS Agent Card signature verification + `card_trust_policy`,
+  #5928) had no runtime construction site anywhere outside `crates/zeph-a2a`'s own tests —
+  setting `[a2a_client].card_trust_policy = "require"` had no effect on a running agent.
+  Wired `AgentRegistry::discover` into `zeph --connect <URL>` (`src/tui_remote.rs`): the
+  peer's card is now fetched and its signature/URL-origin trust policy enforced before the
+  SSE session is established, using an explicit (no-wildcard-by-name) conversion from
+  `zeph_config::channels::CardTrustPolicy`/`TrustedAgentKey` to their `zeph-a2a`
+  counterparts. The discovery fetch is hardened with the same `require_tls`/
+  `ssrf_protection` posture and DNS-rebinding-safe address pinning already applied to the
+  `A2aClient` connection to the same URL. Fixes a bug where the discovery URL was
+  constructed from the full `--connect` target (including its RPC path, e.g.
+  `/a2a/stream`) instead of the origin root where `/.well-known/agent.json` is actually
+  served. A discovery-fetch failure (peer serves no card, network error, timeout) only
+  aborts `--connect` when `card_trust_policy = "require"`; under the default `ignore` (and
+  `prefer`) it is logged and tolerated so a peer that serves no agent card at all still
+  connects, matching pre-#6200 behavior. A trust-check rejection (untrusted signature or
+  URL-origin mismatch) always aborts regardless of policy, since `check_trust` has already
+  folded the policy into that verdict (#6200).
+- **A2A**: `card_signing::canonical_payload` canonicalized the raw received card JSON
+  verbatim (`signatures` key removed only), which rejects a genuinely valid card from any
+  signer that strips proto3-default-valued fields (empty string/`false`/`0`/empty
+  array/object) before signing per the A2A spec text, while transmitting the card with
+  those defaults present — a fail-closed availability bug. `canonical_payload` now strips
+  the same proto3-default fields recursively before JCS canonicalization, so a signature
+  computed over either shape verifies against the other; covered by a new synthetic
+  regression test (real `a2a-sdk` interop is still unvalidated — `card_trust_policy`
+  remains `"ignore"` by default pending a real signed-card vector) (#6201).
 - **Docs**: `specs/010-security/spec.md` and `specs/014-a2a/spec.md` described two different IBCT
   (Invocation-Bound Capability Token) wire formats, and neither fully matched the actual
   implementation in `crates/zeph-a2a/src/ibct.rs`. Reconciled both specs against `ibct.rs` and
@@ -153,17 +180,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     "require"` is set without the `card-signing` feature compiled in, rather than silently
     degrading or bricking discovery. New `ZEPH_A2A_CARD_TRUST_POLICY` env override and
     `--migrate-config` step 82 (commented advisory block for existing configs).
-  - **Known limitations, tracked as follow-ups**: the JCS canonicalization and signing-input
-    construction were implemented from the A2A 1.0.0 spec text, not validated against a real
-    `a2a-sdk`-produced signed card (no network access to obtain a reference vector in this
-    environment) — treat `require` as unproven for real-peer interop until a vector lands.
-    `AgentRegistry` still has no runtime construction site in `zeph-core`/`src/`, so
-    `card_trust_policy` is a fully-implemented library knob with no consumer yet (pre-existing
-    gap, not created by this change). The well-known discovery path remains
-    `/.well-known/agent.json` (0.2.x); a pure-1.0.0 peer serving `/.well-known/agent-card.json`
-    is not yet discoverable. `A2A_PROTOCOL_VERSION` stays `"0.2.1"` — this change is one additive
-    1.0.0 feature, not full 1.0.0 conformance. `jku`/JWKS auto-fetch, EdDSA/RS256, and signing
-    our own served card are all deferred.
+  - **Known limitations, tracked as follow-ups**: `AgentRegistry` had no runtime construction
+    site and the JCS canonicalization was unvalidated against a real `a2a-sdk`-produced signed
+    card — both addressed later in this same `[Unreleased]` section, see the two `A2A` entries
+    above (#6200, #6201). The well-known discovery path remains `/.well-known/agent.json`
+    (0.2.x); a pure-1.0.0 peer serving `/.well-known/agent-card.json` is not yet discoverable.
+    `A2A_PROTOCOL_VERSION` stays `"0.2.1"` — this change is one additive 1.0.0 feature, not full
+    1.0.0 conformance. `jku`/JWKS auto-fetch, EdDSA/RS256, and signing our own served card are
+    all still deferred.
 - **Worktree**: added disk-quota and automatic reconciliation to the `zeph-worktree` subsystem
   (#5924). Four new `[worktree]` config fields: `max_worktrees` (creation-time admission cap,
   enforced as `WorktreeError::QuotaExceeded`), `disk_quota_mb` (soft total-disk-usage threshold),

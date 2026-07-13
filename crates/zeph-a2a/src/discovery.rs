@@ -23,9 +23,10 @@ const WELL_KNOWN_PATH: &str = "/.well-known/agent.json";
 /// Mirrors `zeph_config::channels::CardTrustPolicy` (TOML-facing) as an independent
 /// type, the same way `zeph_mcp::ToolDiscoveryStrategy` mirrors its `zeph-config`
 /// counterpart: `zeph-config` must not depend on protocol crates, so config-side and
-/// protocol-side enums are converted at the `zeph-core` wiring layer.
-// TODO(critic): no runtime construction site consumes card_trust_policy yet — file
-// wire-X follow-up before advertising the knob as enforcing (#5928).
+/// protocol-side enums are converted where both crates are in scope — the top-level
+/// `zeph` binary crate (`src/tui_remote.rs::convert_card_trust_policy`), which wires
+/// `[a2a_client].card_trust_policy`/`trusted_agent_keys` into the `AgentRegistry::discover`
+/// call performed before `zeph --connect <URL>` establishes an A2A session (#6200).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CardTrustPolicy {
@@ -236,18 +237,19 @@ impl AgentRegistry {
     /// ```
     #[must_use]
     pub fn with_trust(mut self, policy: CardTrustPolicy, trusted_keys: Vec<TrustedKey>) -> Self {
-        // Breadcrumb for operators enabling enforcement: the S1 canonicalization/signing-input
-        // construction is implemented per the A2A spec text but has not been validated against
-        // a real peer's signer (see `crate::card_signing` module docs). Without this, a
-        // `require`-policy reject-all failure mode is loud in logs but the *cause* (unproven
-        // interop, not a real attack) is not obvious. Logged here rather than only in a doc
-        // comment, which the operator flipping the knob at runtime will never read.
+        // Breadcrumb for operators enabling enforcement (S3, restored after #6200/#6201
+        // review): card-signature interop with a real A2A peer is still unvalidated — the
+        // JCS canonicalization (including #6201's proto3-default stripping) is implemented
+        // per the A2A spec text only, never checked against a real `a2a-sdk`-produced
+        // signed card (see `crate::card_signing` module docs). This condition doesn't
+        // change based on which gap is currently open, so it's logged here rather than
+        // only in a doc comment an operator flipping the knob at runtime will never read.
         if policy != CardTrustPolicy::Ignore {
             tracing::warn!(
                 policy = ?policy,
                 "a2a discovery: card signature interop is unvalidated against a real A2A peer \
-                 (#5928) — canonicalization/signing-input construction is implemented per spec \
-                 text only; `require` may reject genuinely valid signed peers"
+                 (#5928/#6201) — canonicalization is implemented per spec text only; `require` \
+                 may reject genuinely valid signed peers"
             );
         }
         self.trust = TrustConfig {

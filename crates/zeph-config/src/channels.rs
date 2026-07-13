@@ -1000,10 +1000,10 @@ impl Default for A2aClientConfig {
 ///
 /// Mirrors `zeph_a2a::discovery::CardTrustPolicy` (protocol-crate-facing) as an
 /// independent type — `zeph-config` must not depend on protocol crates, the same reason
-/// [`McpTrustLevel`] has no `zeph-mcp` counterpart dependency. Conversion happens at the
-/// `zeph-core` wiring layer once a runtime `AgentRegistry` construction site exists
-/// (currently none does — see the `card_trust_policy` field doc and the `discovery.rs`
-/// TODO in `zeph-a2a`).
+/// [`McpTrustLevel`] has no `zeph-mcp` counterpart dependency. Conversion happens in the
+/// top-level `zeph` binary crate (`src/tui_remote.rs::convert_card_trust_policy`), which
+/// constructs the `AgentRegistry` used before `zeph --connect <URL>` establishes an A2A
+/// session (#6200).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]

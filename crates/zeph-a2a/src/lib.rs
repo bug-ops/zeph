@@ -22,9 +22,10 @@
 //! # Architecture
 //!
 //! `zeph-a2a` is an optional feature-gated dependency of the main `zeph` binary. The
-//! `A2aServer` is started by `zeph-core` as a background service when `[a2a]` is enabled
-//! in config. The [`A2aClient`] is used by the agent to delegate tasks to peer agents
-//! discovered through the [`AgentRegistry`].
+//! `A2aServer` is started as a background service when `[a2a]` is enabled in config. The
+//! [`AgentRegistry`] verifies a peer's [`AgentCard`] (signature + URL-origin trust policy,
+//! A2A 1.0.0 §8.4) before `zeph --connect <URL>` establishes a session via [`A2aClient`]
+//! (#6200); see `src/tui_remote.rs` in the `zeph` binary crate for the wiring.
 //!
 //! # Features
 //!

@@ -282,17 +282,29 @@ re-scope it) — do not bump the version as a side effect of landing one more 1.
 
 ### Current limitations
 
-- **No live consumer** (#6200): `AgentRegistry` has no runtime construction site anywhere in
-  the codebase outside `crates/zeph-a2a` itself. Nothing in the running agent currently
-  performs A2A peer discovery, so `card_trust_policy` — including `require` — enforces nothing
-  in a running Zeph instance today. It is a fully implemented and tested library + config
-  primitive, not yet wired into `zeph-core`.
-- **Unvalidated interop** (#6201): the RFC 8785 JCS canonicalization in `card_signing.rs` is
-  implemented from the A2A 1.0.0 spec text only, never checked against a real `a2a-sdk`
-  reference-implementation signed-card vector (no network access during development). If a
-  real peer strips proto3-default fields before signing but transmits the full card on the
-  wire, verification could incorrectly reject a genuinely valid card. Treat `require` as
-  unproven against real peers until a real vector is obtained and checked in as a test case.
+- **Live consumer wired to `--connect` only** (#6200, fixed): `AgentRegistry::discover` is now
+  called by `src/tui_remote.rs::run_tui_remote` before `zeph --connect <URL>` establishes its
+  SSE session — the origin (not the RPC path) is fetched and `card_trust_policy` enforces
+  against it, with `require_tls`/`ssrf_protection`/address-pinning applied to the discovery
+  fetch itself. A discovery-fetch failure (peer serves no card, network error, timeout) only
+  aborts `--connect` under `card_trust_policy = "require"`; under `ignore`/`prefer` it is
+  logged and tolerated so a peer serving no agent card at all still connects, matching
+  pre-#6200 behavior — a trust-check rejection (untrusted signature or URL-origin mismatch)
+  always aborts regardless of policy, since `check_trust` has already folded the policy into
+  that verdict (`discovery_error_is_fatal` in `src/tui_remote.rs`). This closes the "no live
+  consumer" gap for the `--connect` client path specifically. It remains true that no *agent-
+  to-agent delegation* consumer exists — no tool or code path lets the running agent loop
+  discover and call an arbitrary peer on its own initiative; `AgentRegistry`'s only live
+  caller is the `--connect` attach flow.
+- **Unvalidated interop, partially addressed** (#6201): the RFC 8785 JCS canonicalization in
+  `card_signing.rs` now strips proto3-default-valued fields (empty string/`false`/`0`/empty
+  array/object, recursively) before canonicalizing, closing the specific divergence where a
+  real peer that strips defaults before signing but transmits the full card on the wire would
+  have its signature incorrectly rejected — covered by a synthetic regression test. This is
+  still not validated against a real `a2a-sdk` reference-implementation signed-card vector (no
+  network access during development), so `require` remains unproven against real peers in
+  general until such a vector is obtained and checked in as a test case; `card_trust_policy`
+  intentionally still defaults to `"ignore"`, not `"prefer"`.
 
 ---
 
