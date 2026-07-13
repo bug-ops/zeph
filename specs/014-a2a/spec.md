@@ -34,8 +34,9 @@ related:
 | `crates/zeph-a2a/src/types.rs` | `Task`, `Message`, `AgentCard`, `Artifact` |
 | `crates/zeph-a2a/src/jsonrpc.rs` | JSON-RPC 2.0 envelope, error codes |
 | `crates/zeph-a2a/src/client.rs` | `A2aClient`, `send_message`, `stream_message`, `get_task`, `cancel_task` |
-| `crates/zeph-a2a/src/discovery.rs` | `AgentRegistry`, TTL cache, `/.well-known/agent.json` |
+| `crates/zeph-a2a/src/discovery.rs` | `AgentRegistry`, TTL cache, `/.well-known/agent.json`, `CardTrustPolicy` enforcement |
 | `crates/zeph-a2a/src/card.rs` | `AgentCard` serialization |
+| `crates/zeph-a2a/src/card_signing.rs` | `AgentCardSignature` JWS verification (`card-signing` feature), `TrustedKey`, `SigAlg`, `SignatureVerification` |
 | `crates/zeph-a2a/src/server/mod.rs` | `A2aServer`, `TaskProcessor` trait |
 | `crates/zeph-a2a/src/server/handlers.rs` | JSON-RPC method handlers |
 | `crates/zeph-a2a/src/server/state.rs` | `TaskManager`, in-memory task store |
@@ -55,12 +56,53 @@ related:
 ```
 AgentRegistry
 ├── cache: RwLock<HashMap<String, CachedCard>>  — URL → AgentCard, TTL-cached
-└── discovery: GET {base_url}/.well-known/agent.json → AgentCard
+├── trust: TrustConfig { policy: CardTrustPolicy, trusted_keys: Vec<TrustedKey> }
+└── discovery: GET {base_url}/.well-known/agent.json → AgentCard → check_trust() → cache
 ```
 
-- Discovery endpoint: `/.well-known/agent.json` — standard A2A well-known path
-- `AgentCard`: describes capabilities, supported methods, authentication requirements
+- Discovery endpoint: `/.well-known/agent.json` — standard A2A (pre-1.0.0) well-known path.
+  A2A 1.0.0 renames this to `/.well-known/agent-card.json`; Zeph has not adopted the rename
+  (see `A2A_PROTOCOL_VERSION` below) — a pure-1.0.0 peer that only serves the new path is not
+  currently discoverable.
+- `AgentCard`: describes capabilities, supported methods, authentication requirements, and
+  (A2A 1.0.0 §4.4.7) an optional `signatures: Vec<AgentCardSignature>` — `#[serde(default)]`,
+  so unsigned/pre-1.0.0 peers deserialize with an empty vec (backward-compatible).
 - Cache TTL: configurable; prevents repeated discovery requests to the same agent
+
+### Card trust policy (`CardTrustPolicy`, #5928)
+
+`AgentRegistry::discover()` runs an optional trust check on every card it fetches, combining
+two independent axes via most-severe-wins precedence (`Accept < Warn < Reject`):
+
+- **URL-origin consistency**: the queried `base_url` vs. the card's self-declared `url` field,
+  compared by scheme + host + port (RFC 6454 origin semantics, not full path).
+- **Signature verification** (`crates/zeph-a2a/src/card_signing.rs`, feature `card-signing`):
+  JWS signatures over the RFC 8785 JCS canonicalization of the *raw received JSON* (never a
+  re-serialization of the typed `AgentCard` struct) with `signatures` removed. Only ES256
+  (P-256) is supported; other algorithms resolve to `Unverifiable`. All signatures in the array
+  are evaluated — verification is order-independent, so key rotation (old+new signature during
+  overlap) and multi-party attestation both work correctly.
+
+`CardTrustPolicy` is tri-state, default **`Ignore`** (byte-identical to pre-#5928 behavior):
+
+| Policy | URL mismatch | Unverifiable/FeatureDisabled signature | Invalid (tampered) signature |
+|---|---|---|---|
+| `ignore` | accept | accept | accept |
+| `prefer` | warn + accept | warn + accept | **reject** |
+| `require` | **reject** | **reject** | **reject** |
+
+Two independent `CardTrustPolicy` enums exist by design: `zeph_a2a::discovery::CardTrustPolicy`
+(protocol-crate-facing, used by `AgentRegistry::with_trust`) and
+`zeph_config::channels::CardTrustPolicy` (TOML-facing, `[a2a_client] card_trust_policy`) — the
+same pattern `zeph_mcp::ToolDiscoveryStrategy` uses for its `zeph-config` counterpart, because
+`zeph-config` must not depend on protocol crates. Conversion between the two happens at the
+`zeph-core` wiring layer once a caller exists (see Current Limitations below).
+
+Configuration: `[a2a_client].card_trust_policy` (default `"ignore"`) and
+`[a2a_client].trusted_agent_keys` (list of `{ kid, alg, key_material }` — plain config, not
+vault-referenced, since these are public keys). Env override: `ZEPH_A2A_CARD_TRUST_POLICY`.
+Setting `card_trust_policy = "require"` while the `card-signing` feature is not compiled in
+**fails config load** (`Config::validate`) rather than silently downgrading to `ignore`.
 
 ## JSON-RPC 2.0 Protocol
 
@@ -117,6 +159,14 @@ Terminal states: `completed | failed | canceled | rejected`
   Client Security Posture below)
 - TLS enforcement: if `require_tls` enabled, `http://` URLs must be rejected, including via redirect
 - Server feature (`zeph-a2a?/server`) is independent of client — can run one without the other
+- The trust anchor for `AgentCard` signature verification MUST be an out-of-band,
+  operator-configured key store (`[a2a_client].trusted_agent_keys`) — NEVER a card-supplied
+  `jku` URL. An attacker who can forge an entire card can also point `jku` at a JWKS they
+  control and self-sign; auto-fetching `jku` would additionally reopen an SSRF surface this
+  crate's transport-layer hardening already guards against (see Client Security Posture below)
+- `card_trust_policy = "require"` without the `card-signing` feature compiled in MUST fail
+  config load loudly — never silently degrade to `ignore`
+- `A2A_PROTOCOL_VERSION` stays at `"0.2.1"` — see A2A 1.0.0 Conformance below before bumping it
 
 ---
 
@@ -213,6 +263,36 @@ The `ibct` feature flag must be enabled for IBCT to be compiled in.
 - NEVER log or dump raw IBCT tokens — they are bearer credentials
 - `X-Zeph-IBCT` header must be stripped from any request before forwarding to MCP servers or external tools
 - HMAC-SHA256 comparison must use constant-time equality — not `==` (enforced via `Mac::verify_slice`, not `subtle::ConstantTimeEq`)
+
+---
+
+## A2A 1.0.0 Conformance (2026-07-13, #5928)
+
+`A2A_PROTOCOL_VERSION` intentionally stays at `"0.2.1"` even though Agent Card signature
+verification (§8.4, one 1.0.0 feature) has been added. Bumping the advertised version would
+over-claim full 1.0.0 conformance. Other 1.0.0 deltas remain unimplemented and are explicitly
+deferred, not silently dropped:
+
+- Well-known path rename `/.well-known/agent.json` → `/.well-known/agent-card.json`
+- gRPC/REST transport bindings (JSON-RPC only today)
+- Method-name/field-shape reconciliation against the 1.0.0 spec text
+
+Any change that bumps `A2A_PROTOCOL_VERSION` must first close this gap list (or explicitly
+re-scope it) — do not bump the version as a side effect of landing one more 1.0.0 feature.
+
+### Current limitations
+
+- **No live consumer** (#6200): `AgentRegistry` has no runtime construction site anywhere in
+  the codebase outside `crates/zeph-a2a` itself. Nothing in the running agent currently
+  performs A2A peer discovery, so `card_trust_policy` — including `require` — enforces nothing
+  in a running Zeph instance today. It is a fully implemented and tested library + config
+  primitive, not yet wired into `zeph-core`.
+- **Unvalidated interop** (#6201): the RFC 8785 JCS canonicalization in `card_signing.rs` is
+  implemented from the A2A 1.0.0 spec text only, never checked against a real `a2a-sdk`
+  reference-implementation signed-card vector (no network access during development). If a
+  real peer strips proto3-default fields before signing but transmits the full card on the
+  wire, verification could incorrectly reject a genuinely valid card. Treat `require` as
+  unproven against real peers until a real vector is obtained and checked in as a test case.
 
 ---
 
