@@ -558,6 +558,12 @@ async fn handle_tool_step(
                 // Re-check the TTL live before every tool call rather than trusting the
                 // one-time gate at delivery time: a long-running turn loop can otherwise keep
                 // using a secret well after its grant expired (issue #5991).
+                //
+                // This only reacts to TTL expiry, not to an explicit mid-loop revoke of a
+                // single grant — currently unreachable since every `revoke_all()` call site
+                // either fires `cancel.cancel()` alongside it or only runs once the loop has
+                // already reported a terminal status (see manager/collect.rs, manager/spawn.rs,
+                // manager/mod.rs's `Drop for SubAgentHandle`).
                 granted_secrets.retain(|_, granted| !granted.is_expired());
                 let exec_ctx = if granted_secrets.is_empty() {
                     None
@@ -1162,6 +1168,79 @@ mod handle_tool_step_granted_secrets_tests {
         assert!(
             granted_secrets.is_empty(),
             "an expired grant must be evicted from the local cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn mixed_expired_and_live_secrets_expired_evicted_live_survives() {
+        // Regression guard for #6124: a `granted_secrets` map holding both an expired and
+        // a live grant at once must evict only the expired entry — the live one must
+        // survive eviction and still be attached to the tool call context.
+        let recorder = Arc::new(RecordingExecutor::default());
+        let executor = FilteredToolExecutor::new(
+            Arc::clone(&recorder) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let hooks = SubagentHooks::default();
+        let mut messages = Vec::new();
+        let mut granted_secrets = HashMap::new();
+        granted_secrets.insert(
+            "EXPIRED_KEY".to_owned(),
+            GrantedSecret {
+                value: Secret::new("expired-value"),
+                expires_at: Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+            },
+        );
+        granted_secrets.insert(
+            "LIVE_KEY".to_owned(),
+            GrantedSecret {
+                value: Secret::new("live-value"),
+                expires_at: Instant::now() + Duration::from_mins(5),
+            },
+        );
+
+        let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+
+        let no_tool = handle_tool_step(
+            &executor,
+            tool_use_response(),
+            &mut messages,
+            &hooks,
+            "task-1",
+            "bot",
+            &sanitizer,
+            &mut granted_secrets,
+        )
+        .await;
+        assert!(!no_tool, "a tool call was made");
+
+        assert_eq!(
+            granted_secrets.len(),
+            1,
+            "only the expired grant should be evicted"
+        );
+        assert!(
+            !granted_secrets.contains_key("EXPIRED_KEY"),
+            "expired grant must be evicted"
+        );
+        assert!(
+            granted_secrets.contains_key("LIVE_KEY"),
+            "live grant must survive eviction"
+        );
+
+        let calls = recorder.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        let context = calls[0]
+            .context
+            .as_ref()
+            .expect("the live grant must still produce a Some(ExecutionContext)");
+        assert_eq!(
+            context.env_overrides().get("LIVE_KEY").map(String::as_str),
+            Some("live-value")
+        );
+        assert!(
+            context.env_overrides().get("EXPIRED_KEY").is_none(),
+            "expired grant must not be attached to the tool call context"
         );
     }
 }

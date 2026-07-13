@@ -319,6 +319,30 @@ async fn deliver_secret_after_approval_sends_value_over_channel() {
     );
 }
 
+#[tokio::test]
+async fn deliver_secret_denies_grant_expired_before_delivery() {
+    // Regression coverage for #6124 item 2: approve_secret with a very short TTL, let it
+    // elapse, then confirm deliver_secret's own `expires_at()` call site refuses delivery
+    // through the real code path (not just PermissionGrants's own unit tests in grants.rs).
+    let mut mgr = make_manager();
+    mgr.definitions.push(def_with_secrets());
+
+    let task_id = do_spawn(&mut mgr, "bot", "work").await.unwrap();
+    mgr.approve_secret(&task_id, "api-key", std::time::Duration::from_millis(1))
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let err = mgr
+        .deliver_secret(
+            &task_id,
+            "api-key",
+            zeph_common::secret::Secret::new("sekrit"),
+        )
+        .unwrap_err();
+    assert_matches!(err, SubAgentError::Invalid(_));
+}
+
 #[test]
 fn deliver_secret_unknown_task_id_returns_not_found() {
     let mut mgr = make_manager();

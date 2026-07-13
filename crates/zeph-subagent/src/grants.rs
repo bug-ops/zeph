@@ -207,6 +207,12 @@ impl PermissionGrants {
     /// TTL locally on every subsequent tool call, without needing further access to this
     /// `PermissionGrants` instance (which stays on the manager side, not the spawned loop task).
     ///
+    /// If duplicate grants exist for the same `kind`, this returns the *first* match's
+    /// expiry rather than the latest (max) one. This is intentionally fail-safe: it can
+    /// only cause an earlier-than-necessary secret eviction in the sub-agent loop, never
+    /// a later one, so it is not a security concern — just a minor inefficiency in the
+    /// rare duplicate-grant case.
+    ///
     /// # Examples
     ///
     /// ```rust

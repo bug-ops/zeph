@@ -63,6 +63,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   promise on resume cannot be a live duplicate child (spec-064 INV-9). No functional change
   (#6010).
 
+### Testing
+
+- **zeph-subagent**: added test coverage for two gaps flagged in the review of #6123
+  (sub-agent secret-delivery TTL re-check and per-task secret-request lookup): a
+  `granted_secrets` map holding both an expired and a live grant now has a regression test
+  confirming eviction removes only the expired entry and the live one stays attached to the
+  tool call context (`mixed_expired_and_live_secrets_expired_evicted_live_survives`); and
+  `SubAgentManager::deliver_secret` now has a test exercising its own `expires_at()` call
+  site directly — approving a grant with a near-zero TTL, letting it elapse, then confirming
+  delivery is refused (`deliver_secret_denies_grant_expired_before_delivery`). Also documented
+  (no behavior change) that `PermissionGrants::expires_at`'s first-match semantics for
+  duplicate same-key grants is intentionally fail-safe (earlier eviction only, never later),
+  and that the TTL-only eviction in `handle_tool_step` does not cover an explicit mid-loop
+  grant revoke — currently unreachable since every `revoke_all()` call site pairs with
+  `cancel.cancel()` or runs only after the loop has reported a terminal status (#6124).
+
 ### Fixed
 
 - **Docs**: fixed 11 stale Claude model ID examples across 5 mdBook pages (`acp.md`,
