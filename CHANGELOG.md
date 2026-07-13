@@ -2152,6 +2152,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `chore(scheduler)`: removed the unused `blake3` and `uuid` dependencies from
   `crates/zeph-scheduler/Cargo.toml` — neither was referenced anywhere in the crate's source
   (#6098).
+- `chore(agent-tools)`: removed 7 unused `zeph-*` dependencies (`zeph-agent-persistence`,
+  `zeph-config`, `zeph-context`, `zeph-mcp`, `zeph-orchestration`, `zeph-sanitizer`,
+  `zeph-skills`) from `crates/zeph-agent-tools/Cargo.toml` — leftover scaffolding from the
+  abandoned `ToolDispatcher` extraction (#3516, closed) with zero references in `src/`.
+  Narrowed the `sqlite`/`postgres` feature gates to forward only to `zeph-tools`, the sole
+  remaining backend-gated dependency (#6084).
 
 ### Fixed
 

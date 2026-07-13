@@ -59,15 +59,15 @@ from referencing `zeph_core::channel::Channel` directly from inside the dispatch
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `sqlite` | on | SQLite backend forwarded to `zeph-mcp`, `zeph-orchestration`, `zeph-sanitizer`, `zeph-skills`, `zeph-tools`, and `zeph-agent-persistence` |
-| `postgres` | off | PostgreSQL backend forwarded to the same downstream crates |
+| `sqlite` | on | SQLite backend, forwarded to `zeph-tools/sqlite` |
+| `postgres` | off | PostgreSQL backend, forwarded to `zeph-tools/postgres` |
 
 A storage backend must be selected for the crate to compile; `sqlite` is the default.
 
-> **Note:** This crate is Phase 2 scaffolding (issue #3516). The `AgentChannel` trait and
-> borrowed event carriers are complete. Full `ToolDispatcher` extraction from `zeph-core` is
-> tracked as a follow-up once the persistence extraction (#3515) lands and integration tests
-> are stable.
+> **Note:** This crate is Phase 2 scaffolding from issue #3516 (closed). The `AgentChannel`
+> trait and borrowed event carriers are complete, but no `zeph-core` adapter currently
+> implements them and no `ToolDispatcher` extraction has landed. Re-opening this work would
+> require a new tracking issue.
 
 ## License
 
