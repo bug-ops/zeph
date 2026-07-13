@@ -72,6 +72,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before. `--migrate-config` drops any leftover `require_tls`/`ssrf_protection` keys from an
   existing `[a2a]` table, warning the user, without erroring (#5885).
 
+- **ACP**: removed `DynSchedulerExecutor`, a hand-maintained `ToolExecutor` wrapper around
+  `Arc<SchedulerExecutor>` that forwarded 9 of the trait's 13 methods (omitting
+  `execute_confirmed`, `set_skill_env`, `set_effective_trust`, `is_tool_retryable`) — the 8th+
+  recurrence of the "leaf type gains a trait method, some Arc wrapper silently drifts" defect
+  class (#5899/#5905/#5906/#5985). The scheduler's ACP tool executor is now wired through the
+  existing `zeph_tools::DynExecutor`/`ErasedToolExecutor` erasure path (already used by every
+  other dynamically-composed executor), which forwards all 13 methods by construction — no
+  bespoke wrapper to drift. `DynSchedulerExecutor` was `pub(crate)`, not a public API, so this
+  is an internal refactor with no behavior change (#6000).
+
 ### Docs
 
 - **LLM**: `AnyProvider`/`Router`/`Triage`'s `capability_delegation_advisory()` rustdoc comments

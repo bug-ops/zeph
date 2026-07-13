@@ -1869,8 +1869,7 @@ async fn spawn_acp_agent(
             agent = agent.with_custom_task_rx(rx);
         }
         if let Some(sched_exec) = scheduler_executor {
-            agent = agent
-                .add_tool_executor(crate::scheduler_executor::DynSchedulerExecutor(sched_exec));
+            agent = agent.add_tool_executor(zeph_tools::DynExecutor(sched_exec));
         }
     }
 

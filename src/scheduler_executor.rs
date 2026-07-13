@@ -516,52 +516,6 @@ impl ToolExecutor for SchedulerExecutor {
     zeph_tools::tool_executor_no_inner_defaults!();
 }
 
-/// `Arc`-wrapper so `SchedulerExecutor` can be shared across ACP sessions without `Clone`.
-#[cfg(feature = "acp")]
-pub(crate) struct DynSchedulerExecutor(pub(crate) std::sync::Arc<SchedulerExecutor>);
-
-#[cfg(feature = "acp")]
-impl ToolExecutor for DynSchedulerExecutor {
-    async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        self.0.execute(response).await
-    }
-
-    fn tool_definitions(&self) -> Vec<ToolDef> {
-        self.0.tool_definitions()
-    }
-
-    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        self.0.execute_tool_call(call).await
-    }
-
-    fn requires_confirmation(&self, call: &ToolCall) -> bool {
-        self.0.requires_confirmation(call)
-    }
-
-    async fn execute_tool_call_confirmed(
-        &self,
-        call: &ToolCall,
-    ) -> Result<Option<ToolOutput>, ToolError> {
-        self.0.execute_tool_call_confirmed(call).await
-    }
-
-    fn checkpoint_undo(&self, n: usize) -> zeph_tools::CheckpointActionResult {
-        self.0.checkpoint_undo(n)
-    }
-
-    fn checkpoint_redo(&self) -> zeph_tools::CheckpointActionResult {
-        self.0.checkpoint_redo()
-    }
-
-    fn checkpoint_list(&self) -> zeph_tools::CheckpointListResult {
-        self.0.checkpoint_list()
-    }
-
-    fn is_tool_speculatable(&self, tool_id: &str) -> bool {
-        self.0.is_tool_speculatable(tool_id)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -754,6 +708,17 @@ mod tests {
     async fn tool_definitions_count() {
         let (exec, _rx) = make_executor().await;
         assert_eq!(exec.tool_definitions().len(), 4);
+    }
+
+    #[cfg(feature = "acp")]
+    #[tokio::test]
+    async fn dyn_executor_erasure_path_dispatches() {
+        let (exec, _rx) = make_executor().await;
+        let dyn_exec = zeph_tools::DynExecutor(Arc::new(exec));
+        assert_eq!(dyn_exec.tool_definitions().len(), 4);
+        let call = make_call("list_tasks", serde_json::json!({}));
+        let result = dyn_exec.execute_tool_call(&call).await.unwrap().unwrap();
+        assert!(result.summary.contains("No active scheduled tasks"));
     }
 
     #[tokio::test]
