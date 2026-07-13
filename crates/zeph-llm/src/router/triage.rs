@@ -336,7 +336,7 @@ impl TriageRouter {
     ///
     /// Returns `None` when there is at most one tier provider (unambiguous target). With more
     /// than one, per-turn classification can select a different tier provider than the one just
-    /// configured — see spec `049-router-thinking-budget-delegation` §6.
+    /// configured — see spec `071-router-thinking-budget-delegation` §5.
     #[must_use]
     pub(crate) fn capability_delegation_advisory(&self) -> Option<String> {
         if self.tier_providers.len() <= 1 {

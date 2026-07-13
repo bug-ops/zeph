@@ -52,6 +52,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Docs
 
+- **LLM**: `AnyProvider`/`Router`/`Triage`'s `capability_delegation_advisory()` rustdoc comments
+  cited a spec, `049-router-thinking-budget-delegation`, that was never created (introduced in
+  #5890). Added `specs/071-router-thinking-budget-delegation/spec.md` documenting the actual
+  capability-delegation-advisory behavior and corrected the three citations to point at it (#5893).
 - **Core**: documented at the `resolve_durable_spawn_gate` call site why falling back to a
   plain spawn is safe when a resumed sub-agent's durable promise is still pending after a
   parent restart — the current architecture is LocalBackend-only, in-process tokio tasks, so

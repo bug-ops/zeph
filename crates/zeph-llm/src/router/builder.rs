@@ -709,7 +709,7 @@ impl RouterProvider {
     /// [`RouterStrategy::Cascade`] (deterministic cheapest-first — always reselects the same
     /// slot barring quality-driven escalation). For re-sampling strategies (`Ema`, `Thompson`,
     /// `Bandit`) over a multi-provider pool, the next dispatch may pick a different provider
-    /// than the one just configured — see spec `049-router-thinking-budget-delegation` §6.
+    /// than the one just configured — see spec `071-router-thinking-budget-delegation` §5.
     #[must_use]
     pub(crate) fn capability_delegation_advisory(&self) -> Option<String> {
         if self.state.providers.len() <= 1 || self.strategy == RouterStrategy::Cascade {

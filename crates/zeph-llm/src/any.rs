@@ -689,7 +689,7 @@ impl AnyProvider {
     /// `None` for non-routed variants, deterministic strategies (`RouterStrategy::Cascade`),
     /// and degenerate single-provider pools — in those cases the applicable provider on the
     /// next dispatch is guaranteed to be the same one the command just mutated, so no warning
-    /// is needed. See spec `049-router-thinking-budget-delegation` §6 for the resolved
+    /// is needed. See spec `071-router-thinking-budget-delegation` §5 for the resolved
     /// edge-case behavior this implements.
     #[must_use]
     pub fn capability_delegation_advisory(&self) -> Option<String> {
