@@ -653,6 +653,16 @@ max_body_size = 1048576
 require_tls = true
 # Block non-loopback --connect targets that resolve to private/loopback IPs
 ssrf_protection = true
+# A2A Agent Card signature + URL-origin trust policy (A2A 1.0.0 §8.4, #5928).
+# "ignore" (default) skips verification; "prefer" warns on an unverifiable/mismatched
+# card but still accepts it; "require" rejects it. "require" needs the crate's
+# card-signing feature compiled in (see the `a2a` feature in the root Cargo.toml).
+# card_trust_policy = "ignore"  # "ignore" | "prefer" | "require"
+# Public keys trusted to verify peer AgentCard signatures, keyed by `kid`.
+# [[a2a_client.trusted_agent_keys]]
+# kid = "key-1"
+# alg = "ES256"
+# jwk_or_pem = ""
 
 [tools]
 # Enable tool execution (bash commands)

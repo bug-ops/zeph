@@ -209,6 +209,7 @@ impl AgentCardBuilder {
             default_input_modes: self.input_modes,
             default_output_modes: self.output_modes,
             skills: self.skills,
+            signatures: Vec::new(),
         }
     }
 }

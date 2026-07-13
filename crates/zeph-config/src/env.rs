@@ -428,5 +428,19 @@ impl Config {
         {
             self.a2a_client.ssrf_protection = ssrf;
         }
+        if let Ok(v) = std::env::var("ZEPH_A2A_CARD_TRUST_POLICY") {
+            match v.to_ascii_lowercase().as_str() {
+                "ignore" => {
+                    self.a2a_client.card_trust_policy = crate::channels::CardTrustPolicy::Ignore;
+                }
+                "prefer" => {
+                    self.a2a_client.card_trust_policy = crate::channels::CardTrustPolicy::Prefer;
+                }
+                "require" => {
+                    self.a2a_client.card_trust_policy = crate::channels::CardTrustPolicy::Require;
+                }
+                _ => {}
+            }
+        }
     }
 }

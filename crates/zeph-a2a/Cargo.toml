@@ -13,6 +13,12 @@ description = "A2A protocol client and server with agent discovery for Zeph"
 readme = "README.md"
 
 [features]
+# MUST be enabled together with zeph-config's `card-signing` marker feature (root Cargo.toml's
+# `a2a` feature line pairs them) — zeph-config's Config::validate() gates
+# card_trust_policy = "require" on that marker as a proxy for whether the crypto here is
+# actually compiled in. Splitting them would make `require` falsely fail config validation
+# even when this crate's crypto path works (#5928).
+card-signing = ["dep:p256", "dep:serde_json_canonicalizer"]
 ibct = ["dep:hmac", "dep:sha2"]
 server = ["dep:axum", "dep:tower", "dep:tower-http", "zeph-common/http-middleware"]
 
@@ -25,9 +31,11 @@ futures.workspace = true
 futures-core.workspace = true
 hex.workspace = true
 hmac = { workspace = true, optional = true }
+p256 = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["json", "rustls", "stream"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+serde_json_canonicalizer = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["net", "sync"] }

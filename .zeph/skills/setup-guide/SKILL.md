@@ -130,6 +130,7 @@ setting that actually governs outbound `--connect` requests.
 ```bash
 export ZEPH_A2A_CLIENT_REQUIRE_TLS=true
 export ZEPH_A2A_CLIENT_SSRF_PROTECTION=true
+export ZEPH_A2A_CARD_TRUST_POLICY=ignore
 ```
 
 Security policy for `zeph --tui --connect <URL>` (remote-TUI attach to another
@@ -141,6 +142,13 @@ reject private/loopback ranges (`ssrf_protection`), using the same IP-range defi
 as `[a2a]`'s (now-reserved) checks (10.x, 172.16.x, 192.168.x, 127.x) — not shared
 enforcement, since `[a2a]` no longer enforces anything on either path.
 Max body size: request payload limit in bytes (default 1 MiB).
+
+`ZEPH_A2A_CARD_TRUST_POLICY` (`ignore` | `prefer` | `require`, default `ignore`)
+controls peer AgentCard signature + URL-origin verification during discovery (A2A
+1.0.0 §8.4, #5928). `require` needs the crate's `card-signing` feature compiled in
+(part of the `a2a` feature bundle) or config validation fails at startup. Trusted
+verification keys are configured via `[[a2a_client.trusted_agent_keys]]` in
+`config.toml` (no env-var equivalent — see `config/default.toml` for the shape).
 
 ## Tools
 

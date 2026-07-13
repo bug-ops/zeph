@@ -14,6 +14,13 @@ readme = "README.md"
 
 [features]
 default = []
+# Marker feature only (no deps) — mirrors `zeph-a2a/card-signing` so `Config::validate()`
+# can fail fast when `card_trust_policy = require` is set without the crypto feature
+# compiled in anywhere in the binary. MUST be enabled together with `zeph-a2a/card-signing`
+# (root `Cargo.toml`'s `a2a` feature line pairs them) — nothing else enforces the pairing, so
+# splitting them would make `require` falsely fail config validation even when the crypto in
+# zeph-a2a actually works (#5928).
+card-signing = []
 deep-link = []
 
 [dependencies]

@@ -334,6 +334,46 @@ max_bot_chain_depth = 5
     }
 
     #[test]
+    fn a2a_client_config_card_trust_policy_defaults_to_ignore() {
+        let cfg = A2aClientConfig::default();
+        assert_eq!(cfg.card_trust_policy, CardTrustPolicy::Ignore);
+        assert!(cfg.trusted_agent_keys.is_empty());
+    }
+
+    #[test]
+    fn card_trust_policy_serde_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&CardTrustPolicy::Ignore).unwrap(),
+            r#""ignore""#
+        );
+        assert_eq!(
+            serde_json::to_string(&CardTrustPolicy::Prefer).unwrap(),
+            r#""prefer""#
+        );
+        assert_eq!(
+            serde_json::to_string(&CardTrustPolicy::Require).unwrap(),
+            r#""require""#
+        );
+    }
+
+    #[test]
+    fn a2a_client_config_trusted_agent_keys_round_trip() {
+        let toml_src = r#"
+            card_trust_policy = "require"
+
+            [[trusted_agent_keys]]
+            kid = "key-1"
+            alg = "ES256"
+            jwk_or_pem = "-----BEGIN PUBLIC KEY-----\nMFk...\n-----END PUBLIC KEY-----"
+        "#;
+        let cfg: A2aClientConfig = toml::from_str(toml_src).unwrap();
+        assert_eq!(cfg.card_trust_policy, CardTrustPolicy::Require);
+        assert_eq!(cfg.trusted_agent_keys.len(), 1);
+        assert_eq!(cfg.trusted_agent_keys[0].kid, "key-1");
+        assert_eq!(cfg.trusted_agent_keys[0].alg, "ES256");
+    }
+
+    #[test]
     fn ibct_key_config_debug_redacts_key_hex() {
         let key = IbctKeyConfig {
             key_id: "primary".into(),
@@ -919,7 +959,7 @@ impl Default for A2aServerConfig {
 /// `--connect http://127.0.0.1:8080/a2a/stream` usage example must work out of the box.
 /// Non-loopback targets are governed by `require_tls`/`ssrf_protection` below, which
 /// default to the same hardened posture as the server config.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct A2aClientConfig {
     /// Reject non-loopback endpoints that do not start with `https://`. Default: `true`.
@@ -927,6 +967,21 @@ pub struct A2aClientConfig {
     /// Resolve non-loopback endpoint hostnames via DNS and reject private/link-local
     /// ranges. Default: `true`.
     pub ssrf_protection: bool,
+    /// Trust policy applied to peer [`AgentCard`](https://docs.rs/zeph-a2a) signatures and
+    /// URL-origin consistency during discovery (A2A 1.0.0 §8.4, #5928). Default: `ignore`
+    /// — byte-identical to pre-#5928 discovery behavior. See
+    /// [`CardTrustPolicy`] doc comments for the `prefer`/`require` semantics, and
+    /// [`Config::validate`](crate::root::Config::validate) for the `require`-without-the-
+    /// `card-signing`-feature fail-fast check.
+    pub card_trust_policy: CardTrustPolicy,
+    /// Public keys trusted to sign peer `AgentCard`s, keyed by `kid`. Empty by default —
+    /// `prefer`/`require` with no entries treats every peer as unverifiable (see
+    /// `SignatureVerification::Unverifiable` in `zeph-a2a`).
+    ///
+    /// These are public verification keys, not secrets, so (unlike
+    /// [`A2aServerConfig::ibct_signing_key_vault_ref`]) they are stored inline rather than
+    /// via a vault reference.
+    pub trusted_agent_keys: Vec<TrustedAgentKey>,
 }
 
 impl Default for A2aClientConfig {
@@ -934,8 +989,56 @@ impl Default for A2aClientConfig {
         Self {
             require_tls: true,
             ssrf_protection: true,
+            card_trust_policy: CardTrustPolicy::default(),
+            trusted_agent_keys: Vec::new(),
         }
     }
+}
+
+/// Trust policy for peer `AgentCard` signature + URL-origin verification during A2A
+/// discovery (A2A 1.0.0 §8.4, #5928).
+///
+/// Mirrors `zeph_a2a::discovery::CardTrustPolicy` (protocol-crate-facing) as an
+/// independent type — `zeph-config` must not depend on protocol crates, the same reason
+/// [`McpTrustLevel`] has no `zeph-mcp` counterpart dependency. Conversion happens at the
+/// `zeph-core` wiring layer once a runtime `AgentRegistry` construction site exists
+/// (currently none does — see the `card_trust_policy` field doc and the `discovery.rs`
+/// TODO in `zeph-a2a`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum CardTrustPolicy {
+    /// Discover peer cards without checking signatures or URL origin. Default —
+    /// byte-identical to pre-#5928 behavior.
+    #[default]
+    Ignore,
+    /// Log a warning on an untrusted/unverifiable card or URL-origin mismatch, but still
+    /// accept it; reject only an actively tampered signature. Recommended production
+    /// setting once real-peer interop is proven (see `zeph-a2a::card_signing` module docs).
+    Prefer,
+    /// Reject any card with an unverifiable signature or a URL-origin mismatch.
+    ///
+    /// Requires the `card-signing` feature to be compiled in — [`Config::validate`]
+    /// rejects this setting at config-load time otherwise, rather than allowing it to
+    /// silently degrade or brick discovery at runtime.
+    ///
+    /// [`Config::validate`]: crate::root::Config::validate
+    Require,
+}
+
+/// A single trusted public key for verifying peer `AgentCard` signatures (#5928).
+///
+/// Public verification key material — not secret, so stored inline in config rather than
+/// resolved via a vault reference (contrast IBCT's `ibct_signing_key_vault_ref`, which
+/// protects a symmetric HMAC secret).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct TrustedAgentKey {
+    /// Key identifier, matched against the `kid` in a signature's protected header.
+    pub kid: String,
+    /// Signature algorithm this key is trusted to verify (e.g. `"ES256"`).
+    pub alg: String,
+    /// JWK JSON object or PEM-encoded `SubjectPublicKeyInfo` public key material.
+    pub jwk_or_pem: String,
 }
 
 /// Dynamic MCP tool context pruning configuration (#2204).

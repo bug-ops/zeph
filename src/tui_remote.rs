@@ -17,7 +17,7 @@ use zeph_tui::{App, EventReader};
 #[cfg(all(feature = "tui", feature = "a2a"))]
 fn resolve_client_security_policy(
     url: &str,
-    client_cfg: zeph_core::config::A2aClientConfig,
+    client_cfg: &zeph_core::config::A2aClientConfig,
 ) -> zeph_a2a::SecurityPolicy {
     let is_loopback = url::Url::parse(url)
         .ok()
@@ -53,7 +53,7 @@ pub(crate) async fn run_tui_remote(
 
     // `[a2a_client]` is a dedicated client-side policy for this `--connect` path — distinct
     // from `[a2a]` (`A2aServerConfig`), which only governs this process's own A2A server (#5878).
-    let security = resolve_client_security_policy(&url, config.a2a_client);
+    let security = resolve_client_security_policy(&url, &config.a2a_client);
     let client =
         zeph_a2a::A2aClient::new(zeph_core::http::default_client()).with_security(security);
 
@@ -227,7 +227,7 @@ mod tests {
     fn loopback_ipv4_bypasses_tls_and_ssrf_even_when_hardened() {
         let policy = resolve_client_security_policy(
             "http://127.0.0.1:8080/a2a/stream",
-            hardened_client_cfg(),
+            &hardened_client_cfg(),
         );
         assert!(!policy.require_tls);
         assert!(!policy.ssrf_protection);
@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn loopback_ipv6_bypasses_tls_and_ssrf() {
         let policy =
-            resolve_client_security_policy("http://[::1]:8080/a2a/stream", hardened_client_cfg());
+            resolve_client_security_policy("http://[::1]:8080/a2a/stream", &hardened_client_cfg());
         assert!(!policy.require_tls);
         assert!(!policy.ssrf_protection);
     }
@@ -245,7 +245,7 @@ mod tests {
     fn loopback_hostname_bypasses_tls_and_ssrf() {
         let policy = resolve_client_security_policy(
             "http://localhost:8080/a2a/stream",
-            hardened_client_cfg(),
+            &hardened_client_cfg(),
         );
         assert!(!policy.require_tls);
         assert!(!policy.ssrf_protection);
@@ -255,7 +255,7 @@ mod tests {
     fn non_loopback_http_uses_configured_client_policy() {
         let policy = resolve_client_security_policy(
             "http://agent.example.com/a2a/stream",
-            hardened_client_cfg(),
+            &hardened_client_cfg(),
         );
         assert!(policy.require_tls);
         assert!(policy.ssrf_protection);
@@ -266,16 +266,17 @@ mod tests {
         let permissive = A2aClientConfig {
             require_tls: false,
             ssrf_protection: false,
+            ..A2aClientConfig::default()
         };
         let policy =
-            resolve_client_security_policy("http://agent.example.com/a2a/stream", permissive);
+            resolve_client_security_policy("http://agent.example.com/a2a/stream", &permissive);
         assert!(!policy.require_tls);
         assert!(!policy.ssrf_protection);
     }
 
     #[test]
     fn unparseable_url_falls_back_to_configured_client_policy() {
-        let policy = resolve_client_security_policy("not a url", hardened_client_cfg());
+        let policy = resolve_client_security_policy("not a url", &hardened_client_cfg());
         assert!(policy.require_tls);
         assert!(policy.ssrf_protection);
     }
@@ -286,7 +287,7 @@ mod tests {
         // unaffected either way — `HTTP://` must resolve identically to `http://`.
         let policy = resolve_client_security_policy(
             "HTTP://127.0.0.1:8080/a2a/stream",
-            hardened_client_cfg(),
+            &hardened_client_cfg(),
         );
         assert!(!policy.require_tls);
         assert!(!policy.ssrf_protection);
@@ -297,7 +298,7 @@ mod tests {
         // `Url::host_str()` must return only the host, ignoring userinfo and port.
         let policy = resolve_client_security_policy(
             "http://user:pass@127.0.0.1:8080/a2a/stream",
-            hardened_client_cfg(),
+            &hardened_client_cfg(),
         );
         assert!(!policy.require_tls);
         assert!(!policy.ssrf_protection);
@@ -306,8 +307,10 @@ mod tests {
     #[test]
     fn unspecified_address_is_not_treated_as_loopback() {
         // `0.0.0.0` is unspecified, not loopback — must stay TLS/SSRF-hardened.
-        let policy =
-            resolve_client_security_policy("http://0.0.0.0:8080/a2a/stream", hardened_client_cfg());
+        let policy = resolve_client_security_policy(
+            "http://0.0.0.0:8080/a2a/stream",
+            &hardened_client_cfg(),
+        );
         assert!(policy.require_tls);
         assert!(policy.ssrf_protection);
     }
@@ -317,7 +320,7 @@ mod tests {
         // 127.0.0.0/8 is entirely loopback, not just 127.0.0.1 — verify the top of the range.
         let policy = resolve_client_security_policy(
             "http://127.255.255.255:8080/a2a/stream",
-            hardened_client_cfg(),
+            &hardened_client_cfg(),
         );
         assert!(!policy.require_tls);
         assert!(!policy.ssrf_protection);
@@ -331,7 +334,7 @@ mod tests {
             "http://10.0.0.1:8080/a2a/stream",
             "http://192.168.1.1:8080/a2a/stream",
         ] {
-            let policy = resolve_client_security_policy(url, hardened_client_cfg());
+            let policy = resolve_client_security_policy(url, &hardened_client_cfg());
             assert!(policy.require_tls, "expected require_tls for {url}");
             assert!(policy.ssrf_protection, "expected ssrf_protection for {url}");
         }
@@ -343,7 +346,7 @@ mod tests {
         // match — a lookalike hostname must not get the carve-out.
         let policy = resolve_client_security_policy(
             "http://notlocalhost.example.com/a2a/stream",
-            hardened_client_cfg(),
+            &hardened_client_cfg(),
         );
         assert!(policy.require_tls);
         assert!(policy.ssrf_protection);
@@ -357,7 +360,7 @@ mod tests {
         // configured (hardened) client policy rather than silently bypassing security.
         let policy = resolve_client_security_policy(
             "http://[::ffff:127.0.0.1]:8080/a2a/stream",
-            hardened_client_cfg(),
+            &hardened_client_cfg(),
         );
         assert!(policy.require_tls);
         assert!(policy.ssrf_protection);

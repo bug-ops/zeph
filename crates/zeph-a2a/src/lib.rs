@@ -32,6 +32,7 @@
 //! |---------|-------------|
 //! | `server` | Enables `A2aServer`, `TaskManager`, and `TaskProcessor` |
 //! | `ibct`   | Enables [`Ibct`] token issuance and verification (HMAC-SHA256) |
+//! | `card-signing` | Enables [`card_signing::verify_card_signatures`] and [`card_signing::sign_card`] (JWS/ES256 over RFC 8785 JCS). Without it, `AgentCardSignature`/`signatures` still (de)serialize, but verification always returns `SignatureVerification::FeatureDisabled`. |
 //!
 //! # Examples
 //!
@@ -65,6 +66,7 @@
 #![forbid(unsafe_code)]
 
 pub mod card;
+pub mod card_signing;
 pub mod client;
 pub mod discovery;
 pub mod error;
@@ -79,11 +81,24 @@ pub mod types;
 mod testing;
 
 /// A2A protocol version implemented by this crate.
+///
+/// This crate implements A2A **0.2.1** for wire compatibility (method names, well-known
+/// discovery path `/.well-known/agent.json`, field shapes), plus one additive 1.0.0
+/// feature: [`AgentCard::signatures`](crate::AgentCard::signatures) / [`card_signing`]
+/// (A2A 1.0.0 §8.4). This constant is intentionally **not** bumped to `"1.0"` — doing so
+/// would over-claim conformance the Key Invariant "`AgentCard` must accurately reflect
+/// supported capabilities" forbids. Deferred 1.0.0 items, tracked as follow-ups to #5928:
+///
+/// - Well-known path rename to `/.well-known/agent-card.json` (see `discovery.rs`).
+/// - gRPC / HTTP-REST transport bindings (JSON-RPC only today).
+/// - Signing our own served card (`server`/`card.rs` emitting `signatures`).
+/// - `jku`/JWKS key retrieval and `x5c` certificate-chain trust anchoring.
 pub const A2A_PROTOCOL_VERSION: &str = "0.2.1";
 
 pub use card::AgentCardBuilder;
+pub use card_signing::{SigAlg, SignatureVerification, TrustedKey};
 pub use client::{A2aClient, SecurityPolicy, TaskEvent, TaskEventStream};
-pub use discovery::AgentRegistry;
+pub use discovery::{AgentRegistry, CardTrustPolicy};
 pub use error::A2aError;
 pub use ibct::{Ibct, IbctError, IbctKey};
 pub use jsonrpc::SendMessageParams;

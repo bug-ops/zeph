@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        81,
-        "MIGRATIONS registry must contain all 81 sequential steps"
+        82,
+        "MIGRATIONS registry must contain all 82 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1753,7 +1753,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 81);
+    assert_eq!(MIGRATIONS.len(), 82);
 }
 
 #[test]
@@ -1874,6 +1874,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_durable_shared_db",
         "migrate_skill_trust_require_check",
         "migrate_shadow_sentinel_config",
+        "migrate_a2a_card_trust_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -4183,6 +4184,57 @@ fn step_81_idempotent_on_own_output() {
         second.output, first.output,
         "output unchanged on second run"
     );
+}
+
+// ── migrate_a2a_card_trust_config tests (step 82, #5928) ──────────
+
+#[test]
+fn step_82_adds_card_trust_block_when_absent() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_a2a_card_trust_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# [a2a_client]"));
+    assert!(result.output.contains("# card_trust_policy"));
+    assert_eq!(result.sections_changed, vec!["a2a_client".to_owned()]);
+}
+
+#[test]
+fn step_82_noop_when_card_trust_policy_already_active() {
+    let src = "[a2a_client]\ncard_trust_policy = \"prefer\"\n";
+    let result = migrate_a2a_card_trust_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_82_noop_when_comment_already_present() {
+    let src = "# [a2a_client]\n# card_trust_policy = \"ignore\"\n";
+    let result = migrate_a2a_card_trust_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_82_idempotent_on_own_output() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let first = migrate_a2a_card_trust_config(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_a2a_card_trust_config(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
+    );
+}
+
+#[test]
+fn step_82_injects_even_when_a2a_client_section_active_without_the_field() {
+    // An existing active `[a2a_client]` section that never set `card_trust_policy` must
+    // still gain the advisory — only the field's own presence suppresses re-injection.
+    let src = "[a2a_client]\nrequire_tls = false\n";
+    let result = migrate_a2a_card_trust_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# card_trust_policy"));
 }
 
 // ── M1 regression tests: narrower `section_header_present`-based guards (#5933) ─────────

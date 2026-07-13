@@ -257,6 +257,30 @@ pub struct AgentCard {
     /// Discrete skills the agent exposes, each with its own examples and mode overrides.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<AgentSkill>,
+    /// JWS signatures over this card's content, per A2A 1.0.0 §8.4.2.
+    ///
+    /// Empty for unsigned cards (all 0.2.x peers and most 1.0.0 peers today). See
+    /// [`crate::card_signing`] for verification. `#[serde(default)]` makes this field
+    /// backward compatible: legacy cards without a `signatures` key deserialize to `[]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signatures: Vec<AgentCardSignature>,
+}
+
+/// A single JWS signature over an [`AgentCard`], per A2A 1.0.0 §8.4.2.
+///
+/// The signed payload is the RFC 8785 JCS canonicalization of the card's JSON
+/// representation with the `signatures` field itself removed. See
+/// [`crate::card_signing`] for the verification algorithm and its known limitations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCardSignature {
+    /// Base64url-encoded (unpadded) JWS protected header, e.g. `{"alg":"ES256","kid":"key-1"}`.
+    pub protected: String,
+    /// Base64url-encoded (unpadded) signature bytes.
+    pub signature: String,
+    /// Optional unprotected JWS header (A2A spec §8.4.2 `header` field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<serde_json::Value>,
 }
 
 /// Organization that built or operates an agent.
@@ -653,12 +677,60 @@ mod tests {
                 input_modes: vec![],
                 output_modes: vec![],
             }],
+            signatures: vec![],
         };
         let json = serde_json::to_string_pretty(&card).unwrap();
         let back: AgentCard = serde_json::from_str(&json).unwrap();
         assert_eq!(back.name, "test-agent");
         assert!(back.capabilities.streaming);
         assert_eq!(back.skills.len(), 1);
+    }
+
+    #[test]
+    fn agent_card_signatures_default_empty_and_skipped() {
+        let card = minimal_card();
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(!json.contains("signatures"));
+        let back: AgentCard = serde_json::from_str(&json).unwrap();
+        assert!(back.signatures.is_empty());
+    }
+
+    #[test]
+    fn agent_card_deserializes_legacy_card_without_signatures_key() {
+        // A pre-#5928 card JSON with no `signatures` key at all must still deserialize.
+        let json = r#"{"name":"old","description":"","url":"http://x","version":"1","protocolVersion":"0.2.1","capabilities":{"streaming":false}}"#;
+        let card: AgentCard = serde_json::from_str(json).unwrap();
+        assert!(card.signatures.is_empty());
+    }
+
+    #[test]
+    fn agent_card_signature_round_trips() {
+        let sig = AgentCardSignature {
+            protected: "eyJhbGciOiJFUzI1NiJ9".into(),
+            signature: "c2lnbmF0dXJlLWJ5dGVz".into(),
+            header: Some(serde_json::json!({"kid": "key-1"})),
+        };
+        let json = serde_json::to_string(&sig).unwrap();
+        let back: AgentCardSignature = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.protected, sig.protected);
+        assert_eq!(back.signature, sig.signature);
+        assert_eq!(back.header, sig.header);
+    }
+
+    fn minimal_card() -> AgentCard {
+        AgentCard {
+            name: "test-agent".into(),
+            description: "A test agent".into(),
+            url: "http://localhost:8080".into(),
+            version: "0.1.0".into(),
+            protocol_version: "0.2.1".into(),
+            provider: None,
+            capabilities: AgentCapabilities::default(),
+            default_input_modes: vec![],
+            default_output_modes: vec![],
+            skills: vec![],
+            signatures: vec![],
+        }
     }
 
     #[test]

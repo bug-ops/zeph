@@ -905,3 +905,45 @@ pub fn migrate_shadow_sentinel_config(toml_src: &str) -> Result<MigrationResult,
         sections_changed: vec!["security.shadow_sentinel".to_owned()],
     })
 }
+
+/// Adds a commented-out `card_trust_policy`/`trusted_agent_keys` advisory block for
+/// `[a2a_client]` to configs that predate A2A Agent Card signature verification (#5928).
+/// Idempotent: no-op when the advisory marker is already present. Existing configs gain
+/// the block as comments only (no behavior change — `card_trust_policy` already defaults
+/// to `"ignore"` via `#[serde(default)]` when absent).
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the source is not valid TOML.
+pub fn migrate_a2a_card_trust_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let commented_present = toml_src.contains("# card_trust_policy");
+    let doc = toml_src.parse::<DocumentMut>()?;
+    let active_present = doc
+        .get("a2a_client")
+        .and_then(|t| t.get("card_trust_policy"))
+        .is_some();
+    if commented_present || active_present {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let block = "\n# A2A Agent Card signature + URL-origin trust policy (A2A 1.0.0 §8.4, #5928).\n\
+         # Requires the `card-signing` feature (see the `a2a` feature in the root Cargo.toml)\n\
+         # for `\"require\"` to be accepted at config load — see zeph-a2a::card_signing module\n\
+         # docs for the ES256-only, out-of-band-key-store trust model.\n\
+         # [a2a_client]\n\
+         # card_trust_policy = \"ignore\"  # \"ignore\" | \"prefer\" | \"require\"\n\
+         # [[a2a_client.trusted_agent_keys]]\n\
+         # kid = \"key-1\"\n\
+         # alg = \"ES256\"\n\
+         # jwk_or_pem = \"\"\n";
+    let output = format!("{}{}", toml_src.trim_end(), block);
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["a2a_client".to_owned()],
+    })
+}

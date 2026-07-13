@@ -117,10 +117,11 @@ pub use agent::{
     SubAgentConfig, SubAgentLifecycleHooks, TaskSupervisorConfig, ToolFilterConfig,
 };
 pub use channels::{
-    A2aClientConfig, A2aServerConfig, ChannelSkillsConfig, DiscordConfig, IbctKeyConfig, McpConfig,
-    McpOAuthConfig, McpPolicy, McpServerConfig, McpTrustLevel, OAuthTokenStorage, RateLimit,
-    SlackConfig, TelegramConfig, ToolDiscoveryConfig, ToolDiscoveryStrategyConfig,
-    ToolPruningConfig, TrustCalibrationConfig, is_skill_allowed,
+    A2aClientConfig, A2aServerConfig, CardTrustPolicy, ChannelSkillsConfig, DiscordConfig,
+    IbctKeyConfig, McpConfig, McpOAuthConfig, McpPolicy, McpServerConfig, McpTrustLevel,
+    OAuthTokenStorage, RateLimit, SlackConfig, TelegramConfig, ToolDiscoveryConfig,
+    ToolDiscoveryStrategyConfig, ToolPruningConfig, TrustCalibrationConfig, TrustedAgentKey,
+    is_skill_allowed,
 };
 pub use cli::{CliConfig, LoopConfig};
 pub use cocoon::CocoonConfig;

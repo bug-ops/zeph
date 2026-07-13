@@ -77,6 +77,7 @@ opentelemetry = "0.32.0"
 opentelemetry-otlp = { version = "0.32.0", default-features = false }
 opentelemetry_sdk = { version = "0.32.1", default-features = false }
 ordered-float = "5.3"
+p256 = "0.14.0"
 parking_lot = "0.12.5"
 pdf-extract = "0.12.0"
 petgraph = "0.8.3"
@@ -100,6 +101,7 @@ seccompiler = "0.5.0"
 semver = "1.0.28"
 serde = "1.0.228"
 serde_json = "1.0.150"
+serde_json_canonicalizer = "0.3.2"
 serde_norway = "0.9.42"
 serial_test = "3.5.0"
 sha2 = "0.11"
@@ -244,7 +246,7 @@ bench      = ["dep:zeph-bench"]
 
 # === Individual feature flags ===
 deep-link = ["zeph-common/deep-link", "zeph-config/deep-link"]
-a2a = ["dep:zeph-a2a", "zeph-a2a?/server", "zeph-a2a?/ibct"]
+a2a = ["dep:zeph-a2a", "zeph-a2a?/server", "zeph-a2a?/ibct", "zeph-a2a?/card-signing", "zeph-config/card-signing"]
 acp = ["dep:zeph-acp", "zeph-acp/unstable-session-delete", "zeph-acp/unstable-session-fork", "zeph-acp/unstable-session-resume", "zeph-acp/unstable-session-usage", "zeph-acp/unstable-elicitation", "zeph-acp/unstable-llm-providers", "zeph-acp/unstable-logout", "zeph-acp/unstable-auth-methods", "zeph-acp/unstable-message-id", "zeph-acp/unstable-session-add-dirs"]
 acp-http = ["acp", "dep:axum", "zeph-acp/acp-http"]
 candle = ["zeph-llm/candle", "zeph-core/candle"]

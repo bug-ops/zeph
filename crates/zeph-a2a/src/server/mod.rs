@@ -349,6 +349,7 @@ pub(crate) mod testing {
             default_input_modes: vec!["text/plain".into()],
             default_output_modes: vec!["text/plain".into()],
             skills: vec![],
+            signatures: vec![],
         }
     }
 

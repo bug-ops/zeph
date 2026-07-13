@@ -43,19 +43,22 @@
 //! table (INV-8 `encryption_gate`, #5996);
 //! step 80 adds a commented `require_integrity_check_on_promote = true` advisory to an
 //! existing active `[skills.trust]` table (#6087);
-//! step 81 adds a commented `[security.shadow_sentinel]` advisory block (spec 050, #5934).
+//! step 81 adds a commented `[security.shadow_sentinel]` advisory block (spec 050, #5934);
+//! step 82 adds a commented `[a2a_client]` `card_trust_policy`/`trusted_agent_keys` advisory
+//! block (#5928).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
 //! registry can hold `Box<dyn Migration>` values.
 
 use super::{
-    MigrateError, Migration, MigrationResult, migrate_acp_auth_clients_config,
-    migrate_acp_subagents_config, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
-    migrate_autodream_config, migrate_caveman_config, migrate_cocoon_provider_notice,
-    migrate_cocoon_show_balance, migrate_compression_predictor_config, migrate_database_url,
-    migrate_deep_link_config, migrate_durable_config, migrate_durable_shared_db,
-    migrate_egress_config, migrate_embed_provider_rename, migrate_eval_model_to_provider,
+    MigrateError, Migration, MigrationResult, migrate_a2a_card_trust_config,
+    migrate_acp_auth_clients_config, migrate_acp_subagents_config, migrate_agent_budget_hint,
+    migrate_agent_retry_to_tools_retry, migrate_autodream_config, migrate_caveman_config,
+    migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
+    migrate_compression_predictor_config, migrate_database_url, migrate_deep_link_config,
+    migrate_durable_config, migrate_durable_shared_db, migrate_egress_config,
+    migrate_embed_provider_rename, migrate_eval_model_to_provider,
     migrate_fidelity_timeout_defaults, migrate_five_signal_config,
     migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_config,
     migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
@@ -994,5 +997,18 @@ impl Migration for MigrateShadowSentinelConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_shadow_sentinel_config(toml_src)
+    }
+}
+
+/// Step 82 — adds a commented `[a2a_client]` `card_trust_policy`/`trusted_agent_keys`
+/// advisory block (A2A Agent Card signature verification, #5928).
+pub(super) struct MigrateA2aCardTrustConfig;
+impl Migration for MigrateA2aCardTrustConfig {
+    fn name(&self) -> &'static str {
+        "migrate_a2a_card_trust_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_a2a_card_trust_config(toml_src)
     }
 }

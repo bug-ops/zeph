@@ -140,6 +140,7 @@ impl Config {
         if self.a2a.rate_limit == 0 {
             return Err(ConfigError::Validation("a2a.rate_limit must be > 0".into()));
         }
+        self.validate_a2a_client_trust()?;
         if self.gateway.rate_limit == 0 {
             return Err(ConfigError::Validation(
                 "gateway.rate_limit must be > 0".into(),
@@ -160,6 +161,31 @@ impl Config {
         if self.memory.tool_call_cutoff == 0 {
             return Err(ConfigError::Validation(
                 "tool_call_cutoff must be >= 1".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Fail fast if `[a2a_client].card_trust_policy = "require"` is set without the
+    /// `card-signing` feature compiled in anywhere in the binary (S3, #5928).
+    ///
+    /// Without this check, `require` would either silently degrade to no signature
+    /// enforcement or brick all discovery, depending on how the unreachable code path is
+    /// interpreted — both are worse than a loud config-load error. See
+    /// `zeph_a2a::discovery::signature_severity` for the runtime-side half of this
+    /// contract (treats `FeatureDisabled` the same as `Unverifiable`/`Invalid` under
+    /// `require`, which only matters if this validation is ever bypassed).
+    #[cfg_attr(
+        feature = "card-signing",
+        allow(clippy::unused_self, clippy::unnecessary_wraps)
+    )]
+    fn validate_a2a_client_trust(&self) -> Result<(), ConfigError> {
+        #[cfg(not(feature = "card-signing"))]
+        if self.a2a_client.card_trust_policy == crate::channels::CardTrustPolicy::Require {
+            return Err(ConfigError::Validation(
+                "a2a_client.card_trust_policy = require requires the card-signing feature \
+                 to be enabled at build time (see the `a2a` feature in the root Cargo.toml)"
+                    .into(),
             ));
         }
         Ok(())
@@ -724,6 +750,35 @@ mod tests {
             err.to_string().contains("semantic_cache_threshold"),
             "unexpected error: {err}"
         );
+    }
+
+    #[cfg(not(feature = "card-signing"))]
+    #[test]
+    fn card_trust_policy_require_without_feature_fails_validation() {
+        let mut cfg = Config::default();
+        cfg.a2a_client.card_trust_policy = crate::channels::CardTrustPolicy::Require;
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("card_trust_policy"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn card_trust_policy_ignore_and_prefer_always_pass_validation() {
+        let mut cfg = Config::default();
+        cfg.a2a_client.card_trust_policy = crate::channels::CardTrustPolicy::Ignore;
+        assert!(cfg.validate().is_ok());
+        cfg.a2a_client.card_trust_policy = crate::channels::CardTrustPolicy::Prefer;
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[cfg(feature = "card-signing")]
+    #[test]
+    fn card_trust_policy_require_with_feature_passes_validation() {
+        let mut cfg = Config::default();
+        cfg.a2a_client.card_trust_policy = crate::channels::CardTrustPolicy::Require;
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

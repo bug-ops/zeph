@@ -67,6 +67,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A2A**: added optional JWS Agent Card signature verification (A2A 1.0.0 §8.4) and a
+  `require`/`prefer`/`ignore` trust policy for peer discovery (#5928):
+  - `AgentCard.signatures: Vec<AgentCardSignature>` — new, additive, `#[serde(default,
+    skip_serializing_if = "Vec::is_empty")]` field; unsigned/0.2.x peer cards round-trip
+    unchanged (empty on the wire).
+  - New `card-signing` Cargo feature (`crates/zeph-a2a`, `p256` + `serde_json_canonicalizer`,
+    pure-Rust, no `openssl-sys`) enabling ES256 (P-256) verification. Off by default; propagated
+    through the root `a2a` feature (and `full`) alongside the existing `ibct`/`server` features
+    so CI actually compiles and tests the crypto path.
+  - `AgentRegistry::with_trust(policy, trusted_keys)` runs a crypto-free URL-origin
+    (scheme+host+port) consistency check plus signature verification in `discover()`, combining
+    both axes by taking the most severe outcome (reject > warn > accept) and returning
+    `A2aError::UntrustedCard` / `A2aError::UrlMismatch`.
+  - `[a2a_client]` gains `card_trust_policy` (`CardTrustPolicy`, default `ignore` — byte-identical
+    to prior behavior) and `trusted_agent_keys` (`Vec<TrustedAgentKey>`, public keys stored
+    inline, not vault-referenced). `Config::validate()` fails fast if `card_trust_policy =
+    "require"` is set without the `card-signing` feature compiled in, rather than silently
+    degrading or bricking discovery. New `ZEPH_A2A_CARD_TRUST_POLICY` env override and
+    `--migrate-config` step 82 (commented advisory block for existing configs).
+  - **Known limitations, tracked as follow-ups**: the JCS canonicalization and signing-input
+    construction were implemented from the A2A 1.0.0 spec text, not validated against a real
+    `a2a-sdk`-produced signed card (no network access to obtain a reference vector in this
+    environment) — treat `require` as unproven for real-peer interop until a vector lands.
+    `AgentRegistry` still has no runtime construction site in `zeph-core`/`src/`, so
+    `card_trust_policy` is a fully-implemented library knob with no consumer yet (pre-existing
+    gap, not created by this change). The well-known discovery path remains
+    `/.well-known/agent.json` (0.2.x); a pure-1.0.0 peer serving `/.well-known/agent-card.json`
+    is not yet discoverable. `A2A_PROTOCOL_VERSION` stays `"0.2.1"` — this change is one additive
+    1.0.0 feature, not full 1.0.0 conformance. `jku`/JWKS auto-fetch, EdDSA/RS256, and signing
+    our own served card are all deferred.
 - **Config**: documented `[security.shadow_sentinel]` (`ShadowSentinelConfig`) as a commented
   advisory block in `config/default.toml`, and added migration step 81
   (`migrate_shadow_sentinel_config`) so existing configs gain the same discoverable block via

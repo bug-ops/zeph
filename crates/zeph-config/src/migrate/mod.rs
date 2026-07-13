@@ -597,21 +597,21 @@ pub trait Migration: Send + Sync {
 
 mod steps;
 use steps::{
-    MigrateAcpAuthClientsConfig, MigrateAcpSubagentsConfig, MigrateAgentBudgetHint,
-    MigrateAgentRetryToToolsRetry, MigrateAutodreamConfig, MigrateCavemanConfig,
-    MigrateCocoonProviderNotice, MigrateCocoonShowBalance, MigrateCompressionPredictorConfig,
-    MigrateDatabaseUrl, MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableSharedDb,
-    MigrateEgressConfig, MigrateEmbedProviderRename, MigrateEvalModelToProvider,
-    MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow,
-    MigrateForgettingConfig, MigrateGoalsConfig, MigrateGonkagateToGonka,
-    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateKnowledgeConfig,
-    MigrateLlmStreamLimits, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
-    MigrateMcpMaxConnectAttempts, MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels,
-    MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
-    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
-    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
-    MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateNliConfig,
-    MigrateOrchestrationAssetSensitivity, MigrateOrchestrationPersistence,
+    MigrateA2aCardTrustConfig, MigrateAcpAuthClientsConfig, MigrateAcpSubagentsConfig,
+    MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry, MigrateAutodreamConfig,
+    MigrateCavemanConfig, MigrateCocoonProviderNotice, MigrateCocoonShowBalance,
+    MigrateCompressionPredictorConfig, MigrateDatabaseUrl, MigrateDeepLinkConfig,
+    MigrateDurableConfig, MigrateDurableSharedDb, MigrateEgressConfig, MigrateEmbedProviderRename,
+    MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig,
+    MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
+    MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
+    MigrateKnowledgeConfig, MigrateLlmStreamLimits, MigrateMagicDocsConfig,
+    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpRetryAndToolTimeout,
+    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported,
+    MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread,
+    MigrateMemoryPersonaConfig, MigrateMemoryReasoning, MigrateMemoryReasoningJudge,
+    MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig,
+    MigrateNliConfig, MigrateOrchestrationAssetSensitivity, MigrateOrchestrationPersistence,
     MigrateOrchestratorProvider, MigrateOtelFilter, MigratePiiFilterNames,
     MigratePlannerModelToProvider, MigratePolicyProviderAndUtilityWindow,
     MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQdrantTimeoutSecs,
@@ -626,7 +626,7 @@ use steps::{
     MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–81).
+/// Ordered registry of all sequential migration steps (steps 1–82).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -773,6 +773,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateSkillTrustRequireCheck),
             // Step 81 — add [security.shadow_sentinel] advisory block (spec 050, #5934)
             Box::new(MigrateShadowSentinelConfig),
+            // Step 82 — add [a2a_client] card_trust_policy/trusted_agent_keys advisory block (#5928)
+            Box::new(MigrateA2aCardTrustConfig),
         ]
     });
 

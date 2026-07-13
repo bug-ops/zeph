@@ -55,6 +55,29 @@ pub enum A2aError {
     /// A request or task processing operation exceeded its deadline.
     #[error("operation timed out after {0:?}")]
     Timeout(std::time::Duration),
+
+    /// A discovered [`AgentCard`](crate::types::AgentCard) failed the configured
+    /// [`CardTrustPolicy`](crate::discovery::CardTrustPolicy) signature check.
+    ///
+    /// Returned when the signature axis alone, or the signature axis combined with a
+    /// URL-origin mismatch, causes rejection (S2: signature `Invalid` dominates a URL
+    /// mismatch). See [`UrlMismatch`](A2aError::UrlMismatch) for a URL-only rejection.
+    #[error("untrusted agent card: {reason}")]
+    UntrustedCard {
+        /// Human-readable reason, e.g. an ECDSA verification failure or an unknown `kid`.
+        reason: String,
+    },
+
+    /// A discovered [`AgentCard`](crate::types::AgentCard)'s `url` field origin
+    /// (scheme + host + port) does not match the origin that was queried, and the
+    /// signature axis did not independently trigger rejection.
+    #[error("agent card url mismatch: queried '{queried}', card advertises '{advertised}'")]
+    UrlMismatch {
+        /// Origin that was queried (`scheme://host:port`).
+        queried: String,
+        /// Origin advertised by the card's `url` field (`scheme://host:port`).
+        advertised: String,
+    },
 }
 
 impl From<JsonRpcError> for A2aError {

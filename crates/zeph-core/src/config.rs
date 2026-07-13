@@ -46,6 +46,7 @@ pub use zeph_config::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};
 pub use zeph_config::A2aClientConfig;
 pub use zeph_config::A2aServerConfig;
 pub use zeph_config::ChannelSkillsConfig;
+pub use zeph_config::{CardTrustPolicy, TrustedAgentKey};
 pub use zeph_config::{FileChangedConfig, HooksConfig};
 
 pub use zeph_config::{
