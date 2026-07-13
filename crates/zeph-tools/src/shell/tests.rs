@@ -2962,11 +2962,23 @@ mod resolve_context {
     // --- CWD resolution ---
 
     #[test]
-    fn no_context_uses_process_cwd() {
+    fn no_context_clamps_cwd_when_process_cwd_outside_sandbox() {
+        // Regression test for #6208: the fallback branch (no `cwd_override`) must not
+        // start the subprocess from the raw, unvalidated process cwd when it falls
+        // outside `allowed_paths` — it must clamp into the sandbox instead.
         let dir = tempfile::tempdir().unwrap();
+        let dir_canonical = dir.path().canonicalize().unwrap();
         let executor = executor_for_dir(&dir);
+        assert_ne!(
+            std::env::current_dir().unwrap(),
+            dir_canonical,
+            "test tempdir must differ from process cwd for this assertion to be meaningful"
+        );
         let resolved = executor.resolve_context(None).unwrap();
-        assert_eq!(resolved.cwd, std::env::current_dir().unwrap());
+        assert_eq!(
+            resolved.cwd, dir_canonical,
+            "no-context fallback must clamp into the sandbox when process cwd is outside allowed_paths (#6208)"
+        );
     }
 
     #[test]
@@ -3344,12 +3356,20 @@ mod resolve_context {
 
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
-    async fn tool_call_without_context_uses_process_cwd() {
+    async fn tool_call_without_context_clamps_cwd_when_process_cwd_outside_sandbox() {
+        // Regression test for #6208: a bare command with zero path tokens (`pwd`) and
+        // no `cwd_override` must run inside the sandbox, not the raw process cwd.
         use crate::executor::ToolExecutor;
         use zeph_common::ToolName;
 
         let dir = tempfile::tempdir().unwrap();
+        let dir_canonical = dir.path().canonicalize().unwrap();
         let executor = executor_for_dir(&dir);
+        assert_ne!(
+            std::env::current_dir().unwrap(),
+            dir_canonical,
+            "test tempdir must differ from process cwd for this assertion to be meaningful"
+        );
         let call = ToolCall {
             tool_id: ToolName::new("bash"),
             params: {
@@ -3367,10 +3387,12 @@ mod resolve_context {
             skill_name: None,
         };
         let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
-        let expected = std::env::current_dir().unwrap();
         assert!(
-            output.summary.contains(expected.to_string_lossy().as_ref()),
-            "pwd without context must reflect process cwd, got: {}",
+            output
+                .summary
+                .contains(dir_canonical.to_string_lossy().as_ref()),
+            "pwd without context must be confined to the sandbox root when process cwd is \
+             outside allowed_paths (#6208), got: {}",
             output.summary
         );
     }

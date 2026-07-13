@@ -91,6 +91,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Docs**: fixed stale `claude-opus-4-5` model ID references in `book/src/advanced/acp.md`
   (4 occurrences in code examples and configuration tables), updated to `claude-opus-4-8`
   for consistency. Documentation-only change (#6211).
+- **Security (shell sandbox)**: `ShellExecutor::resolve_context`'s no-`cwd_override` fallback
+  branch started the subprocess from the raw, unvalidated `std::env::current_dir()` with no
+  check against `allowed_paths`, while the `cwd_override` branch already canonicalized and
+  validated. When `allowed_paths` was configured non-empty and the real process cwd fell
+  outside every allowed root (a non-default launch/config), commands whose file references
+  were all bare filenames or absent (`ls`, `pwd`, `cat foo` — bare filenames are not extracted
+  as path tokens by `extract_paths`) could read/list outside the intended sandbox. Fixed by
+  clamping the fallback cwd into the sandbox (first allowed root, preferring a directory entry)
+  whenever the canonicalized process cwd is outside `allowed_paths`, reusing the shared
+  `zeph_common::security::is_path_within` validator; absolute path tokens in commands were
+  never affected (already canonicalized and rejected by `validate_sandbox_with_cwd`). Clamping
+  rather than rejecting avoids turning common bare commands into hard sandbox-violation errors
+  (#6208).
 - **Dependencies**: `Cargo.lock` had drifted — `rmcp` was pinned to `2.0.0` while crates.io's
   latest release within the existing `^2.0.0` manifest range (`Cargo.toml` unchanged) had moved to
   `2.2.0`. Updated the lockfile to `rmcp 2.2.0` / `rmcp-macros 2.2.0`; `sse-stream` also bumped to

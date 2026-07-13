@@ -35,6 +35,7 @@ use serde::Deserialize;
 use arc_swap::ArcSwap;
 use parking_lot::{Mutex, RwLock};
 
+use zeph_common::security::is_path_within;
 use zeph_common::{TaskSupervisor, ToolName};
 
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
@@ -1477,7 +1478,7 @@ impl ShellExecutor {
             }
             canonical
         } else {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+            self.clamped_process_cwd()
         };
 
         Ok(ResolvedContext {
@@ -1486,6 +1487,30 @@ impl ShellExecutor {
             name: resolved_name,
             trusted,
         })
+    }
+
+    /// Resolve the process cwd for the no-`cwd_override` fallback, clamped into the
+    /// sandbox when it falls outside `allowed_paths` (#6208).
+    ///
+    /// Returns the raw process cwd unchanged when no sandbox is configured, or when
+    /// the (canonicalized) process cwd already lies within `allowed_paths`. Otherwise
+    /// confines the fallback to the first allowed root (preferring one that is
+    /// actually a directory) so that path-token-free and bare-filename commands
+    /// (`ls`, `pwd`, `cat foo`) cannot read/write outside the intended sandbox.
+    fn clamped_process_cwd(&self) -> PathBuf {
+        let process_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        if self.allowed_paths_canonical.is_empty() {
+            return process_cwd;
+        }
+        let canon = canonicalize_or_nearest_ancestor(&process_cwd);
+        if is_path_within(&canon, &self.allowed_paths_canonical) {
+            return canon;
+        }
+        self.allowed_paths_canonical
+            .iter()
+            .find(|p| p.is_dir())
+            .unwrap_or(&self.allowed_paths_canonical[0])
+            .clone()
     }
 
     fn validate_sandbox_with_cwd(
