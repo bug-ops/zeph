@@ -11,9 +11,16 @@ use serde::{Deserialize, Serialize};
 /// effect on Telegram, Discord, Slack, or ACP sessions.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct CliConfig {
     /// Enable bare mode (skip skills, memory, MCP, scheduler, watchers).
     pub bare: bool,
+    /// Enable safe mode (skip ZEPH.md/CLAUDE.md/AGENTS.md, plugins, skills,
+    /// hooks, and MCP servers for this session). Session-scoped only — never
+    /// persisted to `config.toml` (`#[serde(skip)]`), mirroring `--bare`'s
+    /// troubleshooting-flag precedent but gating a disjoint set of subsystems.
+    #[serde(skip)]
+    pub safe_mode: bool,
     /// Emit structured JSON events (JSONL) to stdout. Forces logs to stderr.
     pub json: bool,
     /// Auto-approve trust-gate prompts (`-y` / `--auto`).

@@ -151,6 +151,127 @@ async fn reload_skills_offloads_registry_load_and_reflects_new_skills() {
     );
 }
 
+/// #6031: `reload_skills()` must be a no-op when `runtime.config.safe_mode` is set — the
+/// single DRY choke point covering every entry point (runner/daemon/acp/serve) at once, so a
+/// session that correctly started with an empty registry does not silently re-populate it
+/// from disk on the first skill-file change.
+#[tokio::test]
+async fn reload_skills_is_noop_when_safe_mode_active() {
+    let harness = QuickTestAgent::minimal("ok");
+    let mut agent = harness.agent;
+    agent.runtime.config.safe_mode = true;
+
+    let names_before: Vec<String> = agent
+        .services
+        .skill
+        .registry
+        .read()
+        .all_meta()
+        .iter()
+        .map(|m| m.name.clone())
+        .collect();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let skill_dir = temp_dir.path().join("hot-reload-skill");
+    std::fs::create_dir(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: hot-reload-skill\ndescription: A skill added via hot reload\n---\nSkill body",
+    )
+    .unwrap();
+    agent.services.skill.skill_paths = vec![temp_dir.path().to_path_buf()];
+
+    agent.reload_skills().await;
+
+    let names_after: Vec<String> = agent
+        .services
+        .skill
+        .registry
+        .read()
+        .all_meta()
+        .iter()
+        .map(|m| m.name.clone())
+        .collect();
+    assert_eq!(
+        names_after, names_before,
+        "safe-mode session must not re-populate the skill registry from disk"
+    );
+}
+
+// --- change_working_directory (#6032 / SEC-2) ---
+
+/// FR-009: `/cd` with no argument reports the current cwd without mutating any state.
+#[tokio::test]
+async fn change_working_directory_empty_arg_reports_current_cwd() {
+    use zeph_commands::traits::agent::AgentAccess;
+
+    let harness = QuickTestAgent::minimal("ok");
+    let mut agent = harness.agent;
+    let original_cwd = std::env::current_dir().unwrap();
+
+    let result = agent.change_working_directory("").await.unwrap();
+
+    assert!(result.contains(&original_cwd.display().to_string()));
+    assert_eq!(std::env::current_dir().unwrap(), original_cwd);
+}
+
+/// SEC-2: a `/cd` target outside `services.tool_state.allowed_paths` must be rejected and
+/// must not mutate the process cwd — mirrors spec 063 FR-001/"Never": `/cd` must not become a
+/// bypass for the per-path file sandbox.
+#[tokio::test]
+async fn change_working_directory_rejects_path_outside_allowed_paths() {
+    use zeph_commands::traits::agent::AgentAccess;
+
+    let harness = QuickTestAgent::minimal("ok");
+    let mut agent = harness.agent;
+    let original_cwd = std::env::current_dir().unwrap();
+
+    let allowed_root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    agent.services.tool_state.allowed_paths = vec![allowed_root.path().to_path_buf()];
+
+    let result = agent
+        .change_working_directory(outside.path().to_str().unwrap())
+        .await;
+
+    assert!(result.is_err(), "cd outside allowed_paths must be rejected");
+    assert_eq!(
+        std::env::current_dir().unwrap(),
+        original_cwd,
+        "process cwd must be unchanged after a rejected /cd"
+    );
+}
+
+/// A `/cd` target inside `allowed_paths` succeeds and drives the full post-change pipeline
+/// (`check_cwd_changed`): `env_context.working_dir` and `runtime.lifecycle.last_known_cwd`
+/// both reflect the new directory.
+#[tokio::test]
+async fn change_working_directory_allows_path_inside_allowed_paths() {
+    use zeph_commands::traits::agent::AgentAccess;
+
+    let harness = QuickTestAgent::minimal("ok");
+    let mut agent = harness.agent;
+    let original_cwd = std::env::current_dir().unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let canonical_dir = dir.path().canonicalize().unwrap();
+    agent.services.tool_state.allowed_paths = vec![canonical_dir.clone()];
+
+    let result = agent
+        .change_working_directory(dir.path().to_str().unwrap())
+        .await
+        .unwrap();
+
+    assert!(result.contains(&canonical_dir.display().to_string()));
+    assert_eq!(agent.runtime.lifecycle.last_known_cwd, canonical_dir);
+    assert_eq!(
+        agent.services.session.env_context.working_dir,
+        canonical_dir.display().to_string()
+    );
+
+    let _ = std::env::set_current_dir(&original_cwd);
+}
+
 /// `/plugins list` is registered in the agent-command registry (fix for #3215).
 /// The command must be routed — agent exits cleanly and the channel receives a reply.
 #[tokio::test]

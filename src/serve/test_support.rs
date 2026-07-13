@@ -126,7 +126,7 @@ impl ServeTestHarness {
             rl_persist_interval: 0,
             rl_warmup_updates: 0,
             rl_head: None,
-            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor::new(vec![])),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
@@ -150,6 +150,8 @@ impl ServeTestHarness {
             ),
             trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
             quality_pipeline: None,
+            safe_mode: false,
+            allowed_paths: vec![],
         };
 
         let state = AppState {

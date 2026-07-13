@@ -190,8 +190,11 @@ impl FileExecutor {
                 .join(path)
         };
         let normalized = normalize_path(&resolved);
+        // Ancestor-resolved rather than a plain `canonicalize()` (via
+        // `zeph_common::security::validate_path_within`) because the target may not exist
+        // yet (writing a new file) — only the shared containment check is reused (#6032 SEC-2).
         let canonical = resolve_via_ancestors(&normalized);
-        if !self.allowed_paths.iter().any(|a| canonical.starts_with(a)) {
+        if !zeph_common::security::is_path_within(&canonical, &self.allowed_paths) {
             return Err(ToolError::SandboxViolation {
                 path: canonical.display().to_string(),
             });

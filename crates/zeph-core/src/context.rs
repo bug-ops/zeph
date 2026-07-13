@@ -80,6 +80,14 @@ pub fn build_system_prompt(skills_prompt: &str, env: Option<&EnvironmentContext>
 /// Instruction file content is user-editable and must NOT be placed in the stable
 /// cache block. It is injected here, in the dynamic/volatile section, so that
 /// prompt-caching (epic #1082) is not disrupted.
+///
+/// When `env` is `Some`, the emitted `<environment>` block omits `working_directory`
+/// (see [`EnvironmentContext::format_cacheable`]) — the caller is responsible for
+/// appending a `working_directory:` line to the actual volatile tail (after Claude's
+/// `<!-- cache:volatile -->` marker), which today is only `assemble_final_system_prompt`
+/// (`agent/context/assembly.rs`). Any other caller passing `env: Some(..)` without also
+/// appending that line would silently drop `working_directory` from the assembled prompt
+/// entirely (#6032 S1) — currently safe because every other call site passes `env: None`.
 #[must_use]
 pub fn build_system_prompt_with_instructions(
     skills_prompt: &str,
@@ -91,7 +99,7 @@ pub fn build_system_prompt_with_instructions(
         .iter()
         .map(|b| b.source.display().to_string().len() + b.content.len() + 30)
         .sum();
-    let dynamic_len = env.map_or(0, |e| e.format().len() + 2)
+    let dynamic_len = env.map_or(0, |e| e.format_cacheable().len() + 2)
         + instructions_len
         + if skills_prompt.is_empty() {
             0
@@ -102,8 +110,11 @@ pub fn build_system_prompt_with_instructions(
     prompt.push_str(base);
 
     if let Some(env) = env {
+        // #6032 S1: `working_directory` is omitted here (see `format_cacheable`) and
+        // emitted separately in the volatile tail by `assemble_final_system_prompt`, so a
+        // `/cd` directory switch does not bust this stable cache block.
         prompt.push_str("\n\n");
-        prompt.push_str(&env.format());
+        prompt.push_str(&env.format_cacheable());
     }
 
     // Instruction blocks are placed after env context (volatile, user-editable content).
@@ -204,6 +215,25 @@ impl EnvironmentContext {
         use std::fmt::Write;
         let mut out = String::from("<environment>\n");
         let _ = writeln!(out, "  working_directory: {}", self.working_dir);
+        let _ = writeln!(out, "  os: {}", self.os);
+        let _ = writeln!(out, "  model: {}", self.model_name);
+        if let Some(ref branch) = self.git_branch {
+            let _ = writeln!(out, "  git_branch: {branch}");
+        }
+        out.push_str("</environment>");
+        out
+    }
+
+    /// Like [`format`](Self::format) but omits `working_directory` (#6032, S1 cache fix).
+    ///
+    /// Used to build the cacheable (pre-`cache:stable`) portion of the system prompt.
+    /// `working_directory` changes on every `/cd` and is emitted separately in the volatile
+    /// tail (after `<!-- cache:volatile -->`) so a directory switch does not bust the stable
+    /// prompt-cache block for `os`/`model`/`git_branch`, which rarely change mid-session.
+    #[must_use]
+    pub fn format_cacheable(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::from("<environment>\n");
         let _ = writeln!(out, "  os: {}", self.os);
         let _ = writeln!(out, "  model: {}", self.model_name);
         if let Some(ref branch) = self.git_branch {

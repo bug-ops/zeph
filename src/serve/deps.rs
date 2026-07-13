@@ -166,6 +166,14 @@ pub(crate) struct ServeAgentDeps {
     /// work, so it does not need to be rebuilt per session. `agent_factory::build_agent_factory`
     /// attaches it via `Agent::with_quality_pipeline`, mirroring `src/runner.rs`.
     pub(crate) quality_pipeline: Option<Arc<zeph_core::quality::SelfCheckPipeline>>,
+    /// Safe-mode gate (#6031): `config.cli.safe_mode`, wired into every session's `Agent` via
+    /// `Agent::with_safe_mode` so `check_cwd_changed`'s `/cd` (#6032) instruction-re-discovery
+    /// gate is correctly set for serve-built agents, matching `runner.rs`/`daemon.rs`/`acp.rs`.
+    pub(crate) safe_mode: bool,
+    /// `config.tools.shell.allowed_paths` (#6032 SEC-2), wired into every session's `Agent`
+    /// via `Agent::with_allowed_paths` so `/cd` is validated against the same sandbox
+    /// boundary `FileExecutor`/`DiagnosticsExecutor`/`SetCwdExecutor` already enforce.
+    pub(crate) allowed_paths: Vec<PathBuf>,
 }
 
 /// Assemble [`ServeAgentDeps`] once at `zeph serve-sessions` startup, plus the resolved bearer
@@ -186,10 +194,11 @@ pub(crate) async fn build_serve_deps(
     vault_backend: Option<&str>,
     vault_key: Option<&std::path::Path>,
     vault_path: Option<&std::path::Path>,
+    safe_mode: bool,
 ) -> anyhow::Result<(ServeAgentDeps, Option<String>)> {
     use crate::bootstrap::AppBuilder;
 
-    let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
+    let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path, safe_mode).await?;
     let auth_token = resolve_auth_token(&app).await;
 
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -216,6 +225,12 @@ pub(crate) async fn assemble_serve_deps(
     supervisor: &zeph_common::task_supervisor::TaskSupervisor,
 ) -> anyhow::Result<ServeAgentDeps> {
     let config = app.config();
+    if config.cli.safe_mode {
+        tracing::info!(
+            "safe mode active: plugins and skills are disabled for every session built from \
+             this serve-sessions process (serve wires no hooks or MCP tools yet)"
+        );
+    }
     let (tool_executor, permission_policy, audit_logger) =
         build_tool_executor(config, supervisor).await?;
     // R2 (SEC-H1): built once, eagerly, here — its outputs (`PolicyEnforcer`/`PolicyValidator`/
@@ -472,6 +487,14 @@ pub(crate) async fn assemble_serve_deps(
         shadow_sentinel_probe_provider,
         trajectory_sentinel_config,
         quality_pipeline,
+        safe_mode: config.cli.safe_mode,
+        allowed_paths: config
+            .tools
+            .shell
+            .allowed_paths
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
     })
 }
 
@@ -572,7 +595,15 @@ async fn build_tool_executor(
             .map(PathBuf::from)
             .collect(),
     );
-    let cwd_executor = zeph_tools::SetCwdExecutor;
+    let cwd_executor = zeph_tools::SetCwdExecutor::new(
+        config
+            .tools
+            .shell
+            .allowed_paths
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
+    );
     let base: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
         file_executor,
         zeph_tools::CompositeExecutor::new(

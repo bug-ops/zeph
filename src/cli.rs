@@ -258,6 +258,15 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) bare: bool,
 
+    /// Safe mode: start this session with ZEPH.md/CLAUDE.md/AGENTS.md project
+    /// instructions, plugins, skills, hooks, and MCP servers all disabled, to
+    /// isolate whether a customization is causing unwanted behavior. Distinct
+    /// from `--bare`, which skips memory/tool-registry/background-task overhead
+    /// instead — the two flags are independent and composable. Session-scoped
+    /// only; never persisted to config.toml. Equivalent to `ZEPH_SAFE_MODE=true`.
+    #[arg(long)]
+    pub(crate) safe_mode: bool,
+
     /// Emit structured JSON events to stdout (JSONL, one event per line).
     /// Safe for piping into `jq`. Forces all log output to stderr.
     /// Mutually exclusive with `--tui` and `--acp`.

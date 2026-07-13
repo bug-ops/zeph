@@ -197,7 +197,14 @@ pub(crate) async fn build_shared_core(
     let (provider, _status_tx, _status_rx) = app.build_provider().await?;
     let embedding_provider = crate::bootstrap::create_embedding_provider(app.config(), &provider);
     let budget_tokens = app.auto_budget_tokens(&provider);
-    let registry = std::sync::Arc::new(parking_lot::RwLock::new(app.build_registry()));
+    // Safe-mode gate (#6031): shared by ACP and `serve` (both build agents from this
+    // `SharedCore`) — an empty registry with no matching disables skill loading/matching for
+    // both entry points from this one seam, mirroring `runner.rs`'s `exec_mode.bare` gate.
+    let registry = std::sync::Arc::new(parking_lot::RwLock::new(if app.config().cli.safe_mode {
+        zeph_skills::registry::SkillRegistry::empty()
+    } else {
+        app.build_registry()
+    }));
     let memory = std::sync::Arc::new(app.build_memory(&provider, supervisor).await?);
 
     let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> =
@@ -472,6 +479,13 @@ pub(crate) struct SharedAgentDeps {
     tool_filter_config: zeph_core::config::ToolFilterConfig,
 
     hooks_config: zeph_core::config::HooksConfig,
+    /// Safe-mode gate (#6031): when `true`, `spawn_acp_agent` skips `with_hooks_config` for
+    /// every session built from this shared deps bundle.
+    safe_mode: bool,
+    /// `config.tools.shell.allowed_paths` (#6032 SEC-2), wired into every session's `Agent`
+    /// via `Agent::with_allowed_paths` so `/cd` is validated against the same sandbox
+    /// boundary `FileExecutor`/`DiagnosticsExecutor`/`SetCwdExecutor` already enforce.
+    cwd_allowed_paths: Vec<std::path::PathBuf>,
 
     // ACP-specific fields (transport-level; not agent-level)
     acp_agent_name: String,
@@ -641,6 +655,12 @@ async fn build_acp_deps(
     }
 
     let config = app.config();
+    if config.cli.safe_mode {
+        tracing::info!(
+            "safe mode active: ZEPH.md/CLAUDE.md/AGENTS.md, plugins, skills, hooks, and MCP \
+             servers are disabled for this session"
+        );
+    }
 
     // #5914/#5979/#6180: memory maintenance loops, via the shared
     // `agent_setup::spawn_memory_maintenance_loops` (also used by `src/runner.rs`,
@@ -744,7 +764,13 @@ async fn build_acp_deps(
                 .await;
         std::sync::Arc::new(builder)
     };
-    let (mcp_tools, _mcp_outcomes) = mcp_manager.connect_all().await;
+    // Safe-mode gate (#6031): shared by standalone `--acp` and `serve --acp` (both call
+    // `build_acp_deps`) — mirrors `agent_setup::build_tool_setup`'s runner-path gate.
+    let (mcp_tools, _mcp_outcomes) = if config.cli.safe_mode {
+        (Vec::new(), Vec::new())
+    } else {
+        mcp_manager.connect_all().await
+    };
     let mcp_shared_tools = std::sync::Arc::new(RwLock::new(mcp_tools.clone()));
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
@@ -760,6 +786,13 @@ async fn build_acp_deps(
         shell_executor,
         scrape_executor,
         diagnostics_executor,
+        config
+            .tools
+            .shell
+            .allowed_paths
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
     );
     let index_provider = crate::bootstrap::resolve_index_embed_provider(config, provider.clone());
     let inner_executor: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = {
@@ -1127,6 +1160,14 @@ async fn build_acp_deps(
         guardrail_provider: app.build_guardrail_provider(),
         audit_logger: acp_audit_logger,
         hooks_config: config.hooks.clone(),
+        safe_mode: config.cli.safe_mode,
+        cwd_allowed_paths: config
+            .tools
+            .shell
+            .allowed_paths
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect(),
         session_config,
         session_persistence_config: config.session.clone(),
         resume_condenser: resume_condenser_built,
@@ -1351,6 +1392,8 @@ async fn spawn_acp_agent(
     let scheduler_custom_tx = d.scheduler_custom_tx.clone();
 
     let hooks_config = d.hooks_config.clone();
+    let safe_mode = d.safe_mode;
+    let cwd_allowed_paths = d.cwd_allowed_paths.clone();
     let tool_filter_config = d.tool_filter_config.clone();
 
     // Cloned before `acp_ctx` is destructured into individual per-session executors below
@@ -1769,6 +1812,8 @@ async fn spawn_acp_agent(
             channel_provider_persistence,
             channel_persist_provider_overrides,
         )
+        .with_safe_mode(safe_mode)
+        .with_allowed_paths(cwd_allowed_paths)
         .maybe_init_tool_schema_filter(tool_filter_config, provider.clone()),
     )
     .await;
@@ -1938,7 +1983,9 @@ async fn spawn_acp_agent(
                 .0;
     }
 
-    agent = agent.with_hooks_config(&hooks_config);
+    if !safe_mode {
+        agent = agent.with_hooks_config(&hooks_config);
+    }
     // Spec 050 Phase 2 (#5913): wire ShadowSentinel into the agent so begin_turn() calls
     // advance_turn(), matching src/runner.rs.
     if let Some(sentinel) = shadow_sentinel_arc {
@@ -2257,6 +2304,7 @@ fn collect_project_rules(skill_paths: &[PathBuf]) -> Vec<PathBuf> {
 ///
 /// Returns an error if the agent stack cannot be built or the transport fails.
 #[cfg(feature = "acp")]
+#[allow(clippy::too_many_arguments)] // CLI/env passthrough for one session-bootstrap call; grouping into a struct would not reduce complexity
 pub(crate) async fn run_acp_server(
     config_path: Option<&std::path::Path>,
     vault_backend: Option<&str>,
@@ -2265,10 +2313,11 @@ pub(crate) async fn run_acp_server(
     cli_additional_dirs: Vec<std::path::PathBuf>,
     cli_auth_methods: Vec<String>,
     cli_message_ids: Option<bool>,
+    safe_mode: bool,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
-    let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
+    let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path, safe_mode).await?;
     let (mut deps, _keepalive) = Box::pin(build_acp_deps(&app, None, None)).await?;
     let available_models = std::sync::Arc::clone(&deps.acp_available_models);
     let provider = deps.provider.clone();
@@ -2372,11 +2421,12 @@ pub(crate) async fn run_acp_http_server(
     vault_path: Option<&std::path::Path>,
     bind_override: Option<&str>,
     auth_token_override: Option<String>,
+    safe_mode: bool,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
-    let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path).await?;
+    let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path, safe_mode).await?;
     log_acp_runtime_paths(app.config(), app.config_path());
     let bind_addr = bind_override.map_or_else(|| app.config().acp.http_bind.clone(), str::to_owned);
 
@@ -2892,6 +2942,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
@@ -2941,6 +2992,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
         // Default PermissionPolicy: Supervised autonomy, no explicit rules configured —
         // the exact real-world "user never set tools.permissions" scenario #5575 covers.
@@ -3107,6 +3159,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
@@ -3182,6 +3235,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
@@ -3337,6 +3391,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
@@ -3517,6 +3572,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
         let (trust_gated, _mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
             zeph_tools::DynExecutor(Arc::new(base_executor)),
@@ -3597,6 +3653,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);

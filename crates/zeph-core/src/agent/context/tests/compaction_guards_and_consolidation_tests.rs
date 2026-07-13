@@ -910,6 +910,43 @@ async fn rebuild_system_prompt_cache_markers_count() {
     );
 }
 
+/// #6032 S1 regression: `working_directory:` must live in the volatile tail (after
+/// `<!-- cache:volatile -->`), never in the stable block (before `<!-- cache:stable -->`).
+/// A `/cd` directory switch must not re-cache the stable block just because the cwd line
+/// moved — this test pins the placement so a future change reverting the fix fails CI
+/// instead of only being caught in a live manual check.
+#[tokio::test]
+async fn rebuild_system_prompt_working_directory_is_in_volatile_tail() {
+    use zeph_skills::registry::SkillRegistry;
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = SkillRegistry::default();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    agent.rebuild_system_prompt("test query").await;
+
+    let prompt = &agent.msg.messages[0].content;
+    let stable_pos = prompt
+        .find("<!-- cache:stable -->")
+        .expect("cache:stable marker must be present");
+    let volatile_pos = prompt
+        .find("<!-- cache:volatile -->")
+        .expect("cache:volatile marker must be present");
+    let cwd_pos = prompt
+        .find("working_directory:")
+        .expect("working_directory: line must be present");
+
+    assert!(
+        cwd_pos > volatile_pos,
+        "working_directory: (pos {cwd_pos}) must appear AFTER cache:volatile (pos {volatile_pos})"
+    );
+    assert!(
+        cwd_pos > stable_pos,
+        "working_directory: (pos {cwd_pos}) must not appear before cache:stable (pos {stable_pos})"
+    );
+}
+
 // T-06: H1 regression — ProbeRejected must NOT trigger Exhausted transition.
 //
 // Design invariant (H1 fix): when the compaction probe rejects a summary,

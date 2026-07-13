@@ -121,6 +121,7 @@ fn make_runtime_config() -> RuntimeConfig {
         restoring_provider: false,
         goals: crate::agent::state::GoalRuntimeConfig::default(),
         bare: false,
+        safe_mode: false,
     }
 }
 

@@ -1874,6 +1874,54 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                 .map_err(|e| CommandError::new(e.to_string()))
         })
     }
+
+    // ----- /cd -----
+
+    fn change_working_directory<'a>(
+        &'a mut self,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(
+            async move {
+                let path = path.trim();
+                if path.is_empty() {
+                    let cwd = std::env::current_dir().map_err(|e| {
+                        CommandError::new(format!("failed to read current working directory: {e}"))
+                    })?;
+                    return Ok(format!("Current working directory: {}", cwd.display()));
+                }
+                // Reuses the same path-resolution + `set_current_dir` logic as the
+                // LLM-invoked `set_working_directory` tool (#6032 FR-001/FR-011) — no
+                // parallel implementation. `allowed_paths` empty means no build site has set
+                // it yet; default to `[cwd]` rather than "allow every path", matching
+                // `FileExecutor::new`/`SetCwdExecutor::new`'s convention (SEC-2).
+                let allowed_paths: Vec<std::path::PathBuf> =
+                    if self.services.tool_state.allowed_paths.is_empty() {
+                        // Canonicalize for byte-for-byte parity with `FileExecutor::new`/
+                        // `SetCwdExecutor::new`'s fallback, which both canonicalize their
+                        // default `[cwd]` entry (`.map(|p| p.canonicalize().unwrap_or(p))`).
+                        std::env::current_dir()
+                            .map(|p| p.canonicalize().unwrap_or(p))
+                            .into_iter()
+                            .collect()
+                    } else {
+                        self.services.tool_state.allowed_paths.clone()
+                    };
+                let new_cwd = zeph_tools::resolve_and_set_cwd(path, &allowed_paths)
+                    .map_err(|e| CommandError::new(format!("cannot change to '{path}': {e}")))?;
+                // Drives the same post-change pipeline the tool-invoked path gets for free
+                // after a tool batch (`tier_loop.rs`) — a bare slash command must call it
+                // explicitly (FR-002/FR-003/FR-004): mirror-update, `cwd_changed` hooks,
+                // repo-map invalidation, and (unless safe-mode) instruction re-discovery.
+                self.check_cwd_changed().await;
+                Ok(format!(
+                    "Working directory changed to: {}",
+                    new_cwd.display()
+                ))
+            }
+            .instrument(tracing::info_span!("core.commands.cd")),
+        )
+    }
 }
 
 impl<C: Channel> Agent<C> {

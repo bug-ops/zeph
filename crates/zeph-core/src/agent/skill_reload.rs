@@ -173,6 +173,16 @@ impl<C: Channel> Agent<C> {
     }
     #[tracing::instrument(name = "core.agent.reload_skills", skip_all, level = "debug")]
     pub(super) async fn reload_skills(&mut self) {
+        // #6031: single DRY choke point for the skill-hot-reload gate — covers every entry
+        // point (runner/daemon/acp/serve) at once, instead of patching each `SkillWatcher`
+        // call site individually. Without this, a session that correctly started with an
+        // empty registry (daemon/acp/serve's `build_shared_core` gate) would still silently
+        // re-populate it from disk on the first skill-file change, defeating safe-mode for
+        // the rest of the session.
+        if self.runtime.config.safe_mode {
+            tracing::debug!("safe mode active: skipping skill hot-reload");
+            return;
+        }
         let old_fp = self.services.skill.fingerprint();
         let reload_paths = if let Some(ref supplier) = self.services.skill.plugin_dirs_supplier {
             let plugin_dirs = supplier();

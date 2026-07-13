@@ -74,6 +74,11 @@ pub(crate) struct ServeSessionsArgs {
     pub(crate) vault_key: Option<std::path::PathBuf>,
     /// `--vault-path` — path to the age-encrypted secrets file.
     pub(crate) vault_path: Option<std::path::PathBuf>,
+    /// Resolved `--safe-mode` flag (already OR'd with `ZEPH_SAFE_MODE` by the caller) —
+    /// disables plugin loading (`AppBuilder::new`) and the skill registry
+    /// (`crate::acp::build_shared_core`) for every session this `serve-sessions` process
+    /// builds. Serve wires no hooks or MCP tools today, so there is nothing else to gate here.
+    pub(crate) safe_mode: bool,
 }
 
 /// Shared HTTP handler state.
@@ -149,6 +154,7 @@ pub(crate) async fn handle_serve_sessions_command(
         args.vault_backend.as_deref(),
         args.vault_key.as_deref(),
         args.vault_path.as_deref(),
+        args.safe_mode,
     ))
     .await?;
 
@@ -215,6 +221,7 @@ async fn run_serve_with_acp(
         args.vault_backend.as_deref(),
         args.vault_key.as_deref(),
         args.vault_path.as_deref(),
+        args.safe_mode,
     )
     .await?;
     let serve_config = app.config().serve.clone();

@@ -32,6 +32,7 @@ pub mod quarantine;
 pub mod sanitize;
 pub mod secret;
 pub mod secrets;
+pub mod security;
 pub mod security_event;
 pub mod spawner;
 pub mod task_supervisor;

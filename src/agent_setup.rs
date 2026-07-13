@@ -427,6 +427,7 @@ pub(crate) async fn build_tool_setup(
     permission_policy: zeph_tools::PermissionPolicy,
     with_tool_events: bool,
     bare: bool,
+    safe_mode: bool,
     runtime_ctx: RuntimeContext,
     age_vault: Option<&Arc<std::sync::RwLock<zeph_core::vault::AgeVaultProvider>>>,
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
@@ -567,7 +568,9 @@ pub(crate) async fn build_tool_setup(
         }
     }
     let mcp_manager = Arc::new(mcp_manager_builder);
-    let (mcp_tools, mcp_outcomes) = if bare {
+    // `safe_mode` (#6031) skips the connection, same as `bare` — independent gates, union
+    // applied here.
+    let (mcp_tools, mcp_outcomes) = if bare || safe_mode {
         (Vec::new(), Vec::new())
     } else {
         let result = mcp_manager.connect_all().await;
@@ -579,7 +582,7 @@ pub(crate) async fn build_tool_setup(
     let mcp_tool_rx = mcp_manager.subscribe_tool_changes();
     // Take the elicitation receiver before Arc-wrapping the manager.
     let mcp_elicitation_rx = mcp_manager.take_elicitation_rx();
-    if !bare {
+    if !bare && !safe_mode {
         // Spawn the background task that processes tools/list_changed events.
         mcp_manager.spawn_refresh_task(supervisor);
     }
@@ -599,6 +602,13 @@ pub(crate) async fn build_tool_setup(
         shell_executor,
         scrape_executor,
         diagnostics_executor,
+        config
+            .tools
+            .shell
+            .allowed_paths
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
     );
     let composite = zeph_tools::CompositeExecutor::new(base_executor, mcp_executor);
     let (executor, taco_compressor) =
@@ -1714,6 +1724,7 @@ pub(crate) fn build_base_executor_chain<F, S, W>(
     shell_executor: S,
     scrape_executor: W,
     diagnostics_executor: zeph_tools::DiagnosticsExecutor,
+    cwd_allowed_paths: Vec<PathBuf>,
 ) -> zeph_tools::CompositeExecutor<
     F,
     zeph_tools::CompositeExecutor<
@@ -1739,7 +1750,7 @@ where
             zeph_tools::CompositeExecutor::new(
                 scrape_executor,
                 zeph_tools::CompositeExecutor::new(
-                    zeph_tools::SetCwdExecutor,
+                    zeph_tools::SetCwdExecutor::new(cwd_allowed_paths),
                     diagnostics_executor,
                 ),
             ),
@@ -2873,7 +2884,7 @@ mod tests {
         let file_executor = zeph_tools::FileExecutor::new(vec![]);
         let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
         let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
-        let cwd_executor = zeph_tools::SetCwdExecutor;
+        let cwd_executor = zeph_tools::SetCwdExecutor::new(vec![]);
         let diagnostics_executor = build_diagnostics_executor(&config);
         let base_executor = zeph_tools::CompositeExecutor::new(
             file_executor,
@@ -2910,6 +2921,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
 
         // Must exist on disk (DiagnosticsExecutor canonicalizes before the sandbox

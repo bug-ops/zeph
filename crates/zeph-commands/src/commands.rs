@@ -145,6 +145,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         category: SlashCategory::Session,
         feature_gate: Some("session"),
     },
+    CommandInfo {
+        name: "/cd",
+        args: "[path]",
+        description: "Change the session's working directory (no arg: show current)",
+        category: SlashCategory::Session,
+        feature_gate: None,
+    },
     // --- Configuration (model/provider) ---
     CommandInfo {
         name: "/model",

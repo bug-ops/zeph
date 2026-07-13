@@ -36,6 +36,9 @@ pub enum JsonEvent<'a> {
         version: &'a str,
         bare: bool,
         auto: bool,
+        /// `--safe-mode`/`ZEPH_SAFE_MODE` (#6031): customizations (ZEPH.md/CLAUDE.md/AGENTS.md,
+        /// plugins, skills, hooks, MCP servers) are disabled for this session.
+        safe_mode: bool,
     },
     /// User input received from stdin.
     Query { text: &'a str, queue_len: usize },
@@ -153,11 +156,13 @@ mod tests {
             version: "0.1.0",
             bare: true,
             auto: false,
+            safe_mode: false,
         };
         let s = serde_json::to_string(&event).unwrap();
         assert!(s.contains("\"event\":\"boot\""));
         assert!(s.contains("\"version\":\"0.1.0\""));
         assert!(s.contains("\"bare\":true"));
+        assert!(s.contains("\"safe_mode\":false"));
     }
 
     #[test]

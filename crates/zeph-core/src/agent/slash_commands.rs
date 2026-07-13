@@ -719,6 +719,7 @@ pub(crate) fn build_agent_command_registry<'ctx>()
         agent_cmd::AgentCommand,
         agents_fleet::AgentsFleetCommand,
         caveman::CavemanCommand,
+        cd::CdCommand,
         checkpoint::{RedoCommand, UndoCommand},
         compaction::{CompactCommand, NewConversationCommand, RecapCommand},
         conv::ConvCommand,
@@ -744,6 +745,7 @@ pub(crate) fn build_agent_command_registry<'ctx>()
 
     let mut agent_reg = CommandRegistry::new();
     agent_reg.register(CavemanCommand);
+    agent_reg.register(CdCommand);
     agent_reg.register(MemoryCommand);
     agent_reg.register(GraphCommand);
     agent_reg.register(KnowledgeSlashCommand);

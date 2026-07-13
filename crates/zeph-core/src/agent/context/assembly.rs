@@ -913,6 +913,13 @@ impl<C: Channel> Agent<C> {
         // BLOCK 3: volatile — dynamic per-turn content, never cached
         system_prompt.push_str("\n<!-- cache:volatile -->");
 
+        // #6032 S1: working_directory changes on every `/cd` — kept out of the stable
+        // `<environment>` block (`EnvironmentContext::format_cacheable`) and emitted here so a
+        // directory switch only re-caches this volatile tail, not the (larger, more expensive)
+        // stable block.
+        system_prompt.push_str("\n\nworking_directory: ");
+        system_prompt.push_str(&cwd.display().to_string());
+
         // Inject learned user preferences after the volatile marker so they
         // do not invalidate the stable/semi-stable cache blocks (S2 fix).
         self.inject_learned_preferences(&mut system_prompt).await;

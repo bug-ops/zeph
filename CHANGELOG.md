@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+
+- **CLI**: added `--safe-mode` (and `ZEPH_SAFE_MODE` environment variable) — starts a session
+  with `ZEPH.md`/`CLAUDE.md`/`AGENTS.md` project instructions, plugins, skills, hooks, and MCP
+  servers all disabled at once, so a user can quickly confirm whether one of those
+  customizations is causing a reported problem before bisecting sources manually. Distinct
+  from the existing `--bare` flag, which skips memory/tool-registry/background-task overhead
+  instead of customization sources — the two flags are independent and composable. Gated at
+  all six session entry points (CLI/TUI runner, daemon, standalone ACP, ACP-HTTP, and
+  `zeph serve-sessions` with and without `--acp`); session-scoped only, never persisted to
+  `config.toml` (#6031).
+- **Commands**: added `/cd [path]` — switch the session's primary working directory without
+  restarting, reusing the same path-resolution and post-change pipeline (`cwd_changed` hooks,
+  repo-map invalidation, CLAUDE.md/AGENTS.md re-discovery) the LLM-invoked `set_working_directory`
+  tool already uses. No argument reports the current working directory. Reachable identically
+  from CLI, TUI, and ACP. Instruction re-discovery is skipped in a `--safe-mode` session so `/cd`
+  cannot silently re-load project instructions and defeat the flag. Conversation history, active
+  goals, and skill state are preserved across the switch (#6032).
+
 ### Changed
 
 - **BREAKING**: `CommandHandler::requires_auth()` now defaults to `true` (fail-closed),

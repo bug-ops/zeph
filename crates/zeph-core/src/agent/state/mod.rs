@@ -326,6 +326,15 @@ pub(crate) struct RuntimeConfig {
     /// consolidation, skill trace-extraction, shutdown summary, session digest) apply the
     /// same gating instead of firing unconditional LLM calls at session end.
     pub(crate) bare: bool,
+    /// Set from `config.cli.safe_mode` (`--safe-mode` / `ZEPH_SAFE_MODE`, #6031).
+    ///
+    /// Distinct from `bare`: safe mode disables ZEPH.md/CLAUDE.md/AGENTS.md discovery,
+    /// plugins, skills, hooks, and MCP servers for troubleshooting isolation, rather than
+    /// `bare`'s memory/tool-registry/background-task test-mode behavior. Read by
+    /// `check_cwd_changed` (#6032) to gate whether a `/cd`-triggered directory change
+    /// re-runs instruction discovery — a safe-mode session must never silently re-load
+    /// project instructions mid-session, which would defeat the flag.
+    pub(crate) safe_mode: bool,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.
@@ -812,6 +821,13 @@ pub(crate) struct ToolState {
     /// Last tool executed per skill in the current turn, keyed by skill name.
     /// Used as `prev_tool` for PASTE pattern transition recording.
     pub(crate) last_tool_per_skill: HashMap<String, String>,
+    /// `config.tools.shell.allowed_paths`, mirrored here so `AgentAccess::change_working_directory`
+    /// (#6032 SEC-2) can validate a `/cd` target against the same sandbox boundary
+    /// `FileExecutor`/`DiagnosticsExecutor`/`SetCwdExecutor` already enforce, via
+    /// `zeph_common::security::validate_path_within`. Empty means "no session has set it yet";
+    /// callers treat empty the same way `FileExecutor::new` does (default to `[cwd]`), not as
+    /// "allow every path".
+    pub(crate) allowed_paths: Vec<std::path::PathBuf>,
 }
 
 /// Groups per-session I/O and policy state.
@@ -1286,6 +1302,7 @@ impl Default for RuntimeConfig {
             restoring_provider: false,
             goals: GoalRuntimeConfig::default(),
             bare: false,
+            safe_mode: false,
         }
     }
 }

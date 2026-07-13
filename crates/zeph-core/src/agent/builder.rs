@@ -664,6 +664,33 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set whether the agent is running in `--safe-mode` (#6031).
+    ///
+    /// Safe mode disables ZEPH.md/CLAUDE.md/AGENTS.md discovery, plugins, skills, hooks, and
+    /// MCP servers at startup — a distinct troubleshooting isolation flag from `--bare`'s
+    /// memory/tool-registry test-mode behavior. Read by `check_cwd_changed` to gate whether a
+    /// `/cd`-triggered directory change (#6032) re-runs instruction discovery.
+    #[must_use]
+    pub fn with_safe_mode(mut self, safe_mode: bool) -> Self {
+        self.runtime.config.safe_mode = safe_mode;
+        self
+    }
+
+    /// Set the sandbox root(s) `/cd` (and any other agent-invoked cwd change) is validated
+    /// against (#6032 SEC-2).
+    ///
+    /// Should be the same `config.tools.shell.allowed_paths` passed to
+    /// `FileExecutor::new`/`DiagnosticsExecutor::new`/`SetCwdExecutor::new` at the same
+    /// build site, so all cwd/file-path sandboxes agree on one boundary. An empty `Vec`
+    /// (the default if this is never called) is treated as "default to `[cwd]`" by
+    /// `AgentAccess::change_working_directory`, matching `FileExecutor::new`'s convention —
+    /// not "allow every path".
+    #[must_use]
+    pub fn with_allowed_paths(mut self, allowed_paths: Vec<std::path::PathBuf>) -> Self {
+        self.services.tool_state.allowed_paths = allowed_paths;
+        self
+    }
+
     /// Configure channel identity for per-channel UX preference persistence (#3308, #4654).
     ///
     /// `channel_type` must match the active I/O channel name (`"cli"`, `"tui"`, `"telegram"`,

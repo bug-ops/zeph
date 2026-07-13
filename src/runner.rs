@@ -271,6 +271,7 @@ where
     tiered_retrieval_classifier_provider: Option<std::sync::Arc<LlmAnyProvider>>,
     tiered_retrieval_validator_provider: Option<std::sync::Arc<LlmAnyProvider>>,
     bare_mode: bool,
+    safe_mode: bool,
 }
 
 /// Build the `Agent` from the `AgentBuilder` construction chain used by the CLI bootstrap path
@@ -280,6 +281,7 @@ where
 /// Only the core `Agent::new_with_registry_arc(...)...await` wiring lives here — feature-gated
 /// post-processing (MCP wiring, provider pool, debug dumper, preloaded history, etc.) stays in
 /// `run()`, matching how `build_agent_factory`'s returned closure covers only the core wiring too.
+#[allow(clippy::too_many_lines)] // strictly sequential AgentBuilder chain — one call per config field, splitting would not reduce complexity
 async fn build_agent<C, F>(deps: BuildAgentDeps<'_, F>, channel: C) -> Agent<C>
 where
     C: zeph_core::channel::Channel,
@@ -380,6 +382,16 @@ where
     )
     .with_embedding_provider(deps.embedding_provider.clone())
     .with_bare_mode(deps.bare_mode)
+    .with_safe_mode(deps.safe_mode)
+    .with_allowed_paths(
+        config
+            .tools
+            .shell
+            .allowed_paths
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect(),
+    )
     .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), deps.embedding_provider)
     .await
 }
@@ -436,6 +448,7 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
     let vault_backend = cli.vault.clone();
     let vault_key = cli.vault_key.clone();
     let vault_path = cli.vault_path.clone();
+    let safe_mode = crate::execution_mode::resolve_safe_mode_flag(cli.safe_mode);
 
     match transport {
         AcpTransport::Stdio => {
@@ -447,6 +460,7 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
                 Vec::new(),
                 Vec::new(),
                 None,
+                safe_mode,
             ))
             .await
         }
@@ -459,6 +473,7 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
                 vault_path.as_deref(),
                 None,
                 None,
+                safe_mode,
             ))
             .await
         }
@@ -473,6 +488,7 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
                     Vec::new(),
                     Vec::new(),
                     None,
+                    safe_mode,
                 ) => result,
                 result = run_acp_http_server(
                     config_path.as_deref(),
@@ -481,6 +497,7 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
                     vault_path.as_deref(),
                     None,
                     None,
+                    safe_mode,
                 ) => result,
             }
         }
@@ -498,6 +515,7 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
                 Vec::new(),
                 Vec::new(),
                 None,
+                safe_mode,
             ))
             .await
         }
@@ -516,6 +534,7 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
                 Vec::new(),
                 Vec::new(),
                 None,
+                safe_mode,
             ))
             .await
         }
@@ -925,6 +944,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                     vault_backend: cli.vault.clone(),
                     vault_key: cli.vault_key.clone(),
                     vault_path: cli.vault_path.clone(),
+                    safe_mode: crate::execution_mode::resolve_safe_mode_flag(cli.safe_mode),
                 },
                 cli.config.as_deref(),
             )
@@ -1139,6 +1159,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             cli.vault.as_deref(),
             cli.vault_key.as_deref(),
             cli.vault_path.as_deref(),
+            crate::execution_mode::resolve_safe_mode_flag(cli.safe_mode),
         ))
         .await;
     }
@@ -1166,6 +1187,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             cli.acp_additional_dir,
             cli.acp_auth_method,
             cli_message_ids,
+            crate::execution_mode::resolve_safe_mode_flag(cli.safe_mode),
         ))
         .await;
     }
@@ -1179,6 +1201,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             cli.vault_path.as_deref(),
             cli.acp_http_bind.as_deref(),
             cli.acp_auth_token,
+            crate::execution_mode::resolve_safe_mode_flag(cli.safe_mode),
         ))
         .await;
     }
@@ -1196,6 +1219,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         cli.vault.as_deref(),
         cli.vault_key.as_deref(),
         cli.vault_path.as_deref(),
+        crate::execution_mode::resolve_safe_mode_flag(cli.safe_mode),
     )
     .await?;
 
@@ -1406,7 +1430,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     #[cfg(not(feature = "tui"))]
     let with_tool_events = false;
 
-    let registry = if exec_mode.bare {
+    let registry = if exec_mode.bare || exec_mode.safe_mode {
         zeph_skills::registry::SkillRegistry::empty()
     } else {
         app.build_registry()
@@ -1559,6 +1583,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             permission_policy.clone(),
             with_tool_events,
             exec_mode.bare,
+            exec_mode.safe_mode,
             runtime_ctx,
             app.age_vault_arc(),
             Some(agent_status_tx.clone()),
@@ -1574,6 +1599,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         permission_policy.clone(),
         with_tool_events,
         exec_mode.bare,
+        exec_mode.safe_mode,
         runtime_ctx,
         app.age_vault_arc(),
         Some(agent_status_tx.clone()),
@@ -1743,9 +1769,23 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             version: env!("CARGO_PKG_VERSION"),
             bare: exec_mode.bare,
             auto: exec_mode.auto,
+            safe_mode: exec_mode.safe_mode,
         });
     } else if is_cli {
         println!("zeph v{}", env!("CARGO_PKG_VERSION"));
+    }
+    // FR-008 (#6031): clear startup log line + CLI banner distinguishing safe mode from
+    // `--bare` (NFR-001) — a user running a "clean agent" test must not mistake the result
+    // for representative behavior.
+    if exec_mode.safe_mode {
+        tracing::info!(
+            "safe mode active: ZEPH.md/CLAUDE.md/AGENTS.md, plugins, skills, hooks, and MCP \
+             servers are disabled for this session (see --bare for the separate memory/tool- \
+             registry test mode)"
+        );
+        if is_cli && json_sink.is_none() {
+            println!("Safe mode: customizations disabled (ZEPH.md, plugins, skills, hooks, MCP)");
+        }
     }
 
     // Determine channel name before channel is consumed by Agent::new.
@@ -2498,6 +2538,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             tiered_retrieval_classifier_provider,
             tiered_retrieval_validator_provider,
             bare_mode: exec_mode.bare,
+            safe_mode: exec_mode.safe_mode,
         },
         channel,
     )
@@ -2623,14 +2664,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     provider_kinds.sort_unstable_by_key(|k| k.as_str());
     provider_kinds.dedup_by_key(|k| k.as_str());
 
-    let instruction_blocks = zeph_core::instructions::load_instructions_async(
-        instruction_base.clone(),
-        provider_kinds.clone(),
-        explicit_instruction_files.clone(),
-        config.agent.instruction_auto_detect,
-    )
-    .await;
-
     let instruction_reload_state = zeph_core::instructions::InstructionReloadState {
         base_dir: instruction_base.clone(),
         provider_kinds: provider_kinds.clone(),
@@ -2638,54 +2671,78 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         auto_detect: config.agent.instruction_auto_detect,
     };
 
-    // Collect parent directories of candidate instruction files to watch.
-    // Only include dirs within the canonical project root to avoid watching external paths.
-    let canonical_base = tokio::fs::canonicalize(&instruction_base)
-        .await
-        .unwrap_or_else(|_| instruction_base.clone());
-    let mut watch_dirs: Vec<std::path::PathBuf> = Vec::new();
-    watch_dirs.push(instruction_base.clone());
-    watch_dirs.push(instruction_base.join(".zeph"));
-    if config.agent.instruction_auto_detect {
-        watch_dirs.push(instruction_base.join(".claude"));
-        watch_dirs.push(instruction_base.join(".claude").join("rules"));
-    }
-    for p in &explicit_instruction_files {
-        let abs = if p.is_absolute() {
-            p.clone()
-        } else {
-            instruction_base.join(p)
-        };
-        // Boundary-check: only watch dirs within the project root.
-        if let Some(parent) = abs.parent() {
-            let canonical_parent = tokio::fs::canonicalize(parent).await;
-            if let Ok(canonical_parent) = canonical_parent
-                && canonical_parent.starts_with(&canonical_base)
-            {
-                watch_dirs.push(parent.to_path_buf());
+    // Safe-mode gate (#6031, FR-001): skip instruction discovery entirely — not merely
+    // ignore the result — so ZEPH.md/CLAUDE.md/AGENTS.md are never read from disk and no
+    // filesystem watcher is started. `instruction_reload_state` is still built above (it's
+    // pure data, no I/O) so `/cd` (#6032) has a well-formed `base_dir` to re-point if the
+    // session later drops out of safe mode via a restart.
+    let (instruction_blocks, _instruction_watcher) = if exec_mode.safe_mode {
+        tracing::info!(
+            "safe mode: skipping ZEPH.md/CLAUDE.md/AGENTS.md instruction discovery and watcher"
+        );
+        let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
+        let watcher = zeph_core::instructions::InstructionWatcher::start(&[], tx2, &supervisor)
+            .expect("empty-path watcher always succeeds");
+        (Vec::new(), watcher)
+    } else {
+        let instruction_blocks = zeph_core::instructions::load_instructions_async(
+            instruction_base.clone(),
+            provider_kinds.clone(),
+            explicit_instruction_files.clone(),
+            config.agent.instruction_auto_detect,
+        )
+        .await;
+
+        // Collect parent directories of candidate instruction files to watch.
+        // Only include dirs within the canonical project root to avoid watching external paths.
+        let canonical_base = tokio::fs::canonicalize(&instruction_base)
+            .await
+            .unwrap_or_else(|_| instruction_base.clone());
+        let mut watch_dirs: Vec<std::path::PathBuf> = Vec::new();
+        watch_dirs.push(instruction_base.clone());
+        watch_dirs.push(instruction_base.join(".zeph"));
+        if config.agent.instruction_auto_detect {
+            watch_dirs.push(instruction_base.join(".claude"));
+            watch_dirs.push(instruction_base.join(".claude").join("rules"));
+        }
+        for p in &explicit_instruction_files {
+            let abs = if p.is_absolute() {
+                p.clone()
+            } else {
+                instruction_base.join(p)
+            };
+            // Boundary-check: only watch dirs within the project root.
+            if let Some(parent) = abs.parent() {
+                let canonical_parent = tokio::fs::canonicalize(parent).await;
+                if let Ok(canonical_parent) = canonical_parent
+                    && canonical_parent.starts_with(&canonical_base)
+                {
+                    watch_dirs.push(parent.to_path_buf());
+                }
             }
         }
-    }
-    watch_dirs.sort();
-    watch_dirs.dedup();
+        watch_dirs.sort();
+        watch_dirs.dedup();
 
-    let _instruction_watcher = if watch_dirs.is_empty() {
-        tracing::debug!("no instruction watch dirs, hot-reload disabled");
-        let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
-        zeph_core::instructions::InstructionWatcher::start(&[], tx2, &supervisor)
-            .expect("empty-path watcher always succeeds")
-    } else {
-        zeph_core::instructions::InstructionWatcher::start(
-            &watch_dirs,
-            instruction_reload_tx,
-            &supervisor,
-        )
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "instruction watcher failed, hot-reload disabled");
+        let watcher = if watch_dirs.is_empty() {
+            tracing::debug!("no instruction watch dirs, hot-reload disabled");
             let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
             zeph_core::instructions::InstructionWatcher::start(&[], tx2, &supervisor)
                 .expect("empty-path watcher always succeeds")
-        })
+        } else {
+            zeph_core::instructions::InstructionWatcher::start(
+                &watch_dirs,
+                instruction_reload_tx,
+                &supervisor,
+            )
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "instruction watcher failed, hot-reload disabled");
+                let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
+                zeph_core::instructions::InstructionWatcher::start(&[], tx2, &supervisor)
+                    .expect("empty-path watcher always succeeds")
+            })
+        };
+        (instruction_blocks, watcher)
     };
 
     let agent = agent
@@ -2843,14 +2900,16 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let agent = agent_setup::apply_mcp_pruning(agent, config);
     let agent = agent_setup::apply_mcp_discovery(agent, config);
 
-    // Wire LSP context injection hooks when the feature is enabled and configured.
-    let agent = if config.lsp.enabled {
+    // Wire LSP context injection hooks when the feature is enabled and configured. Also gated
+    // by safe-mode (#6031): LSP hover/diagnostics auto-injection is a customization-adjacent
+    // source the flag must isolate, even though `--bare` never gated it.
+    let agent = if config.lsp.enabled && !exec_mode.safe_mode {
         let runner = zeph_core::lsp_hooks::LspHookRunner::new(lsp_mcp_manager, config.lsp.clone());
         agent.with_lsp_hooks(runner)
     } else {
         agent
     };
-    let agent = if exec_mode.bare {
+    let agent = if exec_mode.bare || exec_mode.safe_mode {
         agent
     } else {
         agent.with_hooks_config(&config.hooks)
@@ -4431,7 +4490,9 @@ mod tests {
             matcher: Some(zeph_skills::matcher::SkillMatcherBackend::InMemory(
                 inner_matcher,
             )),
-            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::SetCwdExecutor)),
+            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(
+                zeph_tools::SetCwdExecutor::new(vec![]),
+            )),
             session_config,
             active_provider_name: "test".to_owned(),
             skill_paths: Vec::new(),
@@ -4456,6 +4517,7 @@ mod tests {
             tiered_retrieval_classifier_provider: None,
             tiered_retrieval_validator_provider: None,
             bare_mode: false,
+            safe_mode: false,
         };
 
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
@@ -4520,7 +4582,9 @@ mod tests {
             matcher: Some(zeph_skills::matcher::SkillMatcherBackend::InMemory(
                 inner_matcher,
             )),
-            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::SetCwdExecutor)),
+            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(
+                zeph_tools::SetCwdExecutor::new(vec![]),
+            )),
             session_config,
             active_provider_name: "test".to_owned(),
             skill_paths: Vec::new(),
@@ -4545,6 +4609,7 @@ mod tests {
             tiered_retrieval_classifier_provider: None,
             tiered_retrieval_validator_provider: None,
             bare_mode: false,
+            safe_mode: false,
         };
 
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);

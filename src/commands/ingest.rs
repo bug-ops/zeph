@@ -16,7 +16,9 @@ pub(crate) async fn handle_ingest(
     collection: String,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let app = AppBuilder::new(config_path, None, None, None).await?;
+    // Non-interactive data command (Qdrant ingestion), not a troubleshooting session with
+    // customization sources to isolate — `safe_mode` is deliberately `false`, not omitted.
+    let app = AppBuilder::new(config_path, None, None, None, false).await?;
     let config = app.config();
 
     let qdrant = QdrantOps::new(

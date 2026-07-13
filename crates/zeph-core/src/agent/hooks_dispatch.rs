@@ -90,6 +90,29 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // #6032 FR-003: invalidate the cached repo-map so it regenerates lazily from the new
+        // cwd on next prompt assembly (`assembly.rs`) — not gated by safe-mode, repo-map is not
+        // a customization source. No eager rebuild here; cheap `Option` clear.
+        self.channel
+            .send_status_best_effort("Re-scoping repo map\u{2026}")
+            .await;
+        self.services.index.cached_repo_map = None;
+
+        // #6032 FR-004: re-run CLAUDE.md/AGENTS.md instruction discovery against the new cwd —
+        // gated on `!safe_mode` (#6031 S3): a --safe-mode session must never silently re-load
+        // project instructions via /cd, which would defeat the flag.
+        if self.runtime.config.safe_mode {
+            tracing::debug!("safe mode active: skipping instruction re-discovery after cwd change");
+        } else if self.runtime.instructions.reload_state.is_some() {
+            self.channel
+                .send_status_best_effort("Re-discovering project instructions\u{2026}")
+                .await;
+            if let Some(ref mut state) = self.runtime.instructions.reload_state {
+                state.base_dir.clone_from(&current);
+            }
+            self.reload_instructions().await;
+        }
+
         self.channel.send_status_best_effort("").await;
     }
     /// Handle a `FileChangedEvent` from the file watcher.
@@ -180,6 +203,130 @@ mod tests {
     use std::collections::HashMap;
 
     use super::insert_main_agent_ctx;
+    #[allow(clippy::wildcard_imports)]
+    use crate::agent::agent_tests::*;
+
+    /// Helper: point the agent's `last_known_cwd` at `from` and the real process cwd at `to`,
+    /// so the next `check_cwd_changed()` call detects a change. Restores the original process
+    /// cwd on drop-equivalent (explicit restore at the end of each test) — nextest runs each
+    /// test in its own process, so this does not race concurrent tests.
+    fn simulate_cwd_change(
+        agent: &mut Agent<MockChannel>,
+        from: &std::path::Path,
+        to: &std::path::Path,
+    ) {
+        agent.runtime.lifecycle.last_known_cwd = from.to_path_buf();
+        std::env::set_current_dir(to).unwrap();
+    }
+
+    /// #6032 FR-003: repo-map cache invalidation must happen on every cwd change,
+    /// unconditionally — not gated by safe-mode (repo-map is not a customization source).
+    #[tokio::test]
+    async fn check_cwd_changed_invalidates_repo_map_cache() {
+        let original_cwd = std::env::current_dir().unwrap();
+        let harness = QuickTestAgent::minimal("ok");
+        let mut agent = harness.agent;
+        agent.services.index.cached_repo_map = Some((
+            "<repo_map>stale</repo_map>".to_owned(),
+            std::time::Instant::now(),
+        ));
+
+        let from = tempfile::tempdir().unwrap();
+        let to = tempfile::tempdir().unwrap();
+        simulate_cwd_change(&mut agent, from.path(), to.path());
+
+        agent.check_cwd_changed().await;
+
+        assert!(
+            agent.services.index.cached_repo_map.is_none(),
+            "cached_repo_map must be cleared after a cwd change"
+        );
+
+        let _ = std::env::set_current_dir(&original_cwd);
+    }
+
+    /// #6032 FR-004 / #6031 S3: instruction re-discovery must be skipped entirely when the
+    /// session is in `--safe-mode` — a `/cd` (or agent-invoked `set_working_directory`) must
+    /// never silently re-load CLAUDE.md/AGENTS.md and defeat the flag.
+    #[tokio::test]
+    async fn check_cwd_changed_skips_instruction_redisovery_when_safe_mode_active() {
+        let original_cwd = std::env::current_dir().unwrap();
+        let harness = QuickTestAgent::minimal("ok");
+        let mut agent = harness.agent;
+        agent.runtime.config.safe_mode = true;
+
+        let from = tempfile::tempdir().unwrap();
+        let to = tempfile::tempdir().unwrap();
+        std::fs::write(to.path().join("zeph.md"), "# target-dir instructions").unwrap();
+
+        agent.runtime.instructions.reload_state =
+            Some(crate::instructions::InstructionReloadState {
+                base_dir: from.path().to_path_buf(),
+                provider_kinds: vec![crate::config::ProviderKind::Claude],
+                explicit_files: Vec::new(),
+                auto_detect: false,
+            });
+        let sentinel_blocks = vec![crate::instructions::InstructionBlock {
+            source: from.path().join("zeph.md"),
+            content: "# original instructions (must survive)".to_owned(),
+        }];
+        agent.runtime.instructions.blocks = sentinel_blocks.clone();
+
+        simulate_cwd_change(&mut agent, from.path(), to.path());
+        agent.check_cwd_changed().await;
+
+        assert_eq!(
+            agent.runtime.instructions.blocks.len(),
+            sentinel_blocks.len(),
+            "instruction blocks must be unchanged when safe_mode is active"
+        );
+        assert_eq!(
+            agent.runtime.instructions.blocks[0].content, sentinel_blocks[0].content,
+            "safe-mode session must not pick up the new directory's zeph.md"
+        );
+
+        let _ = std::env::set_current_dir(&original_cwd);
+    }
+
+    /// Regression baseline for the test above: outside safe-mode, `/cd` DOES re-discover
+    /// instructions from the new directory.
+    #[tokio::test]
+    async fn check_cwd_changed_rediscovers_instructions_when_not_safe_mode() {
+        let original_cwd = std::env::current_dir().unwrap();
+        let harness = QuickTestAgent::minimal("ok");
+        let mut agent = harness.agent;
+        assert!(!agent.runtime.config.safe_mode);
+
+        let from = tempfile::tempdir().unwrap();
+        let to = tempfile::tempdir().unwrap();
+        std::fs::write(to.path().join("zeph.md"), "# target-dir instructions").unwrap();
+
+        agent.runtime.instructions.reload_state =
+            Some(crate::instructions::InstructionReloadState {
+                base_dir: from.path().to_path_buf(),
+                provider_kinds: vec![crate::config::ProviderKind::Claude],
+                explicit_files: Vec::new(),
+                auto_detect: false,
+            });
+        agent.runtime.instructions.blocks = Vec::new();
+
+        simulate_cwd_change(&mut agent, from.path(), to.path());
+        agent.check_cwd_changed().await;
+
+        assert_eq!(
+            agent.runtime.instructions.blocks.len(),
+            1,
+            "instructions must be re-discovered from the new cwd"
+        );
+        assert!(
+            agent.runtime.instructions.blocks[0]
+                .content
+                .contains("target-dir instructions"),
+            "re-discovered block must come from the new directory's zeph.md"
+        );
+
+        let _ = std::env::set_current_dir(&original_cwd);
+    }
 
     #[test]
     fn insert_main_agent_ctx_always_sets_agent_type() {

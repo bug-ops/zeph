@@ -188,6 +188,13 @@ impl AppBuilder {
     ///
     /// CLI-provided overrides take priority over environment variables and config.
     ///
+    /// `safe_mode` disables plugin auto-update and plugin config overlay for this
+    /// session (troubleshooting isolation, see `--safe-mode`/`ZEPH_SAFE_MODE`).
+    /// Callers resolve `flag || env` before calling; `Config::load` above already
+    /// applies the `ZEPH_SAFE_MODE` env overlay, so the two signals are OR'd
+    /// together into `config.cli.safe_mode` rather than one silently overriding
+    /// the other.
+    ///
     /// # Errors
     ///
     /// Returns [`BootstrapError`] if config loading, validation, vault backend parsing,
@@ -197,9 +204,11 @@ impl AppBuilder {
         vault_override: Option<&str>,
         vault_key_override: Option<&Path>,
         vault_path_override: Option<&Path>,
+        safe_mode: bool,
     ) -> Result<Self, BootstrapError> {
         let config_path = resolve_config_path(config_override);
         let mut config = Config::load(&config_path)?;
+        config.cli.safe_mode |= safe_mode;
         config.validate()?;
         config.llm.check_legacy_format()?;
 
@@ -250,11 +259,13 @@ impl AppBuilder {
             .resolve_secrets_masked(vault.as_ref(), secret_registry.as_ref())
             .await?;
 
-        run_plugin_auto_updates(&config).await;
-
-        let resolved_overlay =
+        let resolved_overlay = if config.cli.safe_mode {
+            zeph_plugins::ResolvedOverlay::default()
+        } else {
+            run_plugin_auto_updates(&config).await;
             zeph_plugins::apply_plugin_config_overlays(&mut config, &plugins_dir())
-                .map_err(|e| BootstrapError::Provider(format!("plugin overlay merge: {e}")))?;
+                .map_err(|e| BootstrapError::Provider(format!("plugin overlay merge: {e}")))?
+        };
 
         let qdrant_ops = build_qdrant_ops(&config)?;
 

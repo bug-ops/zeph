@@ -390,6 +390,16 @@ where
     )
     .with_embedding_provider(deps.embedding_provider.clone())
     .with_provider_pool(config.llm.providers.clone(), deps.provider_config_snapshot)
+    .with_safe_mode(config.cli.safe_mode)
+    .with_allowed_paths(
+        config
+            .tools
+            .shell
+            .allowed_paths
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
+    )
     .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), deps.embedding_provider)
     .await
 }
@@ -400,10 +410,11 @@ pub(crate) async fn run_daemon(
     vault: Option<&str>,
     vault_key: Option<&std::path::Path>,
     vault_path: Option<&std::path::Path>,
+    safe_mode: bool,
 ) -> anyhow::Result<()> {
     use zeph_core::daemon::{ComponentHandle, DaemonSupervisor, PidGuard};
 
-    let app = AppBuilder::new(config_path, vault, vault_key, vault_path).await?;
+    let app = AppBuilder::new(config_path, vault, vault_key, vault_path, safe_mode).await?;
     let config = app.config();
 
     // Atomically acquire the daemon pid file lock — fails fast with `AlreadyRunning` if another
@@ -411,13 +422,25 @@ pub(crate) async fn run_daemon(
     let pid_guard = PidGuard::acquire(&config.daemon.pid_file)
         .map_err(|e| anyhow::anyhow!("failed to acquire daemon pid file lock: {e}"))?;
     tracing::info!(pid_file = %config.daemon.pid_file, "daemon started");
+    if config.cli.safe_mode {
+        tracing::info!(
+            "safe mode active: ZEPH.md/CLAUDE.md/AGENTS.md, plugins, skills, hooks, and MCP \
+             servers are disabled for this session"
+        );
+    }
 
     let (provider, status_tx, _status_rx) = app.build_provider().await?;
     let embed_model = app.embedding_model();
     let embedding_provider = crate::bootstrap::create_embedding_provider(app.config(), &provider);
     let budget_tokens = app.auto_budget_tokens(&provider);
 
-    let registry = std::sync::Arc::new(RwLock::new(app.build_registry()));
+    // Safe-mode gate (#6031): empty registry with no matching disables skill loading/matching,
+    // mirroring `runner.rs`'s `exec_mode.bare` gate and `acp::build_shared_core`'s safe-mode gate.
+    let registry = std::sync::Arc::new(RwLock::new(if config.cli.safe_mode {
+        zeph_skills::registry::SkillRegistry::empty()
+    } else {
+        app.build_registry()
+    }));
     let mem_cancel = tokio_util::sync::CancellationToken::new();
     let mem_supervisor = zeph_common::TaskSupervisor::new(mem_cancel.clone());
     let memory = std::sync::Arc::new(app.build_memory(&provider, &mem_supervisor).await?);
@@ -622,7 +645,13 @@ pub(crate) async fn run_daemon(
     )
     .await;
     let mcp_manager = std::sync::Arc::new(mcp_manager_builder);
-    let (mcp_tools, _mcp_outcomes) = mcp_manager.connect_all().await;
+    // Safe-mode gate (#6031): daemon had no prior bare-mode gate on MCP connections either —
+    // this is a fresh gate, mirroring `agent_setup::build_tool_setup`'s runner-path gate.
+    let (mcp_tools, _mcp_outcomes) = if config.cli.safe_mode {
+        (Vec::new(), Vec::new())
+    } else {
+        mcp_manager.connect_all().await
+    };
     // Retain a reference for explicit pre-shutdown so child processes are killed while the
     // tokio runtime is still live (fixes #2693: ChildWithCleanup::drop races with shutdown).
     let shutdown_mcp_manager = std::sync::Arc::clone(&mcp_manager);
@@ -640,6 +669,13 @@ pub(crate) async fn run_daemon(
         shell_executor,
         scrape_executor,
         diagnostics_executor,
+        config
+            .tools
+            .shell
+            .allowed_paths
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
     );
     let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
         std::sync::Arc::clone(&memory),
@@ -1066,12 +1102,17 @@ pub(crate) async fn run_daemon(
         agent
     };
 
-    let mut agent = agent
-        .with_document_config(config.memory.documents.clone())
-        .with_hooks_config(&config.hooks)
-        // Keep TrustGateExecutor's MCP tool-id registry in sync with MCP servers connected
-        // after startup (#5747) — without this, check_tool_refresh has no handle to update.
-        .with_mcp_tool_ids_handle(mcp_ids_handle);
+    let agent = agent.with_document_config(config.memory.documents.clone());
+    // Safe-mode gate (#6031): daemon had no prior bare-mode gate on hooks (unlike
+    // `runner.rs`'s `exec_mode.bare`) — this is a fresh gate, safe-mode only.
+    let agent = if config.cli.safe_mode {
+        agent
+    } else {
+        agent.with_hooks_config(&config.hooks)
+    };
+    // Keep TrustGateExecutor's MCP tool-id registry in sync with MCP servers connected
+    // after startup (#5747) — without this, check_tool_refresh has no handle to update.
+    let mut agent = agent.with_mcp_tool_ids_handle(mcp_ids_handle);
 
     // Spec 050 Phase 2 (#5913): wire ShadowSentinel into the agent so begin_turn() calls
     // advance_turn(), matching src/runner.rs and src/acp.rs.
@@ -1319,7 +1360,9 @@ mod tests {
             matcher: Some(zeph_skills::matcher::SkillMatcherBackend::InMemory(
                 inner_matcher,
             )),
-            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::SetCwdExecutor)),
+            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(
+                zeph_tools::SetCwdExecutor::new(vec![]),
+            )),
             session_config,
             skill_paths: Vec::new(),
             reload_rx,
@@ -1408,7 +1451,9 @@ mod tests {
             matcher: Some(zeph_skills::matcher::SkillMatcherBackend::InMemory(
                 inner_matcher,
             )),
-            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::SetCwdExecutor)),
+            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(
+                zeph_tools::SetCwdExecutor::new(vec![]),
+            )),
             session_config,
             skill_paths: Vec::new(),
             reload_rx,
@@ -1486,7 +1531,9 @@ mod tests {
                 zeph_skills::registry::SkillRegistry::empty(),
             )),
             matcher: None,
-            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::SetCwdExecutor)),
+            tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(
+                zeph_tools::SetCwdExecutor::new(vec![]),
+            )),
             session_config,
             skill_paths: Vec::new(),
             reload_rx,
@@ -1545,6 +1592,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
@@ -1596,6 +1644,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
         // Default PermissionPolicy: Supervised autonomy, no explicit rules configured —
         // the exact real-world "user never set tools.permissions" scenario #5575 covers.
@@ -1771,6 +1820,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
@@ -1954,6 +2004,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
@@ -2008,6 +2059,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
@@ -2089,6 +2141,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
         let (trust_gated, _mcp_ids_handle) = agent_setup::apply_common_tool_gating(
             zeph_tools::DynExecutor(std::sync::Arc::new(base_executor)),
@@ -2171,6 +2224,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            vec![],
         );
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);

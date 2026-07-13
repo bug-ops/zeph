@@ -93,18 +93,27 @@ impl DiagnosticsExecutor {
                 .unwrap_or_else(|_| PathBuf::from("."))
                 .join(path)
         };
-        let canonical = resolved.canonicalize().map_err(|e| {
-            ToolError::Execution(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("path not found: {}: {e}", resolved.display()),
-            ))
-        })?;
-        if !self.allowed_paths.iter().any(|a| canonical.starts_with(a)) {
-            return Err(ToolError::SandboxViolation {
-                path: canonical.display().to_string(),
-            });
-        }
-        Ok(canonical)
+        // #6032 SEC-2: shared canonicalize-then-containment-check, used identically by
+        // `FileExecutor` (via `is_path_within` on its own ancestor-resolved path) and
+        // `resolve_and_set_cwd`.
+        zeph_common::security::validate_path_within(&resolved, &self.allowed_paths).map_err(|e| {
+            match e.kind() {
+                std::io::ErrorKind::NotFound => ToolError::Execution(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("path not found: {}: {e}", resolved.display()),
+                )),
+                // The path exists (NotFound already excluded above) but escapes
+                // `allowed_paths` — re-canonicalize to report the symlink-resolved form,
+                // matching the pre-#6032 SEC-2 behavior of this error message.
+                _ => ToolError::SandboxViolation {
+                    path: resolved
+                        .canonicalize()
+                        .unwrap_or(resolved)
+                        .display()
+                        .to_string(),
+                },
+            }
+        })
     }
 }
 

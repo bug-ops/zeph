@@ -247,7 +247,14 @@ pub(crate) async fn build_agent_factory(
         .with_provider_pool(deps.provider_pool, deps.provider_config_snapshot)
         // #5951: wire the self-check quality pipeline, matching src/runner.rs/src/acp.rs/
         // src/daemon.rs.
-        .with_quality_pipeline(deps.quality_pipeline);
+        .with_quality_pipeline(deps.quality_pipeline)
+        // #6031: propagate safe-mode onto this session's Agent so check_cwd_changed's /cd
+        // (#6032) instruction-re-discovery gate is correctly set, matching
+        // src/runner.rs/src/acp.rs/src/daemon.rs.
+        .with_safe_mode(deps.safe_mode)
+        // #6032 SEC-2: sandbox `/cd` to the same allowed_paths as the file/shell/diagnostics
+        // executors, matching src/runner.rs/src/acp.rs/src/daemon.rs.
+        .with_allowed_paths(deps.allowed_paths);
         if !preloaded_messages.is_empty() {
             agent = agent.with_preloaded_messages(preloaded_messages);
         }
@@ -827,7 +834,7 @@ mod tests {
             rl_persist_interval: 0,
             rl_warmup_updates: 0,
             rl_head: None,
-            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor::new(vec![])),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
@@ -848,6 +855,8 @@ mod tests {
             ),
             trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
             quality_pipeline: None,
+            safe_mode: false,
+            allowed_paths: vec![],
         };
 
         let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
@@ -914,7 +923,7 @@ mod tests {
             rl_persist_interval: 0,
             rl_warmup_updates: 0,
             rl_head: None,
-            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor::new(vec![])),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
@@ -939,6 +948,8 @@ mod tests {
             ),
             trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
             quality_pipeline: None,
+            safe_mode: false,
+            allowed_paths: vec![],
         };
 
         let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
@@ -1028,7 +1039,7 @@ mod tests {
             rl_persist_interval: 0,
             rl_warmup_updates: 0,
             rl_head: None,
-            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor::new(vec![])),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
@@ -1049,6 +1060,8 @@ mod tests {
             ),
             trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
             quality_pipeline: None,
+            safe_mode: false,
+            allowed_paths: vec![],
         };
 
         let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
@@ -1127,7 +1140,7 @@ mod tests {
             rl_persist_interval: 0,
             rl_warmup_updates: 0,
             rl_head: None,
-            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor::new(vec![])),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
@@ -1148,6 +1161,8 @@ mod tests {
             ),
             trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
             quality_pipeline: None,
+            safe_mode: false,
+            allowed_paths: vec![],
         };
 
         let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
@@ -1225,7 +1240,7 @@ mod tests {
             rl_persist_interval: 5,
             rl_warmup_updates: 3,
             rl_head: Some(zeph_skills::rl_head::RoutingHead::new(8)),
-            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor::new(vec![])),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
@@ -1246,6 +1261,8 @@ mod tests {
             ),
             trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
             quality_pipeline: None,
+            safe_mode: false,
+            allowed_paths: vec![],
         };
 
         let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
@@ -1320,7 +1337,7 @@ mod tests {
             rl_persist_interval: 0,
             rl_warmup_updates: 0,
             rl_head: None,
-            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor::new(vec![])),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
@@ -1341,6 +1358,8 @@ mod tests {
             ),
             trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
             quality_pipeline: None,
+            safe_mode: false,
+            allowed_paths: vec![],
         };
 
         let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
@@ -1397,7 +1416,7 @@ mod tests {
             rl_persist_interval: 0,
             rl_warmup_updates: 0,
             rl_head: None,
-            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor::new(vec![])),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default()
                 .with_autonomy(zeph_tools::AutonomyLevel::Full),
@@ -1419,6 +1438,8 @@ mod tests {
             ),
             trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
             quality_pipeline: None,
+            safe_mode: false,
+            allowed_paths: vec![],
         }
     }
 
@@ -1593,7 +1614,7 @@ mod tests {
             Arc::new(parking_lot::Mutex::new(Vec::new()));
 
         let gated = gate_serve_session_executor(
-            Arc::new(zeph_tools::SetCwdExecutor),
+            Arc::new(zeph_tools::SetCwdExecutor::new(vec![])),
             &zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full),
             &policy_gate_pieces,
             None,

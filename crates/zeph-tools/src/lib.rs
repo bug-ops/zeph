@@ -108,7 +108,7 @@ pub use compression::{
     IdentityCompressor, OutputCompressor, RuleBasedCompressor, safe_compile,
 };
 pub use config::{build_permission_policy, validate_sandbox_denied_domains};
-pub use cwd::SetCwdExecutor;
+pub use cwd::{SetCwdExecutor, resolve_and_set_cwd};
 pub use diagnostics::DiagnosticsExecutor;
 pub use error_taxonomy::{
     ErrorDomain, ToolErrorCategory, ToolErrorFeedback, ToolInvocationPhase, classify_http_status,

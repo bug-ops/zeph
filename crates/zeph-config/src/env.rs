@@ -115,6 +115,11 @@ impl Config {
     }
 
     fn apply_env_overrides_core_1b(&mut self) {
+        if let Ok(v) = std::env::var("ZEPH_SAFE_MODE")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.cli.safe_mode = enabled;
+        }
         if let Ok(v) = std::env::var("ZEPH_SKILLS_MAX_ACTIVE")
             && let Ok(n) = v.parse::<usize>()
             && let Some(nz) = NonZeroUsize::new(n)

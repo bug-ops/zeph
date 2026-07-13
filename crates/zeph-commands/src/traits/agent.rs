@@ -17,7 +17,7 @@
 //!
 //! ## Implementors
 //!
-//! `zeph-core::agent::Agent<C>` implements `AgentAccess` in `command_context_impls.rs`.
+//! `zeph-core::agent::Agent<C>` implements `AgentAccess` in `agent_access_impl.rs`.
 //!
 //! [`CommandContext`]: crate::context::CommandContext
 
@@ -643,6 +643,31 @@ pub trait AgentAccess: Send {
     ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>> {
         let _ = force;
         Box::pin(async { Ok(None) })
+    }
+
+    // ----- /cd -----
+
+    /// Change the session's primary working directory, or report the current one when
+    /// `path` is empty (#6032, FR-009).
+    ///
+    /// Reuses `zeph_tools::resolve_and_set_cwd` — the same path-resolution logic the
+    /// LLM-invoked `set_working_directory` tool uses — then runs the agent's
+    /// `check_cwd_changed` post-change pipeline (repo-map invalidation, `cwd_changed` hooks,
+    /// and — unless the session is in `--safe-mode` — CLAUDE.md/AGENTS.md instruction
+    /// re-discovery). `/cd` is an additive user-facing entry point into that existing
+    /// mechanism, not a parallel implementation.
+    ///
+    /// Returns a confirmation string with the new (or current) absolute working directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when `path` does not resolve to an existing, readable directory.
+    fn change_working_directory<'a>(
+        &'a mut self,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let _ = path;
+        Box::pin(async move { Err(CommandError::new("/cd is not supported in this context")) })
     }
 }
 
