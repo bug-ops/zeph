@@ -123,6 +123,10 @@ impl CommandHandler<CommandContext<'_>> for RecapCommand {
         SlashCategory::Session
     }
 
+    fn requires_auth(&self) -> bool {
+        false
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -182,6 +186,11 @@ mod tests {
         assert_eq!(parse_new_flags("--keep"), (false, false));
         assert_eq!(parse_new_flags("--no"), (false, false));
         assert_eq!(parse_new_flags("keep-plan"), (false, false));
+    }
+
+    #[test]
+    fn recap_requires_auth_false() {
+        assert!(!RecapCommand.requires_auth());
     }
 
     #[tokio::test]

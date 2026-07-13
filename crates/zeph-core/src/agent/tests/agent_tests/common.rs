@@ -96,6 +96,10 @@ pub(crate) struct MockChannel {
     pub(crate) confirmed_prompts: Arc<Mutex<Vec<String>>>,
     pub(crate) statuses: Arc<Mutex<Vec<String>>>,
     pub(crate) tool_starts: Arc<Mutex<Vec<ToolStartEvent>>>,
+    /// Records every `Channel::notify_foreground_subagent_completed` call as
+    /// `(task_id, name, success)`, in order — lets tests assert on TUI-completion-event count
+    /// and content (e.g. that a durable replay does not re-fire it, #6027).
+    pub(crate) notify_completed_calls: Arc<Mutex<Vec<(String, String, bool)>>>,
     pub(crate) exit_supported: bool,
     pub(crate) input_sanitization_required: bool,
     /// When `true`, `send()` fails with `ChannelError::ChannelClosed` instead of recording the
@@ -115,6 +119,7 @@ impl MockChannel {
             confirmed_prompts: Arc::new(Mutex::new(Vec::new())),
             statuses: Arc::new(Mutex::new(Vec::new())),
             tool_starts: Arc::new(Mutex::new(Vec::new())),
+            notify_completed_calls: Arc::new(Mutex::new(Vec::new())),
             exit_supported: true,
             input_sanitization_required: false,
             fail_send: false,
@@ -150,6 +155,10 @@ impl MockChannel {
 
     pub(crate) fn confirmed_prompts(&self) -> Vec<String> {
         self.confirmed_prompts.lock().unwrap().clone()
+    }
+
+    pub(crate) fn notify_completed_calls(&self) -> Vec<(String, String, bool)> {
+        self.notify_completed_calls.lock().unwrap().clone()
     }
 }
 
@@ -231,6 +240,19 @@ impl Channel for MockChannel {
 
     fn requires_input_sanitization(&self) -> bool {
         self.input_sanitization_required
+    }
+
+    async fn notify_foreground_subagent_completed(
+        &mut self,
+        id: &str,
+        name: &str,
+        success: bool,
+    ) -> Result<(), crate::channel::ChannelError> {
+        self.notify_completed_calls
+            .lock()
+            .unwrap()
+            .push((id.to_owned(), name.to_owned(), success));
+        Ok(())
     }
 }
 

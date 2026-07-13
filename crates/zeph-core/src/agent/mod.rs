@@ -2031,6 +2031,10 @@ mod test_stubs {
             SlashCategory::Session
         }
 
+        fn requires_auth(&self) -> bool {
+            true
+        }
+
         fn handle<'a>(
             &'a self,
             _ctx: &'a mut CommandContext<'_>,

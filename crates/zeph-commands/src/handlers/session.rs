@@ -41,6 +41,10 @@ impl CommandHandler<CommandContext<'_>> for ExitCommand {
         SlashCategory::Session
     }
 
+    fn requires_auth(&self) -> bool {
+        false
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -66,6 +70,10 @@ impl CommandHandler<CommandContext<'_>> for QuitCommand {
 
     fn category(&self) -> SlashCategory {
         SlashCategory::Session
+    }
+
+    fn requires_auth(&self) -> bool {
+        false
     }
 
     fn handle<'a>(
@@ -403,6 +411,16 @@ mod tests {
         };
         assert!(msg.contains('3'));
         assert_eq!(messages.queue, 0);
+    }
+
+    #[test]
+    fn exit_requires_auth_false() {
+        assert!(!ExitCommand.requires_auth());
+    }
+
+    #[test]
+    fn quit_requires_auth_false() {
+        assert!(!QuitCommand.requires_auth());
     }
 
     #[test]

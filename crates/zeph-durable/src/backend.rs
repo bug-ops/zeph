@@ -304,6 +304,17 @@ impl DurableBackendEnum {
         }
     }
 
+    /// Claim a promise's one-time replay notification. See [`LocalBackend::claim_promise_notification`].
+    pub(crate) async fn claim_promise_notification(
+        &self,
+        id: PromiseId,
+        notified_at_ms: i64,
+    ) -> Result<bool, DurableError> {
+        match self {
+            Self::Local(backend) => backend.claim_promise_notification(id, notified_at_ms).await,
+        }
+    }
+
     /// Open a promise's sealed resolved payload. See [`LocalBackend::open_promise_payload`].
     pub(crate) fn open_promise_payload(
         &self,

@@ -75,6 +75,10 @@ impl CommandHandler<CommandContext<'_>> for HelpCommand {
         SlashCategory::Debugging
     }
 
+    fn requires_auth(&self) -> bool {
+        false
+    }
+
     fn handle<'a>(
         &'a self,
         _ctx: &'a mut CommandContext<'_>,
@@ -96,6 +100,11 @@ mod tests {
     fn help_name_and_description() {
         assert_eq!(HelpCommand.name(), "/help");
         assert!(!HelpCommand.description().is_empty());
+    }
+
+    #[test]
+    fn help_requires_auth_false() {
+        assert!(!HelpCommand.requires_auth());
     }
 
     #[tokio::test]

@@ -452,7 +452,7 @@ impl<C: Channel> Agent<C> {
         .await
         {
             DurableSpawnGate::Fresh(seat) => spawn_ctx.durable_resolver = Some(seat),
-            DurableSpawnGate::Replayed(result) => {
+            DurableSpawnGate::Replayed { result, .. } => {
                 let short = &result.task_id[..8.min(result.task_id.len())];
                 return Some(if result.output.is_empty() {
                     format!(
@@ -487,6 +487,65 @@ impl<C: Channel> Agent<C> {
             Err(e) => Some(format!("Failed to spawn sub-agent: {e}")),
         }
     }
+    /// Handle a [`DurableSpawnGate::Replayed`] result for a foreground spawn.
+    ///
+    /// Gates the channel side effects (user notice + TUI completion event) behind an
+    /// out-of-band `notified_at` claim on the sub-agent's durable promise, so a parent that
+    /// restarts *again* after already taking the replay branch once does not re-fire them
+    /// (#6027). The claim consumes no durable step id, so unlike a `ctx.step()`-based guard it
+    /// cannot perturb INV-2 step-id determinism or cause `ReplayDivergence`. Returns the
+    /// journaled output/error text either way.
+    async fn notify_replayed_foreground_subagent(
+        &mut self,
+        name: &str,
+        result: zeph_subagent::SubagentResult,
+        promise_id: zeph_durable::PromiseId,
+    ) -> String {
+        let success = result.state == zeph_subagent::SubAgentState::Completed;
+        let task_id = result.task_id.clone();
+
+        // Out-of-band, step-counter-independent claim: the FIRST caller to set `notified_at` fires
+        // the channel side effects; every later replay is suppressed. Unlike a ctx.step this consumes
+        // no StepId, so it cannot cause ReplayDivergence under any restart count (#6027). Degrade to
+        // firing directly when durable is off (no replay can happen) or the claim errors.
+        let should_notify = if let Some(ctx) = self.services.session.durable_ctx.clone() {
+            match ctx.claim_promise_notification(promise_id).await {
+                Ok(claimed) => claimed,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "durable: promise-notification claim failed; \
+                         firing the replayed sub-agent notice directly"
+                    );
+                    true
+                }
+            }
+        } else {
+            true
+        };
+
+        let text = if success {
+            result.output
+        } else {
+            result.error.unwrap_or_else(|| "unknown error".to_owned())
+        };
+
+        if should_notify {
+            let _ = self
+                .channel
+                .send(&format!(
+                    "Sub-agent '{name}' replayed from durable journal (already finished \
+                     before the parent restarted)."
+                ))
+                .await;
+            let _ = self
+                .channel
+                .notify_foreground_subagent_completed(&task_id, name, success)
+                .await;
+        }
+        text
+    }
+
     async fn handle_agent_spawn_foreground(&mut self, name: &str, prompt: &str) -> Option<String> {
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
@@ -505,25 +564,11 @@ impl<C: Channel> Agent<C> {
         .await
         {
             DurableSpawnGate::Fresh(seat) => spawn_ctx.durable_resolver = Some(seat),
-            DurableSpawnGate::Replayed(result) => {
-                let success = result.state == zeph_subagent::SubAgentState::Completed;
-                let text = if success {
-                    result.output
-                } else {
-                    result.error.unwrap_or_else(|| "unknown error".to_owned())
-                };
-                let _ = self
-                    .channel
-                    .send(&format!(
-                        "Sub-agent '{name}' replayed from durable journal (already finished \
-                         before the parent restarted)."
-                    ))
-                    .await;
-                let _ = self
-                    .channel
-                    .notify_foreground_subagent_completed(&result.task_id, name, success)
-                    .await;
-                return Some(text);
+            DurableSpawnGate::Replayed { result, promise_id } => {
+                return Some(
+                    self.notify_replayed_foreground_subagent(name, result, promise_id)
+                        .await,
+                );
             }
             DurableSpawnGate::None => {}
         }
@@ -792,11 +837,21 @@ enum DurableSpawnGate {
     /// Resumed run whose child already resolved its promise before the parent crashed. The
     /// caller must skip `spawn` entirely and replay this result instead — spawning here would
     /// duplicate the LLM calls and any side-effecting tool calls the finished child already
-    /// performed (#5944).
-    Replayed(zeph_subagent::SubagentResult),
+    /// performed (#5944). `promise_id` lets the foreground caller claim a one-time replay
+    /// notification (#6027) via [`zeph_durable::DurableContext::claim_promise_notification`].
+    Replayed {
+        result: zeph_subagent::SubagentResult,
+        promise_id: zeph_durable::PromiseId,
+    },
     /// Gate closed: durable subagent support disabled, a resumed run whose child promise is
     /// still pending (out of v1 scope — see `durable.rs` module docs "Scope boundary"), or an
     /// error (logged at `warn`). The caller degrades to a plain spawn with no durable wiring.
+    ///
+    /// The still-pending case is safe only because the current architecture is
+    /// LocalBackend-only, in-process tokio tasks (spec-064 INV-9): a parent-process crash
+    /// necessarily kills its in-process children too, so a still-pending promise on resume
+    /// means the original child is genuinely gone, and re-spawning cannot duplicate a live
+    /// child. See `durable.rs` "Scope boundary".
     None,
 }
 
@@ -823,8 +878,19 @@ async fn resolve_durable_spawn_gate(
     // Resumed: token unrecoverable (INV-9). Check without blocking whether the child already
     // resolved the promise before the crash — replay it instead of re-spawning a duplicate.
     match zeph_subagent::try_replay_durable_subagent(ctx, &promise).await {
-        Ok(Some(result)) => DurableSpawnGate::Replayed(result),
+        Ok(Some(result)) => DurableSpawnGate::Replayed {
+            result,
+            promise_id: promise.id(),
+        },
         Ok(None) => {
+            // Safe to fall back to a plain spawn here only because the current architecture
+            // is LocalBackend-only, in-process tokio tasks: the parent process crashing kills
+            // its in-process children too, so a still-pending promise on resume means the
+            // original child is genuinely gone, not merely unreachable. Re-attaching to a
+            // live child would require cross-process liveness detection, which is out of v1
+            // scope — see `durable.rs` module docs "Scope boundary" and spec-064 INV-9 (the
+            // resolver token is unrecoverable by design, so it cannot be re-minted to attempt
+            // reattachment).
             tracing::warn!(
                 "durable: resumed sub-agent promise still pending after restart — original \
                  child did not resolve before the crash; re-spawning may duplicate side effects \
@@ -1342,6 +1408,22 @@ mod tests {
         let loop_result: Result<String, zeph_subagent::SubAgentError> =
             Ok("foreground child output".to_owned());
         zeph_subagent::resolve_durable_promise(seat, "task-e2e-02", &loop_result).await;
+        // C1 regression guard (#6027): journal a durable step AFTER the promise, exactly the
+        // foreground-spawn-followed-by-another-turn topology that triggered the original
+        // ReplayDivergence bug (a replay-only `ctx.step()` used to land at this same ordinal
+        // position and collide with whatever the fresh run had already recorded there). The
+        // `notified_at` claim consumes no step id, so it can never collide with this marker —
+        // if it regressed to a step-based mechanism, the assertions below would fail with a
+        // `ReplayDivergence` error instead of the expected replayed output.
+        ctx1.step(
+            zeph_durable::StepDescriptor::idempotent(
+                "post_spawn_marker",
+                b"post_spawn_marker".to_vec(),
+            ),
+            |_handle| async move { Ok::<i64, zeph_durable::StepError>(42) },
+        )
+        .await
+        .unwrap();
         agent1
             .services
             .session
@@ -1372,6 +1454,11 @@ mod tests {
                 .any(|m| m.contains("replayed from durable journal")),
             "expected the replay notice to be sent to the channel"
         );
+        assert_eq!(
+            agent2.channel.notify_completed_calls().len(),
+            1,
+            "expected exactly one TUI completion notification on the first replay"
+        );
         assert!(
             agent2
                 .services
@@ -1382,6 +1469,31 @@ mod tests {
                 .statuses()
                 .is_empty(),
             "mgr.spawn must not be called when the child result is replayed"
+        );
+        drop(agent2);
+
+        // "Run 3": the parent restarts *again* after already taking the replay branch once.
+        // Per #6027, the channel side effects (notice + completion event) must not re-fire on
+        // this second replay — only the first winner of the out-of-band `notified_at` claim
+        // fires them; the journaled output is still returned.
+        let mut agent3 = Box::pin(agent_with_durable_and_manager(&db_url, 200)).await;
+
+        let resp = agent3
+            .handle_agent_spawn_foreground("helper", "do work")
+            .await
+            .unwrap();
+        assert_eq!(resp, "foreground child output");
+        assert!(
+            !agent3
+                .channel
+                .sent_messages()
+                .iter()
+                .any(|m| m.contains("replayed from durable journal")),
+            "replay notice must not re-fire on a second replay after a parent restart"
+        );
+        assert!(
+            agent3.channel.notify_completed_calls().is_empty(),
+            "TUI completion event must not re-fire on a second replay after a parent restart"
         );
     }
 

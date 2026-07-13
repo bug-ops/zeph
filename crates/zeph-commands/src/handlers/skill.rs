@@ -75,6 +75,10 @@ impl CommandHandler<CommandContext<'_>> for SkillsCommand {
         SlashCategory::Skills
     }
 
+    fn requires_auth(&self) -> bool {
+        false
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -151,6 +155,11 @@ mod tests {
     fn skills_name_and_description() {
         assert_eq!(SkillsCommand.name(), "/skills");
         assert!(!SkillsCommand.description().is_empty());
+    }
+
+    #[test]
+    fn skills_requires_auth_false() {
+        assert!(!SkillsCommand.requires_auth());
     }
 
     #[test]

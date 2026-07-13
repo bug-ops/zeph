@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Changed
+
+- **BREAKING**: `CommandHandler::requires_auth()` now defaults to `true` (fail-closed),
+  reversing the previous fail-open default. This is the 4th recurrence of a slash-command
+  handler silently exposing privileged behavior to remote channels (Telegram/Discord/Slack)
+  by omitting the override (#5967/#5988, #5997/#6002, #6003/PR#6033); a new handler that
+  forgets to override now becomes unreachable from remote channels (annoyance) rather than
+  silently exposed there (vulnerability). Read-only or self-gated handlers safe to expose on
+  remote channels must now explicitly override `requires_auth()` to return `false` — all
+  in-tree handlers relying on the old implicit default (`ExitCommand`, `QuitCommand`,
+  `GuidelinesCommand`, `SkillsCommand`, `RecapCommand`, `HelpCommand`) were updated with an
+  explicit `false` override, so their behavior is unchanged. Out-of-tree `CommandHandler`
+  implementors relying on the previous `false` default will have their commands rejected on
+  untrusted channels until they add the explicit override (#6034).
+
+### Docs
+
+- **Core**: documented at the `resolve_durable_spawn_gate` call site why falling back to a
+  plain spawn is safe when a resumed sub-agent's durable promise is still pending after a
+  parent restart — the current architecture is LocalBackend-only, in-process tokio tasks, so
+  a parent crash necessarily kills its in-process children too, meaning a still-pending
+  promise on resume cannot be a live duplicate child (spec-064 INV-9). No functional change
+  (#6010).
+
 ### Fixed
 
 - **Docs**: `specs/010-security/spec.md` and `specs/014-a2a/spec.md` described two different IBCT
@@ -40,6 +64,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   field now require the gated type instead of a bare `Vec`/slice, so bypassing the funnel is a
   compile error (wrong type) instead of a code-review catch. Pure refactor — wire format is
   byte-identical (verified via existing insta snapshots) (#6158).
+- **Core**: durable sub-agent replay (`handle_agent_spawn_foreground`) fired its channel side
+  effects — the "replayed from durable journal" user notice and the TUI completion event — as
+  plain awaits outside any dedup guard. A parent that restarted more than once after taking the
+  replay branch would re-fire both side effects on every subsequent restart. An initial fix
+  gated them behind a `ctx.step()` created only on the replay path, but that step consumed a
+  durable step id on replay runs only, shifting every subsequent step id relative to the fresh
+  run's journal and causing a hard `ReplayDivergence` abort whenever another durable step
+  (e.g. an LLM turn) followed the spawn in the same execution — a regression, not a fix.
+  Replaced it with an out-of-band `notified_at` claim column on `durable_promises` (migration
+  109, sqlite+postgres): the first caller to win a conditional
+  `UPDATE ... WHERE notified_at IS NULL` fires the side effects, every later replay is
+  suppressed. The claim consumes zero durable step ids, so it cannot perturb step-id
+  determinism (INV-2) or cause `ReplayDivergence` under any restart count (#6027).
 
 - **CI**: the `registry` feature (`zeph-plugins/registry`, spec-045) was declared in root
   `Cargo.toml` and bundled into `full`, but excluded from every PR-gating CI job's feature

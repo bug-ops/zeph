@@ -669,6 +669,41 @@ impl LocalBackend {
         .await
     }
 
+    /// Claim the one-time replay notification for a promise, returning whether this call won.
+    ///
+    /// The conditional `WHERE notified_at IS NULL` makes the claim single-winner: the first caller
+    /// transitions the row (returns `true`); every later caller is a no-op (returns `false`). This
+    /// backs #6027 — a resumed foreground sub-agent's replay notice / TUI completion event must fire
+    /// at most once across repeated parent restarts. Unlike [`resolve_promise`](Self::resolve_promise)
+    /// it touches only the `notified_at` bookkeeping column and carries no payload, so no sealing /
+    /// waiter wakeup is involved. Span: `durable.promise.claim_notify`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] on a database error.
+    pub(crate) async fn claim_promise_notification(
+        &self,
+        id: PromiseId,
+        notified_at_ms: i64,
+    ) -> Result<bool, DurableError> {
+        let span = tracing::info_span!("durable.promise.claim_notify", promise_id = %id.as_uuid());
+        async move {
+            let affected = zeph_db::query(sql!(
+                "UPDATE durable_promises SET notified_at = ?
+                 WHERE promise_id = ? AND notified_at IS NULL"
+            ))
+            .bind(notified_at_ms)
+            .bind(id.as_uuid().to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("claim_promise_notification", e))?
+            .rows_affected();
+            Ok(affected > 0)
+        }
+        .instrument(span)
+        .await
+    }
+
     /// Open a promise's sealed resolved payload back to plaintext.
     ///
     /// # Errors
@@ -2284,6 +2319,36 @@ mod tests {
             .open_promise_payload(promise, exec, &sealed)
             .unwrap();
         assert_eq!(opened.as_ref(), b"answer");
+    }
+
+    #[tokio::test]
+    async fn claim_promise_notification_is_single_winner() {
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        let promise = PromiseId::derive(exec, StepId::new(0));
+        backend
+            .insert_promise(promise, exec, [9u8; 32], 100)
+            .await
+            .unwrap();
+
+        // First claim wins (transitions notified_at from NULL).
+        assert!(
+            backend
+                .claim_promise_notification(promise, 200)
+                .await
+                .unwrap()
+        );
+        // Every later claim on the same promise is a no-op.
+        assert!(
+            !backend
+                .claim_promise_notification(promise, 300)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

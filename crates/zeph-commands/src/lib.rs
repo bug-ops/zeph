@@ -225,13 +225,14 @@ pub trait CommandHandler<Ctx: ?Sized>: Send + Sync {
     /// Returns `true` if this command requires a trusted (local) caller.
     ///
     /// When `true`, [`CommandRegistry::dispatch`] rejects the command with an authorization
-    /// error if the dispatch site passes `trusted = false`. Commands in the `Debugging`,
-    /// `Configuration`, and `Advanced` categories that should not be accessible from
-    /// remote channels (Telegram, Discord, Slack) must override this to return `true`.
+    /// error if the dispatch site passes `trusted = false`.
     ///
-    /// The default returns `false` (accessible from all channels).
+    /// The default returns `true` (fail-closed): a handler that does not override this
+    /// method requires a trusted session. Read-only or self-gated commands that are safe
+    /// to expose on remote channels (Telegram, Discord, Slack) must explicitly opt out by
+    /// overriding this to return `false`.
     fn requires_auth(&self) -> bool {
-        false
+        true
     }
 
     /// Execute the command.
@@ -537,6 +538,22 @@ mod tests {
 
         // Untrusted: command is rejected.
         let result = reg.dispatch(&mut ctx, "/secret", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejects_handler_without_requires_auth_override_when_untrusted() {
+        // A handler that does not override `requires_auth` inherits the fail-closed default
+        // (`true`) and must be rejected on an untrusted channel — locks in #6034.
+        let mut reg: CommandRegistry<MockCtx> = CommandRegistry::new();
+        reg.register(make_handler("/default-gated"));
+        let mut ctx = MockCtx;
+
+        let result = reg.dispatch(&mut ctx, "/default-gated", true).await;
+        assert!(result.unwrap().is_ok());
+
+        let result = reg.dispatch(&mut ctx, "/default-gated", false).await;
         let err = result.unwrap().unwrap_err();
         assert!(err.0.contains("trusted"));
     }

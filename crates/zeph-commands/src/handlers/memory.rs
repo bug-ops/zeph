@@ -149,6 +149,10 @@ impl CommandHandler<CommandContext<'_>> for GuidelinesCommand {
         Some("compression-guidelines")
     }
 
+    fn requires_auth(&self) -> bool {
+        false
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -239,6 +243,11 @@ mod tests {
         assert_eq!(parse_backfill_limit("backfill"), None);
         assert_eq!(parse_backfill_limit("backfill --limit"), None);
         assert_eq!(parse_backfill_limit("backfill --limit 0"), Some(0));
+    }
+
+    #[test]
+    fn guidelines_requires_auth_false() {
+        assert!(!GuidelinesCommand.requires_auth());
     }
 
     #[tokio::test]

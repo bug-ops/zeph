@@ -270,6 +270,28 @@ impl DurableContext {
         Ok(DurablePromise::fresh(promise_id, token))
     }
 
+    /// Claim the one-time out-of-band notification for a replayed promise result.
+    ///
+    /// Returns `true` for the first caller (fire the side effects) and `false` on every later call
+    /// (suppress — already claimed). The claim is a single conditional `UPDATE` on the promise's
+    /// `notified_at` column keyed by its [`PromiseId`]; it does **not** allocate a durable step id, so
+    /// — unlike wrapping the notice in [`step`](Self::step) — it has zero interaction with the INV-2
+    /// step-id counter and can never cause a [`DurableError::ReplayDivergence`], regardless of how many
+    /// times the parent restarts (#6027).
+    ///
+    /// Because [`PromiseId::derive`] is deterministic across runs (a resumed execution re-derives the
+    /// same id at the same program position), the claim converges on one row for the fresh run and
+    /// every replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] on a database error.
+    pub async fn claim_promise_notification(&self, id: PromiseId) -> Result<bool, DurableError> {
+        self.backend
+            .claim_promise_notification(id, now_unix_millis())
+            .await
+    }
+
     /// Await a durable promise's resolved value, parking until it is resolved.
     ///
     /// Returns immediately if the promise is already resolved (the common replay case). Otherwise it
