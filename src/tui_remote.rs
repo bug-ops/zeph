@@ -127,6 +127,7 @@ fn discovery_origin(url: &str) -> String {
 ///
 /// [`A2aError::UntrustedCard`]: zeph_a2a::A2aError::UntrustedCard
 /// [`A2aError::UrlMismatch`]: zeph_a2a::A2aError::UrlMismatch
+/// [`CardTrustPolicy::Require`]: zeph_a2a::CardTrustPolicy::Require
 #[cfg(all(feature = "tui", feature = "a2a"))]
 fn discovery_error_is_fatal(error: &zeph_a2a::A2aError, policy: zeph_a2a::CardTrustPolicy) -> bool {
     match error {
