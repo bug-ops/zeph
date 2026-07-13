@@ -78,6 +78,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   call sites that hold a full config. Pure internal refactor — every config value reaches the
   exact same setter with the exact same value as before at all four sites, verified by the
   existing end-to-end regression tests, which all pass unchanged (#5887).
+- **ACP**: extracted `build_acp_agent`/`BuildAcpAgentParams` from `spawn_acp_agent`
+  (`src/acp.rs`) — the same builder-chain-into-testable-seam pattern already used by
+  `src/runner.rs`, `src/daemon.rs`, and `src/serve/agent_factory.rs`. `spawn_acp_agent` was the
+  last of the four `Agent` construction entry points with no seam and no real-`Agent`-level
+  regression test proving skill-config wiring reaches the built `Agent`; added
+  `build_acp_agent_wires_skill_matching_config` to close that gap. Pure internal refactor — the
+  extracted chain is byte-identical to the original, moved verbatim (#6221).
 
 ### Removed
 
