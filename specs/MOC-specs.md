@@ -92,6 +92,7 @@ status: moc
 
 ### Planning & DAG
 - [[009-orchestration/spec|Orchestration & Planning]] — DAG planner, DagScheduler, AgentRouter, /plan command, plan template cache, VMAO adaptive replanning, cascade-aware DAG routing with CascadeDetector, tree-optimized dispatch; defines strategy for multi-step task execution
+- [[074-orchestration-hitl-interrupt/spec|Declarative HITL Interrupt]] — LangGraph `interrupt()` parity: `TaskNode.interrupt_before`/`resolved_input` pre-dispatch gate, `TaskGraph.pause_reason` (blob-only, no `DurablePromise` in Phase 1), `/plan provide <value>` command, `GraphStatus::Paused` reuse; extends [[009-orchestration/spec|Orchestration & Planning]]; GitHub #5918
 
 ---
 
@@ -245,6 +246,7 @@ status: moc
 | 069 | [[069-threat-model/spec\|MATRA Threat Model]] | specify | approved |
 | 072 | [[072-multimodal-mcp-passthrough/spec\|Multimodal MCP Passthrough]] | specify | draft |
 | 073 | [[073-orch-ensemble-merge/spec\|ORCH Ensemble-Merge]] | specify | approved |
+| 074 | [[074-orchestration-hitl-interrupt/spec\|Declarative HITL Interrupt]] | tasks | draft |
 
 ---
 
