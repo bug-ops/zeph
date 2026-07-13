@@ -20,22 +20,14 @@ use crate::CacheTtl;
 /// request-construction path — `ClaudeProvider::plain_history` is the funnel that applies the
 /// no-prefill strip after this split (see its doc comment for why).
 ///
-/// Visibility is `pub(in crate::claude)` rather than plain `pub(super)`, but in the current
-/// module nesting (`request` is a direct child of `claude`, and `mod.rs` *is* the `claude`
-/// module) the two are functionally identical — this is a self-documenting anchor to the
-/// intended boundary, NOT a new compile-time bypass barrier. Rust has no way to grant a child
-/// module's item to its parent while excluding the parent's other children, so `claude::tests`
-/// remains exactly as reachable as before in raw visibility terms. A true compile-error barrier
-/// is architecturally impossible while `structured_history`/`plain_history` live in the parent
-/// module (`claude`/`mod.rs`) and therefore need at least this visibility to call these
-/// functions — a new request-construction path added directly in `mod.rs` that calls
-/// `split_messages`/`split_messages_structured` instead of the funnel would still compile fine;
-/// it remains a code-review catch, not a compiler error. The actual hardening this change
-/// delivers is moving the tests that used to call this directly out of `claude::tests` and into
-/// this file's own `mod tests` below — reduced discoverability/habit, not a compiler-enforced
-/// guarantee. A genuine compile-time guarantee (e.g. a newtype only constructible by
-/// `structured_history`/`plain_history`, so a request body cannot accept an ungated history) is
-/// tracked as a follow-up: #6158.
+/// Visibility is `pub(in crate::claude)` rather than plain `pub(super)` as a self-documenting
+/// anchor to the intended boundary. The actual compile-time guarantee against skipping the
+/// no-prefill strip lives one level up: `RequestBody`'s `messages` field requires
+/// `&GatedPlainHistory` (a newtype constructible only via its module-private `Self::new`,
+/// called by `ClaudeProvider::plain_history` on the production path), not `&[ApiMessage]`, so a
+/// request-construction path that calls this function directly and tries to feed its raw `Vec`
+/// to a request body fails to compile with a type mismatch (#6158, resolving the gap left open
+/// by #6155/#6156).
 pub(in crate::claude) fn split_messages(
     messages: &[Message],
 ) -> (Option<String>, Vec<ApiMessage<'_>>) {
@@ -76,8 +68,8 @@ pub(in crate::claude) fn split_messages(
 /// Not re-exported at `claude` module top level and not meant to be called directly from a
 /// request-construction path — `ClaudeProvider::structured_history` is the funnel that applies
 /// the no-prefill strip after this split (see its doc comment for why). See [`split_messages`]
-/// for why the `pub(in crate::claude)` visibility here is a documentation anchor rather than a
-/// new compile-time barrier, and for the compile-time-enforcement follow-up (#6158).
+/// for why the `pub(in crate::claude)` visibility here is a documentation anchor, and for where
+/// the real compile-time guarantee (`GatedStructuredHistory`) lives (#6158).
 pub(in crate::claude) fn split_messages_structured(
     messages: &[Message],
     cache_user_messages: bool,

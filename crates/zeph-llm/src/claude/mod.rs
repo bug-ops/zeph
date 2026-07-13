@@ -249,6 +249,42 @@ fn stale_model_suggestion(model: &str) -> Option<&'static str> {
     ((major, minor) < (floor_major, floor_minor)).then_some(suggestion)
 }
 
+/// A structured chat history with the no-prefill gate already applied.
+///
+/// The tuple field is private to this module, so this type is constructible only via the
+/// module-private [`Self::new`], called by [`ClaudeProvider::structured_history`] on the
+/// production path, after it has stripped trailing assistant turns. `ToolRequestBody`,
+/// `VisionRequestBody`, and `TypedToolRequestBody` require `&GatedStructuredHistory` for their
+/// `messages` field instead of `&[StructuredApiMessage]` — a request-construction path that
+/// calls `request::split_messages_structured` directly and tries to hand its raw `Vec` to a
+/// request body now fails to compile with a type mismatch, closing the loophole left open by
+/// #6155/#6156 (#6158).
+#[derive(serde::Serialize)]
+#[serde(transparent)]
+pub(in crate::claude) struct GatedStructuredHistory(Vec<StructuredApiMessage>);
+
+impl GatedStructuredHistory {
+    fn new(chat: Vec<StructuredApiMessage>) -> Self {
+        Self(chat)
+    }
+}
+
+/// A plain (non-structured) chat history with the no-prefill gate already applied.
+///
+/// Same construction guarantee as [`GatedStructuredHistory`]: constructible only via the
+/// module-private [`Self::new`], called by [`ClaudeProvider::plain_history`] on the production
+/// path. `RequestBody`'s `messages` field requires `&GatedPlainHistory` instead of
+/// `&[ApiMessage]`.
+#[derive(serde::Serialize)]
+#[serde(transparent)]
+pub(in crate::claude) struct GatedPlainHistory<'m>(Vec<ApiMessage<'m>>);
+
+impl<'m> GatedPlainHistory<'m> {
+    fn new(chat: Vec<ApiMessage<'m>>) -> Self {
+        Self(chat)
+    }
+}
+
 impl ClaudeProvider {
     const MAX_CACHE_CONTROL_BLOCKS: usize = 4;
 
@@ -963,22 +999,20 @@ impl ClaudeProvider {
     /// cache-control blocks are capped at Anthropic's budget and the no-prefill gate has
     /// already been applied.
     ///
-    /// This is the *sanctioned* way to obtain a `Vec<StructuredApiMessage>` for a request body,
-    /// not a compiler-enforced one. `split_messages_structured` itself is intentionally NOT
-    /// imported at this module's top level (see the local `use` inside this function) so it
-    /// isn't one autocomplete away from every call site, which raises the friction of pulling
-    /// the split and the no-prefill strip apart again the way they were before #6146 (this is
-    /// the second filing of this bug class; #5903 fixed the gate for `build_request` only). A
-    /// true compile-time barrier is not achievable while this funnel lives in `claude` (this
-    /// module) and `split_messages_structured` must remain visible to it — see the doc comment
-    /// on `split_messages_structured` in `request.rs` and follow-up #6158 for a design that
-    /// would make bypassing this funnel a compile error instead of a code-review catch.
+    /// This is the production path that builds a [`GatedStructuredHistory`] for a request body
+    /// — the wrapper's tuple field is private to this module, so `ToolRequestBody`,
+    /// `VisionRequestBody`, and `TypedToolRequestBody` (which all take `&GatedStructuredHistory`
+    /// for their `messages` field) cannot be built from a raw `Vec<StructuredApiMessage>`
+    /// returned by calling `split_messages_structured` directly. `split_messages_structured`
+    /// itself is intentionally NOT imported at this module's top level (see the local `use`
+    /// inside this function) to additionally keep it off autocomplete at call sites — belt and
+    /// braces on top of the type-level guarantee (#5903, #6146, #6155/#6156, #6158).
     fn structured_history(
         &self,
         messages: &[Message],
         thinking_param: Option<&types::ThinkingParam>,
         cache_tool_blocks: usize,
-    ) -> (Option<Vec<SystemContentBlock>>, Vec<StructuredApiMessage>) {
+    ) -> (Option<Vec<SystemContentBlock>>, GatedStructuredHistory) {
         use self::request::split_messages_structured;
 
         let (system, mut chat_messages) =
@@ -994,24 +1028,23 @@ impl ClaudeProvider {
             self.no_prefill(thinking_param),
             &mut chat_messages,
         );
-        (system_blocks, chat_messages)
+        (system_blocks, GatedStructuredHistory::new(chat_messages))
     }
 
     /// Split `messages` into a system prompt and a plain chat history, with the no-prefill gate
-    /// already applied. Same friction-raising rationale (not a compile-time guarantee) as
-    /// [`Self::structured_history`].
+    /// already applied. Same construction guarantee as [`Self::structured_history`].
     fn plain_history<'m>(
         &self,
         messages: &'m [Message],
         thinking_param: Option<&types::ThinkingParam>,
-    ) -> (Option<Vec<SystemContentBlock>>, Vec<ApiMessage<'m>>) {
+    ) -> (Option<Vec<SystemContentBlock>>, GatedPlainHistory<'m>) {
         use self::request::split_messages;
 
         let (system, mut chat_messages) = split_messages(messages);
         Self::strip_trailing_assistant_plain(self.no_prefill(thinking_param), &mut chat_messages);
         let system_blocks =
             system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
-        (system_blocks, chat_messages)
+        (system_blocks, GatedPlainHistory::new(chat_messages))
     }
 
     fn build_request(&self, messages: &[Message], stream: bool) -> reqwest::RequestBuilder {

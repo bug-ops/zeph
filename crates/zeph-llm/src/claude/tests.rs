@@ -172,14 +172,15 @@ fn debug_includes_model_and_max_tokens() {
 
 #[test]
 fn request_body_serializes_without_system() {
+    let history = GatedPlainHistory::new(vec![ApiMessage {
+        role: "user",
+        content: "hello",
+    }]);
     let body = RequestBody {
         model: "claude-sonnet-4-5-20250929",
         max_tokens: 1024,
         system: None,
-        messages: &[ApiMessage {
-            role: "user",
-            content: "hello",
-        }],
+        messages: &history,
         stream: false,
         thinking: None,
         output_config: None,
@@ -195,6 +196,7 @@ fn request_body_serializes_without_system() {
 
 #[test]
 fn request_body_serializes_with_system_blocks() {
+    let history = GatedPlainHistory::new(vec![]);
     let body = RequestBody {
         model: "claude-sonnet-4-5-20250929",
         max_tokens: 1024,
@@ -206,7 +208,7 @@ fn request_body_serializes_with_system_blocks() {
                 ttl: None,
             }),
         }]),
-        messages: &[],
+        messages: &history,
         stream: false,
         thinking: None,
         output_config: None,
@@ -221,11 +223,12 @@ fn request_body_serializes_with_system_blocks() {
 
 #[test]
 fn request_body_serializes_stream_true() {
+    let history = GatedPlainHistory::new(vec![]);
     let body = RequestBody {
         model: "test",
         max_tokens: 100,
         system: None,
-        messages: &[],
+        messages: &history,
         stream: true,
         thinking: None,
         output_config: None,
@@ -291,11 +294,12 @@ async fn chat_stream_with_unreachable_endpoint_errors() {
 
 #[test]
 fn request_body_serializes_with_stream_false_omits_stream() {
+    let history = GatedPlainHistory::new(vec![]);
     let body = RequestBody {
         model: "test",
         max_tokens: 100,
         system: None,
-        messages: &[],
+        messages: &history,
         stream: false,
         thinking: None,
         output_config: None,

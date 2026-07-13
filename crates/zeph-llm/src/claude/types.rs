@@ -519,7 +519,7 @@ pub(super) struct RequestBody<'a> {
     pub max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<Vec<SystemContentBlock>>,
-    pub messages: &'a [ApiMessage<'a>],
+    pub messages: &'a super::GatedPlainHistory<'a>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -538,7 +538,7 @@ pub(super) struct VisionRequestBody<'a> {
     pub max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<Vec<SystemContentBlock>>,
-    pub messages: &'a [StructuredApiMessage],
+    pub messages: &'a super::GatedStructuredHistory,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -557,7 +557,7 @@ pub(super) struct ToolRequestBody<'a> {
     pub max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<Vec<SystemContentBlock>>,
-    pub messages: &'a [StructuredApiMessage],
+    pub messages: &'a super::GatedStructuredHistory,
     pub tools: &'a [serde_json::Value],
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stream: bool,
@@ -584,7 +584,7 @@ pub(super) struct TypedToolRequestBody<'a> {
     pub max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<Vec<SystemContentBlock>>,
-    pub messages: &'a [StructuredApiMessage],
+    pub messages: &'a super::GatedStructuredHistory,
     pub tools: &'a [AnthropicTool<'a>],
     pub tool_choice: ToolChoice<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]

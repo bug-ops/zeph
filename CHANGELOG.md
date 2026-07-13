@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- **LLM**: the Claude request funnel's no-prefill gate (`ClaudeProvider::structured_history`/
+  `plain_history`) was convention-enforced only — `request::split_messages`/
+  `split_messages_structured` stayed reachable from anywhere inside `crate::claude`, so a new
+  request-construction path added directly in `mod.rs` (or any sibling file) could call the raw
+  split functions and skip the no-prefill strip, silently reintroducing the bug class fixed by
+  #5903/#6145/#6146/#6154. Introduced `GatedStructuredHistory`/`GatedPlainHistory` newtypes with
+  a private inner `Vec`, constructible only via `structured_history`/`plain_history`.
+  `RequestBody`, `ToolRequestBody`, `VisionRequestBody`, and `TypedToolRequestBody`'s `messages`
+  field now require the gated type instead of a bare `Vec`/slice, so bypassing the funnel is a
+  compile error (wrong type) instead of a code-review catch. Pure refactor — wire format is
+  byte-identical (verified via existing insta snapshots) (#6158).
+
 - **CI**: the `registry` feature (`zeph-plugins/registry`, spec-045) was declared in root
   `Cargo.toml` and bundled into `full`, but excluded from every PR-gating CI job's feature
   string — `lint-clippy`, `msrv`, `build-tests` (and by extension the sharded `test` job that
