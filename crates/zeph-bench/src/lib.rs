@@ -59,7 +59,6 @@
 //! | [`dataset`] | Dataset registry and metadata types |
 //! | [`deterministic`] | Temperature-zero override helpers |
 //! | [`error`] | [`BenchError`] error type |
-//! | [`isolation`] | Per-scenario storage isolation ([`BenchIsolation`]) |
 //! | [`loaders`] | Concrete loaders for LOCOMO, FRAMES, GAIA, LongMemEval, and tau-bench |
 //! | [`results`] | Result types and [`ResultWriter`] |
 //! | [`runner`] | [`BenchRunner`] that drives the agent loop over a dataset |
@@ -71,7 +70,6 @@ pub mod cli;
 pub mod dataset;
 pub mod deterministic;
 pub mod error;
-pub mod isolation;
 pub mod loaders;
 pub mod results;
 pub mod runner;
@@ -84,7 +82,6 @@ pub use cli::BenchCommand;
 pub use dataset::{DatasetFormat, DatasetMeta, DatasetRegistry};
 pub use deterministic::apply_deterministic_overrides;
 pub use error::BenchError;
-pub use isolation::BenchIsolation;
 pub use results::{Aggregate, BenchRun, ResultWriter, RunStatus, ScenarioResult};
 pub use runner::{BenchMemoryParams, BenchRunner, MemoryMode, ResponseMode, RunOptions};
 pub use scenario::{

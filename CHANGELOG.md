@@ -88,6 +88,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- **bench**: removed `BenchIsolation` (`zeph-bench::isolation`), dead code whose module doc
+  claimed the runner calls `reset()` to delete/recreate a shared bench-namespaced `SQLite`
+  database before each scenario. No production code ever constructed or called it — the
+  runner has always used a distinct per-scenario `SQLite` file (`bench-{run_id}-{scenario.id}.db`),
+  which needs no reset step since there is never a shared file to clean between scenarios
+  (#5966).
+
 - **BREAKING**: removed the inert `A2aServerConfig::require_tls`/`.ssrf_protection` fields
   (`[a2a]` TOML section) and their `ZEPH_A2A_REQUIRE_TLS`/`ZEPH_A2A_SSRF_PROTECTION`
   environment variables. Neither was ever read by any code path — the daemon's own A2A server

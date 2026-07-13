@@ -449,7 +449,7 @@ impl BenchRunner {
         {
             // One SQLite file per scenario gives strict isolation (NFR-001 choice (a)).
             // This is more files than a per-run DB, but eliminates any cross-scenario
-            // memory bleed and avoids needing BenchIsolation::reset() between scenarios.
+            // memory bleed without needing an explicit reset step between scenarios.
             let scenario_db = params
                 .data_dir
                 .join(format!("bench-{}-{}.db", params.run_id, scenario.id));

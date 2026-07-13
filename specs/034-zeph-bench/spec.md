@@ -82,8 +82,9 @@ per-scenario scores.
 ```
 GIVEN a benchmark with N scenarios
 WHEN scenario K begins
-THEN the Qdrant collection and SQLite conversation history used by the bench
-  session are fully reset, with no traces of scenario K-1
+THEN the Qdrant collection is bench-namespaced for the run and the SQLite
+  conversation history is a fresh, uniquely-named per-scenario database file,
+  so no traces of scenario K-1 can exist
 ```
 
 ### US-003: Deterministic mode
@@ -137,7 +138,7 @@ THEN a table of supported datasets is printed with name, description, scenario c
 | ID | Requirement | Priority |
 |----|-------------|----------|
 | FR-001 | WHEN `zeph bench run --dataset <name>` is invoked THE SYSTEM SHALL download the dataset if not locally cached, run all scenarios sequentially, and write results to the output directory | must |
-| FR-002 | WHEN a benchmark scenario begins THE SYSTEM SHALL reset the Qdrant collection and SQLite conversation history for the bench session before feeding the first message | must |
+| FR-002 | WHEN a benchmark scenario begins THE SYSTEM SHALL use a bench-namespaced Qdrant collection and a fresh, uniquely-named per-scenario SQLite database, so no prior scenario's conversation history is visible before the first message | must |
 | FR-003 | WHEN deterministic mode is active (default) THE SYSTEM SHALL override temperature to 0.0 and set a fixed seed (0) for all LLM calls in the bench session | must |
 | FR-004 | WHEN a scenario response is collected THE SYSTEM SHALL evaluate it against the dataset's ground-truth answer using the dataset's canonical metric (exact match, F1, or LLM judge) | must |
 | FR-005 | WHEN a benchmark run completes THE SYSTEM SHALL write a `results.json` file in the leaderboard-compatible schema for the dataset and a human-readable `summary.md` | must |
@@ -156,13 +157,13 @@ THEN a table of supported datasets is printed with name, description, scenario c
 
 | ID | Category | Requirement |
 |----|----------|-------------|
-| NFR-001 | Isolation | Bench sessions use a dedicated Qdrant collection prefix (`bench_<dataset>_<run_id>`) and a dedicated SQLite DB path (`bench-<run_id>.db`) — never the agent's production collections |
+| NFR-001 | Isolation | Bench sessions use a dedicated Qdrant collection prefix (`bench_<dataset>_<run_id>`) and a dedicated, per-scenario SQLite DB path (`bench-<run_id>-<scenario_id>.db`) — never the agent's production collections |
 | NFR-002 | Reproducibility | Given identical dataset, model, and config, two runs on the same binary must produce identical per-scenario responses (temperature=0, fixed seed) |
 | NFR-003 | Architecture | `BenchmarkChannel` implements `Channel` from `zeph-core` — no changes to agent core, context builder, memory pipeline, or tool executor |
 | NFR-004 | Feature gate | All `zeph-bench` code is gated behind the `bench` feature flag; no bench code compiles into default or `full` builds |
 | NFR-005 | Dependency minimalism | `zeph-bench` may only depend on crates already in `[workspace.dependencies]` plus one new download/cache utility if not already present |
 | NFR-006 | Error handling | `thiserror` typed errors in `zeph-bench`; `anyhow` only at the CLI entry point |
-| NFR-007 | Performance | Time-per-scenario overhead (excluding LLM inference) must be under 2 seconds for isolation reset |
+| NFR-007 | Performance | Time-per-scenario overhead (excluding LLM inference) must be under 2 seconds for per-scenario SQLite database initialization |
 | NFR-008 | Output format | `results.json` schema must be a superset of the dataset's official leaderboard schema so it can be directly submitted without transformation |
 
 ---
@@ -304,8 +305,9 @@ zeph bench show --results <path>
 ## 13. Layer Placement
 
 `zeph-bench` is a **Layer 4 consumer** (same tier as `zeph-channels`, `zeph-tui`):
-- Depends on: `zeph-core` (Channel trait, Agent), `zeph-memory` (isolation reset),
-  `zeph-llm` (provider override), `zeph-config` (provider registry)
+- Depends on: `zeph-core` (Channel trait, Agent), `zeph-memory` (per-scenario `SemanticMemory`
+  instance backed by a fresh `SQLite` file), `zeph-llm` (provider override), `zeph-config`
+  (provider registry)
 - Must NOT be depended on by any other crate
 
 ---
