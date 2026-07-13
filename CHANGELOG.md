@@ -115,6 +115,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   never affected (already canonicalized and rejected by `validate_sandbox_with_cwd`). Clamping
   rather than rejecting avoids turning common bare commands into hard sandbox-violation errors
   (#6208).
+- **Security (shell sandbox)**: `ShellExecutor::spawn_background` was a second, parallel
+  production-reachable path for starting a backgrounded shell command that bypassed
+  `resolve_context` entirely — it validated against the raw `std::env::current_dir()`
+  (`validate_sandbox`) and spawned via `run_background_task`/`build_bash_command` without
+  setting `current_dir` on the child, so it never inherited the `allowed_paths` clamp fixed
+  in #6208 for the structured tool-call path. Audit confirmed zero production callers (the
+  agent's `bash` tool only ever reaches `execute_tool_call` -> `resolve_context` ->
+  `spawn_background_with_context`), so this was a structural footgun rather than a live
+  vulnerability. Converted `spawn_background` into a `#[cfg(test)]`-gated thin wrapper over
+  `resolve_context` + `spawn_background_with_context`, deleted the now-dead
+  `run_background_task`, and gated `validate_sandbox` (its only non-test caller) `#[cfg(test)]`
+  too. This makes "exactly one sandboxed subprocess path" a compile-time guarantee — a future
+  production caller of the old context-less path fails to compile — instead of a convention
+  (#6217).
 - **Dependencies**: `Cargo.lock` had drifted — `rmcp` was pinned to `2.0.0` while crates.io's
   latest release within the existing `^2.0.0` manifest range (`Cargo.toml` unchanged) had moved to
   `2.2.0`. Updated the lockfile to `rmcp 2.2.0` / `rmcp-macros 2.2.0`; `sse-stream` also bumped to

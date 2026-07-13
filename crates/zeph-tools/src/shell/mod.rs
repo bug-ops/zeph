@@ -599,9 +599,9 @@ impl ShellExecutor {
 
     /// Attach a [`TaskSupervisor`] so background shell run tasks are registered and observable.
     ///
-    /// When set, each [`spawn_background`][Self::spawn_background] call registers the run task
-    /// under its `RunId` in the supervisor, making it visible to TUI status panels and
-    /// gracefully aborted on supervisor shutdown.
+    /// When set, each `spawn_background_with_context` call registers the run task under its
+    /// `RunId` in the supervisor, making it visible to TUI status panels and gracefully
+    /// aborted on supervisor shutdown.
     #[must_use]
     pub fn with_task_supervisor(mut self, supervisor: TaskSupervisor) -> Self {
         self.task_supervisor = Some(DebugIgnored(supervisor));
@@ -1551,6 +1551,9 @@ impl ShellExecutor {
         Ok(())
     }
 
+    /// Test-only convenience wrapping [`Self::validate_sandbox_with_cwd`] with the raw
+    /// process cwd. Production code must resolve cwd via `resolve_context` first.
+    #[cfg(test)]
     fn validate_sandbox(&self, code: &str) -> Result<(), ToolError> {
         let cwd = std::env::current_dir().unwrap_or_default();
         self.validate_sandbox_with_cwd(code, &cwd)
@@ -1919,7 +1922,20 @@ impl ToolExecutor for ShellExecutor {
 }
 
 impl ShellExecutor {
-    /// Spawn `command` as a background shell process and return its [`RunId`].
+    /// Test-only convenience. Production code MUST use the structured tool-call path
+    /// (`execute_tool_call` -> `resolve_context` -> `spawn_background_with_context`) so the
+    /// `allowed_paths` sandbox clamp in `resolve_context` always applies. Gated `#[cfg(test)]`
+    /// so a future production caller fails to compile (regression guard for #6217/#6208).
+    #[cfg(test)]
+    async fn spawn_background(&self, command: &str) -> Result<RunId, ToolError> {
+        let resolved = self.resolve_context(None)?;
+        self.spawn_background_with_context(command, &resolved).await
+    }
+
+    /// Spawn `command` as a background process using an already-resolved [`ResolvedContext`].
+    ///
+    /// The only production entry point for backgrounded shell commands — always call via
+    /// `resolve_context` first so the `allowed_paths` sandbox clamp applies.
     ///
     /// All security checks (blocklist, sandbox, permissions) are performed synchronously
     /// before spawning. When the cap (`max_background_runs`) is already reached, this
@@ -1933,95 +1949,6 @@ impl ShellExecutor {
     /// Returns [`ToolError::Blocked`] when the background run cap is reached or the command
     /// is blocked by policy. Returns other [`ToolError`] variants on sandbox/permission
     /// failures.
-    pub async fn spawn_background(&self, command: &str) -> Result<RunId, ToolError> {
-        use std::sync::atomic::Ordering;
-
-        // Reject new spawns while shutting down.
-        if self.shutting_down.load(Ordering::Acquire) {
-            return Err(ToolError::Blocked {
-                command: command.to_owned(),
-            });
-        }
-
-        // Enforce security checks — same as blocking mode.
-        self.check_permissions(command, false).await?;
-        self.validate_sandbox(command)?;
-
-        // Check cap under lock, then register the handle and spawn.
-        let run_id = RunId::new();
-        let mut runs = self.background_runs.lock();
-        if runs.len() >= self.max_background_runs {
-            return Err(ToolError::Blocked {
-                command: format!(
-                    "background run cap reached (max_background_runs={})",
-                    self.max_background_runs
-                ),
-            });
-        }
-        let abort = CancellationToken::new();
-        runs.insert(
-            run_id,
-            BackgroundHandle {
-                command: command.to_owned(),
-                started_at: std::time::Instant::now(),
-                abort: abort.clone(),
-                child_pid: None,
-            },
-        );
-        drop(runs);
-
-        let tool_event_tx = self.tool_event_tx.clone();
-        let background_completion_tx = self.background_completion_tx.clone();
-        let background_runs = Arc::clone(&self.background_runs);
-        let timeout = self.background_timeout;
-        let env_blocklist = self.env_blocklist.clone();
-        let skill_env_snapshot: Option<std::collections::HashMap<String, String>> =
-            self.skill_env.read().clone();
-        let command_owned = command.to_owned();
-
-        if let Some(ref sup) = self.task_supervisor {
-            let task_name: Arc<str> = Arc::from(format!("shell_bg_{run_id}").as_str());
-            // spawn_oneshot registers the task in the supervisor under its RunId name,
-            // making it observable in TUI status. The returned handle is intentionally
-            // dropped: completion is signalled via background_completion_tx, not via join.
-            drop(sup.spawn_oneshot(task_name, move || {
-                run_background_task(
-                    run_id,
-                    command_owned,
-                    timeout,
-                    abort,
-                    background_runs,
-                    tool_event_tx,
-                    background_completion_tx,
-                    skill_env_snapshot,
-                    env_blocklist,
-                )
-            }));
-        } else {
-            tokio::spawn(run_background_task(
-                run_id,
-                command_owned,
-                timeout,
-                abort,
-                background_runs,
-                tool_event_tx,
-                background_completion_tx,
-                skill_env_snapshot,
-                env_blocklist,
-            ));
-        }
-
-        Ok(run_id)
-    }
-
-    /// Spawn `command` as a background process using an already-resolved [`ResolvedContext`].
-    ///
-    /// Like [`spawn_background`](Self::spawn_background) but uses the pre-resolved env and CWD
-    /// instead of reading `skill_env`/process-env at spawn time.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`spawn_background`](Self::spawn_background).
     async fn spawn_background_with_context(
         &self,
         command: &str,
@@ -2155,153 +2082,8 @@ impl ShellExecutor {
     }
 }
 
-/// Drive a background shell run from spawn to completion.
-///
-/// This function is the body of the [`tokio::spawn`] task created by
-/// [`ShellExecutor::spawn_background`]. It is extracted into a named async fn so
-/// the spawner stays within the 100-line limit enforced by `clippy::too_many_lines`.
-///
-/// The child process is spawned here (not in the caller) so its PID can be written
-/// back into the [`BackgroundHandle`] registry before the stream loop starts. This
-/// makes the SIGTERM/SIGKILL escalation path in [`ShellExecutor::shutdown`] reachable.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-async fn run_background_task(
-    run_id: RunId,
-    command: String,
-    timeout: Duration,
-    abort: CancellationToken,
-    background_runs: Arc<Mutex<HashMap<RunId, BackgroundHandle>>>,
-    tool_event_tx: Option<ToolEventTx>,
-    background_completion_tx: Option<tokio::sync::mpsc::Sender<BackgroundCompletion>>,
-    skill_env_snapshot: Option<std::collections::HashMap<String, String>>,
-    env_blocklist: Vec<String>,
-) {
-    use std::process::Stdio;
-
-    let started_at = std::time::Instant::now();
-
-    // Build and spawn the child directly so we can capture its PID and write it
-    // back into the registry before entering the stream loop. Calling execute_bash
-    // would hide the child handle and leave child_pid = None, making the
-    // SIGTERM/SIGKILL escalation path in shutdown() unreachable.
-    let mut cmd = build_bash_command(&command, skill_env_snapshot.as_ref(), &env_blocklist);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(ref e) => {
-            let (_, out) = spawn_error_envelope(e);
-            background_runs.lock().remove(&run_id);
-            emit_completed(tool_event_tx.as_ref(), &command, out.clone(), false, run_id).await;
-            if let Some(ref tx) = background_completion_tx {
-                let _ = tx
-                    .send(BackgroundCompletion {
-                        run_id,
-                        exit_code: 1,
-                        output: out,
-                        success: false,
-                        elapsed_ms: 0,
-                        command,
-                    })
-                    .await;
-            }
-            return;
-        }
-    };
-
-    // Write PID back so shutdown() can reach the SIGTERM/SIGKILL escalation path.
-    if let Some(pid) = child.id()
-        && let Some(handle) = background_runs.lock().get_mut(&run_id)
-    {
-        handle.child_pid = Some(pid);
-    }
-
-    // stdout/stderr are guaranteed piped — set above before spawn.
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
-    let (mut line_rx, _reader_tasks) = spawn_output_readers(stdout, stderr);
-
-    let mut combined = String::new();
-    let mut stdout_buf = String::new();
-    let mut stderr_buf = String::new();
-    let deadline = tokio::time::Instant::now() + timeout;
-    let timeout_secs = timeout.as_secs();
-
-    let (_, out) = match run_bash_stream(
-        &command,
-        deadline,
-        Some(&abort),
-        tool_event_tx.as_ref(),
-        "",
-        &mut line_rx,
-        &mut combined,
-        &mut stdout_buf,
-        &mut stderr_buf,
-        &mut child,
-    )
-    .await
-    {
-        BashLoopOutcome::TimedOut => (
-            ShellOutputEnvelope {
-                stdout: stdout_buf,
-                stderr: format!("{stderr_buf}command timed out after {timeout_secs}s"),
-                exit_code: 1,
-                truncated: false,
-            },
-            format!("[error] command timed out after {timeout_secs}s"),
-        ),
-        BashLoopOutcome::Cancelled => (
-            ShellOutputEnvelope {
-                stdout: stdout_buf,
-                stderr: format!("{stderr_buf}operation aborted"),
-                exit_code: 130,
-                truncated: false,
-            },
-            "[cancelled] operation aborted".to_string(),
-        ),
-        BashLoopOutcome::StreamClosed => {
-            finalize_envelope(&mut child, combined, stdout_buf, stderr_buf).await
-        }
-    };
-
-    #[allow(clippy::cast_possible_truncation)]
-    let elapsed_ms = started_at.elapsed().as_millis() as u64;
-    let success = !out.contains("[error]");
-    let exit_code = i32::from(!success);
-    let truncated = crate::executor::truncate_tool_output_at(&out, 4096);
-
-    background_runs.lock().remove(&run_id);
-    emit_completed(
-        tool_event_tx.as_ref(),
-        &command,
-        truncated.clone(),
-        success,
-        run_id,
-    )
-    .await;
-
-    if let Some(ref tx) = background_completion_tx {
-        let completion = BackgroundCompletion {
-            run_id,
-            exit_code,
-            output: truncated,
-            success,
-            elapsed_ms,
-            command,
-        };
-        if tx.send(completion).await.is_err() {
-            tracing::warn!(
-                run_id = %run_id,
-                "background completion channel closed; agent may have shut down"
-            );
-        }
-    }
-
-    tracing::debug!(run_id = %run_id, exit_code, elapsed_ms, "background shell run completed");
-}
-
-/// Like [`run_background_task`] but uses a pre-resolved `env` and `cwd` from
-/// `resolve_context` instead of reading `skill_env`/process-env at spawn time.
+/// Drive a background shell run from spawn to completion, using a pre-resolved `env`
+/// and `cwd` from `resolve_context` instead of reading `skill_env`/process-env at spawn time.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn run_background_task_with_env(
     run_id: RunId,
