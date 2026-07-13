@@ -31,6 +31,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Dependencies**: `Cargo.lock` had drifted — `rmcp` was pinned to `2.0.0` while crates.io's
+  latest release within the existing `^2.0.0` manifest range (`Cargo.toml` unchanged) had moved to
+  `2.2.0`. Updated the lockfile to `rmcp 2.2.0` / `rmcp-macros 2.2.0`; `sse-stream` also bumped to
+  `0.2.4` (required — rmcp 2.2.0's `transport-streamable-http-client-reqwest` feature path calls
+  `SseStream::from_bytes_stream`, added in `sse-stream` 0.2.4, which is not present in 0.2.3;
+  rmcp's own manifest constraint of `sse-stream = "0.2"` under-specifies this, so a plain
+  `cargo update -p rmcp` alone resolves to a broken combination — tracked upstream separately).
+  Picks up rmcp's 2.1.0/2.2.0 fixes: reject auth servers lacking S256 PKCE support (2.2.0, #955),
+  block redirect header leaks (2.1.0, #936), make `AsyncRwTransport::receive` cancel-safe
+  (#941/#947), fail orphaned streamable HTTP responses on reinit (#914), and negotiate protocol
+  version in the handler (#930). No source changes required in `crates/zeph-mcp` (#5897).
 - **Docs**: `specs/010-security/spec.md` and `specs/014-a2a/spec.md` described two different IBCT
   (Invocation-Bound Capability Token) wire formats, and neither fully matched the actual
   implementation in `crates/zeph-a2a/src/ibct.rs`. Reconciled both specs against `ibct.rs` and
