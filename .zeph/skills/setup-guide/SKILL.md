@@ -115,15 +115,12 @@ export ZEPH_A2A_PORT=8080
 export ZEPH_A2A_PUBLIC_URL=https://my-agent.example.com
 export ZEPH_A2A_AUTH_TOKEN=secret-token
 export ZEPH_A2A_RATE_LIMIT=60
-export ZEPH_A2A_REQUIRE_TLS=true
-export ZEPH_A2A_SSRF_PROTECTION=true
 export ZEPH_A2A_MAX_BODY_SIZE=1048576
 ```
 
-Rate limit: requests per minute per IP (0 = unlimited).
-`ZEPH_A2A_REQUIRE_TLS`/`ZEPH_A2A_SSRF_PROTECTION` are reserved on the `[a2a]` server
-config and not currently read by any code path — see `[a2a_client]` below for the
-setting that actually governs outbound `--connect` requests.
+Rate limit: requests per minute per IP (0 = unlimited). TLS enforcement and SSRF
+protection for outbound A2A connections are configured under `[a2a_client]` below,
+not here — this server section has no security-policy fields of its own.
 
 ## A2A Client (`--connect`)
 
@@ -138,10 +135,9 @@ daemon's `/a2a/stream`). Loopback targets (`127.0.0.1`, `::1`, `localhost`) alwa
 bypass both checks and connect over plain HTTP — this makes
 `zeph --tui --connect http://127.0.0.1:8080/a2a/stream` work with a fresh/default
 config. Non-loopback targets require HTTPS (`require_tls`) and are DNS-validated to
-reject private/loopback ranges (`ssrf_protection`), using the same IP-range definitions
-as `[a2a]`'s (now-reserved) checks (10.x, 172.16.x, 192.168.x, 127.x) — not shared
-enforcement, since `[a2a]` no longer enforces anything on either path.
-Max body size: request payload limit in bytes (default 1 MiB).
+reject private/loopback ranges (`ssrf_protection`) — RFC 1918 ranges (10.x, 172.16.x,
+192.168.x), loopback, and link-local. Max body size: request payload limit in bytes
+(default 1 MiB).
 
 `ZEPH_A2A_CARD_TRUST_POLICY` (`ignore` | `prefer` | `require`, default `ignore`)
 controls peer AgentCard signature + URL-origin verification during discovery (A2A

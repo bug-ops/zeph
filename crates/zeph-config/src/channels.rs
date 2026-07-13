@@ -320,20 +320,6 @@ max_bot_chain_depth = 5
     }
 
     #[test]
-    fn a2a_client_config_defaults_match_a2a_server_config_defaults() {
-        // Not a type-independence guard (the compiler already enforces that `A2aServerConfig`
-        // and `A2aClientConfig` are distinct types — a `[a2a]` override cannot assign into an
-        // `A2aClientConfig` field regardless of what this test asserts). This only pins that
-        // the two structs' *default values* intentionally stay in sync: `[a2a_client]` was
-        // introduced to match `[a2a]`'s pre-#5878 hardened posture for non-loopback targets,
-        // not to silently relax it. If this fails, the drift was deliberate — update the test.
-        let server = A2aServerConfig::default();
-        let client = A2aClientConfig::default();
-        assert_eq!(server.require_tls, client.require_tls);
-        assert_eq!(server.ssrf_protection, client.ssrf_protection);
-    }
-
-    #[test]
     fn a2a_client_config_card_trust_policy_defaults_to_ignore() {
         let cfg = A2aClientConfig::default();
         assert_eq!(cfg.card_trust_policy, CardTrustPolicy::Ignore);
@@ -818,17 +804,6 @@ pub struct A2aServerConfig {
     pub auth_token: Option<String>,
     #[serde(default = "default_a2a_rate_limit")]
     pub rate_limit: u32,
-    /// Reserved, inert: no code path reads this field (the daemon's own A2A server never
-    /// checked it, and the former client reader was moved to `A2aClientConfig::require_tls`
-    /// by #5878). Kept only for TOML/env-var backward compatibility; a value here has no
-    /// effect on either the server or the `--connect` client. Slated for removal in a
-    /// dedicated follow-up PR with a `--migrate-config` step (breaking change, out of scope
-    /// for a bugfix).
-    #[serde(default = "default_true")]
-    pub require_tls: bool,
-    /// Reserved, inert — see [`require_tls`](Self::require_tls) for why.
-    #[serde(default = "default_true")]
-    pub ssrf_protection: bool,
     #[serde(default = "default_a2a_max_body")]
     pub max_body_size: usize,
     #[serde(default = "default_drain_timeout_ms")]
@@ -900,8 +875,6 @@ impl std::fmt::Debug for A2aServerConfig {
                 &self.auth_token.as_ref().map(|_| "[REDACTED]"),
             )
             .field("rate_limit", &self.rate_limit)
-            .field("require_tls", &self.require_tls)
-            .field("ssrf_protection", &self.ssrf_protection)
             .field("max_body_size", &self.max_body_size)
             .field("drain_timeout_ms", &self.drain_timeout_ms)
             .field("require_auth", &self.require_auth)
@@ -927,8 +900,6 @@ impl Default for A2aServerConfig {
             public_url: String::new(),
             auth_token: None,
             rate_limit: default_a2a_rate_limit(),
-            require_tls: true,
-            ssrf_protection: true,
             max_body_size: default_a2a_max_body(),
             drain_timeout_ms: default_drain_timeout_ms(),
             require_auth: false,

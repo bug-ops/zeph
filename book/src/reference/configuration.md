@@ -940,8 +940,6 @@ See [Model Orchestrator](../advanced/orchestrator.md) for multi-provider routing
 | `ZEPH_A2A_PUBLIC_URL` | Public URL for agent card discovery |
 | `ZEPH_A2A_AUTH_TOKEN` | Bearer token for A2A server authentication |
 | `ZEPH_A2A_RATE_LIMIT` | Max requests per IP per minute (default: 60) |
-| `ZEPH_A2A_REQUIRE_TLS` | Reserved on the `[a2a]` server config; not read by any code path (default: true) |
-| `ZEPH_A2A_SSRF_PROTECTION` | Reserved on the `[a2a]` server config; not read by any code path (default: true) |
 | `ZEPH_A2A_MAX_BODY_SIZE` | Max request body size in bytes (default: 1048576) |
 | `ZEPH_A2A_CLIENT_REQUIRE_TLS` | Require HTTPS for non-loopback `zeph --connect <URL>` targets (default: true) |
 | `ZEPH_A2A_CLIENT_SSRF_PROTECTION` | Block private IPs for non-loopback `zeph --connect <URL>` targets (default: true) |

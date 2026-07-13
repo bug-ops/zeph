@@ -206,13 +206,18 @@ rejects the plaintext connection outright rather than silently allowing it.
 
 ### Secure-by-default config wiring
 
-`A2aServerConfig.require_tls` / `.ssrf_protection` (`crates/zeph-config/src/channels.rs`) both
-default to `true` and are env-overridable (`ZEPH_A2A_REQUIRE_TLS`, `ZEPH_A2A_SSRF_PROTECTION`).
-The TUI-remote client (`src/tui_remote.rs`) builds its `A2aClient` with
-`SecurityPolicy { require_tls: config.a2a.require_tls, ssrf_protection: config.a2a.ssrf_protection }`,
-so production deployments are hardened by default through existing config — no separate
-client-side security config section exists, and none should be added (avoid config sprawl; the
-server config's flags already express the intended security posture for outbound A2A traffic).
+`A2aClientConfig.require_tls` / `.ssrf_protection` (`crates/zeph-config/src/channels.rs`, nested
+under `[a2a_client]`) both default to `true` and are env-overridable
+(`ZEPH_A2A_CLIENT_REQUIRE_TLS`, `ZEPH_A2A_CLIENT_SSRF_PROTECTION`). The TUI-remote client
+(`src/tui_remote.rs`) builds its `A2aClient` with
+`SecurityPolicy { require_tls: config.a2a_client.require_tls, ssrf_protection: config.a2a_client.ssrf_protection }`,
+so production deployments are hardened by default through existing config. `[a2a_client]` is
+deliberately separate from `[a2a]` (this process's own server config) — see
+[`A2aClientConfig`] doc comments for why reusing the server section broke loopback `--connect`
+targets (#5878). `A2aServerConfig` never had a matching pair of fields with any effect (the
+daemon's own A2A server never read them); the two dead fields it carried for backward
+compatibility were removed by #5885, with a `--migrate-config` step dropping any leftover keys
+from existing configs.
 
 ### Shared resolution helper
 

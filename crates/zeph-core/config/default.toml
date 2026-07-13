@@ -376,10 +376,6 @@ public_url = ""
 # auth_token = ""
 # Rate limit: max requests per minute per IP (0 = unlimited)
 rate_limit = 60
-# Require TLS for outbound A2A connections
-require_tls = true
-# Block requests to private/loopback IPs
-ssrf_protection = true
 # Maximum request body size in bytes (1MB)
 max_body_size = 1048576
 # Advertise non-media file attachment capability on the AgentCard.

@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        83,
-        "MIGRATIONS registry must contain all 83 sequential steps"
+        84,
+        "MIGRATIONS registry must contain all 84 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1753,7 +1753,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 83);
+    assert_eq!(MIGRATIONS.len(), 84);
 }
 
 #[test]
@@ -1791,7 +1791,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–83).
+    // Names must follow the documented step order (steps 1–84).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1876,6 +1876,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_shadow_sentinel_config",
         "migrate_a2a_card_trust_config",
         "migrate_worktree_quota_fields",
+        "migrate_a2a_server_remove_inert_fields",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -4339,5 +4340,70 @@ fn migrate_tools_compression_config_injects_on_inline_table_form_not_a_real_sect
     assert_eq!(
         result.sections_changed,
         vec!["tools.compression".to_owned()]
+    );
+}
+
+// ── Step 84: drop inert [a2a] require_tls/ssrf_protection keys (#5885) ───────────────────
+
+#[test]
+fn step_84_removes_both_inert_keys_from_active_a2a_table() {
+    let src =
+        "[a2a]\nenabled = true\nrequire_tls = true\nssrf_protection = false\nrate_limit = 60\n";
+    let result = migrate_a2a_server_remove_inert_fields(src).expect("migrate");
+    assert_eq!(result.changed_count, 2);
+    assert_eq!(result.sections_changed, vec!["a2a".to_owned()]);
+    assert!(!result.output.contains("require_tls"));
+    assert!(!result.output.contains("ssrf_protection"));
+    // Unrelated keys in the same table must survive untouched.
+    assert!(result.output.contains("enabled = true"));
+    assert!(result.output.contains("rate_limit = 60"));
+}
+
+#[test]
+fn step_84_removes_only_the_key_that_is_present() {
+    let src = "[a2a]\nrequire_tls = false\n";
+    let result = migrate_a2a_server_remove_inert_fields(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(!result.output.contains("require_tls"));
+}
+
+#[test]
+fn step_84_noop_when_a2a_section_absent() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_a2a_server_remove_inert_fields(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_84_noop_when_a2a_section_present_without_inert_keys() {
+    let src = "[a2a]\nenabled = true\nrate_limit = 60\n";
+    let result = migrate_a2a_server_remove_inert_fields(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_84_leaves_a2a_client_section_untouched() {
+    // [a2a_client]'s own require_tls/ssrf_protection are a distinct, still-active section —
+    // only the [a2a] server table's keys are dropped.
+    let src = "[a2a]\nenabled = true\nrequire_tls = true\n\n[a2a_client]\nrequire_tls = false\nssrf_protection = true\n";
+    let result = migrate_a2a_server_remove_inert_fields(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("[a2a_client]"));
+    assert!(result.output.contains("require_tls = false"));
+    assert!(result.output.contains("ssrf_protection = true"));
+}
+
+#[test]
+fn step_84_is_idempotent() {
+    let src = "[a2a]\nenabled = true\nrequire_tls = true\nssrf_protection = true\n";
+    let first = migrate_a2a_server_remove_inert_fields(src).expect("first migrate");
+    assert_eq!(first.changed_count, 2);
+    let second = migrate_a2a_server_remove_inert_fields(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
     );
 }

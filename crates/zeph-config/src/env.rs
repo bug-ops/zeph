@@ -404,20 +404,6 @@ impl Config {
         {
             self.timeouts.a2a_seconds = secs;
         }
-        // `self.a2a.require_tls`/`.ssrf_protection` are reserved/inert (see their doc
-        // comments in `channels.rs`) — these two branches are kept for env-var backward
-        // compatibility only and have no effect on server or `--connect` client behavior.
-        // Use `ZEPH_A2A_CLIENT_REQUIRE_TLS`/`ZEPH_A2A_CLIENT_SSRF_PROTECTION` below instead.
-        if let Ok(v) = std::env::var("ZEPH_A2A_REQUIRE_TLS")
-            && let Ok(require) = v.parse::<bool>()
-        {
-            self.a2a.require_tls = require;
-        }
-        if let Ok(v) = std::env::var("ZEPH_A2A_SSRF_PROTECTION")
-            && let Ok(ssrf) = v.parse::<bool>()
-        {
-            self.a2a.ssrf_protection = ssrf;
-        }
         if let Ok(v) = std::env::var("ZEPH_A2A_MAX_BODY_SIZE")
             && let Ok(size) = v.parse::<usize>()
         {

@@ -397,9 +397,9 @@ If more than 3 redirects occur, the request fails with `ToolError::Execution("to
 
 ## A2A Network Security
 
-- **TLS enforcement:** `a2a.require_tls = true` rejects HTTP endpoints (HTTPS only)
-- **SSRF protection:** `a2a.ssrf_protection = true` blocks private IP ranges (RFC 1918, loopback, link-local) via DNS resolution
 - **Payload limits:** `a2a.max_body_size` caps request body (default: 1 MiB)
+- **Outbound TLS enforcement:** `a2a_client.require_tls = true` rejects HTTP endpoints for `zeph --connect <URL>` (HTTPS only, loopback exempt)
+- **Outbound SSRF protection:** `a2a_client.ssrf_protection = true` blocks private IP ranges (RFC 1918, loopback, link-local) via DNS resolution for `zeph --connect <URL>` (loopback exempt)
 
 **Safe execution model:**
 - Commands parsed for blocked patterns, then sandbox-validated, then confirmation-checked

@@ -36,10 +36,12 @@ rate_limit = 60
 
 ## Network Security
 
-- **TLS enforcement:** `a2a.require_tls = true` rejects HTTP endpoints (HTTPS only)
-- **SSRF protection:** `a2a.ssrf_protection = true` blocks private IP ranges (RFC 1918, loopback, link-local) via DNS resolution
 - **Payload limits:** `a2a.max_body_size` caps request body (default: 1 MiB)
 - **Rate limiting:** per-IP sliding window (default: 60 requests/minute) with TTL-based eviction (stale entries swept every 60s, hard cap at 10,000 entries)
+
+TLS enforcement and SSRF protection apply to *outbound* A2A connections (`zeph --connect
+<URL>`), configured under `[a2a_client]` — see [Remote TUI](#remote-tui---connect) below.
+This server section has no security-policy fields of its own.
 
 ## Task Processing
 

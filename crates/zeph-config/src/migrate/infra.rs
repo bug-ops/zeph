@@ -999,3 +999,55 @@ pub fn migrate_a2a_card_trust_config(toml_src: &str) -> Result<MigrationResult, 
         sections_changed: vec!["a2a_client".to_owned()],
     })
 }
+
+/// Drops the `require_tls`/`ssrf_protection` keys from an active `[a2a]` table (#5885).
+///
+/// Both keys were never read by the A2A server or the `--connect` client — the client reader
+/// was moved to `[a2a_client]` by #5878 — and have been removed from `A2aServerConfig` entirely.
+/// This step drops any leftover keys from an existing config, warning the user, without
+/// erroring. `[a2a_client]`'s own `require_tls`/`ssrf_protection` fields are a distinct,
+/// still-active section and are left untouched.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the source is not valid TOML.
+pub fn migrate_a2a_server_remove_inert_fields(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    let mut doc = toml_src.parse::<DocumentMut>()?;
+
+    let Some(a2a_table) = doc.get_mut("a2a").and_then(toml_edit::Item::as_table_mut) else {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    };
+
+    let removed: Vec<&str> = ["require_tls", "ssrf_protection"]
+        .into_iter()
+        .filter(|key| a2a_table.remove(key).is_some())
+        .collect();
+
+    if removed.is_empty() {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    eprintln!(
+        "Migration warning: [a2a].{} — never read by the A2A server or the `--connect` client \
+         (see [a2a_client] for the setting that actually governs outbound connections) — \
+         {} been removed from the config.",
+        removed.join(" / "),
+        if removed.len() == 1 { "has" } else { "have" },
+    );
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        changed_count: removed.len(),
+        sections_changed: vec!["a2a".to_owned()],
+    })
+}

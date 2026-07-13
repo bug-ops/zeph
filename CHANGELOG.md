@@ -50,6 +50,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   signatures and behavior for direct callers — this is a pure internal call-graph refactor
   with no observable behavior change (#6205).
 
+### Removed
+
+- **BREAKING**: removed the inert `A2aServerConfig::require_tls`/`.ssrf_protection` fields
+  (`[a2a]` TOML section) and their `ZEPH_A2A_REQUIRE_TLS`/`ZEPH_A2A_SSRF_PROTECTION`
+  environment variables. Neither was ever read by any code path — the daemon's own A2A server
+  never checked them, and the former client-side reader was moved to the independent
+  `[a2a_client]` section by #5878. `[a2a_client].require_tls`/`.ssrf_protection` (governing
+  outbound `zeph --connect <URL>` connections) are unaffected and continue to work exactly as
+  before. `--migrate-config` drops any leftover `require_tls`/`ssrf_protection` keys from an
+  existing `[a2a]` table, warning the user, without erroring (#5885).
+
 ### Docs
 
 - **LLM**: `AnyProvider`/`Router`/`Triage`'s `capability_delegation_advisory()` rustdoc comments
