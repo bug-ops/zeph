@@ -658,6 +658,16 @@ pub(crate) struct OrchestrationState {
     /// Provider for predicate gate evaluation. `None` falls back to `orchestrator_provider`
     /// then `verify_provider` then primary.
     pub(crate) predicate_provider: Option<AnyProvider>,
+    /// Resolved ensemble members for ORCH-style deterministic verifier ensemble-merge
+    /// (spec `073-orch-ensemble-merge`). Each entry pairs the `[[llm.providers]]` name with
+    /// its resolved provider — kept as pairs (not a bare `Vec<AnyProvider>`) so a partial
+    /// bootstrap-time resolution failure can never desynchronize a ballot's `member` name
+    /// from the wrong config entry.
+    ///
+    /// Empty when `[orchestration.ensemble].enabled = false` (the default) or when no member
+    /// resolved successfully. `SchedulerAction::Verify` only takes the ensemble branch when
+    /// this is non-empty.
+    pub(crate) ensemble_members: Vec<(String, AnyProvider)>,
     /// Graph waiting for `/plan confirm` before execution starts.
     pub(crate) pending_graph: Option<zeph_orchestration::TaskGraph>,
     /// Cancellation token for the currently executing plan. `None` when no plan is running.

@@ -319,7 +319,9 @@ impl<C: crate::channel::Channel> Agent<C> {
         task_count: usize,
         cancel_token: CancellationToken,
     ) -> Result<zeph_orchestration::GraphStatus, error::AgentError> {
-        use zeph_orchestration::{PlanVerifier, SchedulerAction};
+        use zeph_orchestration::{
+            EnsembleAttempt, EnsembleTracker, EnsembleVerifier, PlanVerifier, SchedulerAction,
+        };
 
         let mut spawn_counter: usize = 0;
 
@@ -327,6 +329,9 @@ impl<C: crate::channel::Channel> Agent<C> {
             std::collections::HashSet::new();
 
         let mut plan_verifier: Option<PlanVerifier<zeph_llm::any::AnyProvider>> = None;
+        // ORCH-style deterministic verifier ensemble-merge (spec 073-orch-ensemble-merge).
+        // `None` when disabled or before the first `Verify` action of the session.
+        let mut ensemble_verifier: Option<EnsembleVerifier> = None;
         let mut stdin_closed = false;
         // In-flight dedupe for VerifyPredicate actions (S9): prevents double-charging
         // the LLM when tick() re-emits the same task before the previous eval completes.
@@ -480,7 +485,128 @@ impl<C: crate::channel::Channel> Agent<C> {
                         let task = scheduler.graph().tasks.get(task_id.index()).cloned();
 
                         if let Some(task) = task {
-                            let result = verifier.verify(&task, &output).await;
+                            let ensemble_cfg = &orch_config.ensemble;
+                            let resolved_count = self.services.orchestration.ensemble_members.len();
+                            // The odd/>=3 invariant is validated at config load for the
+                            // *configured* member list (spec 073 FR-014), but bootstrap-time
+                            // provider resolution can shrink the *effective* set below it
+                            // (critic S1) — gate on the resolved count's shape, not merely
+                            // non-empty, so a degenerate/even effective ensemble can never run.
+                            let effective_ensemble_valid =
+                                !resolved_count.is_multiple_of(2) && resolved_count >= 3;
+                            let use_ensemble = ensemble_cfg.enabled
+                                && ensemble_cfg.verify
+                                && effective_ensemble_valid;
+
+                            if ensemble_cfg.enabled
+                                && ensemble_cfg.verify
+                                && !effective_ensemble_valid
+                            {
+                                self.update_metrics(|m| {
+                                    m.orchestration.ensemble_degraded_total += 1;
+                                });
+                                tracing::warn!(
+                                    task_id = %task_id,
+                                    resolved_count,
+                                    configured_count = ensemble_cfg.members.len(),
+                                    "ensemble effective member count is not odd/>=3 after \
+                                     bootstrap resolution — falling back to single-provider \
+                                     verify"
+                                );
+                            }
+
+                            let result = if use_ensemble {
+                                let member_timeout_secs = if ensemble_cfg.member_timeout_secs > 0 {
+                                    ensemble_cfg.member_timeout_secs
+                                } else {
+                                    orch_config.verifier_timeout_secs
+                                };
+                                let ensemble_sanitizer: std::sync::Arc<
+                                    dyn zeph_common::OutputSanitizer,
+                                > = std::sync::Arc::new(self.services.security.sanitizer.clone());
+                                let ev = ensemble_verifier.get_or_insert_with(|| {
+                                    EnsembleVerifier::new(
+                                        self.services.orchestration.ensemble_members.clone(),
+                                        std::time::Duration::from_secs(member_timeout_secs),
+                                        EnsembleTracker::new(
+                                            ensemble_cfg.ema_alpha,
+                                            ensemble_cfg.ema_decay,
+                                            ensemble_cfg.min_observations,
+                                        ),
+                                    )
+                                });
+
+                                match ev.verify(&task, &output, &ensemble_sanitizer).await {
+                                    EnsembleAttempt::Merged { result, outcome } => {
+                                        tracing::debug!(
+                                            task_id = %task_id,
+                                            complete = result.complete,
+                                            confidence = result.confidence,
+                                            agreement_ratio = outcome.agreement_ratio,
+                                            tie_broken = outcome.tie_broken,
+                                            "ensemble per-task verification result"
+                                        );
+                                        if let Some(ref tracker) = self.runtime.metrics.cost_tracker
+                                        {
+                                            for usage in ev.last_usage() {
+                                                let member_provider = self
+                                                    .services
+                                                    .orchestration
+                                                    .ensemble_members
+                                                    .iter()
+                                                    .find(|(name, _)| name == &usage.member);
+                                                let (provider_kind, model) = member_provider
+                                                    .map_or(
+                                                        ("cloud", usage.member.as_str()),
+                                                        |(_, p)| {
+                                                            (
+                                                                p.provider_kind_str(),
+                                                                p.model_identifier(),
+                                                            )
+                                                        },
+                                                    );
+                                                tracker.record_usage(
+                                                    &usage.member,
+                                                    provider_kind,
+                                                    model,
+                                                    usage.input_tokens,
+                                                    0,
+                                                    0,
+                                                    usage.output_tokens,
+                                                );
+                                            }
+                                        }
+                                        let member_stats = ev.tracker().snapshot();
+                                        self.update_metrics(|m| {
+                                            m.orchestration.ensemble_last_agreement_ratio =
+                                                Some(outcome.agreement_ratio);
+                                            m.orchestration.ensemble_member_stats = member_stats;
+                                        });
+                                        result
+                                    }
+                                    EnsembleAttempt::QuorumNotMet {
+                                        responded,
+                                        quorum,
+                                        configured,
+                                    } => {
+                                        self.update_metrics(|m| {
+                                            m.orchestration.ensemble_degraded_total += 1;
+                                        });
+                                        tracing::warn!(
+                                            task_id = %task_id,
+                                            responded,
+                                            quorum,
+                                            configured,
+                                            "ensemble quorum not met — falling back to \
+                                             single-provider verify"
+                                        );
+                                        verifier.verify(&task, &output).await
+                                    }
+                                }
+                            } else {
+                                verifier.verify(&task, &output).await
+                            };
+
                             tracing::debug!(
                                 task_id = %task_id,
                                 complete = result.complete,

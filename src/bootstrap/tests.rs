@@ -959,3 +959,69 @@ fn build_judge_provider_both_empty_returns_none() {
         "Empty judge_provider and judge_model must return None"
     );
 }
+
+// ── build_ensemble_members (spec 073-orch-ensemble-merge, T3.4) ──────────────
+
+fn make_builder_with_ensemble_config(
+    enabled: bool,
+    members: Vec<&str>,
+    providers: Vec<ProviderEntry>,
+) -> super::AppBuilder {
+    let mut config = zeph_core::config::Config::load(Path::new("/nonexistent")).unwrap();
+    config.orchestration.ensemble.enabled = enabled;
+    config.orchestration.ensemble.members = members.into_iter().map(String::from).collect();
+    config.llm.providers = providers;
+    super::AppBuilder::for_test(config)
+}
+
+#[test]
+fn build_ensemble_members_disabled_returns_empty_vec() {
+    let b = make_builder_with_ensemble_config(
+        false,
+        vec!["a", "b", "c"],
+        vec![ollama_entry("a"), ollama_entry("b"), ollama_entry("c")],
+    );
+    assert!(
+        b.build_ensemble_members().is_empty(),
+        "enabled=false must resolve zero members regardless of the configured list"
+    );
+}
+
+#[test]
+fn build_ensemble_members_all_valid_names_resolves_full_vec() {
+    let b = make_builder_with_ensemble_config(
+        true,
+        vec!["a", "b", "c"],
+        vec![ollama_entry("a"), ollama_entry("b"), ollama_entry("c")],
+    );
+    let members = b.build_ensemble_members();
+    assert_eq!(members.len(), 3);
+    let names: Vec<&str> = members.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["a", "b", "c"]);
+}
+
+#[test]
+#[tracing_test::traced_test]
+fn build_ensemble_members_one_unresolvable_name_shrinks_vec_and_warns() {
+    let b = make_builder_with_ensemble_config(
+        true,
+        vec!["a", "missing", "c"],
+        vec![ollama_entry("a"), ollama_entry("c")],
+    );
+    let members = b.build_ensemble_members();
+    assert_eq!(
+        members.len(),
+        2,
+        "the unresolvable member must be excluded, not substituted"
+    );
+    let names: Vec<&str> = members.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["a", "c"]);
+    assert!(
+        logs_contain("ensemble member resolution failed"),
+        "a per-member resolution failure must log a warning"
+    );
+    assert!(
+        logs_contain("ensemble member resolution shrank the effective member count"),
+        "shrinkage below the configured count must log a bootstrap-level warning (critic S1)"
+    );
+}

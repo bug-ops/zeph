@@ -105,6 +105,18 @@ pub struct OrchestrationMetrics {
     pub tasks_completed: u64,
     pub tasks_failed: u64,
     pub tasks_skipped: u64,
+    /// Number of times ensemble-verified plan verification fell back to the single-provider
+    /// path because fewer than quorum members responded (spec `073-orch-ensemble-merge`).
+    /// Always `0` when `[orchestration.ensemble]` is disabled.
+    pub ensemble_degraded_total: u64,
+    /// `agreement_ratio` from the most recent successfully merged ensemble verification.
+    /// `None` until the first ensemble merge completes, or when ensemble verification is
+    /// disabled. Telemetry only — never used for `should_replan` (see `MergeOutcome`).
+    pub ensemble_last_agreement_ratio: Option<f64>,
+    /// Per-member `(name, EMA agreement score, observation count)` snapshot from the
+    /// `EnsembleTracker`, for CLI/TUI stats surfacing. Empty when ensemble verification is
+    /// disabled or no member has been observed yet.
+    pub ensemble_member_stats: Vec<(String, f64, u64)>,
 }
 
 #[non_exhaustive]

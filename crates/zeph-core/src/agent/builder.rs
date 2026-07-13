@@ -727,6 +727,18 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the resolved ensemble members for ORCH-style deterministic verifier
+    /// ensemble-merge (spec `073-orch-ensemble-merge`).
+    ///
+    /// Each pair is a `[[llm.providers]]` name and its resolved provider. Empty by default —
+    /// `SchedulerAction::Verify` only takes the ensemble branch when this is non-empty AND
+    /// `[orchestration.ensemble].enabled && verify` are both set.
+    #[must_use]
+    pub fn with_ensemble_members(mut self, members: Vec<(String, AnyProvider)>) -> Self {
+        self.services.orchestration.ensemble_members = members;
+        self
+    }
+
     /// Set the `AdaptOrch` topology advisor.
     ///
     /// When set, `handle_plan_goal_as_string` calls `advisor.recommend()` before planning

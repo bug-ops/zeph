@@ -814,6 +814,56 @@ pub fn migrate_orchestration_asset_sensitivity(
     })
 }
 
+/// Step 86 — add a commented-out `[orchestration.ensemble]` advisory block for ORCH-style
+/// deterministic verifier ensemble-merge, if absent (spec 073, #6232).
+///
+/// All `EnsembleConfig` fields have `#[serde(default)]` so existing configs parse without
+/// changes even without this step — this exists purely for discoverability on config upgrade,
+/// mirroring [`migrate_orchestration_persistence`] and [`migrate_memory_type_aware_compose_config`](super::migrate_memory_type_aware_compose_config).
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if `toml_src` fails to parse as TOML.
+pub fn migrate_orchestration_ensemble(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if section_header_present(toml_src, "orchestration.ensemble")
+        || toml_src.contains("[orchestration.ensemble]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("orchestration") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# ORCH-style deterministic verifier ensemble-merge — off by default (spec 073, #6232)\n\
+         # [orchestration.ensemble]\n\
+         # enabled = false\n\
+         # verify = false\n\
+         # members = []                 # odd length, >= 3, no duplicates, from [[llm.providers]]\n\
+         # ema_alpha = 0.3\n\
+         # ema_decay = 0.95\n\
+         # min_observations = 5\n\
+         # member_timeout_secs = 0      # 0 = fall back to verifier_timeout_secs\n";
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["orchestration.ensemble".to_owned()],
+    })
+}
+
 /// Step 78 — add a commented-out `[skills.registry]` section with defaults if absent
 /// (spec-045, #5869).
 ///

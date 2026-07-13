@@ -91,6 +91,8 @@ pub mod adaptorch;
 #[cfg(feature = "llm-planning")]
 pub mod aggregator;
 #[cfg(feature = "llm-planning")]
+pub mod ensemble;
+#[cfg(feature = "llm-planning")]
 pub mod plan_cache;
 #[cfg(feature = "llm-planning")]
 pub mod planner;
@@ -119,6 +121,8 @@ pub use topology::{
 pub use adaptorch::{AdaptOrchMetrics, AdvisorVerdict, TaskClass, TopologyAdvisor, TopologyHint};
 #[cfg(feature = "llm-planning")]
 pub use aggregator::{Aggregator, LlmAggregator};
+#[cfg(feature = "llm-planning")]
+pub use ensemble::{Ballot, EnsembleAttempt, EnsembleTracker, EnsembleVerifier, MergeOutcome};
 #[cfg(feature = "llm-planning")]
 pub use plan_cache::{
     PlanCache, PlanCacheError, PlanTemplate, TemplateTask, normalize_goal, plan_with_cache,

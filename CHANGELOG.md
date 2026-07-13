@@ -21,6 +21,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   input-history search; a match inside a currently-collapsed tool-output block scrolls
   to the message's visible anchor rather than a position that assumes the block is
   expanded (#6023).
+- **Orchestration**: added opt-in ORCH-style deterministic verifier ensemble-merge for
+  `PlanVerifier` per-task completeness verification (`[orchestration.ensemble]`, spec
+  073-orch-ensemble-merge, arXiv:2602.01797, #6232). When `enabled = true` and `verify = true`,
+  the `SchedulerAction::Verify` handler fans a single verification task out to every configured
+  provider member (`members`, validated odd-length and `>= 3` at config load to guarantee a
+  strict majority with no ties) in parallel via inline `futures::future::join_all` — no new
+  `tokio::spawn` site — and merges independent ballots via a pure, deterministic binary-majority
+  vote (`zeph_orchestration::ensemble::merge`). Errored/timed-out members are excluded from the
+  ballot, never counted as a fail-open vote. Merged `confidence` is always the mean of the
+  winning side's own self-reported confidence — never the ballot agreement ratio, which stays
+  internal-only telemetry (`MergeOutcome`) and is surfaced via `/status` alongside a
+  telemetry-only per-member EMA agreement tracker. Below-quorum responses fall back
+  automatically to the existing single-provider `verify_provider` path (including its fail-open
+  behavior), incrementing an `ensemble_degraded` counter. `enabled = false` (the default)
+  reproduces the pre-existing single-provider `PlanVerifier::verify()` path byte-for-byte.
+  `replan()` remains unchanged and always runs on the single-provider path. `--init` wizard
+  prompt added; `--migrate-config` step 86 adds a commented `[orchestration.ensemble]` advisory
+  block to existing configs for discoverability.
 - **Memory**: added MemGuard-inspired type-aware retrieval composition (`[memory.type_aware_compose]`,
   spec 064, #6086). Retrieval-only, fetch-time gate on `schedule_context_fetchers`: a new
   `FunctionalType` enum (`episodic` / `user_fact` / `behavioral_rule` / `reasoning_strategy` /

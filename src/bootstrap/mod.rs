@@ -1933,6 +1933,59 @@ impl AppBuilder {
             }
         }
     }
+    /// Resolve `[orchestration.ensemble] members` into providers for ORCH-style deterministic
+    /// verifier ensemble-merge (spec `073-orch-ensemble-merge`).
+    ///
+    /// Returns an empty `Vec` when `[orchestration.ensemble].enabled = false` (the default).
+    /// A member name that fails to resolve is logged and excluded (log-and-continue, mirroring
+    /// `build_verify_provider`) — this shrinks the effective ensemble at startup rather than
+    /// failing bootstrap; the runtime quorum check in `EnsembleVerifier::verify` is what
+    /// ultimately decides whether the shrunk set is still usable. This is distinct from the
+    /// load-time shape validation (`members` odd/>=3/no-duplicate), which catches config
+    /// defects, not provider-resolution failures.
+    #[tracing::instrument(name = "orch.ensemble.resolve_members", skip(self))]
+    pub fn build_ensemble_members(&self) -> Vec<(String, AnyProvider)> {
+        if !self.config.orchestration.ensemble.enabled {
+            return Vec::new();
+        }
+        let configured = &self.config.orchestration.ensemble.members;
+        let resolved: Vec<(String, AnyProvider)> = configured
+            .iter()
+            .filter_map(|name| match create_named_provider(name, &self.config) {
+                Ok(p) => {
+                    tracing::info!(provider = %name, "ensemble member configured");
+                    Some((name.clone(), p))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %name,
+                        error = %e,
+                        "ensemble member resolution failed — excluded from ensemble"
+                    );
+                    None
+                }
+            })
+            .collect();
+
+        // Informational only (critic S1): load-time validation guarantees the *configured*
+        // `members` list is odd/>=3, but a resolution failure here can shrink the *effective*
+        // set below that invariant. The runtime quorum/parity guard in the scheduler loop's
+        // `SchedulerAction::Verify` handler is what actually prevents a degenerate effective
+        // ensemble from running (and is where `ensemble_degraded` is signalled) — this warning
+        // exists purely to surface the shrinkage as early as possible, at startup.
+        if resolved.len() != configured.len() {
+            tracing::warn!(
+                configured_count = configured.len(),
+                resolved_count = resolved.len(),
+                "ensemble member resolution shrank the effective member count below the \
+                 configured list — the scheduler loop falls back to single-provider verify \
+                 unless the resolved count is still odd and >= 3"
+            );
+        }
+
+        resolved
+    }
+
     /// Build the predicate evaluation provider from `[orchestration] predicate_provider`.
     ///
     /// Returns `None` when `predicate_provider` is empty (falls back to `orchestrator_provider`

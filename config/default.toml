@@ -1145,6 +1145,24 @@ verify_completeness = false
 # Timeout in seconds for verifier LLM calls (0 rejected by validation). Default: 30.
 # verifier_timeout_secs = 30
 
+# ORCH-style deterministic verifier ensemble-merge (arXiv:2602.01797), opt-in, default off.
+# See specs/073-orch-ensemble-merge/spec.md.
+[orchestration.ensemble]
+# Resolve ensemble members at bootstrap. Default: false.
+# enabled = false
+# Use the ensemble for PlanVerifier per-task verification (requires enabled = true). Default: false.
+# verify = false
+# Provider names from [[llm.providers]]. Must be odd-length and >= 3, no duplicates.
+# members = ["fast", "quality", "cheap"]
+# EMA smoothing factor for per-member agreement tracking [0.0, 1.0]. Default: 0.3.
+# ema_alpha = 0.3
+# Decay-toward-neutral-prior factor [0.0, 1.0]. Default: 0.95.
+# ema_decay = 0.95
+# Minimum observations before a member's EMA score is considered meaningful. Default: 5.
+# min_observations = 5
+# Per-member LLM call timeout in seconds; 0 = fall back to verifier_timeout_secs. Default: 0.
+# member_timeout_secs = 0
+
 [classifiers]
 # Enable ML-backed classifiers (requires the `classifiers` feature at compile time).
 # When false, all classifier code is bypassed and existing regex detection runs unchanged.

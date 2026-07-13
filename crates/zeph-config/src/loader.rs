@@ -361,6 +361,41 @@ impl Config {
                 "orchestration.completeness_threshold must be in [0.0, 1.0], got {ct}"
             )));
         }
+        // Ensemble member-list shape is only meaningful once the ensemble is actually wired
+        // into a verification decision (`enabled && verify`) — an unused/staged config with
+        // an invalid `members` list must not block startup (spec 073 FR-014).
+        let ensemble = &self.orchestration.ensemble;
+        if ensemble.enabled && ensemble.verify {
+            let n = ensemble.members.len();
+            if n.is_multiple_of(2) || n < 3 {
+                return Err(ConfigError::Validation(format!(
+                    "orchestration.ensemble.members must be odd and >= 3, got {n}"
+                )));
+            }
+            let unique: std::collections::HashSet<&str> =
+                ensemble.members.iter().map(String::as_str).collect();
+            if unique.len() != ensemble.members.len() {
+                return Err(ConfigError::Validation(
+                    "orchestration.ensemble.members contains a duplicate provider name".into(),
+                ));
+            }
+            // Defense-in-depth (security P3): EnsembleTracker's EMA params are telemetry-only
+            // in PR-1 and never gate a verification/dispatch decision, but an out-of-range value
+            // would still produce a meaningless displayed score and could bias a future phase
+            // that wires EMA into member selection.
+            let alpha = ensemble.ema_alpha;
+            if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) {
+                return Err(ConfigError::Validation(format!(
+                    "orchestration.ensemble.ema_alpha must be in [0.0, 1.0], got {alpha}"
+                )));
+            }
+            let decay = ensemble.ema_decay;
+            if !decay.is_finite() || !(0.0..=1.0).contains(&decay) {
+                return Err(ConfigError::Validation(format!(
+                    "orchestration.ensemble.ema_decay must be in [0.0, 1.0], got {decay}"
+                )));
+            }
+        }
         // Cascade chain threshold must not be 1 — that would abort on every single failure.
         if self.orchestration.cascade_chain_threshold == 1 {
             return Err(ConfigError::Validation(
@@ -1504,5 +1539,149 @@ weight = 0.3
         );
         let reparsed: Config = toml::from_str(&dumped).expect("reparse dumped defaults");
         assert!(reparsed.validate().is_ok());
+    }
+
+    // --- orchestration.ensemble validation (spec 073-orch-ensemble-merge, M5/M7) ---
+
+    fn config_with_ensemble(enabled: bool, verify: bool, members: Vec<&str>) -> Config {
+        let mut cfg = Config::default();
+        cfg.orchestration.ensemble.enabled = enabled;
+        cfg.orchestration.ensemble.verify = verify;
+        cfg.orchestration.ensemble.members = members.into_iter().map(String::from).collect();
+        cfg
+    }
+
+    #[test]
+    fn ensemble_default_config_validates_trivially() {
+        assert!(Config::default().validate().is_ok());
+    }
+
+    #[test]
+    fn ensemble_disabled_skips_member_list_validation() {
+        // enabled=false: an invalid members list must not block startup.
+        let cfg = config_with_ensemble(false, false, vec!["a", "b"]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn ensemble_enabled_but_not_verify_skips_member_list_validation() {
+        // enabled=true, verify=false: still an unused/staged config, checks skipped.
+        let cfg = config_with_ensemble(true, false, vec!["a", "b"]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn ensemble_active_even_length_members_rejected() {
+        let cfg = config_with_ensemble(true, true, vec!["a", "b"]);
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("must be odd and >= 3"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ensemble_active_short_members_rejected() {
+        let cfg = config_with_ensemble(true, true, vec!["a"]);
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("must be odd and >= 3"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ensemble_active_duplicate_members_rejected() {
+        let cfg = config_with_ensemble(true, true, vec!["a", "b", "a"]);
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate provider name"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ensemble_active_valid_odd_unique_members_accepted() {
+        let cfg = config_with_ensemble(true, true, vec!["a", "b", "c"]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn ensemble_active_valid_five_members_accepted() {
+        let cfg = config_with_ensemble(true, true, vec!["a", "b", "c", "d", "e"]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    // --- ema_alpha / ema_decay range validation (security P3) ---
+
+    #[test]
+    fn ensemble_active_ema_alpha_above_one_rejected() {
+        let mut cfg = config_with_ensemble(true, true, vec!["a", "b", "c"]);
+        cfg.orchestration.ensemble.ema_alpha = 1.5;
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("ema_alpha"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ensemble_active_ema_alpha_negative_rejected() {
+        let mut cfg = config_with_ensemble(true, true, vec!["a", "b", "c"]);
+        cfg.orchestration.ensemble.ema_alpha = -0.1;
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("ema_alpha"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ensemble_active_ema_alpha_nan_rejected() {
+        let mut cfg = config_with_ensemble(true, true, vec!["a", "b", "c"]);
+        cfg.orchestration.ensemble.ema_alpha = f64::NAN;
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("ema_alpha"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ensemble_active_ema_decay_above_one_rejected() {
+        let mut cfg = config_with_ensemble(true, true, vec!["a", "b", "c"]);
+        cfg.orchestration.ensemble.ema_decay = 1.1;
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("ema_decay"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ensemble_active_ema_decay_negative_rejected() {
+        let mut cfg = config_with_ensemble(true, true, vec!["a", "b", "c"]);
+        cfg.orchestration.ensemble.ema_decay = -0.1;
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("ema_decay"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ensemble_active_ema_boundaries_zero_and_one_accepted() {
+        let mut cfg = config_with_ensemble(true, true, vec!["a", "b", "c"]);
+        cfg.orchestration.ensemble.ema_alpha = 0.0;
+        cfg.orchestration.ensemble.ema_decay = 1.0;
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn ensemble_disabled_skips_ema_range_validation() {
+        // enabled=false: an out-of-range EMA param must not block startup.
+        let mut cfg = config_with_ensemble(false, false, vec![]);
+        cfg.orchestration.ensemble.ema_alpha = 5.0;
+        assert!(cfg.validate().is_ok());
     }
 }

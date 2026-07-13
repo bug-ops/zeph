@@ -769,6 +769,19 @@ aggregator_max_tokens = 4096            # Token budget for the aggregation LLM c
 # ttl_days = 30                         # Days since last access before eviction (default: 30)
 # max_templates = 100                    # Maximum cached templates (default: 100)
 
+# ORCH-style deterministic verifier ensemble-merge (arXiv:2602.01797), opt-in, default off.
+# When enabled, PlanVerifier's per-task completeness check runs through N provider members in
+# parallel instead of one, merging independent ballots via deterministic binary majority vote.
+# See specs/073-orch-ensemble-merge/spec.md for the full design.
+[orchestration.ensemble]
+# enabled = false                       # Resolve ensemble members at bootstrap (default: false)
+# verify = false                        # Use the ensemble for PlanVerifier per-task verification (default: false; requires enabled = true)
+# members = ["fast", "quality", "cheap"]  # Provider names from [[llm.providers]]; must be odd-length and >= 3, no duplicates
+# ema_alpha = 0.3                       # EMA smoothing factor for per-member agreement tracking [0.0, 1.0] (default: 0.3)
+# ema_decay = 0.95                      # Decay-toward-neutral-prior factor [0.0, 1.0] (default: 0.95)
+# min_observations = 5                  # Minimum observations before a member's EMA score is considered meaningful (default: 5)
+# member_timeout_secs = 0               # Per-member LLM call timeout; 0 = fall back to verifier_timeout_secs (default: 0)
+
 [gateway]
 enabled = false
 bind = "127.0.0.1"

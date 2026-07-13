@@ -117,6 +117,9 @@ pub(crate) struct WizardState {
     pub(crate) orchestration_failure_strategy: String,
     pub(crate) orchestration_planner_provider: Option<String>,
     pub(crate) orchestration_persistence_enabled: bool,
+    // Ensemble-verified plan verification (spec 073-orch-ensemble-merge, opt-in)
+    pub(crate) ensemble_enabled: bool,
+    pub(crate) ensemble_members: Vec<String>,
     // Debug settings
     pub(crate) debug_dump_enabled: bool,
     pub(crate) debug_dump_format: zeph_core::debug_dump::DumpFormat,
@@ -408,6 +411,8 @@ impl Default for WizardState {
             orchestration_failure_strategy: String::new(),
             orchestration_planner_provider: None,
             orchestration_persistence_enabled: true,
+            ensemble_enabled: false,
+            ensemble_members: Vec::new(),
             debug_dump_enabled: false,
             debug_dump_format: zeph_core::debug_dump::DumpFormat::Json,
             graph_memory_enabled: false,
@@ -1112,6 +1117,12 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 .unwrap_or_default(),
         ),
         persistence_enabled: state.orchestration_persistence_enabled,
+        ensemble: zeph_config::EnsembleConfig {
+            enabled: state.ensemble_enabled,
+            verify: state.ensemble_enabled,
+            members: state.ensemble_members.clone(),
+            ..zeph_config::EnsembleConfig::default()
+        },
         ..OrchestrationConfig::default()
     };
 

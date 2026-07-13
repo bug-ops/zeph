@@ -425,6 +425,7 @@ serial_test.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }
+tracing-test.workspace = true
 wiremock.workspace = true
 zeph-core.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }

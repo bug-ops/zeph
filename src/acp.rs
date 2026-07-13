@@ -443,6 +443,7 @@ pub(crate) struct SharedAgentDeps {
     probe_provider: Option<zeph_llm::any::AnyProvider>,
     planner_provider: Option<zeph_llm::any::AnyProvider>,
     verify_provider: Option<zeph_llm::any::AnyProvider>,
+    ensemble_members: Vec<(String, zeph_llm::any::AnyProvider)>,
     orchestrator_provider: Option<zeph_llm::any::AnyProvider>,
     predicate_provider: Option<zeph_llm::any::AnyProvider>,
     quarantine_provider: Option<(zeph_llm::any::AnyProvider, zeph_sanitizer::QuarantineConfig)>,
@@ -1154,6 +1155,7 @@ async fn build_acp_deps(
         probe_provider: app.build_probe_provider(),
         planner_provider: app.build_planner_provider(),
         verify_provider: app.build_verify_provider(),
+        ensemble_members: app.build_ensemble_members(),
         orchestrator_provider: app.build_orchestrator_provider(),
         predicate_provider: app.build_predicate_provider(),
         quarantine_provider: app.build_quarantine_provider(),
@@ -1535,6 +1537,7 @@ async fn spawn_acp_agent(
     let probe_provider = d.probe_provider.clone();
     let planner_provider = d.planner_provider.clone();
     let verify_provider = d.verify_provider.clone();
+    let ensemble_members = d.ensemble_members.clone();
     let orchestrator_provider = d.orchestrator_provider.clone();
     let predicate_provider = d.predicate_provider.clone();
     let quarantine_provider = d.quarantine_provider.clone();
@@ -2074,6 +2077,8 @@ async fn spawn_acp_agent(
     if let Some(vp) = verify_provider {
         agent = agent.with_verify_provider(vp);
     }
+
+    agent = agent.with_ensemble_members(ensemble_members);
 
     if let Some(op) = orchestrator_provider {
         agent = agent.with_orchestrator_provider(op);

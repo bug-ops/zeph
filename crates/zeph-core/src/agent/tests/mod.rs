@@ -12,6 +12,8 @@ mod compaction_e2e;
 #[cfg(test)]
 mod confirmation_propagation_tests;
 #[cfg(test)]
+mod ensemble_scheduler_loop_tests;
+#[cfg(test)]
 mod flush_orphaned_tests;
 #[cfg(test)]
 mod inline_tool_loop_tests;

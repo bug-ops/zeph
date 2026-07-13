@@ -203,6 +203,37 @@ Verification never blocks graph execution. Downstream tasks are unblocked immedi
 
 When `verify_provider` is empty, verification uses the agent's primary provider.
 
+### Ensemble Verification (ORCH)
+
+Opt-in, default off. Based on ORCH (arXiv:2602.01797): instead of a single verifier call, N
+configured provider members independently judge the same task output in parallel, and a pure,
+deterministic binary-majority vote produces the `VerificationResult` — trading a bounded, opt-in
+cost increase for higher confidence on this one decision.
+
+```toml
+[orchestration.ensemble]
+enabled = true
+verify = true
+members = ["fast", "quality", "cheap"]   # odd length, >= 3, no duplicates
+```
+
+- `members.len()` is validated odd and `>= 3` at config load — this guarantees a strict
+  majority with no ties by construction.
+- Each member is called in parallel (never sequentially) and independently timed out via
+  `member_timeout_secs` (falls back to `verifier_timeout_secs` when `0`).
+- Members that error or time out are **excluded** from the vote — never counted as a fail-open
+  `complete: true` ballot.
+- The merged `confidence` is the mean of the **winning side's** self-reported confidence values
+  — never the ballot agreement ratio (which is telemetry-only and never gates `replan`).
+- When fewer than quorum (`members.len() / 2 + 1`) members respond, verification falls back to
+  the single-provider `verify_provider` path automatically, incrementing a
+  `ensemble_degraded` counter (visible in `/status`).
+- A telemetry-only per-member EMA agreement tracker (`ema_alpha`, `ema_decay`,
+  `min_observations`) is recorded for diagnostics but never gates which members are dispatched.
+
+`replan()` itself always runs on the single-provider path — the ensemble only covers the
+initial completeness verdict, not remediation-task generation.
+
 ## Execution
 
 Once a `TaskGraph` is validated and persisted, the **DAG scheduler** drives execution by producing actions for the caller to perform.

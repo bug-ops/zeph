@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        85,
-        "MIGRATIONS registry must contain all 85 sequential steps"
+        86,
+        "MIGRATIONS registry must contain all 86 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1111,6 +1111,42 @@ fn migrate_memory_type_aware_compose_config_noop_when_active_section_present() {
 }
 
 #[test]
+fn migrate_orchestration_ensemble_idempotent_on_commented_output() {
+    let base = "[orchestration]\nenabled = true\n";
+    let first = migrate_orchestration_ensemble(base).unwrap();
+    assert_eq!(first.changed_count, 1);
+    assert!(first.output.contains("# [orchestration.ensemble]"));
+    assert!(first.output.contains("# enabled = false"));
+    assert!(first.output.contains("# verify = false"));
+    let second = migrate_orchestration_ensemble(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0, "second run must not double-append");
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_orchestration_ensemble_noop_when_orchestration_section_absent() {
+    let base = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_orchestration_ensemble(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
+#[test]
+fn migrate_orchestration_ensemble_noop_when_active_section_present() {
+    let base = "[orchestration]\nenabled = true\n\n[orchestration.ensemble]\nenabled = true\n";
+    let result = migrate_orchestration_ensemble(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
+#[test]
+fn migrate_orchestration_ensemble_sections_changed_reports_key() {
+    let base = "[orchestration]\nenabled = true\n";
+    let result = migrate_orchestration_ensemble(base).unwrap();
+    assert_eq!(result.sections_changed, vec!["orchestration.ensemble"]);
+}
+
+#[test]
 fn migrate_microcompact_config_idempotent_on_commented_output() {
     let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
     let first = migrate_microcompact_config(base).unwrap();
@@ -1781,7 +1817,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 85);
+    assert_eq!(MIGRATIONS.len(), 86);
 }
 
 #[test]
@@ -1906,6 +1942,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_worktree_quota_fields",
         "migrate_a2a_server_remove_inert_fields",
         "migrate_memory_type_aware_compose_config",
+        "migrate_orchestration_ensemble",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

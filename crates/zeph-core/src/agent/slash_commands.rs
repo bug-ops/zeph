@@ -232,6 +232,12 @@ impl<C: crate::channel::Channel> Agent<C> {
             metrics.orch_failed,
             metrics.orch_skipped,
         );
+        append_ensemble_section(
+            &mut out,
+            metrics.ensemble_degraded,
+            metrics.ensemble_agreement_ratio,
+            &metrics.ensemble_member_stats,
+        );
         append_pruning_section(
             &mut out,
             self.context_manager.compression.pruning_strategy,
@@ -805,6 +811,9 @@ struct StatusMetrics {
     orch_completed: u64,
     orch_failed: u64,
     orch_skipped: u64,
+    ensemble_degraded: u64,
+    ensemble_agreement_ratio: Option<f64>,
+    ensemble_member_stats: Vec<(String, f64, u64)>,
     provider_breakdown: Vec<(String, crate::cost::ProviderUsage)>,
 }
 
@@ -825,6 +834,9 @@ fn collect_status_metrics(
             orch_completed: m.orchestration.tasks_completed,
             orch_failed: m.orchestration.tasks_failed,
             orch_skipped: m.orchestration.tasks_skipped,
+            ensemble_degraded: m.orchestration.ensemble_degraded_total,
+            ensemble_agreement_ratio: m.orchestration.ensemble_last_agreement_ratio,
+            ensemble_member_stats: m.orchestration.ensemble_member_stats.clone(),
             provider_breakdown: m.provider_cost_breakdown.clone(),
         }
     } else {
@@ -840,6 +852,9 @@ fn collect_status_metrics(
             orch_completed: 0,
             orch_failed: 0,
             orch_skipped: 0,
+            ensemble_degraded: 0,
+            ensemble_agreement_ratio: None,
+            ensemble_member_stats: vec![],
             provider_breakdown: vec![],
         }
     }
@@ -894,6 +909,32 @@ fn append_orchestration_section(
         if orch_skipped > 0 {
             let _ = writeln!(out, "  Skipped:   {orch_skipped}");
         }
+    }
+}
+
+/// Append ensemble-verified plan verification stats (spec `073-orch-ensemble-merge`) to the
+/// `/status` output. Silent (no section printed) when the ensemble has never run — the
+/// member-stats list is empty and no member has ever cast a ballot.
+fn append_ensemble_section(
+    out: &mut String,
+    ensemble_degraded: u64,
+    ensemble_agreement_ratio: Option<f64>,
+    ensemble_member_stats: &[(String, f64, u64)],
+) {
+    use std::fmt::Write;
+    if ensemble_member_stats.is_empty() && ensemble_degraded == 0 {
+        return;
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(out, "Ensemble verify:");
+    if let Some(ratio) = ensemble_agreement_ratio {
+        let _ = writeln!(out, "  Last agreement: {:.0}%", ratio * 100.0);
+    }
+    if ensemble_degraded > 0 {
+        let _ = writeln!(out, "  Degraded:  {ensemble_degraded} (quorum fallback)");
+    }
+    for (member, score, observations) in ensemble_member_stats {
+        let _ = writeln!(out, "  {member:<16} ema={score:.2} (n={observations})");
     }
 }
 

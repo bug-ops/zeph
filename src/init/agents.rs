@@ -78,10 +78,55 @@ pub(super) fn step_orchestration(state: &mut WizardState) -> anyhow::Result<()> 
             )
             .default(true)
             .interact()?;
+
+        step_ensemble_verify(state)?;
     }
 
     println!();
     Ok(())
+}
+
+/// Prompt for ORCH-style deterministic verifier ensemble-merge (spec
+/// `073-orch-ensemble-merge`), opt-in and nested under orchestration.
+fn step_ensemble_verify(state: &mut WizardState) -> anyhow::Result<()> {
+    state.ensemble_enabled = Confirm::new()
+        .with_prompt(
+            "Enable ensemble-verified plan verification? (opt-in, multiplies verify \
+             cost by member count — runs the same completeness check through N \
+             providers in parallel and merges by deterministic majority vote)",
+        )
+        .default(false)
+        .interact()?;
+
+    if !state.ensemble_enabled {
+        return Ok(());
+    }
+
+    loop {
+        let members_raw: String = Input::new()
+            .with_prompt(
+                "Ensemble member provider names (comma-separated, from \
+                 [[llm.providers]]; must be odd count and >= 3, no duplicates)",
+            )
+            .interact_text()?;
+        let members: Vec<String> = members_raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
+        let unique: std::collections::HashSet<&str> = members.iter().map(String::as_str).collect();
+        if !members.len().is_multiple_of(2) && members.len() >= 3 && unique.len() == members.len() {
+            state.ensemble_members = members;
+            return Ok(());
+        }
+        println!(
+            "Invalid: need an odd count of >= 3 unique provider names, got {} \
+             (duplicates: {}). Try again.",
+            members.len(),
+            members.len() != unique.len()
+        );
+    }
 }
 
 pub(super) fn step_agents(state: &mut WizardState) -> anyhow::Result<()> {

@@ -184,6 +184,18 @@ fn default_verifier_timeout_secs() -> u64 {
     30
 }
 
+fn default_ensemble_ema_alpha() -> f64 {
+    0.3
+}
+
+fn default_ensemble_ema_decay() -> f64 {
+    0.95
+}
+
+fn default_ensemble_min_observations() -> u32 {
+    5
+}
+
 fn default_plan_cache_similarity_threshold() -> f32 {
     0.90
 }
@@ -251,6 +263,66 @@ impl PlanCacheConfig {
             ));
         }
         Ok(())
+    }
+}
+
+/// Configuration for ORCH-style deterministic verifier ensemble-merge
+/// (`[orchestration.ensemble]` TOML section, spec `073-orch-ensemble-merge`).
+///
+/// Opt-in and default-`OFF`: when `enabled = false` (the default), `PlanVerifier::verify()`
+/// behaves byte-for-byte identically to the single-provider path — no ensemble code runs.
+///
+/// `size` and `min_quorum` are intentionally NOT configurable fields — both are always
+/// derived from `members.len()` (`quorum = members.len() / 2 + 1`) so they can never drift
+/// out of sync with the member list.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct EnsembleConfig {
+    /// Enable ensemble machinery (member resolution at bootstrap). Default: `false`.
+    ///
+    /// Separate from `verify` so the ensemble can be resolved/warmed without yet being used
+    /// for verification decisions.
+    pub enabled: bool,
+    /// Use the ensemble for `PlanVerifier` per-task verification. Default: `false`.
+    ///
+    /// Requires `enabled = true`. When `false` (even with `enabled = true`), the
+    /// `SchedulerAction::Verify` handler still uses the single-provider `verify_provider`
+    /// path — `verify` is the per-target activation flag.
+    pub verify: bool,
+    /// Provider names from `[[llm.providers]]`, one per ensemble member.
+    ///
+    /// Validated at config load time (when `enabled && verify`) to be odd-length, `>= 3`,
+    /// and free of duplicates — this guarantees a strict majority with no ties by
+    /// construction. Default: empty.
+    pub members: Vec<String>,
+    /// EMA smoothing factor for `EnsembleTracker`'s per-member agreement score, in `[0.0, 1.0]`.
+    /// Higher values weight the most recent observation more heavily. Default: `0.3`.
+    #[serde(default = "default_ensemble_ema_alpha")]
+    pub ema_alpha: f64,
+    /// Decay-toward-neutral-prior factor for `EnsembleTracker`, in `[0.0, 1.0]`. Default: `0.95`.
+    #[serde(default = "default_ensemble_ema_decay")]
+    pub ema_decay: f64,
+    /// Minimum recorded observations before `EnsembleTracker::ema()` returns a score instead
+    /// of `None` (cold-start gate). Default: `5`.
+    #[serde(default = "default_ensemble_min_observations")]
+    pub min_observations: u32,
+    /// Per-member `chat_typed` call timeout in seconds. `0` = fall back to
+    /// `verifier_timeout_secs`. Default: `0`.
+    #[serde(default)]
+    pub member_timeout_secs: u64,
+}
+
+impl Default for EnsembleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            verify: false,
+            members: Vec::new(),
+            ema_alpha: default_ensemble_ema_alpha(),
+            ema_decay: default_ensemble_ema_decay(),
+            min_observations: default_ensemble_min_observations(),
+            member_timeout_secs: 0,
+        }
     }
 }
 
@@ -455,6 +527,11 @@ pub struct OrchestrationConfig {
     /// Set to `0` is rejected by `Config::validate()`.
     #[serde(default = "default_verifier_timeout_secs")]
     pub verifier_timeout_secs: u64,
+
+    /// ORCH-style deterministic verifier ensemble-merge configuration. Default: disabled.
+    /// See `specs/073-orch-ensemble-merge/spec.md`.
+    #[serde(default)]
+    pub ensemble: EnsembleConfig,
 }
 
 impl Default for OrchestrationConfig {
@@ -498,6 +575,7 @@ impl Default for OrchestrationConfig {
             aggregator_timeout_secs: default_aggregator_timeout_secs(),
             planner_timeout_secs: default_planner_timeout_secs(),
             verifier_timeout_secs: default_verifier_timeout_secs(),
+            ensemble: EnsembleConfig::default(),
         }
     }
 }
@@ -742,6 +820,57 @@ mod tests {
             "missing field must use default 0.7, got {}",
             cfg.completeness_threshold
         );
+    }
+
+    #[test]
+    fn ensemble_config_default_is_disabled() {
+        let cfg = EnsembleConfig::default();
+        assert!(!cfg.enabled);
+        assert!(!cfg.verify);
+        assert!(cfg.members.is_empty());
+        assert!((cfg.ema_alpha - 0.3).abs() < f64::EPSILON);
+        assert!((cfg.ema_decay - 0.95).abs() < f64::EPSILON);
+        assert_eq!(cfg.min_observations, 5);
+        assert_eq!(cfg.member_timeout_secs, 0);
+    }
+
+    #[test]
+    fn orchestration_config_ensemble_is_disabled_by_default() {
+        assert!(!OrchestrationConfig::default().ensemble.enabled);
+    }
+
+    #[test]
+    fn ensemble_config_serde_round_trip() {
+        let toml_in = r#"
+            enabled = true
+            verify = true
+            members = ["fast", "quality", "cheap"]
+            ema_alpha = 0.4
+            ema_decay = 0.9
+            min_observations = 10
+            member_timeout_secs = 15
+        "#;
+        let cfg: EnsembleConfig = toml::from_str(toml_in).expect("deserialize");
+        assert!(cfg.enabled);
+        assert!(cfg.verify);
+        assert_eq!(cfg.members, vec!["fast", "quality", "cheap"]);
+        assert!((cfg.ema_alpha - 0.4).abs() < f64::EPSILON);
+
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        let cfg2: EnsembleConfig = toml::from_str(&serialized).expect("re-deserialize");
+        assert_eq!(cfg2.members, cfg.members);
+        assert_eq!(cfg2.member_timeout_secs, 15);
+    }
+
+    #[test]
+    fn ensemble_config_missing_section_uses_defaults() {
+        // OrchestrationConfig has #[serde(default)] on the whole struct, and `ensemble` has
+        // #[serde(default)] too — an existing config with no [orchestration.ensemble] table
+        // at all must parse to the disabled default (no migration step required).
+        let toml_in = "enabled = true\n";
+        let cfg: OrchestrationConfig = toml::from_str(toml_in).expect("deserialize");
+        assert!(!cfg.ensemble.enabled);
+        assert!(cfg.ensemble.members.is_empty());
     }
 
     #[test]

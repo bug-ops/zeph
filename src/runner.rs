@@ -2773,6 +2773,8 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     } else {
         agent
     };
+    let ensemble_members = app.build_ensemble_members();
+    let agent = agent.with_ensemble_members(ensemble_members);
     let orchestrator_provider = app.build_orchestrator_provider();
     let agent = if let Some(op) = orchestrator_provider {
         agent.with_orchestrator_provider(op)

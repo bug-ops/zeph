@@ -10531,6 +10531,7 @@ dependencies = [
  "tracing-chrome",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "tracing-test",
  "url",
  "uuid",
  "wiremock",

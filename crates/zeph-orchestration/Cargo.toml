@@ -16,6 +16,7 @@ readme = "README.md"
 blake3.workspace = true
 chrono = { workspace = true, features = ["clock"] }
 dirs.workspace = true
+futures = { workspace = true, optional = true }
 parking_lot.workspace = true
 rand.workspace = true
 rand_distr.workspace = true
@@ -46,7 +47,7 @@ zeph-memory.workspace = true
 [features]
 sqlite = ["zeph-db/sqlite", "zeph-durable/sqlite", "zeph-memory/sqlite", "zeph-subagent/sqlite"]
 postgres = ["zeph-db/postgres", "zeph-durable/postgres", "zeph-memory/postgres", "zeph-subagent/postgres"]
-llm-planning = ["dep:zeph-llm"]
+llm-planning = ["dep:zeph-llm", "dep:futures"]
 # Enables test utilities and testcontainers for PostgreSQL integration tests.
 # Implies `llm-planning`: the only test-utils-gated suite (postgres_integration.rs)
 # exercises `PlanCache`, which lives behind that feature.

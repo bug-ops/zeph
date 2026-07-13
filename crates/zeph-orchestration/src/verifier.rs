@@ -469,7 +469,12 @@ struct ReplanTask {
     agent_hint: Option<String>,
 }
 
-fn build_verify_prompt(
+/// Build the per-task completeness-verification prompt.
+///
+/// `pub(crate)` so [`crate::ensemble::verifier::EnsembleVerifier`] can reuse the exact same
+/// prompt for every ensemble member — the ensemble path must ask an identical question of each
+/// member, differing only in which provider answers it.
+pub(crate) fn build_verify_prompt(
     task: &TaskNode,
     output: &str,
     sanitizer: &Arc<dyn OutputSanitizer>,
