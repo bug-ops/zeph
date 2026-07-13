@@ -37,6 +37,7 @@ impl CallableToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         }))])
     }
 
@@ -174,6 +175,7 @@ async fn multiple_tool_iterations_before_text() {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         })),
         Ok(Some(ToolOutput {
             tool_name: "test_tool".into(),
@@ -186,6 +188,7 @@ async fn multiple_tool_iterations_before_text() {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         })),
     ]);
 
@@ -249,6 +252,7 @@ async fn network_deny_wrapped_executor_blocks_fetch_before_reaching_inner() {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))
         }
 
@@ -356,6 +360,7 @@ async fn elicitation_event_during_tool_execution_is_handled() {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))
         }
 

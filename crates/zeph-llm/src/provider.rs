@@ -340,7 +340,7 @@ impl MessagePart {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 /// Raw image payload for vision-capable providers.
 ///
 /// The `data` field is serialized as a Base64 string. `mime_type` must be a valid
@@ -349,6 +349,16 @@ pub struct ImageData {
     #[serde(with = "serde_bytes_base64")]
     pub data: Vec<u8>,
     pub mime_type: String,
+}
+
+impl std::fmt::Debug for ImageData {
+    /// Redacts the raw image bytes — only the MIME type and byte count are printed.
+    ///
+    /// `data` can carry arbitrary externally-sourced bytes (MCP tool results, user uploads);
+    /// a derived `Debug` would dump the full payload into logs/panics.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[image: {}, {} bytes]", self.mime_type, self.data.len())
+    }
 }
 
 mod serde_bytes_base64 {
@@ -1042,6 +1052,17 @@ mod tests {
         fn name(&self) -> &'static str {
             "stub"
         }
+    }
+
+    #[test]
+    fn test_image_data_debug_redacts_bytes() {
+        let img = ImageData {
+            data: vec![0xAB, 0xCD, 0xEF],
+            mime_type: "image/png".to_owned(),
+        };
+        let debug = format!("{img:?}");
+        assert_eq!(debug, "[image: image/png, 3 bytes]");
+        assert!(!debug.contains("171") && !debug.contains("205") && !debug.contains("239"));
     }
 
     #[test]

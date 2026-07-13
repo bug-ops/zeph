@@ -301,6 +301,7 @@ async fn agent_handles_tool_execution_success() {
         locations: None,
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     }))]);
 
     let agent_channel = MockChannel::new(vec!["execute tool".to_string()]);
@@ -604,6 +605,7 @@ async fn agent_handles_tool_output_with_error_marker() {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         })),
         Ok(None),
     ]);
@@ -630,6 +632,7 @@ async fn agent_handles_empty_tool_output() {
         locations: None,
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     }))]);
 
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
@@ -759,6 +762,7 @@ async fn agent_processes_multi_turn_tool_execution() {
         locations: None,
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     }))]);
 
     let mut agent = Agent::new(
@@ -799,6 +803,7 @@ async fn agent_respects_max_shell_iterations() {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         })));
     }
     let executor = MockToolExecutor::new(outputs);

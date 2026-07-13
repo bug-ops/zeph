@@ -180,6 +180,7 @@ impl ToolExecutor for MockMcpServer {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             })),
             Some(Err(msg)) => Err(ToolError::Blocked { command: msg }),
             None => Err(ToolError::Blocked {

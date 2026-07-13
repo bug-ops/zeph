@@ -461,6 +461,7 @@ impl ToolExecutor for IndexMcpServer {
             locations: None,
             raw_response: Some(result),
             claim_source: Some(ClaimSource::CodeSearch),
+            ..Default::default()
         }))
     }
 

@@ -215,6 +215,7 @@ impl<C: Channel> Agent<C> {
                             locations: None,
                             raw_response: None,
                             claim_source: None,
+                            ..Default::default()
                         }))
                     })
                 } else {
@@ -2877,6 +2878,7 @@ fn skipped_output(
         locations: None,
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     }
 }
 
@@ -3955,6 +3957,7 @@ mod tests {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))])
             .with_definitions(vec![test_tool_def()]);
             let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
@@ -4096,6 +4099,7 @@ mod tests {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))])
             .with_definitions(vec![test_tool_def()]);
             let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
@@ -4292,6 +4296,7 @@ mod tests {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))])
             .with_definitions(vec![test_tool_def()])
             // Consumes >1s of wall time on the first (only) dispatched retry, so the second
@@ -4912,6 +4917,7 @@ mod tests {
                     locations: None,
                     raw_response: None,
                     claim_source: None,
+                    ..Default::default()
                 })),
             ]);
             let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
@@ -5017,6 +5023,7 @@ mod tests {
                     locations: None,
                     raw_response: None,
                     claim_source: None,
+                    ..Default::default()
                 })),
             ]);
             let mut agent = Agent::new(provider, channel, registry, None, 5, executor);

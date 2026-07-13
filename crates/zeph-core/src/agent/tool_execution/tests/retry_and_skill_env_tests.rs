@@ -176,6 +176,7 @@ async fn handle_tool_result_sends_output_when_streamed_true() {
         locations: None,
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     };
     agent
         .handle_tool_result("response", Ok(Some(output)))
@@ -212,6 +213,7 @@ async fn handle_tool_result_fenced_emits_tool_start_then_output_via_loopback() {
         locations: None,
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     };
     agent
         .handle_tool_result("response", Ok(Some(output)))
@@ -291,6 +293,7 @@ async fn handle_tool_result_locations_propagated_to_loopback_event() {
         locations: Some(vec!["/src/main.rs".to_owned()]),
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     };
     agent
         .handle_tool_result("response", Ok(Some(output)))
@@ -344,6 +347,7 @@ async fn handle_tool_result_display_is_raw_body_not_markdown_wrapped() {
         locations: None,
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     };
     agent
         .handle_tool_result("response", Ok(Some(output)))

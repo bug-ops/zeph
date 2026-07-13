@@ -644,6 +644,7 @@ mod tests {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }));
             Box::pin(std::future::ready(result))
         }
@@ -746,6 +747,7 @@ mod tests {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }));
             Box::pin(std::future::ready(result))
         }

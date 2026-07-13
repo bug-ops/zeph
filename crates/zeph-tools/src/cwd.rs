@@ -121,6 +121,7 @@ impl ToolExecutor for SetCwdExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(ClaimSource::FileSystem),
+            ..Default::default()
         }))
     }
 

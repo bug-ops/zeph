@@ -710,6 +710,7 @@ async fn tool_call_loop_two_turns() {
                     locations: None,
                     raw_response: None,
                     claim_source: None,
+                    ..Default::default()
                 }))
             } else {
                 Ok(None)
@@ -2326,6 +2327,7 @@ async fn run_agent_loop_executes_native_tool_call() {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             };
             Box::pin(std::future::ready(Ok(Some(output))))
         }

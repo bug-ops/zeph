@@ -323,6 +323,7 @@ impl ToolExecutor for WebScrapeExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(ClaimSource::WebScrape),
+            ..Default::default()
         }))
     }
 
@@ -444,6 +445,7 @@ impl WebScrapeExecutor {
                     locations: None,
                     raw_response: None,
                     claim_source: Some(ClaimSource::WebScrape),
+                    ..Default::default()
                 }))
             }
             Err(e) => {

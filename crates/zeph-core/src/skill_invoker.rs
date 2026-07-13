@@ -155,6 +155,7 @@ fn make_output(summary: String) -> ToolOutput {
         locations: None,
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     }
 }
 

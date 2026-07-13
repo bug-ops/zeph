@@ -591,6 +591,7 @@ fn build_search_code_output(
         locations: Some(locations),
         raw_response: Some(raw_response),
         claim_source: Some(ClaimSource::CodeSearch),
+        ..Default::default()
     }
 }
 

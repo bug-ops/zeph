@@ -434,6 +434,7 @@ fn make_output(tool_name: &str, summary: &str) -> ToolOutput {
         locations: None,
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     }
 }
 

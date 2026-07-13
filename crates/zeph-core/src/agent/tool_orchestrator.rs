@@ -635,6 +635,7 @@ mod tests {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         };
         o.result_cache.put(CacheKey::new("read", 1), output);
         o.result_cache.get(&CacheKey::new("read", 1)); // hit

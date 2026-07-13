@@ -773,6 +773,7 @@ impl ToolExecutor for FixedOutputExecutor {
                     locations: None,
                     raw_response: None,
                     claim_source: None,
+                    ..Default::default()
                 }))
             }
         }
@@ -817,6 +818,7 @@ impl ToolExecutor for FirstFailsExecutor {
                     locations: None,
                     raw_response: None,
                     claim_source: None,
+                    ..Default::default()
                 }))
             }
         }

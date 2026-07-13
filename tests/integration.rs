@@ -198,6 +198,7 @@ impl ToolExecutor for OutputToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         }))
     }
 
@@ -213,6 +214,7 @@ impl ToolExecutor for OutputToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         }))
     }
     zeph_tools::tool_executor_no_inner_defaults!();
@@ -233,6 +235,7 @@ impl ToolExecutor for EmptyOutputToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         }))
     }
 
@@ -248,6 +251,7 @@ impl ToolExecutor for EmptyOutputToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         }))
     }
     zeph_tools::tool_executor_no_inner_defaults!();
@@ -268,6 +272,7 @@ impl ToolExecutor for ErrorOutputToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         }))
     }
 
@@ -283,6 +288,7 @@ impl ToolExecutor for ErrorOutputToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         }))
     }
     zeph_tools::tool_executor_no_inner_defaults!();
@@ -326,6 +332,7 @@ impl ToolExecutor for ConfirmToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         }))
     }
 
@@ -350,6 +357,7 @@ impl ToolExecutor for ConfirmToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         }))
     }
 
@@ -421,6 +429,7 @@ impl ToolExecutor for ExitCodeToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         }))
     }
 
@@ -436,6 +445,7 @@ impl ToolExecutor for ExitCodeToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         }))
     }
     zeph_tools::tool_executor_no_inner_defaults!();
@@ -2599,6 +2609,7 @@ mod self_learning {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))
         }
 
@@ -2617,6 +2628,7 @@ mod self_learning {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))
         }
         zeph_tools::tool_executor_no_inner_defaults!();

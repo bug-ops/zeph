@@ -35,6 +35,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from CLI, TUI, and ACP. Instruction re-discovery is skipped in a `--safe-mode` session so `/cd`
   cannot silently re-load project instructions and defeat the flag. Conversation history, active
   goals, and skill state are preserved across the switch (#6032).
+- **zeph-tools/zeph-llm**: foundational type plumbing for multimodal MCP `ContentBlock::Image`
+  passthrough (spec-072, #6229 P0 of 4). Added `ToolOutput.media: Vec<zeph_llm::ImageData>`
+  (empty by default, `#[derive(Default)]` on `ToolOutput`), a new `zeph-tools → zeph-llm`
+  dependency edge, and a redacting `impl Debug for ImageData` (`[image: {mime}, {n} bytes]`,
+  never the raw bytes), hardening a latent/reachable-by-construction Debug-derive leak on
+  `ImageData` as defense-in-depth for the existing user-upload image path (no production call
+  site currently Debug-formats `ImageData`/`Message`; debug-dump output uses `Serialize`, not
+  `Debug`). Purely additive — `media` is never populated yet, so this PR changes no runtime
+  behavior. Decode/validate/attach logic, the ephemeral persistence strip, vision-tier routing,
+  and the config/CLI/TUI surface are deferred to P1–P3 follow-up issues.
 
 ### Changed
 

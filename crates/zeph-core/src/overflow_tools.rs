@@ -92,6 +92,7 @@ impl ToolExecutor for OverflowToolExecutor {
                     locations: None,
                     raw_response: None,
                     claim_source: None,
+                    ..Default::default()
                 }))
             }
             Ok(None) => Err(ToolError::Execution(std::io::Error::other(

@@ -45,6 +45,7 @@ impl zeph_tools::executor::ToolExecutor for DelayExecutor {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))
         }
     }
@@ -90,6 +91,7 @@ impl zeph_tools::executor::ToolExecutor for FailingNthExecutor {
                     locations: None,
                     raw_response: None,
                     claim_source: None,
+                    ..Default::default()
                 }))
             }
         }
@@ -420,6 +422,7 @@ async fn handle_tool_result_with_output_returns_true() {
         locations: None,
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     };
     let result = agent
         .handle_tool_result("response", Ok(Some(output)))
@@ -451,6 +454,7 @@ async fn handle_tool_result_empty_output_returns_false() {
         locations: None,
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     };
     let result = agent
         .handle_tool_result("response", Ok(Some(output)))
@@ -482,6 +486,7 @@ async fn handle_tool_result_error_prefix_triggers_anomaly_error() {
         locations: None,
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     };
     // reflection_used = true so reflection path is skipped
     agent.services.learning_engine.mark_reflection_used();
@@ -518,6 +523,7 @@ async fn handle_tool_result_stderr_prefix_triggers_anomaly_error() {
         locations: None,
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     };
     agent.services.learning_engine.mark_reflection_used();
     let result = agent

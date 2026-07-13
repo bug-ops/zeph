@@ -356,6 +356,7 @@ async fn filter_stats_metrics_increment_on_normal_native_tool_path() {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))
         }
 
@@ -432,6 +433,7 @@ impl zeph_tools::executor::ToolExecutor for TwoToolExecutor {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))
         } else {
             Ok(Some(zeph_tools::executor::ToolOutput {
@@ -453,6 +455,7 @@ impl zeph_tools::executor::ToolExecutor for TwoToolExecutor {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))
         }
     }

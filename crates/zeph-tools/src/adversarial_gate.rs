@@ -355,6 +355,7 @@ mod tests {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))
         }
 
@@ -872,6 +873,7 @@ mod tests {
                     locations: None,
                     raw_response: None,
                     claim_source: Some(crate::executor::ClaimSource::Shell),
+                    ..Default::default()
                 }))
             }
 

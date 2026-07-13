@@ -253,17 +253,12 @@ pub enum ClaimSource {
 ///     tool_name: ToolName::new("shell"),
 ///     summary: "hello\n".to_owned(),
 ///     blocks_executed: 1,
-///     filter_stats: None,
-///     diff: None,
-///     streamed: false,
-///     terminal_id: None,
-///     locations: None,
-///     raw_response: None,
 ///     claim_source: Some(ClaimSource::Shell),
+///     ..Default::default()
 /// };
 /// assert_eq!(output.to_string(), "hello\n");
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ToolOutput {
     /// Name of the tool that produced this output (e.g. `"shell"`, `"web-scrape"`).
     pub tool_name: ToolName,
@@ -286,6 +281,9 @@ pub struct ToolOutput {
     /// Provenance of this tool result. Set by the executor at construction time.
     /// `None` in pass-through wrappers, mocks, and tests.
     pub claim_source: Option<ClaimSource>,
+    /// Validated image data carried across the tool boundary (e.g. MCP `ContentBlock::Image`
+    /// passthrough, spec-072). Empty for executors that don't produce media.
+    pub media: Vec<zeph_llm::ImageData>,
 }
 
 impl fmt::Display for ToolOutput {
@@ -641,13 +639,7 @@ pub fn deserialize_params<T: serde::de::DeserializeOwned>(
 ///             tool_name: "echo".into(),
 ///             summary: text,
 ///             blocks_executed: 1,
-///             filter_stats: None,
-///             diff: None,
-///             streamed: false,
-///             terminal_id: None,
-///             locations: None,
-///             raw_response: None,
-///             claim_source: None,
+///             ..Default::default()
 ///         }))
 ///     }
 ///
@@ -1130,8 +1122,14 @@ mod tests {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         };
         assert_eq!(output.to_string(), "$ echo hello\nhello");
+    }
+
+    #[test]
+    fn test_tool_output_default_media_empty() {
+        assert!(ToolOutput::default().media.is_empty());
     }
 
     #[test]
@@ -1490,6 +1488,7 @@ mod tests {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))
         }
 
@@ -1512,6 +1511,7 @@ mod tests {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))
         }
 

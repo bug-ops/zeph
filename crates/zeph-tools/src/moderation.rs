@@ -223,6 +223,7 @@ impl<B: ReactionModerationBackend + std::fmt::Debug> ToolExecutor for Moderation
                     locations: None,
                     raw_response: None,
                     claim_source: Some(ClaimSource::Moderation),
+                    ..Default::default()
                 }))
             }
             "telegram_delete_all_reactions" => {
@@ -251,6 +252,7 @@ impl<B: ReactionModerationBackend + std::fmt::Debug> ToolExecutor for Moderation
                     locations: None,
                     raw_response: None,
                     claim_source: Some(ClaimSource::Moderation),
+                    ..Default::default()
                 }))
             }
             _ => Ok(None),

@@ -287,6 +287,7 @@ impl AcpShellExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(zeph_tools::ClaimSource::Shell),
+            ..Default::default()
         }))
     }
 
@@ -449,6 +450,7 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
             locations: None,
             raw_response,
             claim_source: Some(zeph_tools::ClaimSource::Shell),
+            ..Default::default()
         }))
     }
 

@@ -161,6 +161,7 @@ impl ToolExecutor for FixedOutputExecutor {
                     locations: None,
                     raw_response: None,
                     claim_source: None,
+                    ..Default::default()
                 }))
             }
         }
@@ -209,6 +210,7 @@ impl ToolExecutor for FirstSuccessExecutor {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))
         }
     }
@@ -250,6 +252,7 @@ impl ToolExecutor for DispatchingExecutor {
                     locations: None,
                     raw_response: None,
                     claim_source: None,
+                    ..Default::default()
                 })),
                 "tool-retryable" if idx == 1 => Err(ToolError::Execution(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
@@ -266,6 +269,7 @@ impl ToolExecutor for DispatchingExecutor {
                     locations: None,
                     raw_response: None,
                     claim_source: None,
+                    ..Default::default()
                 })),
                 _ => Err(ToolError::Execution(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
@@ -546,6 +550,7 @@ async fn skipped_output_processing_does_not_reset_cross_iteration_utility_window
         locations: None,
         raw_response: None,
         claim_source: None,
+        ..Default::default()
     };
 
     // Two LLM iterations, each: note_action records a non-ToolCall (Retrieve)
@@ -2203,6 +2208,7 @@ impl ToolExecutor for RecordingExecutor {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))
         }
     }

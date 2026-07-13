@@ -288,6 +288,7 @@ impl FileExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(ClaimSource::FileSystem),
+            ..Default::default()
         }))
     }
 
@@ -315,6 +316,7 @@ impl FileExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(ClaimSource::FileSystem),
+            ..Default::default()
         }))
     }
 
@@ -347,6 +349,7 @@ impl FileExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(ClaimSource::FileSystem),
+            ..Default::default()
         }))
     }
 
@@ -393,6 +396,7 @@ impl FileExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(ClaimSource::FileSystem),
+            ..Default::default()
         }))
     }
 
@@ -463,6 +467,7 @@ impl FileExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(ClaimSource::FileSystem),
+            ..Default::default()
         }))
     }
 
@@ -524,6 +529,7 @@ impl FileExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(ClaimSource::FileSystem),
+            ..Default::default()
         }))
     }
 
@@ -545,6 +551,7 @@ impl FileExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(ClaimSource::FileSystem),
+            ..Default::default()
         }))
     }
 
@@ -585,6 +592,7 @@ impl FileExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(ClaimSource::FileSystem),
+            ..Default::default()
         }))
     }
 
@@ -607,6 +615,7 @@ impl FileExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(ClaimSource::FileSystem),
+            ..Default::default()
         }))
     }
 
@@ -641,6 +650,7 @@ impl FileExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(ClaimSource::FileSystem),
+            ..Default::default()
         }))
     }
 }

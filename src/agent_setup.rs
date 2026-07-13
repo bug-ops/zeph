@@ -3649,6 +3649,7 @@ mod tests {
                 locations: None,
                 raw_response: None,
                 claim_source: None,
+                ..Default::default()
             }))
         }
         zeph_tools::tool_executor_no_inner_defaults!();

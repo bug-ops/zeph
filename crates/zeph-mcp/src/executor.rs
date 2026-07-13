@@ -133,6 +133,7 @@ impl ToolExecutor for McpToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(zeph_tools::ClaimSource::Mcp),
+            ..Default::default()
         }))
     }
 
@@ -201,6 +202,7 @@ impl ToolExecutor for McpToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(zeph_tools::ClaimSource::Mcp),
+            ..Default::default()
         }))
     }
 

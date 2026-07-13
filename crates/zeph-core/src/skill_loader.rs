@@ -125,6 +125,7 @@ impl ToolExecutor for SkillLoaderExecutor {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         }))
     }
 

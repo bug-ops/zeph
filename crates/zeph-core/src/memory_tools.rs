@@ -184,6 +184,7 @@ impl ToolExecutor for MemoryToolExecutor {
                     locations: None,
                     raw_response: None,
                     claim_source: Some(zeph_tools::ClaimSource::Memory),
+                    ..Default::default()
                 }))
             }
             "memory_save" => {
@@ -245,6 +246,7 @@ impl ToolExecutor for MemoryToolExecutor {
                     locations: None,
                     raw_response: None,
                     claim_source: Some(zeph_tools::ClaimSource::Memory),
+                    ..Default::default()
                 }))
             }
             _ => Ok(None),

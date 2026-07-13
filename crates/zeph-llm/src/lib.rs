@@ -116,7 +116,7 @@ pub use error::LlmError;
 pub use extractor::Extractor;
 pub use masking::{MaskedProvider, OutboundMasker, mask_messages};
 pub use openai::{CompletionTokensParam, OpenAiConfig};
-pub use provider::{ChatExtras, ChatStream, LlmProvider, StreamChunk, ThinkingBlock};
+pub use provider::{ChatExtras, ChatStream, ImageData, LlmProvider, StreamChunk, ThinkingBlock};
 pub use provider_dyn::LlmProviderDyn;
 pub use router::aware::RouterAware;
 pub use router::coe::{CoeConfig, CoeMetrics, CoeRouter};

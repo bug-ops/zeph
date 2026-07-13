@@ -741,6 +741,7 @@ impl ShellExecutor {
             locations: None,
             raw_response,
             claim_source: Some(ClaimSource::Shell),
+            ..Default::default()
         }))
     }
 
@@ -978,6 +979,7 @@ impl ShellExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(ClaimSource::Shell),
+            ..Default::default()
         }))
     }
 
@@ -1802,6 +1804,7 @@ impl ToolExecutor for ShellExecutor {
                 locations: None,
                 raw_response: None,
                 claim_source: Some(ClaimSource::Shell),
+                ..Default::default()
             }));
         }
 

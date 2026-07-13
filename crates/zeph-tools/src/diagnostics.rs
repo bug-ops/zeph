@@ -194,6 +194,7 @@ impl ToolExecutor for DiagnosticsExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(crate::executor::ClaimSource::Diagnostics),
+            ..Default::default()
         }))
     }
 

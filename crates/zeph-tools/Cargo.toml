@@ -44,6 +44,7 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 zeph-common = { workspace = true, features = ["treesitter"] }
 zeph-config.workspace = true
 zeph-db.workspace = true
+zeph-llm.workspace = true
 zeph-sanitizer.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 

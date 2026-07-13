@@ -121,6 +121,7 @@ impl SingleToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: None,
+            ..Default::default()
         };
         Self {
             output: Arc::new(Mutex::new(Some(output))),

@@ -11403,6 +11403,7 @@ dependencies = [
  "zeph-common",
  "zeph-config",
  "zeph-db",
+ "zeph-llm",
  "zeph-sanitizer",
 ]
 
