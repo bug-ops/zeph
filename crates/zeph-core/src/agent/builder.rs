@@ -57,7 +57,7 @@ use super::session_config::{AgentSessionConfig, CONTEXT_BUDGET_RESERVE_RATIO};
 use crate::agent::state::ProviderConfigSnapshot;
 use crate::channel::Channel;
 use crate::config::{
-    CompressionConfig, LearningConfig, ProviderEntry, ProviderName, SecurityConfig,
+    CompressionConfig, LearningConfig, ProviderEntry, ProviderName, SecurityConfig, SkillsConfig,
     StoreRoutingConfig, TimeoutConfig,
 };
 use crate::config_watcher::ConfigEvent;
@@ -78,6 +78,59 @@ pub enum BuildError {
     /// pass a provider pool via `with_provider_pool`.
     #[error("no LLM provider configured (set via with_*_provider or with_provider_pool)")]
     MissingProviders,
+}
+
+/// Skill-subsystem config values applied identically at every `Agent` construction entry point.
+///
+/// Bundles the fields consumed by [`Agent::with_skill_matching_config`],
+/// [`Agent::with_skill_group_config`], [`Agent::with_skill_provider_names`], and
+/// [`Agent::with_semantic_scan`] for use with [`Agent::with_skill_config`], which applies all
+/// four in one call. This deduplicates the 4-call chain that was independently copy-pasted
+/// across `src/runner.rs`, `src/daemon.rs`, `src/serve/agent_factory.rs`, and `src/acp.rs` — each
+/// site had shipped a swapped- or missing-argument regression at some point (#5819, #5867,
+/// #5827) because the mapping had to be kept in sync by hand in four places.
+#[derive(Debug, Clone)]
+pub struct SkillConfigParams {
+    /// See [`Agent::with_skill_matching_config`]'s `disambiguation_threshold` parameter.
+    pub disambiguation_threshold: f32,
+    /// See [`Agent::with_skill_matching_config`]'s `two_stage_matching` parameter.
+    pub two_stage_matching: bool,
+    /// See [`Agent::with_skill_matching_config`]'s `confusability_threshold` parameter.
+    pub confusability_threshold: f32,
+    /// See [`Agent::with_skill_group_config`]'s `group_structured` parameter.
+    pub group_structured: bool,
+    /// See [`Agent::with_skill_group_config`]'s `support_similarity_threshold` parameter.
+    pub support_similarity_threshold: f32,
+    /// See [`Agent::with_skill_group_config`]'s `min_injection_score` parameter.
+    pub min_injection_score: f32,
+    /// See [`Agent::with_skill_provider_names`]'s `generation_provider_name` parameter.
+    pub generation_provider_name: String,
+    /// See [`Agent::with_skill_provider_names`]'s `disambiguate_provider_name` parameter.
+    pub disambiguate_provider_name: String,
+    /// See [`Agent::with_semantic_scan`]'s `enabled` parameter.
+    pub semantic_scan: bool,
+    /// See [`Agent::with_semantic_scan`]'s `provider_name` parameter.
+    pub semantic_scan_provider_name: String,
+}
+
+/// Extracts the fields [`Agent::with_skill_config`] needs from a full `[skills]` config
+/// section — the shape available at `src/runner.rs`'s and `src/daemon.rs`'s call sites, which
+/// hold the whole `Config` rather than pre-extracted scalars.
+impl From<&SkillsConfig> for SkillConfigParams {
+    fn from(skills: &SkillsConfig) -> Self {
+        Self {
+            disambiguation_threshold: skills.disambiguation_threshold,
+            two_stage_matching: skills.two_stage_matching,
+            confusability_threshold: skills.confusability_threshold,
+            group_structured: skills.group_structured,
+            support_similarity_threshold: skills.support_similarity_threshold,
+            min_injection_score: skills.min_injection_score,
+            generation_provider_name: skills.generation_provider.as_str().to_owned(),
+            disambiguate_provider_name: skills.disambiguate_provider.as_str().to_owned(),
+            semantic_scan: skills.semantic_scan,
+            semantic_scan_provider_name: skills.semantic_scan_provider.as_str().to_owned(),
+        }
+    }
 }
 
 impl<C: Channel> Agent<C> {
@@ -459,6 +512,72 @@ impl<C: Channel> Agent<C> {
         self.services.skill.semantic_scan = enabled;
         self.services.skill.semantic_scan_provider = provider_name.into();
         self
+    }
+
+    /// Configure skill matching, grouping, provider names, and semantic scan in one call.
+    ///
+    /// Chains [`Agent::with_skill_matching_config`], [`Agent::with_skill_group_config`],
+    /// [`Agent::with_skill_provider_names`], and [`Agent::with_semantic_scan`] using the exact
+    /// field mapping shared by every `Agent` construction entry point (CLI, daemon, `/sessions`,
+    /// ACP). Use this instead of calling the four setters individually — see
+    /// [`SkillConfigParams`]'s doc comment for why that duplication was a recurring regression
+    /// source (#5819, #5867, #5827).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let agent = Agent::new(provider, channel, registry, None, 5, executor)
+    ///     .apply_session_config(session_cfg)
+    ///     .with_skill_config(SkillConfigParams::from(&config.skills))
+    ///     .build()?;
+    /// ```
+    #[must_use]
+    pub fn with_skill_config(self, params: SkillConfigParams) -> Self {
+        self.with_skill_matching_config(
+            params.disambiguation_threshold,
+            params.two_stage_matching,
+            params.confusability_threshold,
+        )
+        .with_skill_group_config(
+            params.group_structured,
+            params.support_similarity_threshold,
+            params.min_injection_score,
+        )
+        .with_skill_provider_names(
+            params.generation_provider_name,
+            params.disambiguate_provider_name,
+        )
+        .with_semantic_scan(params.semantic_scan, params.semantic_scan_provider_name)
+    }
+
+    /// Configure skill hot-reload, the plugin-directory supplier, and the managed-skills
+    /// directory in one call.
+    ///
+    /// Chains [`Agent::with_skill_reload`], [`Agent::with_plugin_dirs_supplier`], and
+    /// [`Agent::with_managed_skills_dir`] — the "cold start" trio called together by every
+    /// non-`/sessions` `Agent` construction entry point (`src/runner.rs`, `src/daemon.rs`,
+    /// `src/acp.rs`). `src/serve/agent_factory.rs` does not hot-reload skills for
+    /// `/sessions`-created agents, so it does not call this.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let agent = Agent::new(provider, channel, registry, None, 5, executor)
+    ///     .with_skill_config(params)
+    ///     .with_skill_coldstart(skill_paths, reload_rx, plugin_dirs_supplier, managed_dir)
+    ///     .build()?;
+    /// ```
+    #[must_use]
+    pub fn with_skill_coldstart(
+        self,
+        paths: Vec<PathBuf>,
+        reload_rx: mpsc::Receiver<SkillEvent>,
+        plugin_dirs_supplier: impl Fn() -> Vec<PathBuf> + Send + Sync + 'static,
+        managed_dir: PathBuf,
+    ) -> Self {
+        self.with_skill_reload(paths, reload_rx)
+            .with_plugin_dirs_supplier(plugin_dirs_supplier)
+            .with_managed_skills_dir(managed_dir)
     }
 
     /// Override the embedding model name used for skill matching.
@@ -3433,6 +3552,109 @@ mod tests {
         assert!(
             agent.services.skill.confusability_threshold.abs() < f32::EPSILON,
             "with_skill_matching_config must clamp confusability below 0.0"
+        );
+    }
+
+    /// Unit-level counterpart to the `#5819`/`#5867`/`#5827` end-to-end regression tests in
+    /// `src/runner.rs`, `src/daemon.rs`, `src/serve/agent_factory.rs`, and `src/acp.rs`: those
+    /// tests exercise a whole call site's config wiring through observable `Agent` behavior, so
+    /// they still pass unchanged now that every site delegates to `with_skill_config`. This test
+    /// instead pins down `with_skill_config` itself — every field of `SkillConfigParams` set to a
+    /// value distinct from every other field, so a swapped assignment inside the combinator's
+    /// four delegated calls would be caught here even if it happened to still satisfy one of the
+    /// site-level assertions.
+    #[test]
+    fn with_skill_config_wires_all_fields() {
+        let agent = make_agent().with_skill_config(SkillConfigParams {
+            disambiguation_threshold: 0.11,
+            two_stage_matching: true,
+            confusability_threshold: 0.22,
+            group_structured: true,
+            support_similarity_threshold: 0.33,
+            min_injection_score: 0.44,
+            generation_provider_name: "gen".to_owned(),
+            disambiguate_provider_name: "dis".to_owned(),
+            semantic_scan: true,
+            semantic_scan_provider_name: "scan".to_owned(),
+        });
+
+        let skill = &agent.services.skill;
+        assert!((skill.disambiguation_threshold - 0.11).abs() < f32::EPSILON);
+        assert!(skill.two_stage_matching);
+        assert!((skill.confusability_threshold - 0.22).abs() < f32::EPSILON);
+        assert!(skill.group_structured);
+        assert!((skill.support_similarity_threshold - 0.33).abs() < f32::EPSILON);
+        assert!((skill.min_injection_score - 0.44).abs() < f32::EPSILON);
+        assert_eq!(skill.generation_provider_name, "gen");
+        assert_eq!(skill.disambiguate_provider_name, "dis");
+        assert!(skill.semantic_scan);
+        assert_eq!(skill.semantic_scan_provider, "scan");
+    }
+
+    /// `SkillConfigParams::from(&SkillsConfig)` must map every field to the same-named field on
+    /// `SkillsConfig` (not a neighboring one) — the shape `src/runner.rs` and `src/daemon.rs` rely
+    /// on to build `SkillConfigParams` from a full `[skills]` config section.
+    #[test]
+    fn skill_config_params_from_skills_config_maps_fields() {
+        let mut skills = crate::config::Config::default().skills;
+        skills.disambiguation_threshold = 0.11;
+        skills.two_stage_matching = true;
+        skills.confusability_threshold = 0.22;
+        skills.group_structured = true;
+        skills.support_similarity_threshold = 0.33;
+        skills.min_injection_score = 0.44;
+        skills.generation_provider = "gen".into();
+        skills.disambiguate_provider = "dis".into();
+        skills.semantic_scan = true;
+        skills.semantic_scan_provider = "scan".into();
+
+        let params = SkillConfigParams::from(&skills);
+        assert!((params.disambiguation_threshold - 0.11).abs() < f32::EPSILON);
+        assert!(params.two_stage_matching);
+        assert!((params.confusability_threshold - 0.22).abs() < f32::EPSILON);
+        assert!(params.group_structured);
+        assert!((params.support_similarity_threshold - 0.33).abs() < f32::EPSILON);
+        assert!((params.min_injection_score - 0.44).abs() < f32::EPSILON);
+        assert_eq!(params.generation_provider_name, "gen");
+        assert_eq!(params.disambiguate_provider_name, "dis");
+        assert!(params.semantic_scan);
+        assert_eq!(params.semantic_scan_provider_name, "scan");
+    }
+
+    #[test]
+    fn with_skill_coldstart_wires_all_three_setters() {
+        let (_tx, rx) = mpsc::channel(1);
+        let managed_dir = std::env::temp_dir().join("with_skill_coldstart_wires_all_three_setters");
+        let paths = vec![
+            PathBuf::from("/tmp/skills-a"),
+            PathBuf::from("/tmp/skills-b"),
+        ];
+
+        let agent = make_agent().with_skill_coldstart(
+            paths.clone(),
+            rx,
+            || vec![PathBuf::from("/tmp/plugin-skills")],
+            managed_dir.clone(),
+        );
+
+        let skill = &agent.services.skill;
+        assert_eq!(
+            skill.skill_paths, paths,
+            "with_skill_coldstart must set skill_paths via with_skill_reload"
+        );
+        assert!(
+            skill.skill_reload_rx.is_some(),
+            "with_skill_coldstart must set skill_reload_rx via with_skill_reload"
+        );
+        let supplier = skill
+            .plugin_dirs_supplier
+            .as_ref()
+            .expect("with_skill_coldstart must set plugin_dirs_supplier");
+        assert_eq!(supplier(), vec![PathBuf::from("/tmp/plugin-skills")]);
+        assert_eq!(
+            skill.managed_dir,
+            Some(managed_dir),
+            "with_skill_coldstart must set managed_dir via with_managed_skills_dir"
         );
     }
 

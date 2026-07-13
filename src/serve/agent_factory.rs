@@ -208,21 +208,18 @@ pub(crate) async fn build_agent_factory(
             zeph_tools::DynExecutor(final_tool_executor),
         )
         .apply_session_config(deps.session_config)
-        .with_skill_matching_config(
-            deps.skill_disambiguation_threshold,
-            deps.skill_two_stage_matching,
-            deps.skill_confusability_threshold,
-        )
-        .with_skill_group_config(
-            deps.skill_group_structured,
-            deps.skill_support_similarity_threshold,
-            deps.skill_min_injection_score,
-        )
-        .with_skill_provider_names(
-            deps.skill_generation_provider,
-            deps.skill_disambiguate_provider,
-        )
-        .with_semantic_scan(deps.semantic_scan, deps.semantic_scan_provider)
+        .with_skill_config(zeph_core::SkillConfigParams {
+            disambiguation_threshold: deps.skill_disambiguation_threshold,
+            two_stage_matching: deps.skill_two_stage_matching,
+            confusability_threshold: deps.skill_confusability_threshold,
+            group_structured: deps.skill_group_structured,
+            support_similarity_threshold: deps.skill_support_similarity_threshold,
+            min_injection_score: deps.skill_min_injection_score,
+            generation_provider_name: deps.skill_generation_provider,
+            disambiguate_provider_name: deps.skill_disambiguate_provider,
+            semantic_scan: deps.semantic_scan,
+            semantic_scan_provider_name: deps.semantic_scan_provider,
+        })
         .with_trust_config(deps.trust_config)
         // #6046: wire this session's SkillTrustSnapshot (from build_skill_executors above),
         // matching src/acp.rs/src/daemon.rs — without this, SkillLoaderExecutor/

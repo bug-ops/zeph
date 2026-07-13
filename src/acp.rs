@@ -1756,18 +1756,18 @@ async fn spawn_acp_agent(
             tool_executor,
         )
         .apply_session_config(session_config)
-        .with_skill_matching_config(
-            skill_disambiguation_threshold,
-            skill_two_stage_matching,
-            skill_confusability_threshold,
-        )
-        .with_skill_group_config(
-            skill_group_structured,
-            skill_support_similarity_threshold,
-            skill_min_injection_score,
-        )
-        .with_skill_provider_names(skill_generation_provider, skill_disambiguate_provider)
-        .with_semantic_scan(semantic_scan, semantic_scan_provider)
+        .with_skill_config(zeph_core::SkillConfigParams {
+            disambiguation_threshold: skill_disambiguation_threshold,
+            two_stage_matching: skill_two_stage_matching,
+            confusability_threshold: skill_confusability_threshold,
+            group_structured: skill_group_structured,
+            support_similarity_threshold: skill_support_similarity_threshold,
+            min_injection_score: skill_min_injection_score,
+            generation_provider_name: skill_generation_provider,
+            disambiguate_provider_name: skill_disambiguate_provider,
+            semantic_scan,
+            semantic_scan_provider_name: semantic_scan_provider,
+        })
         .with_trust_config(d.trust_config.clone())
         .with_trust_snapshot(Arc::clone(&trust_snapshot))
         .with_quality_pipeline(d.quality_pipeline.clone())
@@ -1779,9 +1779,12 @@ async fn spawn_acp_agent(
             d.rl_warmup_updates,
         )
         .with_working_dir(session_ctx.working_dir.clone())
-        .with_skill_reload(skill_paths, reload_rx)
-        .with_plugin_dirs_supplier(move || plugin_dirs_supplier())
-        .with_managed_skills_dir(managed_skills_dir)
+        .with_skill_coldstart(
+            skill_paths,
+            reload_rx,
+            move || plugin_dirs_supplier(),
+            managed_skills_dir,
+        )
         .with_shutdown(shutdown_rx)
         .with_config_reload(config_path, config_reload_rx)
         .with_plugins_dir(

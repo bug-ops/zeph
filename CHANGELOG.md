@@ -49,6 +49,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   re-invoking git. `reconcile()`, `clean()`, and `disk_usage()` keep their exact public
   signatures and behavior for direct callers — this is a pure internal call-graph refactor
   with no observable behavior change (#6205).
+- **Core**: extracted `Agent::with_skill_config` and `Agent::with_skill_coldstart`, bundling
+  the skill-matching/grouping/provider-name/semantic-scan setter chain and the hot-reload/
+  plugin-dirs/managed-dir setter chain that were each copy-pasted near-verbatim across all
+  four `Agent` construction entry points (`src/runner.rs`, `src/daemon.rs`,
+  `src/serve/agent_factory.rs`, `src/acp.rs`). Each duplicate had independently shipped a
+  swapped- or missing-argument regression at some point (#5819, #5867, #5827); the field
+  mapping now lives in one place. `SkillConfigParams` (re-exported at the `zeph_core` crate
+  root) carries the four-call chain's arguments, with a `From<&SkillsConfig>` conversion for
+  call sites that hold a full config. Pure internal refactor — every config value reaches the
+  exact same setter with the exact same value as before at all four sites, verified by the
+  existing end-to-end regression tests, which all pass unchanged (#5887).
 
 ### Removed
 

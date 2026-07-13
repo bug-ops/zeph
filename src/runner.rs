@@ -299,27 +299,13 @@ where
     )
     .apply_session_config(deps.session_config)
     .with_active_provider_name(deps.active_provider_name)
-    .with_skill_matching_config(
-        config.skills.disambiguation_threshold,
-        config.skills.two_stage_matching,
-        config.skills.confusability_threshold,
+    .with_skill_config(zeph_core::SkillConfigParams::from(&config.skills))
+    .with_skill_coldstart(
+        deps.skill_paths,
+        deps.reload_rx,
+        deps.plugin_dirs_supplier,
+        crate::bootstrap::managed_skills_dir(),
     )
-    .with_skill_group_config(
-        config.skills.group_structured,
-        config.skills.support_similarity_threshold,
-        config.skills.min_injection_score,
-    )
-    .with_skill_provider_names(
-        config.skills.generation_provider.as_str().to_owned(),
-        config.skills.disambiguate_provider.as_str().to_owned(),
-    )
-    .with_semantic_scan(
-        config.skills.semantic_scan,
-        config.skills.semantic_scan_provider.as_str(),
-    )
-    .with_skill_reload(deps.skill_paths, deps.reload_rx)
-    .with_plugin_dirs_supplier(deps.plugin_dirs_supplier)
-    .with_managed_skills_dir(crate::bootstrap::managed_skills_dir())
     .with_trust_config(config.skills.trust.clone())
     .with_trust_snapshot(deps.trust_snapshot)
     .with_memory(
