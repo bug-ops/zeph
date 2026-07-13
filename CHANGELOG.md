@@ -57,6 +57,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sweeps, which only covered `book/src/advanced/context.md`. Replaced with the dateless
   `claude-sonnet-5` convention established there. Documentation-only change, no source code
   modified (#6147).
+- **Docs**: fixed stale `claude-opus-4-5` model ID references in `book/src/advanced/acp.md`
+  (4 occurrences in code examples and configuration tables), updated to `claude-opus-4-8`
+  for consistency. Documentation-only change (#6211).
 - **Dependencies**: `Cargo.lock` had drifted — `rmcp` was pinned to `2.0.0` while crates.io's
   latest release within the existing `^2.0.0` manifest range (`Cargo.toml` unchanged) had moved to
   `2.2.0`. Updated the lockfile to `rmcp 2.2.0` / `rmcp-macros 2.2.0`; `sse-stream` also bumped to

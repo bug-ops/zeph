@@ -574,7 +574,7 @@ When a config option is changed via `set_session_config_option`, Zeph emits a `C
     "update": {
       "type": "config_option_update",
       "options": [
-        { "id": "model", "value": "claude:claude-opus-4-5", "category": "model" }
+        { "id": "model", "value": "claude:claude-opus-4-8", "category": "model" }
       ]
     }
   }
@@ -1034,14 +1034,14 @@ When `unstable-session-model` is compiled in, the IDE can request a model change
 
 ```jsonc
 // IDE → Zeph
-{ "method": "set_session_model", "params": { "session_id": "...", "model": "claude:claude-opus-4-5" } }
+{ "method": "set_session_model", "params": { "session_id": "...", "model": "claude:claude-opus-4-8" } }
 
 // Zeph emits a SetSessionModel notification
 {
   "method": "notifications/session",
   "params": {
     "session_id": "...",
-    "update": { "type": "set_session_model", "model": "claude:claude-opus-4-5" }
+    "update": { "type": "set_session_model", "model": "claude:claude-opus-4-8" }
   }
 }
 ```
@@ -1222,7 +1222,7 @@ Advertised commands:
 | Command | Description |
 |---------|-------------|
 | `/help` | List all available slash commands |
-| `/model` | Show the current model or switch to a different one (`/model claude:claude-opus-4-5`) |
+| `/model` | Show the current model or switch to a different one (`/model claude:claude-opus-4-8`) |
 | `/mode` | Show or change the session mode (`/mode architect`) |
 | `/clear` | Clear the conversation history for the current session |
 | `/compact` | Summarize and compress the conversation history to reduce token usage |
