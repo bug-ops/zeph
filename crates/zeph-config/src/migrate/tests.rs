@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        82,
-        "MIGRATIONS registry must contain all 82 sequential steps"
+        83,
+        "MIGRATIONS registry must contain all 83 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1753,7 +1753,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 82);
+    assert_eq!(MIGRATIONS.len(), 83);
 }
 
 #[test]
@@ -1791,7 +1791,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–82).
+    // Names must follow the documented step order (steps 1–83).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -2835,7 +2835,7 @@ fn step_55_value_substring_is_noop() {
 // ── migrate_worktree_quota_fields tests (#5924) ──────────────────────────
 
 #[test]
-fn step_82_inserts_quota_comments_when_worktree_present() {
+fn step_83_inserts_quota_comments_when_worktree_present() {
     let input = "[worktree]\nenabled = true\n";
     let result = migrate_worktree_quota_fields(input).unwrap();
     assert_eq!(result.changed_count, 1);
@@ -2847,7 +2847,7 @@ fn step_82_inserts_quota_comments_when_worktree_present() {
 }
 
 #[test]
-fn step_82_is_noop_when_no_worktree_section() {
+fn step_83_is_noop_when_no_worktree_section() {
     let input = "[agent]\nmax_turns = 10\n";
     let result = migrate_worktree_quota_fields(input).unwrap();
     assert_eq!(result.changed_count, 0);
@@ -2855,7 +2855,7 @@ fn step_82_is_noop_when_no_worktree_section() {
 }
 
 #[test]
-fn step_82_is_idempotent_when_auto_reconcile_secs_already_present() {
+fn step_83_is_idempotent_when_auto_reconcile_secs_already_present() {
     let input = "[worktree]\nauto_reconcile_secs = 3600\n";
     let result = migrate_worktree_quota_fields(input).unwrap();
     assert_eq!(result.changed_count, 0);
@@ -2863,14 +2863,14 @@ fn step_82_is_idempotent_when_auto_reconcile_secs_already_present() {
 }
 
 #[test]
-fn step_82_is_idempotent_when_quota_fields_commented() {
+fn step_83_is_idempotent_when_quota_fields_commented() {
     let input = "[worktree]\n# auto_reconcile_secs = 3600\n";
     let result = migrate_worktree_quota_fields(input).unwrap();
     assert_eq!(result.changed_count, 0);
 }
 
 #[test]
-fn step_82_subtable_only_is_noop() {
+fn step_83_subtable_only_is_noop() {
     let input = "[worktree.git]\ntimeout = 30\n";
     let result = migrate_worktree_quota_fields(input).unwrap();
     assert_eq!(
@@ -2881,7 +2881,7 @@ fn step_82_subtable_only_is_noop() {
 }
 
 #[test]
-fn step_82_handles_crlf_line_endings() {
+fn step_83_handles_crlf_line_endings() {
     let input = "[worktree]\r\nenabled = true\r\n";
     let result = migrate_worktree_quota_fields(input).unwrap();
     assert_eq!(result.changed_count, 1);
