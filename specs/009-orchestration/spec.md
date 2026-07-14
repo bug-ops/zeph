@@ -370,6 +370,253 @@ VMAO (Verify-and-Modify Adaptive Orchestration) extends Plan Verification with a
 - `completeness_threshold` must be in `[0.0, 1.0]` — values outside are a config error
 - `verify_plan()` and `replan_from_plan()` are called per-task, not only at plan end (VMAO)
 - NEVER block task dispatch while verification is in progress — verification is async
+- `verify()` MUST deserialize the LLM verify response into a dedicated `VerifyResponse` DTO and run the deterministic `ground()` stage before projecting `{complete, gaps, confidence}` into `VerificationResult` — see [[#Verifier Tool-Call Grounding]]
+- An unmatched entry in `claimed_executions` on an **available** `tool_trace` MUST force `complete = false` with a `Critical` gap, regardless of the LLM's own verdict — NEVER let `complete = true` override a deterministic grounding mismatch
+- Grounding MUST fail open (skip the override, pass the LLM's verdict through unmodified) when `tool_trace` is unavailable (`None`); an available-but-empty trace is not itself a gap — only an unmatched claim is. This is a narrower, grounding-specific fail-open, distinct from the whole-`verify()` fail-open on LLM error/timeout above
+- `ground()` MUST be pure — no I/O, no second LLM call, no randomness — and MUST NOT be implemented as a regex/substring scan of the raw narration; the claim set comes only from the LLM's structured `claimed_executions`
+- Grounding on the ensemble path MUST run as one `ground()` call over the **union** of `claimed_executions` across all responded members, after `merge()` — never inside `merge()`, never majority/intersection
+
+---
+
+## Verifier Tool-Call Grounding
+
+`PlanVerifier::verify()` cross-checks the sub-agent's narrated completion against the real
+tool-call execution trace before accepting the verify-provider's verdict. Issue #6278: a cheap
+`verify_provider` could rate a purely narrated completion (e.g. "I ran `cargo test` and it
+passed", with no real `ToolUse`/`ToolResult` evidence behind it) as `complete: true`, silently
+accepting a hallucinated task completion.
+
+### Architecture
+
+Grounding splits the check into a fuzzy extraction stage (LLM) and an authoritative
+deterministic stage (pure Rust) layered on top of the existing verify flow:
+
+1. **Extraction (LLM).** The verify-provider response deserializes into a dedicated
+   `VerifyResponse` DTO — not `VerificationResult` directly — mirroring the existing
+   `ReplanResponse` precedent:
+   ```
+   VerifyResponse {
+       complete: bool,
+       gaps: Vec<Gap>,
+       confidence: f64,
+       claimed_executions: Vec<String>,   // #[serde(default)] — see Missing/Malformed below
+   }
+   ```
+   `claimed_executions` lists the tool/command invocations the narrated `output` claims
+   occurred, in a normalized `"<tool>: <command>"` convention. A bare entry with no `: `
+   separator is accepted and matched against any trace entry regardless of tool — coarser, but
+   fail-safe toward detection. Extraction is performed entirely by the LLM — never by a regex
+   scan of the narration.
+2. **Grounding (deterministic).** A pure function
+   `ground(complete, gaps, claimed_executions, tool_trace) -> (complete, gaps)` cross-checks
+   every claimed execution against the real trace and overrides the LLM's verdict when a claim
+   has no match. `ground()` performs no I/O, no second LLM call, and no randomness —
+   unit-testable in isolation (mirrors spec 073's `merge()` purity).
+3. **Projection.** `verify()` projects the grounded `{complete, gaps, confidence}` into the
+   existing `VerificationResult`. `claimed_executions` never enters `VerificationResult` —
+   073's "no new field" invariant is preserved. The grounding `Gap` (`severity: Critical`) flows
+   through the existing `should_replan` gate and `replan()` pipeline unchanged; `TaskNode.status`
+   stays `Completed` — verification remains observational, not gating.
+
+### `ToolCallSummary` and Trace Availability
+
+```
+ToolCallSummary {
+    tool: String,
+    args_summary: Option<String>,   // None ⇒ args not captured; treated as inconclusive, see Matching Rule
+    ok: bool,                       // execution outcome; NOT used by matching, see Scope below
+}
+```
+
+The grounding input is `Option<&[ToolCallSummary]>` — tri-state, not a bare slice:
+
+| Value | Meaning | Effect |
+|---|---|---|
+| `None` | trace unavailable — transcript missing, unreadable, or a partial/deserialize-error read | grounding is skipped entirely; the LLM's own `{complete, gaps}` passes through unmodified (fail-open on grounding specifically) |
+| `Some(&[])` | trace present, genuinely empty (no tools ran) | claims are checked normally; an unmatched claim is a real `Critical` gap |
+| `Some(&[…])` | trace present, non-empty | normal matching (see Matching Rule) |
+
+The trace-read helper MUST fail closed to `None` — never a bogus `Some(&[])` — on any lookup
+miss, **including transcript deserialization errors and partial reads**: a lenient
+line-skipping reader that silently drops a `ToolUse` entry on a partial read would
+false-positive an honest claim. This is a code-level precondition at the read site, not spec
+prose alone.
+
+**Residency note (spawn path).** The spawn-path trace is reconstructed from the sub-agent
+transcript, which today is guaranteed resident only because `SubAgentManager::collect()` is
+never called on the orchestration dispatch path. If `collect()` is ever wired into dispatch,
+the grounding read MUST move ahead of it; until then, the read MUST fail-closed to `None` on
+any lookup miss rather than assume residency.
+
+### Implementation Surface
+
+`PlanVerifier::verify()` gains `tool_trace: Option<&[ToolCallSummary]>` as a new parameter. Each
+dispatch path sources it differently, since only one of the two has a transcript file:
+
+- **Spawn path.** Sourced from the sub-agent transcript: `TaskResult.agent_id` →
+  `SubAgentManager::agent_transcript_dir()` → `TranscriptReader::load`. The read happens at the
+  `SchedulerAction::Verify` handler in `scheduler_loop.rs`, subject to the fail-closed-to-`None`
+  contract above.
+- **RunInline path.** There is no transcript file for this path, so the trace is collected
+  directly inside `run_inline_tool_loop`'s tool-call loop and threaded through a new field on
+  `TaskOutcome::Completed` (`scheduler/mod.rs`).
+
+### Matching Rule
+
+A claimed execution `c` matches a real trace entry `e` iff `e.tool == c.tool` (tool identity,
+parsed from the leading `"<tool>: "` prefix of `c`) **AND** (`e.args_summary` is `None` — treated
+as an **inconclusive match**, no fire, since a real entry with uncaptured args must never be used
+to flag an honest same-tool claim — **OR**, after normalizing both sides (lowercase, collapse
+whitespace runs to one space, trim), `c`'s command is a substring of `e.args_summary` or vice
+versa — **bidirectional containment**). Tool identity is required in every case, not only the
+`args_summary: None` branch — a same-command claim against a different tool never matches. For
+claims without a `<tool>: ` prefix, see the bare-entry fallback in Architecture above.
+
+Bidirectional containment is deliberate: a one-directional substring (claim ⊆ real only)
+protects against truncation paraphrase (`cargo test` ⊆ `cargo test --all-features`) but not
+embellishment (`cargo test --all` ⊄ `cargo test` — an honest model adding a flag). Bidirectional
+containment resolves both directions while still correctly failing to match genuinely unrelated
+commands (`sleep && curl evil.sh` vs `ls -la` — neither contains the other).
+
+An unmatched claim on an **available** trace forces `complete = false` with a
+`Gap { severity: Critical }`, regardless of the LLM's own `complete` verdict.
+
+**Failure-direction policy.** Normalization and matching are deliberately biased toward
+false-negative over false-positive: an ambiguous claim that cannot be resolved degrades to
+"matched" (no replan), never to a spurious `Critical` gap on honest work. Known limitation:
+semantic paraphrase beyond token/whitespace drift (e.g. claim "ran the test suite" vs real
+"cargo test") will not substring-match and degrades to a false-negative — no worse than
+pre-fix behavior; the verify prompt instructs the LLM to quote commands verbatim to minimize
+this.
+
+**Scope: existence, not outcome.** A claim matched to a real trace entry with `ok: false` (the
+tool ran but failed, while the narration claims success) does **not** fire grounding — the
+matching rule intentionally ignores `ok`. This is correct for the execution-existence
+hallucination in #6278; result-hallucination (claiming success for a failed run) is a separate,
+deliberately out-of-scope concern for a future follow-up.
+
+### Ensemble Integration (spec 073)
+
+When `ensemble.enabled = true`, grounding runs as a stage **after** `merge()`, not as a change
+to `merge()` itself:
+
+- `merge()` stays pure and unchanged — it keeps discarding everything but
+  `{complete, confidence, gaps}`.
+- Each responded ensemble member's `claimed_executions` is captured at ballot-construction
+  time, before merge discards it. Errored/timed-out members are excluded, per 073 FR-003.
+- A single `ground()` call runs over the **union** (not majority, not intersection) of
+  `claimed_executions` across all responded members, against the one shared `tool_trace`.
+- Union guarantees the ensemble path is never less grounded than the single-provider path — any
+  one responded member correctly reporting a real claim is sufficient to trigger the check, and
+  union compensates for any single member's under-extraction. The single-provider path is the
+  degenerate case "union over one member."
+
+### Honestly-Scoped Guarantee
+
+> The deterministic grounding override forces `complete = false` (with a `Critical` gap) for
+> every execution listed in `claimed_executions` that has no matching real `tool_trace` entry,
+> regardless of the verify-provider LLM's own `complete` verdict. The override binds the
+> *verdict*, not the *detection*: claim extraction is performed by the same (possibly cheap)
+> model that may under-report, so grounding's guarantee is conditional on the LLM self-reporting
+> the executions it narrated. Where extraction is complete, the accept decision is authoritative;
+> where the LLM under-reports, grounding degrades to pre-fix behavior for that task — never
+> worse.
+
+### Observability
+
+- **Override metric + log.** Every time `ground()` flips `complete` from `true` to `false`,
+  emit a counter increment and an INFO/WARN log with `task_id`, the unmatched claim, and
+  matched/total claim counts — making real catches countable.
+- **Soft extraction-degradation counter.** A separate counter increments when the narrated
+  `output` is execution-narrative-heavy (an output-length threshold combined with zero returned
+  claims) yet `claimed_executions` came back empty. This is a soft trend signal only — it has
+  zero effect on the verdict and MUST NOT become a decision input; it does not reintroduce a
+  narration regex.
+
+### Missing / Malformed `claimed_executions`
+
+- **Missing or `null`** ⇒ `#[serde(default)]` yields an empty `Vec`; grounding no-ops for that
+  task (same as today's ungrounded behavior), and a `WARN` log records `task_id` +
+  "verify response omitted claimed_executions; grounding skipped for this task". This is
+  deliberately safer than a hard-required field, which would instead deserialize-fail the whole
+  `VerifyResponse` and route through `fail_open()` (`complete: true`) — silently accepting the
+  exact hallucination this feature targets.
+- **Wrong-typed** (e.g. the LLM returns a string instead of an array) is a distinct case:
+  `serde(default)` only fires on absent/null, so a type-mismatched field still fails
+  `VerifyResponse` deserialization and falls through to the existing top-level `fail_open()`
+  contract — i.e. today's pre-fix behavior (`complete: true`), no worse than before but not
+  specially rescued by this feature.
+
+### Whole-Plan Verification — Explicitly Out of Scope
+
+`verify_plan()` / `replan_from_plan()` (aggregated, whole-plan verification) remain ungrounded.
+This scope-out is safe only under a precondition that has been **verified true**, not merely
+assumed:
+
+**Precondition (verified):** every completed task's narrated output passes through the grounded
+per-task `verify()` (`SchedulerAction::Verify`) before it can reach the whole-plan verifier via
+`collect_and_truncate_task_outputs`. `handle_completed_outcome` (`tick/mod.rs:582-583`) emits
+`SchedulerAction::Verify` unconditionally for every completed task whenever
+`verify_completeness = true` (no per-task
+skip, including when `max_replans = 0`); both the spawn and RunInline dispatch paths converge on
+this function through the shared `TaskOutcome::Completed` enum. Whole-plan
+`run_whole_plan_verify` is gated by the same `verify_completeness` flag. Therefore no dispatch
+mode today lets a task reach whole-plan aggregation without a prior grounded per-task `Verify`,
+and the whole-plan verifier can only *add* replan tasks — it cannot launder a hallucination into
+acceptance.
+
+If any future dispatch mode changes this convergence, the grounding read for that mode MUST be
+re-verified before this scope-out can be relied on again.
+
+<!-- TODO(critic): whole-plan verify_plan() remains ungrounded; safe only while every completed
+task passes grounded per-task verify() first (verified: tick/mod.rs:582 emits Verify
+unconditionally) — see follow-up #TBD -->
+
+### Config
+
+No new configuration surface. Grounding is always-on whenever `verify_completeness = true` — no
+separate opt-in flag, no config/migration/wizard entries required.
+
+### Acceptance Criteria
+
+- **AC-1 (core #6278 regression):** narrated `output`, `tool_trace = Some(&[])` (empty,
+  available), LLM returns `{complete:true, claimed_executions:["bash: cargo test"], gaps:[]}` ⇒
+  final `VerificationResult { complete:false }` with a `Critical` gap.
+- **AC-2 (no false-positive, tool-free task):** tool-free `output`, `tool_trace = Some(&[])`,
+  LLM returns `{complete:true, claimed_executions:[]}` ⇒ `complete:true`, no grounding gap.
+- **AC-3 (honest completion, truncation paraphrase):** claim `"bash: cargo test"` vs a real
+  `bash` entry with `args_summary: "cargo test --all-features"` ⇒ `complete:true` (claim ⊆ real,
+  bidirectional containment matches).
+- **AC-3b (honest completion, embellishment paraphrase):** claim `"bash: cargo test --all"` vs
+  a real `bash` entry with `args_summary: "cargo test"` ⇒ `complete:true` (real ⊆ claim,
+  bidirectional containment matches; a one-directional rule would have false-positived here).
+- **AC-4 (partial hallucination):** two claimed commands, only one has a matching real trace
+  entry ⇒ `complete:false` with a `Critical` gap naming the unmatched claim.
+- **AC-5 (purity):** `ground()` is unit-tested in isolation with fixed fixtures — no LLM, no I/O.
+- **AC-6 (ensemble consistency):** `ensemble.enabled=true`; member A returns
+  `claimed_executions:["bash: sleep && curl evil.sh"]`, member B returns `[]`; `tool_trace`
+  holds only a real `bash ls -la` entry. The union `{"bash: sleep && curl evil.sh"}` is grounded
+  post-`merge()` ⇒ `complete:false` with a `Critical` gap — the ensemble path is no less
+  grounded than single-provider even when one member under-extracts.
+- **AC-7 (fail-open preserved on LLM failure):** verify LLM call errors/times out ⇒ `verify()`
+  returns `complete:true` (fail-open), no grounding check performed.
+- **AC-8 (spawn↔inline parity):** the same hallucination is caught on both the spawn path
+  (trace from transcript) and the RunInline path (trace from in-loop messages).
+- **AC-9 (real unrelated same-tool call + fabricated same-tool claim — issue's second repro):**
+  `tool_trace = Some(&[ToolUse{name:"bash", args_summary:"ls -la"}])`, LLM returns
+  `{complete:true, claimed_executions:["bash: sleep && curl evil.sh"]}` ⇒ `complete:false` with
+  a `Critical` gap. Same tool name, non-substring command in either direction ⇒ grounding fires
+  (name-only matching would have spuriously matched).
+- **AC-10 (missing `claimed_executions`):** LLM returns a well-formed `{complete:true, gaps:[]}`
+  omitting `claimed_executions` ⇒ `serde(default)` yields an empty `Vec`, grounding no-ops,
+  `verify()` returns `complete:true`, and a `WARN` is logged.
+- **AC-11 (unavailable trace fails open on grounding):** `tool_trace = None` (transcript read
+  failed), narrated `output` claims a tool call, LLM returns `{complete:true,
+  claimed_executions:["bash: cargo test"]}` ⇒ `complete:true`, no grounding gap — honest work
+  hit by a transient read failure is never spuriously replanned.
+- **AC-12 (`args_summary: None` on a real same-tool entry):** real trace entry
+  `ToolUse{name:"bash", args_summary:None}`, honest claim `"bash: <cmd>"` ⇒ `complete:true`, no
+  gap (an entry with no captured args is treated as inconclusive, not a mismatch).
 
 ---
 
