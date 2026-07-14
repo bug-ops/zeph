@@ -255,6 +255,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now fails startup instead of silently falling back to the empty-list state that
   `zeph_acp::transport::router` treats as intentionally unauthenticated — a declared-but-
   unresolvable auth configuration must never downgrade to "fully public" (#6270).
+- **Orchestration**: `PlanVerifier::verify()` judged per-task completion purely from the
+  sub-agent's narrated output text, with no cross-check against the real `ToolUse`/`ToolResult`
+  evidence already recorded for the task — a cheap `verify_provider` could rate a purely
+  narrated completion (e.g. "I ran `cargo test` and it passed", with no real tool call behind
+  it) as `complete: true`, silently accepting a hallucinated task completion (#6278). Fixed by
+  adding a deterministic grounding stage: the verify LLM response now deserializes into a
+  `VerifyResponse` DTO carrying a `claimed_executions: Vec<String>` field (`"<tool>: <command>"`
+  entries the narration claims occurred), and a new pure `ground()` function cross-checks every
+  claim against the task's real tool-call trace (tool-name match plus bidirectional
+  normalized-command-substring containment) before projecting the grounded result into the
+  existing `VerificationResult` — `VerificationResult` itself gains no new field. An unmatched
+  claim on an available trace forces `complete = false` with a `Critical` gap, regardless of the
+  LLM's own verdict; an unavailable trace (transcript read failed) fails open on grounding
+  specifically, never spuriously replanning honest work. Applies uniformly to both the spawn
+  dispatch path (trace read from the sub-agent transcript) and the `RunInline` path (trace
+  collected in-loop) and to the ensemble-merge path (spec 073), which grounds the union of
+  `claimed_executions` across all responded members as a stage after `merge()`. No new config —
+  grounding is always-on whenever `verify_completeness = true`. See
+  `specs/009-orchestration/spec.md` § "Verifier Tool-Call Grounding" for the full contract.
+  The spawn-path trace read now uses a new strict `TranscriptReader::load_strict` (fails
+  closed the moment any transcript line is skipped) instead of the lenient `load`, so a
+  torn/malformed line from a canceled sub-agent can no longer masquerade a partial trace as a
+  complete one and false-positive an honest claim.
 - **Docs**: fixed 11 stale Claude model ID examples across 5 mdBook pages (`acp.md`,
   `sub-agents.md`, `experiments.md`, `wizard.md`, `configuration.md`) that still used the
   outdated `claude-sonnet-4-5`/`claude-sonnet-4-20250514` naming (incorrectly pairing the

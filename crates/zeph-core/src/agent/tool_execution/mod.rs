@@ -736,6 +736,40 @@ pub(crate) fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> Too
     }
 }
 
+/// Summarize a tool call's JSON input as a plain-text string for verifier grounding
+/// (spec 009 § Verifier Tool-Call Grounding): every string leaf value in `input`, in document
+/// order, joined with spaces. Deliberately generic (no hardcoded field names like `command`) so
+/// it works across arbitrary tool schemas, and deliberately plain text (not JSON-stringified)
+/// so [`zeph_orchestration::verifier`]'s substring matching isn't defeated by JSON punctuation
+/// wrapping an otherwise-verbatim command string. Returns `None` when `input` carries no string
+/// leaves (e.g. `{}` or all-numeric params) — treated as "args not captured" by grounding.
+pub(crate) fn summarize_tool_input(input: &serde_json::Value) -> Option<String> {
+    let mut parts = Vec::new();
+    collect_json_strings(input, &mut parts);
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+fn collect_json_strings(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(s) => out.push(s.clone()),
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                collect_json_strings(v, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for v in map.values() {
+                collect_json_strings(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Compute structural complexity of a JSON Schema in [0.0, 1.0].
 ///
 /// The score is based on:

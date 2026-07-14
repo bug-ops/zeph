@@ -193,6 +193,28 @@ impl TranscriptReader {
     /// Returns [`SubAgentError::Transcript`] on unrecoverable I/O failures, or
     /// when the transcript file is missing but meta exists (data-loss guard).
     pub fn load(path: &Path) -> Result<Vec<Message>, SubAgentError> {
+        Self::load_impl(path, false)
+    }
+
+    /// Load all messages from a JSONL transcript file, failing closed on the first skipped line.
+    ///
+    /// Unlike [`load`][Self::load], which tolerates an unreadable or malformed line by skipping
+    /// it with a warning and returning the surviving entries as `Ok`, `load_strict` returns
+    /// `SubAgentError::Transcript` the moment any line would be skipped. Callers that must be
+    /// able to distinguish a genuinely complete trace from a partial one — e.g. tool-call
+    /// grounding, where a silently dropped `ToolUse` entry would misrepresent a partial read as
+    /// an authoritative "no tool ran" trace — should use this instead of [`load`][Self::load].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubAgentError::Transcript`] if any line is unreadable or fails to parse, or if
+    /// the file is missing but a meta sidecar exists (data-loss guard, same as
+    /// [`load`][Self::load]).
+    pub fn load_strict(path: &Path) -> Result<Vec<Message>, SubAgentError> {
+        Self::load_impl(path, true)
+    }
+
+    fn load_impl(path: &Path, strict: bool) -> Result<Vec<Message>, SubAgentError> {
         let file = match File::open(path) {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -228,6 +250,13 @@ impl TranscriptReader {
             let line = match line_result {
                 Ok(l) => l,
                 Err(e) => {
+                    if strict {
+                        return Err(SubAgentError::Transcript(format!(
+                            "failed to read transcript '{}' line {}: {e}",
+                            path.display(),
+                            line_no + 1
+                        )));
+                    }
                     tracing::warn!(
                         path = %path.display(),
                         line = line_no + 1,
@@ -244,6 +273,13 @@ impl TranscriptReader {
             match serde_json::from_str::<TranscriptEntry>(trimmed) {
                 Ok(entry) => messages.push(entry.message),
                 Err(e) => {
+                    if strict {
+                        return Err(SubAgentError::Transcript(format!(
+                            "malformed transcript entry in '{}' line {}: {e}",
+                            path.display(),
+                            line_no + 1
+                        )));
+                    }
                     tracing::warn!(
                         path = %path.display(),
                         line = line_no + 1,
@@ -500,6 +536,58 @@ mod tests {
 
         let messages = TranscriptReader::load(&path).unwrap();
         assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn load_strict_fails_on_first_malformed_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mixed.jsonl");
+
+        let good = test_message(Role::User, "good");
+        let entry = TranscriptEntry {
+            seq: 0,
+            timestamp: "2026-01-01T00:00:00Z".to_owned(),
+            message: good.clone(),
+        };
+        let good_line = serde_json::to_string(&entry).unwrap();
+        // A torn/malformed line sits between two well-formed entries — simulates a sub-agent
+        // canceled/killed mid-write.
+        let content = format!("{good_line}\nnot valid json\n{good_line}\n");
+        std::fs::write(&path, &content).unwrap();
+
+        let err = TranscriptReader::load_strict(&path).unwrap_err();
+        assert_matches!(err, SubAgentError::Transcript(_));
+
+        // The lenient reader still tolerates the same file, proving the two variants diverge
+        // only in this failure mode.
+        let messages = TranscriptReader::load(&path).unwrap();
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn load_strict_succeeds_on_intact_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clean.jsonl");
+
+        let good = test_message(Role::User, "good");
+        let entry = TranscriptEntry {
+            seq: 0,
+            timestamp: "2026-01-01T00:00:00Z".to_owned(),
+            message: good,
+        };
+        let good_line = serde_json::to_string(&entry).unwrap();
+        std::fs::write(&path, format!("{good_line}\n")).unwrap();
+
+        let messages = TranscriptReader::load_strict(&path).unwrap();
+        assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn load_strict_missing_file_no_meta_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ghost.jsonl");
+        let messages = TranscriptReader::load_strict(&path).unwrap();
+        assert!(messages.is_empty());
     }
 
     #[test]

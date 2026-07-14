@@ -117,6 +117,11 @@ pub enum SchedulerAction {
         task_id: TaskId,
         /// The raw output text produced by the task.
         output: String,
+        /// Real tool-call trace collected in-loop for `RunInline` tasks (`Some`), or `None`
+        /// for spawn-path tasks — the caller must derive the trace from the sub-agent
+        /// transcript in that case (spec 009 § Verifier Tool-Call Grounding, "Implementation
+        /// Surface"). Transient: never persisted in `TaskResult`.
+        tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
     },
 }
 
@@ -147,6 +152,11 @@ pub enum TaskOutcome {
         output: String,
         /// File-system artifacts produced (may be empty).
         artifacts: Vec<PathBuf>,
+        /// Real tool-call trace collected in-loop, `RunInline` dispatch path only. `None` for
+        /// the spawn dispatch path — its trace is derived from the sub-agent transcript at
+        /// `SchedulerAction::Verify` handling time instead (spec 009 § Verifier Tool-Call
+        /// Grounding, "Implementation Surface").
+        tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
     },
     /// Agent failed.
     Failed {

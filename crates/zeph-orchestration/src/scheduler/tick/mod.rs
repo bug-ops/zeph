@@ -12,6 +12,14 @@ use crate::lineage::{ErrorLineage, LineageEntry, LineageKind, classify_error, no
 use crate::topology::DispatchStrategy;
 use zeph_subagent::SubAgentError;
 
+/// Bundles the fields carried by `TaskOutcome::Completed`, keeping
+/// `handle_completed_outcome`'s argument count under clippy's `too_many_arguments` threshold.
+struct CompletedTaskData {
+    output: String,
+    artifacts: Vec<std::path::PathBuf>,
+    tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
+}
+
 impl DagScheduler {
     /// Process pending events and produce actions for the caller.
     ///
@@ -467,13 +475,20 @@ impl DagScheduler {
         };
 
         match outcome {
-            TaskOutcome::Completed { output, artifacts } => self.handle_completed_outcome(
+            TaskOutcome::Completed {
+                output,
+                artifacts,
+                tool_trace,
+            } => self.handle_completed_outcome(
                 task_id,
                 agent_handle_id,
                 agent_def_name,
                 duration_ms,
-                output,
-                artifacts,
+                CompletedTaskData {
+                    output,
+                    artifacts,
+                    tool_trace,
+                },
             ),
             TaskOutcome::Failed { error } => self.handle_failed_outcome(task_id, &error),
         }
@@ -527,9 +542,14 @@ impl DagScheduler {
         agent_handle_id: String,
         agent_def_name: Option<String>,
         duration_ms: u64,
-        output: String,
-        artifacts: Vec<std::path::PathBuf>,
+        completed: CompletedTaskData,
     ) -> Vec<SchedulerAction> {
+        let CompletedTaskData {
+            output,
+            artifacts,
+            tool_trace,
+        } = completed;
+
         self.graph_dirty = true;
         self.graph.tasks[task_id.index()].status = TaskStatus::Completed;
         self.graph.tasks[task_id.index()].result = Some(TaskResult {
@@ -580,7 +600,11 @@ impl DagScheduler {
         // after budget exhaustion never receive verification at all.
         // max_replans=0 still emits Verify; gaps are logged only (no inject_tasks call).
         if self.verify_completeness {
-            vec![SchedulerAction::Verify { task_id, output }]
+            vec![SchedulerAction::Verify {
+                task_id,
+                output,
+                tool_trace,
+            }]
         } else {
             Vec::new()
         }

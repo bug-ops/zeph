@@ -130,6 +130,6 @@ pub use plan_cache::{
 #[cfg(feature = "llm-planning")]
 pub use planner::{LlmPlanner, Planner};
 #[cfg(feature = "llm-planning")]
-pub use verifier::{Gap, GapSeverity, PlanVerifier, VerificationResult};
+pub use verifier::{Gap, GapSeverity, PlanVerifier, ToolCallSummary, VerificationResult};
 #[cfg(feature = "llm-planning")]
 pub use verify_predicate::PredicateEvaluator;

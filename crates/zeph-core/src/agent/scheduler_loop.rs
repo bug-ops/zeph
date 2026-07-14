@@ -11,6 +11,19 @@ use super::error;
 use super::shutdown_signal;
 use super::tool_execution;
 
+/// Outcome of [`Agent::run_inline_tool_loop`]: the final narrated text plus the real tool-call
+/// trace observed in-loop, for verifier grounding (spec 009 § Verifier Tool-Call Grounding).
+#[derive(Debug)]
+pub(super) struct InlineLoopOutcome {
+    /// Final narrated text (either a `ChatResponse::Text`, or the last narrated text seen
+    /// before the iteration limit was reached).
+    pub(super) text: String,
+    /// Real tool invocations observed during the loop, in call order. Always present (never
+    /// `None` at the `TaskOutcome::Completed` call site) — this path has no I/O failure mode,
+    /// unlike the spawn path's transcript read.
+    pub(super) tool_trace: Vec<zeph_orchestration::ToolCallSummary>,
+}
+
 /// Returns the BFS depth to pass to `lookahead_tools` for a given fidelity configuration.
 ///
 /// When fidelity is disabled (`None` or `enabled = false`) returns `0` so the BFS
@@ -36,6 +49,47 @@ fn network_denied_for_task(task: Option<&zeph_orchestration::TaskNode>) -> bool 
         task.and_then(|t| t.network_scope),
         Some(zeph_orchestration::NetworkScope::Deny)
     )
+}
+
+/// Reconstruct a [`zeph_orchestration::ToolCallSummary`] trace from a loaded transcript's
+/// messages, pairing each `MessagePart::ToolUse` with its later `MessagePart::ToolResult` (by
+/// `tool_use_id`) for the `ok` field. A `ToolUse` with no matching `ToolResult` (e.g. the
+/// sub-agent was canceled mid-call) is still included, defaulting `ok` to `true` — grounding's
+/// matching rule does not consult `ok` (existence, not outcome, is in scope), so this default
+/// cannot cause a false grounding match/mismatch.
+fn tool_trace_from_messages(
+    messages: &[zeph_llm::provider::Message],
+) -> Vec<zeph_orchestration::ToolCallSummary> {
+    use std::collections::HashMap;
+    use zeph_llm::provider::MessagePart;
+
+    let mut result_ok: HashMap<&str, bool> = HashMap::new();
+    for msg in messages {
+        for part in &msg.parts {
+            if let MessagePart::ToolResult {
+                tool_use_id,
+                is_error,
+                ..
+            } = part
+            {
+                result_ok.insert(tool_use_id.as_str(), !is_error);
+            }
+        }
+    }
+
+    let mut trace = Vec::new();
+    for msg in messages {
+        for part in &msg.parts {
+            if let MessagePart::ToolUse { id, name, input } = part {
+                trace.push(zeph_orchestration::ToolCallSummary {
+                    tool: name.clone(),
+                    args_summary: tool_execution::summarize_tool_input(input),
+                    ok: result_ok.get(id.as_str()).copied().unwrap_or(true),
+                });
+            }
+        }
+    }
+    trace
 }
 
 /// Save a graph snapshot to persistent storage with a 5-second timeout.
@@ -135,6 +189,9 @@ impl<C: crate::channel::Channel> Agent<C> {
                     Ok(output) => TaskOutcome::Completed {
                         output: output.clone(),
                         artifacts: vec![],
+                        // Spawn path: no in-loop trace available here. The transcript-derived
+                        // trace is fetched later, at the SchedulerAction::Verify handler.
+                        tool_trace: None,
                     },
                     Err(e) => TaskOutcome::Failed {
                         error: e.to_string(),
@@ -258,9 +315,12 @@ impl<C: crate::channel::Channel> Agent<C> {
         let outcome = tokio::select! {
             result = self.run_inline_tool_loop(&prompt, max_iter) => {
                 match result {
-                    Ok(output) => zeph_orchestration::TaskOutcome::Completed {
-                        output,
+                    Ok(InlineLoopOutcome { text, tool_trace }) => zeph_orchestration::TaskOutcome::Completed {
+                        output: text,
                         artifacts: vec![],
+                        // RunInline path: the real trace is always available (observed directly
+                        // in-loop), even when empty — never None here.
+                        tool_trace: Some(tool_trace),
                     },
                     Err(e) => zeph_orchestration::TaskOutcome::Failed {
                         error: e.to_string(),
@@ -461,7 +521,11 @@ impl<C: crate::channel::Channel> Agent<C> {
                             );
                         }
                     }
-                    SchedulerAction::Verify { task_id, output } => {
+                    SchedulerAction::Verify {
+                        task_id,
+                        output,
+                        tool_trace,
+                    } => {
                         let verify_provider = self
                             .services
                             .orchestration
@@ -485,6 +549,15 @@ impl<C: crate::channel::Channel> Agent<C> {
                         let task = scheduler.graph().tasks.get(task_id.index()).cloned();
 
                         if let Some(task) = task {
+                            // RunInline already carries its in-loop trace; the spawn path
+                            // carries `None` here and the trace is derived from the sub-agent
+                            // transcript instead (spec 009 § Verifier Tool-Call Grounding,
+                            // "Implementation Surface"). Fails closed to `None` on any lookup
+                            // miss — never a bogus `Some(&[])` (S3).
+                            let resolved_tool_trace: Option<
+                                Vec<zeph_orchestration::ToolCallSummary>,
+                            > = tool_trace.or_else(|| self.build_tool_trace_for_task(&task));
+
                             let ensemble_cfg = &orch_config.ensemble;
                             let resolved_count = self.services.orchestration.ensemble_members.len();
                             // The odd/>=3 invariant is validated at config load for the
@@ -536,7 +609,15 @@ impl<C: crate::channel::Channel> Agent<C> {
                                     )
                                 });
 
-                                match ev.verify(&task, &output, &ensemble_sanitizer).await {
+                                match ev
+                                    .verify(
+                                        &task,
+                                        &output,
+                                        resolved_tool_trace.as_deref(),
+                                        &ensemble_sanitizer,
+                                    )
+                                    .await
+                                {
                                     EnsembleAttempt::Merged { result, outcome } => {
                                         tracing::debug!(
                                             task_id = %task_id,
@@ -600,11 +681,15 @@ impl<C: crate::channel::Channel> Agent<C> {
                                             "ensemble quorum not met — falling back to \
                                              single-provider verify"
                                         );
-                                        verifier.verify(&task, &output).await
+                                        verifier
+                                            .verify(&task, &output, resolved_tool_trace.as_deref())
+                                            .await
                                     }
                                 }
                             } else {
-                                verifier.verify(&task, &output).await
+                                verifier
+                                    .verify(&task, &output, resolved_tool_trace.as_deref())
+                                    .await
                             };
 
                             tracing::debug!(
@@ -775,8 +860,9 @@ impl<C: crate::channel::Channel> Agent<C> {
         &mut self,
         prompt: &str,
         max_iterations: usize,
-    ) -> Result<String, zeph_llm::LlmError> {
+    ) -> Result<InlineLoopOutcome, zeph_llm::LlmError> {
         use zeph_llm::provider::{ChatResponse, Message, MessagePart, Role, ToolDefinition};
+        use zeph_orchestration::ToolCallSummary;
         use zeph_tools::executor::ToolCall;
 
         let tool_defs: Vec<ToolDefinition> = self
@@ -795,6 +881,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         let mut messages: Vec<Message> = vec![Message::from_legacy(Role::User, prompt)];
         let mut last_text = String::new();
+        let mut tool_trace: Vec<ToolCallSummary> = Vec::new();
 
         for iteration in 0..max_iterations {
             // PAAC secret masking (#5437) is structural at the provider boundary — this loop is
@@ -805,7 +892,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             match response {
                 ChatResponse::Text(text) => {
                     tracing::debug!(iteration, "inline tool loop: text response, returning");
-                    return Ok(text);
+                    return Ok(InlineLoopOutcome { text, tool_trace });
                 }
                 ChatResponse::ToolUse {
                     text, tool_calls, ..
@@ -868,6 +955,11 @@ impl<C: crate::channel::Channel> Agent<C> {
                             }
                         };
                         let is_error = output.starts_with("[error]");
+                        tool_trace.push(ToolCallSummary {
+                            tool: tc.name.to_string(),
+                            args_summary: tool_execution::summarize_tool_input(&tc.input),
+                            ok: !is_error,
+                        });
                         result_parts.push(MessagePart::ToolResult {
                             tool_use_id: tc.id.clone(),
                             content: output,
@@ -885,7 +977,44 @@ impl<C: crate::channel::Channel> Agent<C> {
             last_text_empty = last_text.is_empty(),
             "inline tool loop: iteration limit reached"
         );
-        Ok(last_text)
+        Ok(InlineLoopOutcome {
+            text: last_text,
+            tool_trace,
+        })
+    }
+
+    /// Build the real tool-call trace for a spawn-path task from its sub-agent transcript
+    /// (spec 009 § Verifier Tool-Call Grounding, "Implementation Surface").
+    ///
+    /// Fails closed to `None` (never a bogus `Some(&[])`) on any lookup miss — missing
+    /// `agent_id`, missing `SubAgentManager`, missing transcript directory, or a transcript
+    /// read error — per the grounding trace-availability contract (S3): an unavailable trace
+    /// must never masquerade as a genuinely-empty one, or an honest task hit by a transient
+    /// read failure would be spuriously flagged by `PlanVerifier`'s grounding override. Uses
+    /// [`TranscriptReader::load_strict`][zeph_subagent::TranscriptReader::load_strict] rather
+    /// than the lenient `load` — a torn or malformed line silently dropped by the lenient
+    /// reader would otherwise surface as `Some(partial)` instead of `None`, false-positiving an
+    /// honest claim for the dropped tool call as a hallucination (S3 residual note).
+    fn build_tool_trace_for_task(
+        &self,
+        task: &zeph_orchestration::TaskNode,
+    ) -> Option<Vec<zeph_orchestration::ToolCallSummary>> {
+        let agent_id = task.result.as_ref().and_then(|r| r.agent_id.as_deref())?;
+        let mgr = self.services.orchestration.subagent_manager.as_ref()?;
+        let dir = mgr.agent_transcript_dir(agent_id)?;
+        let path = dir.join(format!("{agent_id}.jsonl"));
+        match zeph_subagent::TranscriptReader::load_strict(&path) {
+            Ok(messages) => Some(tool_trace_from_messages(&messages)),
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    agent_id = %agent_id,
+                    error = %e,
+                    "tool-trace transcript read failed or partial — grounding fails open for this task"
+                );
+                None
+            }
+        }
     }
 
     /// Bridge pending secret requests from sub-agents to the user (non-blocking, time-bounded).
@@ -965,7 +1094,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
 #[cfg(test)]
 mod tests {
-    use super::{lookahead_effective_depth, network_denied_for_task};
+    use super::{lookahead_effective_depth, network_denied_for_task, tool_trace_from_messages};
 
     #[test]
     fn fidelity_none_returns_zero() {
@@ -1029,5 +1158,229 @@ mod tests {
     fn deny_scope_returns_true() {
         let node = task_with_scope(Some(zeph_orchestration::NetworkScope::Deny));
         assert!(network_denied_for_task(Some(&node)));
+    }
+
+    // ── AC-8 spawn/inline trace parity + S1 fail-closed-on-partial-read regression
+    //    (spec 009 § Verifier Tool-Call Grounding) ──────────────────────────────
+
+    #[test]
+    fn tool_trace_from_messages_reconstructs_tool_use_result_pairs() {
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        let messages = vec![
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "call-1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({ "command": "cargo test" }),
+                }],
+            ),
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: "call-1".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                }],
+            ),
+        ];
+
+        let trace = tool_trace_from_messages(&messages);
+        assert_eq!(trace.len(), 1);
+        assert_eq!(trace[0].tool, "bash");
+        assert_eq!(trace[0].args_summary.as_deref(), Some("cargo test"));
+        assert!(trace[0].ok);
+    }
+
+    /// Spawns a real "worker" sub-agent through [`crate::agent::Agent`]'s
+    /// `AgentCommand::Background` path (the same machinery production code uses), pointed at
+    /// `tmp` for transcripts, and polls until it reaches `Completed`. Returns the full agent id.
+    async fn spawn_worker_and_wait_completed(
+        agent: &mut crate::agent::Agent<crate::agent::agent_tests::MockChannel>,
+        tmp: &std::path::Path,
+    ) -> String {
+        use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use zeph_subagent::hooks::SubagentHooks;
+        use zeph_subagent::{AgentCommand, SubAgentDef, SubAgentManager, SubAgentState};
+
+        agent.services.orchestration.subagent_config.transcript_dir = Some(tmp.to_path_buf());
+        agent
+            .services
+            .orchestration
+            .subagent_config
+            .transcript_enabled = true;
+
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(SubAgentDef {
+            name: "worker".into(),
+            description: "A worker bot".into(),
+            model: None,
+            tools: ToolPolicy::InheritAll,
+            disallowed_tools: vec![],
+            permissions: SubAgentPermissions {
+                max_turns: 1,
+                ..SubAgentPermissions::default()
+            },
+            skills: SkillFilter::default(),
+            system_prompt: "You are a worker.".into(),
+            hooks: SubagentHooks::default(),
+            memory: None,
+            source: None,
+            file_path: None,
+        });
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        let spawn_resp = agent
+            .handle_agent_command(AgentCommand::Background {
+                name: "worker".into(),
+                prompt: "do a task".into(),
+            })
+            .await
+            .expect("Background spawn must return Some");
+        let short_id = spawn_resp
+            .split("id: ")
+            .nth(1)
+            .expect("response must contain 'id: '")
+            .trim_end_matches(')')
+            .trim()
+            .to_string();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let mgr = agent
+                .services
+                .orchestration
+                .subagent_manager
+                .as_ref()
+                .unwrap();
+            let statuses = mgr.statuses();
+            let found = statuses.iter().find(|(id, _)| id.starts_with(&short_id));
+            if let Some((id, status)) = found {
+                match status.state {
+                    SubAgentState::Completed => break id.clone(),
+                    SubAgentState::Failed => {
+                        panic!("sub-agent Failed unexpectedly: {:?}", status.last_message);
+                    }
+                    _ => {}
+                }
+            }
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "sub-agent did not complete within timeout"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Appends a real `ToolUse`("bash", `{"command": "cargo test"}`)/`ToolResult` round to the
+    /// `.jsonl` transcript at `jsonl_path`, simulating a spawn-path sub-agent that actually ran
+    /// a tool (the base transcript from [`spawn_worker_and_wait_completed`] has none, since
+    /// `MockProvider` only emits text).
+    async fn append_tool_round(jsonl_path: &std::path::Path) {
+        let writer = zeph_subagent::TranscriptWriter::new(jsonl_path).unwrap();
+        writer
+            .append(
+                1000,
+                &zeph_llm::provider::Message::from_parts(
+                    zeph_llm::provider::Role::Assistant,
+                    vec![zeph_llm::provider::MessagePart::ToolUse {
+                        id: "call-1".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({ "command": "cargo test" }),
+                    }],
+                ),
+            )
+            .await
+            .unwrap();
+        writer
+            .append(
+                1001,
+                &zeph_llm::provider::Message::from_parts(
+                    zeph_llm::provider::Role::User,
+                    vec![zeph_llm::provider::MessagePart::ToolResult {
+                        tool_use_id: "call-1".into(),
+                        content: "ok".into(),
+                        is_error: false,
+                    }],
+                ),
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Drives `build_tool_trace_for_task` through both halves of its contract against a real
+    /// spawned sub-agent's transcript:
+    ///
+    /// 1. A real transcript with a genuine `ToolUse`/`ToolResult` round resolves to
+    ///    `Some(trace)` whose content matches what the inline path would have collected live
+    ///    for the same tool call — this is the AC-8 spawn/inline parity gap the tester flagged
+    ///    as having zero coverage.
+    /// 2. Tearing that same transcript with one malformed line afterward flips the result to
+    ///    `None`, not `Some(partial)` — this is the S1 regression both the tester and the critic
+    ///    found independently: `TranscriptReader::load`'s lenient line-skipping previously let a
+    ///    partial read masquerade as an authoritative complete trace.
+    #[tokio::test]
+    async fn build_tool_trace_for_task_parity_then_fails_closed_on_torn_line() {
+        use crate::agent::agent_tests::*;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = mock_provider(vec!["task completed successfully".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let full_id = spawn_worker_and_wait_completed(&mut agent, tmp.path()).await;
+
+        let mut task = zeph_orchestration::TaskNode::new(0, "t", "d");
+        task.result = Some(zeph_orchestration::TaskResult {
+            output: String::new(),
+            artifacts: vec![],
+            duration_ms: 0,
+            agent_id: Some(full_id.clone()),
+            agent_def: None,
+        });
+
+        let dir = agent
+            .services
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .unwrap()
+            .agent_transcript_dir(&full_id)
+            .expect("transcript dir must be resolvable for a just-spawned agent")
+            .to_path_buf();
+        let jsonl_path = dir.join(format!("{full_id}.jsonl"));
+        append_tool_round(&jsonl_path).await;
+
+        let trace = agent
+            .build_tool_trace_for_task(&task)
+            .expect("intact transcript must resolve to Some(trace)");
+        assert!(
+            trace
+                .iter()
+                .any(|t| t.tool == "bash" && t.args_summary.as_deref() == Some("cargo test")),
+            "spawn-path trace must reconstruct the bash/cargo-test call the inline path would \
+             have collected live for the same execution: {trace:?}"
+        );
+
+        // Tear the transcript: append a raw malformed line directly (bypassing the writer's
+        // serialization) to simulate a torn/partial write.
+        {
+            use std::io::Write as _;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&jsonl_path)
+                .unwrap();
+            writeln!(f, "not valid json").unwrap();
+        }
+
+        let trace_after_tear = agent.build_tool_trace_for_task(&task);
+        assert!(
+            trace_after_tear.is_none(),
+            "a torn/malformed transcript line must fail closed to None, not Some(partial): \
+             {trace_after_tear:?}"
+        );
     }
 }

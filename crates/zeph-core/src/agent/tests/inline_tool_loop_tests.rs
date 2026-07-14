@@ -89,7 +89,7 @@ async fn text_only_response_returns_immediately() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
     let result = agent.run_inline_tool_loop("what is 2+2?", 10).await;
 
-    assert_eq!(result.unwrap(), "the answer");
+    assert_eq!(result.unwrap().text, "the answer");
 }
 
 #[tokio::test]
@@ -106,7 +106,7 @@ async fn single_tool_iteration_returns_final_text() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
     let result = agent.run_inline_tool_loop("run a tool", 10).await;
 
-    assert_eq!(result.unwrap(), "done");
+    assert_eq!(result.unwrap().text, "done");
     assert_eq!(*counter.lock().unwrap(), 2);
 }
 
@@ -148,7 +148,7 @@ async fn tool_error_produces_is_error_result_and_loop_continues() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
     let result = agent.run_inline_tool_loop("trigger error", 10).await;
 
-    assert_eq!(result.unwrap(), "recovered");
+    assert_eq!(result.unwrap().text, "recovered");
 }
 
 #[tokio::test]
@@ -195,10 +195,23 @@ async fn multiple_tool_iterations_before_text() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
     let result = agent
         .run_inline_tool_loop("two tools then answer", 10)
-        .await;
+        .await
+        .unwrap();
 
-    assert_eq!(result.unwrap(), "all done");
+    assert_eq!(result.text, "all done");
     assert_eq!(*counter.lock().unwrap(), 3);
+
+    // AC-8 (spec 009 § Verifier Tool-Call Grounding): the in-loop-collected tool_trace must
+    // contain both tool calls in order, not just the narrated text.
+    assert_eq!(result.tool_trace.len(), 2);
+    assert!(result.tool_trace.iter().all(|t| t.tool == "test_tool"));
+    assert!(result.tool_trace.iter().all(|t| t.ok));
+    assert!(
+        result
+            .tool_trace
+            .iter()
+            .all(|t| t.args_summary.as_deref() == Some("val"))
+    );
 }
 
 #[tokio::test]
@@ -280,7 +293,7 @@ async fn network_deny_wrapped_executor_blocks_fetch_before_reaching_inner() {
 
     let result = agent.run_inline_tool_loop("fetch a url", 10).await;
 
-    assert_eq!(result.unwrap(), "done");
+    assert_eq!(result.unwrap().text, "done");
     assert!(
         !called.load(Ordering::SeqCst),
         "fetch tool call must be blocked before reaching the inner executor"
@@ -397,5 +410,5 @@ async fn elicitation_event_during_tool_execution_is_handled() {
     .expect("run_inline_tool_loop timed out — elicitation deadlock not fixed")
     .unwrap();
 
-    assert_eq!(result, "done");
+    assert_eq!(result.text, "done");
 }

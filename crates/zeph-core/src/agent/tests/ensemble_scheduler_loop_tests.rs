@@ -63,6 +63,7 @@ async fn default_off_regression_never_touches_ensemble_metrics() {
             outcome: TaskOutcome::Completed {
                 output: "task output".into(),
                 artifacts: vec![],
+                tool_trace: None,
             },
         })
         .unwrap();
@@ -124,6 +125,7 @@ async fn full_quorum_ensemble_path_updates_agreement_ratio() {
             outcome: TaskOutcome::Completed {
                 output: "task output".into(),
                 artifacts: vec![],
+                tool_trace: None,
             },
         })
         .unwrap();
@@ -196,6 +198,7 @@ async fn quorum_fallback_increments_degraded_counter_and_uses_single_provider_re
             outcome: TaskOutcome::Completed {
                 output: "task output".into(),
                 artifacts: vec![],
+                tool_trace: None,
             },
         })
         .unwrap();
@@ -287,6 +290,7 @@ async fn bootstrap_shrunk_ensemble_falls_back_before_verify_dispatch() {
             outcome: TaskOutcome::Completed {
                 output: "task output".into(),
                 artifacts: vec![],
+                tool_trace: None,
             },
         })
         .unwrap();

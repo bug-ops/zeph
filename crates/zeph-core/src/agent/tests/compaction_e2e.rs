@@ -1152,6 +1152,7 @@ async fn scheduler_loop_channel_close_drain_captures_completion() {
             outcome: TaskOutcome::Completed {
                 output: "finished just in time".to_string(),
                 artifacts: vec![],
+                tool_trace: None,
             },
         })
         .await
@@ -1230,6 +1231,7 @@ async fn stdin_closed_parks_when_tasks_running() {
                 outcome: TaskOutcome::Completed {
                     output: "natural completion".to_string(),
                     artifacts: vec![],
+                    tool_trace: None,
                 },
             })
             .await;

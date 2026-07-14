@@ -148,6 +148,7 @@ mod orchestration_integration {
         let final_status = drive_scheduler(&mut scheduler, |task_id| TaskOutcome::Completed {
             output: format!("output from task {}", task_id.index()),
             artifacts: vec![],
+            tool_trace: None,
         })
         .await;
 
@@ -185,6 +186,7 @@ mod orchestration_integration {
         let final_status = drive_scheduler(&mut scheduler, |_| TaskOutcome::Completed {
             output: "done".to_string(),
             artifacts: vec![],
+            tool_trace: None,
         })
         .await;
 
@@ -217,6 +219,7 @@ mod orchestration_integration {
                 TaskOutcome::Completed {
                     output: "unreachable".to_string(),
                     artifacts: vec![],
+                    tool_trace: None,
                 }
             }
         })
@@ -265,6 +268,7 @@ mod orchestration_integration {
                 TaskOutcome::Completed {
                     output: "unreachable".to_string(),
                     artifacts: vec![],
+                    tool_trace: None,
                 }
             }
         })

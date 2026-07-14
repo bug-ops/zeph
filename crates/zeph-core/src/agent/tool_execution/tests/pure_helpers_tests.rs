@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::agent::tool_execution::{
-    normalize_for_doom_loop, tool_def_to_definition, truncate_utf8,
+    normalize_for_doom_loop, summarize_tool_input, tool_def_to_definition, truncate_utf8,
 };
 use zeph_agent_tools::doom_loop_hash;
 
@@ -152,4 +152,51 @@ fn doom_loop_hash_same_content_different_ids_equal() {
 #[test]
 fn doom_loop_hash_empty_string() {
     assert_eq!(doom_loop_hash(""), expected_hash(""));
+}
+
+// ── summarize_tool_input / collect_json_strings (grounding args_summary source) ────────
+
+#[test]
+fn summarize_tool_input_empty_object_returns_none() {
+    assert_eq!(summarize_tool_input(&serde_json::json!({})), None);
+}
+
+#[test]
+fn summarize_tool_input_all_numeric_returns_none() {
+    // Numeric/bool/null leaves are not strings — nothing to flatten.
+    let input = serde_json::json!({ "count": 3, "enabled": true, "note": null });
+    assert_eq!(summarize_tool_input(&input), None);
+}
+
+#[test]
+fn summarize_tool_input_realistic_command_shape() {
+    let input = serde_json::json!({ "command": "cargo test" });
+    assert_eq!(summarize_tool_input(&input), Some("cargo test".to_string()));
+}
+
+#[test]
+fn summarize_tool_input_flattens_nested_object_and_array_in_key_order() {
+    // The workspace's serde_json build has `preserve_order` enabled (pulled in transitively),
+    // so object keys are visited in insertion order: "command" before "args", and array
+    // elements stay in their original order.
+    let input = serde_json::json!({
+        "command": "bash",
+        "args": ["-c", "echo hi"],
+    });
+    assert_eq!(
+        summarize_tool_input(&input),
+        Some("bash -c echo hi".to_string())
+    );
+}
+
+#[test]
+fn summarize_tool_input_deeply_nested_object_flattens_all_string_leaves() {
+    let input = serde_json::json!({
+        "outer": { "inner": { "value": "deep" } },
+        "top": "shallow",
+    });
+    assert_eq!(
+        summarize_tool_input(&input),
+        Some("deep shallow".to_string())
+    );
 }

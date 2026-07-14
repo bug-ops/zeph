@@ -95,6 +95,7 @@ fn test_completion_event_marks_deps_ready() {
         outcome: TaskOutcome::Completed {
             output: "done".to_string(),
             artifacts: vec![],
+            tool_trace: None,
         },
     };
     scheduler.buffered_events.push_back(event);
@@ -168,6 +169,7 @@ fn test_plan_with_verify_criteria_and_predicate_disabled_reaches_completed() {
         outcome: TaskOutcome::Completed {
             output: "parent done".to_string(),
             artifacts: vec![],
+            tool_trace: None,
         },
     });
 
@@ -188,6 +190,7 @@ fn test_plan_with_verify_criteria_and_predicate_disabled_reaches_completed() {
         outcome: TaskOutcome::Completed {
             output: "child done".to_string(),
             artifacts: vec![],
+            tool_trace: None,
         },
     });
 
@@ -694,6 +697,7 @@ fn test_stale_event_rejected() {
         outcome: TaskOutcome::Completed {
             output: "stale output".to_string(),
             artifacts: vec![],
+            tool_trace: None,
         },
     };
     scheduler.buffered_events.push_back(stale_event);
@@ -742,6 +746,7 @@ fn test_duration_ms_computed_correctly() {
         outcome: TaskOutcome::Completed {
             output: "result".to_string(),
             artifacts: vec![],
+            tool_trace: None,
         },
     };
     scheduler.buffered_events.push_back(event);
@@ -1374,6 +1379,7 @@ fn take_graph_dirty_true_after_task_completes() {
         outcome: TaskOutcome::Completed {
             output: "done".to_string(),
             artifacts: vec![],
+            tool_trace: None,
         },
     };
     scheduler.buffered_events.push_back(event);
