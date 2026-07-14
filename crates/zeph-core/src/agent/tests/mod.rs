@@ -19,10 +19,10 @@ mod ensemble_scheduler_loop_tests;
 mod flush_orphaned_tests;
 #[cfg(test)]
 mod inline_tool_loop_tests;
-#[cfg(all(test, feature = "scheduler"))]
-mod per_task_verify_signal_tests;
 #[cfg(test)]
 mod mage_signal_mapping_tests;
+#[cfg(all(test, feature = "scheduler"))]
+mod per_task_verify_signal_tests;
 #[cfg(test)]
 mod pre_execution_audit_tests;
 #[cfg(test)]
