@@ -840,8 +840,11 @@ impl<C: Channel> Agent<C> {
 
     /// Set whether the agent is running in `--bare` mode (#5551).
     ///
-    /// Bare mode skips skill loading, memory init, MCP connections, scheduler startup, and
-    /// filesystem watchers at startup. This flag additionally gates all four shutdown-path
+    /// Bare mode skips skill loading, memory init, MCP connections, scheduler startup,
+    /// filesystem watchers, and the worktree subsystem (`WorktreeManager` construction and
+    /// capability probing, #6256) at startup — a sub-agent with `permissions.worktree = true`
+    /// runs directly against the working copy with no isolation when `--bare` is set, even if
+    /// `worktree.enabled = true` in config. This flag additionally gates all four shutdown-path
     /// subsystems that can fire LLM calls after the run loop exits — autoDream consolidation
     /// (`maybe_autodream`), skill trace-extraction (`maybe_extract_skills_from_trace`), the
     /// shutdown summary (`maybe_store_shutdown_summary`), and the session digest

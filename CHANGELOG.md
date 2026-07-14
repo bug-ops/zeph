@@ -202,6 +202,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Worktree**: `--bare` silently skipped the entire worktree subsystem bootstrap
+  (`WorktreeManager` construction, `probe_capabilities`) with no warning when
+  `worktree.enabled = true` in the active config — the 6th confirmed instance of the `--bare`
+  mode silently skipping a whole subsystem class with no operator-visible signal. A sub-agent
+  definition with `permissions.worktree = true` running under `--bare` lost its worktree
+  isolation guarantee (INV-1/INV-3, `specs/063-worktree-subsystem/spec.md`) with nothing in the
+  logs at default verbosity. `src/runner.rs`'s worktree bootstrap gate now emits a
+  `tracing::warn!` for the `worktree.enabled = true` + `--bare` combination explaining that
+  isolation is being skipped; `WorktreeManager` is still never constructed under `--bare` by
+  design (`--bare` remains a fast, dependency-light path). `Agent::with_bare_mode`'s doc comment
+  now lists the worktree subsystem among those `--bare` skips (#6256).
 - **ACP**: `session/delete` only removed the in-memory session entry, never touching the
   configured persistence store — a deleted session's `acp_sessions` row (and its associated
   conversation history / config snapshot) survived, so it could resurrect via a subsequent

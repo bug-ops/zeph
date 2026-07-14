@@ -3104,6 +3104,12 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 Some(&agent_status_tx),
             )
             .await;
+        } else if agents_config.worktree.enabled && exec_mode.bare {
+            tracing::warn!(
+                "worktree.enabled = true but --bare skips the worktree subsystem; \
+                 background sub-agents with permissions.worktree = true will run \
+                 directly against the working copy with no isolation"
+            );
         }
 
         let agent = agent.with_orchestration(config.orchestration.clone(), agents_config, mgr);
@@ -5000,6 +5006,35 @@ mod tests {
         // Guard: `if exec_mode.bare { agent } else { bootstrap_scheduler(...) }`
         let scheduler_would_run = !mode.bare;
         assert!(!scheduler_would_run, "scheduler must not run in bare mode");
+    }
+
+    /// `--bare` combined with `worktree.enabled = true` must skip `WorktreeManager`
+    /// construction (INV-1/INV-3 in `specs/063-worktree-subsystem/spec.md`) and hit the
+    /// warning branch instead of silently dropping isolation guarantees (#6256).
+    #[test]
+    fn bare_flag_skips_worktree_guard() {
+        let cli = Cli::parse_from(["zeph", "--bare"]);
+        let mode =
+            crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, &Config::default());
+        let agents_config = zeph_config::SubAgentConfig {
+            worktree: zeph_config::WorktreeConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Guard: `if agents_config.worktree.enabled && !exec_mode.bare { bootstrap } else if
+        // agents_config.worktree.enabled && exec_mode.bare { warn }`
+        let worktree_would_bootstrap = agents_config.worktree.enabled && !mode.bare;
+        let worktree_hits_warn_branch = agents_config.worktree.enabled && mode.bare;
+        assert!(
+            !worktree_would_bootstrap,
+            "worktree subsystem must not bootstrap in bare mode"
+        );
+        assert!(
+            worktree_hits_warn_branch,
+            "bare mode with worktree.enabled=true must hit the warning branch"
+        );
     }
 
     /// Without `--bare`, all three subsystems are allowed to start (guards evaluate to true).
