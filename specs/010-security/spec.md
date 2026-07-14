@@ -368,6 +368,10 @@ Signature: HMAC-SHA256 over `{key_id}|{task_id}|{endpoint}|{issued_at}|{expires_
 
 Key rotation: `ibct_keys` is a `Vec<IbctKeyConfig>` of `{key_id, key_hex}` entries (inline hex-encoded keys, legacy path) allowing multiple active keys during rotation windows; `ibct_signing_key_vault_ref` resolves the vault-backed primary signing key and takes precedence over `ibct_keys[0]` when both are set.
 
+**Enforcement (#6260, CWE-862 fix)**: `Ibct::verify` is wired into the server request path via `zeph_a2a::server::router::ibct_middleware`, layered inside the bearer-auth middleware. When `A2aServer` is constructed with a non-empty key set (`A2aServer::with_ibct_keys`, populated in `src/daemon.rs` from `[a2a] ibct_keys`/`ibct_signing_key_vault_ref`), every `/a2a` and `/a2a/stream` request must carry a valid header — missing/undecodable → `401`; present but failing verification (bad signature, expired, unknown key, or endpoint/task mismatch) → `403`. `A2aClient::with_ibct_key` issues and attaches the header on the client side, scoped to the **origin** of the target `endpoint` (path stripped — both routes share one server-side `AgentCard::url`) and the request's `task_id` (`params.id` for `tasks/get`/`tasks/cancel`, `params.message.taskId` for `message/send`/`message/stream`, empty-string sentinel for a not-yet-assigned task ID — see `014-a2a/spec.md` for the full `message/send` scoping caveat). An empty key set is a no-op — IBCT remains fully opt-in.
+
+**Deployment status**: this closes the CWE-862 gap in the primitive (the code now genuinely enforces IBCT when configured), but no caller shipped in this repository calls `A2aClient::with_ibct_key` yet — `src/tui_remote.rs`'s `--connect` client does not. Enabling `ibct_keys` today protects nothing beyond rejecting unauthenticated/non-Zeph traffic on `/a2a`/`/a2a/stream`; it does not by itself close the issue's threat model (a compromised delegated subagent replaying a shared bearer token against a peer task) since no delegation client exists to attach the header. Treat `ibct_keys` as not-yet-ready-for-production-enablement until a delegation client wiring lands.
+
 ### Config
 
 ```toml

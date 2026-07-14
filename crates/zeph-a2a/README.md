@@ -23,30 +23,37 @@ Implements the Agent-to-Agent (A2A) protocol over JSON-RPC 2.0, enabling Zeph to
 
 ## IBCT (Invocation-Bound Capability Tokens)
 
-When the `ibct` feature is enabled, Zeph signs outbound A2A requests with HMAC-SHA256 capability tokens. Each token is bound to a single invocation and expires after a configurable TTL, preventing replay attacks.
+IBCT is an opt-in, finer-grained authorization layer on top of the coarse bearer-token gate: HMAC-SHA256 capability tokens scoped to a specific `task_id` + `endpoint`, sent in the `X-Zeph-IBCT` request header.
 
-The token is sent in the `X-Zeph-IBCT` request header. Remote agents that support IBCT can validate the token using the shared key.
+**Server (`A2aServer::with_ibct_keys`)**: when configured with a non-empty key set, `zeph-a2a`'s router rejects every `/a2a` and `/a2a/stream` request that does not carry a valid `X-Zeph-IBCT` header — `401` if the header is missing or undecodable, `403` if it fails verification (bad signature, expired, unknown `key_id`, or scoped to the wrong endpoint/task). The expected `endpoint` is the server's own advertised `AgentCard::url`; the expected `task_id` is read from the request (`params.id` for `tasks/get`/`tasks/cancel`, `params.message.taskId` for `message/send`/`message/stream` — the empty-string sentinel for a brand-new task that has no server-assigned ID yet). An empty key set (the default) disables enforcement entirely.
 
-Key rotation is supported via `key_id`: multiple keys can be configured simultaneously; Zeph signs with the current signing key and includes `key_id` in the token so the receiver knows which key to verify against.
+**Client (`A2aClient::with_ibct_key`)**: when configured with an `IbctKey`, the client issues a token scoped to the target endpoint + task on every request and attaches it alongside the bearer token. Issuance failures are logged and the request proceeds without the header — the server decides whether to reject it.
+
+Key rotation is supported via `key_id`: multiple keys can be configured on the server simultaneously, so an old signing key stays valid for verification until every token it signed has expired.
 
 | Config field | Type | Default | Description |
 |---|---|---|---|
-| `ibct_keys` | `Vec<IbctKey>` | `[]` | Named HMAC keys (`{ key_id, secret }`) |
-| `ibct_signing_key_vault_ref` | string | `""` | Vault reference for the active signing key secret |
-| `ibct_ttl_secs` | u64 | `60` | Token validity window in seconds |
+| `ibct_keys` | `Vec<IbctKeyConfig>` | `[]` | Named HMAC keys (`{ key_id, key_hex }`) verified against incoming tokens |
+| `ibct_signing_key_vault_ref` | string | `""` | Vault reference for the primary key (`key_id = "primary"`); takes precedence over `ibct_keys[0]` |
+| `ibct_ttl_secs` | u64 | `300` | Token validity window in seconds, for callers issuing tokens with this TTL |
 
 ```toml
 [a2a]
-ibct_ttl_secs = 60
+ibct_ttl_secs = 300
 ibct_signing_key_vault_ref = "ZEPH_A2A_IBCT_KEY"
 
 [[a2a.ibct_keys]]
 key_id = "k1"
-secret = ""   # resolved from vault via ibct_signing_key_vault_ref
+key_hex = "68656c6c6f2d7365637265742d6b6579"   # legacy inline path; prefer the vault ref above
 ```
 
-> [!NOTE]
-> IBCT is gated behind the `ibct` feature flag. When the feature is disabled, the `X-Zeph-IBCT` header is never sent.
+**Note:** IBCT signing/verification requires the `ibct` feature flag. Without it, `Ibct::issue`/`Ibct::verify` always return `IbctError::FeatureDisabled` — a server configured with `ibct_keys` would then reject every request, and a client configured with `with_ibct_key` would log a warning and send no header on every request.
+
+**Important — this ships the enforcement primitive, not an activated end-to-end control.** As of this writing, no caller bundled in this repository calls `A2aClient::with_ibct_key`: `src/tui_remote.rs`'s `A2aClient` usage (the `--connect` remote-TUI-over-A2A-SSE attach feature) does not issue IBCT tokens, and there is no delegation client that spawns subagent tasks over A2A with a token attached. Concretely:
+
+- With the default `ibct_keys = []`, the server stays a no-op — enabling this fix alone does not change behavior for any existing deployment.
+- Setting `ibct_keys` to a non-empty list makes the server require `X-Zeph-IBCT` on every `/a2a` and `/a2a/stream` request. Since nothing in this repository attaches that header, doing so will `401` `zeph --connect`'s own `tui_remote` client and any standard (non-Zeph) A2A peer that has no knowledge of this header — it does not, by itself, protect a delegated subagent task from a leaked bearer token, because no delegation client using IBCT exists yet to protect.
+- To get real protection from IBCT, an operator (or a follow-up change) must build/wire a caller — most likely a task-delegation client for subagent orchestration — that calls `with_ibct_key` and scopes tokens to the tasks it delegates, *before* enabling `ibct_keys` on the receiving server.
 
 ## Authentication
 

@@ -43,6 +43,35 @@ use sha2::Sha256;
 #[cfg(feature = "ibct")]
 const CLOCK_SKEW_GRACE_SECS: u64 = 30;
 
+/// Normalizes a full URL (e.g. `https://agent.example.com/a2a/stream`) down to its origin
+/// (`https://agent.example.com`) for IBCT scoping.
+///
+/// Shared by both sides of the IBCT contract so they can never drift apart:
+///
+/// - **Client** (`crate::client::A2aClient::ibct_header_value`) applies this to the `endpoint`
+///   argument before calling [`Ibct::issue`], so a token issued for `POST /a2a` and one issued
+///   for `POST /a2a/stream` on the same agent carry the identical `endpoint` field.
+/// - **Server** (`crate::server::A2aServer::serve`) applies this to its own advertised
+///   `AgentCard::url` before constructing the `IbctConfig` [`Ibct::verify`] compares against —
+///   `card.url` is documented as a path-free base URL, but nothing enforces that an operator's
+///   configured `public_url` is actually canonical (no trailing slash, no `:443`, lowercase
+///   scheme/host). Normalizing both sides through the same function, rather than trusting one
+///   side's input to already be in the other side's expected shape, is what keeps `/a2a` and
+///   `/a2a/stream` verifiable against one value regardless of path, and keeps a non-canonical
+///   `public_url` from silently 403ing every request (the exact bug class of #6260 review S1,
+///   moved from the client to the server if only one side normalized).
+///
+/// Falls back to the input unchanged if it does not parse as a URL (matches [`Ibct::issue`]'s
+/// own tolerance of non-URL scope strings, and mirrors `discovery_origin` in
+/// `src/tui_remote.rs`, which strips the same route-specific path for the analogous
+/// `.well-known/agent.json` lookup).
+pub(crate) fn ibct_scope_origin(endpoint: &str) -> String {
+    url::Url::parse(endpoint).map_or_else(
+        |_| endpoint.to_owned(),
+        |u| u.origin().ascii_serialization(),
+    )
+}
+
 /// Errors produced by [`Ibct::issue`] and [`Ibct::verify`].
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -104,6 +133,32 @@ impl std::fmt::Debug for IbctKey {
             .field("key_id", &self.key_id)
             .field("key_bytes", &"[REDACTED]")
             .finish()
+    }
+}
+
+impl IbctKey {
+    /// Construct an `IbctKey` from a hex-encoded signing key, as used by
+    /// `[a2a] ibct_keys[].key_hex` in config and by vault-resolved IBCT secrets
+    /// (`ibct_signing_key_vault_ref`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`hex::FromHexError`] if `hex_key` is not valid hex.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_a2a::IbctKey;
+    ///
+    /// let key = IbctKey::from_hex("k1", "68656c6c6f2d7365637265742d6b6579").unwrap();
+    /// assert_eq!(key.key_id, "k1");
+    /// assert!(IbctKey::from_hex("k1", "not-hex").is_err());
+    /// ```
+    pub fn from_hex(key_id: impl Into<String>, hex_key: &str) -> Result<Self, hex::FromHexError> {
+        Ok(Self {
+            key_id: key_id.into(),
+            key_bytes: hex::decode(hex_key)?,
+        })
     }
 }
 
@@ -547,6 +602,43 @@ mod tests {
         assert!(!debug.contains("super-secret-key-for-testing-only"));
         assert!(debug.contains("k1"));
         assert!(debug.contains("REDACTED"));
+    }
+
+    #[cfg(feature = "ibct")]
+    #[test]
+    fn ibct_key_from_hex_decodes_bytes() {
+        let key = IbctKey::from_hex("k1", "68656c6c6f").unwrap();
+        assert_eq!(key.key_id, "k1");
+        assert_eq!(key.key_bytes, b"hello");
+    }
+
+    #[cfg(feature = "ibct")]
+    #[test]
+    fn ibct_key_from_hex_rejects_invalid_hex() {
+        assert!(IbctKey::from_hex("k1", "not-hex").is_err());
+    }
+
+    // #6260 review M6: `ibct_scope_origin` moved here from `client.rs` so both the client
+    // (`A2aClient::ibct_header_value`) and the server (`A2aServer::serve`, normalizing
+    // `card.url`) share one normalization, instead of only the client normalizing while the
+    // server compared a raw, possibly non-canonical `card.url` (which would silently 403
+    // every request for a non-canonical `public_url` — the same bug class as S1, just moved
+    // to the other side). `client.rs`'s `ibct_scope_origin_*` tests and `router.rs`'s
+    // `non_canonical_card_url_still_matches_client_issued_token` cover the two call sites
+    // directly; this test covers the one normalization case neither of those exercises: an
+    // explicit default port must be stripped (`url::Url::Origin::ascii_serialization`'s own
+    // behavior, but worth pinning since #6260's review flagged `:443` by name).
+    #[cfg(feature = "ibct")]
+    #[test]
+    fn ibct_scope_origin_strips_explicit_default_port() {
+        assert_eq!(
+            ibct_scope_origin("https://agent.example.com:443/a2a"),
+            "https://agent.example.com"
+        );
+        assert_eq!(
+            ibct_scope_origin("http://agent.example.com:80/a2a/stream"),
+            "http://agent.example.com"
+        );
     }
 
     #[cfg(feature = "ibct")]

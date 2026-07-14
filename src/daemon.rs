@@ -52,6 +52,7 @@ fn spawn_a2a_server(
     // lifecycle-managed by DaemonSupervisor.
     supervisor: Option<zeph_common::TaskSupervisor>,
     provider: &zeph_llm::any::AnyProvider,
+    ibct_keys: Vec<zeph_a2a::IbctKey>,
 ) {
     let public_url = if config.a2a.public_url.is_empty() {
         format!("http://{}:{}", config.a2a.host, config.a2a.port)
@@ -86,7 +87,8 @@ fn spawn_a2a_server(
     .with_request_timeout(std::time::Duration::from_millis(
         config.a2a.request_timeout_ms,
     ))
-    .with_task_ttl(task_ttl);
+    .with_task_ttl(task_ttl)
+    .with_ibct_keys(ibct_keys);
 
     tracing::info!(
         "A2A server spawned on {}:{}",
@@ -126,6 +128,75 @@ fn spawn_a2a_server(
             }
         });
     }
+}
+
+/// Resolves `[a2a] ibct_keys` (inline hex) plus `ibct_signing_key_vault_ref` (vault-resolved
+/// primary key) into the `Vec<zeph_a2a::IbctKey>` consumed by `A2aServer::with_ibct_keys`.
+///
+/// A malformed inline `key_hex` entry only drops that one key (warned, not fatal) — other
+/// entries and the vault-resolved key still apply. Per the `014-a2a` spec's IBCT Key
+/// Invariants ("`ibct_signing_key_vault_ref` must resolve to a vault key — startup fails if
+/// the ref is set but the vault key is absent"), a *declared* `ibct_signing_key_vault_ref`
+/// that fails to resolve (missing, empty, backend error, or not valid hex) fails startup
+/// instead — an operator who explicitly configured the vault ref for IBCT enforcement must
+/// not silently end up with enforcement disabled because the secret vanished. The
+/// vault-resolved key (`key_id = "primary"`) takes precedence over an inline `ibct_keys`
+/// entry sharing the same `key_id`, per `A2aServerConfig::ibct_signing_key_vault_ref`'s
+/// documented precedence.
+///
+/// **Blast radius**: this function is called (and `?`-propagated) in `run_daemon` *before*
+/// any channel/server spawns — a missing/rotated-out/non-hex vault secret aborts startup for
+/// the whole daemon process (Telegram, Discord, gateway, scheduler, everything), not just the
+/// A2A server. This mirrors the spec-mandated invariant above rather than scoping the failure
+/// to A2A alone; if that blast radius proves too broad in practice, scoping it down (e.g.
+/// disabling only the A2A server on this specific failure, matching `require_auth`'s per-
+/// subsystem soft-fail elsewhere) is a reasonable follow-up, not required by this fix.
+///
+/// # Errors
+///
+/// Returns an error if `ibct_signing_key_vault_ref` is set but the vault lookup fails,
+/// misses, resolves to an empty secret, or the secret is not valid hex.
+async fn resolve_ibct_keys(
+    config: &Config,
+    vault: &dyn zeph_core::vault::VaultProvider,
+) -> anyhow::Result<Vec<zeph_a2a::IbctKey>> {
+    let mut keys = Vec::new();
+    for entry in &config.a2a.ibct_keys {
+        match zeph_a2a::IbctKey::from_hex(entry.key_id.as_str(), &entry.key_hex) {
+            Ok(key) => keys.push(key),
+            Err(e) => tracing::warn!(
+                key_id = %entry.key_id,
+                error = %e,
+                "a2a.ibct_keys: invalid hex key_hex, skipping entry"
+            ),
+        }
+    }
+
+    if let Some(vault_key) = &config.a2a.ibct_signing_key_vault_ref {
+        let hex_secret = vault
+            .get_secret(vault_key)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "a2a.ibct_signing_key_vault_ref '{vault_key}': failed to resolve from vault: {e}"
+                )
+            })?
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "a2a.ibct_signing_key_vault_ref '{vault_key}': vault key not found or empty"
+                )
+            })?;
+        let key = zeph_a2a::IbctKey::from_hex("primary", hex_secret.trim()).map_err(|e| {
+            anyhow::anyhow!(
+                "a2a.ibct_signing_key_vault_ref '{vault_key}': vault secret is not valid hex: {e}"
+            )
+        })?;
+        keys.retain(|k| k.key_id != "primary");
+        keys.insert(0, key);
+    }
+
+    Ok(keys)
 }
 
 pub(crate) struct AgentTaskProcessor {
@@ -1145,6 +1216,7 @@ pub(crate) async fn run_daemon(
     // messages into the agent loop after the A2A server takes ownership of the handle.
     #[cfg(feature = "gateway")]
     let gateway_input_tx = loopback_handle.input_tx.clone();
+    let ibct_keys = resolve_ibct_keys(config, app.vault()).await?;
     spawn_a2a_server(
         config,
         shutdown_rx.clone(),
@@ -1152,6 +1224,7 @@ pub(crate) async fn run_daemon(
         a2a_sanitizer,
         Some(task_supervisor.clone()),
         &provider,
+        ibct_keys,
     );
 
     #[cfg(feature = "gateway")]

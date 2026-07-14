@@ -21,7 +21,9 @@
 //! 1. Body size limit (`max_body_size`, default 1 MiB).
 //! 2. Bearer token authentication (constant-time comparison via blake3).
 //! 3. Per-IP rate limiting with sliding window and eviction.
-//! 4. Handler dispatches to the appropriate operation.
+//! 4. IBCT verification (opt-in — only enforced when `ibct_keys` is non-empty, see
+//!    [`with_ibct_keys`](A2aServer::with_ibct_keys)).
+//! 5. Handler dispatches to the appropriate operation.
 //!
 //! # Feature flag
 //!
@@ -40,8 +42,9 @@ use tokio::sync::watch;
 use zeph_common::http_middleware::AuthConfig;
 
 use crate::error::A2aError;
+use crate::ibct::{IbctKey, ibct_scope_origin};
 use crate::types::AgentCard;
-use router::build_router_with_full_config;
+use router::{IbctConfig, build_router_with_full_config};
 pub use state::{AppState, ProcessorEvent, TaskManager, TaskProcessor};
 
 /// An A2A protocol HTTP server.
@@ -104,6 +107,9 @@ pub struct A2aServer {
     max_body_size: usize,
     /// TTL for terminal tasks; `None` disables background eviction.
     task_ttl: Option<Duration>,
+    /// IBCT verification keys. Empty disables IBCT enforcement (see
+    /// [`with_ibct_keys`](Self::with_ibct_keys)).
+    ibct_keys: Vec<IbctKey>,
 }
 
 impl A2aServer {
@@ -143,6 +149,7 @@ impl A2aServer {
             rate_limit: 0,
             max_body_size: 1_048_576,
             task_ttl: Some(Duration::from_hours(1)),
+            ibct_keys: Vec::new(),
         }
     }
 
@@ -207,6 +214,24 @@ impl A2aServer {
         self
     }
 
+    /// Set the IBCT (Invocation-Bound Capability Token) verification key set.
+    ///
+    /// When non-empty, every request to `/a2a` and `/a2a/stream` must carry a valid
+    /// `X-Zeph-IBCT` header scoped to this server's own advertised endpoint (the
+    /// `public_url` passed to [`AgentCardBuilder::new`](crate::card::AgentCardBuilder::new))
+    /// and to the request's task — see the crate's `ibct` module docs for the exact scoping
+    /// and header format. Requests failing verification are rejected with `401` (missing or
+    /// undecodable header) or `403` (signature/expiry/scope mismatch) before reaching the
+    /// handler.
+    ///
+    /// Passing an empty `Vec` (the default) disables IBCT enforcement entirely — matches the
+    /// existing bearer-auth opt-in pattern ([`with_auth`](Self::with_auth)).
+    #[must_use]
+    pub fn with_ibct_keys(mut self, keys: Vec<IbctKey>) -> Self {
+        self.ibct_keys = keys;
+        self
+    }
+
     /// Set the TTL for terminal tasks in the in-memory store (default: 3600 seconds).
     ///
     /// Tasks in a terminal state ([`crate::TaskState::Completed`], [`crate::TaskState::Failed`],
@@ -249,11 +274,29 @@ impl A2aServer {
             tokio::spawn(eviction_loop) // EXEMPT: aborted in serve() below; no supervisor in A2aServer
         });
 
+        if self.ibct_keys.is_empty() {
+            tracing::debug!("A2A server running without IBCT enforcement (ibct_keys empty)");
+        } else if !cfg!(feature = "ibct") {
+            tracing::error!(
+                "A2A server configured with non-empty ibct_keys, but this build does not have \
+                 the 'ibct' feature enabled — Ibct::verify cannot run, so every request to \
+                 /a2a and /a2a/stream will be rejected with 403. Rebuild with the 'ibct' \
+                 feature, or clear ibct_keys to disable IBCT enforcement instead."
+            );
+        }
+        // Normalized the same way the client normalizes its `endpoint` argument
+        // (`ibct_scope_origin`) so a non-canonical `public_url` (trailing slash, explicit
+        // path, `:443`, uppercase scheme/host) can't silently 403 every request — see
+        // `ibct_scope_origin`'s doc comment (#6260 review M6).
+        let ibct_endpoint: std::sync::Arc<str> = ibct_scope_origin(&self.state.card.url).into();
+        let ibct_cfg = IbctConfig::new(self.ibct_keys, ibct_endpoint, self.max_body_size);
+
         let router = build_router_with_full_config(
             self.state,
             self.auth_cfg,
             self.rate_limit,
             self.max_body_size,
+            ibct_cfg,
         );
 
         let listener = tokio::net::TcpListener::bind(self.addr)

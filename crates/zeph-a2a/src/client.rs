@@ -14,6 +14,7 @@ use tokio_stream::StreamExt;
 use zeph_common::net::resolve_and_validate;
 
 use crate::error::A2aError;
+use crate::ibct::{Ibct, IbctKey, ibct_scope_origin};
 use crate::jsonrpc::{
     JsonRpcRequest, JsonRpcResponse, METHOD_CANCEL_TASK, METHOD_GET_TASK, METHOD_SEND_MESSAGE,
     METHOD_SEND_STREAMING_MESSAGE, SendMessageParams, TaskIdParams,
@@ -166,6 +167,11 @@ pub struct A2aClient {
     /// race: whichever fires first wins. `request_timeout` takes semantic priority because
     /// it maps to `A2aError::Timeout`; the reqwest-level timeout maps to `A2aError::Http`.
     request_timeout: Duration,
+    /// IBCT signing key. When set, every request carries a scoped `X-Zeph-IBCT` header
+    /// alongside the bearer token (see [`with_ibct_key`](Self::with_ibct_key)).
+    ibct_key: Option<IbctKey>,
+    /// TTL for issued IBCT tokens. Has no effect unless `ibct_key` is set.
+    ibct_ttl: Duration,
 }
 
 impl A2aClient {
@@ -179,6 +185,8 @@ impl A2aClient {
             client,
             security: SecurityPolicy::permissive(),
             request_timeout: Duration::from_secs(30),
+            ibct_key: None,
+            ibct_ttl: Duration::from_mins(5),
         }
     }
 
@@ -212,6 +220,69 @@ impl A2aClient {
         self
     }
 
+    /// Configure an IBCT signing key so every request carries a scoped `X-Zeph-IBCT` header
+    /// alongside the bearer token.
+    ///
+    /// The token is scoped to the exact `endpoint` string passed to `send_message`/
+    /// `get_task`/`cancel_task`/`stream_message`, and to the request's `task_id` —
+    /// `params.id` for `get_task`/`cancel_task`, `message.task_id` for `send_message`/
+    /// `stream_message` (the empty-string sentinel when the message has no `task_id` yet,
+    /// i.e. it starts a brand-new task the server has not assigned an ID to).
+    ///
+    /// Issuance failures (e.g. this crate compiled without the `ibct` feature) are logged
+    /// and the request proceeds without the header — the server decides whether to reject it.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_a2a::{A2aClient, IbctKey};
+    ///
+    /// let key = IbctKey { key_id: "k1".into(), key_bytes: b"secret".to_vec() };
+    /// let client = A2aClient::new(reqwest::Client::new()).with_ibct_key(key);
+    /// ```
+    #[must_use]
+    pub fn with_ibct_key(mut self, key: IbctKey) -> Self {
+        self.ibct_key = Some(key);
+        self
+    }
+
+    /// Set the TTL for issued IBCT tokens (default: 5 minutes). Has no effect unless
+    /// [`with_ibct_key`](Self::with_ibct_key) is also configured.
+    #[must_use]
+    pub fn with_ibct_ttl(mut self, ttl: Duration) -> Self {
+        self.ibct_ttl = ttl;
+        self
+    }
+
+    /// Issues and base64-encodes an `X-Zeph-IBCT` header value scoped to `endpoint` +
+    /// `task_id`. Returns `None` when no key is configured, or when issuance/encoding
+    /// fails (logged as a warning).
+    ///
+    /// `endpoint` is normalized to its origin (`scheme://host[:port]`, no path) before
+    /// being embedded in the token — see [`ibct_scope_origin`] for why: the server verifies
+    /// against its own advertised `AgentCard::url`, which is documented as the base URL with
+    /// no path suffix, and is shared by both the `/a2a` and `/a2a/stream` routes. Scoping the
+    /// token to the full request URL (including the route-specific path) would make it valid
+    /// for at most one of the two routes even against the correct server (#6260 review S1).
+    fn ibct_header_value(&self, endpoint: &str, task_id: &str) -> Option<String> {
+        let key = self.ibct_key.as_ref()?;
+        let scope = ibct_scope_origin(endpoint);
+        let token = match Ibct::issue(task_id, &scope, self.ibct_ttl, key) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!("failed to issue IBCT token: {e}");
+                return None;
+            }
+        };
+        match token.encode() {
+            Ok(encoded) => Some(encoded),
+            Err(e) => {
+                tracing::warn!("failed to encode IBCT token: {e}");
+                None
+            }
+        }
+    }
+
     /// # Errors
     /// Returns `A2aError` on network, JSON, or JSON-RPC errors, or `A2aError::Timeout`
     /// if the request exceeds the configured `request_timeout`.
@@ -222,7 +293,8 @@ impl A2aClient {
         params: SendMessageParams,
         token: Option<&str>,
     ) -> Result<Task, A2aError> {
-        self.rpc_call(endpoint, METHOD_SEND_MESSAGE, params, token)
+        let task_id = params.message.task_id.clone().unwrap_or_default();
+        self.rpc_call(endpoint, METHOD_SEND_MESSAGE, params, token, &task_id)
             .await
     }
 
@@ -235,12 +307,16 @@ impl A2aClient {
         params: SendMessageParams,
         token: Option<&str>,
     ) -> Result<TaskEventStream, A2aError> {
+        let task_id = params.message.task_id.clone().unwrap_or_default();
         let pinned = self.validate_endpoint(endpoint).await?;
         let request_client = self.request_client(pinned.as_ref())?;
         let request = JsonRpcRequest::new(METHOD_SEND_STREAMING_MESSAGE, params);
         let mut req = request_client.post(endpoint).json(&request);
         if let Some(t) = token {
             req = req.bearer_auth(t);
+        }
+        if let Some(ibct_header) = self.ibct_header_value(endpoint, &task_id) {
+            req = req.header("X-Zeph-IBCT", ibct_header);
         }
         let resp = tokio::time::timeout(self.request_timeout, req.send())
             .await
@@ -294,7 +370,8 @@ impl A2aClient {
         params: TaskIdParams,
         token: Option<&str>,
     ) -> Result<Task, A2aError> {
-        self.rpc_call(endpoint, METHOD_GET_TASK, params, token)
+        let task_id = params.id.clone();
+        self.rpc_call(endpoint, METHOD_GET_TASK, params, token, &task_id)
             .await
     }
 
@@ -308,7 +385,8 @@ impl A2aClient {
         params: TaskIdParams,
         token: Option<&str>,
     ) -> Result<Task, A2aError> {
-        self.rpc_call(endpoint, METHOD_CANCEL_TASK, params, token)
+        let task_id = params.id.clone();
+        self.rpc_call(endpoint, METHOD_CANCEL_TASK, params, token, &task_id)
             .await
     }
 
@@ -402,6 +480,7 @@ impl A2aClient {
         method: &str,
         params: P,
         token: Option<&str>,
+        task_id: &str,
     ) -> Result<R, A2aError> {
         let pinned = self.validate_endpoint(endpoint).await?;
         let request_client = self.request_client(pinned.as_ref())?;
@@ -409,6 +488,9 @@ impl A2aClient {
         let mut req = request_client.post(endpoint).json(&request);
         if let Some(t) = token {
             req = req.bearer_auth(t);
+        }
+        if let Some(ibct_header) = self.ibct_header_value(endpoint, task_id) {
+            req = req.header("X-Zeph-IBCT", ibct_header);
         }
         let rpc_response: JsonRpcResponse<R> = tokio::time::timeout(self.request_timeout, async {
             let resp = req.send().await?;
@@ -907,6 +989,119 @@ mod tests {
     }
 
     #[test]
+    fn with_ibct_key_sets_key_and_default_ttl() {
+        let key = IbctKey {
+            key_id: "k1".into(),
+            key_bytes: b"secret".to_vec(),
+        };
+        let client = A2aClient::new(reqwest::Client::new()).with_ibct_key(key);
+        assert!(client.ibct_key.is_some());
+        assert_eq!(client.ibct_ttl, Duration::from_mins(5));
+    }
+
+    #[test]
+    fn with_ibct_ttl_overrides_default() {
+        let key = IbctKey {
+            key_id: "k1".into(),
+            key_bytes: b"secret".to_vec(),
+        };
+        let client = A2aClient::new(reqwest::Client::new())
+            .with_ibct_key(key)
+            .with_ibct_ttl(Duration::from_mins(1));
+        assert_eq!(client.ibct_ttl, Duration::from_mins(1));
+    }
+
+    #[test]
+    fn no_ibct_key_configured_yields_no_header() {
+        let client = A2aClient::new(reqwest::Client::new());
+        assert!(
+            client
+                .ibct_header_value("https://agent.example.com", "task-1")
+                .is_none()
+        );
+    }
+
+    #[cfg(feature = "ibct")]
+    #[test]
+    fn ibct_key_configured_yields_encoded_header() {
+        let key = IbctKey {
+            key_id: "k1".into(),
+            key_bytes: b"secret".to_vec(),
+        };
+        let client = A2aClient::new(reqwest::Client::new()).with_ibct_key(key);
+        let header = client
+            .ibct_header_value("https://agent.example.com", "task-1")
+            .expect("header should be issued when ibct feature is enabled");
+        let decoded = crate::ibct::Ibct::decode(&header).unwrap();
+        assert_eq!(decoded.task_id, "task-1");
+        assert_eq!(decoded.endpoint, "https://agent.example.com");
+    }
+
+    // Regression tests for #6260 review S1: the server verifies every IBCT against its own
+    // pathless `AgentCard::url`, shared by both the `/a2a` and `/a2a/stream` routes. A token
+    // scoped to the full per-route POST URL (including the route-specific path) could match
+    // at most one of the two routes even against the correct server. `ibct_scope_origin` (and
+    // therefore `ibct_header_value`) must always strip the path before issuing.
+
+    #[test]
+    fn ibct_scope_origin_strips_path_and_query() {
+        assert_eq!(
+            ibct_scope_origin("https://agent.example.com/a2a"),
+            "https://agent.example.com"
+        );
+        assert_eq!(
+            ibct_scope_origin("https://agent.example.com/a2a/stream"),
+            "https://agent.example.com"
+        );
+        assert_eq!(
+            ibct_scope_origin("http://127.0.0.1:8080/a2a/stream?x=1"),
+            "http://127.0.0.1:8080"
+        );
+    }
+
+    #[test]
+    fn ibct_scope_origin_agrees_across_both_a2a_routes() {
+        let a2a = ibct_scope_origin("http://127.0.0.1:8080/a2a");
+        let stream = ibct_scope_origin("http://127.0.0.1:8080/a2a/stream");
+        assert_eq!(
+            a2a, stream,
+            "both routes on the same agent must scope to the same IBCT endpoint"
+        );
+    }
+
+    #[test]
+    fn ibct_scope_origin_falls_back_to_input_on_unparseable_url() {
+        assert_eq!(ibct_scope_origin("not-a-url"), "not-a-url");
+    }
+
+    #[cfg(feature = "ibct")]
+    #[test]
+    fn ibct_header_value_scopes_token_to_origin_not_full_path() {
+        let key = IbctKey {
+            key_id: "k1".into(),
+            key_bytes: b"secret".to_vec(),
+        };
+        let client = A2aClient::new(reqwest::Client::new()).with_ibct_key(key);
+
+        let header_a2a = client
+            .ibct_header_value("http://127.0.0.1:8080/a2a", "task-1")
+            .unwrap();
+        let header_stream = client
+            .ibct_header_value("http://127.0.0.1:8080/a2a/stream", "task-1")
+            .unwrap();
+
+        let decoded_a2a = crate::ibct::Ibct::decode(&header_a2a).unwrap();
+        let decoded_stream = crate::ibct::Ibct::decode(&header_stream).unwrap();
+        assert_eq!(decoded_a2a.endpoint, "http://127.0.0.1:8080");
+        assert_eq!(
+            decoded_a2a.endpoint, decoded_stream.endpoint,
+            "a token issued for /a2a and one issued for /a2a/stream on the same agent must \
+             carry the same endpoint scope, since the server verifies both against one \
+             pathless card.url"
+        );
+    }
+
+    #[test]
     fn task_event_serialize_round_trip() {
         let event = TaskEvent::StatusUpdate(TaskStatusUpdateEvent {
             kind: "status-update".into(),
@@ -1231,5 +1426,34 @@ mod wiremock_tests {
             result.is_err(),
             "https_only(true) must reject a plain http:// URL"
         );
+    }
+
+    #[cfg(feature = "ibct")]
+    #[tokio::test]
+    async fn send_message_attaches_ibct_header_when_configured() {
+        use wiremock::matchers::header_exists;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rpc"))
+            .and(header_exists("x-zeph-ibct"))
+            .respond_with(task_rpc_response("task-ibct", "submitted"))
+            .mount(&server)
+            .await;
+
+        let key = crate::ibct::IbctKey {
+            key_id: "k1".into(),
+            key_bytes: b"secret".to_vec(),
+        };
+        let client = A2aClient::new(reqwest::Client::new()).with_ibct_key(key);
+        let params = SendMessageParams {
+            message: Message::user_text("hello"),
+            configuration: None,
+        };
+        let task = client
+            .send_message(&format!("{}/rpc", server.uri()), params, None)
+            .await
+            .unwrap();
+        assert_eq!(task.id, "task-ibct");
     }
 }

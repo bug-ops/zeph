@@ -815,8 +815,22 @@ pub struct A2aServerConfig {
     pub require_auth: bool,
     /// IBCT signing keys for per-task delegation scoping.
     ///
-    /// When non-empty, all A2A task requests must include a valid `X-Zeph-IBCT` header
-    /// signed with one of these keys. Multiple keys allow key rotation without downtime.
+    /// When non-empty, all requests to `/a2a` and `/a2a/stream` must include a valid
+    /// `X-Zeph-IBCT` header signed with one of these keys, scoped to this server's own
+    /// advertised endpoint (`AgentCard::url`, i.e. `public_url` above) and to the request's
+    /// `task_id` (`params.id` for `tasks/get`/`tasks/cancel`, `params.message.taskId` for
+    /// `message/send`/`message/stream` — the empty-string sentinel for a brand-new task with
+    /// no server-assigned ID yet). A missing/undecodable header is rejected with `401`; a
+    /// present-but-invalid one (bad signature, expired, unknown key, or scope mismatch) with
+    /// `403`. Multiple keys allow key rotation without downtime — see [`IbctKeyConfig`].
+    /// Enforced by `zeph_a2a::server::router::ibct_middleware`, wired via
+    /// `A2aServer::with_ibct_keys`.
+    ///
+    /// **Before enabling in production**: as of #6260, no caller in this repository attaches
+    /// `X-Zeph-IBCT` yet (the `--connect` remote-TUI client does not opt in, and no A2A
+    /// delegation client exists). Setting this to a non-empty list will `401` `--connect` and
+    /// any standard A2A peer, without protecting a delegated-subagent flow that doesn't yet
+    /// exist — see `specs/010-security/spec.md`'s IBCT "Deployment status" note.
     #[serde(default)]
     pub ibct_keys: Vec<IbctKeyConfig>,
     /// Vault key name to resolve the primary IBCT signing key at startup (MF-3 fix).

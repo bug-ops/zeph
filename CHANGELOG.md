@@ -212,6 +212,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to the caller as an error (rather than logged and silently swallowed) so a transient DB
   failure never reports false success while the persisted row — and the resurrection risk it
   carries — survives. The delete is idempotent by id, so the client can safely retry (#6271).
+- **Security (a2a ibct)**: `zeph-a2a`'s IBCT (Invocation-Bound Capability Token) mechanism was
+  fully implemented (HMAC-SHA256 issuance/verification, key rotation, constant-time comparison)
+  and documented in `A2aServerConfig`/specs/README as an active per-task authorization layer on
+  top of the coarse bearer token, but nothing called `Ibct::issue` outside its own unit tests and
+  nothing in the server's axum handlers called `Ibct::verify` or read the `X-Zeph-IBCT` header —
+  the documented enforcement never existed (CWE-862 Missing Authorization, #6260). Fixed by
+  wiring both sides: server-side, `zeph_a2a::server::router::ibct_middleware` (layered inside the
+  bearer-auth middleware) rejects requests to `/a2a`/`/a2a/stream` with `401` (missing/undecodable
+  header) or `403` (signature/expiry/scope mismatch) whenever `A2aServer::with_ibct_keys` is
+  configured with a non-empty key set — populated in `src/daemon.rs` from `[a2a] ibct_keys`
+  (inline hex, via new `IbctKey::from_hex`) and `ibct_signing_key_vault_ref` (vault-resolved,
+  startup now fails if the ref is set but unresolvable, per the spec's documented invariant); an
+  empty key set stays a no-op, matching the existing bearer-auth opt-in pattern. Client-side,
+  `A2aClient::with_ibct_key` makes `rpc_call`/`stream_message` issue and attach a token scoped to
+  the request's `task_id` (`params.id` for `tasks/get`/`tasks/cancel`, `params.message.taskId` for
+  `message/send`/`message/stream`, empty-string sentinel for a not-yet-assigned task ID) and to
+  the **origin** of the target endpoint (`ibct_scope_origin` strips the path) — required because
+  `/a2a` and `/a2a/stream` are different paths verified against the one pathless `AgentCard::url`,
+  so a token scoped to a full per-route URL would 403 on whichever route it wasn't issued for
+  (caught in review as S1; regression-tested in both `client.rs` and `router.rs`). Corrected the
+  four doc surfaces (`A2aServerConfig` doc comments, `crates/zeph-a2a/README.md`,
+  `specs/014-a2a/spec.md`, `specs/010-security/spec.md`) that overclaimed active enforcement, and
+  added an explicit deployment caveat to all four: no caller bundled in this repository (incl.
+  `src/tui_remote.rs`'s `--connect` client) attaches `X-Zeph-IBCT` yet, so enabling `ibct_keys`
+  today rejects unauthenticated/non-Zeph A2A traffic but does not by itself protect any
+  delegated-subagent flow — a follow-up delegation client wiring `with_ibct_key` is required for
+  that (S2). `message/send` always creates a fresh task server-side and is therefore always
+  scoped to the empty-string sentinel rather than a request-specific ID — documented as a known
+  MVP limitation rather than closed in this fix (S3). `ibct_scope_origin` moved from `client.rs`
+  into a shared `pub(crate)` function in `ibct.rs` and is now applied to the server's own
+  `card.url` in `A2aServer::serve()` too, not just to the client's `endpoint` argument — an
+  unnormalized `public_url` (trailing slash, stray path, explicit default port, mixed-case
+  scheme/host) would otherwise silently 403 every request even from a correctly-behaving client,
+  reintroducing S1's bug class on the server side (review finding M6).
 - **CLI**: `--init` / `--migrate-config` were documented as top-level flags everywhere (both
   `CLAUDE.md` files, `.zeph/zeph.md`, `crates/zeph-config/AGENTS.md`, the worktree-disk-quota
   playbook, and `src/cli.rs`'s own doc comments) but only existed as `clap` subcommands (`zeph
