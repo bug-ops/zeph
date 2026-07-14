@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Security
+
+- Bumped the transitively-pinned `spin` crate off two yanked versions in `Cargo.lock`:
+  `0.9.8 -> 0.9.9` (via `flume 0.12.0` -> `sqlx-sqlite 0.9.0` -> `sqlx 0.9.0`) and
+  `0.10.0 -> 0.10.1` (via `pprof 0.15.0`, `bench` feature). Both were flagged as yanked
+  by `cargo audit` / `cargo deny check advisories`; the patch-level bumps carry no API
+  changes and required no `Cargo.toml` edits (#6249).
+
 ### Added
 
 - **TUI**: added a read-only settings view (`S` key or the `settings` command-palette
