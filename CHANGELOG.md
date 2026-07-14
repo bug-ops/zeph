@@ -120,6 +120,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   per-task (`SchedulerAction::Verify`) and whole-plan (`run_whole_plan_verify`) scopes emit an
   independent `Note: ...` message; previously this case was silently logged at `debug`/`warn`
   only and never surfaced to the user (#6265).
+- **zeph-core**: `Agent::persist_message` now strips every `MessagePart::Image` from `parts`
+  before either persistence writer sees it — SQLite `parts_json`, the Qdrant embed path, and the
+  durable JSONL session log all receive an Image-free slice (spec-072 §4 C1, #6239, P1 of 4).
+  The strip applies to all `Image` parts, not only future MCP-sourced ones, closing pre-existing
+  persistence waste on the existing user-upload image path (base64 bytes were written to SQLite
+  then silently dropped on rehydrate, since `hydrate.rs` never reconstructs `Image` parts). The
+  in-memory `Message` pushed via `push_message` is unaffected — `Image` parts remain available
+  for the current turn's provider request; only the two persistence writers receive the stripped
+  copy. No runtime-visible behavior change beyond no longer persisting image bytes that were
+  already dead weight.
 
 ### Changed
 

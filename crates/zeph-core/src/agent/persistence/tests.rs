@@ -2797,3 +2797,234 @@ async fn regression_3168_corrupt_parts_row_skipped_on_load() {
         "orphaned ToolResult must not survive load_history; loaded={loaded}"
     );
 }
+
+// --- issue #6239 / spec-072 §4 C1: ephemeral Image persistence strip ---
+
+mod image_persistence_strip {
+    use super::*;
+    use zeph_llm::provider::{ImageData, Message, MessageMetadata, MessagePart};
+
+    fn png_image_part() -> MessagePart {
+        MessagePart::Image(Box::new(ImageData {
+            data: vec![0x89, 0x50, 0x4E, 0x47, 1, 2, 3, 4],
+            mime_type: "image/png".to_owned(),
+        }))
+    }
+
+    #[tokio::test]
+    async fn test_persist_message_strips_image_before_sqlite() {
+        // A ToolResult sibling survives (mirrors the future MCP sibling-Image emission shape),
+        // but the Image part itself must never reach the SQLite `parts_json` column.
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let parts = vec![
+            MessagePart::ToolResult {
+                tool_use_id: "call_img_1".to_owned(),
+                content: "see attached image".to_owned(),
+                is_error: false,
+            },
+            png_image_part(),
+        ];
+        agent
+            .persist_message(Role::User, "[tool_result: call_img_1]", &parts, false)
+            .await;
+
+        let history = agent
+            .services
+            .memory
+            .persistence
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+
+        assert_eq!(history.len(), 1);
+        assert!(
+            !history[0]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Image(_))),
+            "SQLite parts_json must not contain an Image part"
+        );
+        assert!(
+            history[0]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == "call_img_1")),
+            "the non-Image sibling must survive the strip"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_persist_message_strips_image_before_embed() {
+        // Role::User always takes the Qdrant embed path (should_embed_message). An
+        // Image-only `parts` slice must still persist (as an empty parts array) without
+        // ever routing image bytes into the embed text or the persisted parts_json.
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let (tx, rx) = tokio::sync::watch::channel(MetricsSnapshot::default());
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_metrics(tx)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
+
+        let parts = vec![png_image_part()];
+        agent
+            .persist_message(Role::User, "hello with an image", &parts, false)
+            .await;
+
+        // sqlite_message_count increments regardless of Qdrant availability in the test
+        // harness — proves the message (sans Image) still reached the persist path.
+        assert_eq!(rx.borrow().sqlite_message_count, 1);
+
+        let history = agent
+            .services
+            .memory
+            .persistence
+            .memory
+            .as_ref()
+            .unwrap()
+            .sqlite()
+            .load_history(cid, 50)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, "hello with an image");
+        assert!(
+            history[0].parts.is_empty(),
+            "an Image-only parts slice must persist as empty, not carry the image through"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_persist_message_strips_image_before_session_log() {
+        use std::sync::Arc;
+        use zeph_agent_persistence::SessionSink;
+        use zeph_session::{SessionEvent, SessionEventLog, SessionStore};
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let dir = tempfile::tempdir().unwrap();
+        let log = Arc::new(SessionEventLog::open(dir.path()).await.unwrap());
+        let db_config = zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            ..Default::default()
+        };
+        let pool = db_config.connect().await.unwrap();
+        zeph_db::run_migrations(&pool).await.unwrap();
+        let store = SessionStore::new(pool);
+        store.create("s-6239").await.unwrap();
+        let sink = SessionSink::new(log.clone(), store, zeph_common::SessionId::new("s-6239"));
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_session_sink(Some(Arc::new(sink)));
+
+        let parts = vec![
+            MessagePart::Text {
+                text: "here is the result".to_owned(),
+            },
+            png_image_part(),
+        ];
+        agent
+            .persist_message(Role::Assistant, "here is the result", &parts, false)
+            .await;
+
+        let events = log.read_all().await.unwrap();
+        assert_eq!(events.len(), 1);
+        let SessionEvent::AssistantMessage {
+            parts: logged_parts,
+        } = &events[0].kind
+        else {
+            panic!("expected AssistantMessage event");
+        };
+        assert!(
+            !logged_parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Image(_))),
+            "durable JSONL session log must not contain an Image part"
+        );
+        assert!(
+            logged_parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Text { text } if text == "here is the result")),
+            "the non-Image sibling must survive the strip"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_persist_message_inmemory_message_keeps_image() {
+        // The strip is persistence-only: the in-memory Message object (pushed separately by
+        // the caller via push_message, not by persist_message itself) must retain its Image
+        // part after persist_message runs on the same underlying parts.
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        let parts = vec![
+            MessagePart::Text {
+                text: "here is the result".to_owned(),
+            },
+            png_image_part(),
+        ];
+
+        // Simulate the real call order: the in-memory Message is pushed first (tier_loop.rs),
+        // then persist_message is invoked with a borrow of the same parts.
+        agent.msg.messages.push(Message {
+            role: Role::Assistant,
+            content: "here is the result".to_owned(),
+            parts: parts.clone(),
+            metadata: MessageMetadata::default(),
+        });
+
+        agent
+            .persist_message(Role::Assistant, "here is the result", &parts, false)
+            .await;
+
+        let in_memory = agent.msg.messages.last().unwrap();
+        assert_eq!(in_memory.parts.len(), 2);
+        assert!(
+            in_memory
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Image(_))),
+            "in-memory Message must keep its Image part — the strip is persistence-only"
+        );
+    }
+}
