@@ -199,6 +199,46 @@ binds `execution_id` (cipher.rs) and `IdempotencyKey::derive` already folds `exe
 `IdempotencyKey` collision this invariant's introduction considered was only ever possible when
 `ExecutionId` itself collided, which this lock now prevents structurally.
 
+**INV-16 — Reopening an execution un-finalizes ALL terminal statuses identically (#6254).**
+`open_execution`/`open_execution_exclusive`'s reopen path MUST reset `status='running'` and clear
+`finalized_at` for a row found in ANY terminal status — `completed`, `failed`, OR `aborted` — not
+just `completed`/`failed` as in the pre-#6254 behavior. The deciding fact for prunability is
+"is this execution being actively reopened right now", never "which terminal status produced the
+row". Leaving `aborted` untouched on reopen (the pre-#6254 behavior, justified at the time because
+the only `aborted` producers were rare, immediately-redriven divergence-recovery/`StepCapExceeded`
+aborts) becomes unsafe once the crash-orphan sweep (INV-17) makes `aborted` the common outcome of a
+resumable crash: a resumed execution whose row keeps `finalized_at` set is prunable out from under
+the active resume — the exact hazard the completed/failed un-finalize was built to prevent. Un-
+finalizing `aborted` on reopen is strictly safer for the pre-existing divergence-recovery case too
+(it now also protects that fresh re-drive from prune) and does not change replay-cursor
+fresh-vs-resume selection, which is independent of the `status` column.
+
+**INV-17 — A crash-orphaned `running` execution is reclaimed only after its liveness is verified
+via the INV-15 advisory lock, never by staleness alone (#6254).**
+A background sweep (`Journal::sweep_orphans`, folded into the existing retention tick, running
+before `prune`) MAY hard-abort a row matching `status='running' AND finalized_at IS NULL AND
+updated_at <= now - stale_running_after_secs` (config: `RetentionPolicy::stale_running_after_secs`,
+default 3600s; `0` disables the sweep) **only** after a non-blocking try-acquire of that
+execution's INV-15 `ExecutionLock` succeeds. `ExecutionLocked` (lock held by a live owner) MUST
+short-circuit to skip — staleness of `updated_at` alone is never sufficient grounds to abort,
+because `updated_at` is not bumped on every journal append, and a genuinely active-but-idle
+execution (a long single step, a parked HITL promise, a multi-hour scheduled-job body) would
+otherwise be false-aborted. The abort `UPDATE` runs while the sweep still holds the acquired lock
+(guard: `WHERE execution_id=? AND status='running' AND finalized_at IS NULL`), which makes it
+race-free against a concurrent `open_execution_exclusive` reopen for the same id — the two can
+never both proceed, because both require the same non-reentrant flock. The sweep never retries or
+resumes an orphan; it only marks it `aborted` so the pre-existing crash-resume path
+(`ensure_session_durable_ctx` → `open_execution` replay) reclaims it on next legitimate open.
+Sweep and prune are ordered on the same tick — the sweep MUST run before `prune()` so a
+just-aborted orphan is visible to that same tick's TTL check (informational: with
+`ttl_failed_secs=0` this makes a freshly-swept orphan prune-eligible on the same tick — intended,
+not a bug, since `0` already means "prune failed/aborted immediately"). Correctness rests on every
+production execution kind holding its flock while live: `AgentTurn` already opens via
+`open_execution_exclusive`; `ScheduledJob` and `DagRun` are converted to it by this change (see
+P2/P3 adapter notes) specifically to make flock-liveness universal. On backends where
+`lock_dir=None` (`:memory:`, Postgres, non-Unix — the same class INV-15 already degrades), the
+sweep is a documented no-op, never a staleness-only abort — see NEVER and Non-Goals.
+
 ---
 
 ## NEVER
@@ -214,8 +254,9 @@ binds `execution_id` (cipher.rs) and `IdempotencyKey::derive` already folds `exe
   migration runner (031 §12). Owning a separate migrator would create a divergent source of truth.
 - **NEVER** journal a domain type or resolved secret in the step payload; journal opaque
   pre-serialized bytes passed by the consumer adapter. Consumers sanitize before calling `step()`.
-- **NEVER** call `journal.prune()` or any other bulk-write on the step dispatch hot path. Pruning
-  and compaction run exclusively in a background task on a timed interval.
+- **NEVER** call `journal.prune()`, `journal.sweep_orphans()`, or any other bulk-write on the step
+  dispatch hot path. Pruning, orphan reclamation, and compaction run exclusively in a background
+  task on a timed interval.
 - **NEVER** consume `Box<dyn ExecutionBackend>` on the hot path. Use `DurableBackendEnum` with
   enum dispatch — consistent with `AnyProvider`/`AnyChannel` precedent.
 - **NEVER** add a `restate` feature to the `full` bundle. Restate requires an external server;
@@ -232,6 +273,21 @@ binds `execution_id` (cipher.rs) and `IdempotencyKey::derive` already folds `exe
   (INV-15) when two processes could plausibly derive the same id (e.g. any id keyed on
   externally-observable state like `ConversationId` rather than a runtime-minted `UUIDv7`). Calling
   the unsynchronized `open_execution` directly from such an adapter reopens the #6122 race.
+- **NEVER** convert `zeph-durable/src/writer.rs` or `handle.rs`'s `open_execution` call sites to
+  `open_execution_exclusive`. These run in the same process that already holds the driving
+  adapter's `ExecutionLock`; `flock(2)` is associated with the open file description, so a second
+  `open()`+`flock` on the same lock file from the same process self-errors (`WOULDBLOCK` /
+  `ExecutionLocked`) against the live execution it is trying to serve, rather than protecting it
+  (#6254). Only the two named adapter entry points (`zeph-scheduler`'s `fire_with_durable`,
+  `zeph-orchestration`'s `journal_budget`) convert — see INV-17 and the P2/P3 adapter notes. Every
+  other `open_execution` call stays plain: it is either covered by the adapter's own lock for
+  cross-process liveness, or would deadlock if re-locked in-process.
+- **NEVER** ship a staleness-only crash-orphan abort (no INV-15 flock liveness check) for
+  `lock_dir=None` backends (Postgres, `:memory:`, non-Unix). Without a liveness signal, staleness
+  of `updated_at` alone cannot distinguish a dead execution from a live one — see INV-17. This is
+  an explicit Non-Goal of #6254 (documented no-op + warn-once); backend-agnostic reclamation for
+  these backends requires a different mechanism (heartbeat-timeout based) and is tracked as a
+  separate follow-up, not shipped in this PR.
 
 ---
 
@@ -259,6 +315,10 @@ binds `execution_id` (cipher.rs) and `IdempotencyKey::derive` already folds `exe
   - P3: scheduler exactly-once job fire via `JobStore.record_run()` seam.
   - P4: subagent durable spawn/await via `DurablePromise<SubagentResult>`.
 - Journal retention and compaction (background sweep, per-execution step cap).
+- Crash-orphan reclamation (#6254): a flock-verified staleness sweep (`Journal::sweep_orphans`)
+  that hard-aborts `running` executions whose owner process died without finalizing, folded into
+  the existing retention tick. See INV-16, INV-17, and the dedicated Retention & Compaction
+  subsection.
 - Mandatory integration points: `[durable]` config, `zeph durable` CLI, TUI `DurableView`,
   `--init` wizard, `--migrate-config`, testing playbook, coverage-status rows.
 - 10 criterion benchmarks + `bench_step_run_exactly_once_n ≤ 5 ms @ N=5` CI regression gate.
@@ -278,6 +338,16 @@ binds `execution_id` (cipher.rs) and `IdempotencyKey::derive` already folds `exe
 - Replacing existing persistence (`zeph-agent-persistence` messages, orchestration
   `GraphPersistence`, scheduler `JobStore`, subagent transcripts). The durable layer
   *complements* them with an execution-flow journal; it does not subsume them.
+- **Backend-agnostic crash-orphan reclamation for `lock_dir=None` backends** (Postgres, `:memory:`,
+  non-Unix) (#6254). The crash-orphan sweep requires the INV-15 advisory flock as its liveness
+  signal and is a documented no-op there (warn-once at startup: `"durable: crash-orphan sweep
+  requires an on-disk advisory-lock dir; orphan reclamation disabled for this backend
+  (Postgres/:memory:/non-Unix)"`). A backend-agnostic mechanism (heartbeat-timeout based, "option
+  c" in the design debate) is a distinct future mechanism — it is NOT shipped in this PR and is
+  tracked as a separate follow-up issue filed after this PR merges. Shipping a staleness-only abort
+  for these backends in the meantime is explicitly forbidden (see NEVER) — it would reintroduce a
+  false-abort-of-a-live-execution defect on the very backends where liveness cannot be verified.
+  `// TODO(post-v1): backend-agnostic (Postgres) crash-orphan reclamation via heartbeat timeout`
 
 ---
 
@@ -303,7 +373,7 @@ src/
   replay.rs           # ReplayCursor, ReplayDivergence check, range-read cursor
   writer.rs           # JournalWriter actor, JournalMsg enum, group-commit, ACK protocol
   cipher.rs           # PayloadCipher trait, PayloadAad, CipherError
-  retention.rs        # compaction/prune, in-execution step cap
+  retention.rs        # compaction/prune, crash-orphan sweep (#6254), in-execution step cap
   config.rs           # re-exports DurableConfig/RetentionPolicy/DurableBackend from zeph-config;
                       #   owns the EncryptionGate + encryption_gate AEAD policy (free fn)
   error.rs            # DurableError (thiserror)
@@ -370,8 +440,16 @@ trait Journal: Send + Sync {
     ) -> Result<Vec<JournalEntry>, DurableError>;
     async fn finalize(&self, id: ExecutionId, status: ExecutionStatus) -> Result<(), DurableError>;
     async fn prune(&self, policy: &RetentionPolicy) -> Result<u64, DurableError>;
+    /// Crash-orphan reclamation (#6254): flock-verify and hard-abort stale `running` rows.
+    /// Returns the count aborted. No-op (`Ok(0)`) on backends without a `lock_dir` (INV-17).
+    async fn sweep_orphans(&self, policy: &RetentionPolicy) -> Result<u64, DurableError>;
 }
 ```
+
+`sweep_orphans` is dispatched through `DurableBackendEnum` exactly like `prune` — the retention
+loop already holds `Arc<DurableBackendEnum>`. `LocalBackend` implements the real flock-probe logic
+(INV-17); `RestateBackend` returns `Ok(0)` (Restate has its own crash-recovery semantics, out of
+scope here).
 
 `read_execution_range` is the path for long executions (DAG runs, agent sessions). The
 `ReplayCursor` reads N steps ahead (default 100, configurable), re-queries as replay advances —
@@ -852,10 +930,69 @@ CREATE INDEX idx_durable_timers_due ON durable_timers(fired, due_at);
 | `max_journal_bytes` | 1073741824 (1 GiB) | Size cap; triggers LRU sweep |
 | `prune_batch_size` | 500 | Rows deleted per transaction; yield between batches |
 | `prune_interval_secs` | 3600 (1h) | Background task poll interval |
+| `stale_running_after_secs` | 3600 (1h) | Crash-orphan threshold (#6254): a `status='running'` row whose `updated_at` is older than this becomes a sweep candidate. Default 1h is generous enough that no genuinely-active long turn is ever a candidate before the flock check even runs, yet small enough that orphans re-enter retention within the hour. `0` disables the sweep. See Crash-Orphan Sweep below. |
 
 Background pruning NEVER runs on the dispatch/append hot path. A background tokio task runs
 `prune()` every `prune_interval_secs`. Pruning deletes in batches of `prune_batch_size` rows per
 transaction, releases the lock, yields, and loops — no large-transaction stall.
+
+#### Crash-Orphan Sweep (#6254)
+
+**Requirement.** An execution whose owner process exits ungracefully (SIGKILL, panic, OOM,
+power-loss) leaves its `durable_executions` row `status='running', finalized_at=NULL` forever — no
+graceful detach path runs, so the row is invisible to the TTL prune above (which only ever
+considers `finalized_at IS NOT NULL` rows) permanently. The sweep gives such crash-orphaned rows a
+terminal status so they re-enter the normal retention lifecycle.
+
+**Mechanism.** The same background task that runs `prune()` (the existing supervised retention
+loop — no new `TaskSupervisor` spawn site) calls `Journal::sweep_orphans(&policy)` **before**
+`prune()` on every tick:
+
+```
+tick:
+    backend.sweep_orphans(&policy).await   // NEW — must run before prune()
+    backend.prune(&policy).await           // existing
+```
+
+`sweep_orphans` (see INV-17 for the full invariant):
+1. If `policy.stale_running_after_secs == 0`, return `Ok(0)` (disabled).
+2. If the backend has no `lock_dir` (`:memory:`, Postgres, non-Unix), warn-once and return `Ok(0)`
+   — see Non-Goals and NEVER. This is a documented no-op, not a silent gap.
+3. Batch-scan (`prune_batch_size` rows per batch, yielding between batches — same discipline as
+   `prune`) `status='running' AND updated_at <= now - stale_running_after_secs`.
+4. For each candidate, non-blocking try-acquire its INV-15 `ExecutionLock`:
+   - `ExecutionLocked` (lock held) → live owner → skip.
+   - Acquired → no live owner → while still holding the lock, run
+     `UPDATE durable_executions SET status='aborted', finalized_at=now, updated_at=now WHERE
+     execution_id=? AND status='running' AND finalized_at IS NULL`, then release the lock.
+5. Return the count aborted.
+
+The sweep never deletes rows and never retries/resumes an orphan — it only finalizes. Deletion
+stays exclusively with `prune()`; resume stays exclusively with the pre-existing
+`ensure_session_durable_ctx` → `open_execution` replay path on the next legitimate open (INV-17).
+
+**Dispatch & Postgres compile-correctness (M1/M2).** `sweep_orphans` is a `Journal` trait method
+(see Journal trait above), dispatched through `DurableBackendEnum` — not called on `LocalBackend`
+directly. The new SQL (the candidate `SELECT` and the guarded abort `UPDATE`) MUST go through the
+project's `sql!()` macro so both queries compile and rewrite placeholders correctly under
+`--features postgres`, even though `sweep_orphans` is a `lock_dir=None` no-op on Postgres at
+runtime — the code path still has to compile there.
+
+**Ordering (M3 tick-safety).** The sweep MUST run before the same tick's `prune()` so a
+just-aborted orphan is visible to that tick's TTL check. With `ttl_failed_secs=0`, a freshly-swept
+orphan (`finalized_at = now`) becomes prune-eligible on that same tick (cutoff `now - 0 = now`,
+`finalized_at <= now` matches) — intended and harmless, since `0` already means "prune
+failed/aborted immediately."
+
+**Zero DB migrations.** `status`, `updated_at`, and `finalized_at` already exist on
+`durable_executions`; `'aborted'` is already a legal `CHECK` value. No new column, no new index —
+the existing `idx_durable_exec_status_time (status, finalized_at)` index already restricts the scan
+to `status='running'`; filtering the (small, bounded-by-live-concurrency) result set on `updated_at`
+in memory is cheap.
+
+**Observability.** Span `durable.retention.sweep_orphans` with an `aborted_count` attribute
+(mirrors `durable.journal.prune`), and a metric `durable.retention.orphans_aborted` — see Tracing
+Spans.
 
 **In-execution step cap:** `max_steps_per_execution` (default **10000**). On soft exceed
 (90% of cap): the `JournalWriter` forces a `Checkpoint` fold of the committed-idempotent prefix
@@ -929,6 +1066,20 @@ mechanism. This is not a new contribution — it documents existing behavior.
 auto-reload-and-resume on startup today; P2 does not add it. A future epic may wire that path;
 the durable journal provides the substrate.
 
+**Flock-liveness conversion (#6254, m1/m3).** `journal_budget`'s `DagRun` execution-open call
+converts from plain `open_execution` to `open_execution_exclusive`, holding the returned
+`ExecutionLock` as a local for the function's lifetime — this is what makes the row observable to
+the INV-17 crash-orphan sweep (its `budget_exec_id(graph_id, generation)` id is externally-derived
+from a monotonic save-generation, so exclusive is the structurally-correct call regardless of the
+sweep; see INV-15/#6122). `journal_budget` MUST keep passing `is_resume=false` into
+`build_budget_ctx` exactly as before — lock acquisition and the resume flag are orthogonal;
+converting the open call does not change the "always a fresh generation, never a resume" semantics
+of this path. On `DurableError::ExecutionLocked` (another live instance already owns this
+`graph_id`+`generation`), `journal_budget` MUST log and return `Ok(())` — skip journaling this
+budget snapshot, do not retry, do not surface an error. This is benign: the existing caller
+(`plan.rs:369`) already tolerates a missing snapshot (budget zeroes on next resume). A test MUST
+assert `ExecutionLocked` → `Ok(())`, not an error.
+
 ### P3 — Scheduler Exactly-Once (`zeph-scheduler`)
 
 Thin adapter in `zeph-scheduler` wrapping `JobStore.record_run()`. Each job fire opens an
@@ -942,6 +1093,19 @@ scheduled_fire_time_ms)`.
 - On crash recovery: intent-present + result-absent → `OnAmbiguous` per job class.
 
 Respects the invariant "fire via `message_queue` injection, never direct agent call."
+
+**Flock-liveness conversion (#6254, m1).** `fire_with_durable`'s `ScheduledJob` execution-open
+call converts from plain `open_execution` to `open_execution_exclusive`, holding the returned
+`ExecutionLock` as a local for the entire fire-body function (open → step → finalize) — this is
+what makes a slow-but-alive job (e.g. a multi-hour nightly job body, held as one `ctx.step`)
+correctly skip the INV-17 crash-orphan sweep instead of being false-aborted. Its id
+(`derive_execution_id(job_name, slot_ms)`) is externally-derivable, so exclusive is the
+structurally-correct call independent of the sweep — it also closes a latent double-drive gap
+where two scheduler daemons could otherwise both fire the same `job_name`+`slot_ms` (INV-15/#6122).
+On `DurableError::ExecutionLocked` (a peer daemon already owns this slot), the handler MUST log at
+info/debug and return `Ok(())` — skip this fire, do not retry (a retry risks a duplicate; the peer
+is already firing it), and MUST NOT map to `SchedulerError::TaskFailed`. A test MUST assert
+`ExecutionLocked` → `Ok(())`, not a task failure.
 
 ### P4 — Subagent Durable Promise (`zeph-subagent`)
 
@@ -1033,6 +1197,7 @@ max_executions = 10000
 max_journal_bytes = 1073741824      # 1 GiB
 prune_batch_size = 500
 prune_interval_secs = 3600
+stale_running_after_secs = 3600     # crash-orphan threshold (#6254); 0 disables the sweep
 
 # RestateBackend sub-table (only meaningful when backend = "restate" + feature = "restate")
 [durable.restate]
@@ -1063,7 +1228,7 @@ Analogous to `zeph schedule`. Connects directly to `durable.db`; no agent proces
 | `zeph durable show <execution_id>` | Show journal entries (metadata only by default; payload redacted) |
 | `zeph durable show <execution_id> --reveal` | Show with decrypted payload (WARNING printed) |
 | `zeph durable inspect <execution_id> --step <n>` | Inspect a single step entry |
-| `zeph durable prune [--dry-run]` | Force retention sweep |
+| `zeph durable prune [--dry-run]` | Force crash-orphan sweep, then TTL prune (#6254). `--dry-run` reports both counts separately: "N orphaned executions would be aborted" and "M would be pruned" |
 | `zeph durable resume <execution_id>` | Manual replay trigger (for supported execution kinds) |
 
 **Redaction rule (INV-5):** default output shows only: `entry_kind`, `step_id`, `effect_class`,
@@ -1081,12 +1246,20 @@ tokens are never shown without `--reveal`.
   - `Awaiting external completion…` (promise parked)
   - `Journal unavailable — non-durable mode` (ACK timeout degradation)
 
+**Crash-orphan sweep (#6254): minimal/no new TUI surface.** The sweep runs on the same background
+loop as `prune()`, which has no mandatory palette command today (only the optional `Pruning
+journal…` status line above). No new TUI command or palette entry is added for the sweep. If/when
+the retention task's status label is extended, it MAY read `Sweeping orphaned executions…` before
+`Pruning journal…`; this is optional polish, not a requirement.
+
 ### 3. `--init` Wizard
 
 Step in the interactive configuration wizard offering:
 1. Enable durable execution? (y/n, default n)
 2. Backend: `local` (default) | `restate`
-3. Retention defaults (accept defaults or customize TTL/size).
+3. Retention defaults (accept defaults or customize TTL/size). `stale_running_after_secs` (#6254)
+   is not individually surfaced here, consistent with the other `RetentionPolicy` fields — accepting
+   defaults includes it.
 4. (If backend = restate) Vault key configuration for `ZEPH_RESTATE_INGRESS_URL` and
    `ZEPH_RESTATE_API_KEY`.
 5. Generate `ZEPH_DURABLE_KEY` and store in age vault.
@@ -1096,6 +1269,16 @@ Step in the interactive configuration wizard offering:
 Migration step adds `[durable]` section with all defaults to existing configs. The migration is
 purely additive and default-off (`enabled = false`), so no behavior change on upgrade. Migration
 step is idempotent (skip if `[durable]` already present).
+
+**`stale_running_after_secs` field injection (#6254).** Two migration paths:
+1. Fresh migration (no `[durable]` present): the commented `[durable.retention]` block includes
+   `# stale_running_after_secs = 3600` alongside the other retention defaults.
+2. Existing, uncommented `[durable.retention]` table that predates #6254 and lacks the field: a
+   targeted field-injection step inserts `stale_running_after_secs = 3600` into it (path 1's
+   early-return on "`[durable]` already present" would otherwise skip this config forever). Because
+   the field is `#[serde(default)]`, a config that never runs this migration step still loads with
+   the correct default at runtime — the migration is a self-documentation convenience, not a
+   correctness requirement.
 
 ### 5. Testing Playbook
 
@@ -1120,6 +1303,22 @@ Must cover:
 9. **Promise resolution auth** — attempt resolution with wrong resolver token; verify rejection.
 10. **Key rotation** — rotate `ZEPH_DURABLE_KEY`; verify in-flight executions complete or drain
     cleanly.
+11. **Crash-orphan sweep (#6254)** — `kill -9` an agent process mid-turn; verify the
+    `durable_executions` row stays `status='running', finalized_at=NULL` (invisible to plain TTL
+    prune). Run `zeph durable prune` (or wait a tick with `stale_running_after_secs` lowered for
+    the test); verify the row flips to `status='aborted', finalized_at=<set>`. Separately, start a
+    live session and force a sweep tick while it is idle-but-alive (holding its
+    `ExecutionLock`); verify its row is NOT swept (still `running`, not aborted). Verify
+    `--dry-run` reports the orphan count without mutating state.
+12. **`ExecutionLocked` graceful skip (#6254, m1)** — for both the scheduler `ScheduledJob` and
+    orchestration `DagRun` adapters: with two processes contending for the same execution id
+    (same job+slot, or same graph+generation), verify the loser receives `DurableError::
+    ExecutionLocked` and the adapter returns `Ok(())` — no `SchedulerError::TaskFailed`, no error
+    surfaced, no retry.
+13. **Reopen unifies `aborted` (#6254, INV-16)** — abort an execution (via the sweep or via
+    divergence-recovery), then reopen its `ExecutionId` (e.g. resume the same `ConversationId`);
+    verify the row resets to `status='running', finalized_at=NULL` rather than staying finalized
+    and prune-eligible.
 
 ### 6. Coverage-Status Rows
 
@@ -1141,7 +1340,9 @@ Add to `/Users/rabax/Dev/zeph/.local/testing/coverage-status.md` with status `Un
 | P3 scheduler exactly-once | 3 |
 | P4 subagent durable promise | 4 |
 | Retention sweep | 5 |
-| `zeph durable` CLI | 1, 5 |
+| Crash-orphan sweep (#6254) | 11, 13 |
+| Scheduler/orchestration `ExecutionLocked` graceful skip (#6254) | 12 |
+| `zeph durable` CLI | 1, 5, 11 |
 | TUI `DurableView` + spinners | 1 |
 
 ---
@@ -1178,6 +1379,7 @@ Span naming convention: `<crate_short>.<subsystem>.<operation>`.
 | `durable.journal.read` | `execution_id`, `step_count` | Full read |
 | `durable.journal.read_segment` | `execution_id`, `from_step_id`, `count` | Range read (replaces full for long sessions) |
 | `durable.journal.prune` | `deleted_count` | Background sweep |
+| `durable.retention.sweep_orphans` | `aborted_count` | Crash-orphan sweep (#6254); runs immediately before `durable.journal.prune` each tick. Metric: `durable.retention.orphans_aborted`. |
 | `durable.journal.writer.queue_depth` | gauge value | Gauge event per commit cycle |
 | `durable.step.run` | `step_id`, `effect_class`, `replayed: bool` | Per step; `replayed` drives perf regression gate |
 | `durable.step.replay` | `step_id`, `effect_class` | Replay path only |
@@ -1221,12 +1423,12 @@ wiring; `zeph-durable` provides the key via `StepHandle`, not a config field.
 | **001** §10 concurrency | Single-threaded async; concurrent tasks, not parallel OS threads | `DurableContext` is `&self` + `AtomicU32`; concurrent `step()` calls are safe; `parallel()` uses `fetch_add(n)` for contiguous reserved blocks. |
 | **001** §13 DB backend | SQLite/Postgres parity; `zeph_db::DbPool`; all SQL through `sql!()` macro | Dedicated `durable.db` pool using `DatabaseDriver`/`DbPool`/`sql!()`; durable schema files in `zeph-db/migrations/` applied via `zeph_db::run_migrations`; Postgres variant uses same types. |
 | **001** §15 RuntimeLayer | `&self` hooks, non-fatal, observation-only | RuntimeLayer receives `StepOutcome::Replayed` to suppress double-print. No replay *control* flows through it. |
-| **009** orchestration | `GraphPersistence::save()` after every transition; `DagScheduler::resume_from` | P2 adds a parallel journal; `resume_from` restores replan counters from journal instead of zeroing. `pending_permits` use existing lazy re-acquisition. |
-| **018** scheduler | `JobStore.record_run()` sole persistence path | P3 wraps `record_run()` as a `DurableStep`; `JobStore` retains sole ownership of `scheduled_jobs`. |
+| **009** orchestration | `GraphPersistence::save()` after every transition; `DagScheduler::resume_from` | P2 adds a parallel journal; `resume_from` restores replan counters from journal instead of zeroing. `pending_permits` use existing lazy re-acquisition. #6254 converts `journal_budget`'s execution-open to `open_execution_exclusive`, making `DagRun` liveness observable to the crash-orphan sweep (INV-17); `ExecutionLocked` degrades to a graceful `Ok(())` skip, never a task failure. |
+| **018** scheduler | `JobStore.record_run()` sole persistence path | P3 wraps `record_run()` as a `DurableStep`; `JobStore` retains sole ownership of `scheduled_jobs`. #6254 converts `fire_with_durable`'s execution-open to `open_execution_exclusive`, making `ScheduledJob` liveness observable to the crash-orphan sweep (INV-17) and closing a latent cross-daemon double-fire gap; `ExecutionLocked` degrades to a graceful `Ok(())` skip, never `SchedulerError::TaskFailed`. |
 | **029** feature flags | Flags gate real optional deps; no behavioral markers | `restate` flag gates `dep:restate-sdk`. Core has no flag. |
 | **031** database abstraction | Single migration runner (`sqlx::migrate!` only in `zeph-db`); `DbPool` from `DatabaseDriver` | Dedicated `durable.db` pool (own `DbConfig::connect()` — valid precedent from `JobStore`). Schema files added to `zeph-db/migrations/{sqlite,postgres}/`; applied via `zeph_db::run_migrations(&durable_pool)`. `zeph-durable` owns NO `.sql` files and NO `sqlx::migrate!` — single source of truth preserved (031 §12). |
 | **038** vault | All secrets vault-resolved; `ZEPH_*` keys | `ZEPH_DURABLE_KEY`, `ZEPH_RESTATE_*` are vault-resolved; never inline TOML. |
-| **039** background-task-supervisor | Tracked via `TaskSupervisor`; supervised restart | `JournalWriter` tokio task is tracked via `zeph-common::TaskSupervisor` (the unified `JoinSet` wrapper, spec-039) under the daemon supervisor; on panic, supervisor restarts the writer, which re-reads the last committed `JournalSeq` and resumes (INV-12, FR-DE-12). |
+| **039** background-task-supervisor | Tracked via `TaskSupervisor`; supervised restart | `JournalWriter` tokio task is tracked via `zeph-common::TaskSupervisor` (the unified `JoinSet` wrapper, spec-039) under the daemon supervisor; on panic, supervisor restarts the writer, which re-reads the last committed `JournalSeq` and resumes (INV-12, FR-DE-12). #6254's crash-orphan sweep introduces NO new spawn site: it folds into the already-supervised retention loop (`sweep_orphans()` called before `prune()` each tick), inheriting that loop's existing `TaskSupervisor::spawn` restart policy at both existing spawn call sites. |
 | **044** subagent lifecycle | Transcript JSONL + `.meta.json` remains the human record | P4 adds a durable promise for control state; transcript unchanged. |
 | **057** agent persistence | `NEVER double-persist`; `sanitize_tool_pairs` discards orphans | P1 replays journaled steps (no re-insert). `Idempotent` step replay skips `op`. The discard becomes a resume (INV-10). |
 | **063** worktree subsystem | Subagent spawning, cwd isolation | P4 durable resume reuses the existing respawn path; CwdGuard discipline is unaffected. |
@@ -1255,6 +1457,12 @@ wiring; `zeph-durable` provides the key via `StepHandle`, not a config field.
 | FR-DE-13 | P2: `/plan resume <id>` MUST restore `task_replan_counts`, `global_replan_count`, `predicate_replans_used`, `predicate_reasons`, and `lineage_chains` from the journal. |
 | FR-DE-14 | P3: a scheduler job fire whose `EffectIntent` is journaled but `StepResult` is absent on restart MUST apply the job's configured `OnAmbiguous` policy; it MUST NOT unconditionally re-fire. |
 | FR-DE-15 | Payload encryption MUST use XChaCha20-Poly1305 with a fresh random 24-byte nonce per `seal`. Stored layout: `nonce(24B) \|\| ciphertext \|\| tag(16B)`. |
+| FR-DE-16 | (#6254) The crash-orphan sweep MUST abort a `status='running'` row with `updated_at <= now - stale_running_after_secs` ONLY after a non-blocking try-acquire of that execution's `ExecutionLock` succeeds; `ExecutionLocked` MUST short-circuit to skip (no abort). |
+| FR-DE-17 | (#6254) The sweep's abort `UPDATE` MUST run while still holding the acquired `ExecutionLock`, guarded by `WHERE execution_id=? AND status='running' AND finalized_at IS NULL`, and MUST run before that tick's `prune()` call. |
+| FR-DE-18 | (#6254) `stale_running_after_secs = 0` MUST disable the sweep entirely (`sweep_orphans` returns `Ok(0)` without scanning). |
+| FR-DE-19 | (#6254) On a backend with `lock_dir=None` (`:memory:`, Postgres, non-Unix), `sweep_orphans` MUST return `Ok(0)` and emit a warn-once log; it MUST NOT abort any row on staleness alone. |
+| FR-DE-20 | (#6254) `zeph-scheduler`'s `fire_with_durable` and `zeph-orchestration`'s `journal_budget` MUST open their execution via `open_execution_exclusive`; on `DurableError::ExecutionLocked` both MUST return `Ok(())` without retry and without surfacing a task-failure error. |
+| FR-DE-21 | (#6254) `open_execution`/`open_execution_exclusive`'s reopen path MUST reset `status='running'` and clear `finalized_at` for a row in ANY of `completed`, `failed`, or `aborted` — not only `completed`/`failed`. |
 
 ### Non-Functional Requirements (measurable)
 
@@ -1299,6 +1507,11 @@ wiring; `zeph-durable` provides the key via `StepHandle`, not a config field.
 
 // TODO(post-v1): auto crash-recovery on process start (no-arg resume of in-flight executions).
 // v1 fixes only the explicit /plan resume user command path (P2).
+
+// TODO(post-v1): backend-agnostic (Postgres/:memory:/non-Unix) crash-orphan reclamation via a
+// heartbeat-timeout signal ("option c"). #6254's sweep requires the INV-15 advisory flock as its
+// liveness signal and is a documented no-op on lock_dir=None backends. Tracked as a separate
+// follow-up issue filed after #6254 merges.
 ```
 
 ---
