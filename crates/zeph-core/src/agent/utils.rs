@@ -201,6 +201,11 @@ impl<C: Channel> Agent<C> {
             // 7+ times per turn, not once, so `timings.persist_message_ms` always keeps the
             // manual `Instant::now()` value computed in `agent/mod.rs`.
             m.bridge_timings_written = 0;
+            // `MetricsBridge::on_close` accumulates `llm_chat_ms` across every `chat_with_tools`
+            // span closed this turn (#6275). Reset it to 0 here, now that it has been read into
+            // `timings` above, so the next turn's accumulation starts fresh instead of adding
+            // onto this turn's total.
+            m.last_turn_timings.llm_chat_ms = 0;
         });
 
         if self.runtime.metrics.timing_window.len() >= 10 {
@@ -990,6 +995,41 @@ mod tests {
         assert_eq!(
             snap.bridge_timings_written, 0,
             "bitmask must be cleared after flush"
+        );
+    }
+
+    // #6275: `MetricsBridge::on_close` accumulates `last_turn_timings.llm_chat_ms` via
+    // `saturating_add` across every `chat_with_tools` span closed in a turn. Without resetting
+    // that field back to 0 once `flush_turn_timings` has read it, the next turn's accumulation
+    // would start on top of the previous turn's total instead of from zero — a slow, silent
+    // leak across turns rather than a one-turn glitch.
+    #[cfg(feature = "profiling")]
+    #[test]
+    fn flush_turn_timings_resets_bridge_llm_chat_ms_across_turns() {
+        let (mut agent, rx) = agent_with_metrics_watch();
+
+        // Turn 1: bridge reports a real chat_with_tools-derived duration.
+        if let Some(tx) = agent.runtime.metrics.metrics_tx.as_ref() {
+            tx.send_modify(|m| {
+                m.last_turn_timings.llm_chat_ms = 500;
+                m.bridge_timings_written = crate::metrics_bridge::TimingField::LlmChat.bridge_bit();
+            });
+        }
+        agent.runtime.metrics.pending_timings = make_timings(0, 0, 0, 0);
+        agent.flush_turn_timings();
+        assert_eq!(rx.borrow().last_turn_timings.llm_chat_ms, 500);
+
+        // Turn 2: no chat_with_tools span closes this turn (bridge does not mark the bit).
+        // `last_turn_timings.llm_chat_ms` must have been reset to 0 by turn 1's flush, so
+        // `MetricsBridge::on_close`'s `saturating_add` (if it fired again) would start fresh —
+        // and here, since it never fires, the field must simply read 0, not the stale 500.
+        agent.runtime.metrics.pending_timings = make_timings(0, 0, 0, 0);
+        agent.flush_turn_timings();
+
+        assert_eq!(
+            rx.borrow().last_turn_timings.llm_chat_ms,
+            0,
+            "llm_chat_ms must not leak turn 1's bridge value into turn 2 (#6275)"
         );
     }
 }

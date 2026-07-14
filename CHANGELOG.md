@@ -271,6 +271,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unnormalized `public_url` (trailing slash, stray path, explicit default port, mixed-case
   scheme/host) would otherwise silently 403 every request even from a correctly-behaving client,
   reintroducing S1's bug class on the server side (review finding M6).
+- **TUI/metrics**: the turn-latency panel (`latency ctx:… llm:… tool:… save:…`) showed
+  `llm:0ms` for tool-enabled turns even when the real LLM call took 25+ seconds. Root cause:
+  `MetricsBridge::WATCHED_SPANS` watched the bare `llm.chat` span, but every tool-enabled turn
+  (i.e. essentially every turn) dispatches through `chat_with_tools()` (`llm.chat_with_tools`)
+  instead — a span name `WATCHED_SPANS` never matched. The bare `llm.chat` span still fires from
+  several *auxiliary* call sites within the same turn (MARCH self-check, compaction probe, magic
+  docs, background learning, session digest, heuristic promotion), so whichever of those closed
+  last silently overwrote the correct manually-timed `chat_with_tools` duration with its own,
+  typically much smaller one. Fixed by watching `llm.chat_with_tools` instead of `llm.chat`
+  (mirroring the existing `persist_message_ms` exclusion rationale from #6111) and accumulating
+  (rather than overwriting) its duration across the multiple `chat_with_tools` calls a single
+  multi-round tool-loop turn can make. `llm.chat_with_tools` also fires from concurrent
+  in-process sub-agents and the scheduler's `RunInline` inline tool loop, neither of which
+  wraps the call in the main turn's `llm.turn_call` span — the bridge now scopes the `LlmChat`
+  field strictly to spans nested under `llm.turn_call`, so a sub-agent's or scheduler task's
+  own `chat_with_tools` timing can no longer inflate or corrupt the main turn's `llm_chat_ms`
+  (#6275, review follow-up).
+- **TUI/observability**: the `bg: N enrich, M telem` background-task status segment only
+  refreshed at the top of the next turn, so it stayed stale/invisible for the entire idle window
+  after a turn's response was sent — exactly when background enrichment/telemetry extraction
+  (spawned from `persist_message`) is actually running. Added a periodic `bg_metrics_tick`
+  (`LoopEvent::BgMetricsTick`, 2s interval) to the existing `Agent::next_event` `tokio::select!`
+  loop that reuses `reap_background_tasks_and_update_metrics` between turns, so the TUI now
+  reflects real in-flight background work continuously. No new `tokio::spawn`: the tick rides
+  the agent's own already-supervised event loop and is lazily constructed on first use since
+  `tokio::time::interval` requires an active Tokio runtime that plain-`#[test]`-constructed
+  agents do not have. Uses `tokio::time::interval_at` to defer the first tick by a full interval
+  rather than firing it immediately at construction — a plain `interval(..)` would have raced
+  the pre-existing channel-closed/shutdown `select!` arms on every agent startup, occasionally
+  forcing one spurious extra loop iteration before a closed channel was observed (#6279).
 - **CLI**: `--init` / `--migrate-config` were documented as top-level flags everywhere (both
   `CLAUDE.md` files, `.zeph/zeph.md`, `crates/zeph-config/AGENTS.md`, the worktree-disk-quota
   playbook, and `src/cli.rs`'s own doc comments) but only existed as `clap` subcommands (`zeph

@@ -244,6 +244,25 @@ fn lifecycle_state_last_no_providers_at_starts_none() {
     );
 }
 
+// ------------------------------------------------------------------
+// LifecycleState — bg_metrics_tick lazy construction (#6279)
+// ------------------------------------------------------------------
+
+/// `LifecycleState::new()` is a plain synchronous constructor called from many `#[test]`
+/// functions with no Tokio runtime active. `bg_metrics_tick` must stay `None` here and only be
+/// constructed lazily inside `Agent::next_event` (which always runs inside a runtime) — eagerly
+/// building the `tokio::time::Interval` in `new()` panics with "there is no reactor running"
+/// under a plain `#[test]`.
+#[test]
+fn lifecycle_state_bg_metrics_tick_starts_none() {
+    use crate::agent::state::LifecycleState;
+    let state = LifecycleState::new();
+    assert!(
+        state.bg_metrics_tick.is_none(),
+        "bg_metrics_tick must be None until lazily constructed by Agent::next_event (#6279)"
+    );
+}
+
 #[test]
 #[allow(clippy::unchecked_time_subtraction, clippy::nonminimal_bool)]
 fn lifecycle_state_last_no_providers_at_elapsed_check() {

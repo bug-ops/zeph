@@ -1034,3 +1034,77 @@ async fn heuristic_promotion_handle_not_set_when_disabled() {
         "no handle should be spawned when heuristic_promotion_enabled = false"
     );
 }
+
+/// Regression coverage for #6279 (updated for the review follow-up fix): a plain
+/// `tokio::time::interval(..)` fires its *first* tick immediately (standard `tokio` semantics),
+/// which — since `bg_metrics_tick` was lazily constructed on the very first `next_event()`
+/// call — raced the pre-existing channel-closed `select!` branch on every agent startup,
+/// empirically winning ~90% of the time (271/300 in a local run against a `MockChannel`) and
+/// forcing one spurious extra loop iteration before `Agent::run()` observed a closed channel.
+/// Fixed by constructing `bg_metrics_tick` via `tokio::time::interval_at(now +
+/// BG_METRICS_TICK_INTERVAL, ..)` instead, deferring the first fire by a full interval — see
+/// `crates/zeph-core/src/agent/tests/bg_metrics_tick_race_tests.rs` for a deterministic,
+/// paused-time proof of that specific mechanism (verified to fail if the constructor is
+/// reverted to plain `interval(..)`).
+///
+/// This test uses `PendingChannel` (a channel that never yields a message, unlike
+/// `MockChannel`'s empty-queue `recv()`, which resolves immediately to `Ok(None)` i.e.
+/// "closed") to isolate `bg_metrics_tick` from any other ready branch: with nothing else ever
+/// ready, `next_event()` still resolves via `BgMetricsTick` once virtual time auto-advances to
+/// the deferred deadline (`start_paused = true` makes tokio's test time driver jump forward to
+/// the next scheduled timer when there is no other progress to make) — confirming the tick
+/// still fires as a plain periodic signal post-fix, just no longer competing for the very first
+/// poll.
+#[tokio::test(start_paused = true)]
+async fn next_event_first_call_fires_bg_metrics_tick_once_deferred_tick_elapses() {
+    use crate::agent::loop_event::LoopEvent;
+
+    let provider = mock_provider(vec![]);
+    let channel = PendingChannel;
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+    // No explicit time advance in this test body: with no other branch ever ready, tokio's
+    // paused-time auto-advance jumps straight to the deferred tick's deadline.
+    let event = agent.next_event().await.unwrap();
+    assert!(
+        matches!(event, Some(LoopEvent::BgMetricsTick)),
+        "expected the first next_event() call to eventually fire BgMetricsTick \
+         (the only possible event on a PendingChannel), once its deferred first tick elapses"
+    );
+}
+
+/// Regression coverage for #6279: after the (now-deferred) first tick, subsequent ticks are
+/// still properly spaced `BG_METRICS_TICK_INTERVAL` apart — confirming the tick remains
+/// periodic post-fix, not a one-shot.
+#[tokio::test(start_paused = true)]
+async fn next_event_bg_metrics_tick_refires_after_interval() {
+    use crate::agent::loop_event::LoopEvent;
+    use crate::agent::state::BG_METRICS_TICK_INTERVAL;
+
+    let provider = mock_provider(vec![]);
+    let channel = PendingChannel;
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+    // Consume the (deferred) first tick.
+    let first = agent.next_event().await.unwrap();
+    assert!(matches!(first, Some(LoopEvent::BgMetricsTick)));
+
+    // Before the interval elapses, a bounded wait for the next tick must time out —
+    // the second tick is not yet due.
+    let too_early = tokio::time::timeout(BG_METRICS_TICK_INTERVAL / 2, agent.next_event()).await;
+    assert!(
+        too_early.is_err(),
+        "BgMetricsTick must not refire before BG_METRICS_TICK_INTERVAL has elapsed"
+    );
+
+    tokio::time::advance(BG_METRICS_TICK_INTERVAL).await;
+    let second = agent.next_event().await.unwrap();
+    assert!(
+        matches!(second, Some(LoopEvent::BgMetricsTick)),
+        "expected BgMetricsTick to refire after BG_METRICS_TICK_INTERVAL"
+    );
+}

@@ -49,4 +49,9 @@ pub(crate) enum LoopEvent {
 
     /// The autonomous goal driver tick fired; the agent should execute one autonomous turn.
     AutonomousTick,
+
+    /// Periodic background-metrics tick fired; refresh `bg_enrichment_inflight` /
+    /// `bg_telemetry_inflight` (and reap completed tasks) so the TUI status segment stays live
+    /// during idle time between turns, not only at the start of the next one (#6279).
+    BgMetricsTick,
 }

@@ -473,6 +473,10 @@ impl<C: Channel> Agent<C> {
                         }
                         continue;
                     }
+                    Some(LoopEvent::BgMetricsTick) => {
+                        self.reap_background_tasks_and_update_metrics();
+                        continue;
+                    }
                     Some(LoopEvent::Message(msg)) => {
                         self.services.session.is_guest_context = msg.is_guest_context;
                         self.drain_channel();
@@ -796,6 +800,33 @@ impl<C: Channel> Agent<C> {
             () = self.services.autonomous.next_tick(),
                 if self.services.autonomous.should_tick() => {
                 LoopEvent::AutonomousTick
+            }
+            // Periodic background-metrics refresh: keeps the TUI's bg status segment live
+            // during idle time between turns (#6279). Lazily constructed here (not in
+            // `LifecycleState::new()`) because `tokio::time::interval` requires an active Tokio
+            // runtime, which plain `#[test]`-constructed agents do not have.
+            //
+            // `interval_at(now + INTERVAL, ...)` defers the *first* tick by a full interval.
+            // Plain `tokio::time::interval()` fires its first tick immediately on construction,
+            // which — since this is lazily built on the very first `next_event()` poll — raced
+            // the pre-existing `self.channel.recv()`/shutdown branches on every agent startup:
+            // both were simultaneously ready and `tokio::select!` (unbiased here) could pick
+            // `BgMetricsTick`, forcing one spurious extra loop iteration before an
+            // already-closed/closing channel was observed (tester-found race).
+            _ = self
+                .runtime
+                .lifecycle
+                .bg_metrics_tick
+                .get_or_insert_with(|| {
+                    let mut iv = tokio::time::interval_at(
+                        tokio::time::Instant::now() + state::BG_METRICS_TICK_INTERVAL,
+                        state::BG_METRICS_TICK_INTERVAL,
+                    );
+                    iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    iv
+                })
+                .tick() => {
+                LoopEvent::BgMetricsTick
             }
         };
         Ok(Some(event))
@@ -1274,7 +1305,10 @@ impl<C: Channel> Agent<C> {
 
     /// Reap completed background tasks, apply summarization signal, and update supervisor metrics.
     ///
-    /// Called at the top of each turn, before any user message processing.
+    /// Called at the top of each turn, before any user message processing, and — since #6279 —
+    /// also on every `LoopEvent::BgMetricsTick` (a periodic idle-time tick), so the TUI's
+    /// background-work status segment reflects real in-flight enrichment/telemetry tasks
+    /// continuously, not only at turn boundaries.
     fn reap_background_tasks_and_update_metrics(&mut self) {
         let bg_signal = self.runtime.lifecycle.supervisor.reap();
         if bg_signal.did_summarize {

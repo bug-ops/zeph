@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{Notify, mpsc, watch};
 use tokio::time::Interval;
@@ -537,6 +537,16 @@ pub(crate) struct LifecycleState {
     /// Supervised background task manager. Owned by the agent; call `reap()` between turns
     /// and `abort_all()` on shutdown.
     pub(crate) supervisor: super::agent_supervisor::BackgroundSupervisor,
+    /// Ticks periodically so `Agent::next_event` refreshes `bg_enrichment_inflight` /
+    /// `bg_telemetry_inflight` (and reaps completed tasks) during idle time between turns, not
+    /// only at the top of the next turn. Background enrichment/telemetry tasks run *after* a
+    /// turn's response is sent (spawned from `persist_message`), so without this the TUI status
+    /// segment showing in-flight background work was invisible for the entire idle window (#6279).
+    ///
+    /// `None` until the first `Agent::next_event` call lazily constructs it: `tokio::time::interval`
+    /// requires an active Tokio runtime, but `LifecycleState::new()` is also called from plain
+    /// (non-`#[tokio::test]`) unit tests that construct an `Agent` outside any runtime.
+    pub(crate) bg_metrics_tick: Option<Interval>,
     /// Per-turn completion notifier. `None` when `notifications.enabled = false`.
     pub(crate) notifier: Option<crate::notifications::Notifier>,
     /// Per-turn LLM request counter. Incremented by `process_response`; reset at turn start.
@@ -1398,6 +1408,12 @@ impl SkillState {
     }
 }
 
+/// Interval between periodic `bg_metrics_tick` refreshes (#6279).
+///
+/// Short enough that the TUI's background-work status segment feels live during idle time
+/// between turns, long enough to be a negligible fraction of `BackgroundSupervisor::reap`'s cost.
+pub(crate) const BG_METRICS_TICK_INTERVAL: Duration = Duration::from_secs(2);
+
 impl LifecycleState {
     pub(crate) fn new() -> Self {
         let (_tx, rx) = watch::channel(false);
@@ -1423,6 +1439,7 @@ impl LifecycleState {
                 &crate::config::TaskSupervisorConfig::default(),
                 None,
             ),
+            bg_metrics_tick: None,
             notifier: None,
             turn_llm_requests: 0,
             last_no_providers_at: None,

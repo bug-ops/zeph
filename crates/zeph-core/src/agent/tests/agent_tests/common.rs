@@ -256,6 +256,33 @@ impl Channel for MockChannel {
     }
 }
 
+/// A [`Channel`] whose `recv()` never resolves.
+///
+/// Unlike `MockChannel` — whose `recv()` on an empty message queue resolves *immediately* to
+/// `Ok(None)` (i.e. "closed") — this channel keeps `next_event()`'s `channel.recv()` branch of
+/// `tokio::select!` permanently pending. Tests that need to observe a specific non-channel
+/// `tokio::select!` arm (e.g. a periodic tick) in isolation, without racing against the
+/// immediately-ready channel-closed branch, should use this instead of an empty `MockChannel`.
+pub(crate) struct PendingChannel;
+
+impl Channel for PendingChannel {
+    async fn recv(&mut self) -> Result<Option<ChannelMessage>, crate::channel::ChannelError> {
+        std::future::pending().await
+    }
+
+    async fn send(&mut self, _text: &str) -> Result<(), crate::channel::ChannelError> {
+        Ok(())
+    }
+
+    async fn send_chunk(&mut self, _chunk: &str) -> Result<(), crate::channel::ChannelError> {
+        Ok(())
+    }
+
+    async fn flush_chunks(&mut self) -> Result<(), crate::channel::ChannelError> {
+        Ok(())
+    }
+}
+
 pub(crate) struct MockToolExecutor {
     outputs: Arc<Mutex<Vec<ToolOutputResult>>>,
     pub(crate) captured_env: Arc<Mutex<Vec<EnvSnapshot>>>,
