@@ -58,6 +58,7 @@ status: moc
 - [[020-config-loading/spec|Config Loading]] — config resolution order, mode-agnostic defaults, environment overrides
 - [[022-config-simplification/spec|Provider Registry]] — see LLM Providers section above
 - [[037-config-schema/spec|Config Schema]] — canonical TOML section inventory, validation rules, env-var override table, migration mechanism for `zeph-config` crate
+- [[076-cli-init-migrate-config-flag-mismatch/spec|CLI Init/Migrate-Config Flag Mismatch]] — bug spec: `init`/`migrate-config` exist only as clap subcommands, but every mandatory doc (both CLAUDE.md files, `.zeph/zeph.md`, `crates/zeph-config/AGENTS.md`, a live-testing playbook, and `src/cli.rs`'s own doc comments) documents them as `--init`/`--migrate-config` flags; two remediation paths (flag-alias restoration per #587 precedent, or doc correction) left open for a future planning session
 
 ### Background Task Management
 - [[039-background-task-supervisor/spec|Supervised Background Task Manager]] — (proposed) AgentTaskSupervisor with JoinSet, task priority classes (Critical/Enrichment/Telemetry), queue depth limits, turn-boundary cleanup, metrics integration (`bg_inflight`, `bg_dropped`, `bg_completed`); addresses GitHub issue #2816
@@ -249,6 +250,7 @@ status: moc
 | 073 | [[073-orch-ensemble-merge/spec\|ORCH Ensemble-Merge]] | specify | approved |
 | 074 | [[074-orchestration-hitl-interrupt/spec\|Declarative HITL Interrupt]] | tasks | draft |
 | 075 | [[075-orchestration-node-control-parity/spec\|Node Timeout / Retry-Exhausted Recovery]] | tasks | approved |
+| 076 | [[076-cli-init-migrate-config-flag-mismatch/spec\|CLI Init/Migrate-Config Flag Mismatch]] | specify | draft |
 
 ---
 

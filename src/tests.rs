@@ -273,6 +273,65 @@ fn cli_parse_vault_partial_flags() {
 }
 
 #[test]
+fn cli_parse_init_flag_alias() {
+    let cli = Cli::try_parse_from(["zeph", "--init"]).unwrap();
+    assert!(cli.init);
+    assert!(cli.command.is_none());
+}
+
+#[test]
+fn cli_parse_migrate_config_flag_alias() {
+    let cli = Cli::try_parse_from([
+        "zeph",
+        "--migrate-config",
+        "--config",
+        "x.toml",
+        "--in-place",
+    ])
+    .unwrap();
+    assert!(cli.migrate_config);
+    assert!(cli.in_place);
+    assert!(!cli.diff);
+    assert_eq!(cli.config.unwrap(), PathBuf::from("x.toml"));
+}
+
+#[test]
+fn cli_parse_migrate_config_flag_alias_diff() {
+    let cli = Cli::try_parse_from(["zeph", "--migrate-config", "--diff"]).unwrap();
+    assert!(cli.migrate_config);
+    assert!(cli.diff);
+}
+
+#[test]
+fn cli_parse_init_subcommand_still_works_alongside_flag_alias() {
+    let cli = Cli::try_parse_from(["zeph", "init"]).unwrap();
+    assert!(matches!(cli.command, Some(Command::Init { output: None })));
+    assert!(!cli.init);
+}
+
+#[test]
+fn cli_parse_migrate_config_subcommand_still_works_alongside_flag_alias() {
+    let cli = Cli::try_parse_from(["zeph", "migrate-config", "--diff"]).unwrap();
+    match cli.command {
+        Some(Command::MigrateConfig { diff, .. }) => assert!(diff),
+        _ => panic!("expected MigrateConfig subcommand"),
+    }
+    assert!(!cli.migrate_config);
+}
+
+#[test]
+fn cli_parse_in_place_without_migrate_config_flag_errors() {
+    let result = Cli::try_parse_from(["zeph", "--in-place"]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn cli_parse_diff_without_migrate_config_flag_errors() {
+    let result = Cli::try_parse_from(["zeph", "--diff"]);
+    assert!(result.is_err());
+}
+
+#[test]
 fn build_config_ollama_defaults() {
     use crate::init::{WizardState, build_config};
 

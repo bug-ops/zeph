@@ -202,6 +202,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **CLI**: `--init` / `--migrate-config` were documented as top-level flags everywhere (both
+  `CLAUDE.md` files, `.zeph/zeph.md`, `crates/zeph-config/AGENTS.md`, the worktree-disk-quota
+  playbook, and `src/cli.rs`'s own doc comments) but only existed as `clap` subcommands (`zeph
+  init`, `zeph migrate-config`), so any session following the documented syntax hit a clap
+  "unexpected argument" error. Added `--init`, `--migrate-config`, `--in-place`, and `--diff` as
+  top-level `Cli` flags, coexisting with the unchanged `init`/`migrate-config` subcommands (same
+  pattern already proven by `--vault`/`vault`) and routed in `runner.rs` to the identical handler
+  functions the subcommand arms call — no duplicated business logic. `--in-place`/`--diff` now
+  `requires = "migrate_config"`, so using them without `--migrate-config` is a clean clap error
+  instead of silently falling through to the interactive agent (#6277).
 - **Docs**: fixed 11 stale Claude model ID examples across 5 mdBook pages (`acp.md`,
   `sub-agents.md`, `experiments.md`, `wizard.md`, `configuration.md`) that still used the
   outdated `claude-sonnet-4-5`/`claude-sonnet-4-20250514` naming (incorrectly pairing the

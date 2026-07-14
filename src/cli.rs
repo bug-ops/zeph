@@ -98,6 +98,31 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "PATH")]
     pub(crate) vault_path: Option<PathBuf>,
 
+    /// Run the interactive configuration wizard, then exit (flag alias for the `init` subcommand).
+    ///
+    /// Equivalent to `zeph init` with no `--output`. To choose an output path, use the subcommand
+    /// form `zeph init --output <PATH>`. If both this flag and the `init` subcommand are supplied,
+    /// the flag takes precedence and the subcommand is not consulted.
+    #[arg(long)]
+    pub(crate) init: bool,
+
+    /// Add missing config parameters as commented-out entries, then exit (flag alias for the
+    /// `migrate-config` subcommand).
+    ///
+    /// Select the file with the top-level `--config <PATH>`; combine with `--in-place` / `--diff`.
+    /// If both this flag and the `migrate-config` subcommand are supplied, the flag takes
+    /// precedence and the subcommand's own args are not consulted.
+    #[arg(long = "migrate-config")]
+    pub(crate) migrate_config: bool,
+
+    /// Write the migrated config back to the source file. Requires `--migrate-config`.
+    #[arg(long, requires = "migrate_config")]
+    pub(crate) in_place: bool,
+
+    /// Show a unified diff instead of full output. Requires `--migrate-config`.
+    #[arg(long, requires = "migrate_config")]
+    pub(crate) diff: bool,
+
     /// Enable Claude thinking mode: `extended:<budget_tokens>` or `adaptive` or `adaptive:<effort>`
     /// where effort is `low`, `medium`, or `high`. Overrides config.toml thinking setting.
     /// Examples: `--thinking extended:10000`  `--thinking adaptive`  `--thinking adaptive:high`

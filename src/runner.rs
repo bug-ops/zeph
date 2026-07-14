@@ -844,6 +844,18 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         );
     }
 
+    // Flag aliases for the init / migrate-config subcommands (spec-076, #6277). Route to the exact
+    // same handlers as the subcommand arms below — no forked logic. If both a flag and its
+    // matching subcommand are supplied, the flag wins (documented in the `Cli` doc comments).
+    if cli.init {
+        return crate::init::run(None);
+    }
+    if cli.migrate_config {
+        let resolved = resolve_config_path(cli.config.as_deref());
+        return crate::commands::migrate::handle_migrate_config(&resolved, cli.in_place, cli.diff)
+            .map(|_summary| ());
+    }
+
     match cli.command {
         Some(Command::Init { output }) => return crate::init::run(output),
         Some(Command::Vault { command: vault_cmd }) => {
