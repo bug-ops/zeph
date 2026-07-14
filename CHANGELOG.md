@@ -135,6 +135,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   regression test proving skill-config wiring reaches the built `Agent`; added
   `build_acp_agent_wires_skill_matching_config` to close that gap. Pure internal refactor — the
   extracted chain is byte-identical to the original, moved verbatim (#6221).
+- **Core**: `Agent::rebuild_system_prompt` (`crates/zeph-core/src/agent/context/assembly.rs`)
+  now issues exactly one `SQLite` `load_skill_outcome_stats()` query and at most one
+  turn-`query` embedding call per turn, down from up to three each. The skill-outcome-stats row
+  set is fetched once and shared by reference between the trust/RL rerank `metrics_map` in
+  `match_and_rank_skills`, the `health_map` used for `format_active_skills_prompt`'s XML
+  attributes, and `apply_skill_confidence_metrics` (new, split out of
+  `update_skill_confidence_metrics` in `crates/zeph-core/src/agent/learning/mod.rs` — the pure
+  stats-to-`metrics.skill_confidence` transform, so `rebuild_system_prompt` no longer triggers
+  that function's own independent `load_skill_outcome_stats()` fetch; its other two callers,
+  `record_skill_outcomes` and `flush_skill_outcomes`, are unchanged and still fetch internally
+  via `update_skill_confidence_metrics`). The turn query's embedding (against the default
+  `self.embedding_provider`) is computed lazily on first need and cached per-turn (new
+  `QueryEmbedCache`, threaded through `match_and_rank_skills`, `discover_mcp_tools_for_turn`,
+  and `filter_tool_schemas_for_turn`), reused by the RL skill rerank, MCP semantic tool
+  discovery, and tool schema filter steps whenever they resolve to that same provider; a
+  consumer with an explicitly configured distinct provider (e.g. MCP `discovery_provider`)
+  still issues its own fresh `embed()` call. Pure data-reuse refactor — no change to the
+  resulting `metrics_map`/`health_map`/`skill_confidence` contents or to per-consumer fallback
+  behavior. One caveat: a transient `embed()` timeout for the first consumer that needs it now
+  denies a retry to later same-turn consumers sharing the cache (previously each retried
+  independently) — an accepted hot-path trade-off, not a correctness issue (#6266, #6267).
 
 ### Removed
 

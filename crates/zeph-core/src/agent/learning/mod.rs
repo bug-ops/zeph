@@ -208,6 +208,11 @@ impl<C: Channel> Agent<C> {
         true
     }
 
+    /// Fetches skill outcome stats and applies them to `metrics.skill_confidence`. Used by
+    /// callers that don't already have the stats in scope (`record_skill_outcomes`,
+    /// `flush_skill_outcomes`). `rebuild_system_prompt` instead calls
+    /// [`Self::apply_skill_confidence_metrics`] directly with its own single per-turn fetch,
+    /// to avoid a second `load_skill_outcome_stats()` query on that hot path (#6266).
     pub(crate) async fn update_skill_confidence_metrics(&self) {
         let Some(memory) = &self.services.memory.persistence.memory else {
             return;
@@ -215,6 +220,17 @@ impl<C: Channel> Agent<C> {
         let Ok(stats) = memory.sqlite().load_skill_outcome_stats().await else {
             return;
         };
+        self.apply_skill_confidence_metrics(&stats);
+    }
+
+    /// Applies already-fetched skill outcome stats to `metrics.skill_confidence`, without
+    /// querying `SQLite`. Pure data transform, split out of
+    /// [`Self::update_skill_confidence_metrics`] so `rebuild_system_prompt` can reuse its own
+    /// per-turn `load_skill_outcome_stats()` fetch instead of triggering a second query (#6266).
+    pub(crate) fn apply_skill_confidence_metrics(
+        &self,
+        stats: &[zeph_memory::store::SkillMetricsRow],
+    ) {
         let confidences: Vec<crate::metrics::SkillConfidence> = stats
             .iter()
             .map(|s| {

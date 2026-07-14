@@ -86,6 +86,22 @@ fn should_inject_caveman_directive(
     !body_included
 }
 
+/// Per-turn cache slot for the turn query embedded against `Agent::embedding_provider`
+/// (#6267). Shared by [`Agent::query_embedding_cached`] across the RL skill rerank, MCP
+/// semantic tool discovery, and tool schema filter steps of `rebuild_system_prompt` so the
+/// identical `embed()` call is issued at most once per turn instead of once per consumer.
+#[derive(Clone, Default)]
+enum QueryEmbedCache {
+    /// Not yet attempted this turn.
+    #[default]
+    Empty,
+    /// Attempted and failed (timeout or provider error) — cached so later consumers don't
+    /// each retry independently.
+    Failed,
+    /// Attempted and succeeded.
+    Ready(Vec<f32>),
+}
+
 impl<C: Channel> Agent<C> {
     /// Construct a `ProviderHandles` bundle from the agent's primary and embedding providers.
     pub(in crate::agent) fn providers(&self) -> zeph_agent_context::state::ProviderHandles {
@@ -722,6 +738,7 @@ impl<C: Channel> Agent<C> {
     }
 
     #[tracing::instrument(name = "core.context.rebuild_system_prompt", skip_all, level = "debug")]
+    #[allow(clippy::too_many_lines)] // sequential per-turn setup: skill match + stats/embed cache fetch + MCP/schema filter dispatch
     pub(in crate::agent) async fn rebuild_system_prompt(&mut self, query: &str) {
         let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
             .services
@@ -739,8 +756,37 @@ impl<C: Channel> Agent<C> {
         let rewritten_query = self.rewrite_query_for_skill_matching(query).await;
         let effective_query = rewritten_query.as_deref().unwrap_or(query);
 
+        // Fetch skill outcome stats once per turn (#6266): the raw SQLite rows feed the
+        // trust/RL rerank `metrics_map` inside `match_and_rank_skills`, `health_map` used below
+        // for `format_active_skills_prompt`'s XML attributes, and
+        // `apply_skill_confidence_metrics` below. All three are pure derivations of the same
+        // query with no mutation in between, so a single fetch here, shared by reference then
+        // consumed, replaces what were previously up to three independent queries per turn.
+        let skill_outcome_stats: Vec<zeph_memory::store::SkillMetricsRow> =
+            if let Some(memory) = &self.services.memory.persistence.memory {
+                memory
+                    .sqlite()
+                    .load_skill_outcome_stats()
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+        // Per-turn cache for the turn `query` embedded against `self.embedding_provider`
+        // (#6267): reused by the RL skill rerank, MCP semantic tool discovery, and the tool
+        // schema filter whenever they resolve to this same default provider. See
+        // `QueryEmbedCache` for the cache-state semantics.
+        let mut query_embed_cache = QueryEmbedCache::default();
+
         let (matched_indices, skill_fallback_mode, skills_to_record) = self
-            .match_and_rank_skills(query, effective_query, &all_meta)
+            .match_and_rank_skills(
+                query,
+                effective_query,
+                &all_meta,
+                &skill_outcome_stats,
+                &mut query_embed_cache,
+            )
             .await;
         let matched_indices = self.filter_skills_missing_secrets(&all_meta, matched_indices);
 
@@ -764,7 +810,9 @@ impl<C: Channel> Agent<C> {
                 tracing::warn!("failed to record skill usage: {e:#}");
             }
         }
-        self.update_skill_confidence_metrics().await;
+        // Reuses the single per-turn `skill_outcome_stats` fetch from above (#6266) instead of
+        // triggering `update_skill_confidence_metrics`'s own `load_skill_outcome_stats()` query.
+        self.apply_skill_confidence_metrics(&skill_outcome_stats);
 
         let (all_skills, active_skills, matched_indices) =
             self.load_and_filter_skills_by_channel(&all_meta, &matched_indices);
@@ -774,26 +822,18 @@ impl<C: Channel> Agent<C> {
             .await;
 
         // Build health_map: skill_name -> (posterior_mean, total_uses) for XML attributes.
-        let health_map: std::collections::HashMap<String, (f64, u32)> = if let Some(memory) =
-            &self.services.memory.persistence.memory
-        {
-            memory
-                .sqlite()
-                .load_skill_outcome_stats()
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|m| {
-                    let successes = u32::try_from(m.successes).unwrap_or(0);
-                    let failures = u32::try_from(m.failures).unwrap_or(0);
-                    let total = successes + failures;
-                    let posterior = zeph_skills::trust_score::posterior_mean(successes, failures);
-                    (m.skill_name, (posterior, total))
-                })
-                .collect()
-        } else {
-            std::collections::HashMap::new()
-        };
+        // Reuses the single `skill_outcome_stats` fetch from above (#6266) instead of
+        // re-querying SQLite.
+        let health_map: std::collections::HashMap<String, (f64, u32)> = skill_outcome_stats
+            .into_iter()
+            .map(|m| {
+                let successes = u32::try_from(m.successes).unwrap_or(0);
+                let failures = u32::try_from(m.failures).unwrap_or(0);
+                let total = successes + failures;
+                let posterior = zeph_skills::trust_score::posterior_mean(successes, failures);
+                (m.skill_name, (posterior, total))
+            })
+            .collect();
 
         let (mut skills_prompt, effective_mode) = self.format_active_skills_prompt(
             &active_skills,
@@ -823,12 +863,16 @@ impl<C: Channel> Agent<C> {
         // Strategy dispatch: Embedding (new), Llm (existing prune_tools_cached), None (all).
         // Runs before the schema filter so the selected subset feeds into the combined
         // (native + MCP) tool set that the schema filter operates on.
-        self.discover_mcp_tools_for_turn(query).await;
+        self.discover_mcp_tools_for_turn(query, &mut query_embed_cache)
+            .await;
 
         // Dynamic tool schema filtering (#2020): compute once per turn, cache for native path.
-        // Query embedding is computed here; when strategy=Embedding already computed it above,
-        // but providers are stateless so a second embed() call is acceptable for MVP.
-        self.filter_tool_schemas_for_turn(query).await;
+        // Reuses `query_embed_cache` (#6267) — this step always embeds against the default
+        // `self.embedding_provider`, same as the MCP discovery step above when no distinct
+        // `discovery_provider` is configured, so the identical query embedding is shared
+        // instead of issuing a second embed() call.
+        self.filter_tool_schemas_for_turn(query, &mut query_embed_cache)
+            .await;
 
         self.assemble_final_system_prompt(
             query,
@@ -1055,12 +1099,63 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Returns the embedding of `query` against `self.embedding_provider`, computing it at
+    /// most once per turn and caching the outcome in `cache` (#6267). Reused by any consumer
+    /// configured to use the default embedding provider — the RL skill rerank, MCP semantic
+    /// tool discovery, and tool schema filter steps of `rebuild_system_prompt` all embed the
+    /// identical turn `query` text. Bounded by `timeouts.embedding_seconds`.
+    ///
+    /// A consumer with an explicitly configured distinct provider (e.g. MCP
+    /// `discovery_provider`) MUST NOT use this cache — it must issue its own `embed()` call
+    /// against that provider, since reusing an embedding computed by a different provider
+    /// would silently mix embedding spaces.
+    ///
+    /// A cache hit on a prior failure (`QueryEmbedCache::Failed`) returns `None` without
+    /// logging again — the failure reason (timeout or provider error) is logged once, at the
+    /// point this is first computed. Call sites are expected to log their own
+    /// consumer-specific fallback behavior when this returns `None`.
+    async fn query_embedding_cached(
+        &self,
+        query: &str,
+        cache: &mut QueryEmbedCache,
+    ) -> Option<Vec<f32>> {
+        match cache {
+            QueryEmbedCache::Ready(v) => return Some(v.clone()),
+            QueryEmbedCache::Failed => return None,
+            QueryEmbedCache::Empty => {}
+        }
+        let embed_timeout =
+            std::time::Duration::from_secs(self.runtime.config.timeouts.embedding_seconds);
+        match tokio::time::timeout(embed_timeout, self.embedding_provider.embed(query)).await {
+            Ok(Ok(v)) => {
+                *cache = QueryEmbedCache::Ready(v.clone());
+                Some(v)
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("query embed failed: {e:#}");
+                *cache = QueryEmbedCache::Failed;
+                None
+            }
+            Err(_elapsed) => {
+                tracing::warn!("query embed timed out after {embed_timeout:?}");
+                *cache = QueryEmbedCache::Failed;
+                None
+            }
+        }
+    }
+
     /// Runs embedding-based skill matching for `effective_query` against `all_meta`:
     /// BM25 fusion (if enabled), trust-score rerank, RL-head rerank (past warmup only),
     /// and disambiguation when the top-2 scores are within `disambiguation_threshold`.
     ///
     /// `query` (the pre-rewrite original) is required separately because disambiguation
     /// prompts use the original wording, not the rewritten retrieval query.
+    ///
+    /// `skill_outcome_stats` is the single per-turn fetch from `rebuild_system_prompt` (#6266);
+    /// this function derives its `metrics_map` from it rather than re-querying `SQLite`.
+    /// `query_embed_cache` is the shared per-turn embedding of `query` against
+    /// `self.embedding_provider` (#6267), populated lazily by the RL rerank branch below and
+    /// reused by the MCP discovery / tool schema filter steps that run after this call returns.
     ///
     /// Returns `(matched_indices, skill_fallback_mode, skills_to_record)`:
     /// - `matched_indices` — indices into `all_meta` selected this turn (all indices when
@@ -1075,6 +1170,8 @@ impl<C: Channel> Agent<C> {
         query: &str,
         effective_query: &str,
         all_meta: &[&SkillMeta],
+        skill_outcome_stats: &[zeph_memory::store::SkillMetricsRow],
+        query_embed_cache: &mut QueryEmbedCache,
     ) -> (Vec<usize>, bool, Vec<String>) {
         let mut skills_to_record: Vec<String> = Vec::new();
 
@@ -1141,25 +1238,19 @@ impl<C: Channel> Agent<C> {
                     matcher.refresh_skill_embeddings(all_meta, &scored).await;
                 }
 
+                // Derived from the single per-turn `skill_outcome_stats` fetch (#6266) rather
+                // than re-querying SQLite here.
                 let metrics_map: std::collections::HashMap<String, (u32, u32)> =
-                    if let Some(memory) = &self.services.memory.persistence.memory {
-                        memory
-                            .sqlite()
-                            .load_skill_outcome_stats()
-                            .await
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|m| {
-                                let pair = (
-                                    u32::try_from(m.successes).unwrap_or(0),
-                                    u32::try_from(m.failures).unwrap_or(0),
-                                );
-                                (m.skill_name, pair)
-                            })
-                            .collect()
-                    } else {
-                        std::collections::HashMap::new()
-                    };
+                    skill_outcome_stats
+                        .iter()
+                        .map(|m| {
+                            let pair = (
+                                u32::try_from(m.successes).unwrap_or(0),
+                                u32::try_from(m.failures).unwrap_or(0),
+                            );
+                            (m.skill_name.clone(), pair)
+                        })
+                        .collect();
                 zeph_skills::trust_score::rerank(
                     &mut scored,
                     self.services.skill.cosine_weight,
@@ -1172,26 +1263,18 @@ impl<C: Channel> Agent<C> {
                     },
                 );
 
-                // SkillOrchestra: RL routing head re-rank (past warmup only).
+                // SkillOrchestra: RL routing head re-rank (past warmup only). Reuses the
+                // shared per-turn query embedding cache (#6267) — this branch always embeds
+                // against the default `self.embedding_provider`, so it can share the same
+                // cache slot as the MCP discovery / tool schema filter steps.
                 let rl_query_embed = if self.services.skill.rl_head.is_some() {
-                    let rl_embed_timeout = std::time::Duration::from_secs(
-                        self.runtime.config.timeouts.embedding_seconds,
-                    );
-                    match tokio::time::timeout(
-                        rl_embed_timeout,
-                        self.embedding_provider.embed(query),
-                    )
-                    .await
-                    {
-                        Ok(Ok(v)) => Some(v),
-                        Ok(Err(_)) => None,
-                        Err(_elapsed) => {
-                            tracing::warn!(
-                                "rl_head: embed() timed out, skipping RL re-rank this turn"
-                            );
-                            None
-                        }
+                    let embed = self.query_embedding_cached(query, query_embed_cache).await;
+                    if embed.is_none() {
+                        tracing::warn!(
+                            "rl_head: query embed unavailable, skipping RL re-rank this turn"
+                        );
                     }
+                    embed
                 } else {
                     None
                 };
@@ -1654,8 +1737,19 @@ impl<C: Channel> Agent<C> {
     ///
     /// Runs before the schema filter so the selected subset feeds into the combined
     /// (native + MCP) tool set that the schema filter operates on.
+    ///
+    /// `query_embed_cache` is the shared per-turn query embedding cache (#6267). When no
+    /// distinct `discovery_provider` is configured this step resolves to the default
+    /// `self.embedding_provider` and shares the cache with the RL skill rerank / tool schema
+    /// filter steps; an explicitly configured distinct `discovery_provider` always issues its
+    /// own fresh `embed()` call instead, since reusing an embedding from a different provider
+    /// would silently mix embedding spaces.
     #[allow(clippy::too_many_lines)] // strategy dispatch (Embedding/Llm/None) with per-strategy fallback handling
-    async fn discover_mcp_tools_for_turn(&mut self, query: &str) {
+    async fn discover_mcp_tools_for_turn(
+        &mut self,
+        query: &str,
+        query_embed_cache: &mut QueryEmbedCache,
+    ) {
         if !self.services.mcp.tools.is_empty() {
             match self.services.mcp.discovery_strategy {
                 zeph_mcp::ToolDiscoveryStrategy::Embedding => {
@@ -1664,31 +1758,50 @@ impl<C: Channel> Agent<C> {
                         // Below threshold — skip filtering.
                         self.services.mcp.sync_executor_tools();
                     } else if let Some(ref index) = self.services.mcp.semantic_index {
-                        // Resolve embedding provider for query.
-                        let embed_provider = self
-                            .services
-                            .mcp
-                            .discovery_provider
-                            .clone()
-                            .unwrap_or_else(|| self.embedding_provider.clone());
                         self.channel
                             .send_status_best_effort("selecting tools...")
                             .await;
-                        let embed_timeout = std::time::Duration::from_secs(
-                            self.runtime.config.timeouts.embedding_seconds,
-                        );
-                        let embed_outcome =
-                            tokio::time::timeout(embed_timeout, embed_provider.embed(query)).await;
-                        match embed_outcome {
-                            Err(_elapsed) => {
-                                tracing::warn!(
-                                    "semantic tool discovery: embed() timed out, falling back to all tools"
-                                );
-                                if !params.strict {
-                                    self.services.mcp.sync_executor_tools();
+                        let query_emb = if let Some(ref discovery_provider) =
+                            self.services.mcp.discovery_provider
+                        {
+                            // Explicitly configured distinct provider — must not share the
+                            // default-provider cache (#6267).
+                            let embed_timeout = std::time::Duration::from_secs(
+                                self.runtime.config.timeouts.embedding_seconds,
+                            );
+                            match tokio::time::timeout(
+                                embed_timeout,
+                                discovery_provider.embed(query),
+                            )
+                            .await
+                            {
+                                Ok(Ok(v)) => Some(v),
+                                Ok(Err(e)) => {
+                                    tracing::warn!(
+                                        strict = params.strict,
+                                        "semantic tool discovery: query embed failed, falling back to all tools: {e:#}"
+                                    );
+                                    None
+                                }
+                                Err(_elapsed) => {
+                                    tracing::warn!(
+                                        "semantic tool discovery: embed() timed out, falling back to all tools"
+                                    );
+                                    None
                                 }
                             }
-                            Ok(Ok(query_emb)) => {
+                        } else {
+                            let embed = self.query_embedding_cached(query, query_embed_cache).await;
+                            if embed.is_none() {
+                                tracing::warn!(
+                                    strict = params.strict,
+                                    "semantic tool discovery: query embed unavailable, falling back to all tools"
+                                );
+                            }
+                            embed
+                        };
+                        match query_emb {
+                            Some(query_emb) => {
                                 let selected = index.select(
                                     &query_emb,
                                     params.top_k,
@@ -1702,17 +1815,13 @@ impl<C: Channel> Agent<C> {
                                 );
                                 self.services.mcp.apply_pruned_tools(selected);
                             }
-                            Ok(Err(e)) => {
-                                tracing::warn!(
-                                    strict = params.strict,
-                                    "semantic tool discovery: query embed failed, falling back to all tools: {e:#}"
-                                );
-                                if !params.strict {
-                                    self.services.mcp.sync_executor_tools();
-                                }
+                            None => {
                                 // strict=true: do not sync — executor retains whatever tools it had
                                 // (either previously synced or empty). The turn will proceed without
                                 // MCP tools rather than silently degrading to the full unfiltered set.
+                                if !params.strict {
+                                    self.services.mcp.sync_executor_tools();
+                                }
                             }
                         }
                         self.channel.send_status_best_effort("").await;
@@ -1773,10 +1882,17 @@ impl<C: Channel> Agent<C> {
 
     /// Computes the per-turn dynamic tool schema filter (#2020) plus dependency-graph
     /// gating, caching the result into `self.services.tool_state.cached_filtered_tool_ids`.
-    /// Always clears the cache first; a fresh `embed()` call is made even when the MCP
-    /// Embedding discovery strategy already computed one this turn (providers are
-    /// stateless — accepted as MVP duplication per the existing code comment).
-    async fn filter_tool_schemas_for_turn(&mut self, query: &str) {
+    /// Always clears the cache first.
+    ///
+    /// `query_embed_cache` is the shared per-turn query embedding cache (#6267): this step
+    /// always embeds against the default `self.embedding_provider`, so it reuses whatever the
+    /// RL skill rerank / MCP discovery steps already computed this turn instead of issuing its
+    /// own `embed()` call.
+    async fn filter_tool_schemas_for_turn(
+        &mut self,
+        query: &str,
+        query_embed_cache: &mut QueryEmbedCache,
+    ) {
         self.services.tool_state.cached_filtered_tool_ids = None;
         if let Some(ref filter) = self.services.tool_state.tool_schema_filter {
             let defs = self.tool_executor.tool_definitions_erased();
@@ -1789,15 +1905,11 @@ impl<C: Channel> Agent<C> {
             self.channel
                 .send_status_best_effort("filtering tools...")
                 .await;
-            let schema_embed_timeout =
-                std::time::Duration::from_secs(self.runtime.config.timeouts.embedding_seconds);
-            match tokio::time::timeout(schema_embed_timeout, self.embedding_provider.embed(query))
-                .await
-            {
-                Err(_elapsed) => {
-                    tracing::warn!("tool filter: embed() timed out, using all tools");
+            match self.query_embedding_cached(query, query_embed_cache).await {
+                None => {
+                    tracing::warn!("tool filter: query embed unavailable, using all tools");
                 }
-                Ok(Ok(query_emb)) => {
+                Some(query_emb) => {
                     let mut result = filter.filter(&all_ids, &descriptions, query, &query_emb);
 
                     // Apply dependency graph AFTER schema filter (and after any TAFC
@@ -1841,9 +1953,6 @@ impl<C: Channel> Agent<C> {
                         tracing::debug!(tool_id, ?reason, "tool inclusion reason");
                     }
                     self.services.tool_state.cached_filtered_tool_ids = Some(result.included);
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!("tool filter: query embed failed, using all tools: {e:#}");
                 }
             }
             self.channel.send_status_best_effort("").await;
@@ -3080,8 +3189,15 @@ mod tests {
         agent.services.skill.rl_warmup_updates = 0; // already past warmup
 
         let all_meta_refs: Vec<&SkillMeta> = all_meta_owned.iter().collect();
+        let mut query_embed_cache = QueryEmbedCache::default();
         let (indices, fallback, skills_to_record) = agent
-            .match_and_rank_skills("query", "effective query", &all_meta_refs)
+            .match_and_rank_skills(
+                "query",
+                "effective query",
+                &all_meta_refs,
+                &[],
+                &mut query_embed_cache,
+            )
             .await;
 
         assert!(
@@ -3120,8 +3236,15 @@ mod tests {
         tokio::time::pause();
         let handle = tokio::spawn(async move {
             let all_meta_refs: Vec<&SkillMeta> = all_meta_owned.iter().collect();
+            let mut query_embed_cache = QueryEmbedCache::default();
             agent
-                .match_and_rank_skills("query", "effective query", &all_meta_refs)
+                .match_and_rank_skills(
+                    "query",
+                    "effective query",
+                    &all_meta_refs,
+                    &[],
+                    &mut query_embed_cache,
+                )
                 .await
         });
         tokio::time::advance(std::time::Duration::from_secs(2)).await;
@@ -3159,8 +3282,15 @@ mod tests {
         agent = agent.with_rl_head(rl_head.clone());
 
         let all_meta_refs: Vec<&SkillMeta> = all_meta_owned.iter().collect();
+        let mut query_embed_cache = QueryEmbedCache::default();
         let (indices, fallback, _) = agent
-            .match_and_rank_skills("query", "effective query", &all_meta_refs)
+            .match_and_rank_skills(
+                "query",
+                "effective query",
+                &all_meta_refs,
+                &[],
+                &mut query_embed_cache,
+            )
             .await;
 
         assert!(!fallback);
@@ -3189,8 +3319,15 @@ mod tests {
         agent = agent.with_rl_head(rl_head.clone());
 
         let all_meta_refs: Vec<&SkillMeta> = all_meta_owned.iter().collect();
+        let mut query_embed_cache = QueryEmbedCache::default();
         let (indices, fallback, _) = agent
-            .match_and_rank_skills("query", "effective query", &all_meta_refs)
+            .match_and_rank_skills(
+                "query",
+                "effective query",
+                &all_meta_refs,
+                &[],
+                &mut query_embed_cache,
+            )
             .await;
 
         assert!(!fallback);
@@ -3202,6 +3339,299 @@ mod tests {
         assert!(
             !rl_head.update(1.0, 0.01),
             "rerank() must never run when some skill embeddings don't match rl_head's dim"
+        );
+    }
+
+    // ── #6267: turn-query embed cache shared across RL rerank / MCP discovery / tool filter ──
+    // Regression coverage for the dedup fix: a future reintroduction of a duplicate embed()
+    // call at any of the three consumer sites must fail one of these tests.
+
+    use zeph_mcp::{DiscoveryParams, McpTool, SemanticToolIndex, ToolDiscoveryStrategy};
+    use zeph_tools::registry::{InvocationHint, ToolDef};
+    use zeph_tools::schema_filter::{ToolEmbedding, ToolSchemaFilter};
+
+    fn embed_dedup_test_tool_def() -> ToolDef {
+        ToolDef {
+            id: "test_tool".into(),
+            description: "a test tool for schema filter dedup coverage".into(),
+            schema: schemars::Schema::default(),
+            invocation: InvocationHint::ToolCall,
+            output_schema: None,
+            server_id: None,
+        }
+    }
+
+    fn embed_dedup_mcp_tool() -> McpTool {
+        McpTool {
+            server_id: "srv".into(),
+            name: "mcp_tool".into(),
+            description: "an mcp tool for discovery dedup coverage".into(),
+            input_schema: serde_json::Value::Null,
+            output_schema: None,
+            security_meta: zeph_mcp::ToolSecurityMeta::default(),
+        }
+    }
+
+    /// Builds an in-memory `SemanticToolIndex` over a single tool. Embeddings are computed via
+    /// a fixed-vector closure independent of any agent provider — mirrors `build_rl_test_agent`'s
+    /// `embed_fn` pattern for the skill matcher — since only the *runtime* `index.select()` call
+    /// (fed by `query_embedding_cached`) is relevant to the dedup guarantee under test, not how
+    /// the index was originally populated.
+    async fn build_mcp_semantic_index(embed_dim: usize) -> SemanticToolIndex {
+        let tools = vec![embed_dedup_mcp_tool()];
+        let embed_fn = move |_: &str| -> zeph_llm::provider::EmbedFuture {
+            Box::pin(async move { Ok(vec![1.0_f32; embed_dim]) })
+        };
+        SemanticToolIndex::build(&tools, &embed_fn).await.unwrap()
+    }
+
+    fn embed_dedup_discovery_params() -> DiscoveryParams {
+        DiscoveryParams {
+            min_tools_to_filter: 1,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_discovery_and_tool_filter_share_query_embed_cache() {
+        let embed_dim = 4;
+        let raw_provider =
+            MockProvider::with_responses(vec![]).with_embedding(vec![1.0_f32; embed_dim]);
+        let embed_call_count = Arc::clone(&raw_provider.embed_call_count);
+        let provider = AnyProvider::Mock(raw_provider);
+
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools().with_definitions(vec![embed_dedup_test_tool_def()]),
+        )
+        .with_mcp_discovery(
+            ToolDiscoveryStrategy::Embedding,
+            embed_dedup_discovery_params(),
+            None, // no distinct provider — shares the default embedding_provider (#6267 path)
+        );
+        agent.services.mcp.tools = vec![embed_dedup_mcp_tool()];
+        agent.services.mcp.semantic_index = Some(build_mcp_semantic_index(embed_dim).await);
+        agent.services.tool_state.tool_schema_filter = Some(ToolSchemaFilter::new(
+            vec![],
+            5,
+            0,
+            vec![ToolEmbedding {
+                tool_id: "test_tool".into(),
+                embedding: vec![1.0_f32; embed_dim],
+            }],
+        ));
+
+        let mut cache = QueryEmbedCache::default();
+        agent.discover_mcp_tools_for_turn("query", &mut cache).await;
+        agent
+            .filter_tool_schemas_for_turn("query", &mut cache)
+            .await;
+
+        assert_eq!(
+            embed_call_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "MCP embedding discovery and the tool schema filter must share a single query \
+             embed() call per turn instead of each issuing their own (#6267)"
+        );
+        assert!(
+            matches!(cache, QueryEmbedCache::Ready(_)),
+            "cache must hold the computed embedding after both consumers ran"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_discovery_distinct_provider_does_not_share_query_embed_cache() {
+        let embed_dim = 4;
+        let default_raw =
+            MockProvider::with_responses(vec![]).with_embedding(vec![1.0_f32; embed_dim]);
+        let default_count = Arc::clone(&default_raw.embed_call_count);
+        let default_provider = AnyProvider::Mock(default_raw);
+
+        let distinct_raw =
+            MockProvider::with_responses(vec![]).with_embedding(vec![0.5_f32; embed_dim]);
+        let distinct_count = Arc::clone(&distinct_raw.embed_call_count);
+        let distinct_provider = AnyProvider::Mock(distinct_raw);
+
+        let mut agent = Agent::new(
+            default_provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools().with_definitions(vec![embed_dedup_test_tool_def()]),
+        )
+        .with_mcp_discovery(
+            ToolDiscoveryStrategy::Embedding,
+            embed_dedup_discovery_params(),
+            Some(distinct_provider),
+        );
+        agent.services.mcp.tools = vec![embed_dedup_mcp_tool()];
+        agent.services.mcp.semantic_index = Some(build_mcp_semantic_index(embed_dim).await);
+        agent.services.tool_state.tool_schema_filter = Some(ToolSchemaFilter::new(
+            vec![],
+            5,
+            0,
+            vec![ToolEmbedding {
+                tool_id: "test_tool".into(),
+                embedding: vec![1.0_f32; embed_dim],
+            }],
+        ));
+
+        let mut cache = QueryEmbedCache::default();
+        agent.discover_mcp_tools_for_turn("query", &mut cache).await;
+        agent
+            .filter_tool_schemas_for_turn("query", &mut cache)
+            .await;
+
+        assert_eq!(
+            distinct_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "MCP discovery with an explicit distinct discovery_provider must issue its own \
+             embed() call"
+        );
+        assert_eq!(
+            default_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the tool schema filter must still embed against the default provider — an \
+             embedding computed by a distinct provider must never be reused across a different \
+             embedding space (#6267)"
+        );
+    }
+
+    #[tokio::test]
+    async fn match_and_rank_skills_rl_rerank_shares_query_embed_cache_with_mcp_discovery() {
+        let embed_dim = 4;
+        let raw_provider = MockProvider::with_responses(vec!["ok".to_string()])
+            .with_embedding(vec![1.0_f32; embed_dim]);
+        let embed_call_count = Arc::clone(&raw_provider.embed_call_count);
+        let provider = AnyProvider::Mock(raw_provider);
+
+        let (mut agent, all_meta_owned, _dir) =
+            Box::pin(build_rl_test_agent(provider, (embed_dim, embed_dim))).await;
+        let rl_head = RoutingHead::new(embed_dim);
+        agent = agent.with_rl_head(rl_head);
+        agent.services.skill.rl_warmup_updates = 0;
+
+        agent = agent.with_mcp_discovery(
+            ToolDiscoveryStrategy::Embedding,
+            embed_dedup_discovery_params(),
+            None,
+        );
+        agent.services.mcp.tools = vec![embed_dedup_mcp_tool()];
+        agent.services.mcp.semantic_index = Some(build_mcp_semantic_index(embed_dim).await);
+
+        let all_meta_refs: Vec<&SkillMeta> = all_meta_owned.iter().collect();
+        let mut cache = QueryEmbedCache::default();
+        let _ = agent
+            .match_and_rank_skills("query", "effective query", &all_meta_refs, &[], &mut cache)
+            .await;
+
+        // 1 call for the skill matcher's own `effective_query` embed (unrelated to #6267) + 1
+        // call for the shared `query_embed_cache` write triggered by the RL-rerank branch.
+        let after_rl = embed_call_count.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            after_rl, 2,
+            "expected exactly 2 embed() calls after RL rerank: 1 for the skill matcher's own \
+             query embed + 1 for the shared query_embed_cache write"
+        );
+
+        agent.discover_mcp_tools_for_turn("query", &mut cache).await;
+
+        assert_eq!(
+            embed_call_count.load(std::sync::atomic::Ordering::SeqCst),
+            after_rl,
+            "MCP discovery must reuse the query embed cache already populated by RL rerank \
+             instead of issuing its own embed() call (#6267)"
+        );
+    }
+
+    // ── #6266: skill outcome stats fetched at most once per rebuild_system_prompt turn ──
+
+    /// Counts spans matching `span_name` as they are created. Used to count invocations of
+    /// `SqliteStore::load_skill_outcome_stats` via its
+    /// `#[tracing::instrument(name = "memory.skills.load_skill_outcome_stats")]` annotation —
+    /// there is no mock/trait for `SqliteStore` to count calls against directly. If that
+    /// instrument annotation is ever removed, this test needs an equivalent replacement.
+    struct SpanCountLayer {
+        span_name: &'static str,
+        count: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl<S> tracing_subscriber::Layer<S> for SpanCountLayer
+    where
+        S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::span::Id,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if attrs.metadata().name() == self.span_name {
+                self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rebuild_system_prompt_loads_skill_outcome_stats_at_most_once() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let provider = AnyProvider::Mock(
+            MockProvider::with_responses(vec!["ok".to_string()]).with_embedding(vec![1.0_f32; 4]),
+        );
+        let memory = zeph_memory::semantic::SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            None,
+            provider.clone(),
+            "test-model",
+        )
+        .await
+        .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        memory
+            .sqlite()
+            .record_skill_outcomes_batch(
+                &["test-skill".to_string()],
+                Some(cid),
+                "success",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(Arc::new(memory), cid, 50, 5, 50);
+
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let layer = SpanCountLayer {
+            span_name: "memory.skills.load_skill_outcome_stats",
+            count: Arc::clone(&count),
+        };
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        agent.rebuild_system_prompt("query").await;
+
+        drop(guard);
+        assert!(
+            count.load(std::sync::atomic::Ordering::SeqCst) <= 1,
+            "load_skill_outcome_stats() must be called at most once per rebuild_system_prompt \
+             turn (#6266), got {}",
+            count.load(std::sync::atomic::Ordering::SeqCst)
         );
     }
 }
