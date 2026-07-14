@@ -375,6 +375,7 @@ VMAO (Verify-and-Modify Adaptive Orchestration) extends Plan Verification with a
 - Grounding MUST fail open (skip the override, pass the LLM's verdict through unmodified) when `tool_trace` is unavailable (`None`); an available-but-empty trace is not itself a gap — only an unmatched claim is. This is a narrower, grounding-specific fail-open, distinct from the whole-`verify()` fail-open on LLM error/timeout above
 - `ground()` MUST be pure — no I/O, no second LLM call, no randomness — and MUST NOT be implemented as a regex/substring scan of the raw narration; the claim set comes only from the LLM's structured `claimed_executions`
 - Grounding on the ensemble path MUST run as one `ground()` call over the **union** of `claimed_executions` across all responded members, after `merge()` — never inside `merge()`, never majority/intersection
+- `verify_plan()` MUST run the same deterministic `ground()` stage over the **DAG-wide union** of every completed task's `tool_trace`; the aggregate MUST be `None` (fail open) if **any** completed-with-result task's trace is unavailable — never `Some(partial_union)`, which could false-positive an honest claim — see [[#Whole-Plan Grounding (issue #6287)]]
 
 ---
 
@@ -547,30 +548,92 @@ to `merge()` itself:
   contract — i.e. today's pre-fix behavior (`complete: true`), no worse than before but not
   specially rescued by this feature.
 
-### Whole-Plan Verification — Explicitly Out of Scope
+### Whole-Plan Grounding (issue #6287)
 
-`verify_plan()` / `replan_from_plan()` (aggregated, whole-plan verification) remain ungrounded.
-This scope-out is safe only under a precondition that has been **verified true**, not merely
-assumed:
+`verify_plan()` grounds its aggregated-output verdict against the **union** of every completed
+task's real `tool_trace`, applying the identical deterministic `ground()` stage the per-task
+path uses. This is independent defense-in-depth: per-task `verify()` already grounds each task's
+own narration against its own trace, so today's whole-plan grounding is *additive*, not the sole
+guard. Its purpose is to close the structural gap that a future dispatch mode which lets a task
+reach whole-plan aggregation *without* a prior grounded per-task `Verify` would otherwise open —
+laundering a hallucinated claim that only surfaces once outputs are aggregated across the DAG.
 
-**Precondition (verified):** every completed task's narrated output passes through the grounded
-per-task `verify()` (`SchedulerAction::Verify`) before it can reach the whole-plan verifier via
-`collect_and_truncate_task_outputs`. `handle_completed_outcome` (`tick/mod.rs:582-583`) emits
-`SchedulerAction::Verify` unconditionally for every completed task whenever
-`verify_completeness = true` (no per-task
-skip, including when `max_replans = 0`); both the spawn and RunInline dispatch paths converge on
-this function through the shared `TaskOutcome::Completed` enum. Whole-plan
-`run_whole_plan_verify` is gated by the same `verify_completeness` flag. Therefore no dispatch
-mode today lets a task reach whole-plan aggregation without a prior grounded per-task `Verify`,
-and the whole-plan verifier can only *add* replan tasks — it cannot launder a hallucination into
-acceptance.
+**Aggregation is transcript-derived, not per-task-verify-derived.** At `run_whole_plan_verify`
+time the DAG-wide trace is rebuilt from source, per completed-with-result task, by reimplementing
+the same resolution logic `build_tool_trace_for_task` uses for the per-task path (`TaskResult.agent_id`
+→ `SubAgentManager::agent_transcript_dir()` → `TranscriptReader::load_strict`) — split across
+`resolve_whole_plan_trace_paths` (synchronous path resolution) and `build_whole_plan_tool_trace`
+(the actual reads, offloaded to `spawn_blocking`). `build_tool_trace_for_task` itself is
+module-private to `scheduler_loop.rs` and is not called directly from the whole-plan path (a
+sibling module); only its inner `tool_trace_from_messages` conversion (messages →
+`Vec<ToolCallSummary>`) is actually shared, bumped to `pub(super)` for that purpose. Rebuilding
+from the transcript — rather than reusing a value cached during per-task `Verify` — is deliberate:
+it makes whole-plan grounding correct *even when per-task `Verify` was skipped* for some task,
+which is exactly the future gap this closes. The reads are already-persisted transcripts; no
+per-task LLM claim-extraction is re-run.
 
-If any future dispatch mode changes this convergence, the grounding read for that mode MUST be
-re-verified before this scope-out can be relied on again.
+**Trace availability is all-or-nothing, lifted to the DAG level.** The aggregate is
+`Some(union)` only if **every** completed-with-result task resolves to `Some(trace)`; if **any**
+one resolves to `None` (unavailable — unreadable/partial transcript, or a RunInline task whose
+in-loop trace is ephemeral and has no transcript file), the whole aggregate degrades to `None`
+and grounding is skipped entirely (fail-open), exactly reproducing today's ungrounded behavior.
+This mirrors the per-task `None`-means-unavailable contract: a union missing part of the real
+execution record could false-positive an honest claim, so an incomplete union must never drive an
+override. Consequence and documented limitation: a DAG containing any RunInline task fails open at
+whole-plan grounding (RunInline traces are not persisted); persisting them onto `TaskResult` to
+cover that case is a deliberate future enhancement, not part of this MVP. Under the default
+`RuleBasedRouter`, a DAG is either all-spawn or all-inline (it returns `None` — i.e. RunInline —
+iff `available_agents` is empty, otherwise every task routes to a sub-agent), so in practice this
+limitation manifests as an all-or-nothing feature toggle per deployment: a no-subagent-defs
+deployment gets zero whole-plan grounding, silently, unless the caller logs the degradation (see
+`run_whole_plan_verify`'s DEBUG log on aggregate unavailability). A **custom** `AgentRouter`
+implementation, however, can freely mix spawn and RunInline dispatch within a single DAG — in that
+case a single stray inline task disables whole-plan grounding for the *entire* plan, even though
+every other task's transcript is perfectly readable. This is a real, not merely theoretical,
+failure mode for any deployment using a router other than the default.
 
-<!-- TODO(critic): whole-plan verify_plan() remains ungrounded; safe only while every completed
-task passes grounded per-task verify() first (verified: tick/mod.rs:582 emits Verify
-unconditionally) — see follow-up #TBD -->
+**Union, not per-task attribution — and materially weaker detection than the per-task path.**
+`ground()` checks each aggregated `claimed_executions` entry against *any* union member. Grounding
+against the union (rather than the originating task's trace) is strictly more lenient — a claim
+grounds if it matches any task's real call — which is the correct fail-open bias; task-boundary
+attribution is intentionally not reconstructed from the concatenated output. This leniency has a
+real cost: a per-task hallucination (task T's own narration claims a command T never ran) PASSES
+whole-plan grounding if **any other task U** in the same DAG genuinely ran that command, even
+though per-task `verify()` on T alone would have caught it. Because the sole reason this feature
+exists is to defend against a *future dispatch mode that skips per-task `Verify`* — in which
+whole-plan grounding becomes the **only** guard for that task — this is exactly the scenario where
+whole-plan grounding runs at its *weakest*. Whole-plan grounding is therefore genuine
+defense-in-depth only, layered on top of (never a replacement for) per-task grounding; it is not
+sized to catch every hallucination on its own, only to close the specific structural gap described
+above.
+
+**Prompt bound vs. grounding input.** The full union is passed to the deterministic `ground()`
+call (which alone binds the verdict). The advisory tool-trace section rendered into the
+`verify_plan` prompt is capped at a fixed entry count to keep the prompt bounded on large DAGs;
+because `ground()` runs in Rust over the complete slice, capping the *prompt* rendering can never
+introduce a false-positive (unlike dropping entries from the grounding input, which is forbidden).
+`aggregated_output` remains pre-truncated by the caller as today.
+
+**Scope alignment.** Only `Completed` tasks with a `result` contribute both output and trace, so
+partial/failed tasks are excluded symmetrically from both sides. Output truncation only *removes*
+claims (never adds), and a union that is a superset of the referenced calls is always safe, so
+truncation cannot desync the two sides. Whole-plan verify is single-provider `PlanVerifier` only
+(the ensemble path is per-task); no ensemble union is constructed here.
+
+`replan_from_plan()` needs no change: it consumes the grounded `gaps` that `verify_plan()` now
+emits, so a grounding-forced `Critical` gap flows through the existing `should_replan` gate into
+whole-plan replan unchanged. As with the per-task path, `TaskNode.status` stays `Completed` —
+grounding remains observational, adding replan tasks, never gating acceptance.
+
+**Note (execution contract, not part of the grounding contract itself):** `execute_partial_replan_dag`
+runs `replan_from_plan()`'s gap tasks in a standalone `DagScheduler`/`TaskGraph`, which
+`dag::validate` requires to carry 0-based positional task IDs (`tasks[i].id == TaskId(i)`) — but
+`replan_from_plan()` assigns gap-task IDs continuing the *parent* graph's numbering so the final
+merge into `completed_graph.tasks` stays globally unique. `execute_partial_replan_dag` reconciles
+this by remapping gap-task IDs to local 0-based IDs for the partial scheduler run and back to the
+original global IDs on the way out (fixed alongside #6287's end-to-end wiring test, which was the
+first test to exercise this path with a non-empty parent graph and exposed a pre-existing
+rejection here — see CHANGELOG).
 
 ### Config
 
@@ -617,6 +680,25 @@ separate opt-in flag, no config/migration/wizard entries required.
 - **AC-12 (`args_summary: None` on a real same-tool entry):** real trace entry
   `ToolUse{name:"bash", args_summary:None}`, honest claim `"bash: <cmd>"` ⇒ `complete:true`, no
   gap (an entry with no captured args is treated as inconclusive, not a mismatch).
+- **AC-13 (whole-plan hallucination caught) — integration-level** (`zeph-core`
+  `scheduler_loop.rs`/`plan.rs`, extends the `build_tool_trace_for_task_parity_*` fixture family):
+  two spawn tasks with readable transcripts, DAG-wide union `Some(&[bash: cargo build])`,
+  `verify_plan` LLM returns `{complete:true, claimed_executions:["bash: cargo test"], gaps:[]}` ⇒
+  final `VerificationResult{complete:false}` with a `Critical` gap naming the unmatched claim,
+  flowing into `replan_from_plan`.
+- **AC-14 (whole-plan honest completion) — unit-level** (`zeph-orchestration` `verifier.rs`, pure
+  `ground()`/mock-provider `verify_plan()` test, no I/O): union `Some(&[bash: cargo test])`,
+  `verify_plan` claims `["bash: cargo test"]` ⇒ `complete:true`, no grounding gap.
+- **AC-15 (whole-plan fail-open on any unavailable task trace) — integration-level** (`zeph-core`,
+  same fixture family as AC-13): two completed tasks, one resolves to `Some(trace)` and one to
+  `None` (e.g. a RunInline task, or an unreadable transcript) ⇒ aggregate is `None`, grounding
+  skipped, `verify_plan`'s LLM verdict passes through unmodified — no spurious whole-plan replan.
+  Reproduces today's ungrounded behavior exactly.
+- **AC-16 (empty/single-task DAG) — integration-level** (`zeph-core`, trace-path resolution over a
+  hand-built `TaskGraph`): empty aggregated output ⇒ `run_whole_plan_verify` returns early
+  (unchanged); a graph with no completed tasks resolves to a vacuously-available `Some(vec![])`
+  aggregate, not `None`; a single completed task's trace forms a one-element union and grounds
+  normally.
 
 ---
 

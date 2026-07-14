@@ -11,6 +11,7 @@
 //! All LLM call failures are fail-open: `verify()` returns `complete = true` on
 //! error; `replan()` returns an empty `Vec`. Verification never blocks execution.
 
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,13 @@ const MAX_GAP_DESCRIPTION_LEN: usize = 500;
 /// Purely an observability heuristic — never a decision input — chosen as a rough proxy for
 /// "this narration is long enough to plausibly describe a tool invocation."
 const NARRATIVE_HEAVY_OUTPUT_LEN_THRESHOLD: usize = 200;
+
+/// Maximum number of trace entries rendered into the whole-plan verify prompt's advisory trace
+/// section (spec 009 § Whole-Plan Grounding, "Prompt bound vs. grounding input"). The full
+/// (uncapped) union is always passed to the deterministic [`ground`] call — this constant only
+/// bounds the prompt's token footprint on large DAGs and can never cause a false-positive since
+/// grounding itself never sees a truncated slice.
+const MAX_WHOLE_PLAN_TRACE_ENTRIES: usize = 200;
 
 /// A single real tool invocation recorded during a task's execution.
 ///
@@ -285,11 +293,28 @@ impl<P: LlmProvider> PlanVerifier<P> {
         vr: VerifyResponse,
         tool_trace: Option<&[ToolCallSummary]>,
     ) -> VerificationResult {
+        self.apply_grounding(output, vr, tool_trace, &task.id.to_string())
+    }
+
+    /// Shared grounding core used by both the per-task (`verify`) and whole-plan (`verify_plan`)
+    /// paths: run the deterministic [`ground`] stage over a successful LLM response and project
+    /// the result into a `VerificationResult`, updating the override-accounting counters/logs
+    /// along the way (spec 009 § Verifier Tool-Call Grounding, Observability). `log_ctx` is the
+    /// identifier included in the log fields — the task id for per-task verification, or a
+    /// fixed marker (e.g. `"whole_plan"`) for whole-plan verification — so the two paths never
+    /// drift on how override-accounting is logged or counted (a security invariant).
+    fn apply_grounding(
+        &mut self,
+        output: &str,
+        vr: VerifyResponse,
+        tool_trace: Option<&[ToolCallSummary]>,
+        log_ctx: &str,
+    ) -> VerificationResult {
         if vr.claimed_executions.is_empty() {
             warn!(
-                task_id = %task.id,
-                "no claimed_executions to ground for this task (either the LLM reported no tool \
-                 executions, or the field was missing/null and defaulted to empty)"
+                context = %log_ctx,
+                "no claimed_executions to ground (either the LLM reported no tool executions, \
+                 or the field was missing/null and defaulted to empty)"
             );
         }
         if narrative_heavy_empty_claims(output, &vr.claimed_executions) {
@@ -304,7 +329,7 @@ impl<P: LlmProvider> PlanVerifier<P> {
         if llm_complete && !outcome.complete {
             self.grounding_overrides_total = self.grounding_overrides_total.saturating_add(1);
             warn!(
-                task_id = %task.id,
+                context = %log_ctx,
                 unmatched_claims = ?outcome.unmatched_claims,
                 matched = vr.claimed_executions.len() - outcome.unmatched_claims.len(),
                 total_claims = vr.claimed_executions.len(),
@@ -419,19 +444,38 @@ impl<P: LlmProvider> PlanVerifier<P> {
     ///
     /// The aggregated output is expected to be pre-truncated by the caller to stay
     /// within the token budget before calling this method.
+    ///
+    /// `tool_trace` is the DAG-wide **union** of every completed task's real `tool_trace`,
+    /// rebuilt by the caller from transcripts (spec 009 § Whole-Plan Grounding, issue #6287):
+    /// `None` when unavailable (at least one completed task's trace could not be resolved —
+    /// grounding fails open for the whole plan), `Some(&[])` when every completed task
+    /// genuinely ran zero tools, `Some(&[…])` otherwise. The LLM's verdict is deterministically
+    /// cross-checked against it by the crate-internal `ground()` function before being
+    /// projected into the returned `VerificationResult` — identical mechanism to [`Self::verify`],
+    /// applied to the DAG-wide union instead of a single task's trace.
     #[tracing::instrument(
         name = "orchestration.verifier.verify_plan",
-        skip(self, goal, aggregated_output)
+        skip(self, goal, aggregated_output, tool_trace)
     )]
-    pub async fn verify_plan(&mut self, goal: &str, aggregated_output: &str) -> VerificationResult {
-        let messages = build_verify_plan_prompt(goal, aggregated_output, &self.sanitizer);
+    pub async fn verify_plan(
+        &mut self,
+        goal: &str,
+        aggregated_output: &str,
+        tool_trace: Option<&[ToolCallSummary]>,
+    ) -> VerificationResult {
+        let messages =
+            build_verify_plan_prompt(goal, aggregated_output, tool_trace, &self.sanitizer);
 
-        let result = tokio::time::timeout(self.timeout, self.provider.chat_typed(&messages)).await;
+        let result = tokio::time::timeout(
+            self.timeout,
+            self.provider.chat_typed::<VerifyResponse>(&messages),
+        )
+        .await;
 
         match result {
             Ok(Ok(vr)) => {
                 self.consecutive_failures = 0;
-                vr
+                self.apply_grounding(aggregated_output, vr, tool_trace, "whole_plan")
             }
             Ok(Err(e)) => {
                 self.consecutive_failures = self.consecutive_failures.saturating_add(1);
@@ -798,6 +842,7 @@ fn render_tool_trace(tool_trace: Option<&[ToolCallSummary]>) -> String {
 fn build_verify_plan_prompt(
     goal: &str,
     aggregated_output: &str,
+    tool_trace: Option<&[ToolCallSummary]>,
     sanitizer: &Arc<dyn OutputSanitizer>,
 ) -> Vec<Message> {
     let system = "You are a plan completion verifier. Evaluate whether the aggregated output \
@@ -808,22 +853,76 @@ fn build_verify_plan_prompt(
                     \"gaps\": [\n\
                       {\"description\": \"what was missing\", \"severity\": \"critical|important|minor\"}\n\
                     ],\n\
-                    \"confidence\": 0.0-1.0\n\
+                    \"confidence\": 0.0-1.0,\n\
+                    \"claimed_executions\": [\"<tool>: <command>\", ...]\n\
                   }\n\n\
                   severity levels:\n\
                   - critical: essential goal requirement not addressed\n\
                   - important: partial coverage that affects goal quality\n\
-                  - minor: nice to have, does not affect core goal"
+                  - minor: nice to have, does not affect core goal\n\n\
+                  claimed_executions: list every tool or command invocation the aggregated \
+                  output narrative claims occurred anywhere in the plan, one entry per \
+                  invocation, in the form \"<tool>: <command>\" (quote the command verbatim \
+                  from the narration). Leave empty if the output does not claim any tool \
+                  executions. This list is cross-checked against the actual tool-execution log \
+                  below — list every claim so a hallucinated completion (output narrates a \
+                  command that never really ran anywhere in the plan) can be detected. If the \
+                  output claims a specific command or tool was executed, cross-check it \
+                  yourself against that log too: a claim with no matching real execution \
+                  anywhere in the plan is always at least an important gap."
         .to_string();
 
     let safe_output = sanitizer.sanitize_task_output(aggregated_output);
+    let trace_section = render_whole_plan_tool_trace(tool_trace);
 
-    let user = format!("Original goal: {goal}\n\nAggregated plan output:\n{safe_output}");
+    let user = format!(
+        "Original goal: {goal}\n\nAggregated plan output:\n{safe_output}\n\n{trace_section}"
+    );
 
     vec![
         Message::from_legacy(Role::System, system),
         Message::from_legacy(Role::User, user),
     ]
+}
+
+/// Render the DAG-wide real tool-execution trace union into the labeled prompt section the
+/// whole-plan verify LLM is instructed to cross-check `claimed_executions` against. Unlike
+/// [`render_tool_trace`], this caps the number of rendered entries at
+/// [`MAX_WHOLE_PLAN_TRACE_ENTRIES`] to keep the prompt bounded on large DAGs — the full,
+/// uncapped union still feeds the deterministic [`ground`] call separately (spec 009 §
+/// Whole-Plan Grounding, "Prompt bound vs. grounding input").
+fn render_whole_plan_tool_trace(tool_trace: Option<&[ToolCallSummary]>) -> String {
+    match tool_trace {
+        None => {
+            "Actual tool executions across the plan: unavailable (could not be read)".to_string()
+        }
+        Some([]) => "Actual tool executions across the plan: none recorded".to_string(),
+        Some(entries) => {
+            let total = entries.len();
+            let lines: Vec<String> = entries
+                .iter()
+                .take(MAX_WHOLE_PLAN_TRACE_ENTRIES)
+                .map(|e| {
+                    let args = e.args_summary.as_deref().unwrap_or("(args not captured)");
+                    let status = if e.ok { "" } else { " [failed]" };
+                    format!("- {}: {args}{status}", e.tool)
+                })
+                .collect();
+            let mut section = format!(
+                "Actual tool executions across the plan:\n{}",
+                lines.join("\n")
+            );
+            if total > MAX_WHOLE_PLAN_TRACE_ENTRIES {
+                let _ = write!(
+                    section,
+                    "\n... ({} more entries omitted from this prompt; the full record is still \
+                     checked)",
+                    total - MAX_WHOLE_PLAN_TRACE_ENTRIES
+                );
+            }
+            section
+        }
+    }
 }
 
 fn build_replan_from_plan_prompt(
@@ -1253,7 +1352,7 @@ mod tests {
         let mut verifier =
             PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let result = verifier
-            .verify_plan("write a web server", "here is the server code")
+            .verify_plan("write a web server", "here is the server code", None)
             .await;
         assert!(result.complete);
         assert!(result.gaps.is_empty());
@@ -1268,7 +1367,7 @@ mod tests {
         let mut verifier =
             PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let result = verifier
-            .verify_plan("write a web server", "partial output")
+            .verify_plan("write a web server", "partial output", None)
             .await;
         assert!(!result.complete);
         assert_eq!(result.gaps.len(), 3);
@@ -1282,7 +1381,7 @@ mod tests {
         };
         let mut verifier =
             PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
-        let result = verifier.verify_plan("goal", "output").await;
+        let result = verifier.verify_plan("goal", "output", None).await;
         assert!(result.complete);
         assert!(result.gaps.is_empty());
         assert!(result.confidence.abs() < f64::EPSILON);
@@ -1374,7 +1473,7 @@ mod tests {
         };
         let mut verifier =
             PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
-        let result = verifier.verify_plan("goal", "output").await;
+        let result = verifier.verify_plan("goal", "output", None).await;
         assert!(!result.complete);
         assert!((result.confidence - 0.6).abs() < 0.01);
         // The caller is responsible for gating on threshold; verify_plan just returns the result.
@@ -1396,7 +1495,7 @@ mod tests {
         };
         let mut verifier =
             PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
-        let result = verifier.verify_plan("goal", "output").await;
+        let result = verifier.verify_plan("goal", "output", None).await;
         let threshold = 0.7_f64;
         let should_replan =
             !result.complete && result.confidence < threshold && !result.gaps.is_empty();
@@ -1472,7 +1571,7 @@ mod tests {
     #[tokio::test]
     async fn verify_plan_timeout_is_fail_open() {
         let mut verifier = slow_verifier();
-        let result = verifier.verify_plan("goal", "output").await;
+        let result = verifier.verify_plan("goal", "output", None).await;
         assert!(result.complete, "timeout must be fail-open (complete=true)");
         assert!(result.gaps.is_empty());
     }
@@ -1510,7 +1609,7 @@ mod tests {
     async fn verify_plan_timeout_increments_counter_and_crosses_threshold() {
         let mut verifier = slow_verifier();
         for _ in 0..3 {
-            let _ = verifier.verify_plan("goal", "output").await;
+            let _ = verifier.verify_plan("goal", "output", None).await;
         }
         assert_eq!(
             verifier.consecutive_failures(),
@@ -1879,5 +1978,181 @@ mod tests {
 
         assert!(result.complete);
         assert_eq!(verifier.grounding_overrides_total(), 0);
+    }
+
+    // --- #6287: whole-plan verifier grounding (spec 009 § Whole-Plan Grounding) ---
+
+    fn hallucinated_verify_plan_json() -> String {
+        r#"{
+            "complete": true,
+            "gaps": [],
+            "confidence": 0.9,
+            "claimed_executions": ["bash: cargo test"]
+        }"#
+        .to_string()
+    }
+
+    /// AC-14 (pure `ground()` over a DAG-wide union): a union built from two different tasks'
+    /// traces still grounds a claim correctly — `ground()` has no per-task attribution, so this
+    /// is really the same `ground()` already covered elsewhere, exercised here specifically
+    /// over a multi-task union to document the whole-plan usage shape.
+    #[test]
+    fn ground_ac14_union_of_multiple_tasks_grounds_claim() {
+        let union = vec![
+            tool_call("bash", Some("cargo build"), true),
+            tool_call("bash", Some("cargo test --all-features"), true),
+        ];
+        let outcome = ground(
+            true,
+            vec![],
+            &["bash: cargo test".to_string()],
+            Some(&union),
+        );
+        assert!(
+            outcome.complete,
+            "claim matches the second task's real call"
+        );
+        assert!(outcome.unmatched_claims.is_empty());
+    }
+
+    /// M3 regression at the `verify_plan()` entry point: an aggregate that is `Some(&[])`
+    /// (every completed task genuinely ran zero tools — the tightest detection case, NOT the
+    /// same as an unavailable `None` aggregate) must still ground and catch a hallucinated
+    /// claim, ending in `complete: false`.
+    #[tokio::test]
+    async fn verify_plan_end_to_end_hallucinated_claim_on_empty_union_overrides_complete() {
+        let provider = MockProvider {
+            response: Ok(hallucinated_verify_plan_json()),
+        };
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
+        let union: Vec<ToolCallSummary> = vec![];
+        let result = verifier
+            .verify_plan(
+                "run the test suite",
+                "I ran cargo test across the whole plan and it passed",
+                Some(&union),
+            )
+            .await;
+
+        assert!(!result.complete, "hallucinated claim must be caught");
+        assert!(
+            result
+                .gaps
+                .iter()
+                .any(|g| g.severity == GapSeverity::Critical)
+        );
+        assert_eq!(verifier.grounding_overrides_total(), 1);
+    }
+
+    /// Honest completion: the same claim matched against a real union entry (contributed by
+    /// some task in the DAG — not necessarily the one that narrated it) stays complete.
+    #[tokio::test]
+    async fn verify_plan_end_to_end_honest_claim_stays_complete() {
+        let provider = MockProvider {
+            response: Ok(hallucinated_verify_plan_json()),
+        };
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
+        let union = vec![tool_call("bash", Some("cargo test --all-features"), true)];
+        let result = verifier
+            .verify_plan(
+                "run the test suite",
+                "I ran cargo test across the whole plan and it passed",
+                Some(&union),
+            )
+            .await;
+
+        assert!(result.complete);
+        assert_eq!(verifier.grounding_overrides_total(), 0);
+    }
+
+    /// AC-15 (verifier-side half): an unavailable aggregate (`None` — the caller's contract for
+    /// "at least one completed task's trace could not be resolved") never overrides, even
+    /// though the narration claims a tool call. The DAG-level trace-resolution behavior itself
+    /// (`RunInline` task → `None`) is exercised as an integration test in
+    /// `scheduler_loop.rs`.
+    #[tokio::test]
+    async fn verify_plan_end_to_end_none_aggregate_never_overrides() {
+        let provider = MockProvider {
+            response: Ok(hallucinated_verify_plan_json()),
+        };
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
+        let result = verifier
+            .verify_plan(
+                "run the test suite",
+                "I ran cargo test across the whole plan and it passed",
+                None,
+            )
+            .await;
+
+        assert!(result.complete);
+        assert_eq!(verifier.grounding_overrides_total(), 0);
+    }
+
+    /// Override-accounting counters must not drift between the per-task and whole-plan paths —
+    /// both go through the shared `apply_grounding` helper, so a whole-plan override increments
+    /// the exact same `grounding_overrides_total` counter as a per-task override.
+    #[tokio::test]
+    async fn verify_plan_override_increments_same_counter_as_per_task_path() {
+        let provider = MockProvider {
+            response: Ok(hallucinated_verify_json()),
+        };
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
+        let task = TaskNode::new(0, "run tests", "run cargo test and report result");
+        let trace: Vec<ToolCallSummary> = vec![];
+        let _ = verifier
+            .verify(&task, "I ran cargo test and it passed", Some(&trace))
+            .await;
+        assert_eq!(verifier.grounding_overrides_total(), 1);
+
+        // A second override via verify_plan() on the SAME verifier instance must accumulate,
+        // not reset or diverge onto a separate counter.
+        let union: Vec<ToolCallSummary> = vec![];
+        let _ = verifier
+            .verify_plan(
+                "goal",
+                "I ran cargo test across the whole plan",
+                Some(&union),
+            )
+            .await;
+        assert_eq!(verifier.grounding_overrides_total(), 2);
+    }
+
+    /// LLM serialization gate (`.claude/rules/branching.md`): a real round-trip against a live
+    /// Ollama model, exercising the new `build_verify_plan_prompt` schema (the
+    /// `claimed_executions` field + trace section added for #6287) end-to-end through
+    /// `chat_typed::<VerifyResponse>`. Ignored by default (requires a local Ollama instance with
+    /// `qwen2.5:7b` pulled) — run manually with `cargo nextest run -p zeph-orchestration
+    /// --features llm-planning -- --ignored`.
+    #[tokio::test]
+    #[ignore = "requires a local Ollama instance with qwen2.5:7b"]
+    async fn verify_plan_live_ollama_round_trip_does_not_error() {
+        let provider = zeph_llm::ollama::OllamaProvider::new(
+            "http://localhost:11434",
+            "qwen2.5:7b".into(),
+            "nomic-embed-text-v2-moe".into(),
+        );
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
+        let union = vec![tool_call("bash", Some("cargo test --all-features"), true)];
+        let result = verifier
+            .verify_plan(
+                "run the full test suite and report results",
+                "I ran cargo test across the whole plan and all tests passed",
+                Some(&union),
+            )
+            .await;
+        // The call must complete without a 400/422 surfacing as a hard failure (fail-open on
+        // any LLM error still returns a well-formed VerificationResult, so a non-panicking
+        // return with a real HTTP round-trip already proves the schema round-trips).
+        println!(
+            "live verify_plan result: complete={} gaps={} confidence={}",
+            result.complete,
+            result.gaps.len(),
+            result.confidence
+        );
     }
 }

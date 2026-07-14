@@ -57,7 +57,7 @@ fn network_denied_for_task(task: Option<&zeph_orchestration::TaskNode>) -> bool 
 /// sub-agent was canceled mid-call) is still included, defaulting `ok` to `true` — grounding's
 /// matching rule does not consult `ok` (existence, not outcome, is in scope), so this default
 /// cannot cause a false grounding match/mismatch.
-fn tool_trace_from_messages(
+pub(super) fn tool_trace_from_messages(
     messages: &[zeph_llm::provider::Message],
 ) -> Vec<zeph_orchestration::ToolCallSummary> {
     use std::collections::HashMap;

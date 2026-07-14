@@ -521,6 +521,21 @@ impl<C: crate::channel::Channel> Agent<C> {
             return None;
         }
 
+        let trace_paths = self.resolve_whole_plan_trace_paths(scheduler.graph());
+        let tool_trace = match trace_paths {
+            Some(paths) => Self::build_whole_plan_tool_trace(paths).await,
+            None => None,
+        };
+        if tool_trace.is_none() {
+            tracing::debug!(
+                "whole-plan verify: tool-trace union unavailable — at least one completed \
+                 task's trace could not be resolved (e.g. a RunInline task, whose in-loop trace \
+                 is never persisted, or an unreadable/partial transcript); grounding skipped for \
+                 this whole-plan verify (fail-open, matches per-task behavior on an unavailable \
+                 trace)"
+            );
+        }
+
         let verify_provider = self
             .services
             .orchestration
@@ -537,7 +552,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             &self.services.orchestration.orchestration_config,
         );
         let result = verifier
-            .verify_plan(&goal, &truncated_output)
+            .verify_plan(&goal, &truncated_output, tool_trace.as_deref())
             .instrument(tracing::info_span!("core.plan.whole_plan_verify"))
             .await;
 
@@ -577,15 +592,145 @@ impl<C: crate::channel::Channel> Agent<C> {
         self.execute_partial_replan_dag(gap_tasks, &goal).await
     }
 
+    /// Resolve the transcript path for every completed-with-result task in `graph`, as a
+    /// synchronous prerequisite step for [`Self::build_whole_plan_tool_trace`].
+    ///
+    /// Takes a plain `&TaskGraph` (not `&DagScheduler`) so it is testable without spinning up
+    /// full scheduler machinery — the caller passes `scheduler.graph()`.
+    ///
+    /// Pure in-memory work (`agent_transcript_dir` is a `HashMap` lookup, no I/O) — deliberately
+    /// kept synchronous and `&self`-borrowing so it never needs to cross an `.await` point,
+    /// which would otherwise require `Agent<C>: Sync` to keep the caller's future `Send` (spec
+    /// 009 § Whole-Plan Grounding, issue #6287). Returns `None` the moment any one task's path
+    /// cannot be resolved (missing `agent_id` — e.g. a `RunInline` task, whose in-loop trace is
+    /// never persisted — or no `SubAgentManager`/transcript dir), matching the all-or-nothing
+    /// availability contract.
+    fn resolve_whole_plan_trace_paths(
+        &self,
+        graph: &zeph_orchestration::TaskGraph,
+    ) -> Option<Vec<std::path::PathBuf>> {
+        use zeph_orchestration::TaskStatus;
+
+        let mut paths: Vec<std::path::PathBuf> = Vec::new();
+        for task in graph
+            .tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Completed && t.result.is_some())
+        {
+            let Some(agent_id) = task.result.as_ref().and_then(|r| r.agent_id.as_deref()) else {
+                tracing::debug!(
+                    task_id = %task.id,
+                    "whole-plan tool-trace union: task has no agent_id (RunInline dispatch or \
+                     missing), aggregate unavailable"
+                );
+                return None;
+            };
+            let Some(mgr) = self.services.orchestration.subagent_manager.as_ref() else {
+                tracing::debug!(
+                    task_id = %task.id,
+                    agent_id = %agent_id,
+                    "whole-plan tool-trace union: no SubAgentManager configured, aggregate \
+                     unavailable"
+                );
+                return None;
+            };
+            let Some(dir) = mgr.agent_transcript_dir(agent_id) else {
+                tracing::debug!(
+                    task_id = %task.id,
+                    agent_id = %agent_id,
+                    "whole-plan tool-trace union: transcript dir unresolvable, aggregate \
+                     unavailable"
+                );
+                return None;
+            };
+            paths.push(dir.join(format!("{agent_id}.jsonl")));
+        }
+        Some(paths)
+    }
+
+    /// Build the DAG-wide **union** of every completed task's real `tool_trace`, rebuilt from
+    /// transcripts at whole-plan-verify time (spec 009 § Whole-Plan Grounding, issue #6287).
+    ///
+    /// Availability is all-or-nothing: returns `Some(union)` iff **every** completed task with
+    /// a `result` resolves to a trace (`Some`, including `Some(vec![])` for a task that
+    /// genuinely ran zero tools); returns `None` the moment any one task's trace cannot be
+    /// resolved (missing `agent_id` — e.g. a `RunInline` task, whose in-loop trace is never
+    /// persisted — or an unreadable/partial transcript). An incomplete union is never returned:
+    /// a union missing part of the real record could false-positive an honest claim, mirroring
+    /// the per-task `None`-means-unavailable contract lifted to the DAG level.
+    ///
+    /// Transcript path resolution ([`Self::resolve_whole_plan_trace_paths`]) happens entirely
+    /// before this method's only `.await`, so `self` is never held across it — this is a free
+    /// associated function taking owned `paths` rather than `&self` specifically to keep the
+    /// generated future `Send` regardless of `Agent<C>`'s `Sync` bound. The actual synchronous
+    /// file reads + JSON parsing (`TranscriptReader::load_strict`) are offloaded to
+    /// `spawn_blocking` since this loop can run N reads back-to-back with no yield point on the
+    /// async finalization path.
+    async fn build_whole_plan_tool_trace(
+        paths: Vec<std::path::PathBuf>,
+    ) -> Option<Vec<zeph_orchestration::ToolCallSummary>> {
+        if paths.is_empty() {
+            return Some(Vec::new());
+        }
+
+        let read_result = tokio::task::spawn_blocking(move || {
+            let mut union = Vec::new();
+            for path in &paths {
+                match zeph_subagent::TranscriptReader::load_strict(path) {
+                    Ok(messages) => {
+                        union.extend(super::scheduler_loop::tool_trace_from_messages(&messages));
+                    }
+                    Err(e) => return Err(format!("{}: {e}", path.display())),
+                }
+            }
+            Ok(union)
+        })
+        .await;
+
+        match read_result {
+            Ok(Ok(union)) => Some(union),
+            Ok(Err(e)) => {
+                tracing::debug!(
+                    error = %e,
+                    "whole-plan tool-trace union: transcript read failed, aggregate unavailable"
+                );
+                None
+            }
+            Err(join_err) => {
+                tracing::warn!(
+                    error = %join_err,
+                    "whole-plan tool-trace union: spawn_blocking panicked, aggregate unavailable"
+                );
+                None
+            }
+        }
+    }
+
     pub(super) async fn execute_partial_replan_dag(
         &mut self,
         gap_tasks: Vec<zeph_orchestration::TaskNode>,
         goal: &str,
     ) -> Option<Vec<zeph_orchestration::TaskNode>> {
-        use zeph_orchestration::{DagScheduler, RuleBasedRouter, TaskStatus};
+        use zeph_orchestration::{DagScheduler, RuleBasedRouter, TaskId, TaskStatus};
 
+        // `replan_from_plan` assigns gap-task IDs continuing the parent graph's numbering
+        // (`next_id..`, so downstream merges into `completed_graph.tasks` stay globally
+        // unique), but `dag::validate` requires a freshly-constructed standalone `TaskGraph`'s
+        // task IDs to be 0-based and positional (`tasks[i].id == TaskId(i)`) — otherwise
+        // `DagScheduler::new` rejects the graph outright. Remap to local 0-based IDs for this
+        // scheduler run, then remap back to the original global IDs on the way out. Safe
+        // because whole-plan gap tasks are always independent roots with no `depends_on`
+        // cross-references to fix up (see `replan_from_plan`'s doc comment).
+        let base_id = gap_tasks.first().map_or(0, |t| t.id.0);
         let mut partial_graph = zeph_orchestration::TaskGraph::new(goal);
-        partial_graph.tasks = gap_tasks;
+        partial_graph.tasks = gap_tasks
+            .into_iter()
+            .enumerate()
+            .map(|(i, mut task)| {
+                task.id = TaskId(u32::try_from(i).unwrap_or(u32::MAX));
+                task
+            })
+            .collect();
 
         let mut partial_config = self.services.orchestration.orchestration_config.clone();
         partial_config.max_replans = 0;
@@ -654,6 +799,10 @@ impl<C: crate::channel::Channel> Agent<C> {
             .tasks
             .into_iter()
             .filter(|t| t.status == TaskStatus::Completed)
+            .map(|mut t| {
+                t.id = TaskId(t.id.0 + base_id);
+                t
+            })
             .collect();
 
         if completed.is_empty() {
@@ -1378,5 +1527,417 @@ mod tests {
     #[test]
     fn durable_enabled_when_both_flags_true() {
         assert!(durable_orchestration_enabled(Some(&enabled_cfg())));
+    }
+
+    // --- #6287: whole-plan verifier grounding — DAG-wide tool-trace union (spec 009 §
+    // Whole-Plan Grounding) ---
+
+    /// Spawns a "worker" sub-agent via [`crate::agent::Agent`]'s `AgentCommand::Background`
+    /// path — the same machinery production code and `scheduler_loop`'s
+    /// `spawn_worker_and_wait_completed` use — but reuses an already-configured
+    /// `SubAgentManager` across multiple calls so several agent ids stay simultaneously
+    /// resolvable via `agent_transcript_dir`. Needed to build a multi-task DAG-wide trace union
+    /// in these tests (the `scheduler_loop.rs` helper recreates the manager on every call,
+    /// which would evict the previous spawn's id).
+    async fn spawn_worker_and_wait_completed_shared(
+        agent: &mut crate::agent::Agent<crate::agent::agent_tests::MockChannel>,
+        tmp: &std::path::Path,
+    ) -> String {
+        use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use zeph_subagent::hooks::SubagentHooks;
+        use zeph_subagent::{AgentCommand, SubAgentDef, SubAgentManager, SubAgentState};
+
+        if agent.services.orchestration.subagent_manager.is_none() {
+            agent.services.orchestration.subagent_config.transcript_dir = Some(tmp.to_path_buf());
+            agent
+                .services
+                .orchestration
+                .subagent_config
+                .transcript_enabled = true;
+
+            let mut mgr = SubAgentManager::new(4);
+            mgr.definitions_mut().push(SubAgentDef {
+                name: "worker".into(),
+                description: "A worker bot".into(),
+                model: None,
+                tools: ToolPolicy::InheritAll,
+                disallowed_tools: vec![],
+                permissions: SubAgentPermissions {
+                    max_turns: 1,
+                    ..SubAgentPermissions::default()
+                },
+                skills: SkillFilter::default(),
+                system_prompt: "You are a worker.".into(),
+                hooks: SubagentHooks::default(),
+                memory: None,
+                source: None,
+                file_path: None,
+            });
+            agent.services.orchestration.subagent_manager = Some(mgr);
+        }
+
+        let spawn_resp = agent
+            .handle_agent_command(AgentCommand::Background {
+                name: "worker".into(),
+                prompt: "do a task".into(),
+            })
+            .await
+            .expect("Background spawn must return Some");
+        let short_id = spawn_resp
+            .split("id: ")
+            .nth(1)
+            .expect("response must contain 'id: '")
+            .trim_end_matches(')')
+            .trim()
+            .to_string();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let mgr = agent
+                .services
+                .orchestration
+                .subagent_manager
+                .as_ref()
+                .unwrap();
+            let statuses = mgr.statuses();
+            let found = statuses.iter().find(|(id, _)| id.starts_with(&short_id));
+            if let Some((id, status)) = found {
+                match status.state {
+                    SubAgentState::Completed => break id.clone(),
+                    SubAgentState::Failed => {
+                        panic!("sub-agent Failed unexpectedly: {:?}", status.last_message);
+                    }
+                    _ => {}
+                }
+            }
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "sub-agent did not complete within timeout"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Appends a real `ToolUse`("bash", `{"command": "cargo test"}`)/`ToolResult` round to the
+    /// `.jsonl` transcript at `jsonl_path` (mirrors `scheduler_loop.rs`'s private helper of the
+    /// same shape — duplicated here since test helpers are module-private).
+    async fn append_tool_round(jsonl_path: &std::path::Path) {
+        let writer = zeph_subagent::TranscriptWriter::new(jsonl_path).unwrap();
+        writer
+            .append(
+                1000,
+                &zeph_llm::provider::Message::from_parts(
+                    zeph_llm::provider::Role::Assistant,
+                    vec![zeph_llm::provider::MessagePart::ToolUse {
+                        id: "call-1".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({ "command": "cargo test" }),
+                    }],
+                ),
+            )
+            .await
+            .unwrap();
+        writer
+            .append(
+                1001,
+                &zeph_llm::provider::Message::from_parts(
+                    zeph_llm::provider::Role::User,
+                    vec![zeph_llm::provider::MessagePart::ToolResult {
+                        tool_use_id: "call-1".into(),
+                        content: "ok".into(),
+                        is_error: false,
+                    }],
+                ),
+            )
+            .await
+            .unwrap();
+    }
+
+    fn completed_task_with_agent(id: u32, agent_id: &str) -> zeph_orchestration::TaskNode {
+        let mut task = zeph_orchestration::TaskNode::new(id, format!("t{id}"), "d");
+        task.status = zeph_orchestration::TaskStatus::Completed;
+        task.result = Some(zeph_orchestration::TaskResult {
+            output: "done".to_string(),
+            artifacts: vec![],
+            duration_ms: 0,
+            agent_id: Some(agent_id.to_string()),
+            agent_def: None,
+        });
+        task
+    }
+
+    /// AC-13/M3 (integration-level): two completed spawn tasks with intact-but-empty
+    /// transcripts (zero tool calls) resolve to an aggregate `Some(vec![])`, NOT `None` — the
+    /// pitfall the critic flagged as most likely to be gotten wrong (spec 009 § Whole-Plan
+    /// Grounding). An empty-but-available union is the tightest detection case, so collapsing it
+    /// to `None` would silently fail the whole feature open for every pure-LLM-task plan.
+    #[tokio::test]
+    async fn whole_plan_trace_union_stays_some_empty_for_zero_tool_completed_tasks() {
+        use crate::agent::agent_tests::*;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = mock_provider(vec![
+            "task completed successfully".into(),
+            "task completed successfully".into(),
+        ]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let id1 = spawn_worker_and_wait_completed_shared(&mut agent, tmp.path()).await;
+        let id2 = spawn_worker_and_wait_completed_shared(&mut agent, tmp.path()).await;
+
+        let mut graph = zeph_orchestration::TaskGraph::new("goal");
+        graph.tasks = vec![
+            completed_task_with_agent(0, &id1),
+            completed_task_with_agent(1, &id2),
+        ];
+
+        let paths = agent
+            .resolve_whole_plan_trace_paths(&graph)
+            .expect("both tasks have resolvable agent_ids/transcript dirs");
+        assert_eq!(paths.len(), 2);
+
+        let union = Agent::<MockChannel>::build_whole_plan_tool_trace(paths)
+            .await
+            .expect("intact-but-empty transcripts must resolve to Some(union), not None");
+        assert!(
+            union.is_empty(),
+            "neither worker ran a tool, so the union must be Some(vec![]): {union:?}"
+        );
+    }
+
+    /// AC-13 (integration-level): a real tool call recorded in ONE task's transcript is present
+    /// in the DAG-wide union alongside the other (tool-free) task's contribution.
+    #[tokio::test]
+    async fn whole_plan_trace_union_combines_multiple_tasks() {
+        use crate::agent::agent_tests::*;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = mock_provider(vec![
+            "task completed successfully".into(),
+            "task completed successfully".into(),
+        ]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let id1 = spawn_worker_and_wait_completed_shared(&mut agent, tmp.path()).await;
+        let id2 = spawn_worker_and_wait_completed_shared(&mut agent, tmp.path()).await;
+
+        let dir = agent
+            .services
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .unwrap()
+            .agent_transcript_dir(&id1)
+            .unwrap()
+            .to_path_buf();
+        append_tool_round(&dir.join(format!("{id1}.jsonl"))).await;
+
+        let mut graph = zeph_orchestration::TaskGraph::new("goal");
+        graph.tasks = vec![
+            completed_task_with_agent(0, &id1),
+            completed_task_with_agent(1, &id2),
+        ];
+
+        let paths = agent.resolve_whole_plan_trace_paths(&graph).unwrap();
+        let union = Agent::<MockChannel>::build_whole_plan_tool_trace(paths)
+            .await
+            .expect("both transcripts are intact");
+        assert!(
+            union
+                .iter()
+                .any(|t| t.tool == "bash" && t.args_summary.as_deref() == Some("cargo test")),
+            "union must include the tool call recorded on task 0's transcript: {union:?}"
+        );
+    }
+
+    /// AC-15 (integration-level): a `RunInline` task anywhere in the DAG (no `agent_id`, its
+    /// in-loop trace is never persisted) makes the WHOLE aggregate `None` — fail-open,
+    /// reproducing today's ungrounded behavior exactly — even though another task in the same
+    /// DAG has a perfectly resolvable transcript.
+    #[tokio::test]
+    async fn whole_plan_trace_union_none_when_any_task_is_run_inline() {
+        use crate::agent::agent_tests::*;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = mock_provider(vec!["task completed successfully".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let id1 = spawn_worker_and_wait_completed_shared(&mut agent, tmp.path()).await;
+
+        let mut inline_task = zeph_orchestration::TaskNode::new(1, "t1", "d");
+        inline_task.status = zeph_orchestration::TaskStatus::Completed;
+        inline_task.result = Some(zeph_orchestration::TaskResult {
+            output: "done inline".to_string(),
+            artifacts: vec![],
+            duration_ms: 0,
+            agent_id: None, // RunInline: no agent_id, trace is ephemeral/never persisted.
+            agent_def: None,
+        });
+
+        let mut graph = zeph_orchestration::TaskGraph::new("goal");
+        graph.tasks = vec![completed_task_with_agent(0, &id1), inline_task];
+
+        let paths = agent.resolve_whole_plan_trace_paths(&graph);
+        assert!(
+            paths.is_none(),
+            "any RunInline task in the DAG must degrade the whole aggregate to None (fail-open)"
+        );
+    }
+
+    /// AC-16 (empty/single-task DAG): no completed tasks in the graph means the trace-path
+    /// resolution loop never runs, and the union is vacuously available (`Some(vec![])`) — the
+    /// caller (`run_whole_plan_verify`) never actually reaches this path in practice since
+    /// `truncated_output.is_empty()` already short-circuits first, but the helper itself must
+    /// not spuriously report unavailability for an empty task set.
+    #[tokio::test]
+    async fn whole_plan_trace_union_empty_graph_is_vacuously_available() {
+        use crate::agent::agent_tests::*;
+
+        let agent = QuickTestAgent::minimal("noop").agent;
+        let graph = zeph_orchestration::TaskGraph::new("goal");
+
+        let paths = agent
+            .resolve_whole_plan_trace_paths(&graph)
+            .expect("no completed tasks means vacuously available, not unavailable");
+        assert!(paths.is_empty());
+
+        let union = Agent::<MockChannel>::build_whole_plan_tool_trace(paths)
+            .await
+            .expect("empty path list must resolve to Some(vec![])");
+        assert!(union.is_empty());
+    }
+
+    /// End-to-end wiring test for `run_whole_plan_verify` itself (code review Important-1):
+    /// every sub-component (trace-union building, `verify_plan` grounding) is covered in
+    /// isolation above, but nothing previously called `run_whole_plan_verify` directly — this
+    /// is the project's documented "wire X into Y" defect class (a piece built and unit-tested
+    /// in isolation, but never proven reachable from its real call site). A hallucinated
+    /// whole-plan claim (unmatched against the completed task's real, empty trace) must flow
+    /// through grounding -> `should_replan` -> `replan_from_plan` -> `execute_partial_replan_dag`
+    /// and produce a non-`None`, non-empty result — proving the pipeline is genuinely wired, not
+    /// just each piece in isolation.
+    #[tokio::test]
+    async fn run_whole_plan_verify_end_to_end_hallucinated_claim_triggers_replan() {
+        use crate::agent::agent_tests::*;
+        use zeph_orchestration::{DagScheduler, GraphStatus, RuleBasedRouter};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = mock_provider(vec![
+            "task completed successfully".into(),
+            r#"{"complete": true, "gaps": [], "confidence": 0.5,
+                "claimed_executions": ["bash: cargo test"]}"#
+                .into(),
+            r#"{"tasks": [{"title": "fix gap", "description": "address the gap",
+                "agent_hint": null}]}"#
+                .into(),
+            "gap task completed successfully".into(),
+        ]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.orchestration.orchestration_config = crate::config::OrchestrationConfig {
+            enabled: true,
+            verify_completeness: true,
+            ..crate::config::OrchestrationConfig::default()
+        };
+
+        let id1 = spawn_worker_and_wait_completed_shared(&mut agent, tmp.path()).await;
+
+        let mut graph = zeph_orchestration::TaskGraph::new("goal");
+        graph.tasks = vec![completed_task_with_agent(0, &id1)];
+
+        let available_agents = agent
+            .services
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .map(|m| m.definitions().to_vec())
+            .unwrap_or_default();
+        let mut scheduler = DagScheduler::resume_from(
+            graph,
+            &agent.services.orchestration.orchestration_config,
+            Box::new(RuleBasedRouter),
+            available_agents,
+            None,
+        )
+        .unwrap();
+
+        let result = agent
+            .run_whole_plan_verify(&mut scheduler, GraphStatus::Completed)
+            .await;
+
+        let extra_tasks = result.expect(
+            "hallucinated whole-plan claim must trigger the full grounding -> replan -> \
+             execute pipeline, not silently fail open",
+        );
+        assert!(
+            !extra_tasks.is_empty(),
+            "the replan must actually produce and execute at least one gap task"
+        );
+    }
+
+    /// Companion to the hallucinated-claim wiring test above: an honest whole-plan claim
+    /// (matches nothing because there is nothing to match, and the LLM claims nothing) must
+    /// pass through `run_whole_plan_verify` end-to-end and correctly return `None` — no
+    /// spurious replan triggered by the real pipeline.
+    #[tokio::test]
+    async fn run_whole_plan_verify_end_to_end_honest_claim_returns_none() {
+        use crate::agent::agent_tests::*;
+        use zeph_orchestration::{DagScheduler, GraphStatus, RuleBasedRouter};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = mock_provider(vec![
+            "task completed successfully".into(),
+            r#"{"complete": true, "gaps": [], "confidence": 0.95}"#.into(),
+        ]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.orchestration.orchestration_config = crate::config::OrchestrationConfig {
+            enabled: true,
+            verify_completeness: true,
+            ..crate::config::OrchestrationConfig::default()
+        };
+
+        let id1 = spawn_worker_and_wait_completed_shared(&mut agent, tmp.path()).await;
+
+        let mut graph = zeph_orchestration::TaskGraph::new("goal");
+        graph.tasks = vec![completed_task_with_agent(0, &id1)];
+
+        let available_agents = agent
+            .services
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .map(|m| m.definitions().to_vec())
+            .unwrap_or_default();
+        let mut scheduler = DagScheduler::resume_from(
+            graph,
+            &agent.services.orchestration.orchestration_config,
+            Box::new(RuleBasedRouter),
+            available_agents,
+            None,
+        )
+        .unwrap();
+
+        let result = agent
+            .run_whole_plan_verify(&mut scheduler, GraphStatus::Completed)
+            .await;
+
+        assert!(
+            result.is_none(),
+            "an honest, grounded whole-plan verdict must not trigger a replan: {result:?}"
+        );
     }
 }

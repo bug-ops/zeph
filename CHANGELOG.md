@@ -257,6 +257,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pre-existing DB-error branch already produced — fail-open, matching `ShadowSentinel`'s
   documented defence-in-depth contract; the primary `PolicyGateExecutor`/`TrajectorySentinel`
   gates are unaffected and continue to run regardless (#6269).
+- **Orchestration**: `PlanVerifier::verify_plan()` (whole-plan completeness verification, run
+  once after all DAG tasks complete) had no tool-call grounding — only the per-task `verify()`
+  path gained deterministic grounding against the real tool-execution trace in #6278/PR #6286,
+  which explicitly scoped whole-plan out with a `TODO(critic)` marker. A hallucinated
+  aggregated-output claim (e.g. "ran the full test suite across all tasks") could pass whole-plan
+  verification ungrounded. `verify_plan()` now grounds against the DAG-wide **union** of every
+  completed task's real `tool_trace`, rebuilt from transcripts at whole-plan-verify time by
+  reimplementing the same resolution logic `build_tool_trace_for_task` uses for the per-task path
+  (independent of whether per-task `Verify` ran for a given task — this is deliberate
+  defense-in-depth against a future dispatch mode that skips it). Trace
+  availability is all-or-nothing at the DAG level: the aggregate is `Some(union)` only if every
+  completed task's trace resolves; any one unavailable trace (e.g. a `RunInline` task, whose
+  in-loop trace is never persisted) degrades the whole aggregate to `None` and grounding fails
+  open, exactly reproducing prior ungrounded behavior (now with a `DEBUG` log noting the
+  degradation). Whole-plan grounding is strictly weaker than per-task grounding at catching a
+  single task's own hallucination (a claim grounds if *any* task in the plan really performed
+  it) — it is additive defense-in-depth, not a replacement. The trace-path resolution loop is
+  offloaded to `spawn_blocking` to avoid N synchronous transcript reads blocking the async
+  finalization path. `specs/009-orchestration/spec.md` updated with the new grounding contract,
+  Key Invariant, and AC-13..AC-16 (#6287).
+- **Orchestration**: `execute_partial_replan_dag` (whole-plan replan execution) silently rejected
+  every replan attempt against a non-empty graph — i.e. always, in practice, since whole-plan
+  replan only ever runs after at least one task has completed. `replan_from_plan` assigns gap-task
+  IDs continuing the parent graph's numbering (so the final merge into `completed_graph.tasks`
+  stays globally unique), but the standalone partial `TaskGraph` built to execute those gap tasks
+  is validated by `dag::validate`, which requires 0-based positional IDs (`tasks[i].id ==
+  TaskId(i)`) for any freestanding graph. The mismatch made `DagScheduler::new` reject the partial
+  graph outright (`"invalid graph: task at index 0 has id 1 (expected 0)"`), fail-opening to no
+  replan every time. This is a distinct, pre-existing defect independent of the whole-plan
+  grounding work above — unrelated to the matching/grounding contract, purely a task-ID-numbering
+  bug in replan execution — surfaced by the new end-to-end test added for #6287's review pass.
+  Gap-task IDs are now remapped to local 0-based IDs for the partial scheduler run and back to the
+  original global IDs on the way out.
 - **Worktree**: `--bare` silently skipped the entire worktree subsystem bootstrap
   (`WorktreeManager` construction, `probe_capabilities`) with no warning when
   `worktree.enabled = true` in the active config — the 6th confirmed instance of the `--bare`
