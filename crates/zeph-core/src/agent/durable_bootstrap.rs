@@ -6,21 +6,33 @@
 //! adapter that reads the shared `[durable]` config section (#5452).
 //!
 //! This module owns only the mechanical "open backend, init schema, attach cipher, spawn
-//! writer" sequence. Each adapter keeps its own cache slot (`services.orchestration.durable_*`
-//! for P2, `services.session.durable_*` for P1) and its own [`zeph_durable::ExecutionId`]
-//! derivation — those decisions are adapter-specific and stay in `plan.rs` / `durable_bootstrap.rs`
-//! respectively.
+//! writer, spawn retention sweep" sequence. Each adapter keeps its own cache slot
+//! (`services.orchestration.durable_*` for P2, `services.session.durable_*` for P1) and its
+//! own [`zeph_durable::ExecutionId`] derivation — those decisions are adapter-specific and stay
+//! in `plan.rs` / `durable_bootstrap.rs` respectively.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use zeph_durable::{DurableBackendEnum, JournalWriterHandle, LocalBackend, PayloadCipher};
+use zeph_durable::{
+    DurableBackendEnum, DurableRetentionService, JournalWriterHandle, LocalBackend, PayloadCipher,
+};
 
 use crate::agent::Agent;
 use crate::channel::Channel;
 
+/// Supervised task name for the background retention sweep (#6264).
+///
+/// Both the P1 and P2 adapters share one `TaskSupervisor` (`runtime.lifecycle.task_supervisor`)
+/// and, in the common case, the same on-disk `durable.db`. Using one fixed name lets
+/// `TaskSupervisor::spawn`'s "same name aborts the prior instance" rule collapse a second
+/// adapter's spawn into a plain restart of the first adapter's sweep, instead of running two
+/// redundant sweeps against the same journal.
+const RETENTION_TASK_NAME: &str = "durable.retention_sweep";
+
 /// Open a [`LocalBackend`] at `db_url`, initialise its schema, attach `cipher` and `hmac_key` if
-/// present, and spawn its [`JournalWriter`](zeph_durable::JournalWriter) actor via
-/// `task_supervisor`.
+/// present, spawn its [`JournalWriter`](zeph_durable::JournalWriter) actor, and spawn the
+/// background [`DurableRetentionService`] prune sweep — all via `task_supervisor`.
 ///
 /// `hmac_key` is `None` for a single-user local, non-shared database (INV-8) — the documented
 /// stance where control entries carry no HMAC.
@@ -67,6 +79,21 @@ pub(crate) async fn open_durable_backend(
         task_supervisor.spawn_oneshot(Arc::from(writer_task_name), move || async move {
             writer_actor.run().await;
         });
+
+    let retention_backend = Arc::clone(&backend);
+    let retention_policy = cfg.retention.clone();
+    task_supervisor.spawn(zeph_common::TaskDescriptor {
+        name: RETENTION_TASK_NAME,
+        restart: zeph_common::RestartPolicy::Restart {
+            max: 5,
+            base_delay: Duration::from_secs(5),
+        },
+        factory: move || {
+            DurableRetentionService::new(Arc::clone(&retention_backend), retention_policy.clone())
+                .run()
+        },
+    });
+
     Some((backend, handle, task_handle))
 }
 
@@ -263,6 +290,7 @@ impl<C: Channel> Agent<C> {
 
 #[cfg(test)]
 mod tests {
+    use super::RETENTION_TASK_NAME;
     use crate::agent::agent_tests::*;
 
     fn agent_with_conversation() -> crate::agent::Agent<MockChannel> {
@@ -290,6 +318,35 @@ mod tests {
         assert!(agent.services.session.durable_ctx.is_some());
         assert!(agent.services.session.durable_writer.is_some());
         assert!(agent.services.session.durable_ctx_init_attempted);
+    }
+
+    #[tokio::test]
+    async fn spawns_retention_sweep_reachable_via_task_supervisor_snapshot() {
+        // #6264: `DurableRetentionService::run()` must actually be reachable from production
+        // startup, not just constructible. Assert the supervised task shows up in
+        // `TaskSupervisor::snapshot()` — the same registry the TUI task panel (#6281) reads.
+        let mut agent = agent_with_conversation();
+        agent.services.session.durable_agent_turns_config = Some(zeph_config::DurableConfig {
+            enabled: true,
+            agent_turns: true,
+            ..zeph_config::DurableConfig::default()
+        });
+        agent.services.session.durable_agent_turns_db_url = Some(":memory:".to_owned());
+
+        agent.ensure_session_durable_ctx().await;
+
+        let names: Vec<String> = agent
+            .runtime
+            .lifecycle
+            .task_supervisor
+            .snapshot()
+            .iter()
+            .map(|s| s.name.to_string())
+            .collect();
+        assert!(
+            names.contains(&RETENTION_TASK_NAME.to_owned()),
+            "expected {RETENTION_TASK_NAME:?} among supervised tasks, got {names:?}"
+        );
     }
 
     #[tokio::test]

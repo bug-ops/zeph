@@ -278,6 +278,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   closed the moment any transcript line is skipped) instead of the lenient `load`, so a
   torn/malformed line from a canceled sub-agent can no longer masquerade a partial trace as a
   complete one and false-positive an honest claim.
+- **Durable execution**: `zeph_durable::retention::DurableRetentionService` (the periodic
+  background prune sweep documented in spec-064 "Retention & Compaction") was never
+  instantiated outside its own doctest — the only production prune path was the manual
+  `zeph durable prune` one-shot CLI subcommand, so a running deployment's `durable.db`
+  journal grew unbounded regardless of `[durable.retention]` TTLs. Now spawned via
+  `TaskSupervisor::spawn` (task name `durable.retention_sweep`, `RestartPolicy::Restart`
+  with exponential backoff) alongside the `JournalWriter` actor, at every production
+  call site that already opens a durable backend: the shared `open_durable_backend` helper
+  (`crates/zeph-core/src/agent/durable_bootstrap.rs`, covering both the P1 agent-turn and
+  P2 orchestration adapters) and the P3 scheduler daemon's `build_durable_adapter`
+  (`src/commands/scheduler_daemon.rs`). Gated by the same per-adapter conditions that already
+  guard backend construction at each call site — `durable.enabled && (durable.agent_turns ||
+  durable.orchestration)` for P1/P2 (each adapter checks its own flag before invoking the
+  shared helper), `durable.enabled && durable.scheduler` for P3 — no new config surface was
+  added (#6264).
 - **Docs**: fixed 11 stale Claude model ID examples across 5 mdBook pages (`acp.md`,
   `sub-agents.md`, `experiments.md`, `wizard.md`, `configuration.md`) that still used the
   outdated `claude-sonnet-4-5`/`claude-sonnet-4-20250514` naming (incorrectly pairing the

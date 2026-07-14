@@ -237,6 +237,24 @@ async fn build_durable_adapter(
             },
         });
     }
+    {
+        let retention_backend = std::sync::Arc::clone(&backend);
+        let retention_policy = durable_cfg.retention.clone();
+        sched_supervisor.spawn(zeph_common::TaskDescriptor {
+            name: "durable.retention_sweep",
+            restart: zeph_common::RestartPolicy::Restart {
+                max: 5,
+                base_delay: std::time::Duration::from_secs(5),
+            },
+            factory: move || {
+                zeph_durable::DurableRetentionService::new(
+                    std::sync::Arc::clone(&retention_backend),
+                    retention_policy.clone(),
+                )
+                .run()
+            },
+        });
+    }
     Ok(Some(zeph_scheduler::durable::SchedulerDurableAdapter::new(
         backend,
         writer_handle,
@@ -273,5 +291,71 @@ fn print_status_human(status: &zeph_scheduler::DaemonStatus) {
                 run.name, last_run, run.next_run
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #6264: `build_durable_adapter` must spawn the retention sweep (not just the journal
+    /// writer) onto `sched_supervisor`, mirroring the P1/P2 coverage in
+    /// `crates/zeph-core/src/agent/durable_bootstrap.rs`. `encrypt_payload = false` avoids a
+    /// real vault dependency in this test, same pattern as
+    /// `open_backend_reveal_succeeds_without_key_when_encrypt_payload_disabled` in
+    /// `src/commands/durable.rs`.
+    #[tokio::test]
+    async fn spawns_retention_sweep_alongside_journal_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = zeph_core::config::Config::default();
+        config.memory.sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+        config.durable.enabled = true;
+        config.durable.scheduler = true;
+        config.durable.encrypt_payload = false;
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let sched_supervisor = zeph_common::TaskSupervisor::new(cancel);
+
+        let adapter = build_durable_adapter(&config, &sched_supervisor)
+            .await
+            .expect("build_durable_adapter must succeed with a local, unencrypted backend");
+        assert!(
+            adapter.is_some(),
+            "durable.enabled && durable.scheduler must produce an adapter"
+        );
+
+        let names: Vec<String> = sched_supervisor
+            .snapshot()
+            .iter()
+            .map(|s| s.name.to_string())
+            .collect();
+        assert!(
+            names.contains(&"journal_writer".to_owned()),
+            "expected journal_writer among supervised tasks, got {names:?}"
+        );
+        assert!(
+            names.contains(&"durable.retention_sweep".to_owned()),
+            "expected durable.retention_sweep among supervised tasks, got {names:?}"
+        );
+    }
+
+    /// The retention sweep must not spawn at all when the P3 adapter itself is disabled — it
+    /// rides the same `durable.enabled && durable.scheduler` gate as backend construction.
+    #[tokio::test]
+    async fn does_not_spawn_when_scheduler_adapter_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = zeph_core::config::Config::default();
+        config.memory.sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+        config.durable.enabled = true;
+        config.durable.scheduler = false;
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let sched_supervisor = zeph_common::TaskSupervisor::new(cancel);
+
+        let adapter = build_durable_adapter(&config, &sched_supervisor)
+            .await
+            .expect("build_durable_adapter must succeed (returns None, not an error)");
+        assert!(adapter.is_none());
+        assert!(sched_supervisor.snapshot().is_empty());
     }
 }
