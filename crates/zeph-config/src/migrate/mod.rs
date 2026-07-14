@@ -601,33 +601,34 @@ use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
     MigrateAutodreamConfig, MigrateCavemanConfig, MigrateCocoonProviderNotice,
     MigrateCocoonShowBalance, MigrateCompressionPredictorConfig, MigrateDatabaseUrl,
-    MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableSharedDb, MigrateEgressConfig,
-    MigrateEmbedProviderRename, MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults,
-    MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
-    MigrateGoalsConfig, MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig,
-    MigrateHooksTurnComplete, MigrateKnowledgeConfig, MigrateLlmStreamLimits,
-    MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
-    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryGraph,
-    MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
-    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
-    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
-    MigrateMemoryRetrievalQueryBias, MigrateMemoryTypeAwareCompose, MigrateMicrocompactConfig,
-    MigrateNliConfig, MigrateOrchestrationAssetSensitivity, MigrateOrchestrationEnsemble,
-    MigrateOrchestrationPersistence, MigrateOrchestratorProvider, MigrateOtelFilter,
-    MigratePiiFilterNames, MigratePlannerModelToProvider, MigratePolicyProviderAndUtilityWindow,
-    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQdrantTimeoutSecs,
-    MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
-    MigrateSecretMaskingConfig, MigrateServeConfig, MigrateSessionPersistProviderOverrides,
-    MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
-    MigrateShadowSentinelConfig, MigrateShellCheckpointsConfig, MigrateShellTransactional,
-    MigrateSkillTrustRequireCheck, MigrateSkillsRegistry, MigrateSttToProvider,
-    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
-    MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig,
-    MigrateTuiThemeDefaults, MigrateUtilityHighGainTools, MigrateVigilConfig,
-    MigrateWorktreeConfig, MigrateWorktreeGitTimeout, MigrateWorktreeQuotaFields,
+    MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableSharedDb,
+    MigrateDurableStaleRunningAfterSecs, MigrateEgressConfig, MigrateEmbedProviderRename,
+    MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig,
+    MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
+    MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
+    MigrateKnowledgeConfig, MigrateLlmStreamLimits, MigrateMagicDocsConfig,
+    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpRetryAndToolTimeout,
+    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported,
+    MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread,
+    MigrateMemoryPersonaConfig, MigrateMemoryReasoning, MigrateMemoryReasoningJudge,
+    MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias, MigrateMemoryTypeAwareCompose,
+    MigrateMicrocompactConfig, MigrateNliConfig, MigrateOrchestrationAssetSensitivity,
+    MigrateOrchestrationEnsemble, MigrateOrchestrationPersistence, MigrateOrchestratorProvider,
+    MigrateOtelFilter, MigratePiiFilterNames, MigratePlannerModelToProvider,
+    MigratePolicyProviderAndUtilityWindow, MigrateProviderMaxConcurrent, MigrateQdrantApiKey,
+    MigrateQdrantTimeoutSecs, MigrateQualityConfig, MigrateSandboxConfig,
+    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSecretMaskingConfig,
+    MigrateServeConfig, MigrateSessionPersistProviderOverrides, MigrateSessionPersistenceConfig,
+    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShadowSentinelConfig,
+    MigrateShellCheckpointsConfig, MigrateShellTransactional, MigrateSkillTrustRequireCheck,
+    MigrateSkillsRegistry, MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
+    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
+    MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateUtilityHighGainTools,
+    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
+    MigrateWorktreeQuotaFields,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–86).
+/// Ordered registry of all sequential migration steps (steps 1–87).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -789,6 +790,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 86 — add [orchestration.ensemble] advisory block for ORCH-style
             // deterministic verifier ensemble-merge (spec 073, #6232)
             Box::new(MigrateOrchestrationEnsemble),
+            // Step 87 — add stale_running_after_secs advisory to an existing active
+            // [durable.retention] table for the crash-orphan sweep (spec-064, #6254)
+            Box::new(MigrateDurableStaleRunningAfterSecs),
         ]
     });
 

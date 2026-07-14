@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        86,
-        "MIGRATIONS registry must contain all 86 sequential steps"
+        87,
+        "MIGRATIONS registry must contain all 87 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1817,7 +1817,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 86);
+    assert_eq!(MIGRATIONS.len(), 87);
 }
 
 #[test]
@@ -1855,7 +1855,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–84).
+    // Names must follow the documented step order (steps 1–87).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1943,6 +1943,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_a2a_server_remove_inert_fields",
         "migrate_memory_type_aware_compose_config",
         "migrate_orchestration_ensemble",
+        "migrate_durable_stale_running_after_secs",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -4139,6 +4140,67 @@ fn step_79_still_adds_advisory_when_unsafe_topology_detected() {
     assert_eq!(
         result.sections_changed,
         vec!["durable.shared_db".to_owned()]
+    );
+}
+
+// ── migrate_durable_stale_running_after_secs tests (step 87, #6254) ──────
+
+#[test]
+fn step_87_adds_commented_advisory_when_retention_active_and_missing_field() {
+    let src = "[durable.retention]\nttl_completed_secs = 604800\n";
+    let result = migrate_durable_stale_running_after_secs(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# stale_running_after_secs = 3600"));
+    assert!(!result.output.contains("\nstale_running_after_secs ="));
+    assert!(result.output.contains("ttl_completed_secs = 604800"));
+    assert_eq!(
+        result.sections_changed,
+        vec!["durable.retention.stale_running_after_secs".to_owned()]
+    );
+}
+
+#[test]
+fn step_87_noop_when_field_already_present() {
+    let src = "[durable.retention]\nstale_running_after_secs = 7200\n";
+    let result = migrate_durable_stale_running_after_secs(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_87_noop_when_field_comment_already_present() {
+    let src = "[durable.retention]\n# stale_running_after_secs = 3600\n";
+    let result = migrate_durable_stale_running_after_secs(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_87_noop_when_durable_retention_section_absent() {
+    let src = "[durable]\nenabled = true\n";
+    let result = migrate_durable_stale_running_after_secs(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_87_noop_when_durable_retention_only_commented_advisory() {
+    let src = "# [durable.retention]\n# ttl_completed_secs = 604800\n";
+    let result = migrate_durable_stale_running_after_secs(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_87_idempotent_on_own_output() {
+    let src = "[durable.retention]\nttl_completed_secs = 604800\n";
+    let first = migrate_durable_stale_running_after_secs(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_durable_stale_running_after_secs(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
     );
 }
 

@@ -329,12 +329,22 @@ pub(crate) async fn handle_durable_command(
             };
             let policy = &config.durable.retention;
             if dry_run {
+                let orphans = backend
+                    .count_orphans(policy)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("failed to count orphaned executions: {e}"))?;
+                println!("Dry run: {orphans} orphaned execution(s) would be aborted.");
                 let n = backend
                     .count_prunable(policy)
                     .await
                     .map_err(|e| anyhow::anyhow!("failed to count prunable executions: {e}"))?;
                 println!("Dry run: {n} terminal execution(s) past TTL would be pruned.");
             } else {
+                let aborted = backend
+                    .sweep_orphans(policy)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("failed to sweep orphaned executions: {e}"))?;
+                println!("Aborted {aborted} orphaned execution(s).");
                 let n = backend
                     .prune(policy)
                     .await

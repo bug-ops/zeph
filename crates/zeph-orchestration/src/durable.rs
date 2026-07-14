@@ -219,10 +219,32 @@ pub async fn journal_budget(
         });
     };
     let local_backend = local_backend.clone();
-    // Open a fresh execution (never a resume) for this generation.
-    local_backend
-        .open_execution(exec_id, ExecutionKind::DagRun)
-        .await?;
+    // Open a fresh execution (never a resume) for this generation, taking the INV-15 exclusive
+    // lock so this `DagRun` row's liveness is observable to the INV-17 crash-orphan sweep
+    // (#6254). `_lock` is held for the rest of this function so the sweep never races the write
+    // below; `is_resume` stays hardcoded `false` below regardless of the lock result — lock
+    // acquisition and the resume flag are orthogonal (this path always opens a fresh generation).
+    let _lock = match local_backend
+        .open_execution_exclusive(exec_id, ExecutionKind::DagRun)
+        .await
+    {
+        Ok((_, lock)) => lock,
+        Err(DurableError::ExecutionLocked {
+            execution_id,
+            holder_pid,
+        }) => {
+            tracing::info!(
+                execution_id = %execution_id,
+                holder_pid,
+                graph_id = %graph_id,
+                generation,
+                "orch.durable.budget_journal: execution already open in another process; \
+                 skipping this budget snapshot"
+            );
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
 
     let ctx = build_budget_ctx(exec_id, false, backend, writer, config);
 
@@ -583,6 +605,66 @@ mod tests {
 
             let exec = budget_exec_id(&graph_id, generation);
             assert_eq!(execution_status(&local, exec).await, "failed");
+        }
+
+        /// FR-DE-20 (#6254): `journal_budget` opens via `open_execution_exclusive`. When another
+        /// process/handle already holds the `DagRun` execution's lock, `journal_budget` must
+        /// return `Ok(())` (a graceful skip), never an error and never a task failure — the
+        /// existing caller (`plan.rs`) already tolerates a missing snapshot.
+        #[tokio::test]
+        async fn journal_budget_skips_gracefully_when_execution_is_locked() {
+            let dir = tempfile::tempdir().unwrap();
+            let url = dir.path().join("durable.db").to_string_lossy().into_owned();
+
+            let owner = LocalBackend::open(&url, 1_048_576).await.unwrap();
+            owner.init().await.unwrap();
+            let owner = Arc::new(owner);
+
+            let contender = LocalBackend::open(&url, 1_048_576).await.unwrap();
+            let contender = Arc::new(contender);
+            let backend = Arc::new(DurableBackendEnum::Local(contender.clone()));
+            let (writer, handle) = JournalWriter::new(contender.clone(), &test_config());
+            tokio::spawn(async move { writer.run().await }); // EXEMPT: test-only helper
+
+            let graph_id = GraphId::new();
+            let generation: u32 = 0;
+            let exec_id = budget_exec_id(&graph_id, generation);
+
+            // The "owner" holds the exclusive lock on this exact execution id, simulating
+            // another live process already journaling this generation's budget.
+            let (_, _lock) = owner
+                .open_execution_exclusive(exec_id, ExecutionKind::DagRun)
+                .await
+                .unwrap();
+
+            let config = test_config();
+            let result = journal_budget(
+                &graph_id,
+                generation,
+                backend,
+                handle,
+                &config,
+                ReplanBudgetSnapshot::default(),
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "ExecutionLocked must degrade to a graceful Ok(()) skip, got {result:?}"
+            );
+
+            // The row belongs to `owner` (it opened first and holds the lock); the losing side
+            // must not have mutated it — it stays `running`, never `completed`/`failed`.
+            let (status,): (String,) = zeph_db::query_as(zeph_db::sql!(
+                "SELECT status FROM durable_executions WHERE execution_id = ?"
+            ))
+            .bind(exec_id.as_uuid().to_string())
+            .fetch_one(owner.pool())
+            .await
+            .unwrap();
+            assert_eq!(
+                status, "running",
+                "the losing side must not have written a step or finalized the row"
+            );
         }
     }
 }

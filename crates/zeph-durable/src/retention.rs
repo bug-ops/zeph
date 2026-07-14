@@ -216,8 +216,10 @@ impl DurableRetentionService {
 
     /// Run the prune loop until the task is aborted.
     ///
-    /// Each tick prunes terminal executions older than their TTL; a prune failure is logged and the
-    /// loop continues (a transient database error must not kill retention).
+    /// Each tick first runs the crash-orphan sweep (#6254), then prunes terminal executions older
+    /// than their TTL — in that order, so a just-aborted orphan is visible to the same tick's TTL
+    /// check (INV-17, M3). A sweep or prune failure is logged and the loop continues (a transient
+    /// database error must not kill retention).
     #[tracing::instrument(name = "durable.retention.run", skip_all)]
     pub async fn run(self) {
         let mut tick = tokio::time::interval(self.interval);
@@ -228,6 +230,14 @@ impl DurableRetentionService {
         loop {
             tick.tick().await;
             async {
+                match self.backend.sweep_orphans(&self.policy).await {
+                    Ok(aborted) => {
+                        tracing::debug!(aborted, "durable retention crash-orphan sweep completed");
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "durable retention crash-orphan sweep failed; will retry");
+                    }
+                }
                 match self.backend.prune(&self.policy).await {
                     Ok(deleted) => {
                         tracing::debug!(deleted, "durable retention prune sweep completed");
@@ -241,6 +251,96 @@ impl DurableRetentionService {
             .await;
         }
     }
+}
+
+/// A keyset-pagination cursor over `durable_executions(updated_at, execution_id)`, used by the
+/// crash-orphan sweep to guarantee forward progress across batches (#6254 C1).
+///
+/// Ordering by `(updated_at, execution_id)` (not `updated_at` alone) gives a total order even
+/// when several rows share the same `updated_at` millisecond, so no candidate is ever skipped or
+/// revisited across batch boundaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SweepCursor {
+    /// `updated_at` of the last row this batch scanned.
+    pub(crate) updated_at_ms: i64,
+    /// `execution_id` (as stored, a UUID string) of the last row this batch scanned.
+    pub(crate) execution_id: String,
+}
+
+/// The outcome of one batch of the crash-orphan sweep: how many `running` rows this batch
+/// scanned (drives the caller's batch-continuation decision, mirroring [`prune_in_batches`]'s
+/// `deleted < batch` check), how many of those were actually aborted (a candidate whose
+/// [`ExecutionLock`](crate::backend::ExecutionLock) is held by a live owner is scanned but not
+/// aborted — INV-17), and the keyset cursor to resume from on the next batch.
+///
+/// `next_cursor` is the load-bearing fix for #6254 C1: the sweep never deletes or otherwise
+/// removes a skipped (lock-held) candidate from `durable_executions`, so a batch that re-issued
+/// the *same* unbounded `SELECT ... LIMIT batch` on every iteration would re-select the exact
+/// same lock-held rows forever whenever the live-but-stale count reaches or exceeds `batch` —
+/// `scanned` would stay `== batch` and `aborted` would stay `0` on every iteration, so the
+/// `scanned < batch` continuation check would never trip and the loop would never terminate.
+/// Advancing past `next_cursor` on every batch — whether or not any row in it was aborted —
+/// guarantees the candidate set strictly shrinks each iteration regardless of lock outcomes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SweepBatchOutcome {
+    /// Number of `status='running'` candidates this batch scanned.
+    pub(crate) scanned: u64,
+    /// Number of those candidates this batch actually hard-aborted.
+    pub(crate) aborted: u64,
+    /// Keyset cursor positioned at the last-scanned row, `None` if this batch scanned zero rows.
+    pub(crate) next_cursor: Option<SweepCursor>,
+}
+
+/// Run one batched crash-orphan sweep pass, hard-aborting stale `running` executions whose
+/// INV-15 `ExecutionLock` is free (#6254).
+///
+/// This is the shared body behind [`Journal::sweep_orphans`](crate::Journal::sweep_orphans) for
+/// the local backend. Mirrors [`prune_in_batches`]'s batch/yield discipline so a large sweep
+/// never monopolizes the runtime, but continues based on `scanned` (not `aborted`) — a batch
+/// where every candidate's lock is held by a live owner still scanned a full `batch` and must not
+/// be mistaken for "sweep exhausted". Termination is guaranteed by keyset pagination
+/// ([`SweepCursor`]): each batch's `sweep_batch` call is handed the previous batch's cursor and
+/// scans strictly past it, so the same lock-held row is never re-selected across batches (#6254
+/// C1 — without this, an all-lock-held batch >= `batch_size` would loop forever).
+pub(crate) async fn sweep_orphans_in_batches<F, Fut>(
+    batch_size: u64,
+    cutoff_ms: i64,
+    sweep_batch: F,
+) -> Result<u64, DurableError>
+where
+    F: Fn(i64, u64, Option<SweepCursor>) -> Fut,
+    Fut: Future<Output = Result<SweepBatchOutcome, DurableError>>,
+{
+    let batch = batch_size.max(1);
+    let mut total_aborted = 0u64;
+    let mut cursor: Option<SweepCursor> = None;
+    let span = tracing::info_span!(
+        "durable.retention.sweep_orphans",
+        aborted_count = tracing::field::Empty
+    );
+    async {
+        loop {
+            let outcome = sweep_batch(cutoff_ms, batch, cursor.take()).await?;
+            total_aborted = total_aborted.saturating_add(outcome.aborted);
+            if outcome.scanned < batch {
+                break;
+            }
+            cursor = outcome.next_cursor;
+            // A full batch with no cursor to resume from cannot happen (scanned == batch >= 1
+            // rows implies a last row to build a cursor from) — but fail closed rather than
+            // looping forever on a future refactor that breaks this invariant.
+            if cursor.is_none() {
+                break;
+            }
+            // Release the write lock and let other tasks run before the next batch.
+            tokio::task::yield_now().await;
+        }
+        tracing::Span::current().record("aborted_count", total_aborted);
+        metrics::counter!("durable.retention.orphans_aborted").increment(total_aborted);
+        Ok(total_aborted)
+    }
+    .instrument(span)
+    .await
 }
 
 /// Run one batched prune pass over the journal, deleting terminal executions past their TTL.
@@ -426,5 +526,58 @@ mod tests {
         .unwrap();
         assert_eq!(total, 1_620);
         assert_eq!(remaining.get(), 0);
+    }
+
+    /// Mirrors [`prune_in_batches_loops_until_drained_and_yields`] but for the sweep, which
+    /// continues on `scanned` rather than `aborted` (#6254): a batch where every candidate's
+    /// `ExecutionLock` is held by a live owner still scans a full batch and must not be mistaken
+    /// for "sweep exhausted". The closure below draws from a *fixed*, non-shrinking pool of
+    /// candidate rows addressed purely by the `cursor` it is handed — exactly what
+    /// `LocalBackend::sweep_orphan_batch`'s keyset-paginated SQL does — rather than an internal
+    /// counter that shrinks regardless of lock outcome. This is deliberate: a version of this
+    /// test that shrinks an internal "remaining" counter on every batch (aborted or not) passes
+    /// even against the pre-fix implementation, which never advanced a cursor and would re-select
+    /// the identical lock-held rows forever in production — it asserts nothing about the actual
+    /// #6254 C1 bug. Middle batch (rows `[2, 4)`) aborts nothing, simulating "every candidate in
+    /// this batch is lock-held"; the sweep must still advance past those rows via `next_cursor`
+    /// and finish the remaining pool. Wrapped in a timeout so a regression that drops cursor
+    /// advancement fails this test instead of hanging the whole suite.
+    #[tokio::test]
+    async fn sweep_orphans_in_batches_advances_past_an_all_lock_held_batch() {
+        const POOL_SIZE: u64 = 5;
+        const BATCH_SIZE: u64 = 2;
+
+        let sweep = sweep_orphans_in_batches(BATCH_SIZE, 0, |_cutoff, batch, cursor| {
+            let start = cursor.map_or(0, |c| u64::try_from(c.updated_at_ms).unwrap() + 1);
+            let end = (start + batch).min(POOL_SIZE);
+            let scanned = end.saturating_sub(start);
+            // Rows [2, 4) simulate "every candidate in this batch is lock-held": 0 aborted.
+            let aborted = if start == 2 { 0 } else { scanned };
+            let next_cursor = (scanned > 0).then(|| SweepCursor {
+                updated_at_ms: i64::try_from(end - 1).unwrap(),
+                execution_id: String::new(),
+            });
+            async move {
+                Ok(SweepBatchOutcome {
+                    scanned,
+                    aborted,
+                    next_cursor,
+                })
+            }
+        });
+
+        let total_aborted = tokio::time::timeout(std::time::Duration::from_secs(5), sweep)
+            .await
+            .expect(
+                "sweep_orphans_in_batches must terminate even when a batch is entirely \
+                 lock-held (#6254 C1 regression) — it hung instead of returning",
+            )
+            .unwrap();
+
+        assert_eq!(
+            total_aborted,
+            POOL_SIZE - BATCH_SIZE,
+            "every row except the all-locked middle batch must be aborted"
+        );
     }
 }

@@ -149,6 +149,10 @@ pub struct RetentionPolicy {
     pub prune_batch_size: u64,
     /// Background prune poll interval, in seconds.
     pub prune_interval_secs: u64,
+    /// Crash-orphan threshold, in seconds (#6254): a `status='running'` row whose `updated_at`
+    /// is older than this becomes a sweep candidate, subject to an INV-15 flock liveness check
+    /// before it is aborted. `0` disables the sweep entirely.
+    pub stale_running_after_secs: u64,
 }
 
 impl Default for RetentionPolicy {
@@ -160,6 +164,7 @@ impl Default for RetentionPolicy {
             max_journal_bytes: 1_073_741_824,
             prune_batch_size: 500,
             prune_interval_secs: 3600,
+            stale_running_after_secs: 3600,
         }
     }
 }
@@ -196,6 +201,7 @@ mod tests {
         assert_eq!(cfg.retention.max_journal_bytes, 1_073_741_824);
         assert_eq!(cfg.retention.prune_batch_size, 500);
         assert_eq!(cfg.retention.prune_interval_secs, 3600);
+        assert_eq!(cfg.retention.stale_running_after_secs, 3600);
     }
 
     #[test]

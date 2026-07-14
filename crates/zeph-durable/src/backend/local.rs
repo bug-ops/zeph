@@ -120,6 +120,10 @@ pub struct LocalBackend {
     /// [`LocalBackend::new`] from a caller-supplied pool, or a non-SQLite (Postgres) deployment,
     /// where a filesystem lock file cannot express cross-process exclusivity anyway.
     lock_dir: Option<PathBuf>,
+    /// Set once [`sweep_orphans`](Self::sweep_orphans) has emitted its warn-once log for a
+    /// `lock_dir = None` backend (#6254), so a background retention tick every
+    /// `prune_interval_secs` does not spam the log for the lifetime of the process.
+    orphan_sweep_warned: std::sync::atomic::AtomicBool,
 }
 
 impl fmt::Debug for LocalBackend {
@@ -149,6 +153,7 @@ impl LocalBackend {
             promise_waiters: NotifyRegistry::default(),
             timer_waiters: NotifyRegistry::default(),
             lock_dir: None,
+            orphan_sweep_warned: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -351,21 +356,63 @@ impl LocalBackend {
         Ok(count.max(0).cast_unsigned())
     }
 
+    /// Count crash-orphaned executions a [`sweep_orphans`](Journal::sweep_orphans) sweep would
+    /// abort under `policy` (#6254).
+    ///
+    /// Read-only: backs `zeph durable prune --dry-run`. Mirrors the real sweep's staleness scan
+    /// and INV-15 flock liveness check (acquiring and immediately releasing each candidate's
+    /// `ExecutionLock`, exactly as the real sweep does, so the count reflects genuinely
+    /// unowned rows rather than staleness alone) — but never mutates `status`. Returns `0` when
+    /// the sweep is disabled (`stale_running_after_secs == 0`) or this backend has no `lock_dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails.
+    pub async fn count_orphans(&self, policy: &RetentionPolicy) -> Result<u64, DurableError> {
+        if policy.stale_running_after_secs == 0 {
+            return Ok(0);
+        }
+        let Some(lock_dir) = self.lock_dir.clone() else {
+            return Ok(0);
+        };
+        let cutoff_ms = orphan_cutoff_ms(policy, now_unix_millis());
+        let candidates: Vec<(String,)> = zeph_db::query_as(sql!(
+            "SELECT execution_id FROM durable_executions WHERE status = 'running' AND updated_at <= ?"
+        ))
+        .bind(cutoff_ms)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("count_orphans", e))?;
+        let mut count = 0u64;
+        for (exec_str,) in &candidates {
+            let Ok(execution_id) = parse_execution_id(exec_str) else {
+                continue;
+            };
+            if ExecutionLock::acquire(&lock_dir, execution_id).is_ok() {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     /// Ensure a `durable_executions` row exists for `id`, returning whether this is a resume.
     ///
     /// Inserts a fresh `running` row for a new execution (returning `false`) or detects an existing
     /// row for a resumed one (returning `true`). The journal's foreign key requires this row before
     /// any entry is appended, so callers open the execution first.
     ///
-    /// Reopening a row previously [`finalize`](Journal::finalize)d as `completed` or `failed`
-    /// un-finalizes it: status resets to `running` and `finalized_at` clears. A caller reopening an
-    /// execution is, by definition, still using it, so the retention sweep (gated on
-    /// `finalized_at`) must not consider it prunable while it does — without this, a long-lived
-    /// execution finalized at one process's graceful shutdown and legitimately resumed by a later
-    /// process (e.g. a per-conversation `AgentTurn` execution) would keep a stale `finalized_at`
-    /// and could be pruned out from under its still-active journal. `aborted` rows are left
-    /// untouched: divergence recovery reopens the same row on purpose and starts a fresh replay
-    /// cursor without needing the status reset.
+    /// Reopening a row previously [`finalize`](Journal::finalize)d as `completed`, `failed`, or
+    /// `aborted` un-finalizes it: status resets to `running` and `finalized_at` clears (INV-16,
+    /// #6254). A caller reopening an execution is, by definition, still using it, so the retention
+    /// sweep (gated on `finalized_at`) must not consider it prunable while it does — without this,
+    /// a long-lived execution finalized at one process's graceful shutdown and legitimately resumed
+    /// by a later process (e.g. a per-conversation `AgentTurn` execution) would keep a stale
+    /// `finalized_at` and could be pruned out from under its still-active journal. `aborted` rows
+    /// are included because the crash-orphan sweep (INV-17) makes `aborted` the common outcome of a
+    /// resumable crash: a resumed execution whose row keeps `finalized_at` set is prunable out from
+    /// under the active resume — the exact hazard this un-finalize prevents for `completed`/`failed`.
+    /// This is also strictly safer for the pre-existing divergence-recovery case, which reopens an
+    /// `aborted` row on purpose: it now also protects that fresh re-drive from prune.
     ///
     /// The un-finalize is attempted as a single guarded `UPDATE` (no preceding `SELECT`) so there
     /// is no read-then-write window against a concurrent prune sweep (#6251 critic S1): if the row
@@ -399,7 +446,7 @@ impl LocalBackend {
             // "observe completed/failed" and "reset to running" for a concurrent prune to act in.
             let reopened = zeph_db::query(sql!(
                 "UPDATE durable_executions SET status = 'running', updated_at = ?, finalized_at = NULL
-                 WHERE execution_id = ? AND status IN ('completed', 'failed')"
+                 WHERE execution_id = ? AND status IN ('completed', 'failed', 'aborted')"
             ))
             .bind(now_unix_millis())
             .bind(&exec)
@@ -412,9 +459,10 @@ impl LocalBackend {
             }
 
             // Zero rows: either the row doesn't exist, or it exists but wasn't terminal (already
-            // `running`/`aborted`, no reset needed). Distinguish the two — if a concurrent prune
-            // deleted a terminal row between any earlier observation and this check, this SELECT
-            // sees the authoritative post-delete state instead of a stale belief that it's there.
+            // `running`, no reset needed — every terminal status is covered by the UPDATE above).
+            // Distinguish the two — if a concurrent prune deleted a terminal row between any
+            // earlier observation and this check, this SELECT sees the authoritative post-delete
+            // state instead of a stale belief that it's there.
             let existing: Option<(String,)> = zeph_db::query_as(sql!(
                 "SELECT status FROM durable_executions WHERE execution_id = ?"
             ))
@@ -1176,6 +1224,96 @@ impl LocalBackend {
         Ok(removed)
     }
 
+    /// One batch of the crash-orphan sweep (INV-17, #6254).
+    ///
+    /// Selects up to `batch` `status='running'` rows whose `updated_at` is at or before
+    /// `cutoff_ms`, then for each candidate non-blockingly try-acquires its INV-15
+    /// `ExecutionLock`: `ExecutionLocked` (a live owner holds it) short-circuits to skip —
+    /// staleness of `updated_at` alone is never sufficient grounds to abort. Only when the lock is
+    /// acquired does the guarded `UPDATE` run, still holding the lock, so the abort is race-free
+    /// against a concurrent `open_execution_exclusive` reopen for the same id (both require the
+    /// same non-reentrant flock). The lock releases when it drops at the end of each loop
+    /// iteration.
+    ///
+    /// `cursor` is the previous batch's [`SweepCursor`](crate::retention::SweepCursor) (`None` for
+    /// the first batch); the candidate scan is keyset-paginated strictly past it so a skipped
+    /// (lock-held) row is never re-selected by a later batch — #6254 C1: without this, a batch
+    /// consisting entirely of lock-held rows would re-select the identical rows on every
+    /// iteration and the caller's batch loop would never terminate. Returns the number of rows
+    /// scanned (for the caller's batch-continuation decision), the number actually aborted, and
+    /// the cursor to resume from on the next call.
+    async fn sweep_orphan_batch(
+        &self,
+        lock_dir: &std::path::Path,
+        cutoff_ms: i64,
+        batch: u64,
+        cursor: Option<crate::retention::SweepCursor>,
+    ) -> Result<crate::retention::SweepBatchOutcome, DurableError> {
+        // Sentinel "no lower bound" cursor: every real `updated_at` (Unix ms) is > i64::MIN, so
+        // this keyset predicate is a no-op on the first batch while still using one static,
+        // sql!()-cacheable query for both the first and subsequent calls.
+        let (after_updated_at, after_exec) = cursor.map_or((i64::MIN, String::new()), |c| {
+            (c.updated_at_ms, c.execution_id)
+        });
+
+        let candidates: Vec<(String, i64)> = zeph_db::query_as(sql!(
+            "SELECT execution_id, updated_at FROM durable_executions
+             WHERE status = 'running' AND updated_at <= ?
+               AND (updated_at > ? OR (updated_at = ? AND execution_id > ?))
+             ORDER BY updated_at, execution_id LIMIT ?"
+        ))
+        .bind(cutoff_ms)
+        .bind(after_updated_at)
+        .bind(after_updated_at)
+        .bind(&after_exec)
+        .bind(i64::try_from(batch).unwrap_or(i64::MAX))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("sweep_orphans", e))?;
+
+        let scanned = u64::try_from(candidates.len()).unwrap_or(u64::MAX);
+        let next_cursor = candidates
+            .last()
+            .map(|(id, updated_at)| crate::retention::SweepCursor {
+                updated_at_ms: *updated_at,
+                execution_id: id.clone(),
+            });
+
+        let now = now_unix_millis();
+        let abort = sql!(
+            "UPDATE durable_executions SET status = 'aborted', finalized_at = ?, updated_at = ?
+             WHERE execution_id = ? AND status = 'running' AND finalized_at IS NULL"
+        );
+        let mut aborted = 0u64;
+        for (exec_str, _updated_at) in &candidates {
+            let Ok(execution_id) = parse_execution_id(exec_str) else {
+                continue;
+            };
+            match ExecutionLock::acquire(lock_dir, execution_id) {
+                Ok(_lock) => {
+                    let result = zeph_db::query(abort)
+                        .bind(now)
+                        .bind(now)
+                        .bind(exec_str)
+                        .execute(&self.pool)
+                        .await
+                        .map_err(|e| DurableError::storage("sweep_orphans", e))?;
+                    aborted += result.rows_affected();
+                    // `_lock` drops here, releasing the flock for the next holder.
+                }
+                Err(DurableError::ExecutionLocked { .. }) => {
+                    // A live owner holds this execution — never abort on staleness alone (INV-17).
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(crate::retention::SweepBatchOutcome {
+            scanned,
+            aborted,
+            next_cursor,
+        })
+    }
+
     /// Seal a plaintext payload, or pass it through verbatim when no cipher is configured.
     fn seal_payload(&self, plaintext: &[u8], aad: &PayloadAad) -> Result<Vec<u8>, DurableError> {
         match &self.cipher {
@@ -1631,6 +1769,32 @@ impl Journal for LocalBackend {
         })
         .await
     }
+
+    /// Crash-orphan reclamation (INV-17, #6254). See [`Journal::sweep_orphans`] for the contract.
+    async fn sweep_orphans(&self, policy: &RetentionPolicy) -> Result<u64, DurableError> {
+        if policy.stale_running_after_secs == 0 {
+            return Ok(0);
+        }
+        let Some(lock_dir) = self.lock_dir.clone() else {
+            if !self
+                .orphan_sweep_warned
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                tracing::warn!(
+                    "durable: crash-orphan sweep requires an on-disk advisory-lock dir; orphan \
+                     reclamation disabled for this backend (Postgres/:memory:/non-Unix)"
+                );
+            }
+            return Ok(0);
+        };
+        let cutoff_ms = orphan_cutoff_ms(policy, now_unix_millis());
+        crate::retention::sweep_orphans_in_batches(
+            policy.prune_batch_size,
+            cutoff_ms,
+            |cutoff, batch, cursor| self.sweep_orphan_batch(&lock_dir, cutoff, batch, cursor),
+        )
+        .await
+    }
 }
 
 impl crate::sealed::Sealed for LocalBackend {}
@@ -1736,6 +1900,14 @@ pub(crate) fn now_unix_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// The absolute `updated_at` cutoff (Unix ms) at or before which a `status='running'` row becomes
+/// a crash-orphan sweep candidate (INV-17, #6254).
+fn orphan_cutoff_ms(policy: &RetentionPolicy, now_ms: i64) -> i64 {
+    let threshold =
+        i64::try_from(policy.stale_running_after_secs.saturating_mul(1000)).unwrap_or(i64::MAX);
+    now_ms.saturating_sub(threshold)
 }
 
 /// Decode a stored blob into a fixed 32-byte array, failing closed on the wrong length.
@@ -2415,9 +2587,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reopening_an_aborted_execution_leaves_it_untouched() {
-        // Divergence recovery reopens the same row on purpose (a fresh replay cursor, not a status
-        // reset) — only `completed`/`failed` rows are un-finalized on reopen, `aborted` is not.
+    async fn reopening_an_aborted_execution_un_finalizes_it() {
+        // INV-16 (#6254): reopening a row in ANY terminal status — including `aborted` — must
+        // un-finalize it back to `running` with `finalized_at` cleared. This covers both the
+        // pre-existing divergence-recovery reopen (which starts a fresh replay cursor on
+        // purpose) and the new crash-orphan sweep (INV-17), which makes `aborted` the common
+        // outcome of a resumable crash: a resumed execution whose row keeps `finalized_at` set
+        // would otherwise be prunable out from under the active resume.
         let backend = mem_backend(1_048_576).await;
         let exec = ExecutionId::new();
         backend
@@ -2429,21 +2605,26 @@ mod tests {
             .await
             .unwrap();
 
-        backend
+        let is_resume = backend
             .open_execution(exec, ExecutionKind::AgentTurn)
             .await
             .unwrap();
+        assert!(is_resume, "the row already existed, so this is a resume");
 
-        let (status,): (String,) = zeph_db::query_as(sql!(
-            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        let (status, finalized): (String, Option<i64>) = zeph_db::query_as(sql!(
+            "SELECT status, finalized_at FROM durable_executions WHERE execution_id = ?"
         ))
         .bind(exec.as_uuid().to_string())
         .fetch_one(backend.pool())
         .await
         .unwrap();
         assert_eq!(
-            status, "aborted",
-            "reopening must not un-finalize an aborted execution"
+            status, "running",
+            "reopening an aborted execution must un-finalize it (INV-16)"
+        );
+        assert!(
+            finalized.is_none(),
+            "reopening must clear the stale finalized_at"
         );
     }
 
@@ -2872,6 +3053,414 @@ mod tests {
                 .is_none()
         );
         assert_eq!(backend.read_execution(live).await.unwrap().len(), 1);
+    }
+
+    /// Backdate a `durable_executions` row's `updated_at` so it becomes a sweep candidate.
+    async fn backdate_updated_at(backend: &LocalBackend, id: ExecutionId, updated_at_ms: i64) {
+        zeph_db::query(sql!(
+            "UPDATE durable_executions SET updated_at = ? WHERE execution_id = ?"
+        ))
+        .bind(updated_at_ms)
+        .bind(id.as_uuid().to_string())
+        .execute(backend.pool())
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn sweep_orphans_disabled_when_threshold_is_zero() {
+        // A file-backed backend so the sweep would otherwise have a lock_dir to work with;
+        // stale_running_after_secs = 0 must short-circuit before any scan.
+        let dir = tempfile::tempdir().unwrap();
+        let backend =
+            LocalBackend::open(&dir.path().join("durable.db").to_string_lossy(), 1_048_576)
+                .await
+                .unwrap();
+        backend.init().await.unwrap();
+
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backdate_updated_at(&backend, exec, 0).await;
+
+        let policy = RetentionPolicy {
+            stale_running_after_secs: 0,
+            ..RetentionPolicy::default()
+        };
+        let aborted = backend.sweep_orphans(&policy).await.unwrap();
+        assert_eq!(
+            aborted, 0,
+            "stale_running_after_secs = 0 disables the sweep"
+        );
+
+        let (status,): (String,) = zeph_db::query_as(sql!(
+            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(status, "running");
+    }
+
+    #[tokio::test]
+    async fn sweep_orphans_is_a_documented_no_op_on_memory_backend() {
+        // `:memory:` has no on-disk lock_dir (INV-15 degrade), so the sweep must never abort on
+        // staleness alone — FR-DE-19.
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backdate_updated_at(&backend, exec, 0).await;
+
+        let policy = RetentionPolicy {
+            stale_running_after_secs: 1,
+            ..RetentionPolicy::default()
+        };
+        let aborted = backend.sweep_orphans(&policy).await.unwrap();
+        assert_eq!(
+            aborted, 0,
+            "a lock_dir=None backend must never abort on staleness alone"
+        );
+
+        let (status,): (String,) = zeph_db::query_as(sql!(
+            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(status, "running");
+    }
+
+    #[tokio::test]
+    async fn sweep_orphans_aborts_a_stale_running_execution_with_no_live_owner() {
+        // FR-DE-16/17: a stale `running` row whose lock is free (no live owner) is hard-aborted.
+        let dir = tempfile::tempdir().unwrap();
+        let backend =
+            LocalBackend::open(&dir.path().join("durable.db").to_string_lossy(), 1_048_576)
+                .await
+                .unwrap();
+        backend.init().await.unwrap();
+
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        // Nothing holds this execution's ExecutionLock — `open_execution` (not `_exclusive`)
+        // never acquires one, simulating a crashed owner whose flock released on process exit.
+        backdate_updated_at(&backend, exec, 0).await;
+
+        let policy = RetentionPolicy {
+            stale_running_after_secs: 1,
+            ..RetentionPolicy::default()
+        };
+        let aborted = backend.sweep_orphans(&policy).await.unwrap();
+        assert_eq!(aborted, 1);
+
+        let (status, finalized): (String, Option<i64>) = zeph_db::query_as(sql!(
+            "SELECT status, finalized_at FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(status, "aborted");
+        assert!(finalized.is_some());
+    }
+
+    #[tokio::test]
+    async fn sweep_orphans_skips_an_execution_whose_lock_is_held_by_a_live_owner() {
+        // INV-17: staleness of `updated_at` alone is never sufficient — a stale-but-alive
+        // execution (long single step, parked HITL promise, multi-hour job) must survive the
+        // sweep as long as its owner still holds the INV-15 flock.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("durable.db");
+        let url = db_path.to_string_lossy().into_owned();
+
+        let owner = LocalBackend::open(&url, 1_048_576).await.unwrap();
+        owner.init().await.unwrap();
+        let sweeper = LocalBackend::open(&url, 1_048_576).await.unwrap();
+
+        let exec = ExecutionId::new();
+        let (_, _lock) = owner
+            .open_execution_exclusive(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backdate_updated_at(&owner, exec, 0).await;
+
+        let policy = RetentionPolicy {
+            stale_running_after_secs: 1,
+            ..RetentionPolicy::default()
+        };
+        let aborted = sweeper.sweep_orphans(&policy).await.unwrap();
+        assert_eq!(aborted, 0, "a live-held lock must never be swept");
+
+        let (status,): (String,) = zeph_db::query_as(sql!(
+            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(owner.pool())
+        .await
+        .unwrap();
+        assert_eq!(status, "running");
+    }
+
+    #[tokio::test]
+    async fn sweep_orphans_leaves_a_fresh_running_execution_untouched() {
+        // A recently-updated `running` row is not yet a sweep candidate at all.
+        let dir = tempfile::tempdir().unwrap();
+        let backend =
+            LocalBackend::open(&dir.path().join("durable.db").to_string_lossy(), 1_048_576)
+                .await
+                .unwrap();
+        backend.init().await.unwrap();
+
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+
+        let policy = RetentionPolicy {
+            stale_running_after_secs: 3600,
+            ..RetentionPolicy::default()
+        };
+        let aborted = backend.sweep_orphans(&policy).await.unwrap();
+        assert_eq!(aborted, 0);
+    }
+
+    #[tokio::test]
+    async fn count_orphans_matches_sweep_without_mutating() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend =
+            LocalBackend::open(&dir.path().join("durable.db").to_string_lossy(), 1_048_576)
+                .await
+                .unwrap();
+        backend.init().await.unwrap();
+
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backdate_updated_at(&backend, exec, 0).await;
+
+        let policy = RetentionPolicy {
+            stale_running_after_secs: 1,
+            ..RetentionPolicy::default()
+        };
+        let counted = backend.count_orphans(&policy).await.unwrap();
+        assert_eq!(counted, 1);
+
+        // count_orphans must not have mutated the row.
+        let (status,): (String,) = zeph_db::query_as(sql!(
+            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(status, "running");
+
+        let aborted = backend.sweep_orphans(&policy).await.unwrap();
+        assert_eq!(
+            aborted, counted,
+            "sweep must abort exactly what count_orphans counted"
+        );
+    }
+
+    /// Batching-boundary regression: a candidate set straddling `prune_batch_size` (one more row
+    /// than a single batch) must be fully processed across multiple batches, not just the first
+    /// one. Exercises the real `sweep_orphan_batch`/`sweep_orphans_in_batches` composition end to
+    /// end (not the pure-logic unit test in `retention.rs`), so the SQL `LIMIT` and the
+    /// `scanned`-driven continuation check are both proven against a real DB.
+    #[tokio::test]
+    async fn sweep_orphans_processes_every_batch_when_candidates_straddle_the_batch_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend =
+            LocalBackend::open(&dir.path().join("durable.db").to_string_lossy(), 1_048_576)
+                .await
+                .unwrap();
+        backend.init().await.unwrap();
+
+        let batch_size = 2u64;
+        let candidate_count = batch_size + 1; // straddles the batch boundary
+        let mut execs = Vec::new();
+        for _ in 0..candidate_count {
+            let exec = ExecutionId::new();
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+            backdate_updated_at(&backend, exec, 0).await;
+            execs.push(exec);
+        }
+
+        let policy = RetentionPolicy {
+            stale_running_after_secs: 1,
+            prune_batch_size: batch_size,
+            ..RetentionPolicy::default()
+        };
+        let aborted = backend.sweep_orphans(&policy).await.unwrap();
+        assert_eq!(
+            aborted, candidate_count,
+            "every candidate must be aborted, including the one past the first batch"
+        );
+
+        for exec in execs {
+            let (status,): (String,) = zeph_db::query_as(sql!(
+                "SELECT status FROM durable_executions WHERE execution_id = ?"
+            ))
+            .bind(exec.as_uuid().to_string())
+            .fetch_one(backend.pool())
+            .await
+            .unwrap();
+            assert_eq!(status, "aborted");
+        }
+    }
+
+    /// #6254 C1 regression: when the count of stale-but-live (lock-held) candidates is `>=
+    /// prune_batch_size`, the sweep must still terminate rather than looping forever re-selecting
+    /// the same lock-held rows. Before the keyset-pagination fix, `sweep_orphan_batch`'s candidate
+    /// `SELECT` had no offset/cursor, so a batch consisting entirely of lock-held rows (which the
+    /// sweep never deletes, mutates, or otherwise removes from the `status='running'` candidate
+    /// set) would re-select the identical rows on every iteration: `scanned` would stay `==
+    /// batch` and `aborted` would stay `0` forever, so `sweep_orphans_in_batches`'s `scanned <
+    /// batch` continuation check would never trip. Exercises the real DB-backed
+    /// `sweep_orphan_batch`/`sweep_orphans_in_batches` composition (not the pure-logic
+    /// simulation in `retention.rs`) with more lock-held candidates than `prune_batch_size`, so a
+    /// naive single-batch-worth-of-locks reproduction would not have caught a bug that only
+    /// manifests once the candidate set spans multiple batches.
+    #[tokio::test]
+    async fn sweep_orphans_terminates_when_lock_held_candidates_exceed_batch_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+
+        let owner = LocalBackend::open(&db_url, 1_048_576).await.unwrap();
+        owner.init().await.unwrap();
+        let sweeper = LocalBackend::open(&db_url, 1_048_576).await.unwrap();
+
+        let batch_size = 2u64;
+        let candidate_count = batch_size * 2 + 1; // spans at least three batches, all lock-held
+        let mut locks = Vec::new();
+        for _ in 0..candidate_count {
+            let exec = ExecutionId::new();
+            let (_, lock) = owner
+                .open_execution_exclusive(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+            backdate_updated_at(&owner, exec, 0).await;
+            locks.push(lock); // held for the whole test — every candidate stays lock-held
+        }
+
+        let policy = RetentionPolicy {
+            stale_running_after_secs: 1,
+            prune_batch_size: batch_size,
+            ..RetentionPolicy::default()
+        };
+
+        let aborted = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            sweeper.sweep_orphans(&policy),
+        )
+        .await
+        .expect(
+            "sweep_orphans must terminate even when lock-held candidates exceed prune_batch_size \
+             (#6254 C1) — it hung instead of returning",
+        )
+        .unwrap();
+
+        assert_eq!(aborted, 0, "every candidate's lock is held by a live owner");
+        drop(locks);
+    }
+
+    /// INV-17: the sweep's guarded abort `UPDATE` runs only while holding the same non-reentrant
+    /// flock a concurrent `open_execution_exclusive` reopen for the same execution id requires, so
+    /// the two can never both mutate the row at once. Drives them as genuinely concurrent tasks
+    /// against a real multi-connection pool (file-backed — `:memory:` forces a single connection,
+    /// which would serialize the two calls trivially and prove nothing) across many trials so both
+    /// orderings ("sweep acquires the lock first" and "reopen acquires the lock first") are
+    /// exercised without artificial delay injection, mirroring the #6251
+    /// `concurrent_prune_and_reopen_never_lose_or_corrupt_the_row` pattern above.
+    #[tokio::test]
+    async fn concurrent_sweep_and_reopen_race_never_corrupts_the_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+        let backend = Arc::new(LocalBackend::open(&db_url, 1_048_576).await.unwrap());
+        backend.init().await.unwrap();
+
+        let policy = RetentionPolicy {
+            stale_running_after_secs: 1,
+            prune_batch_size: 10,
+            ..RetentionPolicy::default()
+        };
+
+        for _ in 0..20 {
+            let exec = ExecutionId::new();
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+            backdate_updated_at(&backend, exec, 0).await;
+
+            let sweep_backend = backend.clone();
+            let policy_for_task = policy.clone();
+            let sweep =
+                tokio::spawn(async move { sweep_backend.sweep_orphans(&policy_for_task).await });
+
+            let reopen_backend = backend.clone();
+            let reopen = tokio::spawn(async move {
+                reopen_backend
+                    .open_execution_exclusive(exec, ExecutionKind::AgentTurn)
+                    .await
+            });
+
+            let (sweep_result, reopen_result) = tokio::join!(sweep, reopen);
+            let aborted = sweep_result
+                .expect("sweep task must not panic")
+                .expect("sweep must not error under a concurrent reopen");
+            assert!(aborted <= 1, "at most one candidate row exists per trial");
+
+            match reopen_result.expect("reopen task must not panic") {
+                Ok((_is_resume, _lock)) => {
+                    // reopen won the race for the lock (either before the sweep even tried, or
+                    // after the sweep aborted the row and released) — the row must be `running`
+                    // with `finalized_at` cleared either way (INV-16 un-finalizes `aborted` too).
+                    let (status, finalized): (String, Option<i64>) = zeph_db::query_as(sql!(
+                        "SELECT status, finalized_at FROM durable_executions WHERE execution_id = ?"
+                    ))
+                    .bind(exec.as_uuid().to_string())
+                    .fetch_one(backend.pool())
+                    .await
+                    .unwrap();
+                    assert_eq!(status, "running");
+                    assert!(finalized.is_none());
+                    // Finalize before the next trial: when reopen wins because the row was
+                    // already `running` (not terminal) at the time it checked, `open_execution`'s
+                    // existing-row branch never bumps `updated_at` — left alone, this row would
+                    // stay a stale `running` candidate forever and pollute a later trial's
+                    // `aborted` count (the `assert!(aborted <= 1, ...)` above would then see more
+                    // than this trial's own row). Each trial must start with a clean slate of
+                    // exactly its own candidate.
+                    backend
+                        .finalize(exec, ExecutionStatus::Completed)
+                        .await
+                        .unwrap();
+                }
+                Err(DurableError::ExecutionLocked { .. }) => {
+                    // The sweep held the lock at the moment reopen tried — expected under the race.
+                }
+                Err(e) => panic!(
+                    "reopen must only ever fail with ExecutionLocked under this race, got {e:?}"
+                ),
+            }
+        }
     }
 
     #[tokio::test]

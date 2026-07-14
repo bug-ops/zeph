@@ -230,6 +230,12 @@ impl Journal for DurableBackendEnum {
             Self::Local(backend) => backend.prune(policy).await,
         }
     }
+
+    async fn sweep_orphans(&self, policy: &RetentionPolicy) -> Result<u64, DurableError> {
+        match self {
+            Self::Local(backend) => backend.sweep_orphans(policy).await,
+        }
+    }
 }
 
 impl ExecutionBackend for DurableBackendEnum {

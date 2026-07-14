@@ -26,8 +26,8 @@ use std::sync::Arc;
 use tracing::Instrument as _;
 use zeph_config::DurableConfig;
 use zeph_durable::{
-    DurableBackendEnum, DurableContext, EffectIntentSubClass, ExecutionId, ExecutionKind,
-    ExecutionStatus, JournalWriterHandle, LocalBackend, StepDescriptor, StepError,
+    DurableBackendEnum, DurableContext, DurableError, EffectIntentSubClass, ExecutionId,
+    ExecutionKind, ExecutionStatus, JournalWriterHandle, LocalBackend, StepDescriptor, StepError,
 };
 
 use crate::error::SchedulerError;
@@ -149,10 +149,35 @@ where
             }
         };
 
-        let is_resume = local_backend
-            .open_execution(exec_id, ExecutionKind::ScheduledJob)
+        // Exclusive open (INV-15) so this `ScheduledJob` row's liveness is observable to the
+        // INV-17 crash-orphan sweep (#6254) — it also closes a latent double-drive gap where two
+        // scheduler daemons could otherwise both fire the same `job_name`+`slot_ms`. `_lock` is
+        // held for the entire fire body (open → step → finalize) below.
+        let (is_resume, _lock) = match local_backend
+            .open_execution_exclusive(exec_id, ExecutionKind::ScheduledJob)
             .await
-            .map_err(|e| SchedulerError::TaskFailed(format!("durable open failed: {e}")))?;
+        {
+            Ok(result) => result,
+            Err(DurableError::ExecutionLocked {
+                execution_id,
+                holder_pid,
+            }) => {
+                tracing::info!(
+                    execution_id = %execution_id,
+                    holder_pid,
+                    job = job_name,
+                    slot_ms,
+                    "sched.durable.fire: execution already open in another process; skipping \
+                     this fire"
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(SchedulerError::TaskFailed(format!(
+                    "durable open failed: {e}"
+                )));
+            }
+        };
 
         let ctx = DurableContext::new(
             exec_id,
@@ -422,6 +447,55 @@ mod tests {
 
             let exec = derive_execution_id("test-job", 1_000);
             assert_eq!(execution_status(&local, exec).await, "failed");
+        }
+
+        /// #6254: `fire_with_durable` opens via `open_execution_exclusive`. When a peer daemon
+        /// already holds the `ScheduledJob` execution's lock, `fire_with_durable` must return
+        /// `Ok(())` (skip this fire, no retry) — never `SchedulerError::TaskFailed` and never a
+        /// re-invocation of the fire body.
+        #[tokio::test]
+        async fn fire_with_durable_skips_gracefully_when_execution_is_locked() {
+            let dir = tempfile::tempdir().unwrap();
+            let url = dir.path().join("durable.db").to_string_lossy().into_owned();
+
+            let owner = LocalBackend::open(&url, 1_048_576).await.unwrap();
+            owner.init().await.unwrap();
+
+            let contender = Arc::new(LocalBackend::open(&url, 1_048_576).await.unwrap());
+            let backend = Arc::new(DurableBackendEnum::Local(contender.clone()));
+            let cfg = Arc::new(fast_config());
+            let (writer, handle) = JournalWriter::new(contender.clone(), &cfg);
+            let _task = tokio::spawn(writer.run()); // EXEMPT: test-only helper
+            let adapter = SchedulerDurableAdapter::new(backend, handle, cfg);
+
+            let exec_id = derive_execution_id("test-job", 1_000);
+            // The "owner" holds the exclusive lock, simulating a peer scheduler daemon already
+            // firing this exact job+slot.
+            let (_, _lock) = owner
+                .open_execution_exclusive(exec_id, ExecutionKind::ScheduledJob)
+                .await
+                .unwrap();
+
+            let count = Arc::new(AtomicU32::new(0));
+            let c = count.clone();
+            let result = fire_with_durable(&adapter, "test-job", 1_000, move || async move {
+                c.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
+            .await;
+
+            assert!(
+                result.is_ok(),
+                "ExecutionLocked must degrade to a graceful Ok(()) skip, got {result:?}"
+            );
+            assert_eq!(
+                count.load(Ordering::Relaxed),
+                0,
+                "a locked execution must not re-invoke the fire body"
+            );
+
+            // The row belongs to `owner`; the losing side must not have mutated it.
+            assert_eq!(execution_status(&owner, exec_id).await, "running");
         }
     }
 }

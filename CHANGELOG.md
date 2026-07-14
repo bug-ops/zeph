@@ -15,6 +15,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Durable execution**: added a crash-orphan sweep to the durable retention loop (`Journal::sweep_orphans`,
+  #6254) that reclaims `status='running'` executions whose owner process died without finalizing —
+  previously invisible to the TTL prune (which only ever considers `finalized_at IS NOT NULL` rows) and
+  stuck `running` forever. A `status='running'` row whose `updated_at` is older than the new
+  `[durable.retention] stale_running_after_secs` (default 3600s, `0` disables the sweep) becomes a
+  candidate; it is hard-aborted only after a non-blocking try-acquire of its INV-15 advisory
+  `ExecutionLock` succeeds — a live owner (`ExecutionLocked`) short-circuits to skip, since staleness of
+  `updated_at` alone never proves the owner is dead. The sweep runs before `prune()` on every retention
+  tick (same supervised loop, no new spawn site) and is a documented no-op (warn-once) on backends
+  without an on-disk lock directory (`:memory:`, Postgres, non-Unix). `zeph durable prune` now runs the
+  sweep before the TTL prune and `--dry-run` reports both counts separately.
+- **Durable execution**: `zeph-orchestration`'s `journal_budget` (P2) and `zeph-scheduler`'s
+  `fire_with_durable` (P3) now open their execution via `open_execution_exclusive` instead of the plain
+  `open_execution`, making their `DagRun`/`ScheduledJob` rows' liveness observable to the crash-orphan
+  sweep; on `DurableError::ExecutionLocked` both adapters log and return `Ok(())` — a graceful skip, never
+  a task failure or retry.
 - **TUI**: added a read-only settings view (`S` key or the `settings` command-palette
   entry) listing configured LLM providers, MCP servers, and sub-agent definitions in
   three tabs, sourced as a live snapshot from `MetricsSnapshot` (never re-parsed from
@@ -290,6 +306,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bug in replan execution — surfaced by the new end-to-end test added for #6287's review pass.
   Gap-task IDs are now remapped to local 0-based IDs for the partial scheduler run and back to the
   original global IDs on the way out.
+- **Durable execution**: `open_execution`/`open_execution_exclusive`'s reopen path un-finalized only
+  `completed`/`failed` rows, leaving `aborted` rows untouched on reopen (INV-16). This was safe before
+  #6254 because `aborted` was a rare, immediately-redriven outcome, but became a hazard once the new
+  crash-orphan sweep makes `aborted` the common outcome of a resumable crash: a resumed execution whose
+  row kept `finalized_at` set was prunable out from under the active resume — the exact hazard the
+  completed/failed un-finalize was built to prevent. Reopening now resets `status='running'` and clears
+  `finalized_at` for a row in ANY terminal status.
 - **Worktree**: `--bare` silently skipped the entire worktree subsystem bootstrap
   (`WorktreeManager` construction, `probe_capabilities`) with no warning when
   `worktree.enabled = true` in the active config — the 6th confirmed instance of the `--bare`

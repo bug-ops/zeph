@@ -298,6 +298,28 @@ pub trait Journal: Send + Sync {
         &self,
         policy: &RetentionPolicy,
     ) -> impl Future<Output = Result<u64, DurableError>> + Send;
+
+    /// Crash-orphan reclamation (#6254): flock-verify and hard-abort stale `running` rows.
+    ///
+    /// A `status='running'` row whose `updated_at` is older than `policy.stale_running_after_secs`
+    /// is a sweep candidate; it is only hard-aborted after a non-blocking try-acquire of its
+    /// INV-15 `ExecutionLock` succeeds — a live owner (`ExecutionLocked`) short-circuits to skip,
+    /// since staleness alone never proves the owner is dead (INV-17). Runs exclusively on a
+    /// background task, before [`Journal::prune`] on the same tick — never on the dispatch hot
+    /// path.
+    ///
+    /// Returns the number of executions aborted. Returns `Ok(0)` without scanning when
+    /// `policy.stale_running_after_secs == 0` (disabled), and `Ok(0)` with a warn-once log on
+    /// backends without a `lock_dir` (`:memory:`, Postgres, non-Unix) — a documented no-op, never
+    /// a staleness-only abort.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::JournalUnavailable`] if the sweep cannot complete.
+    fn sweep_orphans(
+        &self,
+        policy: &RetentionPolicy,
+    ) -> impl Future<Output = Result<u64, DurableError>> + Send;
 }
 
 #[cfg(test)]

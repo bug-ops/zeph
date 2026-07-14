@@ -781,9 +781,9 @@ pub(crate) enum DurableCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Force a retention sweep over terminal executions past their TTL
+    /// Force the crash-orphan sweep, then a retention sweep over terminal executions past their TTL
     Prune {
-        /// Report how many executions would be pruned without deleting anything
+        /// Report how many executions would be aborted/pruned without mutating anything
         #[arg(long)]
         dry_run: bool,
     },

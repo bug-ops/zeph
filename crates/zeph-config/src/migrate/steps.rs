@@ -53,7 +53,9 @@
 //! step 85 adds a commented `[memory.type_aware_compose]` advisory block for `MemGuard`
 //! type-aware retrieval composition (spec 064, #6086);
 //! step 86 adds a commented `[orchestration.ensemble]` advisory block for ORCH-style
-//! deterministic verifier ensemble-merge (spec 073, #6232).
+//! deterministic verifier ensemble-merge (spec 073, #6232);
+//! step 87 adds a commented `stale_running_after_secs = 3600` advisory to an existing active
+//! `[durable.retention]` table for the crash-orphan sweep (spec-064, #6254).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -66,8 +68,8 @@ use super::{
     migrate_autodream_config, migrate_caveman_config, migrate_cocoon_provider_notice,
     migrate_cocoon_show_balance, migrate_compression_predictor_config, migrate_database_url,
     migrate_deep_link_config, migrate_durable_config, migrate_durable_shared_db,
-    migrate_egress_config, migrate_embed_provider_rename, migrate_eval_model_to_provider,
-    migrate_fidelity_timeout_defaults, migrate_five_signal_config,
+    migrate_durable_stale_running_after_secs, migrate_egress_config, migrate_embed_provider_rename,
+    migrate_eval_model_to_provider, migrate_fidelity_timeout_defaults, migrate_five_signal_config,
     migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_config,
     migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
     migrate_knowledge_config, migrate_llm_stream_limits, migrate_magic_docs_config,
@@ -1071,5 +1073,18 @@ impl Migration for MigrateOrchestrationEnsemble {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_orchestration_ensemble(toml_src)
+    }
+}
+
+/// Step 87 — adds a commented `stale_running_after_secs = 3600` advisory to an existing active
+/// `[durable.retention]` table that predates the crash-orphan sweep (spec-064, #6254).
+pub(super) struct MigrateDurableStaleRunningAfterSecs;
+impl Migration for MigrateDurableStaleRunningAfterSecs {
+    fn name(&self) -> &'static str {
+        "migrate_durable_stale_running_after_secs"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_durable_stale_running_after_secs(toml_src)
     }
 }

@@ -668,7 +668,8 @@ pub fn migrate_durable_config(toml_src: &str) -> Result<MigrationResult, Migrate
          # max_executions = 10000\n\
          # max_journal_bytes = 1073741824\n\
          # prune_batch_size = 500\n\
-         # prune_interval_secs = 3600\n";
+         # prune_interval_secs = 3600\n\
+         # stale_running_after_secs = 3600  # crash-orphan threshold (#6254); 0 disables the sweep\n";
     let output = format!("{}{}", toml_src.trim_end(), block);
     Ok(MigrationResult {
         output,
@@ -772,6 +773,73 @@ pub fn migrate_durable_shared_db(toml_src: &str) -> Result<MigrationResult, Migr
         changed_count,
         sections_changed: if changed {
             vec!["durable.shared_db".to_owned()]
+        } else {
+            Vec::new()
+        },
+    })
+}
+
+/// Adds a commented `# stale_running_after_secs = 3600` advisory line to an existing active
+/// `[durable.retention]` table that predates the crash-orphan sweep (#6254) and lacks the field.
+///
+/// Purely additive with the spec default (`3600`, matching the runtime `#[serde(default)]`
+/// value): a config that never runs this migration step still loads with the correct default at
+/// runtime, so this is a self-documentation convenience, not a correctness requirement. No-op
+/// when `[durable.retention]` is absent (a fresh `[durable]` migration via
+/// [`migrate_durable_config`] already includes the field in its commented block) or
+/// `stale_running_after_secs` (active or commented) is already present.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the source is not valid TOML.
+pub fn migrate_durable_stale_running_after_secs(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    // Anchored multiline pattern: matches `[durable.retention]` with optional inline comment,
+    // followed by LF or CRLF.
+    static DURABLE_RETENTION_HEADER_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| {
+            Regex::new(r"(?m)^[ \t]*\[durable\.retention\][ \t]*(?:#[^\r\n]*)?\r?\n")
+                .expect("static pattern")
+        });
+
+    if !section_header_present(toml_src, "durable.retention") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let already_present = toml_src.lines().any(|l| {
+        l.trim()
+            .trim_start_matches('#')
+            .trim()
+            .starts_with("stale_running_after_secs")
+    });
+    if already_present || !DURABLE_RETENTION_HEADER_RE.is_match(toml_src) {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "# stale_running_after_secs = 3600  # crash-orphan threshold (#6254); 0 disables \
+        the sweep\n";
+    let output = DURABLE_RETENTION_HEADER_RE
+        .replacen(toml_src, 1, |caps: &regex::Captures| {
+            format!("{}{comment}", &caps[0])
+        })
+        .into_owned();
+
+    let changed = output != toml_src;
+    let changed_count = usize::from(changed);
+    Ok(MigrationResult {
+        output,
+        changed_count,
+        sections_changed: if changed {
+            vec!["durable.retention.stale_running_after_secs".to_owned()]
         } else {
             Vec::new()
         },
