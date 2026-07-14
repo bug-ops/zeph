@@ -177,7 +177,7 @@ Debug dump is intended for context debugging — use it when you need to inspect
 
 Configure security features:
 
-- **PII filter** — scrub emails, phone numbers, SSNs, and credit card numbers from tool outputs before they reach the LLM context and debug dumps (default: disabled)
+- **PII filter** — scrub emails, phone numbers, SSNs, and credit card numbers from tool outputs before they reach the LLM context and debug dumps (default: enabled)
 - **Tool rate limiter** — sliding-window per-category limits (shell 30/min, web 20/min, memory 60/min) to prevent runaway tool calls (default: disabled)
 - **Skill scan on load** — scan skill content for injection patterns when skills are loaded; logs warnings but does not block execution (default: enabled)
 - **Pre-execution verification** — block destructive commands (e.g. `rm -rf /`) and injection patterns before every tool call (default: enabled)

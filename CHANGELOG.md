@@ -244,6 +244,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `build.warnings = "deny"` turned into a hard build failure. The module declaration in
   `agent/tests/mod.rs` is now gated `#[cfg(all(test, feature = "scheduler"))]` so the whole
   file compiles only when the feature enabling its content is enabled (#6274).
+- **Security (config)**: `PiiFilterConfig` and `SecretMaskingConfig` (the PAAC secret
+  placeholder masking registry) both shipped `enabled = false` by default even though both
+  controls are cheap synchronous substitutions (regex scrub / placeholder swap, no LLM call)
+  whose entire purpose is keeping vault-resolved secrets and PII out of LLM payloads, SQLite
+  message history, and debug dumps — an operator accepting `--init` defaults ended up with
+  neither protection active. Flipped both fields' effective default to `true`: the `enabled`
+  field itself now uses `#[serde(default = "default_true")]` (not a bare `#[serde(default)]`,
+  which only resolves via `bool::default()` and would have stayed `false` for any config where
+  the section is present but the key was never written — matching the existing
+  `query_bias_correction` field convention), so both a missing section and a present-but-key-
+  omitted section now correctly resolve to enabled. `PiiFilterConfig::default()` and
+  `SecretMaskingConfig::default()` updated to match. `--init` prompts now default to `true`
+  with a "(recommended)" suffix. An operator's explicit `enabled = false` in an existing
+  `config.toml` is always respected — this is a serde default-value change, not a migration
+  that rewrites live config. Also updated the shipped `config/default.toml` and
+  `crates/zeph-core/config/default.toml` reference files (both previously wrote an explicit
+  `enabled = false`, which would otherwise have silently overridden the new safe default) and
+  the `--migrate-config` step-73 advisory comment for `[security.content_isolation.secret_masking]`
+  (#6263).
+- **Security (config)**: `GatewayConfig.auth_token` is hydrated in place from the vault
+  (`ZEPH_GATEWAY_TOKEN`) at startup but derived `Serialize` only had `#[serde(default)]`, no
+  `#[serde(skip_serializing)]` — the same latent-leak class already fixed for
+  `TelegramConfig.token`/`DiscordConfig.token`/`SlackConfig.bot_token`/`SlackConfig.signing_secret`
+  in #6173. Unlike `A2aServerConfig.auth_token`, `--init` has no wizard path that persists
+  `gateway.auth_token` to `config.toml`, so redacting it in `Serialize` carries no round-trip
+  risk. Added `#[serde(skip_serializing)]`; `Deserialize` is untouched so an inline token in a
+  hand-edited `config.toml` still loads (#6248).
 - **ACP**: `session/delete` only removed the in-memory session entry, never touching the
   configured persistence store — a deleted session's `acp_sessions` row (and its associated
   conversation history / config snapshot) survived, so it could resurrect via a subsequent

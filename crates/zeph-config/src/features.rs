@@ -912,7 +912,16 @@ pub struct GatewayConfig {
     pub port: u16,
     /// Bearer token for request authentication. When set, all requests must include
     /// `Authorization: Bearer <token>`. Default: `None` (no auth).
-    #[serde(default)]
+    ///
+    /// # Security
+    ///
+    /// Never serialized: `--init` has no wizard path that persists this field (the real
+    /// token is resolved from the vault via `ZEPH_GATEWAY_TOKEN`), but runtime config
+    /// resolution hydrates the real value into this field in memory.
+    /// `#[serde(skip_serializing)]` keeps any future diagnostic `Serialize` of a live
+    /// `Config` from leaking it; `Deserialize` is untouched so an inline token in a
+    /// hand-edited `config.toml` still loads.
+    #[serde(default, skip_serializing)]
     pub auth_token: Option<String>,
     /// Maximum requests per minute. Must be `> 0`. Default: `120`.
     #[serde(default = "default_gateway_rate_limit")]
@@ -1358,6 +1367,26 @@ mod tests {
         let dbg = format!("{cfg:?}");
         assert!(!dbg.contains("[REDACTED]"));
         assert!(dbg.contains("auth_token: None"));
+    }
+
+    #[test]
+    fn gateway_config_serialize_omits_auth_token() {
+        let cfg = GatewayConfig {
+            auth_token: Some("real-secret-value".into()),
+            ..GatewayConfig::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(!json.contains("real-secret-value"));
+        assert!(!json.contains("\"auth_token\""));
+    }
+
+    #[test]
+    fn gateway_config_deserialize_missing_auth_token_as_none() {
+        // `#[serde(skip_serializing)]` only affects the output side; this pins that
+        // `skip_serializing` cannot break loading a config that never had the key (e.g. one
+        // written before this fix, or hand-edited without it).
+        let cfg: GatewayConfig = toml::from_str("").unwrap();
+        assert!(cfg.auth_token.is_none());
     }
 
     #[test]

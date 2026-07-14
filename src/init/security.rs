@@ -204,9 +204,9 @@ pub(super) fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
     );
     state.pii_filter_enabled = Confirm::new()
         .with_prompt(
-            "Enable PII filter? (scrubs emails, phone numbers, SSNs, and credit card numbers from tool outputs before LLM context and debug dumps)",
+            "Enable PII filter? (scrubs emails, phone numbers, SSNs, and credit card numbers from tool outputs before LLM context and debug dumps; recommended)",
         )
-        .default(false)
+        .default(true)
         .interact()?;
     state.rate_limit_enabled = Confirm::new()
         .with_prompt(
@@ -379,9 +379,9 @@ pub(super) fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
     {
         state.secret_masking_enabled = Confirm::new()
             .with_prompt(
-                "Enable secret placeholder masking? (substitutes vault-resolved secrets — API keys, tokens, DB URLs — with opaque per-session placeholders before outbound LLM calls; resolved back only at tool execution)",
+                "Enable secret placeholder masking? (substitutes vault-resolved secrets — API keys, tokens, DB URLs — with opaque per-session placeholders before outbound LLM calls; resolved back only at tool execution; recommended)",
             )
-            .default(false)
+            .default(true)
             .interact()?;
     }
 

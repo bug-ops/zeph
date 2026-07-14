@@ -531,7 +531,7 @@ pub struct SecurityConfig {
     /// Memory write validation (enabled by default).
     #[serde(default)]
     pub memory_validation: MemoryWriteValidationConfig,
-    /// PII filter for tool outputs and debug dumps (opt-in, disabled by default).
+    /// PII filter for tool outputs and debug dumps (enabled by default).
     #[serde(default)]
     pub pii_filter: PiiFilterConfig,
     /// Tool action rate limiter (opt-in, disabled by default).

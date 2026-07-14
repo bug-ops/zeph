@@ -440,7 +440,7 @@ impl Default for WizardState {
             experiments_eval_provider: String::new(),
             experiments_schedule_enabled: false,
             experiments_schedule_cron: String::new(),
-            pii_filter_enabled: false,
+            pii_filter_enabled: true,
             rate_limit_enabled: false,
             skill_scan_on_load: true,
             skill_require_integrity_check_on_promote: true,
@@ -461,7 +461,7 @@ impl Default for WizardState {
             guardrail_timeout_ms: 500,
             nli_enabled: false,
             nli_provider: String::new(),
-            secret_masking_enabled: false,
+            secret_masking_enabled: true,
             #[cfg(feature = "classifiers")]
             classifiers_enabled: false,
             #[cfg(feature = "classifiers")]

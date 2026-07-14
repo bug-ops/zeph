@@ -820,7 +820,10 @@ pub fn migrate_nli_config(toml_src: &str) -> Result<MigrationResult, MigrateErro
 /// Adds a commented-out `[security.content_isolation.secret_masking]` section to configs that
 /// predate the PAAC secret placeholder masking registry (#5437). Idempotent: no-op when the
 /// real or commented `[security.content_isolation.secret_masking]` header is already present.
-/// Existing configs gain the section as comments (no behavior change — `enabled = false`).
+/// Existing configs gain the section as comments only — this migration writes no active TOML
+/// key, so it does not itself change behavior. The section is absent from `toml_src` here, so
+/// the actual effective value already comes from `SecretMaskingConfig::default()`, which is
+/// `enabled = true` as of #6263.
 ///
 /// # Errors
 ///
@@ -842,9 +845,9 @@ pub fn migrate_secret_masking_config(toml_src: &str) -> Result<MigrationResult, 
     let _doc = toml_src.parse::<DocumentMut>()?;
 
     let block = "\n# PAAC secret placeholder masking: substitutes vault-resolved secrets with opaque\n\
-         # per-session placeholders before outbound LLM calls (#5437). Opt-in, default-off.\n\
+         # per-session placeholders before outbound LLM calls (#5437). Enabled by default.\n\
          # [security.content_isolation.secret_masking]\n\
-         # enabled = false\n\
+         # enabled = true\n\
          # min_secret_len = 8\n";
     let output = format!("{}{}", toml_src.trim_end(), block);
     Ok(MigrationResult {

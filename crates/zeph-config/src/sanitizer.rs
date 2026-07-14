@@ -199,11 +199,13 @@ impl Default for NliConfig {
 /// Configuration for PAAC secret placeholder masking, nested under
 /// `[security.content_isolation.secret_masking]` in the agent config file.
 ///
-/// When `enabled = false` (the default), vault secrets are not masked.
+/// Enabled by default: substitution is a cheap synchronous placeholder swap with no LLM
+/// call, and keeps vault-resolved secrets out of LLM payloads, `SQLite` history, and debug
+/// dumps (#6263).
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct SecretMaskingConfig {
-    /// Enable secret placeholder masking (default: false — opt-in).
-    #[serde(default)]
+    /// Enable secret placeholder masking (default: true).
+    #[serde(default = "default_true")]
     pub enabled: bool,
 
     /// Minimum secret byte length to be eligible for masking (default: 8).
@@ -221,7 +223,7 @@ fn default_min_secret_len() -> usize {
 impl Default for SecretMaskingConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             min_secret_len: default_min_secret_len(),
         }
     }
@@ -402,12 +404,13 @@ fn default_custom_replacement() -> String {
 
 /// Configuration for the PII filter, nested under `[security.pii_filter]` in the config file.
 ///
-/// Disabled by default — opt-in to avoid unexpected data loss.
+/// Enabled by default: filtering is a cheap synchronous regex substitution with no LLM
+/// call, and keeps PII out of LLM payloads, `SQLite` history, and debug dumps (#6263).
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct PiiFilterConfig {
-    /// Master switch. When `false`, the filter is a no-op.
-    #[serde(default)]
+    /// Master switch. When `false`, the filter is a no-op. Default: `true`.
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Scrub email addresses.
     #[serde(default = "default_true")]
@@ -439,7 +442,7 @@ pub struct PiiFilterConfig {
 impl Default for PiiFilterConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             filter_email: true,
             filter_phone: true,
             filter_ssn: true,
@@ -594,6 +597,59 @@ mod tests {
     fn content_isolation_deserialize_absent_defaults_true() {
         let cfg: ContentIsolationConfig = toml::from_str("").unwrap();
         assert!(cfg.mcp_to_acp_boundary);
+    }
+
+    // ── PiiFilterConfig / SecretMaskingConfig safe-default posture (#6263) ──────────────
+
+    #[test]
+    fn pii_filter_default_is_enabled() {
+        assert!(PiiFilterConfig::default().enabled);
+    }
+
+    #[test]
+    fn pii_filter_deserialize_absent_defaults_enabled_true() {
+        // The whole [security.pii_filter] table is absent — falls back to struct Default.
+        let cfg: PiiFilterConfig = toml::from_str("").unwrap();
+        assert!(cfg.enabled);
+    }
+
+    #[test]
+    fn pii_filter_deserialize_section_present_without_enabled_key_defaults_true() {
+        // The section exists (e.g. only `filter_email` was set) but omits `enabled` — must
+        // resolve via the field-level `default_true`, not `bool::default()`.
+        let cfg: PiiFilterConfig = toml::from_str("filter_email = false").unwrap();
+        assert!(cfg.enabled);
+        assert!(!cfg.filter_email);
+    }
+
+    #[test]
+    fn pii_filter_deserialize_explicit_false_is_respected() {
+        let cfg: PiiFilterConfig = toml::from_str("enabled = false").unwrap();
+        assert!(!cfg.enabled);
+    }
+
+    #[test]
+    fn secret_masking_default_is_enabled() {
+        assert!(SecretMaskingConfig::default().enabled);
+    }
+
+    #[test]
+    fn secret_masking_deserialize_absent_defaults_enabled_true() {
+        let cfg: SecretMaskingConfig = toml::from_str("").unwrap();
+        assert!(cfg.enabled);
+    }
+
+    #[test]
+    fn secret_masking_deserialize_section_present_without_enabled_key_defaults_true() {
+        let cfg: SecretMaskingConfig = toml::from_str("min_secret_len = 12").unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.min_secret_len, 12);
+    }
+
+    #[test]
+    fn secret_masking_deserialize_explicit_false_is_respected() {
+        let cfg: SecretMaskingConfig = toml::from_str("enabled = false").unwrap();
+        assert!(!cfg.enabled);
     }
 
     fn de_guard(toml: &str) -> Result<EmbeddingGuardConfig, toml::de::Error> {

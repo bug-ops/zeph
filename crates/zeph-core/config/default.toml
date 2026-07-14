@@ -538,8 +538,8 @@ sources = ["web_scrape", "a2a_message"]
 model = "claude"
 
 [security.pii_filter]
-# Scrub PII from tool outputs before they enter LLM context and debug dumps (default: false)
-enabled = false
+# Scrub PII from tool outputs before they enter LLM context and debug dumps (default: true)
+enabled = true
 # Scrub email addresses (default: true)
 filter_email = true
 # Scrub US phone numbers (default: true)

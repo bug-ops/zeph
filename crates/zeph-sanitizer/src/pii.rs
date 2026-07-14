@@ -549,7 +549,12 @@ mod tests {
     }
 
     fn filter_disabled() -> PiiFilter {
-        PiiFilter::new(PiiFilterConfig::default())
+        // `enabled` now defaults to true (#6263) — construct an explicitly-disabled config to
+        // exercise the no-op fast path, rather than relying on `PiiFilterConfig::default()`.
+        PiiFilter::new(PiiFilterConfig {
+            enabled: false,
+            ..PiiFilterConfig::default()
+        })
     }
 
     // --- disabled fast-path ---
@@ -915,7 +920,7 @@ mod tests {
 
     #[test]
     fn detect_spans_disabled_returns_empty() {
-        let f = PiiFilter::new(PiiFilterConfig::default());
+        let f = filter_disabled();
         assert!(f.detect_spans("user@example.com").is_empty());
     }
 

@@ -3649,7 +3649,7 @@ fn step_73_adds_secret_masking_block_when_absent() {
             .output
             .contains("# [security.content_isolation.secret_masking]")
     );
-    assert!(result.output.contains("# enabled = false"));
+    assert!(result.output.contains("# enabled = true"));
     assert_eq!(
         result.sections_changed,
         vec!["security.content_isolation.secret_masking".to_owned()]
