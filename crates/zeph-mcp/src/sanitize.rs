@@ -43,6 +43,14 @@ const MAX_TOOL_NAME_LEN: usize = 64;
 const MAX_SCHEMA_DEPTH: usize = 10;
 const MAX_LOG_MATCH_BYTES: usize = 64;
 
+/// Cap on distinct entries in each `name_referenced_in` regex cache.
+///
+/// Tool names are attacker-influenced (untrusted MCP server input): a server that rotates
+/// its advertised names on every reconnect/catalog-refresh must not be able to grow these
+/// caches without bound. 256 comfortably covers realistic tool-name cardinality for a single
+/// process while capping worst-case memory to a small, fixed number of compiled regexes.
+const NAME_REGEX_CACHE_CAPACITY: usize = 256;
+
 /// Minimum tool name length for cross-reference matching.
 ///
 /// Short names like "get", "set", "run" produce too many false positives.
@@ -627,18 +635,21 @@ fn detect_cross_tool_references(
 /// For hyphenated names, `\b` does not work correctly because hyphen is a word boundary
 /// character. A custom boundary set is used instead: whitespace and common punctuation.
 fn name_referenced_in(text: &str, tool_name: &str) -> bool {
-    use std::collections::HashMap;
+    use std::num::NonZeroUsize;
     use std::sync::OnceLock;
+
+    use lru::LruCache;
 
     let lower_text = text.to_lowercase();
     let lower_name = tool_name.to_lowercase();
+    let capacity = || NonZeroUsize::new(NAME_REGEX_CACHE_CAPACITY).expect("capacity is non-zero");
 
     if tool_name.contains('-') {
         // Custom word boundaries for hyphenated names.
-        static CACHE: OnceLock<parking_lot::Mutex<HashMap<String, Regex>>> = OnceLock::new();
-        let cache = CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
+        static CACHE: OnceLock<parking_lot::Mutex<LruCache<String, Regex>>> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| parking_lot::Mutex::new(LruCache::new(capacity())));
         let mut guard = cache.lock();
-        let re = guard.entry(lower_name.clone()).or_insert_with(|| {
+        let re = guard.get_or_insert(lower_name.clone(), || {
             let escaped = regex::escape(&lower_name);
             let pattern =
                 format!(r#"(?:^|[\s,;.()\[\]{{}}\"'`]){escaped}(?:[\s,;.()\[\]{{}}\"'`]|$)"#);
@@ -647,10 +658,10 @@ fn name_referenced_in(text: &str, tool_name: &str) -> bool {
         re.is_match(&lower_text)
     } else {
         // Plain word boundary is fine for non-hyphenated names.
-        static CACHE: OnceLock<parking_lot::Mutex<HashMap<String, Regex>>> = OnceLock::new();
-        let cache = CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
+        static CACHE: OnceLock<parking_lot::Mutex<LruCache<String, Regex>>> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| parking_lot::Mutex::new(LruCache::new(capacity())));
         let mut guard = cache.lock();
-        let re = guard.entry(lower_name.clone()).or_insert_with(|| {
+        let re = guard.get_or_insert(lower_name.clone(), || {
             let escaped = regex::escape(&lower_name);
             let pattern = format!(r"\b{escaped}\b");
             Regex::new(&pattern).expect("cross-ref word boundary regex")
@@ -1749,6 +1760,46 @@ mod tests {
                 .any(|r| { r.source_tool == "list_pages" && r.target_tool == "fetch-url" }),
             "hyphenated tool name 'fetch-url' must be matched via custom boundary regex"
         );
+    }
+
+    #[test]
+    fn name_referenced_in_cache_bounded_survives_churn() {
+        // Regression guard for #6255: both `name_referenced_in` regex caches are bounded LRUs
+        // (`NAME_REGEX_CACHE_CAPACITY`). Insert well past the cap with distinct names to force
+        // repeated eviction, then confirm a long-evicted entry still matches correctly when
+        // recompiled on demand — proving eviction churn causes no panic or stale/wrong result
+        // in either the hyphenated-name or the plain-word-boundary cache.
+        let churn = NAME_REGEX_CACHE_CAPACITY * 2 + 10;
+
+        for i in 0..churn {
+            let name = format!("tool-{i}");
+            let text = format!("call the {name} tool");
+            assert!(
+                name_referenced_in(&text, &name),
+                "hyphenated name {name} must match its own text"
+            );
+        }
+        let evicted_hyphenated = "tool-0";
+        assert!(
+            name_referenced_in("call the tool-0 tool", evicted_hyphenated),
+            "evicted hyphenated entry must still match after being recompiled"
+        );
+        assert!(!name_referenced_in("no reference here", evicted_hyphenated));
+
+        for i in 0..churn {
+            let name = format!("toolname{i}");
+            let text = format!("call the {name} tool");
+            assert!(
+                name_referenced_in(&text, &name),
+                "plain name {name} must match its own text"
+            );
+        }
+        let evicted_plain = "toolname0";
+        assert!(
+            name_referenced_in("call the toolname0 tool", evicted_plain),
+            "evicted plain entry must still match after being recompiled"
+        );
+        assert!(!name_referenced_in("no reference here", evicted_plain));
     }
 
     #[test]

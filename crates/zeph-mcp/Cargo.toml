@@ -28,6 +28,7 @@ dashmap.workspace = true
 futures.workspace = true
 glob.workspace = true
 http.workspace = true
+lru.workspace = true
 open.workspace = true
 parking_lot.workspace = true
 rand.workspace = true

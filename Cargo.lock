@@ -11106,6 +11106,7 @@ dependencies = [
  "futures",
  "glob",
  "http",
+ "lru",
  "open",
  "parking_lot",
  "qdrant-client",

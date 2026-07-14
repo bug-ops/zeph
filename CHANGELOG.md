@@ -595,6 +595,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Known residual gap, intentionally not addressed here: an execution that ends via an ungraceful
   process exit (crash, OOM, `SIGKILL`) still has no reclamation path if never resumed — this needs a
   separate periodic staleness-sweep mechanism, tracked in a follow-up issue (#6251).
+- **Security (zeph-mcp)**: `name_referenced_in`'s two regex memoization caches
+  (`crates/zeph-mcp/src/sanitize.rs`) were process-lifetime `static`s keyed by lowercased MCP
+  tool name with no eviction — since tool names are attacker-influenced (untrusted MCP server
+  input), a malicious/compromised server rotating its advertised tool names on reconnect or
+  catalog refresh could grow both caches without bound, leaking memory over the lifetime of a
+  long-running daemon/gateway/serve process. Replaced both `HashMap<String, Regex>` caches with
+  `lru::LruCache<String, Regex>` capped at 256 entries, using `get_or_insert` in place of
+  `entry().or_insert_with()` — same single-lock-acquisition semantics, no new attack surface
+  (#6255).
 
 ### Added
 
