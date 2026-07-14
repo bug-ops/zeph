@@ -23,7 +23,7 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 | `compatible` | Generic OpenAI-compatible endpoint backend |
 | `gonka` | Gonka native inference backend — signed HTTP transport via `RequestSigner`, `EndpointPool` for weighted multi-node load balancing; supports `chat`, `chat_stream`, `embed`, and `chat_with_tools` (feature `gonka`) |
 | `candle_provider` | Local inference via Candle (feature `candle`) |
-| `any` | `AnyProvider` enum wrapping every backend for uniform dispatch |
+| `any` | `AnyProvider` enum wrapping every backend for uniform dispatch; `set_thinking_budget()` / `apply_reasoning_effort()` / `current_thinking_budget()` / `current_reasoning_effort()` mutate the active provider's thinking/reasoning settings at runtime (session-only, never persisted), delegating through `Router`/`Triage` to the last-active inner provider |
 | `router` | `RouterProvider` selects among backends via four strategies: EMA latency tracking, Thompson sampling (Beta distributions), cascade escalation, and LinUCB bandit. Providers stored as `Arc<[AnyProvider]>` — `clone()` on every LLM request is O(1) regardless of chain length |
 | `extractor` | `Extractor` / `chat_typed<T>()` — typed LLM output via JSON Schema (`schemars`); per-`TypeId` schema caching |
 | `sse` | Shared `sse_to_chat_stream()` helpers for Claude and OpenAI SSE parsing |
@@ -210,6 +210,8 @@ thinking = { mode = "extended", budget_tokens = 16000 }
 ```
 
 CLI: `--thinking extended:16000` or `--thinking adaptive`. When thinking is enabled and `max_tokens` is below 16000, it is raised automatically. Thinking deltas are parsed from the SSE stream and suppressed from the user-facing output; `MessagePart::ThinkingBlock` variants preserve thinking blocks verbatim across tool-use turns.
+
+The thinking budget and OpenAI/Compatible/Gemini `reasoning_effort` can also be changed mid-session via `AnyProvider::set_thinking_budget()` / `apply_reasoning_effort()` — surfaced as the `/think-tokens [N|Nk|NM|off]` and `/reasoning-effort [low|medium|high]` slash commands (and a matching `--reasoning-effort` CLI flag / `--init` wizard prompt). Overrides are session-only: never persisted across restarts or `/provider` switches, and unsupported providers return an explicit "not supported" message instead of a silent no-op.
 
 ## Prompt cache TTL
 

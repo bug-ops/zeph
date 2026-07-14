@@ -9,16 +9,18 @@ Native durable execution layer for [Zeph](https://github.com/bug-ops/zeph) — j
 flow* of an execution (steps, promises, timers) so a crashed or interrupted run can resume at the
 point of failure instead of restarting from scratch.
 
-> [!IMPORTANT]
-> This crate is **under active construction** (spec-064, epic
-> [#4707](https://github.com/bug-ops/zeph/issues/4707)). The type-level foundation, the AEAD payload
-> contract, the persistence engine (`LocalBackend`, the background `JournalWriter` actor, the sealed
-> `ExecutionBackend` dispatcher), and the execution heart — the `&self` `DurableContext` with
+> [!NOTE]
+> Spec-064 (epic [#4707](https://github.com/bug-ops/zeph/issues/4707)) is complete — all 11 child
+> issues shipped and the epic is closed. The type-level foundation, the AEAD payload contract, the
+> persistence engine (`LocalBackend`, the background `JournalWriter` actor, the sealed
+> `ExecutionBackend` dispatcher), the execution heart (the `&self` `DurableContext` with
 > deterministic step ids, the fingerprint-guarded replay cursor, the exactly-once intent/result
-> protocol, and `parallel()` batches — have landed, as have the promise/timer layer
-> (`DurablePromise`, `DurableHandle`, `DurableTimerService`) and journal retention
-> (`DurableRetentionService`). The CLI/TUI integration and the consuming adapters land in follow-up
-> issues of the epic.
+> protocol, and `parallel()` batches), the promise/timer layer (`DurablePromise`, `DurableHandle`,
+> `DurableTimerService`), and journal retention (`DurableRetentionService`, including the
+> flock-verified crash-orphan staleness sweep) have all landed. The `zeph durable` CLI (`list` /
+> `show` / ...) and the TUI durable-execution widget are wired, and all four consuming adapters —
+> agent tool loop, orchestration (`/plan resume`), scheduler, and subagent — journal their steps
+> through `DurableContext`.
 
 ## Overview
 
@@ -56,7 +58,9 @@ a dedicated `durable.db` (SQLite) or a feature-gated Restate backend.
   section, with spec defaults applied on deserialization.
 - **backend** — the sealed `ExecutionBackend` trait, `BackendCapabilities`, the `DurableBackendEnum`
   enum dispatcher, and `LocalBackend` (a dedicated `durable.db` pool implementing `Journal`, sealing
-  payloads through the injected cipher).
+  payloads through the injected cipher). Includes `open_execution_exclusive`, a `flock(2)`-backed
+  process-exclusivity lock that rejects a second concurrent holder for the same `ExecutionId`
+  (guards against colliding `agent_turn` executions across processes).
 - **writer** — the background `JournalWriter` actor and its cloneable `JournalWriterHandle`:
   group-commit for buffered appends, flush-before-commit ACKs for exactly-once entries, and
   `MAX(seq)` restart resume.
@@ -64,7 +68,10 @@ a dedicated `durable.db` (SQLite) or a feature-gated Restate backend.
   point) and `DurableHandle` for out-of-band resolution.
 - **timer** — `DurableTimerService`, a polling actor that fires journaled timers on resume.
 - **retention** — `DurableRetentionService`, the background pruner that enforces `RetentionPolicy`
-  (TTL, execution/journal-byte caps) against the `durable.db` pool.
+  (TTL, execution/journal-byte caps) against the `durable.db` pool. Also folds in the crash-orphan
+  staleness sweep: a `stale_running_after_secs` knob reclaims `status='running'` rows abandoned by
+  an ungraceful process exit, gated on a non-blocking advisory-lock liveness probe so a still-live
+  owner is never aborted out from under it.
 - **error** — the crate-wide `DurableError`.
 
 ## Architecture & invariants

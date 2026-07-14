@@ -69,6 +69,7 @@ zeph migrate-config --in-place # update file in place
 | Feature | Description |
 |---------|-------------|
 | `deep-link` | Enables `zeph://` deep-link config fields (paired with the `deep-link` feature in `zeph-common`) |
+| `card-signing` | Marker feature (no deps) letting `Config::validate()` fail fast when `card_trust_policy = "require"` is set without the A2A Agent Card signing crypto compiled in. MUST be enabled together with `zeph-a2a/card-signing` (paired automatically by the root `a2a` feature) |
 
 ## Environment variable overrides
 

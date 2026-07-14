@@ -65,8 +65,8 @@ async fn example(
 ## Architecture
 
 `zeph-agent-persistence` depends on `zeph-memory`, `zeph-llm`, `zeph-context`, `zeph-config`,
-and `zeph-common`. It does **not** depend on `zeph-core`. This is the core invariant that keeps
-the persistence and tool-dispatch subsystems independently evolvable.
+`zeph-session`, and `zeph-common`. It does **not** depend on `zeph-core`. This is the core
+invariant that keeps the persistence and tool-dispatch subsystems independently evolvable.
 
 `zeph-core` depends on this crate and constructs the borrow-lens views (`MemoryPersistenceView`,
 `SecurityView`, `MetricsView`) from disjoint field projections of `Agent<C>`, then delegates to

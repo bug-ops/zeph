@@ -7,7 +7,10 @@
 
 Agent context-assembly service for the [Zeph](https://github.com/bug-ops/zeph) AI agent.
 
-Provides `ContextService` — a stateless façade for all context operations: system prompt rebuilds, memory injection, conversation compaction, and summarization. Previously this logic lived directly on `Agent<C>` inside `zeph-core`; extracting it means editing context assembly does not trigger recompilation of the tool dispatcher (`zeph-agent-tools`) or the persistence layer (`zeph-agent-persistence`).
+Provides `ContextService` — a stateless façade for context operations: memory injection, skill disambiguation, conversation compaction, and summarization. Previously this logic lived directly on `Agent<C>` inside `zeph-core`; extracting it means editing context assembly does not trigger recompilation of the tool dispatcher (`zeph-agent-tools`) or the persistence layer (`zeph-agent-persistence`).
+
+> [!NOTE]
+> System prompt rebuild (`rebuild_system_prompt`) stayed on `Agent<C>` in `zeph-core` — it was never migrated into a `ContextService` method, and an early dead stub of the same name was later removed from this crate.
 
 ## Installation
 
@@ -23,36 +26,34 @@ zeph-agent-context = { version = "0.22", workspace = true }
 
 All methods on `ContextService` are stateless. State flows exclusively through explicit borrow-lens view parameters — structs of `&`/`&mut` references that `zeph-core`'s shim layer constructs from disjoint `Agent<C>` fields. The borrow checker proves field disjointness at the literal struct expressions in the shim.
 
-### Rebuild system prompt
+### Prepare context (memory injection)
 
 ```rust,no_run
-use zeph_agent_context::{ContextService, ContextAssemblyView, MessageWindowView, ProviderHandles};
+use zeph_agent_context::ContextService;
 
 let svc = ContextService::new();
 
 // `window` and `view` are constructed by zeph-core's shim from Agent<C> fields.
-svc.rebuild_system_prompt(
-    query,
-    &mut window,
-    &mut view,
-    &providers,
-    &trust_gate,
-    &status_sink,
-).await;
-```
-
-### Prepare context (memory injection)
-
-```rust,no_run
-svc.prepare_context(query, &mut window, &mut view, &providers, &status_sink)
-    .await
-    .map_err(AgentError::context)?;
+let delta = svc.prepare_context(query, &mut window, &mut view).await?;
+// `delta.code_context`, if present, is applied by the caller (zeph-core keeps
+// `inject_code_context` on `Agent<C>` per the extraction scope decision).
 ```
 
 ### Compaction
 
 ```rust,no_run
-svc.maybe_compact(&mut summ, &providers, &status_sink).await?;
+// `status` implements the `StatusSink` trait so collected messages can be
+// forwarded to the channel after the call returns.
+svc.maybe_compact(&mut summ, &status).await?;
+```
+
+### Skill disambiguation
+
+```rust,no_run
+use zeph_agent_context::ContextService;
+
+let svc = ContextService::new();
+let chosen_order = svc.disambiguate_skills(query, &all_meta, &scored, &providers).await;
 ```
 
 ## Key Types
@@ -65,6 +66,11 @@ svc.maybe_compact(&mut summ, &providers, &status_sink).await?;
 | `ContextAssemblyView<'a>` | Borrow-lens over all fields needed for `prepare_context` and `rebuild_system_prompt` |
 | `ContextSummarizationView<'a>` | Borrow-lens over fields needed for compaction, scheduling, and pruning |
 | `ProviderHandles` | Arc-cloned primary and embedding LLM provider handles |
+
+`type_aware_compose::resolve_active_functional_types` resolves the MemGuard-inspired active
+`FunctionalType` set (spec-064, #6086) that `prepare_context` uses to gate memory-fetcher
+composition per turn — retrieval-only, no storage or write-path change; a byte-for-byte no-op
+when `[memory.type_aware_compose]` is disabled (the default).
 
 ## Borrow-Lens Pattern
 

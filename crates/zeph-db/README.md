@@ -18,6 +18,7 @@ Database abstraction layer for [Zeph](https://github.com/bug-ops/zeph) — unifi
 - **Automatic migrations** — `DbConfig::connect` runs `migrations/sqlite/` or `migrations/postgres/` on startup; WAL checkpoint applied after SQLite migrations
 - **`FullDriver` super-trait** — reduces sqlx bound repetition in generic impl blocks across consumer crates
 - **FTS helpers** — backend-aware `WHERE`/`JOIN`/rank fragments for messages and graph entity full-text search
+- **`limit_clause()` helper** — cross-backend "`0` means unlimited" `LIMIT` fragment; omits the clause entirely instead of relying on the SQLite-only `LIMIT -1` sentinel, which PostgreSQL rejects
 - **Safe URL logging** — `redact_url` strips credentials from connection strings before they appear in logs
 - **Write transactions** — `begin_write` issues `BEGIN IMMEDIATE` on SQLite (prevents `SQLITE_BUSY`); falls back to standard `BEGIN` on PostgreSQL
 
@@ -126,6 +127,19 @@ let mut tx = begin(&pool).await?;
 let mut tx = begin_write(&pool).await?;
 sqlx::query("INSERT INTO t (name) VALUES (?)").bind("foo").execute(&mut *tx).await?;
 tx.commit().await?;
+```
+
+### Cross-backend `LIMIT` clause
+
+```rust
+use zeph_db::limit_clause;
+
+let (fragment, bind) = limit_clause(page_size); // 0 => unlimited, omits the clause entirely
+let sql = format!("SELECT id FROM messages WHERE conversation_id = ?{fragment}");
+let mut query = sqlx::query(&sql).bind(conversation_id);
+if let Some(limit) = bind {
+    query = query.bind(limit);
+}
 ```
 
 ### FTS helpers

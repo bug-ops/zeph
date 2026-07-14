@@ -47,7 +47,7 @@ See `specs/068-session-persistence/spec.md` and `plan.md` for the full design an
 | `replay` | `ReplayEngine` — deterministic fold of an event log into agent-ready messages; never calls the LLM |
 | `condenser` | `Condenser` trait contract and the non-overlap guard (INV-SP-4) |
 | `llm_condenser` | `LlmCondenser` — default `Condenser`, reusing `zeph_context::summarization` |
-| `fork` | `ForkEngine` — eager-copy session forking |
+| `fork` | `ForkEngine` — eager-copy session forking; blobs referenced by `UserMessage.image_refs` are hard-linked into the child session's blobs directory (falling back to a copy), with referenced hashes validated as bare hex to prevent path traversal |
 | `error` | `SessionError` — crate-wide error enum |
 
 ## Usage
@@ -61,6 +61,10 @@ let dir = zeph_session::session_dir(Path::new(".zeph/sessions"), "abc-123");
 assert_eq!(dir, Path::new(".zeph/sessions/abc-123"));
 ```
 
+`migrate_legacy_session_layout` is a one-time startup migration that moves session directories still
+sitting at the pre-fix on-disk layout (`<data_dir>/sessions/<session_id>/`) up one level to the
+current layout, returning a `MigrationReport` (counts migrated vs. skipped-because-destination-exists).
+
 ## Features
 
 Exactly one storage backend must be selected for the `acp_sessions` metadata index; `sqlite` is the default.
@@ -69,6 +73,7 @@ Exactly one storage backend must be selected for the `acp_sessions` metadata ind
 |---------|---------|-------------|
 | `sqlite` | yes | SQLite backend for `zeph-db` |
 | `postgres` | no | PostgreSQL backend for `zeph-db` |
+| `test-utils` | no | Enables `testcontainers`-based PostgreSQL integration test utilities (implies `postgres`) |
 
 ## Installation
 

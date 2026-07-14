@@ -700,6 +700,24 @@ Generate an on-demand summary of the current conversation. Useful for understand
 
 Configuration: Set `[session.recap]` in your config to control which LLM provider and whether to auto-recap on session resume.
 
+### `/cd`
+
+Change the working directory for the agent. This updates the active `cwd` used by tools like `shell` and `read_file`, invalidates the cached repo-map, and re-discovers `CLAUDE.md` and `AGENTS.md` files in the new directory. The system-prompt context block is preserved across the change.
+
+```
+/cd <path>
+```
+
+Examples:
+
+```bash
+> /cd ../sibling-project
+> /cd /home/user/workspace/myproject
+> /cd .                 # reset to current directory
+```
+
+The path must be within the allowed `[tools.shell] allowed_paths` sandbox. Attempting to change to a path outside the sandbox will produce an error.
+
 ### `/conv`
 
 Browse, resume, or fork durable conversation-sessions (see [Session Persistence and
@@ -725,6 +743,7 @@ channels.
 | Flag | Description |
 |------|-------------|
 | `--bare` | Strip the agent to essentials for scripted/CI usage: skips memory initialization, scheduler startup, skill loading, and watcher registration. Faster startup, suitable for piping and non-interactive workflows. Incompatible with `--tui`, `--acp`, and messaging channels |
+| `--safe-mode` | Disable project-context, plugins, skills (including hot-reload), hooks, and MCP servers for a single session for troubleshooting. Unlike `--bare` (which is for CI scripting), `--safe-mode` preserves the full agent loop and allows normal interaction — it just strips optional features. Also set via `ZEPH_SAFE_MODE=true` |
 | `--json` | Emit structured JSONL events to stdout (boot, chunk, response_end, tool_call, tool_result, cost, error) for programmatic integration. All tool output is redacted. Incompatible with `--tui`, `--acp`, and messaging channels. Tracing redirected to stderr |
 | `-y` / `--auto` | Enable full autonomy: skip all tool confirmation prompts. Shell blocklist and adversarial policy enforcement remain active. Use in trusted scripted environments |
 | `--tui` | Run with the TUI dashboard (requires the `tui` feature) |

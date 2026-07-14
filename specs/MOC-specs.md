@@ -52,6 +52,7 @@ status: moc
 - [[004-memory/spec|Memory Pipeline]] — SQLite + Qdrant dual backend, semantic response cache, anchored summarization, compaction probe, importance scoring, A-MAC admission control, MemScene consolidation, cost-sensitive store routing, temporal decay, multi-vector chunking, GAAMA episode nodes, BATS budget hints, Focus compression, SleepGate forgetting pass, persona/trajectory/category-aware memory, TiMem tree, microcompact, autoDream, MagicDocs, embed backfill batching
 - [[012-graph-memory/spec|Entity Graph Memory]] — entity graph, BFS recall, community detection, MAGMA typed edges, SYNAPSE spreading activation; works with [[004-memory/spec|Memory Pipeline]]
   - [[004-memory/004-6-graph-memory|Graph Memory (memory sub-spec)]] — concise reference within the memory subsystem: data model overview, MAGMA edge types, SYNAPSE config, key invariants
+  - [[004-memory/004-16-memory-type-aware-retrieval|MemGuard Type-Aware Retrieval (memory sub-spec)]] — opt-in fetch-time gate on `schedule_context_fetchers`, `FunctionalType` enum, intent-scoped widening via existing `HeuristicRouter` (no new LLM call), `BehavioralRule` always-composed safety invariant; retrieval-only, byte-for-byte no-op when disabled; GitHub #6086, #6226
 - [[067-knowledge-ingest/spec|Knowledge Ingest]] — `zeph knowledge ingest` operator command; static artifacts → semantic notes (existing `IngestionPipeline`, no graph), subagent transcripts → graph (gated by measurement spike); Phase 0 provenance (`origin`/`import_batch_id`/`source_uri`) + `rollback`; honors write-gate (004-9) + admission (004-3), bypasses only RPE; sanitizer on write path; external Claude/Codex import deferred; code stays in [[018-index/spec|zeph-index]]
 
 ### Configuration & Loading
@@ -59,6 +60,7 @@ status: moc
 - [[022-config-simplification/spec|Provider Registry]] — see LLM Providers section above
 - [[037-config-schema/spec|Config Schema]] — canonical TOML section inventory, validation rules, env-var override table, migration mechanism for `zeph-config` crate
 - [[076-cli-init-migrate-config-flag-mismatch/spec|CLI Init/Migrate-Config Flag Mismatch]] — bug spec: `init`/`migrate-config` exist only as clap subcommands, but every mandatory doc (both CLAUDE.md files, `.zeph/zeph.md`, `crates/zeph-config/AGENTS.md`, a live-testing playbook, and `src/cli.rs`'s own doc comments) documents them as `--init`/`--migrate-config` flags; two remediation paths (flag-alias restoration per #587 precedent, or doc correction) left open for a future planning session
+- [[077-safe-mode-and-cd-command/spec|Safe Mode & /cd Command]] — backfilled spec: `--safe-mode`/`ZEPH_SAFE_MODE` disables project-context/plugin/skill/hook/MCP loading for one session (orthogonal to `--bare`, gated across all 6 session entry points); `/cd <path>` reuses the existing `set_working_directory`/`check_cwd_changed` pipeline, re-scopes the repo-map and `CLAUDE.md`/`AGENTS.md` discovery, and rebuilds only the volatile system-prompt block to preserve Claude prompt-cache breakpoints; GitHub #6031, #6032
 
 ### Background Task Management
 - [[039-background-task-supervisor/spec|Supervised Background Task Manager]] — (proposed) AgentTaskSupervisor with JoinSet, task priority classes (Critical/Enrichment/Telemetry), queue depth limits, turn-boundary cleanup, metrics integration (`bg_inflight`, `bg_dropped`, `bg_completed`); addresses GitHub issue #2816
@@ -251,6 +253,7 @@ status: moc
 | 074 | [[074-orchestration-hitl-interrupt/spec\|Declarative HITL Interrupt]] | tasks | draft |
 | 075 | [[075-orchestration-node-control-parity/spec\|Node Timeout / Retry-Exhausted Recovery]] | tasks | approved |
 | 076 | [[076-cli-init-migrate-config-flag-mismatch/spec\|CLI Init/Migrate-Config Flag Mismatch]] | specify | draft |
+| 077 | [[077-safe-mode-and-cd-command/spec\|Safe Mode & /cd Command]] | specify | implemented |
 
 ---
 

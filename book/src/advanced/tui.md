@@ -70,6 +70,8 @@ When using `--connect`, the TUI renders token-by-token streaming from the remote
 | `e` | Toggle expanded/compact view for tool output and diffs |
 | `d` | Toggle side panels on/off |
 | `p` | Toggle Plan View / Sub-agents view in the side panel |
+| `s` / `S` | Toggle Settings view (read-only panels showing LLM providers, MCP servers, and sub-agent definitions) |
+| `Ctrl+F` | Open transcript search (case-insensitive substring search across message content and tool names) |
 | `Tab` | Cycle side panel focus (includes SubAgents panel) |
 | `a` | Focus the SubAgents panel |
 
@@ -198,6 +200,38 @@ When a destructive command requires confirmation, a modal overlay appears:
 | `N` / `Escape` | Cancel action |
 
 All other keys are blocked while the modal is visible.
+
+### Settings View
+
+Press `S` in Normal mode to open a read-only side panel showing your current configuration:
+
+- **Providers tab** — all LLM providers defined in `[[llm.providers]]` with their model, type, and whether they're marked as default or for embedding
+- **MCP Servers tab** — all connected MCP servers and their hosted tools
+- **Sub-Agents tab** — all registered sub-agent definitions with their routing hints
+
+The view refreshes automatically when providers are switched or the config is reloaded mid-session. API keys and vault-based secrets are never displayed in the settings view.
+
+| Key | Action |
+|-----|--------|
+| `s` / `S` | Toggle settings view open/closed |
+| `Tab` / `Right` | Move to next tab |
+| `Shift+Tab` / `Left` | Move to previous tab |
+| `Up` / `Down` | Scroll within the active tab |
+| `Escape` | Close settings and return to Normal mode |
+
+### Transcript Search
+
+Press `Ctrl+F` in Normal mode to open a search overlay that searches across all messages in the current session. Search is case-insensitive and matches substrings in message content and tool names.
+
+| Key | Action |
+|-----|--------|
+| Any character | Add to search query (incremental match highlighting) |
+| `Enter` or `Ctrl+F` | Jump to next match and close search |
+| `Shift+Enter` | Jump to previous match and close search |
+| `Backspace` | Remove last query character (dismisses if query is empty) |
+| `Escape` | Close search without jumping and restore previous scroll position |
+
+Matches are highlighted inline within the transcript and the view scrolls to a visible anchor even if the match is inside a collapsed tool-output block. The search uses the live-rendered message content, so matches are always accurate.
 
 ## Markdown Rendering
 

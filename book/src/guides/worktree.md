@@ -132,6 +132,53 @@ If worktree creation is slow on your system:
 3. **Check disk**: Low disk space can slow git operations
 4. **Use `head` mode**: Avoids a remote fetch; only copies the local worktree
 
+## Disk Quota Management
+
+When running many concurrent sub-agents or long-running sessions, worktree storage can accumulate. Zeph provides automatic disk quota management to keep worktree directories under control:
+
+### Configuration
+
+Add the following to your `[worktree]` section:
+
+```toml
+[worktree]
+enabled = true
+max_worktrees = 10                      # Hard limit on active worktrees (default: 10)
+disk_quota_mb = 2048                    # Max total disk space for all worktrees in MB (default: 2048, ~2 GiB)
+auto_reconcile_secs = 3600              # Periodic sweep interval in seconds (default: 3600, 1 hour)
+reconcile_on_startup = true             # Run a cleanup sweep on agent startup (default: true)
+```
+
+### How It Works
+
+1. **On startup**: Zeph runs a sweep to clean up orphaned worktrees from previous sessions
+2. **On worktree creation**: Checks if adding a new worktree would exceed `disk_quota_mb` or `max_worktrees`. If so, automatically prunes the oldest unused worktrees until there's room
+3. **Periodic reconciliation**: Every `auto_reconcile_secs`, the background supervisor runs a cleanup sweep to remove stale worktrees not linked to any active sub-agent
+4. **Pruning strategy**: Only removes worktrees that have been pruned via git (git has marked them as prunable); never force-deletes intact checkouts
+
+### Quotas in Action
+
+Example: if `disk_quota_mb = 2048` and `max_worktrees = 10`:
+
+- When you spawn the 11th concurrent sub-agent, the oldest idle worktree is pruned to make room
+- If total worktree disk usage would exceed 2 GiB, older worktrees are pruned before creating a new one
+- A warning is logged when quota is tight or sweeps are frequent (may indicate undersized quotas)
+
+### Manual Cleanup
+
+Even with automatic quotas, you can manually clean up anytime:
+
+```bash
+zeph worktree clean              # Remove stale/pruned worktrees
+zeph worktree list               # See current usage and breakdown
+```
+
+To temporarily disable periodic reconciliation (e.g., for performance testing):
+
+```bash
+auto_reconcile_secs = 0          # Disable periodic sweep; only clean on startup and admission
+```
+
 ## Troubleshooting
 
 ### "Git operation timed out"

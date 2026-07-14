@@ -45,6 +45,20 @@ and restores the registry. This avoids borrow-checker conflicts with the channel
 `NullSink` and `NullAgent` are zero-cost sentinels for dispatch blocks that do not need
 channel I/O or agent-access commands respectively.
 
+### Authorization is fail-closed by default
+
+`CommandHandler::requires_auth()` defaults to `true`: a handler that does not override it
+requires a trusted (local) caller, and `CommandRegistry::dispatch` rejects it with a
+`CommandError` when the dispatch site passes `trusted = false` (e.g. a remote channel such as
+Telegram/Discord/Slack). Read-only or self-gated commands that are safe to expose on remote
+channels must explicitly override `requires_auth()` to return `false`.
+
+> [!NOTE]
+> This default was flipped from permissive (`false`) to fail-closed (`true`) after repeated
+> incidents where a new handler silently stayed reachable from untrusted channels until an
+> audit caught it. New handlers — including the `PingHandler` example below — now require a
+> trusted session unless they explicitly opt out.
+
 ## Usage
 
 ### Register and dispatch commands
@@ -102,6 +116,13 @@ Commands are grouped into categories for `/help` output:
 | `Debugging` | `/debug-dump`, `/log`, `/lsp`, `/status`, … |
 | `Integration` | `/mcp`, `/image`, `/agent`, … |
 | `Advanced` | `/experiment`, `/policy`, `/scheduler`, … |
+
+## Features
+
+| Feature | Description | Default |
+|---------|-------------|---------|
+| `cocoon` | Enables the `/cocoon` handler (Cocoon sidecar status and model listing) | No |
+| `profiling` | Extra `tracing` instrumentation spans for dispatch latency profiling | No |
 
 ## License
 

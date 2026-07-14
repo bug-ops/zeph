@@ -28,6 +28,8 @@ zeph-acp = { version = "0.22", features = ["acp-http"] }
 
 | Feature | Description | Default |
 |---------|-------------|---------|
+| `sqlite` | SQLite backend forwarded to `zeph-memory`/`zeph-session`/`zeph-core`/`zeph-mcp`/`zeph-tools` | Yes |
+| `postgres` | PostgreSQL backend forwarded to the same crates | No |
 | `acp-http` | HTTP+SSE transport via axum (`AcpHttpState`, `acp_router`, `post_handler`, `get_handler`) | No |
 
 **Tip:**

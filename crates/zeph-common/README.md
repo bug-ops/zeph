@@ -19,7 +19,8 @@ Provides foundational utilities used across multiple Zeph crates: Unicode-safe s
 | `net` | Network helpers — `is_private_ip()` for IPv4/IPv6 private range detection; used by the SSRF guard in `zeph-tools` and `zeph-acp` |
 | `sanitize` | Low-level sanitization primitives (null byte stripping, control character removal) |
 | `fs_secure` | Secure file I/O helpers — `open_private_truncate`, `append_private`, `write_private`, `atomic_write_private`; all create files with mode `0o600` independent of process umask; `atomic_write_private` uses `O_EXCL` on the temp file and fsyncs before rename for crash safety |
-| `treesitter` | Tree-sitter query constants and parser helpers for Rust, Python, JavaScript, TypeScript, Go (optional, requires `treesitter` feature) |
+| `secrets` | Canonical secret-token and path-prefix constants (`SECRET_PREFIXES`, `PATH_PREFIXES`, `BEARER_TOKEN_PATTERN`, `JWT_PATTERN`) shared by redaction layers across crates — the single source of truth so `zeph-core::redact` and `zeph-memory` compression guidelines can't drift apart |
+| `treesitter` | Tree-sitter query constants and parser helpers for Rust, Python, JavaScript, TypeScript, Go, Bash, TOML, JSON, Markdown (optional, requires `treesitter` feature) |
 
 ## Usage
 

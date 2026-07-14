@@ -15,7 +15,7 @@ Implements the multi-agent task orchestration pipeline extracted from `zeph-core
 
 | Module | Description |
 |--------|-------------|
-| `graph` | `TaskGraph`, `TaskNode`, `TaskId`, `GraphId` typed identifiers; `TaskStatus`, `GraphStatus`, `FailureStrategy` (abort/retry/skip/ask) |
+| `graph` | `TaskGraph`, `TaskNode`, `TaskId`, `GraphId` typed identifiers; `TaskStatus`, `GraphStatus`, `FailureStrategy` (abort/retry/skip/ask); per-task `TimeoutPolicy` (`run_timeout_secs`) and Mode-1 `RecoveryAction` (`state_injection`) |
 | `dag` | DAG validation (cycle detection via topological sort), `ready_tasks`, `propagate_failure`, `reset_for_retry` |
 | `scheduler` | `DagScheduler` tick-based execution engine; `SchedulerAction` command pattern; `TaskEvent`, `TaskOutcome` |
 | `topology` | `TopologyClassifier`, `Topology`, `DispatchStrategy` — DAG shape analysis for dispatch selection |
@@ -26,7 +26,8 @@ Implements the multi-agent task orchestration pipeline extracted from `zeph-core
 | `error` | `OrchestrationError` unified error type |
 | `planner` | `Planner` trait + `LlmPlanner` — goal decomposition via `chat_typed` structured output (feature `llm-planning`) |
 | `aggregator` | `Aggregator` trait + `LlmAggregator` — synthesizes completed task outputs; content-sanitized before injection (feature `llm-planning`) |
-| `verifier` | `PlanVerifier` — post-task completeness verifier with targeted replan (feature `llm-planning`) |
+| `verifier` | `PlanVerifier` — post-task and whole-plan completeness verifier with targeted replan, grounded against the DAG-wide tool-call trace (feature `llm-planning`) |
+| `ensemble` | `EnsembleVerifier`, `EnsembleTracker` — N-fold parallel dispatch of `PlanVerifier` gap-severity checks across configured providers with deterministic majority-vote merge (spec `073-orch-ensemble-merge`, `[orchestration.ensemble]`, feature `llm-planning`) |
 | `plan_cache` | `PlanCache` — caches plan templates by normalized goal hash; `normalize_goal` + `goal_hash` for deterministic cache keys (feature `llm-planning`) |
 | `adaptorch` | `TopologyAdvisor` — adaptive topology hints for the scheduler (feature `llm-planning`) |
 
@@ -58,6 +59,8 @@ confirm_before_execute = true      # require /plan confirm before starting
 aggregator_max_tokens = 4096       # token budget for LlmAggregator synthesis call
 ```
 
+Deterministic ensemble-merge verification (opt-in, disabled by default) has its own `[orchestration.ensemble]` table — see the `ensemble` module above.
+
 ## Failure strategies
 
 | Strategy | Behavior when a task fails |
@@ -66,6 +69,9 @@ aggregator_max_tokens = 4096       # token budget for LlmAggregator synthesis ca
 | `Retry` | Re-queue the failed task up to `max_retries` times |
 | `Skip` | Mark the task skipped and continue with dependents |
 | `Ask` | Pause the graph and wait for `/plan resume` from the user |
+
+> [!NOTE]
+> A `TaskNode` can also carry a declarative `recovery: RecoveryAction` (Mode 1, spec `075-orchestration-node-control-parity`). On an `Abort`-default or retry-exhausted `Retry` failure, a node with `recovery` set is marked `Completed` with `state_injection` substituted as its output instead of failing the graph, letting downstream tasks proceed. `run_timeout_secs` on the same node bounds both spawned and `RunInline` dispatch; `None` falls back to `OrchestrationConfig::task_timeout_secs`.
 
 ## Plan template caching
 
@@ -84,7 +90,7 @@ When a goal is decomposed into a task graph, the resulting structure is cached a
 |---------|---------|-------------|
 | `sqlite` | yes | SQLite backend for graph persistence (via `zeph-db`, `zeph-durable`, `zeph-memory`, `zeph-subagent`) |
 | `postgres` | no | PostgreSQL backend |
-| `llm-planning` | no | Enables the LLM-dependent modules (`planner`, `aggregator`, `verifier`, `verify_predicate`, `plan_cache`, `adaptorch`) and the `zeph-llm` dependency |
+| `llm-planning` | no | Enables the LLM-dependent modules (`planner`, `aggregator`, `verifier`, `verify_predicate`, `plan_cache`, `adaptorch`, `ensemble`) and the `zeph-llm` dependency |
 | `test-utils` | no | Testcontainers for PostgreSQL integration tests (implies `postgres` and `llm-planning`) |
 
 > [!NOTE]

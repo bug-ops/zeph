@@ -17,7 +17,7 @@ Implements I/O channel adapters that connect the agent to different frontends. S
 |--------|-------------|
 | `cli` | `CliChannel` — interactive terminal I/O with persistent input history (rustyline), prefix search, and `/image` command for vision input |
 | `json_cli` | `JsonCliChannel` — active under `--json`; emits JSONL events to stdout and reads prompts from stdin for programmatic/embedding use (logs forced to stderr) |
-| `telegram` | Telegram adapter via teloxide with streaming; voice/audio message detection and file download; photo message support for vision input; configurable streaming edit interval (`stream_interval_ms`, default 3000 ms, minimum 500 ms) |
+| `telegram` | Telegram adapter via teloxide with streaming; voice/audio message detection and file download; photo message support for vision input; configurable streaming edit interval (`stream_interval_ms`, default 3000 ms, minimum 500 ms); send/edit paths retry on HTTP 429 with backoff (mirroring Discord/Slack) |
 | `telegram::guest` | Guest Mode — transparent local axum HTTP proxy that intercepts `getUpdates` responses and surfaces `guest_message` entries (Bot API 10.0) without a second `getUpdates` connection |
 | `telegram::bot_to_bot` | Bot-to-Bot communication — registers via `setManagedBotAccessSettings` on startup; per-chat reply-depth tracking via `BotReplyCounters`; configurable `max_bot_chain_depth` |
 | `telegram::api` | `TelegramApiClient` — raw HTTP wrapper for Bot API 10.0 methods unavailable in teloxide 0.17: `answer_guest_query`, `get/set_managed_bot_access_settings`, `delete_message_reaction`, `delete_all_message_reactions` |

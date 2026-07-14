@@ -75,6 +75,10 @@ bg_isolation = "worktree"   # "none" | "worktree"
 base_ref = "head"           # "head" | "fresh"
 git_timeout_secs = 30       # clamped to max(1, value)
 cleanup_on_completion = true
+# max_worktrees = 20        # optional admission cap; None = unlimited
+# disk_quota_mb = 5000      # optional soft disk-usage threshold; None = disabled
+auto_reconcile_secs = 0     # periodic reconcile-and-quota sweep; 0 disables it
+reconcile_on_startup = true
 ```
 
 | Field | Default | Description |
@@ -84,12 +88,18 @@ cleanup_on_completion = true
 | `base_ref` | `"head"` | `"head"` branches off current HEAD; `"fresh"` fetches and branches off `origin/<default>` |
 | `git_timeout_secs` | `30` | Per-command timeout for all git subprocess calls |
 | `cleanup_on_completion` | `true` | Remove the worktree when the subagent finishes |
+| `max_worktrees` | `None` (unlimited) | Creation-time admission cap on concurrent git-registered worktrees under `root`. Counts worktrees from other concurrently running Zeph sessions over the same `root`, not just this session's own. `Some(0)` is rejected at config-validation time |
+| `disk_quota_mb` | `None` (disabled) | Soft total-disk-usage threshold (sum of logical file sizes) across all worktrees under `root`. When exceeded, the reconcile sweep auto-reclaims only git-`prunable` entries — an intact worktree is never force-removed to satisfy this threshold |
+| `auto_reconcile_secs` | `0` (disabled) | Interval for the supervised background reconcile-and-quota sweep. `Config::validate` rejects values in `1..60` |
+| `reconcile_on_startup` | `true` | Run one reconcile-and-quota sweep at bootstrap, recovering from crash-left `prunable` worktrees without waiting for the first periodic tick |
 
 ## Invariants
 
 - Path sanitization rejects absolute paths, `..` components, and names starting with `-` before any git call.
 - `base_ref = "fresh"` never silently falls back to HEAD on fetch failure — it returns an error.
 - `git_timeout_secs = 0` is clamped to `1` by `DefaultGitRunner`.
+- `create()` admission (quota check + worktree add) closes the check-then-act race under concurrent callers within the same process.
+- Lowering `max_worktrees` below the current worktree count does not evict existing worktrees; it only blocks new admissions until `zeph worktree clean` runs or the limit is raised.
 
 ## License
 

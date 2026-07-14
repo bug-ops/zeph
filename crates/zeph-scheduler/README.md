@@ -15,7 +15,7 @@ Manages recurring and deferred background tasks. Periodic tasks run on a cron sc
 
 - **scheduler** — `Scheduler` event loop; evaluates due tasks on each tick, drains the `SchedulerMessage` channel, and dispatches execution to registered handlers
 - **store** — `JobStore` for SQLite-backed job persistence (upsert, record_run, mark_done, delete, next_run management)
-- **task** — `ScheduledTask`, `TaskDescriptor`, `TaskHandler`, `TaskKind`, `TaskMode` — core type definitions
+- **task** — `ScheduledTask`, `TaskDescriptor`, `TaskHandler`, `TaskKind`, `TaskMode`, `TaskProvenance` (`Static`/`UserAdded`/`External` trust tiers for RTW-A re-entry defense) — core type definitions
 - **handlers** — `CustomTaskHandler` — injects a sanitized prompt into the agent loop via `mpsc::Sender<String>`
 - **sanitize** — `sanitize_task_prompt` — strips control characters and truncates to 512 code points
 - **update_check** — `UpdateCheckHandler` for GitHub releases version check
@@ -137,23 +137,45 @@ scheduler.run_with_interval(30).await;  // tick every 30 seconds
 
 Previously, a periodic task with a missing `next_run` value in the store would fire immediately on the next tick regardless of its cron schedule. The fix: when `next_run` is `NULL`, the scheduler computes and persists the next occurrence from the cron expression and skips the current tick. Tasks now only fire when `next_run <= now`.
 
+## RTW-A re-entry defense
+
+`scheduled_jobs` rows carry a `provenance` column (`TaskProvenance::Static`/`UserAdded`/`External`)
+used by RTW-A (Read-Then-Write-Attack) re-entry defense mechanisms that gate custom-prompt
+dispatch: a trust gate (only `static`/`user_added` tasks may run custom prompts), external-read
+suppression for the current tick (a handler's `reads_external_content()`/`injects_agent_prompt()`
+declares whether it participates), and Unicode-aware injection-pattern scanning of `task_data` via
+`sanitize::sanitize_task_prompt_checked` (distinct from the unchecked `sanitize_task_prompt` used
+elsewhere). `JobStore::init()` forces every DB-hydrated job to `TaskProvenance::External`
+regardless of its stored column value, closing a spoofing gap where a direct-SQL actor could
+self-label a row as trusted. Controlled by `[scheduler.security]` (`enabled`,
+`injection_pattern_check`, `attenuate_after_external_read`, all default `true`); call
+`Scheduler::with_reentry_defense(enabled, injection_pattern_check, attenuate_after_external_read)`
+to override the defaults, e.g. to relax checks in a trusted test environment.
+
 ## JobStore Schema
 
 ```sql
 CREATE TABLE IF NOT EXISTS scheduled_jobs (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    name      TEXT NOT NULL UNIQUE,
-    cron_expr TEXT NOT NULL DEFAULT '',
-    kind      TEXT NOT NULL,
-    last_run  TEXT,
-    next_run  TEXT,
-    status    TEXT NOT NULL DEFAULT 'pending',
-    task_mode TEXT NOT NULL DEFAULT 'periodic',
-    run_at    TEXT
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    cron_expr  TEXT NOT NULL DEFAULT '',
+    kind       TEXT NOT NULL,
+    last_run   TEXT,
+    next_run   TEXT,
+    status     TEXT NOT NULL DEFAULT 'pending',
+    task_mode  TEXT NOT NULL DEFAULT 'periodic',
+    run_at     TEXT,
+    task_data  TEXT NOT NULL DEFAULT '',
+    provenance TEXT NOT NULL DEFAULT 'external'
 )
 ```
 
-`task_mode` is `'periodic'` or `'oneshot'`. `run_at` holds the ISO 8601 UTC timestamp for one-shot tasks. The `init()` method applies `ALTER TABLE` migrations for older schemas that lack `task_mode` and `run_at`.
+`task_mode` is `'periodic'` or `'oneshot'`. `run_at` holds the ISO 8601 UTC timestamp for one-shot
+tasks. `task_data` carries the arbitrary JSON `TaskDescriptor::config` forwarded to the handler.
+`provenance` is the RTW-A trust tier (see above); existing rows default to `'external'`, the most
+restrictive tier, on upgrade. The schema itself is owned by numbered migrations in
+`zeph-db/migrations/{sqlite,postgres}/` (`051_scheduler_jobs.sql` plus later `ALTER TABLE` steps for
+`task_data`/`provenance`), applied via `JobStore::init()` calling `zeph_db::run_migrations`.
 
 ## CLI subcommand
 

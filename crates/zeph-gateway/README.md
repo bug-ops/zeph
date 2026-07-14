@@ -32,7 +32,7 @@ auth_token = "your-secret-token"   # optional, see authentication below
 cargo run --features gateway -- --daemon   # starts agent + gateway server
 ```
 
-The gateway is wired via `src/gateway_spawn.rs` into both `daemon.rs` and `runner.rs`. A background drain task logs incoming webhook payloads; agent loopback forwarding is a planned follow-up.
+The gateway is wired via `src/gateway_spawn.rs` into both `daemon.rs` and `runner.rs`. A background `forward_webhooks` task drains incoming webhook payloads and forwards each one into the agent's input queue as a `ChannelMessage`: a payload recognized as a known slash command is forwarded as-is (subject to the same `CommandHandler::requires_auth` authorization as any other channel); every other payload is sanitized via `ContentSanitizer` (classified `ExternalUntrusted`) before it reaches the agent loop, since a valid bearer token proves only that the sender knows the shared secret, not that the content is safe.
 
 ## Authentication
 
@@ -52,7 +52,7 @@ GatewayServer::new("127.0.0.1", 8080, webhook_tx, shutdown_rx)
     .await?;
 ```
 
-Token comparison uses BLAKE3 + `subtle::ConstantTimeEq` to prevent timing attacks.
+Token comparison uses BLAKE3 + `subtle::ConstantTimeEq` to prevent timing attacks. The rate limiter wraps the auth check (not the reverse), so requests with a missing or invalid bearer token still count against the per-IP limit — a brute-force attempt against the token cannot bypass rate limiting.
 
 ## Features
 

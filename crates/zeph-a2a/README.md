@@ -16,7 +16,7 @@ Implements the Agent-to-Agent (A2A) protocol over JSON-RPC 2.0, enabling Zeph to
 - **client** — `A2aClient` for sending tasks and messages to remote agents
 - **server** — `A2aServer` exposing an A2A-compliant endpoint with `ProcessorEvent` streaming via `mpsc::Sender` (requires `server` feature)
 - **card** — `AgentCardBuilder` for constructing agent capability cards; includes `protocolVersion` field set to `A2A_PROTOCOL_VERSION` constant (`"0.2.1"`) in the default card served at `/.well-known/agent.json`
-- **discovery** — `AgentRegistry` for agent lookup and registration
+- **discovery** — `AgentRegistry` for agent lookup and registration, with an optional card-signing + URL-origin trust policy applied in `discover()` (see below)
 - **jsonrpc** — JSON-RPC 2.0 request/response types
 - **types** — shared protocol types (Task, Message, Artifact, etc.)
 - **error** — `A2aError` error types
@@ -55,18 +55,57 @@ key_hex = "68656c6c6f2d7365637265742d6b6579"   # legacy inline path; prefer the 
 - Setting `ibct_keys` to a non-empty list makes the server require `X-Zeph-IBCT` on every `/a2a` and `/a2a/stream` request. Since nothing in this repository attaches that header, doing so will `401` `zeph --connect`'s own `tui_remote` client and any standard (non-Zeph) A2A peer that has no knowledge of this header — it does not, by itself, protect a delegated subagent task from a leaked bearer token, because no delegation client using IBCT exists yet to protect.
 - To get real protection from IBCT, an operator (or a follow-up change) must build/wire a caller — most likely a task-delegation client for subagent orchestration — that calls `with_ibct_key` and scopes tokens to the tasks it delegates, *before* enabling `ibct_keys` on the receiving server.
 
+## Agent Card trust policy (JWS signature verification)
+
+`AgentRegistry` supports an optional, feature-gated (`card-signing`) A2A 1.0.0 `AgentCardSignature`
+check applied inside `discover()`, closing the card-spoofing/impersonation gap where a peer card was
+trusted unauthenticated with no cross-check between the queried base URL and the card's own `url`
+field.
+
+`AgentRegistry::with_trust(policy, trusted_keys)` configures a tri-state `CardTrustPolicy`
+(`Ignore` / `Prefer` / `Require`, default `Ignore`) combining signature verification and
+URL-origin consistency via most-severe-wins precedence, checked against an out-of-band
+operator-configured trusted-key store (never the card-supplied `jku`, which would reopen an SSRF
+surface this crate already guards against elsewhere). Not calling `with_trust` leaves the registry
+at `Ignore` with no trusted keys — zero behavior change for existing callers.
+
+```rust
+use zeph_a2a::{AgentRegistry, CardTrustPolicy};
+use std::time::Duration;
+
+let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_secs(300))
+    .with_trust(CardTrustPolicy::Prefer, vec![]);
+```
+
+`zeph --connect <URL>` — the only outbound A2A client path in the binary — wires
+`AgentRegistry::discover` with the operator's configured `[a2a] card_trust_policy` and
+`trusted_agent_keys`.
+
+> [!WARNING]
+> Canonicalization is implemented per the A2A spec text but has not been validated against a real
+> `a2a-sdk`-produced signed-card vector — `require` may reject genuinely valid peers until this is
+> proven (tracked in [#6201](https://github.com/bug-ops/zeph/issues/6201)).
+
 ## Authentication
 
 `A2aServer` supports bearer token authentication via the `with_auth()` builder method. When `auth_token` is `None`, the server emits a `tracing::warn!` at startup indicating that the endpoint is unauthenticated.
 
-```rust
-A2aServer::new(addr, sender)
-    .with_auth(Some("secret-token".to_string()))
+```rust,ignore
+use std::sync::Arc;
+use tokio::sync::watch;
+use zeph_a2a::{A2aServer, AgentCardBuilder};
+
+let card = AgentCardBuilder::new("my-agent", "http://localhost:9090", "0.1.0").build();
+let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+
+A2aServer::new(card, Arc::new(my_processor), "0.0.0.0", 9090, shutdown_rx)
+    .with_auth(Some("secret-token"))
+    .with_rate_limit(120)   // requests per 60s window per IP; 0 disables
     .serve()
     .await?;
 ```
 
-The token is hashed once at construction time; each request compares blake3 hashes of both sides to prevent timing attacks. `A2aServer::require_auth(true)` rejects all requests when no token is configured.
+The token is hashed once at construction time; each request compares blake3 hashes of both sides to prevent timing attacks. `A2aServer::with_require_auth(true)` rejects all requests when no token is configured. Failed-auth requests (missing/invalid bearer token or IBCT header) are also subject to the same per-IP rate limit as ordinary requests, closing a brute-force vector against the auth layer itself.
 
 ## Features
 
@@ -74,6 +113,7 @@ The token is hashed once at construction time; each request compares blake3 hash
 |---------|-------------|
 | `server` | Enables `A2aServer`, `TaskManager`, and `TaskProcessor` with an axum HTTP handler and bearer auth (requires `axum`, `tower`, `tower-http`) |
 | `ibct`   | Enables `Ibct` token issuance and verification (HMAC-SHA256) |
+| `card-signing` | Enables A2A 1.0.0 `AgentCardSignature` verification and the `CardTrustPolicy` trust check in `AgentRegistry::discover` (requires `p256`, `serde_json_canonicalizer`). Must be compiled in together with `zeph-config`'s matching marker feature — `card_trust_policy = "require"` fails config validation otherwise. |
 
 ## Installation
 

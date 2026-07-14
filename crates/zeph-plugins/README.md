@@ -28,6 +28,7 @@ Manages the full lifecycle of Zeph plugin packages: installing from a path or UR
 | `manager` | `PluginManager` — install/remove/list with path-traversal defense (`canonicalize + starts_with(root)`), recursive `.bundled` marker stripping, symlink skip, and atomic install-then-verify |
 | `manifest` | `plugin.toml` schema (`PluginManifest`, `PluginMeta`, `SkillEntry`, `McpSection`) |
 | `overlay` | `apply_plugin_config_overlays` — scans installed plugins, validates overlays, and merges tighten-only keys into the live `Config` struct |
+| `marketplace` | `RegistryClient` trait, `RegistryEntry`, `PackageArchive`, `RegistryError` — opt-in skill/plugin discovery-and-install marketplace backing `zeph plugin search`/`get` (feature `registry`) |
 | `error` | `PluginError` typed error enum |
 | `types` | `PluginName` validated identifier |
 
@@ -96,6 +97,18 @@ zeph plugin remove my-plugin
 /plugins remove <name>   # uninstall a plugin
 ```
 
+### Marketplace discovery (opt-in)
+
+```bash
+# Requires the `registry` feature and [skills.registry] enabled = true in config.toml
+zeph plugin search <query>
+zeph plugin get <registry-id>
+```
+
+Backed by the `marketplace` module's `RegistryClient` trait (default backend: `skills.sh`). Disabled
+by default (`FR-004`): when `skills.registry.enabled = false`, both subcommands print an actionable
+opt-in message and make zero network calls.
+
 ## Config overlay merge
 
 At bootstrap (`AppBuilder::new`) and on hot-reload (`reload_config`), `apply_plugin_config_overlays` is called to merge all installed plugin overlays into the live `Config`. The merge is deterministic: plugins are processed in directory-sorted order to ensure reproducible results.
@@ -131,12 +144,14 @@ Enabled automatically when the `zeph-plugins` crate is a dependency of the root 
 
 ## Feature flags
 
-`zeph-skills`/`zeph-tools` (and transitively `zeph-db`) require a database backend to compile, so exactly one of these must be enabled:
+`zeph-skills`/`zeph-tools` (and transitively `zeph-db`) require a database backend to compile, so exactly one of `sqlite`/`postgres` must be enabled:
 
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `sqlite` | yes | SQLite backend — the default, lets the crate build in isolation |
 | `postgres` | no | PostgreSQL backend for PostgreSQL deployments (#4956) |
+| `registry` | no | Enables the `marketplace` module body backing `zeph plugin search`/`get` (spec-045). Adds `reqwest`'s `query` Cargo feature only — no new crate |
+| `mock` | no | Exposes `marketplace::mock::MockRegistryClient` outside `#[cfg(test)]` for downstream crates' `dev-dependencies`. No-op unless `registry` is also enabled |
 
 ## Documentation
 

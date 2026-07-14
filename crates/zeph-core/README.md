@@ -313,6 +313,10 @@ Key `OrchestrationConfig` fields (TOML section `[orchestration]`):
 | `dependency_context_budget` | usize | `16384` | Character budget injected as cross-task context |
 | `confirm_before_execute` | bool | `true` | Require `/plan confirm` before executing a new plan |
 | `aggregator_max_tokens` | u32 | `4096` | Token budget for the `LlmAggregator` synthesis call; divided equally across completed tasks |
+| `default_idle_timeout_secs` | `Option<u64>` | `None` | Graph-wide default for `TaskNode::idle_timeout_secs` (reserved, currently a documented no-op); per-task `run_timeout` enforcement applies independently to both spawned and `RunInline` dispatch, defaulting `RunInline` tasks to the graph-global 300s bound instead of running unbounded |
+
+> [!NOTE]
+> A task whose verification (plan-level or per-task) judges output incomplete and for which no automatic repair resolves it now surfaces a visible signal to the user instead of only a debug/warn log line. `state_injection` recovery lets the graph continue past a failed node on terminal `Abort`/retry-exhausted failures instead of pausing unrelated work.
 
 ## Experiment Commands
 
@@ -351,7 +355,7 @@ In-session commands for autonomous self-experimentation (integrates `zeph-experi
 - **SSE decoding path** — `claude_sse_to_tool_stream` emits `ToolBlockStart` at `content_block_start`; when confidence exceeds `confidence_threshold`, `try_dispatch(Trusted)` fires with a 2 s timeout.
 - **PASTE pattern path** — `run_paste_skill_activation` calls `PatternStore::predict` per active skill and dispatches candidates above threshold with per-skill trust; `observe_paste_transition` records transitions for future pattern learning.
 
-`requires_confirmation` defaults to `true` for all executors, making speculative dispatch safe-by-default. Only executors that explicitly opt out can be speculatively dispatched.
+`requires_confirmation` and `is_tool_speculatable` are required methods with no trait default (#6067) — every `ToolExecutor`/`ErasedToolExecutor` implementor, including wrappers, must state its policy explicitly rather than inherit a permissive fallback. This closed a recurring wrapper-forwarding defect class where a decorator silently fell back to an inherited default instead of forwarding to its inner executor. Only executors that explicitly return `true` from `is_tool_speculatable` (and `false` from `requires_confirmation`) can be speculatively dispatched.
 
 Configure via `[tools.speculative]` in `config.toml`:
 
@@ -381,7 +385,7 @@ probe_timeout_ms   = 2000   # per-probe timeout; fail-open on expiry
 ```
 
 > [!NOTE]
-> ShadowSentinel is fail-open by default — a timed-out or failed probe does not block execution. Set `fail_closed = true` to block tool calls when the probe cannot complete within `probe_timeout_ms`.
+> ShadowSentinel is fail-open by default — a timed-out or failed probe does not block execution. Set `deny_on_timeout = true` to block tool calls when the probe cannot complete within `probe_timeout_ms`. Hot-path trajectory/tool-history reads are themselves bounded by `probe_timeout_ms.min(2000)` so a stalled DB connection cannot block dispatch (#6293).
 
 ## Reactive hooks
 

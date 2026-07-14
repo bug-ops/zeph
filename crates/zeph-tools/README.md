@@ -30,6 +30,7 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `schema_filter` | `ToolSchemaFilter` — dynamic tool schema filtering via embedding similarity; selects top-K relevant tools per query. `ToolDependencyGraph` — dependency graph with `requirements_met()` gate preventing tool execution until prerequisites are completed; `DependencyExclusion` marks tools excluded by unmet deps |
 | `cache` | `ToolResultCache` — in-memory LRU cache for deterministic tool results with TTL expiry; `CacheKey` hashes tool name + args; `is_cacheable()` whitelist for safe-to-cache tools |
 | `tool_filter` | `ToolFilter<E>` — executor wrapper that suppresses specified tools from the LLM tool set |
+| `executor_delegate` | Forwarding macros (`tool_executor_forward!`, `tool_executor_no_inner_defaults!`, and their `erased_*` counterparts) that implement the required `ToolExecutor`/`ErasedToolExecutor` methods for wrapper and leaf executors, respectively |
 | `overflow` | (removed — overflow storage migrated to SQLite in `zeph-memory`) |
 | `shell::transaction` | Transactional shell executor — snapshot/rollback filesystem state around shell commands; captures pre-execution state and reverts on failure or user request |
 | `adversarial_policy` | Adversarial policy agent — pre-execution LLM validation that evaluates tool calls for safety before dispatch |
@@ -183,6 +184,31 @@ Rules are merged into `PolicyEnforcer` at startup. `[tools.policy]` rules always
 ## Caller identity
 
 `ToolCall::caller_id: Option<String>` carries the originating agent or sub-agent identifier. Set automatically by the orchestrator for sub-agent dispatches; `None` for the primary agent. Recorded in audit log entries.
+
+## ToolExecutor trait contract
+
+> [!WARNING]
+> `requires_confirmation`, `execute_tool_call_confirmed`, `checkpoint_undo`/`checkpoint_redo`/
+> `checkpoint_list`, and `is_tool_speculatable` (and their `_erased` counterparts on
+> `ErasedToolExecutor`) have **no default implementation**. A wrapper or leaf executor that
+> omits one of these no longer silently inherits a permissive fallback — it fails to compile.
+> Leaf executors with no wrapped inner should implement them via
+> [`tool_executor_no_inner_defaults!`](https://docs.rs/zeph-tools); wrappers that forward to an
+> inner executor should use [`tool_executor_forward!`](https://docs.rs/zeph-tools). This closed
+> a recurring defect class where a decorator's `impl` block quietly fell back to an overly
+> permissive trait default instead of forwarding to its inner executor.
+
+## Multimodal tool output (media passthrough)
+
+`ToolOutput.media: Vec<zeph_llm::ImageData>` carries validated image data across the tool
+boundary (e.g. MCP `ContentBlock::Image` passthrough, spec-072), introducing a `zeph-tools` →
+`zeph-llm` dependency edge. `ImageData` has a redacting `Debug` impl so raw image bytes never
+reach logs or debug dumps.
+
+> [!NOTE]
+> As of this release `media` is never populated by any executor — this is foundational,
+> behavior-preserving plumbing only. Decode/validate/attach logic, the persistence strip,
+> vision-tier routing, and the config/CLI/TUI surface are deferred to follow-up work.
 
 ## Features
 

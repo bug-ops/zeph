@@ -51,10 +51,16 @@ CLI usage:
 
 ```bash
 zeph vault set ZEPH_CLAUDE_API_KEY sk-ant-...
+zeph vault set ZEPH_CLAUDE_API_KEY sk-ant-... --force  # overwrite an existing key
 zeph vault get ZEPH_CLAUDE_API_KEY
 zeph vault list
 zeph vault delete ZEPH_CLAUDE_API_KEY
 ```
+
+> [!NOTE]
+> `zeph vault set` refuses to overwrite an existing key unless `--force` is passed — mirrored at
+> the library level by `AgeVaultProvider::set_secret_mut`'s `overwrite` parameter, which returns
+> `AgeVaultError::AlreadyExists` instead of silently replacing the value.
 
 ## Configuration
 

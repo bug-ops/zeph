@@ -20,12 +20,37 @@ Implements a multi-stage security pipeline that processes all external data befo
 | `ContentSourceKind` | Source category (tool output, web scrape, document, etc.) |
 | `SanitizedContent` | Output with `body`, `source`, `injection_flags`, and `was_truncated` |
 | `InjectionFlag` | Detected injection pattern (`pattern_name`, `byte_offset`, `matched_text`) |
+| `pii::PiiFilter` | Regex PII scrubber (email, phone, SSN, credit card; opt-in name heuristic) |
+| `guardrail::GuardrailFilter` | LLM-based pre-screener at the input boundary |
 | `quarantine::QuarantinedSummarizer` | Dual LLM pattern — routes high-risk content through an isolated, tool-less LLM call |
+| `response_verifier::ResponseVerifier` | Post-LLM response scanner |
 | `exfiltration::ExfiltrationGuard` | Three outbound guards: markdown image tracking, tool URL cross-validation, memory write suppression |
+| `memory_validation::MemoryWriteValidator` | Structural write guards for the memory store |
+| `causal_ipi::TurnCausalAnalyzer` | Behavioral deviation detection at tool-return boundaries |
+| `nli::NliSanitizer` | Probabilistic NLI entailment check for injected instructions |
+| `secret_mask::SecretMaskRegistry` | Vault-secret placeholder masking at the LLM boundary |
+| `ipi_filter::IpiFilter` / `IpiVerdict` | Indirect prompt injection filter and verdict type |
 | `ContentSource` | Source metadata with `ContentSourceKind` and optional `MemorySourceHint` for memory retrieval classification |
 | `MemorySourceHint` | `ConversationHistory` / `LlmSummary` / `ExternalContent` — classifies memory retrieval sources to suppress false positive injection flags on recalled user text and LLM-generated summaries |
 
-## Sanitization pipeline
+## Architecture
+
+The crate is a layered defense-in-depth pipeline; each layer is independently configurable and optional except layer 1:
+
+| Layer | Type | Description |
+|-------|------|-------------|
+| 1 | `ContentSanitizer` | Regex-based injection detection + spotlighting |
+| 2 | `pii::PiiFilter` | Regex PII scrubber (email, phone, SSN, credit card) |
+| 3 | `guardrail::GuardrailFilter` | LLM-based pre-screener at the input boundary |
+| 4 | `quarantine::QuarantinedSummarizer` | Isolated LLM fact extractor |
+| 5 | `response_verifier::ResponseVerifier` | Post-LLM response scanner |
+| 6 | `exfiltration::ExfiltrationGuard` | Outbound channel guards (markdown images, tool URLs) |
+| 7 | `memory_validation::MemoryWriteValidator` | Structural write guards for the memory store |
+| 8 | `causal_ipi::TurnCausalAnalyzer` | Behavioral deviation detection at tool-return boundaries |
+| 9 | `nli::NliSanitizer` | Probabilistic NLI entailment check for injected instructions |
+| 10 | `secret_mask::SecretMaskRegistry` | Vault-secret placeholder masking at the LLM boundary |
+
+### Sanitization pipeline (layer 1 detail)
 
 ```
 External data
@@ -74,7 +99,18 @@ enabled = true
 block_markdown_images = true
 validate_tool_urls = true
 block_injection_flagged_memory_writes = true
+
+[security.pii_filter]
+enabled = true    # default: true — scrubs email/phone/SSN/credit-card before LLM context and debug dumps
+filter_names = false  # opt-in: higher-recall, lower-precision name heuristic
+
+[security.content_isolation.secret_masking]
+enabled = true    # default: true — vault-resolved secrets replaced with placeholders before outbound LLM calls
 ```
+
+> [!NOTE]
+> `PiiFilterConfig` and `SecretMaskingConfig` both default to `enabled = true`. An operator's
+> explicit `enabled = false` in an existing `config.toml` is always respected.
 
 ## Features
 

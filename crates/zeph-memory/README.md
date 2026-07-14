@@ -29,6 +29,8 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 
 **GAAMA episode nodes** extend the graph memory with episode-typed entities that capture temporal context boundaries — start/end timestamps and associated entity sets — enabling episodic recall alongside semantic and graph retrieval.
 
+**MemGuard type-aware retrieval composition** gates context-assembly fetchers on a `FunctionalType` active set (episodic, user facts, behavioral rules, reasoning strategies, cross-session summaries, graph facts) so a turn can compose only the functionally relevant memory types instead of always fetching all sources. Configure via `[memory.type_aware_compose]`.
+
 ## Key modules
 
 | Module | Description |
@@ -69,7 +71,7 @@ Includes a document ingestion subsystem for loading, chunking, and storing user 
 | `eviction` | Graph eviction — cleanup of expired edges, orphan entities, and entity cap enforcement |
 | `error` | `MemoryError` — unified error type |
 
-**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`, `AnchoredSummary`, `CompactionProbeConfig`, `validate_compaction`
+**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`, `AnchoredSummary`, `CompactionProbeConfig`, `validate_compaction`, `FunctionalType` (from `zeph-common`), `TypeAwareComposeConfig`
 
 ## Breaking changes in v0.18.2
 
@@ -219,6 +221,20 @@ top_k            = 1      # number of session digests retrieved per session
 [memory]
 context_strategy = "adaptive"   # "memory_first" | "adaptive" (default: "memory_first")
 ```
+
+## MemGuard type-aware retrieval composition
+
+`TypeAwareComposeConfig` (`[memory.type_aware_compose]`) is a retrieval-only, fetch-time gate on context assembly: when enabled, a turn composes only the functionally relevant `FunctionalType` memory sources instead of always fetching all six. `BehavioralRule` (past-correction recall) is never gated — it stays unconditionally composed as a safety-critical invariant regardless of the active set.
+
+```toml
+[memory.type_aware_compose]
+enabled = false            # off by default; byte-for-byte no-op when disabled
+default_compose_types = [] # empty = all types; unknown strings are a hard config-load error
+intent_scoped = false      # widen the active set per classified query intent (no new LLM call; reuses HeuristicRouter)
+```
+
+**Note:**
+> No new storage, no new Qdrant collection, no write-path change. `FunctionalType` lives in `zeph-common` (re-exported here for taxonomy discoverability) because `zeph-context` — the crate that gates fetchers on this type — deliberately has no `zeph-memory` dependency.
 
 ## Document RAG
 

@@ -377,6 +377,42 @@ VMAO (Verify-and-Modify Adaptive Orchestration) extends Plan Verification with a
 - Grounding on the ensemble path MUST run as one `ground()` call over the **union** of `claimed_executions` across all responded members, after `merge()` — never inside `merge()`, never majority/intersection
 - `verify_plan()` MUST run the same deterministic `ground()` stage over the **DAG-wide union** of every completed task's `tool_trace`; the aggregate MUST be `None` (fail open) if **any** completed-with-result task's trace is unavailable — never `Some(partial_union)`, which could false-positive an honest claim — see [[#Whole-Plan Grounding (issue #6287)]]
 
+### User-Visible Incompleteness Signal (issue #6265)
+
+Prior to #6265, a verifier judging output incomplete with no successful automatic repair was
+silent to the user — only `tracing::debug!`/`tracing::warn!` recorded it, and
+`finalize_plan_execution` only branches user-visible messaging on `GraphStatus`
+(`Completed`/`Failed`/`Paused`/`Canceled`), which reflects task *execution* outcome, not the
+verifier's *completeness* judgment. A plan whose only task technically completed (produced some
+output) was reported as an unqualified success even when verification confidently judged that
+output wrong.
+
+Both verification scopes now emit an independent, fail-open `channel.send(...)` notice whenever
+`result.complete == false` and no repair resolves the gap:
+
+- **Whole-plan** (`run_whole_plan_verify`, `agent/plan.rs`): `signal_plan_incomplete()` sends
+  `"Note: the plan output may be incomplete — verification found {N} unresolved gap(s)
+  (verification confidence {C}%) and automatic repair did not resolve it."` — fired when
+  `should_replan` is false but `!result.complete` (confidently incomplete or no actionable gaps),
+  when `replan_from_plan()` errors, when it returns no gap tasks, or when
+  `execute_partial_replan_dag()` returns `None` (replan ran but produced nothing usable).
+- **Per-task** (`scheduler_loop.rs`, ensemble/verify branch): a task-scoped notice —
+  `"Note: task \"{title}\" verification found {N} unresolved gap(s) (verification confidence
+  {C}%)."` — fired when `!result.complete && !repaired`, worded local to the task since a later
+  whole-plan replan may still self-heal the gap.
+
+**Key invariants (additive to the list above):**
+
+- `result.complete == true` never emits a signal — nothing to report, no replan is attempted.
+- The signal is best-effort: a `channel.send` failure is logged via `tracing::warn!` and never
+  propagated as a turn error — this is a notice, not a control-flow gate.
+- The signal is emitted at most once per verification outcome (whole-plan: at the single
+  `return None` point reached for that verdict; per-task: once per task's verify branch) — never
+  duplicated across the fail-open retry paths within the same verification call.
+- This is purely a user-visibility addition — it changes no `VerificationResult`/`GraphStatus`
+  shape, no replan gating, and no grounding behavior; `should_replan`'s computation (§ above) is
+  unmodified.
+
 ---
 
 ## Verifier Tool-Call Grounding

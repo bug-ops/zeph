@@ -99,6 +99,11 @@ expected_tools = ["read_file", "write_file", "list_directory"]
 **Important:**
 > Leave `expected_tools` empty (or omit it) to allow all tools from a server. Setting it to an empty list `[]` blocks all tools from that server.
 
+`McpManager` also caches each server's tool fingerprints (Blake3 of name + description +
+`input_schema`) across reconnects. On the next connect or `tools/list_changed` refresh, a tool
+whose description or schema silently changed since the previous session logs a schema-drift
+("rug-pull") warning — detection only, no automatic blocking.
+
 ## Elicitation
 
 MCP servers can request structured user input via the `elicitation/create` method. When enabled, Zeph presents a phishing-prevention header before displaying the server's form and routes the response back over a bounded channel.
@@ -124,6 +129,8 @@ elicitation_timeout = 120
 - **Tool-list snapshot locking** — set `lock_tool_list = true` on a server entry to reject any `tools/list_changed` refresh after the initial snapshot. Prevents malicious servers from injecting new tools mid-session.
 - **Per-server stdio env isolation** — `env_isolation = true` (or `default_env_isolation = true` globally) strips the inherited process environment before spawning stdio MCP servers, preventing accidental secret leakage via `PATH`, `HOME`, and similar variables. Explicitly declared `env` keys are still passed through.
 - **Intent-anchor nonce boundaries** — tool output from MCP servers is wrapped with per-call nonce delimiters before entering the LLM context, reducing prompt injection surface.
+- **Schema depth-cap dropping** — both `input_schema` and `output_schema` are dropped to an empty object when a tool definition nests past `MAX_SCHEMA_DEPTH` (10 levels), closing an injection vector where a malicious server buries a payload too deep for pattern matching to reach. Each drop counts as an injection for trust-score purposes; the `input_schemas_dropped`/`output_schemas_dropped` counters are surfaced through `ServerConnectOutcome`/`McpServerStatus` into the TUI.
+- **Bounded cross-reference regex cache** — `name_referenced_in`'s per-tool-name regex caches are capped at 256 entries via `lru::LruCache`, so a server that rotates its advertised tool names cannot grow memory unbounded over the lifetime of a long-running daemon/gateway process.
 
 ```toml
 [mcp]

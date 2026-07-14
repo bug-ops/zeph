@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 Zeph is a Rust workspace (`Cargo.toml`) with the CLI entrypoint in `src/` and domain crates in `crates/` (for example: `zeph-core`, `zeph-llm`, `zeph-memory`, `zeph-tools`, `zeph-tui`).
-Top-level integration tests live in `tests/`, while crate-specific tests and benches live under each crate’s `tests/` and `benches/` directories. Documentation sources are in `docs/src/` (mdBook), runtime defaults are in `config/default.toml`, and container assets are in `docker/`.
+Top-level integration tests live in `tests/`, while crate-specific tests and benches live under each crate’s `tests/` and `benches/` directories. Documentation sources are in `book/src/` (mdBook), runtime defaults are in `config/default.toml`, and container assets are in `docker/`.
 Do not create git worktrees inside this repository. Create separate worktrees only under the sibling directory `../worktrees/`.
 
 ## Specifications (MANDATORY)
@@ -24,7 +24,7 @@ All feature and system specifications live in `specs/`. **Compliance is non-nego
 Path-specific instructions for GitHub Copilot live in `.github/instructions/*.instructions.md` with `applyTo` frontmatter.
 
 - Use `cargo nextest run` as the default test runner.
-- Keep Rust changes compatible with Edition 2024 and MSRV `1.88`.
+- Keep Rust changes compatible with Edition 2024 and MSRV `1.97`.
 - Prefer zero-warning `clippy`; avoid `unwrap`/`expect` in production code when proper error propagation is possible.
 - Any user-facing change must update relevant docs, config defaults, and `CHANGELOG.md` (`[Unreleased]` section).
 - For new functionality, provide all integration points: config section, CLI subcommand/argument, TUI command palette entry, `--init` wizard, `--migrate-config` migration step, live testing playbook in `.local/testing/playbooks/`, and coverage row in `.local/testing/coverage-status.md`.
@@ -69,7 +69,7 @@ All secrets and API keys are stored exclusively in the Zeph age vault. Never use
 - `cargo llvm-cov --all-features --workspace`: Generate coverage locally.
 
 ## Coding Style & Naming Conventions
-Use Rust 2024 edition and MSRV `1.88`. Follow `rustfmt` defaults (4-space indentation) and keep Clippy warnings at zero where practical.
+Use Rust 2024 edition and MSRV `1.97`. Follow `rustfmt` defaults (4-space indentation) and keep Clippy warnings at zero where practical.
 Use `snake_case` for functions/modules/files, `PascalCase` for types/traits, and `SCREAMING_SNAKE_CASE` for constants. Prefer small modules with explicit responsibilities; keep public APIs in `lib.rs` minimal and re-export intentionally.
 
 ## Testing Guidelines

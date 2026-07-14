@@ -379,6 +379,20 @@ strategy = "heuristic"        # Routing strategy for memory backend selection (d
 # MemORAI adaptive retrieval settings for graph-based memory
 # deep_reasoning_query_conditioned = false  # Use query-adaptive SYNAPSE weighting when deep reasoning active (default: false)
 
+# [memory.type_aware_compose]
+# MemGuard-inspired type-aware retrieval composition — opt-in, default off (#6086)
+# Retrieval-only gate: no new storage, no write-path change, byte-for-byte no-op when disabled.
+# When enabled, context assembly composes only the configured functional types instead of
+# all memory sources. Functional types: episodic (past actions), user_fact (known facts),
+# behavioral_rule (heuristics), reasoning_strategy (problem-solving patterns),
+# cross_session_summary (continuity across sessions), graph_fact (knowledge graph entities).
+# Corrections stay unconditionally composed as a safety-critical invariant.
+# enabled = false
+# # Functional types always composed; empty = all types (default). Unknown strings = hard config error.
+# default_compose_types = []                # ["episodic", "user_fact", "behavioral_rule", "reasoning_strategy", "cross_session_summary", "graph_fact"]
+# # Widen the active set per classified query intent; no new LLM call (reuses HeuristicRouter)
+# intent_scoped = false
+
 # [memory.admission]
 # enabled = false                    # Enable A-MAC adaptive memory admission control (default: false)
 # threshold = 0.40                   # Composite score threshold; messages below this are rejected (default: 0.40)
@@ -755,6 +769,7 @@ max_parallel = 4                         # Max concurrent task executions (defau
 default_failure_strategy = "abort"       # abort, retry, skip, or ask (default: "abort")
 default_max_retries = 3                  # Retries for the "retry" strategy (default: 3)
 task_timeout_secs = 300                  # Per-task timeout in seconds, 0 = no timeout (default: 300)
+# default_idle_timeout_secs = 60         # Global default idle/no-progress timeout in seconds; individual tasks can override via `timeout` field. RESERVED — not yet enforced (see specs/075-orchestration-node-control-parity/spec.md)
 # planner_provider = "quality"            # Provider name from [[llm.providers]] for planning LLM calls; empty = primary provider
 planner_max_tokens = 4096                # Max tokens for planner LLM response (default: 4096; reserved — not yet enforced)
 dependency_context_budget = 16384       # Character budget for cross-task context injection (default: 16384)
@@ -871,6 +886,7 @@ max_parked_promises = 1000                 # Above this, promise resolution fall
 [durable.retention]
 ttl_completed_secs = 604800                # Prune completed executions older than this (7 days)
 ttl_failed_secs = 2592000                  # Prune failed/aborted executions older than this (30 days)
+stale_running_after_secs = 3600            # Crash-orphan sweep: abort running executions after this many seconds with no owner process (0 disables). Requires advisory-lock backend (SQLite on Unix). See specs/064-durable-execution/spec.md §crash-orphan-sweep.
 max_executions = 10000                     # LRU cap on stored executions
 max_journal_bytes = 1073741824            # Journal size cap in bytes (1 GiB)
 prune_batch_size = 500                     # Rows deleted per transaction during a sweep

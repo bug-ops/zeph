@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+## [0.22.1] - 2026-07-15
 ### Security
 
 - Bumped the transitively-pinned `spin` crate off two yanked versions in `Cargo.lock`:
@@ -12,6 +14,272 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `0.10.0 -> 0.10.1` (via `pprof 0.15.0`, `bench` feature). Both were flagged as yanked
   by `cargo audit` / `cargo deny check advisories`; the patch-level bumps carry no API
   changes and required no `Cargo.toml` edits (#6249).
+
+- `zeph-plugins`: the HTTPS-downgrade-redirect protection in `registry.rs`
+  (a `reqwest::redirect::Policy::custom` that rejects any redirect leaving the `https`
+  scheme) previously guarded only `add_remote_ephemeral`'s session-scoped install path.
+  `PluginManager::add_remote` (permanent plugin install) and `download_archive` (used by
+  the unattended `check_auto_updates`/`update_one_plugin` auto-update path, which runs on
+  every process startup for any plugin with `auto_update = true`) both used the bare
+  `reqwest::get(url)` global client instead, following up to 10 redirects with no
+  scheme-downgrade restriction (#6099). The anti-downgrade client construction is now a
+  shared `https_safe_client()` helper used by all three archive-download call sites.
+- `zeph-plugins`: `PluginManager::add_remote` and `download_archive` called `response.bytes()`
+  unconditionally with no upper bound on body size, allowing a malicious or compromised host to
+  exhaust process memory (#6108). Unlike `download_and_extract`, which already rejected an
+  oversized `Content-Length` before reading the body, these two call sites had no such check —
+  and `download_archive` backs the unattended `check_auto_updates` path that runs on every
+  process startup for any plugin with `auto_update = true`. All three call sites now share a
+  single `fetch_archive_bytes` helper that rejects a declared `Content-Length` above
+  `MAX_ARCHIVE_BYTES` (52 MiB) before reading the body, removing the duplicated inline check
+  that previously lived only in `download_and_extract`.
+- `zeph-mcp`: `PinningOAuthHttpClient` (#6074) resolved, SSRF-validated, and DNS-pinned
+  the target host of every OAuth HTTP request, but its underlying `reqwest::Client`
+  only disabled auto-following redirects for `OAuthHttpRedirectPolicy::Stop` requests
+  — for `Follow` (dynamic client registration is rmcp's only current caller), reqwest's
+  own redirect-following stayed active, so a `3xx` response pointing at a *different*
+  host had that hop resolved independently and unpinned by reqwest itself, reopening a
+  redirect-scoped DNS-rebinding TOCTOU (#6089). `build_client` now disables redirects
+  unconditionally, and `execute()` follows `Follow`-policy redirects manually via a new
+  bounded loop (`MAX_OAUTH_REDIRECT_HOPS = 10`) that re-runs the identical
+  validate-and-pin step for every hop, mirroring standard redirect semantics (`303`
+  always downgrades to `GET`; `301`/`302` downgrade a `POST` to `GET`; `307`/`308`
+  preserve method and body). The manual reimplementation also now mirrors reqwest's
+  cross-origin header handling: `Authorization`, `Cookie`, `Proxy-Authorization`, and
+  `WWW-Authenticate` are dropped when a redirect hop's scheme, host, or port differs
+  from the previous hop's (a validated, SSRF-safe redirect target only proves it isn't
+  a private address — it can still be attacker-controlled, so credentials must not
+  follow it cross-origin), and `Content-Length`/`Content-Type`/`Content-Encoding` are
+  dropped whenever the body is emptied by a method downgrade.
+- `zeph-scheduler`: `Scheduler::init()`'s DB-hydration loop read `TaskProvenance` verbatim from
+  the writer-controllable `scheduled_jobs.provenance` column, so a direct-SQL / out-of-process
+  writer could self-label a row `"static"` or `"user_added"` to dodge the RTW-A re-entry defenses
+  (#6114). This is latent hardening, not an active bypass fix — hydration only ever loads
+  periodic rows with `Value::Null` config, and the provenance-gated injection check only fires
+  for oneshot+`Custom` tasks, so no hydrated row reaches it today. `init()` now forces
+  `TaskProvenance::External` on every hydrated row regardless of the stored label, latching the
+  invariant that a row not written by this process's trusted in-session path is untrusted.
+- `zeph-mcp`: closed three gaps in the MCP tool trust pipeline (#6071, #6072, #6073).
+  - `sanitize_tools`'s depth-cap drop path (see #6068 below) dropped unsanitizable
+    `input_schema`/`output_schema` content beyond `MAX_SCHEMA_DEPTH` but never incremented
+    `SanitizeResult::injection_count`, so `apply_injection_penalties` early-returned and a
+    server nesting an injection payload 11+ levels deep evaded both sanitization *and* the
+    trust-score penalty / `registration_injection` audit warning (#6071). Both depth-cap
+    drop sites now count as an injection. `SanitizeResult::input_schemas_dropped` and
+    `output_schemas_dropped` were also write-only — added to `ServerConnectOutcome` /
+    `zeph-core`'s `McpServerStatus` and surfaced in the TUI's MCP server status line
+    (`schema-drop:N`) alongside the existing connected/tool-count indicator.
+  - MCP tool schema-drift detection (the "rug-pull" mitigation documented in
+    `attestation.rs`) never fired: `apply_attestation()` hardcoded `previous_fingerprints`
+    to `None` on every call, so the reconnect-comparison branch in `attest_tools()` was
+    dead code outside its own unit test (#6072). `McpManager` now caches each server's
+    tool fingerprints (`server_fingerprints`, populated only when `expected_tools` is
+    configured — attestation must be enabled for drift detection to run) and threads them
+    into `attest_tools()` on every reconnect and `tools/list_changed` refresh, so a tool
+    description/schema that silently changes between sessions now logs a
+    `tracing::warn!`. Trust/filtering decisions are unchanged — this is detection only.
+  - `TrustScoreStore::load_and_apply_delta` — the only write path used in production,
+    gating `Trusted`/`Untrusted`/`Sandboxed` classification — was a non-atomic
+    read-then-write: it called `load()` (decay-aware) and then issued an unconditional
+    `UPDATE SET score = excluded.score`, so two concurrent callers for the same
+    `server_id` could both read the same pre-update score and the second writer's
+    unconditional overwrite would silently clobber the first's delta (#6073). It's now a
+    single atomic `INSERT ... ON CONFLICT DO UPDATE` that recomputes the asymmetric
+    time-decay from the stored `updated_at_secs` entirely inside the SQL expression
+    (`CASE WHEN` + dialect `LEAST`/`GREATEST`), so the whole
+    read-decay-delta-clamp-write sequence is one atomic row-level operation. The former
+    `apply_delta()` (atomic but decay-blind, unused in production) is removed — both
+    properties now live in one method, eliminating the two-divergent-write-paths root
+    cause.
+- `zeph-common`: consolidated three duplicated/diverging security-sanitization
+  implementations into single canonical sources, closing real defense-in-depth gaps
+  (#5925, #5915, #5917). `zeph_common::sanitize::strip_control_chars` and
+  `strip_control_chars_preserve_whitespace` previously stripped only ASCII controls plus
+  `BiDi` overrides — missing zero-width space/joiners, soft hyphen, BOM, Hangul/Khmer/
+  Mongolian fillers, and the Unicode Tags block that `zeph_common::patterns::
+  strip_format_chars` already covered. Both now share a single bypass-codepoint denylist
+  (`patterns::is_bypass_codepoint`), so `zeph-memory`'s graph-resolver `sanitize_fact`/
+  `sanitize_relation` (LLM-extracted entity/relation text stored in the graph and later
+  replayed into community-summarization prompts) transitively gain the stronger coverage
+  (#5925). `zeph-memory::graph::community`'s local `scrub_content` (only 4 filtered
+  categories) is removed; both call sites now use `strip_format_chars` directly (#5915).
+  `zeph-core::redact`'s `SECRET_PREFIXES`/`PATH_REGEX` and `zeph-memory::store::
+  compression_guidelines`'s `SECRET_RE`/`PATH_RE` duplicated the same prefix list
+  character-for-character while drifting apart — `zeph-memory` had gained `Authorization:
+  Bearer` header and standalone-JWT redaction that `zeph-core` lacked. A new
+  `zeph_common::secrets` module is now the single source of truth for
+  `SECRET_PREFIXES`/`PATH_PREFIXES`/`BEARER_TOKEN_PATTERN`/`JWT_PATTERN`; both crates build
+  their own `regex::Regex` from it (matching the existing `zeph_common::patterns`
+  raw-pattern convention), and `zeph-core::redact::redact_secrets`/`scrub_content` now also
+  redact Bearer headers and JWTs (#5917).
+- `zeph-mcp`: `sanitize_tools` walks `input_schema` and `output_schema` with the same
+  recursive walker, which enforces `MAX_SCHEMA_DEPTH` (10) by returning without sanitizing
+  the subtree at all once the cap is hit — no injection-pattern check, no truncation.
+  `output_schema` correctly dropped the whole field on a depth-cap hit, but `input_schema`
+  did not: `input_depth_cap` was computed and then never read, so an untrusted/compromised
+  MCP server could nest an injection payload 11+ levels deep and have it pass through
+  completely unsanitized straight into the LLM system prompt (`input_schema` is always
+  present, unlike the optional `output_schema`, and is always rendered verbatim by
+  `zeph-tools::registry::format_schema_params`) (#6068). `input_schema` is now dropped to
+  an empty object on a depth-cap hit, mirroring the existing `output_schema` handling
+  exactly, and the drop is tracked via a new `SanitizeResult::input_schemas_dropped`
+  counter. A related pre-existing gap — depth-cap drops on either schema field never
+  increment `injection_count`, so `apply_injection_penalties` never fires a trust-score
+  penalty or audit log for depth-cap evasion specifically — is tracked separately in #6071.
+- `zeph-core`: `load_skill` (`SkillLoaderExecutor`) had no trust check at all — it read the raw
+  `SKILL.md` body straight from `SkillRegistry::body` and returned it verbatim, bypassing the
+  entire skill-trust defense-in-depth pipeline that `invoke_skill` already enforced: `Blocked`
+  skills were never refused, `Quarantined`/non-Trusted bodies were never sanitized or wrapped,
+  and the LLM-supplied `skill_name` was echoed unsanitized into the not-found error. The turn-
+  level `TrustGateExecutor` gate does not close this gap — it only denies `load_skill` when the
+  turn's folded `effective_trust` is Quarantined, and never inspects the `skill_name` argument
+  itself, so a `load_skill` call naming a Blocked/Quarantined skill sailed through on any turn
+  where the active skill set wasn't already Quarantined (#6050). `SkillLoaderExecutor` now shares
+  the exact same trust pipeline as `SkillInvokeExecutor` via a new `SkillTrustGate` (extracted
+  into `crates/zeph-core/src/skill_trust_gate.rs`, #6049): Blocked is refused before any body
+  read, non-Trusted bodies are sanitized, Quarantined bodies are additionally wrapped, the
+  per-invocation blake3 integrity re-check now also applies to `load_skill`, and `skill_name` is
+  sanitized on every output path (found, blocked, and not-found). `SkillLoaderExecutor::new` now
+  takes the same `trust_snapshot` `Arc` as `SkillInvokeExecutor`; a new
+  `agent_setup::build_skill_executors` helper constructs both executors around one shared `Arc`
+  so `load_skill` and `invoke_skill` can no longer observe divergent trust state or be wired up
+  independently, replacing five duplicated inline construction sites across `src/runner.rs`,
+  `src/acp.rs`, and `src/daemon.rs` (prod and test).
+- `zeph-mcp`: closed a DNS-rebinding TOCTOU gap in the HTTP transport SSRF guard
+  (#6057). `validate_url_ssrf()` resolved and validated the target hostname as a
+  standalone pre-flight check, then discarded the result — the actual connection
+  (`connect_url`, `connect_url_with_headers`, `connect_url_oauth`, including both the
+  cached-token fast path and the post-callback `complete_oauth` path) performed its
+  own independent DNS resolution moments later via a bare `reqwest::Client::default()`
+  with the default redirect policy. An attacker controlling DNS for the target
+  hostname could pass validation with a public IP, then rebind to a private/internal
+  address before the transport's later resolution, or simply 3xx-redirect the request
+  toward an internal target. All three connect paths now call a new
+  `validate_and_pin_url()` helper that resolves the hostname once via
+  `zeph_common::net::resolve_and_validate` and threads the exact validated addresses
+  through to a hardened `reqwest::Client` (`resolve_to_addrs` + `Policy::none()`),
+  eliminating both the re-resolution window and the redirect bypass. The OAuth flow's
+  `OAuthPending` now carries the addresses pinned at the start of
+  `connect_url_oauth` through to `complete_oauth`, since re-resolving after the user's
+  browser interaction (unbounded duration) would reopen the same race. `connect_url_oauth`
+  also now routes `AuthorizationManager`'s internal OAuth HTTP traffic (metadata
+  discovery, token exchange, refresh) through the same SSRF-pinned client via
+  `OAuthState::new(url, Some(hardened_client))`, instead of letting it build its own
+  default, unpinned `reqwest::Client` internally — closing the same DNS-rebinding
+  window for OAuth requests to the original server host (#6069, sibling of #6057,
+  same PR). Note: `Policy::none()` is applied unconditionally, so `trusted` (operator
+  static-config) servers also stop auto-following redirects — previously they inherited
+  `reqwest`'s default of following up to 10 — a deliberate pre-1.0 hardening, not a
+  regression.
+- `zeph-mcp`: closed the residual cross-origin discovered-issuer OAuth SSRF/DNS-rebinding
+  TOCTOU that #6069's single-host `resolve_to_addrs` pinning could not cover — per SEP-985,
+  `token_endpoint`, `authorization_endpoint`, `jwks_uri`, and `registration_endpoint` can
+  legitimately live on a different host than the MCP server itself, so `AuthorizationManager`
+  fell back to its own independent, unpinned DNS resolution for them. `connect_url_oauth` now
+  routes OAuth HTTP traffic through a new `PinningOAuthHttpClient`
+  (`rmcp::transport::auth::OAuthHttpClient` impl) that resolves, SSRF-validates, and DNS-pins
+  each request individually by its own target host at execution time, rather than reusing a
+  client pinned to the original server's host (#6074).
+- `zeph-mcp`: `McpClient::connect_url_oauth`'s cached-token fast path and
+  `complete_oauth`'s post-callback path now wrap `handler.serve(transport)` in
+  `tokio::time::timeout`, matching every other connect entry point
+  (`connect_stdio`, `connect_url`, `connect_url_with_headers`); previously these two
+  sites could hang indefinitely if the server never responded (#6064).
+- `zeph-durable`/`zeph`: `zeph_durable::encryption_gate` (the documented INV-8 AEAD enforcement
+  policy) is now actually invoked at runtime — previously it was a unit-tested pure function that
+  no call site ever reached, so `src/commands/durable.rs::load_write_cipher` (the durable journal
+  write path) and `open_backend` (the `zeph durable` CLI read path, including `--reveal`) each
+  made their own cipher decision by checking only `[durable] encrypt_payload`, ignoring backend
+  and shared-database status entirely. A deployment with `encrypt_payload = false` on a durable
+  journal database reachable by more than one process/client (e.g. a shared volume, or a future
+  Postgres-backed deployment) would silently persist tool outputs and agent-turn state in
+  plaintext with zero warning and zero error (#5996). Both call sites now evaluate
+  `encryption_gate` before making the cipher decision: `encrypt_payload = false` combined with a
+  non-local backend or a shared database now fails closed with a hard error at startup / on the
+  CLI command, and the permitted single-user local override now emits the documented startup
+  `tracing::warn!`. Added a new `[durable] shared_db` config field (default `false`) so operators
+  can declare a shared-database deployment explicitly; a `postgres://`/`postgresql://` resolved
+  journal URL is also treated as shared automatically, as defense in depth. The TUI durable panel
+  poller (`durable_poll_task`, feature `tui`) now evaluates the same policy before opening the
+  journal — previously it bypassed the gate entirely, so the TUI panel could render a journal the
+  `zeph durable` CLI refused to open; a rejection now degrades gracefully to a distinct
+  `GateRejected` panel status instead of erroring (see #6041 below for why it no longer reuses
+  the plain "non-durable mode" state).
+- `zeph-commands`: 19 privileged slash-command handlers now override `requires_auth()` to
+  return `true`, closing a trust-gate gap where they ran the default `false` and were therefore
+  reachable from untrusted remote channels (Telegram/Discord/Slack) as well as trusted local
+  sessions (#6003). Gated handlers: `UndoCommand`/`RedoCommand` (`/undo`, `/redo` — mutate the
+  on-disk working tree), `PlanCommand` (`/plan` — executes tools/shell via orchestration),
+  `SkillCommand` (`/skill` — installs/removes/trusts executable skills), `FeedbackCommand`
+  (`/feedback` — writes persistent self-learning input), `KnowledgeSlashCommand` (`/knowledge` —
+  unconfirmed destructive `rollback`), `AgentCommand`/`AgentsFleetCommand` (`/agent`, `/agents` —
+  spawn/mutate sub-agent definitions), `ConvCommand` (`/conv`, feature `session` — session
+  hijack/cross-session disclosure via `resume`/`fork`), `MemoryCommand`/`GraphCommand`
+  (`/memory`, `/graph` — mutate semantic memory / knowledge graph, LLM cost), `GoalCommand`
+  (`/goal` — mutates persisted goal FSM, can drive autonomous execution), `AcpCommand` (`/acp`,
+  feature `acp` — discloses ACP allowlist/auth/bind-address config), `CocoonCommand` (`/cocoon`,
+  feature `cocoon` — discloses sidecar state and TON balance), `CompactCommand`/
+  `NewConversationCommand` (`/compact`, `/new` — mutate conversation state, LLM cost/DoS), and
+  `ClearCommand`/`ResetCommand`/`ClearQueueCommand` (`/clear`, `/reset`, `/clear-queue` —
+  remote wipe of the operator's live session). `RecapCommand`, `SkillsCommand`,
+  `GuidelinesCommand`, `ExitCommand`, `QuitCommand`, and `HelpCommand` were audited and left at
+  the default (read-only, or already self-gated via `supports_exit()`). The
+  `CommandHandler::requires_auth()` default value itself is unchanged — revisiting the default
+  is deferred to a follow-up issue.
+- `zeph-db`: `redact_url` no longer leaks the tail of a Postgres password containing `@` (#5969).
+  The previous regex (`://[^:]+:[^@]+@`) stopped at the first `@`, so
+  `postgres://user:p@ss@host/db` only redacted up to `p`, leaking `ss@host` verbatim into
+  `DbError::Connection` and CLI error output (`src/commands/db.rs`). Replaced with
+  `url::Url`-based userinfo parsing, which splits on the *last* `@` before the authority ends —
+  matching real client behavior — so passwords/usernames containing `@`, multiple `@`, and IPv6
+  hosts are all handled correctly. Also now recognizes two non-userinfo libpq credential forms and
+  redacts the whole URL for them: query-param URIs (`?password=...`) and key-value DSNs
+  (`host=... password=...`), neither of which the old regex covered at all.
+- **BREAKING**: `vault.backend` now defaults to `age` instead of `env` when a config omits the
+  `[vault]` section entirely (#5953). This aligns runtime behavior with the already-documented
+  default in `specs/010-security/spec.md` and `specs/038-vault/spec.md` — a fresh config with no
+  `[vault]` section previously resolved secrets from process environment variables silently;
+  it now requires an age vault identity (`~/.config/zeph/vault-key.txt` and `secrets.age`, or
+  `--vault-key`/`--vault-path`). Existing deployments that relied on the implicit `env` default
+  must either run `zeph vault init` to provision an age vault, or explicitly set
+  `vault.backend = "env"` in `config.toml` (understanding this stores secrets in plaintext
+  environment variables). `config/default.toml` and `crates/zeph-core/config/default.toml` were
+  updated to match; no config migration step was added because the previous `env` default was
+  never a persisted value — only a parse-time fallback applied to configs that omit the key.
+- `parse_backend_str` (the parser for the `--vault` CLI flag and `ZEPH_VAULT_BACKEND` env var)
+  now rejects unrecognized backend names with a hard error instead of silently falling back to
+  the weaker `env` backend with only a `tracing::warn!` log line (#5954). Combined with the
+  #5953 default change, a typo in `--vault`/`ZEPH_VAULT_BACKEND` (e.g. `--vault aeg`) previously
+  downgraded the effective secret-storage backend for the whole process without a startup
+  failure. `parse_vault_args` now returns `Result<VaultArgs, String>`; `AppBuilder::new` and the
+  `bench`/`doctor`/`gonka`/`cocoon` commands that call it propagate the error instead of
+  continuing with a silently-downgraded backend.
+
+- `zeph-config` / `zeph-llm`: removed derived `Debug` from 7 secret-bearing config structs that
+  printed their plaintext secret verbatim in any `{:?}` output — logs, panics, error chains
+  (#5952, #5963). `GatewayConfig::auth_token`, `ProviderEntry::api_key`/`cocoon_access_hash`,
+  `ClassifiersConfig::hf_token`, `CandleConfig::hf_token`, `CandleInlineConfig::hf_token`,
+  `OpenAiConfig::api_key`, and `CompatibleConfig::api_key` are now redacted (`"[REDACTED]"` in
+  `zeph-config`, `"<redacted>"` in `zeph-llm`, matching each crate's existing manual-`Debug`
+  precedent) by a hand-written `impl Debug` that still lists every other field. `Option<String>`
+  secrets preserve the `None`-vs-`Some` distinction. `CandleInlineConfig` is embedded inside
+  `ProviderEntry`, so both were fixed together to avoid a transitive leak through nested `Debug`.
+- `zeph-memory`/`zeph-core`/`zeph`: `SqliteStore::set_requires_trust_check` (the setter for the
+  per-invocation blake3 integrity re-check gated by `SkillTrustSnapshot::requires_trust_check`,
+  `crates/zeph-core/src/skill_trust_gate.rs`) had zero production callers anywhere in the
+  codebase — the column defaulted to `0` for every skill in every deployment and could never be
+  set to `1` by any CLI flag, config knob, or in-session command, making the entire defense
+  unreachable in practice despite being fully implemented and unit-tested on the consumption side
+  since #4306/#6062 (#6080). `zeph skill trust <name> <level> --require-check` and the in-session
+  `/skill trust <name> <level> --require-check` now call the setter after updating the trust
+  level. Separately, the CLI's `zeph skill invoke <name>` preview command (`src/commands/skill.rs`)
+  was a hand-rolled reimplementation of the trust-gating pipeline that predated #6062's
+  consolidation onto the shared `SkillTrustGate`: it never checked `requires_trust_check` at all,
+  and echoed the raw unsanitized skill name into its not-found error instead of the sanitized form
+  every other trust-gated path uses (#6079). `SkillTrustGate` and `SkillBodyResolution` are now
+  `pub` at the `zeph-core` crate root, and `SkillCommand::Invoke` calls
+  `SkillTrustGate::resolve_body` directly — the same pipeline `load_skill`/`invoke_skill` use —
+  so the CLI preview can no longer drift from the agent-facing tools.
 
 ### Added
 
@@ -131,6 +399,146 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   copy. No runtime-visible behavior change beyond no longer persisting image bytes that were
   already dead weight.
 
+- **A2A**: added optional JWS Agent Card signature verification (A2A 1.0.0 §8.4) and a
+  `require`/`prefer`/`ignore` trust policy for peer discovery (#5928):
+  - `AgentCard.signatures: Vec<AgentCardSignature>` — new, additive, `#[serde(default,
+    skip_serializing_if = "Vec::is_empty")]` field; unsigned/0.2.x peer cards round-trip
+    unchanged (empty on the wire).
+  - New `card-signing` Cargo feature (`crates/zeph-a2a`, `p256` + `serde_json_canonicalizer`,
+    pure-Rust, no `openssl-sys`) enabling ES256 (P-256) verification. Off by default; propagated
+    through the root `a2a` feature (and `full`) alongside the existing `ibct`/`server` features
+    so CI actually compiles and tests the crypto path.
+  - `AgentRegistry::with_trust(policy, trusted_keys)` runs a crypto-free URL-origin
+    (scheme+host+port) consistency check plus signature verification in `discover()`, combining
+    both axes by taking the most severe outcome (reject > warn > accept) and returning
+    `A2aError::UntrustedCard` / `A2aError::UrlMismatch`.
+  - `[a2a_client]` gains `card_trust_policy` (`CardTrustPolicy`, default `ignore` — byte-identical
+    to prior behavior) and `trusted_agent_keys` (`Vec<TrustedAgentKey>`, public keys stored
+    inline, not vault-referenced). `Config::validate()` fails fast if `card_trust_policy =
+    "require"` is set without the `card-signing` feature compiled in, rather than silently
+    degrading or bricking discovery. New `ZEPH_A2A_CARD_TRUST_POLICY` env override and
+    `--migrate-config` step 82 (commented advisory block for existing configs).
+  - **Known limitations, tracked as follow-ups**: `AgentRegistry` had no runtime construction
+    site and the JCS canonicalization was unvalidated against a real `a2a-sdk`-produced signed
+    card — both addressed later in this same `[Unreleased]` section, see the two `A2A` entries
+    above (#6200, #6201). The well-known discovery path remains `/.well-known/agent.json`
+    (0.2.x); a pure-1.0.0 peer serving `/.well-known/agent-card.json` is not yet discoverable.
+    `A2A_PROTOCOL_VERSION` stays `"0.2.1"` — this change is one additive 1.0.0 feature, not full
+    1.0.0 conformance. `jku`/JWKS auto-fetch, EdDSA/RS256, and signing our own served card are
+    all still deferred.
+- **Worktree**: added disk-quota and automatic reconciliation to the `zeph-worktree` subsystem
+  (#5924). Four new `[worktree]` config fields: `max_worktrees` (creation-time admission cap,
+  enforced as `WorktreeError::QuotaExceeded`), `disk_quota_mb` (soft total-disk-usage threshold),
+  `auto_reconcile_secs` (periodic reconcile+quota sweep interval via `TaskSupervisor`, `0` =
+  disabled), and `reconcile_on_startup` (default `true` — one reconcile+quota sweep at bootstrap).
+  Automatic reclamation only ever removes worktrees git itself reports as `prunable` — an intact
+  worktree is never force-removed to satisfy either threshold (spec-063 INV-6, extends INV-5).
+  `WorktreeManager` gains `disk_usage()`/`cached_disk_usage()` (filesystem walk, offloaded to
+  `spawn_blocking`, never called on the `create()` hot path) and `sweep()` (reconcile +
+  prunable-only reclaim + quota evaluation). `zeph worktree list` and the agent-side
+  `/worktree list` slash command both always print a fresh usage/quota summary footer (no
+  cross-mode divergence). `Config::validate` rejects `Some(0)` for `max_worktrees`/
+  `disk_quota_mb`, rejects `disk_quota_mb` being set with no automatic evaluation path enabled
+  (neither `reconcile_on_startup` nor `auto_reconcile_secs`), and rejects a sub-60-second
+  `auto_reconcile_secs` (too short an interval would run a filesystem walk in a tight loop).
+  `--migrate-config` step 83 surfaces the four new fields as commented advisories on existing
+  `[worktree]` tables; the `--init` wizard gained matching prompts with the same validation.
+- **Config**: documented `[security.shadow_sentinel]` (`ShadowSentinelConfig`) as a commented
+  advisory block in `config/default.toml`, and added migration step 81
+  (`migrate_shadow_sentinel_config`) so existing configs gain the same discoverable block via
+  `zeph --migrate-config`. The section was previously implemented and wired through
+  `SecurityConfig`/`validate_provider_names` but absent from both the shipped default config and
+  the migration registry (#5934).
+- **Security**: added `.gitleaks.toml` allowlisting the 31 known-benign gitleaks
+  findings from a full git-history scan — all fake/example secrets in test
+  fixtures, doctests, and documentation (`secret_mask.rs`, `redact.rs`,
+  `tool_execution.rs`/tests, `notifications.rs`, `secrets.rs`, `doctor.rs`,
+  `compression_guidelines.rs`, the `api-request` skill doc, and A2A
+  `ZEPH_A2A_IBCT_KEY`/`VAULT_A2A_IBCT_KEY_1` env-var names), none a real
+  credential. Extends (not replaces) gitleaks' default ruleset via
+  `[extend] useDefault = true`; allowlist entries match the literal dummy
+  string so future test fixtures reusing the same established pattern are
+  also covered, not just the already-known commits. `gitleaks detect` now
+  exits clean (0 findings) instead of re-surfacing the same 31 hits on every
+  scan. `SECURITY.md` documents the convention: reuse an existing dummy
+  pattern in new test fixtures where possible, or add a new allowlist entry
+  (#6056, #6081).
+- **Memory**: wired the five remaining memory-maintenance loops — guidelines
+  (`mem-guidelines`), tree-consolidation (`mem-tree-consolidation`), hebbian-consolidation
+  (`mem-hebbian-consolidation`), episodic-consolidation (`mem-episodic-consolidation`), and
+  optical-forgetting (`mem-optical-forgetting`) — into `src/acp.rs` (`build_acp_deps`),
+  `src/daemon.rs` (`run_daemon`), and `src/serve/deps.rs` (`spawn_memory_maintenance_loops`),
+  matching the CLI/TUI path (`src/runner.rs`) and the first five loops wired by #5978. Each new
+  loop is gated by its own `[memory.*] enabled` config flag, exactly as in `runner.rs`; ACP and
+  `/sessions*`-created agents pass `None` for the hebbian loop's status sender since neither
+  entry point has a status-sender handle in scope, while the daemon reuses its own
+  `status_tx` (#5979).
+- **Skills**: `[skills.trust] require_integrity_check_on_promote` (default `true`) automatically
+  arms the per-invocation BLAKE3 integrity re-check (`requires_trust_check`) whenever a skill is
+  promoted to `trusted`/`verified`, at both the CLI (`zeph skill trust`) and in-session
+  (`/skill trust`) promotion handlers. Previously the re-check could only be armed manually via
+  `--require-check`, so an operator who forgot the flag left a promoted skill's tampered-on-disk
+  `SKILL.md` undetected between promotions (#6087). `--require-check`/`--no-require-check`
+  (mutually exclusive) continue to override the config default per command; promotion to
+  `quarantined`/`blocked` leaves `requires_trust_check` untouched. A migration step (80) adds a
+  commented advisory for the new key to existing configs that already declare `[skills.trust]`.
+  Self-learning/heuristic auto-promotion and reload trust-assignment are intentionally out of
+  scope for this change — see the PR description.
+
+- `feat(acp)`: `[[acp.auth_clients]]` — named bearer-token clients for the ACP HTTP/WS
+  transport (#5868), enabling genuine multi-tenant/multi-window isolation of persisted ACP
+  session listing. `crates/zeph-acp/src/transport/auth.rs`'s `BearerAuthLayer` now authenticates
+  against a named-client credential set instead of one server-wide token; the matched client's
+  stable `id` becomes the connection's `owner_key`, threaded through `build_agent_state` and
+  scoping every session-persistence access path (`list_sessions`, `load_session`,
+  `resume_session`, `fork_session`, the REST `/sessions*` CRUD handlers, and the deprecated
+  `_session/*` ext methods). The legacy `[acp] auth_token` scalar keeps working unchanged,
+  synthesized as a client with id `"default"`; unauthenticated HTTP and stdio both resolve to
+  the `"acp-local"` bucket, matching pre-#5868 behavior for every deployment that does not
+  configure `auth_clients`. Each entry accepts an inline `token` or a `token_vault_key` resolved
+  from the age vault at startup (mirrors `[serve] auth_token_vault_key`). Config validation
+  rejects the reserved ids `"default"`/`"acp-local"`, duplicate ids, and duplicate tokens across
+  `auth_token` + `auth_clients` (inline collisions at config-load time; vault-resolved
+  collisions at startup, after the vault unlocks). `--init` gained a matching wizard prompt and
+  `migrate-config` a new step (77) that surfaces the new array as a commented block.
+  Note: this closes the isolation gap for genuine multi-token **HTTP/WS** deployments only — the
+  literal Zed-over-stdio scenario from the issue is unaffected by this change (stdio has no
+  token multiplexing to redesign; use distinct `sqlite_path` values per window instead).
+- `feat(plugins,skills,config,cli)`: added an opt-in skill/plugin discovery-and-install
+  marketplace (spec-045, #5869) — `zeph skill search <query>` / `zeph skill get <registry-id>`
+  and `zeph plugin search <query>` / `zeph plugin get <registry-id>`, closing the "no discovery
+  path, only `--plugin-url`" gap identified against Cline's marketplace and Vercel's
+  `skills.sh` in a competitive parity scan. A new `crates/zeph-plugins/src/marketplace` module
+  defines a dyn-compatible `RegistryClient` trait (mirroring `VaultProvider`'s boxed-future
+  pattern) with a `SkillsShClient` implementation for the public skills.sh registry, gated
+  behind a new `registry` Cargo feature (included in the `full` bundle) that gates only the
+  network-touching client code — CLI arg definitions and `[skills.registry]` config parsing
+  always compile, printing an actionable "rebuild with `--features registry`" message when the
+  feature is off. Registry lookups are strictly opt-in and off by default
+  (`skills.registry.enabled = false`): zero network calls and zero vault access occur unless
+  explicitly enabled. Fetched packages route through the existing, unmodified install
+  pipelines — `SkillManager::install_from_path` (frontmatter validation + Quarantined-trust
+  upsert) for skills, `PluginManager::add` (manifest validation, MCP allowlist, injection scan)
+  for plugins — so no new content-safety bypass is introduced. Auth token resolved exclusively
+  via `VaultProvider` (`skills.registry.auth_vault_key`), never a plain config field. Adds the
+  `--init` wizard step, a `--migrate-config` step (idempotent, always writes `enabled = false`
+  in the advisory template), and `MockRegistryClient` proving the trait boundary is real.
+
+- `feat(llm,commands,core)`: added runtime `/think-tokens [N|Nk|NM|off]` and
+  `/reasoning-effort [low|medium|high]` slash commands that mutate the active LLM provider's
+  thinking-token budget or reasoning-effort level mid-session, taking effect on the very next
+  turn — no restart required (#3098). Session-only: never persisted across restarts or
+  `/provider` switches (the switch confirmation now warns when an active override is dropped).
+  Supported per-provider: Claude (`Extended`/`Adaptive` thinking, mutually exclusive — setting
+  one overrides the other), OpenAI/Compatible (`reasoning_effort`), Gemini (`thinking_budget`/
+  `thinking_level`); unsupported providers return an explicit "not supported" message rather
+  than a silent no-op. Fixed a latent bug in `ClaudeProvider::with_thinking` along the way: a
+  `base_max_tokens` snapshot now makes `max_tokens` restoration exact on disable, instead of the
+  previous construction-only logic which could only ever raise `max_tokens` to the 16k thinking
+  floor and never lower it back. Added a new `--reasoning-effort <low|medium|high>` CLI flag and
+  a matching `--init` wizard prompt for OpenAI providers (Claude and Gemini already prompt for
+  their equivalent reasoning-depth setting).
+
 ### Changed
 
 - **BEHAVIOR CHANGE**: `RunInline` orchestration tasks (dispatched when no sub-agent matches)
@@ -212,6 +620,144 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   denies a retry to later same-turn consumers sharing the cache (previously each retried
   independently) — an accepted hot-path trade-off, not a correctness issue (#6266, #6267).
 
+- **Config**: replaced hand-rolled TOML section-header idempotency checks (raw
+  `toml_src.contains("[name]")` substring matches and unanchored exact-line comparisons) across
+  `crates/zeph-config/src/migrate/{features,memory,tools,session,serve,infra,llm}.rs` with the
+  shared `section_header_present()` helper, which correctly recognizes inline-commented headers
+  (`[name]  # note`) and excludes fully commented-out headers (`# [name]`) — a stricter, more
+  correct check than the substring/exact-line patterns it replaces. Per-key idempotency checks
+  (e.g. detecting a specific field inside a section) and array-of-tables headers (`[[name]]`,
+  unsupported by `section_header_present()`) were left as-is. Behavior is unchanged for all
+  existing migration test expectations except five now-corrected/narrowed guards:
+  `migrate_goals_config` and `migrate_memory_graph_config`'s `[memory.graph.beam_search]` check
+  now also explicitly recognize a fully commented-out header instead of relying on substring
+  coincidence; `migrate_egress_config`, `migrate_vigil_config`, and
+  `migrate_tools_compression_config` previously used a broad, bracket-less substring guard
+  (e.g. `contains("[tools.egress]") || contains("tools.egress")`, effectively just
+  `contains("tools.egress")`) that also suppressed re-injection for unrelated matches such as an
+  inline table (`compression = { enabled = true }`) or a root dotted key (`tools.egress.enabled
+  = ...`) — this was the exact copy-paste anti-pattern #5933 targets, not a deliberate design
+  choice, so the guard is now narrowed to the real header-only check. The narrowing only affects
+  which configs receive a commented advisory block on `--migrate-config`; it never touches active
+  config values and remains fully idempotent (#5933).
+
+- **Architecture**: `zeph-agent-context` — refactored the graph-retrieval-strategy call
+  chain in `helpers.rs` (`dispatch_graph_strategy`, `run_graph_strategy`,
+  `run_synapse_strategy`, `run_hybrid_strategy`, `recall_by_classified_strategy`,
+  `fetch_semantic_recall_raw`, `append_graph_facts`) away from the "parameter bag"
+  anti-pattern — each function threaded 8-14 positional arguments and individually
+  suppressed `clippy::too_many_arguments`. Introduced `GraphStrategyParams` (per-call
+  query state), `GraphRecallConfig` (shared immutable config), `GraphRecallBudget`
+  (mutable token-budget accumulator), and `SemanticRecallRawParams`, grouped by
+  mutability/ownership rather than bundled arbitrarily. Removed all six
+  `clippy::too_many_arguments` allows and the crate's `#![recursion_limit = "256"]`
+  override, which the refactor's reduced Future-nesting depth no longer requires. Pure
+  internal signature refactor — no behavior change (#5992).
+- **DRY**: consolidated the four near-identical memory-maintenance-loop spawn blocks in
+  `src/runner.rs` (CLI/TUI, previously inline), `src/acp.rs` (`build_acp_deps`, previously
+  inline), `src/daemon.rs` (`run_daemon`, previously inline), and `src/serve/deps.rs`
+  (`spawn_memory_maintenance_loops`) into a single shared
+  `agent_setup::spawn_memory_maintenance_loops`, now called by all four entry points (#6180).
+  The function takes `status_tx: Option<&UnboundedSender<String>>` to unify the ACP/`/sessions*`
+  (`None`) vs. CLI/TUI/daemon (`Some`) difference in the hebbian-consolidation loop's status
+  sender, and a `skip_eviction: bool` preserving `runner.rs`'s pre-existing `--bare` gate, which
+  only ever applied to the eviction loop. The `acp.rs`/`daemon.rs` unit tests previously
+  reconstructed a hand-written copy of the production spawn block (unlike `serve/deps.rs`'s
+  test, which already called the real function); both now call the shared production function
+  directly via `AppBuilder::for_test`, closing a test-realism gap left by #6170. No behavior
+  change for any entry point.
+- **DRY**: `zeph-mcp` — extracted `McpManager::commit_pending` to replace the near-identical
+  `commit_connect_outputs`/`commit_oauth_outputs` pair in `manager/connect.rs`, and
+  `finish_connect` to replace the handler-build + timeout-wrapped-handshake + error-classify
+  scaffolding duplicated across all five `McpClient` connect paths (`connect`, `connect_url`,
+  `connect_url_with_headers`, `connect_url_oauth`'s cached-token branch, `complete_oauth`) in
+  `client.rs` (#6070, #6065). Pure internal refactor, no observable behavior change: the
+  never-hold-a-lock-across-an-`.await` invariant is preserved on every path, and
+  `finish_connect` now routes every site through `classify_connect_error` uniformly (verified
+  byte-for-byte equivalent to the prior inline mapping used by the stdio `connect` path). One
+  intrinsic side effect of unifying two helpers that committed `server_tools` and
+  `server_fingerprints` in opposite relative orders: `commit_pending` adopts the OAuth path's
+  order (`fingerprints` then `tools`) on `connect_all` too, where it was previously reversed.
+  Both are independent `RwLock`s never held simultaneously by any code in the module, so this
+  ordering swap has no observable effect.
+
+- **DRY**: extracted the `zeph worktree clean` reconcile → remove → prune pipeline and its
+  removed/skipped/errored counting into a single `WorktreeManager::clean` method plus a
+  `format_clean_summary` free function (`zeph-worktree`), now shared by both the CLI
+  (`src/commands/worktree.rs`) and the agent-side `/worktree clean` slash command
+  (`crates/zeph-core/src/agent/worktree_commands.rs`) (#6142). These two call sites
+  previously duplicated the same loop independently, which already caused a real bug during
+  #6141's review (the agent-side path originally discarded the `prune()` failure instead of
+  reporting it, diverging from the CLI's warn-and-continue behavior). Only the `--force`
+  hint text in the skip warning still differs between the two surfaces (`force_hint`
+  parameter), since that's the one piece of legitimately surface-specific UX.
+
+- **BREAKING**: `zeph-db`'s `DbConfig` collapses `max_connections` and `pool_size` into a
+  single `pool_size: u32` field, used as `sqlx`'s `.max_connections()` for both `SQLite` and
+  `PostgreSQL` (#5970). Previously `pool_size` was documented "`SQLite` only" but was actually
+  what `connect_postgres` passed to `PgPoolOptions::max_connections()` (`max_connections` was
+  never read under Postgres), and `SQLite` combined the two fields as
+  `max_connections.max(pool_size)` — the larger value won, not a cap. Every call site already
+  set both fields to the same value by convention; this removes the redundant, contradictory
+  field. All in-tree `DbConfig` construction sites (`zeph-scheduler`, `zeph-memory`, `zeph-mcp`,
+  `zeph-durable`, `zeph-orchestration`, `zeph-index`, `src/bootstrap/mod.rs`,
+  `src/commands/db.rs`) are updated; `max_connections` was never exposed as a user-facing
+  `config.toml` key, so no config migration step is needed.
+- `refactor(common)`: deduplicated the near-identical `Arc<str>`-backed newtype boilerplate in
+  `ToolName`, `ProviderName`, and `SkillName` (`crates/zeph-common/src/types.rs`) — each
+  independently reimplemented the same ~115-line block (`Default`, `Display`, `AsRef<str>`,
+  `Borrow<str>`, `From<&str>`, `From<String>`, `FromStr`, and 5 hand-written `PartialEq`
+  directions) — behind a private `macro_rules! arc_str_newtype!`, parameterized per type via
+  captured doc-comment attributes so each type keeps its own tailored rustdoc and doctests
+  (#5927). `ProviderName`'s `is_empty`/`as_non_empty` empty-sentinel helpers stay in a separate
+  hand-written `impl` block, unchanged. Pure refactor, no behavior change.
+
+- `ci`: migrate the workspace lint-warning gate from the global `RUSTFLAGS: "-D warnings"`
+  CI env var to Cargo's native `build.warnings = "deny"` (new `.cargo/config.toml`, stabilized
+  in Rust 1.97, cargo PR rust-lang/cargo#16796). Unlike `RUSTFLAGS`, toggling `build.warnings`
+  does not change rustc's invocation fingerprint, so it no longer forces a full recompile of
+  unchanged units when switching between a plain `cargo build` and a warnings-denied one —
+  verified locally via `cargo build -v` fingerprint comparison (`Fresh` in both directions vs.
+  full recompile on `RUSTFLAGS` toggle). Coverage-parity verified for the warning classes the
+  previous gate caught (unused imports, dead code, unused variables); `build.warnings` was also
+  found to independently catch `rustdoc::broken_intra_doc_links` and `cargo clippy` lints, wider
+  than expected, but `RUSTDOCFLAGS="--deny rustdoc::broken_intra_doc_links"` and clippy's own
+  `-- -D warnings` CLI flag are left unchanged as defense-in-depth (#5873). The `coverage` job's
+  former `RUSTFLAGS: ""` reset (needed because it builds `--features full`, a superset of the
+  `lint-clippy` matrix, and must not fail on lint status — that's `lint-clippy`'s job) is now
+  `CARGO_BUILD_WARNINGS: "allow"`, the per-job env override for the same repo-wide config key.
+  The `rustdoc` job gets the same override: `build.warnings` being wider than `RUSTDOCFLAGS`
+  means it independently denies `rustdoc::private_intra_doc_links`/`redundant_explicit_links`
+  too, and 37 pre-existing instances across 10 crates (unrelated to this change) would have
+  newly failed that job; the override keeps it enforcing exactly what it always has pending a
+  separate doc-cleanup pass.
+- `chore`: raise the workspace MSRV from Rust 1.96 to 1.97 (`Cargo.toml`
+  `rust-version`, CI `msrv` job, all crate README badges/notes, `specs/constitution.md`).
+  Rust 1.97 (stable 2026-07-07) is now the minimum supported toolchain. This also unifies
+  MSRV references that had drifted between 1.95 and 1.96 across README/spec docs. No source
+  changes accompany the bump: a review against Rust 1.89-1.97 stabilizations found no
+  1.97-specific stdlib API with a real use site (the codebase already uses `floor_char_boundary`
+  for UTF-8-safe truncation; existing `compare_exchange` sites are one-shot guards, not
+  CAS-update loops; `with_extension` sites intentionally replace the suffix).
+- `refactor(session)`: extracted a shared `finish_torn_tail` helper in
+  `crates/zeph-session/src/log.rs` for the identical torn-tail warn+repair epilogue duplicated
+  between `read_events` and `read_events_chunked` (#5852).
+- `perf(scheduler)`: `daemon_status()`'s `recent_runs` fetched every active job via
+  `list_jobs_full()` and sorted/truncated in Rust rather than pushing the ordering and limit
+  into SQL (#6115). Added `JobStore::list_recent_runs`/`count_active_jobs`; ordering uses
+  `ORDER BY last_run IS NULL, last_run DESC LIMIT ?`, which evaluates to a sortable `0`/`1`
+  (`SQLite`) or `false`/`true` (`PostgreSQL`) value on both backends without relying on
+  `PostgreSQL`-only `NULLS LAST` syntax.
+- `chore(scheduler)`: removed the unused `blake3` and `uuid` dependencies from
+  `crates/zeph-scheduler/Cargo.toml` — neither was referenced anywhere in the crate's source
+  (#6098).
+- `chore(agent-tools)`: removed 7 unused `zeph-*` dependencies (`zeph-agent-persistence`,
+  `zeph-config`, `zeph-context`, `zeph-mcp`, `zeph-orchestration`, `zeph-sanitizer`,
+  `zeph-skills`) from `crates/zeph-agent-tools/Cargo.toml` — leftover scaffolding from the
+  abandoned `ToolDispatcher` extraction (#3516, closed) with zero references in `src/`.
+  Narrowed the `sqlite`/`postgres` feature gates to forward only to `zeph-tools`, the sole
+  remaining backend-gated dependency (#6084).
+
 ### Removed
 
 - **bench**: removed `BenchIsolation` (`zeph-bench::isolation`), dead code whose module doc
@@ -255,6 +801,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for every dispatch path. `shell_executor_handle` (used only for TUI background-run metrics via
   the concrete `ShellExecutor::background_runs_snapshot()` inherent method) is unaffected (#6224).
 
+- `crates/zeph-sanitizer/src/pipeline.rs`: deleted the composable `Pipeline`/`Stage`/
+  `SanitizeContext` abstraction. It had zero production consumers — `ContentSanitizer`
+  (`sanitizer.rs`) implements its own inline sequence of steps (truncate, strip, detect,
+  escape, spotlight) as ordinary method calls and never used `Pipeline`/`add_stage` (#5911).
+  No `pub use` re-export existed and no other crate in the workspace referenced these types,
+  so removal is a pure dead-code cleanup with no behavior change.
+
 ### Docs
 
 - **LLM**: `AnyProvider`/`Router`/`Triage`'s `capability_delegation_advisory()` rustdoc comments
@@ -283,6 +836,267 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and that the TTL-only eviction in `handle_tool_step` does not cover an explicit mid-loop
   grant revoke — currently unreachable since every `revoke_all()` call site pairs with
   `cancel.cancel()` or runs only after the loop has reported a terminal status (#6124).
+
+- `src/acp.rs`/`src/daemon.rs`: the memory-maintenance-loop regression tests
+  (`acp_memory_maintenance_loops_registered_on_connection_supervisor`,
+  `daemon_memory_maintenance_loops_registered_on_mem_supervisor`) reconstructed the
+  spawn blocks inline with a mock `TaskSupervisor` instead of calling the real
+  production wiring path, so a broken or inverted `config.memory.*.enabled` guard in
+  `build_acp_deps`/`run_daemon` would go undetected by either test (#6170). Extracted
+  the wiring into standalone `spawn_acp_memory_maintenance_loops`/
+  `spawn_daemon_memory_maintenance_loops` functions, mirroring the existing
+  `spawn_memory_maintenance_loops` pattern in `src/serve/deps.rs` (#5979); both tests
+  now call the extracted functions directly. No behavior change — all ten loops still
+  spawn identically, gated the same way, via `TaskSupervisor::spawn`.
+- `zeph-llm`: reduced the discoverability of bypassing the Claude no-prefill funnel introduced
+  by #6154, and closed a real HTTP-level coverage gap (#6155, #6156). `split_messages`/
+  `split_messages_structured` in `crates/zeph-llm/src/claude/request.rs` are now
+  `pub(in crate::claude)` instead of `pub(super)`. In the current module nesting (`request` is
+  a direct child of `claude`, i.e. `mod.rs`) the two are functionally identical — Rust has no
+  way to grant a child module's item to its parent while excluding the parent's other children,
+  so this is a self-documenting anchor to the intended boundary, not a new compile-time barrier;
+  `claude::tests` remains exactly as reachable as before in raw visibility terms. A true
+  compile-error barrier is architecturally impossible while the no-prefill funnel
+  (`structured_history`/`plain_history`) lives in the parent module (`claude`/`mod.rs`) — a new
+  request-construction path added there calling the raw split functions directly would still
+  compile fine, so this remains a code-review catch rather than a compiler error. The actual
+  hardening is that the ~22 pure message-conversion tests (tool-use pairing, cache breakpoints,
+  image blocks, thinking/redacted-thinking blocks, compaction round-trip) that used to call
+  these functions directly moved from `claude/tests.rs` into a same-file `mod tests` inside
+  `request.rs`, so `claude::tests` no longer imports or calls them — removing the habit/
+  discoverability path a future author would reach for, not adding a compiler-enforced one. A
+  genuine compile-time guarantee (a newtype only constructible via `structured_history`/
+  `plain_history`, so a request body cannot accept an ungated history) is tracked as a
+  follow-up: #6158. Separately, `ClaudeProvider`'s Messages API
+  base URL is now an injectable field (`api_url`, defaulting to the real `API_URL` in
+  production) with a `#[cfg(test)]`-only `with_api_url` override, replacing a dead hand-rolled
+  TCP mock server in `claude/tests.rs` that had given up on HTTP-level assertions ("We can't
+  override API_URL from outside"). New `wiremock`-backed tests drive `chat_with_tools`,
+  `chat_with_tools_stream`, and `chat_typed` through a real (mocked) HTTP round-trip and assert
+  the no-prefill gate strips a trailing assistant message in the request actually sent over the
+  wire, closing the gap where prior coverage only exercised the identical body-construction
+  sequence via `debug_request_json` as a same-order proxy.
+- `zeph-worktree`: added a regression test confirming `WorktreeManager::remove()`'s single
+  `git worktree remove --force` still refuses a `git worktree lock`-ed worktree (requires
+  `-f -f`), the second safety layer alongside the `prunable`-gating from #6076 — previously
+  only confirmed manually against real git 2.50.1 (#6077).
+- `src/commands/worktree.rs`: added an end-to-end test calling the real `handle_worktree_command`
+  handler (not a reimplementation of its skip-gating logic) against a real git repo with a
+  mixed stale list (N>1 prunable + M>1 in-use entries in the same run) (#6077).
+- `zeph-worktree`: added `FakeGitRunner`-backed unit tests for the new shared
+  `WorktreeManager::clean`/`format_clean_summary` covering the mixed prunable/non-prunable
+  case, the `--force` bypass, a `remove()` failure being counted as `errored`, and — the
+  exact divergence caught in #6141's review — a final `prune()` failure recording a warning
+  without discarding an already-successful removal count (#6142).
+- `zeph-core`: added a live-`SubAgentManager` fixture test suite for `Agent::
+  handle_worktree_list_as_string`/`handle_worktree_clean_as_string` (`crates/zeph-core/src/
+  agent/worktree_commands.rs`) — a real `DefaultWorktreeManager` over a temp git repo wired
+  into a real `SubAgentManager` via `set_worktree_manager`, exercising the live-manager
+  `Some(wm)` branch end to end (0/1/N active worktrees, mixed prunable/in-use stale lists,
+  `--force` reaching `WorktreeManager` with correct semantics). Previously only the
+  disabled-subsystem `None` short-circuit had coverage, via `zeph-commands`'
+  `NullAgent`-backed tests (#6142).
+- `tests/workspace_lints.rs`: added a guard test asserting
+  `workspace.lints.rust.linker_messages` stays `"allow"` in root `Cargo.toml`, closing a CI
+  blind spot where an accidental removal would only surface on a manual `ci-non-linux.yml`
+  macOS/arm64 run or the next tagged release build, not on any automated per-PR check (#5961).
+
+- `test(tools)`: added regression coverage for the `ShellExecutor` checkpoint stack (#6001):
+  `checkpoint_redo` with no prior `checkpoint_undo` (no-op "Nothing to redo.", not a panic),
+  `checkpoint_list` ordering with 3 recorded checkpoints (most-recent-first, matching the
+  `index` field), and a multi-step undo/redo/undo sequence pinning undo-stack depth
+  bookkeeping.
+
+- `fix(serve,gateway)`: `POST /sessions/:id/prompt` and the gateway `POST /webhook` path now
+  dispatch recognized slash commands (e.g. `/status`) locally instead of silently forwarding
+  them as a full, billed chat turn (#5898, #5904). Both endpoints previously ran
+  `ContentSanitizer::sanitize` unconditionally before queueing the message, wrapping the text
+  in an `<external-data>` delimiter that hid the leading `/` from the agent's dispatch
+  registries. Text now checked against `zeph_commands::is_recognized_command` (backed by the
+  crate's own `COMMANDS` registry) before sanitization; a match is forwarded raw so the
+  existing dispatch/authorization path (`CommandHandler::requires_auth` + `trusted`, already
+  used identically for Telegram/Discord/Slack) decides whether it may run. Non-command text is
+  sanitized exactly as before — no change to that path. The gateway handler
+  (`crates/zeph-gateway/src/handlers.rs`) now forwards a `WebhookMessage { sender, channel,
+  body }` instead of a pre-formatted `"[sender@channel] body"` string, so the
+  `"[sender@channel]"` display prefix is applied only to non-command chat text in
+  `forward_webhooks` (`src/gateway_spawn.rs`), which is where the command-detection decision
+  and sanitization both now happen.
+  - Security-critical follow-up caught in review before merge: `GatewayChannel` (used to merge
+    webhook input into the main agent when `[gateway] enabled = true` alongside a CLI/TUI
+    primary channel) previously delegated `supports_exit()` — the signal `zeph-core`'s turn loop
+    reads as `trusted` for command-dispatch authorization — unconditionally to the primary
+    channel. A CLI/TUI host reports `supports_exit() == true`, so once recognized commands could
+    dispatch at all, a bearer-token holder could run every `requires_auth` command (`/policy`,
+    `/mcp`, `/plugins`, ...) at the *host's* trust level. `GatewayChannel` now forces
+    `supports_exit() == false` for the exact turn processing a webhook-sourced message
+    (`recv()`-only delivery for webhook input — never opportunistically drained via `try_recv()`,
+    since `zeph-core`'s queue has no way to carry a per-message trust distinction across turns).
+  - Also caught in review: `/subagent spawn <cmd>` (external ACP process spawn) is dispatched by
+    `dispatch_slash_command` with no `trusted`/`requires_auth` check at all, independent of the
+    trust-boundary issue above — a webhook `/subagent spawn <cmd>` would have been unconditional
+    remote code execution on any build with `acp_subagent_spawn_fn` installed (`full`/`ide` +
+    `gateway`). `zeph_commands::is_recognized_command` now excludes `/subagent`
+    (`UNGATED_DISPATCH_COMMANDS`), so it falls back to the pre-fix sanitized/wrapped behavior —
+    inert, as before this PR.
+- `fix(tools)`: `CompositeExecutor`, `AdversarialPolicyGateExecutor`, and `PolicyGateExecutor`
+  now forward `requires_confirmation`/`is_tool_speculatable`/`execute_tool_call_confirmed` to
+  their inner executors instead of silently falling through to the `ToolExecutor` trait's
+  no-op defaults (#5900, #5938, #5931). `CompositeExecutor::requires_confirmation` now
+  OR-forwards to both `first`/`second` leaves, mirroring the existing `is_tool_retryable`/
+  `is_tool_speculatable` pattern; `CompositeExecutor::execute_tool_call_confirmed` now
+  first-match-wins forwards, mirroring the existing `execute_confirmed` override — without it,
+  a confirmation-gating executor composed inside a `CompositeExecutor` would have its
+  confirm-bypass silently re-run the full (still-gating) `execute_tool_call` path after the
+  user approved. `AdversarialPolicyGateExecutor` and `PolicyGateExecutor` now plain-delegate
+  `requires_confirmation` (and `AdversarialPolicyGateExecutor` also `is_tool_speculatable`) to
+  `self.inner`. Same defect class as #5899/#5905/#5906 (fixed by #5930) — these three wrapper
+  layers were explicitly scoped out of that PR to keep it minimal.
+- `fix(subagent,core)`: durable sub-agent resume now replays the journaled result instead of
+  unconditionally re-spawning the child (#5944, spec-064 §P4). With `[durable].subagent = true`,
+  restarting a crashed parent whose sub-agent had already finished (and resolved its durable
+  promise) previously discarded that promise and spawned a brand-new child from scratch,
+  duplicating LLM calls and any side-effecting tool calls (git operations, GitHub issue/PR
+  creation, file writes) the finished child had already performed. `maybe_make_durable_seat` is
+  replaced by `resolve_durable_spawn_gate`, which on a resumed run performs a non-blocking check
+  (`zeph_durable::DurableContext::take_resolved_promise`, exposed via the new
+  `zeph_subagent::try_replay_durable_subagent`) for whether the child already resolved its
+  promise before the crash; if so, `handle_agent_background` and `handle_agent_spawn_foreground`
+  skip `mgr.spawn(...)` entirely and feed the journaled `SubagentResult` through the normal
+  completion path instead. A still-pending resumed promise (child's fate unknown after a crash —
+  its resolver token is unrecoverable per INV-9) falls back to the pre-existing spawn behavior,
+  matching the documented v1 scope boundary in `zeph-subagent/src/durable.rs`, and now logs a
+  `tracing::warn!` at that fallback so the residual duplicate-spawn window is observable rather
+  than silent (tracked as a known v1 limitation in #6010).
+- `fix(config)`: `--migrate-config --in-place` no longer duplicates advisory comment blocks or
+  falsely reports changes on repeated runs (#5945). `migrate_llm_stream_limits` (#4750) and the
+  two `[memory.hebbian]` splice steps (HL-F3/F4 #3345, HL-F5 #3346) guarded their idempotency by
+  checking for an *uncommented* field, but each step only ever writes a *commented* advisory
+  block — so the guard never matched the step's own prior output and re-appended the identical
+  block on every run. Guards now recognize the commented form they themselves write.
+  Separately, `migrate_orchestration_persistence` (#3107) and
+  `migrate_orchestration_asset_sensitivity` (spec-068, #3934) matched an exact
+  `"[orchestration]\n"` substring via `String::replacen` and unconditionally reported
+  `changed_count: 1` regardless of whether the replacement actually happened — `replacen`
+  silently no-ops when the pattern isn't found, so a header not immediately followed by a bare
+  newline caused a false "added" report on every run without ever writing anything. Both now
+  insert via the existing `insert_after_section` helper and only report a change when the output
+  actually differs from the input. Two same-defect-class siblings found during review are fixed
+  alongside these: `migrate_memory_hebbian_config` (HL-F1/F2, #3344) required an exact
+  `[memory.hebbian]` line match that fails against the header actually shipped in
+  `config/default.toml` (which carries a trailing inline comment), so it wrongly concluded the
+  section was absent and appended a duplicate block on the first run — this also blocked
+  `migrate_memory_hebbian_consolidation_config`/`migrate_memory_hebbian_spread_config` from ever
+  engaging against the real shipped config, since they shared the same exact-match precondition;
+  and `migrate_magic_docs_config` (#2702), which had the identical "guard checks for an
+  uncommented key the step never writes" defect as bug 1 above.
+- `fix(commands)`: `/mcp` and `/plugins` now require a trusted (local) session, closing an
+  unauthenticated remote code execution path (#5997, CWE-284). `McpCommand` and `PluginsCommand`
+  previously left `requires_auth()` at its default `false`, so Telegram/Discord/Slack/gateway
+  callers could invoke `/mcp add <id> <command> [args...]` to spawn an arbitrary local subprocess
+  (with the shipped default `mcp.allowed_commands = ["npx", "uvx", "node", "python", "python3"]`,
+  e.g. `python3 -c "..."`) or `/plugins add <path>` to install a plugin from an arbitrary local
+  path — both without any authentication. Both handlers now override `requires_auth()` to return
+  `true`, matching the same defect class fixed for `/image` in #5967; the commands remain
+  available from local CLI/TUI/ACP-stdio sessions.
+- `fix(config,mcp,a2a)`: three more secret-bearing config/runtime structs no longer leak
+  vault-resolved credentials through plain `Debug`/`Serialize` derives (#5968, #5965, #5964).
+  `MemoryConfig::database_url` (the resolved Postgres connection string, including embedded
+  username/password) is now wrapped in `zeph_common::secret::Secret` and skipped on
+  serialization, mirroring the existing `qdrant_api_key` field; `IbctKeyConfig::key_hex`
+  (`zeph-config`) and `IbctKey::key_bytes` (`zeph-a2a`) — the A2A HMAC signing key material —
+  now hand-write a redacting `Debug` impl that prints only `key_id`; and `McpTransport`'s
+  `Http.headers` and `Stdio.env` values (which commonly carry resolved MCP server bearer
+  tokens / API keys) are now redacted in `Debug` output while keeping header/env-var names
+  visible for diagnostics — `ServerEntry`'s derived `Debug` picks up the fix automatically via
+  per-field delegation. `Serialize` was intentionally left unchanged for all three (needed for
+  TOML config round-tripping); resolved secrets can still appear in a JSON serialization of
+  these structs, tracked as a follow-up (#6006).
+- `fix(commands)`: `/image` now requires a trusted (local) session, closing a remote arbitrary
+  file read (#5967, CWE-284). `ImageCommand` previously left `requires_auth()` at its default
+  `false`, so Telegram/Discord/Slack/gateway callers — none of which are trusted by
+  `CommandRegistry::dispatch` — could invoke `/image <path>` to read any file under the server's
+  working directory that the process could access. `ImageCommand` now overrides `requires_auth()`
+  to return `true`, matching the existing `/cache-stats` and `/notify-test` handlers in the same
+  module; the command remains available from local CLI/TUI/ACP-stdio sessions.
+- `fix(tools)`: `checkpoint_undo`/`checkpoint_redo`/`checkpoint_list` are now forwarded by
+  `impl ToolExecutor for std::sync::Arc<ShellExecutor>` (#5985). This impl block predates the
+  checkpoint feature and only overrode `execute`/`tool_definitions`/`execute_tool_call`/
+  `set_skill_env`, so the three checkpoint methods fell through to the trait's no-op default —
+  `/undo`, `/redo`, and `/undo list` always reported "Checkpoints are not enabled" in the plain
+  default production wiring (no `capability_scopes`/`shadow_sentinel` gating required to
+  reproduce), because `agent_setup.rs` wraps the shell executor in an `Arc` before building the
+  executor chain, so every checkpoint call resolved against the incomplete `Arc<ShellExecutor>`
+  impl rather than `ShellExecutor`'s own correct one. This is the same defect class as
+  #5899/#5905/#5906 but at the leaf type's own smart-pointer shadow-impl rather than a decorator
+  wrapper.
+- `fix(serve)`: `zeph serve-sessions` `/sessions`-created agents now enforce the same
+  trust/policy/adversarial-policy gate stack as the CLI, ACP, and daemon entry points
+  (#5973, #5977, #5886). Previously `serve/deps.rs::build_tool_executor` built only a bare
+  file/shell/scrape/cwd composite with none of the three gates, so a Quarantined skill's tools
+  and a configured `[tools.policy]`/`[tools.adversarial_policy]` deny rule were silently
+  unenforced for any session created via `POST /sessions`. Each session now gets its own
+  `TrustGateExecutor`/`PolicyGateExecutor`/`AdversarialPolicyGateExecutor` instance, wrapped
+  per-session in `serve/agent_factory.rs::build_agent_factory` around the shared base composite
+  — gating eagerly, once, at startup would let one concurrent session's trust level clobber
+  another's on a shared mutable trust-state atomic. The verbatim-triplicated
+  policy-file-load/provider-resolve/`PolicyEnforcer`-compile block previously copy-pasted
+  across `runner.rs`, `acp.rs`, and `daemon.rs` (source of the #5881 ordering bug) is now a
+  single shared helper in `src/agent_setup.rs` (`build_policy_gate_pieces` +
+  `apply_policy_gate_chain`), used by all four entry points.
+- `fix(mcp)`: Qdrant-backed MCP tool registry now rehydrates real `input_schema` (plus
+  `output_schema`/`security_meta`) for semantically-matched tools instead of surfacing them to
+  the LLM with an empty `{}` schema (#5935). `Agent::match_mcp_tools()` no longer trusts
+  `McpToolRegistry::search()`'s stub schema directly — it now looks up each `(server_id, name)`
+  hit against the live `self.services.mcp.tools` list and substitutes the full tool definition,
+  dropping (with a `WARN` log) any hit that no longer has a live counterpart. This only affected
+  the default/recommended deployment configuration (`memory.semantic.enabled = true` with a
+  Qdrant backend); the in-memory `SemanticToolIndex` fallback path was never affected.
+- `fix(subagent)`: the sub-agent vault-secret request/approval flow now actually resolves
+  and delivers the secret's real value instead of discarding it (#5941, #5942). All three
+  approval call sites (`scheduler_loop::process_pending_secret_requests`,
+  `subagent_commands::poll_subagent_until_done`, `subagent_commands::handle_agent_approve`)
+  now resolve the requested key against the vault-backed custom-secrets map (the same
+  `ZEPH_SECRET_*`-derived store used for skill `requires_secrets`) before calling
+  `SubAgentManager::deliver_secret`, which now carries a `zeph_common::secret::Secret` value
+  instead of echoing back the key name. On the sub-agent side, `agent_loop.rs` no longer
+  discards the received value — it is attached as a per-tool-call `ExecutionContext` env
+  override (scoped to the requesting sub-agent's own tool calls, not the shared
+  `ShellExecutor::skill_env` slot the parent agent also uses) so a subsequent shell command
+  can reference `$KEY_NAME`. `PermissionGrants::is_active` is now load-bearing:
+  `deliver_secret` refuses to hand over a value unless there is a currently active grant for
+  that key, closing the gap where the TTL/grant bookkeeping was never actually consulted.
+- `fix(tools)`: `checkpoint_undo`/`checkpoint_redo`/`checkpoint_list` are now forwarded to the
+  wrapped inner executor by `TrustGateExecutor`, `PolicyGateExecutor`,
+  `AdversarialPolicyGateExecutor` (#5899), `ScopedToolExecutor`, and `ShadowProbeExecutor`
+  (#5905). Previously none of these `ToolExecutor` wrappers overrode the three checkpoint
+  methods, so calls fell through to the trait's no-op default instead of reaching
+  `ShellExecutor` — `/undo`, `/redo`, and `/undo list` always reported "Checkpoints are not
+  enabled" whenever trust/policy/adversarial gating, `capability_scopes`, or `shadow_sentinel`
+  wrapped the executor chain, even with `[tools.shell] checkpoints_enabled = true` set — the
+  standard, default-recommended production configuration, not an edge case. Also fixes
+  `ScopedToolExecutor::requires_confirmation` (#5906), previously hardcoded to the trait
+  default `false` regardless of the real policy underneath, affecting the (currently dormant)
+  speculative-dispatch engine.
+- `fix(core,acp,tools)`: the five ongoing memory-maintenance sweeps
+  (eviction/tier-promotion/scene-consolidation/consolidation/forgetting) and the Spec 050
+  `capability_scopes`/`shadow_sentinel` tool-executor wrappers previously ran only under the
+  CLI/TUI (`src/runner.rs`) entry point — ACP sessions (`--acp`, `serve-sessions --acp`), the
+  daemon (A2A server), and `/sessions*` (`serve-sessions`) silently skipped all of it regardless
+  of config (#5914, #5913). Memory now stays maintained (evicted, promoted, consolidated,
+  forgotten) identically across every entry point, gated by the same `[memory.*]` flags; when
+  configured, `[security.capability_scopes]` now narrows the tool surface and
+  `[security.shadow_sentinel]`'s pre-execution LLM safety probe now applies uniformly too,
+  regardless of which entry point built the agent. A misconfigured `capability_scopes` entry
+  (a glob matching zero registered tools) is a fatal startup error in the daemon and
+  `serve-sessions` entry points, same as the CLI — both build one static, process-wide tool
+  registry, so the misconfiguration is knowable before any session/request is served. ACP's
+  per-connection/per-session registry cannot be validated quite that early; a misconfigured
+  scope there now fails **closed** for that one session (denies all tool access) rather than
+  silently falling back to the unscoped executor, which would have granted full tool access on
+  a config typo — the opposite of what `capability_scopes` is for. Added `ToolScope::empty()`
+  (`crates/zeph-tools/src/scope.rs`) as the reusable deny-all primitive backing that fail-closed
+  path.
 
 ### Fixed
 
@@ -738,128 +1552,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `entry().or_insert_with()` — same single-lock-acquisition semantics, no new attack surface
   (#6255).
 
-### Added
-
-- **A2A**: added optional JWS Agent Card signature verification (A2A 1.0.0 §8.4) and a
-  `require`/`prefer`/`ignore` trust policy for peer discovery (#5928):
-  - `AgentCard.signatures: Vec<AgentCardSignature>` — new, additive, `#[serde(default,
-    skip_serializing_if = "Vec::is_empty")]` field; unsigned/0.2.x peer cards round-trip
-    unchanged (empty on the wire).
-  - New `card-signing` Cargo feature (`crates/zeph-a2a`, `p256` + `serde_json_canonicalizer`,
-    pure-Rust, no `openssl-sys`) enabling ES256 (P-256) verification. Off by default; propagated
-    through the root `a2a` feature (and `full`) alongside the existing `ibct`/`server` features
-    so CI actually compiles and tests the crypto path.
-  - `AgentRegistry::with_trust(policy, trusted_keys)` runs a crypto-free URL-origin
-    (scheme+host+port) consistency check plus signature verification in `discover()`, combining
-    both axes by taking the most severe outcome (reject > warn > accept) and returning
-    `A2aError::UntrustedCard` / `A2aError::UrlMismatch`.
-  - `[a2a_client]` gains `card_trust_policy` (`CardTrustPolicy`, default `ignore` — byte-identical
-    to prior behavior) and `trusted_agent_keys` (`Vec<TrustedAgentKey>`, public keys stored
-    inline, not vault-referenced). `Config::validate()` fails fast if `card_trust_policy =
-    "require"` is set without the `card-signing` feature compiled in, rather than silently
-    degrading or bricking discovery. New `ZEPH_A2A_CARD_TRUST_POLICY` env override and
-    `--migrate-config` step 82 (commented advisory block for existing configs).
-  - **Known limitations, tracked as follow-ups**: `AgentRegistry` had no runtime construction
-    site and the JCS canonicalization was unvalidated against a real `a2a-sdk`-produced signed
-    card — both addressed later in this same `[Unreleased]` section, see the two `A2A` entries
-    above (#6200, #6201). The well-known discovery path remains `/.well-known/agent.json`
-    (0.2.x); a pure-1.0.0 peer serving `/.well-known/agent-card.json` is not yet discoverable.
-    `A2A_PROTOCOL_VERSION` stays `"0.2.1"` — this change is one additive 1.0.0 feature, not full
-    1.0.0 conformance. `jku`/JWKS auto-fetch, EdDSA/RS256, and signing our own served card are
-    all still deferred.
-- **Worktree**: added disk-quota and automatic reconciliation to the `zeph-worktree` subsystem
-  (#5924). Four new `[worktree]` config fields: `max_worktrees` (creation-time admission cap,
-  enforced as `WorktreeError::QuotaExceeded`), `disk_quota_mb` (soft total-disk-usage threshold),
-  `auto_reconcile_secs` (periodic reconcile+quota sweep interval via `TaskSupervisor`, `0` =
-  disabled), and `reconcile_on_startup` (default `true` — one reconcile+quota sweep at bootstrap).
-  Automatic reclamation only ever removes worktrees git itself reports as `prunable` — an intact
-  worktree is never force-removed to satisfy either threshold (spec-063 INV-6, extends INV-5).
-  `WorktreeManager` gains `disk_usage()`/`cached_disk_usage()` (filesystem walk, offloaded to
-  `spawn_blocking`, never called on the `create()` hot path) and `sweep()` (reconcile +
-  prunable-only reclaim + quota evaluation). `zeph worktree list` and the agent-side
-  `/worktree list` slash command both always print a fresh usage/quota summary footer (no
-  cross-mode divergence). `Config::validate` rejects `Some(0)` for `max_worktrees`/
-  `disk_quota_mb`, rejects `disk_quota_mb` being set with no automatic evaluation path enabled
-  (neither `reconcile_on_startup` nor `auto_reconcile_secs`), and rejects a sub-60-second
-  `auto_reconcile_secs` (too short an interval would run a filesystem walk in a tight loop).
-  `--migrate-config` step 83 surfaces the four new fields as commented advisories on existing
-  `[worktree]` tables; the `--init` wizard gained matching prompts with the same validation.
-- **Config**: documented `[security.shadow_sentinel]` (`ShadowSentinelConfig`) as a commented
-  advisory block in `config/default.toml`, and added migration step 81
-  (`migrate_shadow_sentinel_config`) so existing configs gain the same discoverable block via
-  `zeph --migrate-config`. The section was previously implemented and wired through
-  `SecurityConfig`/`validate_provider_names` but absent from both the shipped default config and
-  the migration registry (#5934).
-- **Security**: added `.gitleaks.toml` allowlisting the 31 known-benign gitleaks
-  findings from a full git-history scan — all fake/example secrets in test
-  fixtures, doctests, and documentation (`secret_mask.rs`, `redact.rs`,
-  `tool_execution.rs`/tests, `notifications.rs`, `secrets.rs`, `doctor.rs`,
-  `compression_guidelines.rs`, the `api-request` skill doc, and A2A
-  `ZEPH_A2A_IBCT_KEY`/`VAULT_A2A_IBCT_KEY_1` env-var names), none a real
-  credential. Extends (not replaces) gitleaks' default ruleset via
-  `[extend] useDefault = true`; allowlist entries match the literal dummy
-  string so future test fixtures reusing the same established pattern are
-  also covered, not just the already-known commits. `gitleaks detect` now
-  exits clean (0 findings) instead of re-surfacing the same 31 hits on every
-  scan. `SECURITY.md` documents the convention: reuse an existing dummy
-  pattern in new test fixtures where possible, or add a new allowlist entry
-  (#6056, #6081).
-- **Memory**: wired the five remaining memory-maintenance loops — guidelines
-  (`mem-guidelines`), tree-consolidation (`mem-tree-consolidation`), hebbian-consolidation
-  (`mem-hebbian-consolidation`), episodic-consolidation (`mem-episodic-consolidation`), and
-  optical-forgetting (`mem-optical-forgetting`) — into `src/acp.rs` (`build_acp_deps`),
-  `src/daemon.rs` (`run_daemon`), and `src/serve/deps.rs` (`spawn_memory_maintenance_loops`),
-  matching the CLI/TUI path (`src/runner.rs`) and the first five loops wired by #5978. Each new
-  loop is gated by its own `[memory.*] enabled` config flag, exactly as in `runner.rs`; ACP and
-  `/sessions*`-created agents pass `None` for the hebbian loop's status sender since neither
-  entry point has a status-sender handle in scope, while the daemon reuses its own
-  `status_tx` (#5979).
-- **Skills**: `[skills.trust] require_integrity_check_on_promote` (default `true`) automatically
-  arms the per-invocation BLAKE3 integrity re-check (`requires_trust_check`) whenever a skill is
-  promoted to `trusted`/`verified`, at both the CLI (`zeph skill trust`) and in-session
-  (`/skill trust`) promotion handlers. Previously the re-check could only be armed manually via
-  `--require-check`, so an operator who forgot the flag left a promoted skill's tampered-on-disk
-  `SKILL.md` undetected between promotions (#6087). `--require-check`/`--no-require-check`
-  (mutually exclusive) continue to override the config default per command; promotion to
-  `quarantined`/`blocked` leaves `requires_trust_check` untouched. A migration step (80) adds a
-  commented advisory for the new key to existing configs that already declare `[skills.trust]`.
-  Self-learning/heuristic auto-promotion and reload trust-assignment are intentionally out of
-  scope for this change — see the PR description.
-
-### Changed
-
-- **Config**: replaced hand-rolled TOML section-header idempotency checks (raw
-  `toml_src.contains("[name]")` substring matches and unanchored exact-line comparisons) across
-  `crates/zeph-config/src/migrate/{features,memory,tools,session,serve,infra,llm}.rs` with the
-  shared `section_header_present()` helper, which correctly recognizes inline-commented headers
-  (`[name]  # note`) and excludes fully commented-out headers (`# [name]`) — a stricter, more
-  correct check than the substring/exact-line patterns it replaces. Per-key idempotency checks
-  (e.g. detecting a specific field inside a section) and array-of-tables headers (`[[name]]`,
-  unsupported by `section_header_present()`) were left as-is. Behavior is unchanged for all
-  existing migration test expectations except five now-corrected/narrowed guards:
-  `migrate_goals_config` and `migrate_memory_graph_config`'s `[memory.graph.beam_search]` check
-  now also explicitly recognize a fully commented-out header instead of relying on substring
-  coincidence; `migrate_egress_config`, `migrate_vigil_config`, and
-  `migrate_tools_compression_config` previously used a broad, bracket-less substring guard
-  (e.g. `contains("[tools.egress]") || contains("tools.egress")`, effectively just
-  `contains("tools.egress")`) that also suppressed re-injection for unrelated matches such as an
-  inline table (`compression = { enabled = true }`) or a root dotted key (`tools.egress.enabled
-  = ...`) — this was the exact copy-paste anti-pattern #5933 targets, not a deliberate design
-  choice, so the guard is now narrowed to the real header-only check. The narrowing only affects
-  which configs receive a commented advisory block on `--migrate-config`; it never touches active
-  config values and remains fully idempotent (#5933).
-
-### Removed
-
-- `crates/zeph-sanitizer/src/pipeline.rs`: deleted the composable `Pipeline`/`Stage`/
-  `SanitizeContext` abstraction. It had zero production consumers — `ContentSanitizer`
-  (`sanitizer.rs`) implements its own inline sequence of steps (truncate, strip, detect,
-  escape, spotlight) as ordinary method calls and never used `Pipeline`/`add_stage` (#5911).
-  No `pub use` re-export existed and no other crate in the workspace referenced these types,
-  so removal is a pure dead-code cleanup with no behavior change.
-
-### Fixed
-
 - `crates/zeph-vault/src/age.rs`: `AgeVaultProvider::set_secret_mut` silently overwrote an
   existing secret with no confirmation, diff, or backup — the same defect class as the
   `ZEPH_DURABLE_KEY` incident fixed for the `zeph init` wizard in #5880/#5874, but one layer
@@ -983,147 +1675,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `CwdRestoreGuard::acquire()`) so a setup failure is now visible via `/agent
   list`/`/agent status`, its concurrency slot is released, and the real error is
   retrievable via `collect()`.
-
-### Testing
-
-- `src/acp.rs`/`src/daemon.rs`: the memory-maintenance-loop regression tests
-  (`acp_memory_maintenance_loops_registered_on_connection_supervisor`,
-  `daemon_memory_maintenance_loops_registered_on_mem_supervisor`) reconstructed the
-  spawn blocks inline with a mock `TaskSupervisor` instead of calling the real
-  production wiring path, so a broken or inverted `config.memory.*.enabled` guard in
-  `build_acp_deps`/`run_daemon` would go undetected by either test (#6170). Extracted
-  the wiring into standalone `spawn_acp_memory_maintenance_loops`/
-  `spawn_daemon_memory_maintenance_loops` functions, mirroring the existing
-  `spawn_memory_maintenance_loops` pattern in `src/serve/deps.rs` (#5979); both tests
-  now call the extracted functions directly. No behavior change — all ten loops still
-  spawn identically, gated the same way, via `TaskSupervisor::spawn`.
-- `zeph-llm`: reduced the discoverability of bypassing the Claude no-prefill funnel introduced
-  by #6154, and closed a real HTTP-level coverage gap (#6155, #6156). `split_messages`/
-  `split_messages_structured` in `crates/zeph-llm/src/claude/request.rs` are now
-  `pub(in crate::claude)` instead of `pub(super)`. In the current module nesting (`request` is
-  a direct child of `claude`, i.e. `mod.rs`) the two are functionally identical — Rust has no
-  way to grant a child module's item to its parent while excluding the parent's other children,
-  so this is a self-documenting anchor to the intended boundary, not a new compile-time barrier;
-  `claude::tests` remains exactly as reachable as before in raw visibility terms. A true
-  compile-error barrier is architecturally impossible while the no-prefill funnel
-  (`structured_history`/`plain_history`) lives in the parent module (`claude`/`mod.rs`) — a new
-  request-construction path added there calling the raw split functions directly would still
-  compile fine, so this remains a code-review catch rather than a compiler error. The actual
-  hardening is that the ~22 pure message-conversion tests (tool-use pairing, cache breakpoints,
-  image blocks, thinking/redacted-thinking blocks, compaction round-trip) that used to call
-  these functions directly moved from `claude/tests.rs` into a same-file `mod tests` inside
-  `request.rs`, so `claude::tests` no longer imports or calls them — removing the habit/
-  discoverability path a future author would reach for, not adding a compiler-enforced one. A
-  genuine compile-time guarantee (a newtype only constructible via `structured_history`/
-  `plain_history`, so a request body cannot accept an ungated history) is tracked as a
-  follow-up: #6158. Separately, `ClaudeProvider`'s Messages API
-  base URL is now an injectable field (`api_url`, defaulting to the real `API_URL` in
-  production) with a `#[cfg(test)]`-only `with_api_url` override, replacing a dead hand-rolled
-  TCP mock server in `claude/tests.rs` that had given up on HTTP-level assertions ("We can't
-  override API_URL from outside"). New `wiremock`-backed tests drive `chat_with_tools`,
-  `chat_with_tools_stream`, and `chat_typed` through a real (mocked) HTTP round-trip and assert
-  the no-prefill gate strips a trailing assistant message in the request actually sent over the
-  wire, closing the gap where prior coverage only exercised the identical body-construction
-  sequence via `debug_request_json` as a same-order proxy.
-- `zeph-worktree`: added a regression test confirming `WorktreeManager::remove()`'s single
-  `git worktree remove --force` still refuses a `git worktree lock`-ed worktree (requires
-  `-f -f`), the second safety layer alongside the `prunable`-gating from #6076 — previously
-  only confirmed manually against real git 2.50.1 (#6077).
-- `src/commands/worktree.rs`: added an end-to-end test calling the real `handle_worktree_command`
-  handler (not a reimplementation of its skip-gating logic) against a real git repo with a
-  mixed stale list (N>1 prunable + M>1 in-use entries in the same run) (#6077).
-- `zeph-worktree`: added `FakeGitRunner`-backed unit tests for the new shared
-  `WorktreeManager::clean`/`format_clean_summary` covering the mixed prunable/non-prunable
-  case, the `--force` bypass, a `remove()` failure being counted as `errored`, and — the
-  exact divergence caught in #6141's review — a final `prune()` failure recording a warning
-  without discarding an already-successful removal count (#6142).
-- `zeph-core`: added a live-`SubAgentManager` fixture test suite for `Agent::
-  handle_worktree_list_as_string`/`handle_worktree_clean_as_string` (`crates/zeph-core/src/
-  agent/worktree_commands.rs`) — a real `DefaultWorktreeManager` over a temp git repo wired
-  into a real `SubAgentManager` via `set_worktree_manager`, exercising the live-manager
-  `Some(wm)` branch end to end (0/1/N active worktrees, mixed prunable/in-use stale lists,
-  `--force` reaching `WorktreeManager` with correct semantics). Previously only the
-  disabled-subsystem `None` short-circuit had coverage, via `zeph-commands`'
-  `NullAgent`-backed tests (#6142).
-- `tests/workspace_lints.rs`: added a guard test asserting
-  `workspace.lints.rust.linker_messages` stays `"allow"` in root `Cargo.toml`, closing a CI
-  blind spot where an accidental removal would only surface on a manual `ci-non-linux.yml`
-  macOS/arm64 run or the next tagged release build, not on any automated per-PR check (#5961).
-
-### Changed
-
-- **Architecture**: `zeph-agent-context` — refactored the graph-retrieval-strategy call
-  chain in `helpers.rs` (`dispatch_graph_strategy`, `run_graph_strategy`,
-  `run_synapse_strategy`, `run_hybrid_strategy`, `recall_by_classified_strategy`,
-  `fetch_semantic_recall_raw`, `append_graph_facts`) away from the "parameter bag"
-  anti-pattern — each function threaded 8-14 positional arguments and individually
-  suppressed `clippy::too_many_arguments`. Introduced `GraphStrategyParams` (per-call
-  query state), `GraphRecallConfig` (shared immutable config), `GraphRecallBudget`
-  (mutable token-budget accumulator), and `SemanticRecallRawParams`, grouped by
-  mutability/ownership rather than bundled arbitrarily. Removed all six
-  `clippy::too_many_arguments` allows and the crate's `#![recursion_limit = "256"]`
-  override, which the refactor's reduced Future-nesting depth no longer requires. Pure
-  internal signature refactor — no behavior change (#5992).
-- **DRY**: consolidated the four near-identical memory-maintenance-loop spawn blocks in
-  `src/runner.rs` (CLI/TUI, previously inline), `src/acp.rs` (`build_acp_deps`, previously
-  inline), `src/daemon.rs` (`run_daemon`, previously inline), and `src/serve/deps.rs`
-  (`spawn_memory_maintenance_loops`) into a single shared
-  `agent_setup::spawn_memory_maintenance_loops`, now called by all four entry points (#6180).
-  The function takes `status_tx: Option<&UnboundedSender<String>>` to unify the ACP/`/sessions*`
-  (`None`) vs. CLI/TUI/daemon (`Some`) difference in the hebbian-consolidation loop's status
-  sender, and a `skip_eviction: bool` preserving `runner.rs`'s pre-existing `--bare` gate, which
-  only ever applied to the eviction loop. The `acp.rs`/`daemon.rs` unit tests previously
-  reconstructed a hand-written copy of the production spawn block (unlike `serve/deps.rs`'s
-  test, which already called the real function); both now call the shared production function
-  directly via `AppBuilder::for_test`, closing a test-realism gap left by #6170. No behavior
-  change for any entry point.
-- **DRY**: `zeph-mcp` — extracted `McpManager::commit_pending` to replace the near-identical
-  `commit_connect_outputs`/`commit_oauth_outputs` pair in `manager/connect.rs`, and
-  `finish_connect` to replace the handler-build + timeout-wrapped-handshake + error-classify
-  scaffolding duplicated across all five `McpClient` connect paths (`connect`, `connect_url`,
-  `connect_url_with_headers`, `connect_url_oauth`'s cached-token branch, `complete_oauth`) in
-  `client.rs` (#6070, #6065). Pure internal refactor, no observable behavior change: the
-  never-hold-a-lock-across-an-`.await` invariant is preserved on every path, and
-  `finish_connect` now routes every site through `classify_connect_error` uniformly (verified
-  byte-for-byte equivalent to the prior inline mapping used by the stdio `connect` path). One
-  intrinsic side effect of unifying two helpers that committed `server_tools` and
-  `server_fingerprints` in opposite relative orders: `commit_pending` adopts the OAuth path's
-  order (`fingerprints` then `tools`) on `connect_all` too, where it was previously reversed.
-  Both are independent `RwLock`s never held simultaneously by any code in the module, so this
-  ordering swap has no observable effect.
-
-- **DRY**: extracted the `zeph worktree clean` reconcile → remove → prune pipeline and its
-  removed/skipped/errored counting into a single `WorktreeManager::clean` method plus a
-  `format_clean_summary` free function (`zeph-worktree`), now shared by both the CLI
-  (`src/commands/worktree.rs`) and the agent-side `/worktree clean` slash command
-  (`crates/zeph-core/src/agent/worktree_commands.rs`) (#6142). These two call sites
-  previously duplicated the same loop independently, which already caused a real bug during
-  #6141's review (the agent-side path originally discarded the `prune()` failure instead of
-  reporting it, diverging from the CLI's warn-and-continue behavior). Only the `--force`
-  hint text in the skip warning still differs between the two surfaces (`force_hint`
-  parameter), since that's the one piece of legitimately surface-specific UX.
-
-- **BREAKING**: `zeph-db`'s `DbConfig` collapses `max_connections` and `pool_size` into a
-  single `pool_size: u32` field, used as `sqlx`'s `.max_connections()` for both `SQLite` and
-  `PostgreSQL` (#5970). Previously `pool_size` was documented "`SQLite` only" but was actually
-  what `connect_postgres` passed to `PgPoolOptions::max_connections()` (`max_connections` was
-  never read under Postgres), and `SQLite` combined the two fields as
-  `max_connections.max(pool_size)` — the larger value won, not a cap. Every call site already
-  set both fields to the same value by convention; this removes the redundant, contradictory
-  field. All in-tree `DbConfig` construction sites (`zeph-scheduler`, `zeph-memory`, `zeph-mcp`,
-  `zeph-durable`, `zeph-orchestration`, `zeph-index`, `src/bootstrap/mod.rs`,
-  `src/commands/db.rs`) are updated; `max_connections` was never exposed as a user-facing
-  `config.toml` key, so no config migration step is needed.
-- `refactor(common)`: deduplicated the near-identical `Arc<str>`-backed newtype boilerplate in
-  `ToolName`, `ProviderName`, and `SkillName` (`crates/zeph-common/src/types.rs`) — each
-  independently reimplemented the same ~115-line block (`Default`, `Display`, `AsRef<str>`,
-  `Borrow<str>`, `From<&str>`, `From<String>`, `FromStr`, and 5 hand-written `PartialEq`
-  directions) — behind a private `macro_rules! arc_str_newtype!`, parameterized per type via
-  captured doc-comment attributes so each type keeps its own tailored rustdoc and doctests
-  (#5927). `ProviderName`'s `is_empty`/`as_non_empty` empty-sentinel helpers stay in a separate
-  hand-written `impl` block, unchanged. Pure refactor, no behavior change.
-
-### Fixed
 
 - `zeph-config`/`zeph-a2a`/`zeph-mcp`: `IbctKeyConfig`, `IbctKey`, and `McpTransport` derived
   `Serialize` unredacted, so any future `serde_json`/`toml::to_string`/log/status/ACP path
@@ -1723,276 +2274,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     a pattern past the truncation window either. `zeph-common` is now a required (non-optional)
     dependency of `zeph-scheduler` rather than gated behind the `daemon` feature.
 
-### Security
-
-- `zeph-plugins`: the HTTPS-downgrade-redirect protection in `registry.rs`
-  (a `reqwest::redirect::Policy::custom` that rejects any redirect leaving the `https`
-  scheme) previously guarded only `add_remote_ephemeral`'s session-scoped install path.
-  `PluginManager::add_remote` (permanent plugin install) and `download_archive` (used by
-  the unattended `check_auto_updates`/`update_one_plugin` auto-update path, which runs on
-  every process startup for any plugin with `auto_update = true`) both used the bare
-  `reqwest::get(url)` global client instead, following up to 10 redirects with no
-  scheme-downgrade restriction (#6099). The anti-downgrade client construction is now a
-  shared `https_safe_client()` helper used by all three archive-download call sites.
-- `zeph-plugins`: `PluginManager::add_remote` and `download_archive` called `response.bytes()`
-  unconditionally with no upper bound on body size, allowing a malicious or compromised host to
-  exhaust process memory (#6108). Unlike `download_and_extract`, which already rejected an
-  oversized `Content-Length` before reading the body, these two call sites had no such check —
-  and `download_archive` backs the unattended `check_auto_updates` path that runs on every
-  process startup for any plugin with `auto_update = true`. All three call sites now share a
-  single `fetch_archive_bytes` helper that rejects a declared `Content-Length` above
-  `MAX_ARCHIVE_BYTES` (52 MiB) before reading the body, removing the duplicated inline check
-  that previously lived only in `download_and_extract`.
-- `zeph-mcp`: `PinningOAuthHttpClient` (#6074) resolved, SSRF-validated, and DNS-pinned
-  the target host of every OAuth HTTP request, but its underlying `reqwest::Client`
-  only disabled auto-following redirects for `OAuthHttpRedirectPolicy::Stop` requests
-  — for `Follow` (dynamic client registration is rmcp's only current caller), reqwest's
-  own redirect-following stayed active, so a `3xx` response pointing at a *different*
-  host had that hop resolved independently and unpinned by reqwest itself, reopening a
-  redirect-scoped DNS-rebinding TOCTOU (#6089). `build_client` now disables redirects
-  unconditionally, and `execute()` follows `Follow`-policy redirects manually via a new
-  bounded loop (`MAX_OAUTH_REDIRECT_HOPS = 10`) that re-runs the identical
-  validate-and-pin step for every hop, mirroring standard redirect semantics (`303`
-  always downgrades to `GET`; `301`/`302` downgrade a `POST` to `GET`; `307`/`308`
-  preserve method and body). The manual reimplementation also now mirrors reqwest's
-  cross-origin header handling: `Authorization`, `Cookie`, `Proxy-Authorization`, and
-  `WWW-Authenticate` are dropped when a redirect hop's scheme, host, or port differs
-  from the previous hop's (a validated, SSRF-safe redirect target only proves it isn't
-  a private address — it can still be attacker-controlled, so credentials must not
-  follow it cross-origin), and `Content-Length`/`Content-Type`/`Content-Encoding` are
-  dropped whenever the body is emptied by a method downgrade.
-- `zeph-scheduler`: `Scheduler::init()`'s DB-hydration loop read `TaskProvenance` verbatim from
-  the writer-controllable `scheduled_jobs.provenance` column, so a direct-SQL / out-of-process
-  writer could self-label a row `"static"` or `"user_added"` to dodge the RTW-A re-entry defenses
-  (#6114). This is latent hardening, not an active bypass fix — hydration only ever loads
-  periodic rows with `Value::Null` config, and the provenance-gated injection check only fires
-  for oneshot+`Custom` tasks, so no hydrated row reaches it today. `init()` now forces
-  `TaskProvenance::External` on every hydrated row regardless of the stored label, latching the
-  invariant that a row not written by this process's trusted in-session path is untrusted.
-- `zeph-mcp`: closed three gaps in the MCP tool trust pipeline (#6071, #6072, #6073).
-  - `sanitize_tools`'s depth-cap drop path (see #6068 below) dropped unsanitizable
-    `input_schema`/`output_schema` content beyond `MAX_SCHEMA_DEPTH` but never incremented
-    `SanitizeResult::injection_count`, so `apply_injection_penalties` early-returned and a
-    server nesting an injection payload 11+ levels deep evaded both sanitization *and* the
-    trust-score penalty / `registration_injection` audit warning (#6071). Both depth-cap
-    drop sites now count as an injection. `SanitizeResult::input_schemas_dropped` and
-    `output_schemas_dropped` were also write-only — added to `ServerConnectOutcome` /
-    `zeph-core`'s `McpServerStatus` and surfaced in the TUI's MCP server status line
-    (`schema-drop:N`) alongside the existing connected/tool-count indicator.
-  - MCP tool schema-drift detection (the "rug-pull" mitigation documented in
-    `attestation.rs`) never fired: `apply_attestation()` hardcoded `previous_fingerprints`
-    to `None` on every call, so the reconnect-comparison branch in `attest_tools()` was
-    dead code outside its own unit test (#6072). `McpManager` now caches each server's
-    tool fingerprints (`server_fingerprints`, populated only when `expected_tools` is
-    configured — attestation must be enabled for drift detection to run) and threads them
-    into `attest_tools()` on every reconnect and `tools/list_changed` refresh, so a tool
-    description/schema that silently changes between sessions now logs a
-    `tracing::warn!`. Trust/filtering decisions are unchanged — this is detection only.
-  - `TrustScoreStore::load_and_apply_delta` — the only write path used in production,
-    gating `Trusted`/`Untrusted`/`Sandboxed` classification — was a non-atomic
-    read-then-write: it called `load()` (decay-aware) and then issued an unconditional
-    `UPDATE SET score = excluded.score`, so two concurrent callers for the same
-    `server_id` could both read the same pre-update score and the second writer's
-    unconditional overwrite would silently clobber the first's delta (#6073). It's now a
-    single atomic `INSERT ... ON CONFLICT DO UPDATE` that recomputes the asymmetric
-    time-decay from the stored `updated_at_secs` entirely inside the SQL expression
-    (`CASE WHEN` + dialect `LEAST`/`GREATEST`), so the whole
-    read-decay-delta-clamp-write sequence is one atomic row-level operation. The former
-    `apply_delta()` (atomic but decay-blind, unused in production) is removed — both
-    properties now live in one method, eliminating the two-divergent-write-paths root
-    cause.
-- `zeph-common`: consolidated three duplicated/diverging security-sanitization
-  implementations into single canonical sources, closing real defense-in-depth gaps
-  (#5925, #5915, #5917). `zeph_common::sanitize::strip_control_chars` and
-  `strip_control_chars_preserve_whitespace` previously stripped only ASCII controls plus
-  `BiDi` overrides — missing zero-width space/joiners, soft hyphen, BOM, Hangul/Khmer/
-  Mongolian fillers, and the Unicode Tags block that `zeph_common::patterns::
-  strip_format_chars` already covered. Both now share a single bypass-codepoint denylist
-  (`patterns::is_bypass_codepoint`), so `zeph-memory`'s graph-resolver `sanitize_fact`/
-  `sanitize_relation` (LLM-extracted entity/relation text stored in the graph and later
-  replayed into community-summarization prompts) transitively gain the stronger coverage
-  (#5925). `zeph-memory::graph::community`'s local `scrub_content` (only 4 filtered
-  categories) is removed; both call sites now use `strip_format_chars` directly (#5915).
-  `zeph-core::redact`'s `SECRET_PREFIXES`/`PATH_REGEX` and `zeph-memory::store::
-  compression_guidelines`'s `SECRET_RE`/`PATH_RE` duplicated the same prefix list
-  character-for-character while drifting apart — `zeph-memory` had gained `Authorization:
-  Bearer` header and standalone-JWT redaction that `zeph-core` lacked. A new
-  `zeph_common::secrets` module is now the single source of truth for
-  `SECRET_PREFIXES`/`PATH_PREFIXES`/`BEARER_TOKEN_PATTERN`/`JWT_PATTERN`; both crates build
-  their own `regex::Regex` from it (matching the existing `zeph_common::patterns`
-  raw-pattern convention), and `zeph-core::redact::redact_secrets`/`scrub_content` now also
-  redact Bearer headers and JWTs (#5917).
-- `zeph-mcp`: `sanitize_tools` walks `input_schema` and `output_schema` with the same
-  recursive walker, which enforces `MAX_SCHEMA_DEPTH` (10) by returning without sanitizing
-  the subtree at all once the cap is hit — no injection-pattern check, no truncation.
-  `output_schema` correctly dropped the whole field on a depth-cap hit, but `input_schema`
-  did not: `input_depth_cap` was computed and then never read, so an untrusted/compromised
-  MCP server could nest an injection payload 11+ levels deep and have it pass through
-  completely unsanitized straight into the LLM system prompt (`input_schema` is always
-  present, unlike the optional `output_schema`, and is always rendered verbatim by
-  `zeph-tools::registry::format_schema_params`) (#6068). `input_schema` is now dropped to
-  an empty object on a depth-cap hit, mirroring the existing `output_schema` handling
-  exactly, and the drop is tracked via a new `SanitizeResult::input_schemas_dropped`
-  counter. A related pre-existing gap — depth-cap drops on either schema field never
-  increment `injection_count`, so `apply_injection_penalties` never fires a trust-score
-  penalty or audit log for depth-cap evasion specifically — is tracked separately in #6071.
-- `zeph-core`: `load_skill` (`SkillLoaderExecutor`) had no trust check at all — it read the raw
-  `SKILL.md` body straight from `SkillRegistry::body` and returned it verbatim, bypassing the
-  entire skill-trust defense-in-depth pipeline that `invoke_skill` already enforced: `Blocked`
-  skills were never refused, `Quarantined`/non-Trusted bodies were never sanitized or wrapped,
-  and the LLM-supplied `skill_name` was echoed unsanitized into the not-found error. The turn-
-  level `TrustGateExecutor` gate does not close this gap — it only denies `load_skill` when the
-  turn's folded `effective_trust` is Quarantined, and never inspects the `skill_name` argument
-  itself, so a `load_skill` call naming a Blocked/Quarantined skill sailed through on any turn
-  where the active skill set wasn't already Quarantined (#6050). `SkillLoaderExecutor` now shares
-  the exact same trust pipeline as `SkillInvokeExecutor` via a new `SkillTrustGate` (extracted
-  into `crates/zeph-core/src/skill_trust_gate.rs`, #6049): Blocked is refused before any body
-  read, non-Trusted bodies are sanitized, Quarantined bodies are additionally wrapped, the
-  per-invocation blake3 integrity re-check now also applies to `load_skill`, and `skill_name` is
-  sanitized on every output path (found, blocked, and not-found). `SkillLoaderExecutor::new` now
-  takes the same `trust_snapshot` `Arc` as `SkillInvokeExecutor`; a new
-  `agent_setup::build_skill_executors` helper constructs both executors around one shared `Arc`
-  so `load_skill` and `invoke_skill` can no longer observe divergent trust state or be wired up
-  independently, replacing five duplicated inline construction sites across `src/runner.rs`,
-  `src/acp.rs`, and `src/daemon.rs` (prod and test).
-- `zeph-mcp`: closed a DNS-rebinding TOCTOU gap in the HTTP transport SSRF guard
-  (#6057). `validate_url_ssrf()` resolved and validated the target hostname as a
-  standalone pre-flight check, then discarded the result — the actual connection
-  (`connect_url`, `connect_url_with_headers`, `connect_url_oauth`, including both the
-  cached-token fast path and the post-callback `complete_oauth` path) performed its
-  own independent DNS resolution moments later via a bare `reqwest::Client::default()`
-  with the default redirect policy. An attacker controlling DNS for the target
-  hostname could pass validation with a public IP, then rebind to a private/internal
-  address before the transport's later resolution, or simply 3xx-redirect the request
-  toward an internal target. All three connect paths now call a new
-  `validate_and_pin_url()` helper that resolves the hostname once via
-  `zeph_common::net::resolve_and_validate` and threads the exact validated addresses
-  through to a hardened `reqwest::Client` (`resolve_to_addrs` + `Policy::none()`),
-  eliminating both the re-resolution window and the redirect bypass. The OAuth flow's
-  `OAuthPending` now carries the addresses pinned at the start of
-  `connect_url_oauth` through to `complete_oauth`, since re-resolving after the user's
-  browser interaction (unbounded duration) would reopen the same race. `connect_url_oauth`
-  also now routes `AuthorizationManager`'s internal OAuth HTTP traffic (metadata
-  discovery, token exchange, refresh) through the same SSRF-pinned client via
-  `OAuthState::new(url, Some(hardened_client))`, instead of letting it build its own
-  default, unpinned `reqwest::Client` internally — closing the same DNS-rebinding
-  window for OAuth requests to the original server host (#6069, sibling of #6057,
-  same PR). Note: `Policy::none()` is applied unconditionally, so `trusted` (operator
-  static-config) servers also stop auto-following redirects — previously they inherited
-  `reqwest`'s default of following up to 10 — a deliberate pre-1.0 hardening, not a
-  regression.
-- `zeph-mcp`: closed the residual cross-origin discovered-issuer OAuth SSRF/DNS-rebinding
-  TOCTOU that #6069's single-host `resolve_to_addrs` pinning could not cover — per SEP-985,
-  `token_endpoint`, `authorization_endpoint`, `jwks_uri`, and `registration_endpoint` can
-  legitimately live on a different host than the MCP server itself, so `AuthorizationManager`
-  fell back to its own independent, unpinned DNS resolution for them. `connect_url_oauth` now
-  routes OAuth HTTP traffic through a new `PinningOAuthHttpClient`
-  (`rmcp::transport::auth::OAuthHttpClient` impl) that resolves, SSRF-validates, and DNS-pins
-  each request individually by its own target host at execution time, rather than reusing a
-  client pinned to the original server's host (#6074).
-- `zeph-mcp`: `McpClient::connect_url_oauth`'s cached-token fast path and
-  `complete_oauth`'s post-callback path now wrap `handler.serve(transport)` in
-  `tokio::time::timeout`, matching every other connect entry point
-  (`connect_stdio`, `connect_url`, `connect_url_with_headers`); previously these two
-  sites could hang indefinitely if the server never responded (#6064).
-- `zeph-durable`/`zeph`: `zeph_durable::encryption_gate` (the documented INV-8 AEAD enforcement
-  policy) is now actually invoked at runtime — previously it was a unit-tested pure function that
-  no call site ever reached, so `src/commands/durable.rs::load_write_cipher` (the durable journal
-  write path) and `open_backend` (the `zeph durable` CLI read path, including `--reveal`) each
-  made their own cipher decision by checking only `[durable] encrypt_payload`, ignoring backend
-  and shared-database status entirely. A deployment with `encrypt_payload = false` on a durable
-  journal database reachable by more than one process/client (e.g. a shared volume, or a future
-  Postgres-backed deployment) would silently persist tool outputs and agent-turn state in
-  plaintext with zero warning and zero error (#5996). Both call sites now evaluate
-  `encryption_gate` before making the cipher decision: `encrypt_payload = false` combined with a
-  non-local backend or a shared database now fails closed with a hard error at startup / on the
-  CLI command, and the permitted single-user local override now emits the documented startup
-  `tracing::warn!`. Added a new `[durable] shared_db` config field (default `false`) so operators
-  can declare a shared-database deployment explicitly; a `postgres://`/`postgresql://` resolved
-  journal URL is also treated as shared automatically, as defense in depth. The TUI durable panel
-  poller (`durable_poll_task`, feature `tui`) now evaluates the same policy before opening the
-  journal — previously it bypassed the gate entirely, so the TUI panel could render a journal the
-  `zeph durable` CLI refused to open; a rejection now degrades gracefully to a distinct
-  `GateRejected` panel status instead of erroring (see #6041 below for why it no longer reuses
-  the plain "non-durable mode" state).
-- `zeph-commands`: 19 privileged slash-command handlers now override `requires_auth()` to
-  return `true`, closing a trust-gate gap where they ran the default `false` and were therefore
-  reachable from untrusted remote channels (Telegram/Discord/Slack) as well as trusted local
-  sessions (#6003). Gated handlers: `UndoCommand`/`RedoCommand` (`/undo`, `/redo` — mutate the
-  on-disk working tree), `PlanCommand` (`/plan` — executes tools/shell via orchestration),
-  `SkillCommand` (`/skill` — installs/removes/trusts executable skills), `FeedbackCommand`
-  (`/feedback` — writes persistent self-learning input), `KnowledgeSlashCommand` (`/knowledge` —
-  unconfirmed destructive `rollback`), `AgentCommand`/`AgentsFleetCommand` (`/agent`, `/agents` —
-  spawn/mutate sub-agent definitions), `ConvCommand` (`/conv`, feature `session` — session
-  hijack/cross-session disclosure via `resume`/`fork`), `MemoryCommand`/`GraphCommand`
-  (`/memory`, `/graph` — mutate semantic memory / knowledge graph, LLM cost), `GoalCommand`
-  (`/goal` — mutates persisted goal FSM, can drive autonomous execution), `AcpCommand` (`/acp`,
-  feature `acp` — discloses ACP allowlist/auth/bind-address config), `CocoonCommand` (`/cocoon`,
-  feature `cocoon` — discloses sidecar state and TON balance), `CompactCommand`/
-  `NewConversationCommand` (`/compact`, `/new` — mutate conversation state, LLM cost/DoS), and
-  `ClearCommand`/`ResetCommand`/`ClearQueueCommand` (`/clear`, `/reset`, `/clear-queue` —
-  remote wipe of the operator's live session). `RecapCommand`, `SkillsCommand`,
-  `GuidelinesCommand`, `ExitCommand`, `QuitCommand`, and `HelpCommand` were audited and left at
-  the default (read-only, or already self-gated via `supports_exit()`). The
-  `CommandHandler::requires_auth()` default value itself is unchanged — revisiting the default
-  is deferred to a follow-up issue.
-- `zeph-db`: `redact_url` no longer leaks the tail of a Postgres password containing `@` (#5969).
-  The previous regex (`://[^:]+:[^@]+@`) stopped at the first `@`, so
-  `postgres://user:p@ss@host/db` only redacted up to `p`, leaking `ss@host` verbatim into
-  `DbError::Connection` and CLI error output (`src/commands/db.rs`). Replaced with
-  `url::Url`-based userinfo parsing, which splits on the *last* `@` before the authority ends —
-  matching real client behavior — so passwords/usernames containing `@`, multiple `@`, and IPv6
-  hosts are all handled correctly. Also now recognizes two non-userinfo libpq credential forms and
-  redacts the whole URL for them: query-param URIs (`?password=...`) and key-value DSNs
-  (`host=... password=...`), neither of which the old regex covered at all.
-- **BREAKING**: `vault.backend` now defaults to `age` instead of `env` when a config omits the
-  `[vault]` section entirely (#5953). This aligns runtime behavior with the already-documented
-  default in `specs/010-security/spec.md` and `specs/038-vault/spec.md` — a fresh config with no
-  `[vault]` section previously resolved secrets from process environment variables silently;
-  it now requires an age vault identity (`~/.config/zeph/vault-key.txt` and `secrets.age`, or
-  `--vault-key`/`--vault-path`). Existing deployments that relied on the implicit `env` default
-  must either run `zeph vault init` to provision an age vault, or explicitly set
-  `vault.backend = "env"` in `config.toml` (understanding this stores secrets in plaintext
-  environment variables). `config/default.toml` and `crates/zeph-core/config/default.toml` were
-  updated to match; no config migration step was added because the previous `env` default was
-  never a persisted value — only a parse-time fallback applied to configs that omit the key.
-- `parse_backend_str` (the parser for the `--vault` CLI flag and `ZEPH_VAULT_BACKEND` env var)
-  now rejects unrecognized backend names with a hard error instead of silently falling back to
-  the weaker `env` backend with only a `tracing::warn!` log line (#5954). Combined with the
-  #5953 default change, a typo in `--vault`/`ZEPH_VAULT_BACKEND` (e.g. `--vault aeg`) previously
-  downgraded the effective secret-storage backend for the whole process without a startup
-  failure. `parse_vault_args` now returns `Result<VaultArgs, String>`; `AppBuilder::new` and the
-  `bench`/`doctor`/`gonka`/`cocoon` commands that call it propagate the error instead of
-  continuing with a silently-downgraded backend.
-
-- `zeph-config` / `zeph-llm`: removed derived `Debug` from 7 secret-bearing config structs that
-  printed their plaintext secret verbatim in any `{:?}` output — logs, panics, error chains
-  (#5952, #5963). `GatewayConfig::auth_token`, `ProviderEntry::api_key`/`cocoon_access_hash`,
-  `ClassifiersConfig::hf_token`, `CandleConfig::hf_token`, `CandleInlineConfig::hf_token`,
-  `OpenAiConfig::api_key`, and `CompatibleConfig::api_key` are now redacted (`"[REDACTED]"` in
-  `zeph-config`, `"<redacted>"` in `zeph-llm`, matching each crate's existing manual-`Debug`
-  precedent) by a hand-written `impl Debug` that still lists every other field. `Option<String>`
-  secrets preserve the `None`-vs-`Some` distinction. `CandleInlineConfig` is embedded inside
-  `ProviderEntry`, so both were fixed together to avoid a transitive leak through nested `Debug`.
-- `zeph-memory`/`zeph-core`/`zeph`: `SqliteStore::set_requires_trust_check` (the setter for the
-  per-invocation blake3 integrity re-check gated by `SkillTrustSnapshot::requires_trust_check`,
-  `crates/zeph-core/src/skill_trust_gate.rs`) had zero production callers anywhere in the
-  codebase — the column defaulted to `0` for every skill in every deployment and could never be
-  set to `1` by any CLI flag, config knob, or in-session command, making the entire defense
-  unreachable in practice despite being fully implemented and unit-tested on the consumption side
-  since #4306/#6062 (#6080). `zeph skill trust <name> <level> --require-check` and the in-session
-  `/skill trust <name> <level> --require-check` now call the setter after updating the trust
-  level. Separately, the CLI's `zeph skill invoke <name>` preview command (`src/commands/skill.rs`)
-  was a hand-rolled reimplementation of the trust-gating pipeline that predated #6062's
-  consolidation onto the shared `SkillTrustGate`: it never checked `requires_trust_check` at all,
-  and echoed the raw unsanitized skill name into its not-found error instead of the sanitized form
-  every other trust-gated path uses (#6079). `SkillTrustGate` and `SkillBodyResolution` are now
-  `pub` at the `zeph-core` crate root, and `SkillCommand::Invoke` calls
-  `SkillTrustGate::resolve_body` directly — the same pipeline `load_skill`/`invoke_skill` use —
-  so the CLI preview can no longer drift from the agent-facing tools.
-
-### Fixed
-
 - `zeph-channels`: Telegram's raw API extension client and Slack's Web API client had no
   429 retry-with-backoff, unlike Discord's REST client (#4728) — a rate-limited request
   surfaced as a hard error on the first attempt instead of transparently retrying
@@ -2211,263 +2492,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   walks up to the nearest existing ancestor, canonicalizes it, and reattaches the non-existent
   suffix.
 
-### Testing
-
-- `test(tools)`: added regression coverage for the `ShellExecutor` checkpoint stack (#6001):
-  `checkpoint_redo` with no prior `checkpoint_undo` (no-op "Nothing to redo.", not a panic),
-  `checkpoint_list` ordering with 3 recorded checkpoints (most-recent-first, matching the
-  `index` field), and a multi-step undo/redo/undo sequence pinning undo-stack depth
-  bookkeeping.
-
-- `fix(serve,gateway)`: `POST /sessions/:id/prompt` and the gateway `POST /webhook` path now
-  dispatch recognized slash commands (e.g. `/status`) locally instead of silently forwarding
-  them as a full, billed chat turn (#5898, #5904). Both endpoints previously ran
-  `ContentSanitizer::sanitize` unconditionally before queueing the message, wrapping the text
-  in an `<external-data>` delimiter that hid the leading `/` from the agent's dispatch
-  registries. Text now checked against `zeph_commands::is_recognized_command` (backed by the
-  crate's own `COMMANDS` registry) before sanitization; a match is forwarded raw so the
-  existing dispatch/authorization path (`CommandHandler::requires_auth` + `trusted`, already
-  used identically for Telegram/Discord/Slack) decides whether it may run. Non-command text is
-  sanitized exactly as before — no change to that path. The gateway handler
-  (`crates/zeph-gateway/src/handlers.rs`) now forwards a `WebhookMessage { sender, channel,
-  body }` instead of a pre-formatted `"[sender@channel] body"` string, so the
-  `"[sender@channel]"` display prefix is applied only to non-command chat text in
-  `forward_webhooks` (`src/gateway_spawn.rs`), which is where the command-detection decision
-  and sanitization both now happen.
-  - Security-critical follow-up caught in review before merge: `GatewayChannel` (used to merge
-    webhook input into the main agent when `[gateway] enabled = true` alongside a CLI/TUI
-    primary channel) previously delegated `supports_exit()` — the signal `zeph-core`'s turn loop
-    reads as `trusted` for command-dispatch authorization — unconditionally to the primary
-    channel. A CLI/TUI host reports `supports_exit() == true`, so once recognized commands could
-    dispatch at all, a bearer-token holder could run every `requires_auth` command (`/policy`,
-    `/mcp`, `/plugins`, ...) at the *host's* trust level. `GatewayChannel` now forces
-    `supports_exit() == false` for the exact turn processing a webhook-sourced message
-    (`recv()`-only delivery for webhook input — never opportunistically drained via `try_recv()`,
-    since `zeph-core`'s queue has no way to carry a per-message trust distinction across turns).
-  - Also caught in review: `/subagent spawn <cmd>` (external ACP process spawn) is dispatched by
-    `dispatch_slash_command` with no `trusted`/`requires_auth` check at all, independent of the
-    trust-boundary issue above — a webhook `/subagent spawn <cmd>` would have been unconditional
-    remote code execution on any build with `acp_subagent_spawn_fn` installed (`full`/`ide` +
-    `gateway`). `zeph_commands::is_recognized_command` now excludes `/subagent`
-    (`UNGATED_DISPATCH_COMMANDS`), so it falls back to the pre-fix sanitized/wrapped behavior —
-    inert, as before this PR.
-- `fix(tools)`: `CompositeExecutor`, `AdversarialPolicyGateExecutor`, and `PolicyGateExecutor`
-  now forward `requires_confirmation`/`is_tool_speculatable`/`execute_tool_call_confirmed` to
-  their inner executors instead of silently falling through to the `ToolExecutor` trait's
-  no-op defaults (#5900, #5938, #5931). `CompositeExecutor::requires_confirmation` now
-  OR-forwards to both `first`/`second` leaves, mirroring the existing `is_tool_retryable`/
-  `is_tool_speculatable` pattern; `CompositeExecutor::execute_tool_call_confirmed` now
-  first-match-wins forwards, mirroring the existing `execute_confirmed` override — without it,
-  a confirmation-gating executor composed inside a `CompositeExecutor` would have its
-  confirm-bypass silently re-run the full (still-gating) `execute_tool_call` path after the
-  user approved. `AdversarialPolicyGateExecutor` and `PolicyGateExecutor` now plain-delegate
-  `requires_confirmation` (and `AdversarialPolicyGateExecutor` also `is_tool_speculatable`) to
-  `self.inner`. Same defect class as #5899/#5905/#5906 (fixed by #5930) — these three wrapper
-  layers were explicitly scoped out of that PR to keep it minimal.
-- `fix(subagent,core)`: durable sub-agent resume now replays the journaled result instead of
-  unconditionally re-spawning the child (#5944, spec-064 §P4). With `[durable].subagent = true`,
-  restarting a crashed parent whose sub-agent had already finished (and resolved its durable
-  promise) previously discarded that promise and spawned a brand-new child from scratch,
-  duplicating LLM calls and any side-effecting tool calls (git operations, GitHub issue/PR
-  creation, file writes) the finished child had already performed. `maybe_make_durable_seat` is
-  replaced by `resolve_durable_spawn_gate`, which on a resumed run performs a non-blocking check
-  (`zeph_durable::DurableContext::take_resolved_promise`, exposed via the new
-  `zeph_subagent::try_replay_durable_subagent`) for whether the child already resolved its
-  promise before the crash; if so, `handle_agent_background` and `handle_agent_spawn_foreground`
-  skip `mgr.spawn(...)` entirely and feed the journaled `SubagentResult` through the normal
-  completion path instead. A still-pending resumed promise (child's fate unknown after a crash —
-  its resolver token is unrecoverable per INV-9) falls back to the pre-existing spawn behavior,
-  matching the documented v1 scope boundary in `zeph-subagent/src/durable.rs`, and now logs a
-  `tracing::warn!` at that fallback so the residual duplicate-spawn window is observable rather
-  than silent (tracked as a known v1 limitation in #6010).
-- `fix(config)`: `--migrate-config --in-place` no longer duplicates advisory comment blocks or
-  falsely reports changes on repeated runs (#5945). `migrate_llm_stream_limits` (#4750) and the
-  two `[memory.hebbian]` splice steps (HL-F3/F4 #3345, HL-F5 #3346) guarded their idempotency by
-  checking for an *uncommented* field, but each step only ever writes a *commented* advisory
-  block — so the guard never matched the step's own prior output and re-appended the identical
-  block on every run. Guards now recognize the commented form they themselves write.
-  Separately, `migrate_orchestration_persistence` (#3107) and
-  `migrate_orchestration_asset_sensitivity` (spec-068, #3934) matched an exact
-  `"[orchestration]\n"` substring via `String::replacen` and unconditionally reported
-  `changed_count: 1` regardless of whether the replacement actually happened — `replacen`
-  silently no-ops when the pattern isn't found, so a header not immediately followed by a bare
-  newline caused a false "added" report on every run without ever writing anything. Both now
-  insert via the existing `insert_after_section` helper and only report a change when the output
-  actually differs from the input. Two same-defect-class siblings found during review are fixed
-  alongside these: `migrate_memory_hebbian_config` (HL-F1/F2, #3344) required an exact
-  `[memory.hebbian]` line match that fails against the header actually shipped in
-  `config/default.toml` (which carries a trailing inline comment), so it wrongly concluded the
-  section was absent and appended a duplicate block on the first run — this also blocked
-  `migrate_memory_hebbian_consolidation_config`/`migrate_memory_hebbian_spread_config` from ever
-  engaging against the real shipped config, since they shared the same exact-match precondition;
-  and `migrate_magic_docs_config` (#2702), which had the identical "guard checks for an
-  uncommented key the step never writes" defect as bug 1 above.
-- `fix(commands)`: `/mcp` and `/plugins` now require a trusted (local) session, closing an
-  unauthenticated remote code execution path (#5997, CWE-284). `McpCommand` and `PluginsCommand`
-  previously left `requires_auth()` at its default `false`, so Telegram/Discord/Slack/gateway
-  callers could invoke `/mcp add <id> <command> [args...]` to spawn an arbitrary local subprocess
-  (with the shipped default `mcp.allowed_commands = ["npx", "uvx", "node", "python", "python3"]`,
-  e.g. `python3 -c "..."`) or `/plugins add <path>` to install a plugin from an arbitrary local
-  path — both without any authentication. Both handlers now override `requires_auth()` to return
-  `true`, matching the same defect class fixed for `/image` in #5967; the commands remain
-  available from local CLI/TUI/ACP-stdio sessions.
-- `fix(config,mcp,a2a)`: three more secret-bearing config/runtime structs no longer leak
-  vault-resolved credentials through plain `Debug`/`Serialize` derives (#5968, #5965, #5964).
-  `MemoryConfig::database_url` (the resolved Postgres connection string, including embedded
-  username/password) is now wrapped in `zeph_common::secret::Secret` and skipped on
-  serialization, mirroring the existing `qdrant_api_key` field; `IbctKeyConfig::key_hex`
-  (`zeph-config`) and `IbctKey::key_bytes` (`zeph-a2a`) — the A2A HMAC signing key material —
-  now hand-write a redacting `Debug` impl that prints only `key_id`; and `McpTransport`'s
-  `Http.headers` and `Stdio.env` values (which commonly carry resolved MCP server bearer
-  tokens / API keys) are now redacted in `Debug` output while keeping header/env-var names
-  visible for diagnostics — `ServerEntry`'s derived `Debug` picks up the fix automatically via
-  per-field delegation. `Serialize` was intentionally left unchanged for all three (needed for
-  TOML config round-tripping); resolved secrets can still appear in a JSON serialization of
-  these structs, tracked as a follow-up (#6006).
-- `fix(commands)`: `/image` now requires a trusted (local) session, closing a remote arbitrary
-  file read (#5967, CWE-284). `ImageCommand` previously left `requires_auth()` at its default
-  `false`, so Telegram/Discord/Slack/gateway callers — none of which are trusted by
-  `CommandRegistry::dispatch` — could invoke `/image <path>` to read any file under the server's
-  working directory that the process could access. `ImageCommand` now overrides `requires_auth()`
-  to return `true`, matching the existing `/cache-stats` and `/notify-test` handlers in the same
-  module; the command remains available from local CLI/TUI/ACP-stdio sessions.
-- `fix(tools)`: `checkpoint_undo`/`checkpoint_redo`/`checkpoint_list` are now forwarded by
-  `impl ToolExecutor for std::sync::Arc<ShellExecutor>` (#5985). This impl block predates the
-  checkpoint feature and only overrode `execute`/`tool_definitions`/`execute_tool_call`/
-  `set_skill_env`, so the three checkpoint methods fell through to the trait's no-op default —
-  `/undo`, `/redo`, and `/undo list` always reported "Checkpoints are not enabled" in the plain
-  default production wiring (no `capability_scopes`/`shadow_sentinel` gating required to
-  reproduce), because `agent_setup.rs` wraps the shell executor in an `Arc` before building the
-  executor chain, so every checkpoint call resolved against the incomplete `Arc<ShellExecutor>`
-  impl rather than `ShellExecutor`'s own correct one. This is the same defect class as
-  #5899/#5905/#5906 but at the leaf type's own smart-pointer shadow-impl rather than a decorator
-  wrapper.
-- `fix(serve)`: `zeph serve-sessions` `/sessions`-created agents now enforce the same
-  trust/policy/adversarial-policy gate stack as the CLI, ACP, and daemon entry points
-  (#5973, #5977, #5886). Previously `serve/deps.rs::build_tool_executor` built only a bare
-  file/shell/scrape/cwd composite with none of the three gates, so a Quarantined skill's tools
-  and a configured `[tools.policy]`/`[tools.adversarial_policy]` deny rule were silently
-  unenforced for any session created via `POST /sessions`. Each session now gets its own
-  `TrustGateExecutor`/`PolicyGateExecutor`/`AdversarialPolicyGateExecutor` instance, wrapped
-  per-session in `serve/agent_factory.rs::build_agent_factory` around the shared base composite
-  — gating eagerly, once, at startup would let one concurrent session's trust level clobber
-  another's on a shared mutable trust-state atomic. The verbatim-triplicated
-  policy-file-load/provider-resolve/`PolicyEnforcer`-compile block previously copy-pasted
-  across `runner.rs`, `acp.rs`, and `daemon.rs` (source of the #5881 ordering bug) is now a
-  single shared helper in `src/agent_setup.rs` (`build_policy_gate_pieces` +
-  `apply_policy_gate_chain`), used by all four entry points.
-- `fix(mcp)`: Qdrant-backed MCP tool registry now rehydrates real `input_schema` (plus
-  `output_schema`/`security_meta`) for semantically-matched tools instead of surfacing them to
-  the LLM with an empty `{}` schema (#5935). `Agent::match_mcp_tools()` no longer trusts
-  `McpToolRegistry::search()`'s stub schema directly — it now looks up each `(server_id, name)`
-  hit against the live `self.services.mcp.tools` list and substitutes the full tool definition,
-  dropping (with a `WARN` log) any hit that no longer has a live counterpart. This only affected
-  the default/recommended deployment configuration (`memory.semantic.enabled = true` with a
-  Qdrant backend); the in-memory `SemanticToolIndex` fallback path was never affected.
-- `fix(subagent)`: the sub-agent vault-secret request/approval flow now actually resolves
-  and delivers the secret's real value instead of discarding it (#5941, #5942). All three
-  approval call sites (`scheduler_loop::process_pending_secret_requests`,
-  `subagent_commands::poll_subagent_until_done`, `subagent_commands::handle_agent_approve`)
-  now resolve the requested key against the vault-backed custom-secrets map (the same
-  `ZEPH_SECRET_*`-derived store used for skill `requires_secrets`) before calling
-  `SubAgentManager::deliver_secret`, which now carries a `zeph_common::secret::Secret` value
-  instead of echoing back the key name. On the sub-agent side, `agent_loop.rs` no longer
-  discards the received value — it is attached as a per-tool-call `ExecutionContext` env
-  override (scoped to the requesting sub-agent's own tool calls, not the shared
-  `ShellExecutor::skill_env` slot the parent agent also uses) so a subsequent shell command
-  can reference `$KEY_NAME`. `PermissionGrants::is_active` is now load-bearing:
-  `deliver_secret` refuses to hand over a value unless there is a currently active grant for
-  that key, closing the gap where the TTL/grant bookkeeping was never actually consulted.
-- `fix(tools)`: `checkpoint_undo`/`checkpoint_redo`/`checkpoint_list` are now forwarded to the
-  wrapped inner executor by `TrustGateExecutor`, `PolicyGateExecutor`,
-  `AdversarialPolicyGateExecutor` (#5899), `ScopedToolExecutor`, and `ShadowProbeExecutor`
-  (#5905). Previously none of these `ToolExecutor` wrappers overrode the three checkpoint
-  methods, so calls fell through to the trait's no-op default instead of reaching
-  `ShellExecutor` — `/undo`, `/redo`, and `/undo list` always reported "Checkpoints are not
-  enabled" whenever trust/policy/adversarial gating, `capability_scopes`, or `shadow_sentinel`
-  wrapped the executor chain, even with `[tools.shell] checkpoints_enabled = true` set — the
-  standard, default-recommended production configuration, not an edge case. Also fixes
-  `ScopedToolExecutor::requires_confirmation` (#5906), previously hardcoded to the trait
-  default `false` regardless of the real policy underneath, affecting the (currently dormant)
-  speculative-dispatch engine.
-- `fix(core,acp,tools)`: the five ongoing memory-maintenance sweeps
-  (eviction/tier-promotion/scene-consolidation/consolidation/forgetting) and the Spec 050
-  `capability_scopes`/`shadow_sentinel` tool-executor wrappers previously ran only under the
-  CLI/TUI (`src/runner.rs`) entry point — ACP sessions (`--acp`, `serve-sessions --acp`), the
-  daemon (A2A server), and `/sessions*` (`serve-sessions`) silently skipped all of it regardless
-  of config (#5914, #5913). Memory now stays maintained (evicted, promoted, consolidated,
-  forgotten) identically across every entry point, gated by the same `[memory.*]` flags; when
-  configured, `[security.capability_scopes]` now narrows the tool surface and
-  `[security.shadow_sentinel]`'s pre-execution LLM safety probe now applies uniformly too,
-  regardless of which entry point built the agent. A misconfigured `capability_scopes` entry
-  (a glob matching zero registered tools) is a fatal startup error in the daemon and
-  `serve-sessions` entry points, same as the CLI — both build one static, process-wide tool
-  registry, so the misconfiguration is knowable before any session/request is served. ACP's
-  per-connection/per-session registry cannot be validated quite that early; a misconfigured
-  scope there now fails **closed** for that one session (denies all tool access) rather than
-  silently falling back to the unscoped executor, which would have granted full tool access on
-  a config typo — the opposite of what `capability_scopes` is for. Added `ToolScope::empty()`
-  (`crates/zeph-tools/src/scope.rs`) as the reusable deny-all primitive backing that fail-closed
-  path.
-
-### Added
-
-- `feat(acp)`: `[[acp.auth_clients]]` — named bearer-token clients for the ACP HTTP/WS
-  transport (#5868), enabling genuine multi-tenant/multi-window isolation of persisted ACP
-  session listing. `crates/zeph-acp/src/transport/auth.rs`'s `BearerAuthLayer` now authenticates
-  against a named-client credential set instead of one server-wide token; the matched client's
-  stable `id` becomes the connection's `owner_key`, threaded through `build_agent_state` and
-  scoping every session-persistence access path (`list_sessions`, `load_session`,
-  `resume_session`, `fork_session`, the REST `/sessions*` CRUD handlers, and the deprecated
-  `_session/*` ext methods). The legacy `[acp] auth_token` scalar keeps working unchanged,
-  synthesized as a client with id `"default"`; unauthenticated HTTP and stdio both resolve to
-  the `"acp-local"` bucket, matching pre-#5868 behavior for every deployment that does not
-  configure `auth_clients`. Each entry accepts an inline `token` or a `token_vault_key` resolved
-  from the age vault at startup (mirrors `[serve] auth_token_vault_key`). Config validation
-  rejects the reserved ids `"default"`/`"acp-local"`, duplicate ids, and duplicate tokens across
-  `auth_token` + `auth_clients` (inline collisions at config-load time; vault-resolved
-  collisions at startup, after the vault unlocks). `--init` gained a matching wizard prompt and
-  `migrate-config` a new step (77) that surfaces the new array as a commented block.
-  Note: this closes the isolation gap for genuine multi-token **HTTP/WS** deployments only — the
-  literal Zed-over-stdio scenario from the issue is unaffected by this change (stdio has no
-  token multiplexing to redesign; use distinct `sqlite_path` values per window instead).
-- `feat(plugins,skills,config,cli)`: added an opt-in skill/plugin discovery-and-install
-  marketplace (spec-045, #5869) — `zeph skill search <query>` / `zeph skill get <registry-id>`
-  and `zeph plugin search <query>` / `zeph plugin get <registry-id>`, closing the "no discovery
-  path, only `--plugin-url`" gap identified against Cline's marketplace and Vercel's
-  `skills.sh` in a competitive parity scan. A new `crates/zeph-plugins/src/marketplace` module
-  defines a dyn-compatible `RegistryClient` trait (mirroring `VaultProvider`'s boxed-future
-  pattern) with a `SkillsShClient` implementation for the public skills.sh registry, gated
-  behind a new `registry` Cargo feature (included in the `full` bundle) that gates only the
-  network-touching client code — CLI arg definitions and `[skills.registry]` config parsing
-  always compile, printing an actionable "rebuild with `--features registry`" message when the
-  feature is off. Registry lookups are strictly opt-in and off by default
-  (`skills.registry.enabled = false`): zero network calls and zero vault access occur unless
-  explicitly enabled. Fetched packages route through the existing, unmodified install
-  pipelines — `SkillManager::install_from_path` (frontmatter validation + Quarantined-trust
-  upsert) for skills, `PluginManager::add` (manifest validation, MCP allowlist, injection scan)
-  for plugins — so no new content-safety bypass is introduced. Auth token resolved exclusively
-  via `VaultProvider` (`skills.registry.auth_vault_key`), never a plain config field. Adds the
-  `--init` wizard step, a `--migrate-config` step (idempotent, always writes `enabled = false`
-  in the advisory template), and `MockRegistryClient` proving the trait boundary is real.
-
-- `feat(llm,commands,core)`: added runtime `/think-tokens [N|Nk|NM|off]` and
-  `/reasoning-effort [low|medium|high]` slash commands that mutate the active LLM provider's
-  thinking-token budget or reasoning-effort level mid-session, taking effect on the very next
-  turn — no restart required (#3098). Session-only: never persisted across restarts or
-  `/provider` switches (the switch confirmation now warns when an active override is dropped).
-  Supported per-provider: Claude (`Extended`/`Adaptive` thinking, mutually exclusive — setting
-  one overrides the other), OpenAI/Compatible (`reasoning_effort`), Gemini (`thinking_budget`/
-  `thinking_level`); unsupported providers return an explicit "not supported" message rather
-  than a silent no-op. Fixed a latent bug in `ClaudeProvider::with_thinking` along the way: a
-  `base_max_tokens` snapshot now makes `max_tokens` restoration exact on disable, instead of the
-  previous construction-only logic which could only ever raise `max_tokens` to the 16k thinking
-  floor and never lower it back. Added a new `--reasoning-effort <low|medium|high>` CLI flag and
-  a matching `--init` wizard prompt for OpenAI providers (Claude and Gemini already prompt for
-  their equivalent reasoning-depth setting).
-
-### Fixed
-
 - `fix`: allowed the `linker_messages` rustc lint via `[workspace.lints.rust]` so plain
   `cargo build`/`cargo run` succeeds on macOS/arm64, where Apple's `ld` linker warns on binaries
   whose `__eh_frame` section exceeds 16MB and `build.warnings = "deny"` (#5891) denies that
@@ -2619,56 +2643,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   metadata, contradicting those headers. Added `LICENSE-APACHE` at the repo root (the standard
   Apache License, Version 2.0 text) alongside the existing MIT `LICENSE`, so both halves of the
   dual-license declaration have a corresponding license file (#5855).
-
-### Changed
-
-- `ci`: migrate the workspace lint-warning gate from the global `RUSTFLAGS: "-D warnings"`
-  CI env var to Cargo's native `build.warnings = "deny"` (new `.cargo/config.toml`, stabilized
-  in Rust 1.97, cargo PR rust-lang/cargo#16796). Unlike `RUSTFLAGS`, toggling `build.warnings`
-  does not change rustc's invocation fingerprint, so it no longer forces a full recompile of
-  unchanged units when switching between a plain `cargo build` and a warnings-denied one —
-  verified locally via `cargo build -v` fingerprint comparison (`Fresh` in both directions vs.
-  full recompile on `RUSTFLAGS` toggle). Coverage-parity verified for the warning classes the
-  previous gate caught (unused imports, dead code, unused variables); `build.warnings` was also
-  found to independently catch `rustdoc::broken_intra_doc_links` and `cargo clippy` lints, wider
-  than expected, but `RUSTDOCFLAGS="--deny rustdoc::broken_intra_doc_links"` and clippy's own
-  `-- -D warnings` CLI flag are left unchanged as defense-in-depth (#5873). The `coverage` job's
-  former `RUSTFLAGS: ""` reset (needed because it builds `--features full`, a superset of the
-  `lint-clippy` matrix, and must not fail on lint status — that's `lint-clippy`'s job) is now
-  `CARGO_BUILD_WARNINGS: "allow"`, the per-job env override for the same repo-wide config key.
-  The `rustdoc` job gets the same override: `build.warnings` being wider than `RUSTDOCFLAGS`
-  means it independently denies `rustdoc::private_intra_doc_links`/`redundant_explicit_links`
-  too, and 37 pre-existing instances across 10 crates (unrelated to this change) would have
-  newly failed that job; the override keeps it enforcing exactly what it always has pending a
-  separate doc-cleanup pass.
-- `chore`: raise the workspace MSRV from Rust 1.96 to 1.97 (`Cargo.toml`
-  `rust-version`, CI `msrv` job, all crate README badges/notes, `specs/constitution.md`).
-  Rust 1.97 (stable 2026-07-07) is now the minimum supported toolchain. This also unifies
-  MSRV references that had drifted between 1.95 and 1.96 across README/spec docs. No source
-  changes accompany the bump: a review against Rust 1.89-1.97 stabilizations found no
-  1.97-specific stdlib API with a real use site (the codebase already uses `floor_char_boundary`
-  for UTF-8-safe truncation; existing `compare_exchange` sites are one-shot guards, not
-  CAS-update loops; `with_extension` sites intentionally replace the suffix).
-- `refactor(session)`: extracted a shared `finish_torn_tail` helper in
-  `crates/zeph-session/src/log.rs` for the identical torn-tail warn+repair epilogue duplicated
-  between `read_events` and `read_events_chunked` (#5852).
-- `perf(scheduler)`: `daemon_status()`'s `recent_runs` fetched every active job via
-  `list_jobs_full()` and sorted/truncated in Rust rather than pushing the ordering and limit
-  into SQL (#6115). Added `JobStore::list_recent_runs`/`count_active_jobs`; ordering uses
-  `ORDER BY last_run IS NULL, last_run DESC LIMIT ?`, which evaluates to a sortable `0`/`1`
-  (`SQLite`) or `false`/`true` (`PostgreSQL`) value on both backends without relying on
-  `PostgreSQL`-only `NULLS LAST` syntax.
-- `chore(scheduler)`: removed the unused `blake3` and `uuid` dependencies from
-  `crates/zeph-scheduler/Cargo.toml` — neither was referenced anywhere in the crate's source
-  (#6098).
-- `chore(agent-tools)`: removed 7 unused `zeph-*` dependencies (`zeph-agent-persistence`,
-  `zeph-config`, `zeph-context`, `zeph-mcp`, `zeph-orchestration`, `zeph-sanitizer`,
-  `zeph-skills`) from `crates/zeph-agent-tools/Cargo.toml` — leftover scaffolding from the
-  abandoned `ToolDispatcher` extraction (#3516, closed) with zero references in `src/`.
-  Narrowed the `sqlite`/`postgres` feature gates to forward only to `zeph-tools`, the sole
-  remaining backend-gated dependency (#6084).
-
-### Fixed
 
 - `docs(orchestration)`: corrected `zeph-orchestration` crate-level doc comment claiming `llm-planning` feature is enabled by default; it is not (default feature set is `sqlite` only). Updated docs to clarify opt-in behavior and reference `LlmPlanner`/`LlmAggregator` APIs (#5856).
 - `fix(tools)`: `[tools.adversarial_policy]`'s fixed 3s `timeout_ms` made the fail-closed
@@ -14778,7 +14752,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/bug-ops/zeph/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/bug-ops/zeph/compare/v0.21.4...v0.22.0
 [0.21.4]: https://github.com/bug-ops/zeph/compare/v0.21.3...v0.21.4
 [0.21.3]: https://github.com/bug-ops/zeph/compare/v0.21.2...v0.21.3

@@ -23,7 +23,7 @@ Provides a terminal UI for monitoring the Zeph agent in real time. Built on rata
 - **layout** — panel arrangement and responsive grid
 - **metrics** — `MetricsCollector`, `MetricsSnapshot` for live telemetry; skill confidence bars rendered as `[████░░░░] 73% (42 uses)` using Wilson score posterior from the skills registry; filter savings percentage shown in the status bar (e.g. `Filters: 78%`); `SEC` indicator in status bar shows injection flag count when nonzero; compaction probe metrics panel showing pass/soft-fail/fail/error rates; `Backfilling embeddings: N/M (X%)` status bar entry during embed backfill (clears on completion)
 - **theme** — color palette and style definitions
-- **widgets** — reusable ratatui widget components; includes `subagents` widget with a 5-state FSM panel (`List` → `Detail` → `Create` → `Edit` → `ConfirmDelete`) for interactive management of sub-agent definition files; `security` widget renders a side panel with a real-time security event feed (injection flags, exfiltration blocks, quarantine invocations, truncations); `plan_view` widget renders a live task graph table with per-row status spinners, status colors (Running=Yellow, Completed=Green, Failed=Red), and a 30-second stale cleanup — toggled with `p` (requires `orchestration` feature); `memory` widget displays compaction probe metrics (pass/soft-fail/fail/error distribution with percentage bars)
+- **widgets** — reusable ratatui widget components; includes `subagents` widget with a 5-state FSM panel (`List` → `Detail` → `Create` → `Edit` → `ConfirmDelete`) for interactive management of sub-agent definition files; `security` widget renders a side panel with a real-time security event feed (injection flags, exfiltration blocks, quarantine invocations, truncations); `plan_view` widget renders a live task graph table with per-row status spinners, status colors (Running=Yellow, Completed=Green, Failed=Red), and a 30-second stale cleanup — toggled with `p` (requires `orchestration` feature); `memory` widget displays compaction probe metrics (pass/soft-fail/fail/error distribution with percentage bars); `settings` widget renders a read-only, tabbed (Providers / MCP / Agents) view of live configuration sourced from `MetricsSnapshot`, toggled with `S`; `transcript_search` widget implements a Ctrl+F highlight-and-scroll transcript search overlay (mirrors the Ctrl+R reverse-search pattern); `task_registry` widget shows the live `TaskSupervisor` task list, toggled with `t`
 - **error** — `TuiError` typed error enum (Io, Channel)
 
 ## Agents management panel
@@ -99,6 +99,22 @@ Enable debug dump mid-session without restarting the agent:
 
 Files are written to `{output_dir}/{unix_timestamp}/` with numbered `request.json`, `response.txt`, and `tool-{name}.txt` files for each LLM call and tool execution.
 
+## Settings view
+
+Press `S` (or the `settings` command-palette entry) to open a read-only, tabbed view of the running session's live configuration, sourced from `MetricsSnapshot`:
+
+| Tab | Shows |
+|-----|-------|
+| Providers | Configured `[[llm.providers]]` entries (name, type, model) — secret fields are never surfaced, via an explicit whitelist field-copy |
+| MCP | Configured MCP servers and their live connection status |
+| Agents | Configured sub-agent definitions (templates), not runtime instances |
+
+Write/edit is out of scope for this view — it is read-only by design.
+
+## Transcript search
+
+Press `Ctrl+F` (or the `search:transcript` command-palette entry) to open a case-insensitive substring search overlay over the conversation transcript, mirroring the existing `Ctrl+R` reverse-search interaction: highlight-and-scroll (not filter), cycle matches, `Esc` restores the pre-search scroll position, `Enter` accepts.
+
 ## Command palette
 
 The command palette is opened with `:` in normal mode. Type to fuzzy-filter entries, then press Enter to execute.
@@ -120,6 +136,9 @@ The command palette is opened with `:` in normal mode. Type to fuzzy-filter entr
 | `graph:backfill` | Backfill graph from existing messages — requires `graph-memory` feature |
 | `scheduler:list` | List active scheduled tasks (name, kind, mode, next run) — requires `scheduler` feature |
 | `gateway:status` | Show gateway server state — requires `gateway` feature |
+| `tasks` | Toggle the task registry panel (`t` shortcut), showing live `TaskSupervisor` tasks |
+| `settings` | Browse configured providers, MCP servers, and agents (`S` shortcut) |
+| `search:transcript` | Find in conversation (`Ctrl+F` shortcut) |
 | `security:events` | Show security event history |
 | `plan:status` | Print current plan progress to chat |
 | `plan:confirm` | Confirm and execute the pending plan |
