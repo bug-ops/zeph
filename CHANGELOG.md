@@ -210,6 +210,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Security (`ShadowSentinel`)**: `check_tool_call` awaited its two pre-tool-dispatch DB reads
+  (`get_trajectory`, `get_tool_history`) with no timeout, so a stalled DB connection (e.g. a
+  slow/unresponsive Postgres backend) could block dispatch of every `Shell`/`FileWrite`/
+  `ExfilCapable`/`McpUnclassified` tool call for the whole session. Both reads are now wrapped
+  in `tokio::time::timeout`, bounded by the existing `probe_timeout_ms.min(2000)` (no new config
+  field). A timeout logs a warning and falls back to the same empty/partial trajectory the
+  pre-existing DB-error branch already produced — fail-open, matching `ShadowSentinel`'s
+  documented defence-in-depth contract; the primary `PolicyGateExecutor`/`TrajectorySentinel`
+  gates are unaffected and continue to run regardless (#6269).
 - **Worktree**: `--bare` silently skipped the entire worktree subsystem bootstrap
   (`WorktreeManager` construction, `probe_capabilities`) with no warning when
   `worktree.enabled = true` in the active config — the 6th confirmed instance of the `--bare`

@@ -695,6 +695,104 @@ impl ShadowSentinel {
         false
     }
 
+    /// Load the trajectory + cross-session tool history used as probe context.
+    ///
+    /// Filters out `probe_result` events — exposing probe verdicts to the LLM would allow
+    /// prompt injection attacks that craft tool outputs to manipulate perceived safety.
+    ///
+    /// Each DB read is independently bounded by `probe_timeout_ms.min(2000)`: a stalled DB
+    /// connection must never block dispatch of every high-risk tool call for the session. A
+    /// timeout or DB error falls back to an empty/partial result (fail-open), matching the
+    /// probe's own fail-open default.
+    ///
+    /// The two reads run sequentially, each with its own independent timeout budget, and the
+    /// LLM probe call in [`check_tool_call`](Self::check_tool_call) has its own separate,
+    /// uncapped `probe_timeout_ms` timeout on top — worst-case `check_tool_call` latency is
+    /// therefore additive across all three: `2 * probe_timeout_ms.min(2000) + probe_timeout_ms`
+    /// (~6s at the 2000ms default), not a single shared ~2s bound.
+    async fn load_probe_context(&self, qualified_tool_id: &str) -> Vec<SentinelEvent> {
+        let db_timeout_ms = self.config.probe_timeout_ms.min(2000);
+        let db_timeout = std::time::Duration::from_millis(db_timeout_ms);
+
+        let mut trajectory: Vec<SentinelEvent> = match tokio::time::timeout(
+            db_timeout,
+            self.store
+                .get_trajectory(&self.session_id, self.config.max_context_events),
+        )
+        .await
+        {
+            Ok(Ok(t)) => t
+                .into_iter()
+                .filter(|e| e.event_type != "probe_result")
+                .collect(),
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "ShadowSentinel: failed to load trajectory, proceeding without context");
+                vec![]
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_ms = db_timeout_ms,
+                    "ShadowSentinel: trajectory load timed out, proceeding without context"
+                );
+                vec![]
+            }
+        };
+
+        // Reserve half the total budget for cross-session history so recurring risk patterns
+        // from other sessions always have visibility — even in the busiest sessions, where the
+        // session's own trajectory alone would otherwise fill (and, pre-fix, silently evict
+        // the entire cross-session block from) the whole budget. Enforce the session-side cap
+        // here (trajectory is oldest-first/ASC, so excess is trimmed from the front, keeping
+        // the most recent events).
+        let cross_session_budget = self.config.max_context_events / 2;
+        let session_budget = self.config.max_context_events - cross_session_budget;
+        if trajectory.len() > session_budget {
+            let excess = trajectory.len() - session_budget;
+            trajectory.drain(0..excess);
+        }
+
+        // Load cross-session history for this tool so recurring risk patterns from
+        // other sessions inform the probe, not just the current session (#5449). The
+        // current session is excluded in SQL (not just filtered client-side) so its own
+        // activity can never crowd genuinely cross-session rows out of the LIMIT clip.
+        match tokio::time::timeout(
+            db_timeout,
+            self.store.get_tool_history(
+                qualified_tool_id,
+                self.session_id.as_str(),
+                self.config.max_context_events,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(history)) => {
+                // get_tool_history is DESC (newest first); reverse to ASC to match
+                // trajectory ordering, then prepend so trajectory stays oldest-first.
+                let mut cross_session: Vec<SentinelEvent> = history
+                    .into_iter()
+                    .filter(|e| e.event_type != "probe_result")
+                    .rev()
+                    .collect();
+                if cross_session.len() > cross_session_budget {
+                    let excess = cross_session.len() - cross_session_budget;
+                    cross_session.drain(0..excess);
+                }
+                trajectory.splice(0..0, cross_session);
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "ShadowSentinel: failed to load cross-session tool history, proceeding without it");
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_ms = db_timeout_ms,
+                    "ShadowSentinel: cross-session tool history load timed out, proceeding without it"
+                );
+            }
+        }
+
+        trajectory
+    }
+
     /// Evaluate a proposed tool call and return a probe verdict.
     ///
     /// Returns `ProbeVerdict::Skip` when:
@@ -737,68 +835,7 @@ impl ShadowSentinel {
             return ProbeVerdict::Skip;
         }
 
-        // Load recent trajectory for probe context.
-        // Filter out probe_result events — exposing probe verdicts to the LLM would allow
-        // prompt injection attacks that craft tool outputs to manipulate perceived safety.
-        let mut trajectory: Vec<SentinelEvent> = match self
-            .store
-            .get_trajectory(&self.session_id, self.config.max_context_events)
-            .await
-        {
-            Ok(t) => t
-                .into_iter()
-                .filter(|e| e.event_type != "probe_result")
-                .collect(),
-            Err(e) => {
-                tracing::warn!(error = %e, "ShadowSentinel: failed to load trajectory, proceeding without context");
-                vec![]
-            }
-        };
-
-        // Reserve half the total budget for cross-session history so recurring risk patterns
-        // from other sessions always have visibility — even in the busiest sessions, where the
-        // session's own trajectory alone would otherwise fill (and, pre-fix, silently evict
-        // the entire cross-session block from) the whole budget. Enforce the session-side cap
-        // here (trajectory is oldest-first/ASC, so excess is trimmed from the front, keeping
-        // the most recent events).
-        let cross_session_budget = self.config.max_context_events / 2;
-        let session_budget = self.config.max_context_events - cross_session_budget;
-        if trajectory.len() > session_budget {
-            let excess = trajectory.len() - session_budget;
-            trajectory.drain(0..excess);
-        }
-
-        // Load cross-session history for this tool so recurring risk patterns from
-        // other sessions inform the probe, not just the current session (#5449). The
-        // current session is excluded in SQL (not just filtered client-side) so its own
-        // activity can never crowd genuinely cross-session rows out of the LIMIT clip.
-        match self
-            .store
-            .get_tool_history(
-                qualified_tool_id,
-                self.session_id.as_str(),
-                self.config.max_context_events,
-            )
-            .await
-        {
-            Ok(history) => {
-                // get_tool_history is DESC (newest first); reverse to ASC to match
-                // trajectory ordering, then prepend so trajectory stays oldest-first.
-                let mut cross_session: Vec<SentinelEvent> = history
-                    .into_iter()
-                    .filter(|e| e.event_type != "probe_result")
-                    .rev()
-                    .collect();
-                if cross_session.len() > cross_session_budget {
-                    let excess = cross_session.len() - cross_session_budget;
-                    cross_session.drain(0..excess);
-                }
-                trajectory.splice(0..0, cross_session);
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "ShadowSentinel: failed to load cross-session tool history, proceeding without it");
-            }
-        }
+        let trajectory = self.load_probe_context(qualified_tool_id).await;
 
         let verdict = self
             .probe
@@ -1992,6 +2029,77 @@ mod tests {
             trajectory.is_empty(),
             "probe_result events from other sessions must never appear in the \
              cross-session merge (LLM isolation invariant), got: {trajectory:?}"
+        );
+    }
+
+    // ── #6269: DB-read timeout fail-open ─────────────────────────────────────
+
+    /// #6269 regression: both DB reads inside `load_probe_context` (`get_trajectory` and
+    /// `get_tool_history`, reached via `check_tool_call`) must fail open when the DB pool
+    /// stalls, exactly like their existing `Err` (DB-error) branches and the LLM probe's own
+    /// timeout branch. A real stall is forced — not a synthetic sleep race — by exhausting
+    /// the in-memory `SQLite` pool's sole connection: `test_pool()` connects with `":memory:"`,
+    /// which `crates/zeph-db/src/pool.rs` hard-caps at `max_connections(1)`, so holding one
+    /// `BEGIN IMMEDIATE` transaction open blocks both `fetch_all(&pool)` calls on
+    /// `pool.acquire()` until `probe_timeout_ms` elapses.
+    #[tokio::test]
+    async fn check_tool_call_falls_open_when_both_db_reads_stall() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let pool = test_pool().await;
+        let raw_pool = pool.clone();
+        let store = ShadowEventStore::new(pool);
+
+        // Seed real rows so an empty captured trajectory can only be explained by the
+        // timeout fallback below, not by the store genuinely having nothing to return.
+        let base = unix_now();
+        seed_events(&store, "current-session", "builtin:shell", "own", base, 2).await;
+        seed_events(&store, "other-session", "builtin:shell", "cross", base, 2).await;
+
+        let messages: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let layer = MessageCaptureLayer {
+            messages: messages.clone(),
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            probe_timeout_ms: 50,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+
+        // Hold the sole in-memory SQLite connection so both `fetch_all` calls inside
+        // `load_probe_context` block on `pool.acquire()` for the full 50ms probe timeout.
+        let tx = zeph_db::begin_write(&raw_pool)
+            .await
+            .expect("hold sole in-memory sqlite connection");
+
+        let trajectory =
+            capture_check_tool_call_trajectory(store, config, "current-session", "builtin:shell")
+                .await;
+
+        drop(tx);
+
+        assert!(
+            trajectory.is_empty(),
+            "trajectory passed to the probe must be empty when both get_trajectory and \
+             get_tool_history time out, despite real seeded data existing; got: {trajectory:?}"
+        );
+
+        let captured_logs = messages.lock().unwrap();
+        assert!(
+            captured_logs
+                .iter()
+                .any(|m| m.contains("trajectory load timed out")),
+            "expected a warn log for the timed-out get_trajectory read, got: {captured_logs:?}"
+        );
+        assert!(
+            captured_logs
+                .iter()
+                .any(|m| m.contains("cross-session tool history load timed out")),
+            "expected a warn log for the timed-out get_tool_history read, got: {captured_logs:?}"
         );
     }
 
