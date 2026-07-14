@@ -43,7 +43,12 @@ fn resolve_runtime_path(path: &std::path::Path, cwd: &std::path::Path) -> std::p
 /// # Errors
 ///
 /// Returns an error if two configured clients (across `auth_token` and `auth_clients`,
-/// inline or vault-resolved) end up with the same resolved token.
+/// inline or vault-resolved) end up with the same resolved token. Also returns an error
+/// (rather than starting with authentication silently disabled) when `acp_config` declared
+/// `auth_token` and/or `auth_clients` but every one of them failed to resolve — a missing
+/// vault key, an empty vault secret, or a vault backend error emptying the *entire* declared
+/// set must fail startup, not silently fall back to the "no auth configured" empty-list state
+/// that `zeph_acp::transport::router` treats as intentionally public (#6270 F3).
 #[cfg(any(feature = "acp", feature = "acp-http"))]
 async fn resolve_acp_auth_clients(
     acp_config: &zeph_config::AcpConfig,
@@ -65,7 +70,14 @@ async fn resolve_acp_auth_clients(
             Some(t.clone())
         } else if let Some(ref key) = client.token_vault_key {
             match vault.get_secret(key).await {
-                Ok(Some(t)) => Some(t),
+                Ok(Some(t)) if !t.trim().is_empty() => Some(t),
+                Ok(Some(_)) => {
+                    tracing::warn!(
+                        id = %client.id, vault_key = %key,
+                        "acp.auth_clients: vault key resolved to an empty token; client disabled"
+                    );
+                    None
+                }
                 Ok(None) => {
                     tracing::warn!(
                         id = %client.id, vault_key = %key,
@@ -100,6 +112,23 @@ async fn resolve_acp_auth_clients(
             token,
         });
     }
+
+    // #6270 F3: an operator who configured `auth_token`/`auth_clients` intended
+    // authentication to be active. If every entry failed to resolve (bad vault key, empty
+    // vault secret, or backend error), the empty `Vec` this function would otherwise return
+    // is indistinguishable from "no auth was configured at all" — and
+    // `zeph_acp::transport::router` treats an empty `auth_clients` list as intentionally
+    // public, serving session-history endpoints with no auth layer at all (only a `warn!`).
+    // Fail startup instead of silently downgrading to fully public.
+    let auth_declared = acp_config.auth_token.is_some() || !acp_config.auth_clients.is_empty();
+    anyhow::ensure!(
+        !auth_declared || !clients.is_empty(),
+        "[acp] auth_token / [[acp.auth_clients]] configured authentication, but every entry \
+         failed to resolve (missing vault key, empty vault secret, or vault backend error) — \
+         refusing to start with authentication silently disabled. Fix the vault key(s), or \
+         remove the auth_token/auth_clients configuration entirely to run intentionally \
+         without authentication."
+    );
 
     Ok(clients)
 }
@@ -2963,6 +2992,77 @@ mod tests {
         let clients = resolve_acp_auth_clients(&cfg, &vault).await.unwrap();
         assert_eq!(clients.len(), 1);
         assert_eq!(clients[0].id, "bob");
+    }
+
+    #[tokio::test]
+    async fn resolve_acp_auth_clients_empty_vault_token_soft_disables_client() {
+        // #6270: a vault key resolving to "" must be treated the same as a missing key
+        // (Ok(None)), not pushed through as a live client whose token is "" — that would let
+        // `zeph-acp`'s BearerAuthLayer match a request presenting an empty bearer value.
+        let cfg = acp_config_with(
+            None,
+            vec![
+                vault_client("alice", "ZEPH_ACP_TOKEN_ALICE"),
+                inline_client("bob", "token-b"),
+            ],
+        );
+        let vault = TestVault::default().with_secret("ZEPH_ACP_TOKEN_ALICE", "");
+        let clients = resolve_acp_auth_clients(&cfg, &vault).await.unwrap();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].id, "bob");
+    }
+
+    #[tokio::test]
+    async fn resolve_acp_auth_clients_sole_empty_vault_token_fails_closed() {
+        // #6270 F3: when the ONLY configured client's vault-resolved token is empty, the
+        // resolved set would otherwise be empty — indistinguishable from "no auth
+        // configured", which `zeph_acp::transport::router` treats as intentionally public.
+        // Must fail startup instead of silently serving everything unauthenticated.
+        let cfg = acp_config_with(None, vec![vault_client("alice", "ZEPH_ACP_TOKEN_ALICE")]);
+        let vault = TestVault::default().with_secret("ZEPH_ACP_TOKEN_ALICE", "");
+        let err = resolve_acp_auth_clients(&cfg, &vault).await.unwrap_err();
+        assert!(
+            err.to_string().contains("refusing to start"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_acp_auth_clients_sole_missing_vault_key_fails_closed() {
+        // Same fail-closed guard, but for the pre-existing "vault key not found" soft-disable
+        // path — the class this PR extends rather than introduces (critic F3).
+        let cfg = acp_config_with(None, vec![vault_client("alice", "ZEPH_ACP_TOKEN_ALICE")]);
+        let err = resolve_acp_auth_clients(&cfg, &TestVault::default())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("refusing to start"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_acp_auth_clients_sole_client_backend_error_fails_closed() {
+        let cfg = acp_config_with(None, vec![vault_client("alice", "ZEPH_ACP_TOKEN_ALICE")]);
+        let vault = TestVault::default().with_erroring_key("ZEPH_ACP_TOKEN_ALICE");
+        let err = resolve_acp_auth_clients(&cfg, &vault).await.unwrap_err();
+        assert!(
+            err.to_string().contains("refusing to start"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_acp_auth_clients_legacy_token_alone_never_empties_so_no_fail_closed_path() {
+        // Sanity check: the legacy scalar `auth_token` path has no vault resolution, so it
+        // can never trigger the fail-closed guard through normal config loading (an inline
+        // empty auth_token is already rejected by AcpConfig::validate_auth_clients at
+        // config-load time, before this function ever runs).
+        let cfg = acp_config_with(Some("legacy-secret"), vec![]);
+        let clients = resolve_acp_auth_clients(&cfg, &TestVault::default())
+            .await
+            .unwrap();
+        assert_eq!(clients.len(), 1);
     }
 
     #[tokio::test]

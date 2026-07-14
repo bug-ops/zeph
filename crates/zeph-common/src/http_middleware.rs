@@ -64,7 +64,13 @@ pub const RATE_WINDOW: Duration = Duration::from_mins(1);
 #[derive(Clone)]
 pub struct AuthConfig {
     /// BLAKE3 hash of the configured bearer token, or `None` when no token is set.
-    pub token_hash: Option<blake3::Hash>,
+    ///
+    /// Private (not `pub`): the empty-token-normalizes-to-`None` invariant established by
+    /// [`AuthConfig::new`] (#6268) must hold for every `AuthConfig` in existence — a `pub`
+    /// field would let a future caller construct one via struct-literal syntax with
+    /// `token_hash: Some(blake3::hash(b""))`, silently reintroducing the bypass `new`
+    /// exists to prevent. Read via [`AuthConfig::is_token_configured`].
+    token_hash: Option<blake3::Hash>,
     /// When `true`, requests are rejected even if no token is configured.
     ///
     /// Useful for A2A servers that must enforce authentication at the config level.
@@ -77,9 +83,15 @@ impl AuthConfig {
     /// If `token` is `None` and `require_auth` is `false`, all requests pass through.
     /// If `token` is `None` and `require_auth` is `true`, all requests are rejected with 401.
     ///
+    /// An empty or whitespace-only `token` is treated the same as `None` (#6268): otherwise a
+    /// misconfigured or blank vault-resolved secret would hash to a fixed digest that a
+    /// request with no `Authorization` header also hashes to (`auth_middleware` defaults the
+    /// submitted token to `""`) — silently granting every unauthenticated request full access
+    /// instead of rejecting or requiring `require_auth` to gate it.
+    ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// use zeph_common::http_middleware::AuthConfig;
     ///
     /// // Auth enabled with a token
@@ -87,13 +99,38 @@ impl AuthConfig {
     ///
     /// // Require auth even without a configured token (rejects all requests)
     /// let cfg_strict = AuthConfig::new(None, true);
+    ///
+    /// // An empty token is treated as unset, not as a valid "" secret
+    /// let cfg_empty = AuthConfig::new(Some(""), false);
+    /// assert!(!cfg_empty.is_token_configured());
     /// ```
     #[must_use]
     pub fn new(token: Option<&str>, require_auth: bool) -> Self {
         Self {
-            token_hash: token.map(|t| blake3::hash(t.as_bytes())),
+            token_hash: token
+                .filter(|t| !t.trim().is_empty())
+                .map(|t| blake3::hash(t.as_bytes())),
             require_auth,
         }
+    }
+
+    /// Returns `true` when a non-empty bearer token was configured.
+    ///
+    /// Useful for startup-time warnings/guards that need to know whether auth is active
+    /// without re-deriving the empty-string normalization `new` already applied.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::http_middleware::AuthConfig;
+    ///
+    /// assert!(AuthConfig::new(Some("secret"), false).is_token_configured());
+    /// assert!(!AuthConfig::new(Some(""), false).is_token_configured());
+    /// assert!(!AuthConfig::new(None, false).is_token_configured());
+    /// ```
+    #[must_use]
+    pub fn is_token_configured(&self) -> bool {
+        self.token_hash.is_some()
     }
 }
 
@@ -256,7 +293,7 @@ impl RateLimitState {
 
 /// Axum middleware that enforces bearer-token authentication.
 ///
-/// When [`AuthConfig::token_hash`] is `Some`, the request must carry
+/// When [`AuthConfig::is_token_configured`] is `true`, the request must carry
 /// `Authorization: Bearer <token>` whose BLAKE3 hash matches the pre-computed digest.
 /// Comparison uses [`ConstantTimeEq`] on two 32-byte arrays — constant time regardless
 /// of token content, preventing timing-oracle attacks.
@@ -473,7 +510,7 @@ mod tests {
     #[test]
     fn auth_config_new_hashes_token() {
         let cfg = AuthConfig::new(Some("secret"), false);
-        assert!(cfg.token_hash.is_some());
+        assert!(cfg.is_token_configured());
         assert!(!cfg.require_auth);
         let expected = blake3::hash(b"secret");
         assert_eq!(cfg.token_hash.unwrap(), expected);
@@ -482,8 +519,99 @@ mod tests {
     #[test]
     fn auth_config_new_none_token() {
         let cfg = AuthConfig::new(None, true);
-        assert!(cfg.token_hash.is_none());
+        assert!(!cfg.is_token_configured());
         assert!(cfg.require_auth);
+    }
+
+    #[test]
+    fn auth_config_new_empty_token_treated_as_unset() {
+        // #6268: an empty configured token must not become a valid "" secret that a
+        // request with no Authorization header (which also submits "") can match.
+        let cfg = AuthConfig::new(Some(""), false);
+        assert!(!cfg.is_token_configured());
+    }
+
+    #[test]
+    fn auth_config_new_whitespace_only_token_treated_as_unset() {
+        // #6268 F5: whitespace-only tokens must be trimmed the same way empty ones are —
+        // otherwise " " would be accepted as a "valid" weak secret instead of being
+        // normalized to unset like the rest of the empty-token handling.
+        let cfg = AuthConfig::new(Some("   "), false);
+        assert!(!cfg.is_token_configured());
+    }
+
+    /// Route handler reflects the `AuthIdentity` the middleware inserted, so tests can
+    /// distinguish "passed through because auth is off" from "passed through because it
+    /// was (wrongly) considered authenticated".
+    fn identity_app(cfg: AuthConfig) -> axum::Router {
+        axum::Router::new()
+            .route(
+                "/",
+                axum::routing::get(
+                    |axum::extract::Extension(id): axum::extract::Extension<AuthIdentity>| async move {
+                        id.authenticated.to_string()
+                    },
+                ),
+            )
+            .layer(axum::middleware::from_fn_with_state(cfg, auth_middleware))
+    }
+
+    async fn send(app: axum::Router, auth: Option<&str>) -> (StatusCode, String) {
+        use tower::ServiceExt as _;
+
+        let mut builder = axum::http::Request::builder().method("GET").uri("/");
+        if let Some(v) = auth {
+            builder = builder.header("authorization", v);
+        }
+        let req = builder.body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), 64).await.unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[tokio::test]
+    async fn empty_configured_token_with_require_auth_never_authenticates() {
+        // #6268: pre-fix, `AuthConfig::new(Some(""), _)` hashed to `blake3::hash(b"")`,
+        // which a request with no Authorization header (submitted token defaults to "")
+        // or an empty `Bearer ` also hashed to — matching and marking the request
+        // `authenticated: true` despite the caller presenting no real credential.
+        let cfg = AuthConfig::new(Some(""), false);
+        let app = identity_app(cfg.clone());
+        let (status, body) = send(app, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body, "false",
+            "missing-header request must not read as authenticated"
+        );
+
+        let app = identity_app(cfg);
+        let (status, body) = send(app, Some("Bearer ")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body, "false",
+            "empty bearer request must not read as authenticated"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_configured_token_with_require_auth_true_rejects_all_requests() {
+        // With require_auth=true, an empty token must behave exactly like no token at all:
+        // reject every request with 401, never silently authenticate via an empty-vs-empty
+        // hash match.
+        let cfg = AuthConfig::new(Some(""), true);
+        let app = identity_app(cfg.clone());
+        assert_eq!(send(app, None).await.0, StatusCode::UNAUTHORIZED);
+
+        let app = identity_app(cfg);
+        assert_eq!(send(app, Some("Bearer ")).await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn real_token_still_rejects_missing_header() {
+        let cfg = AuthConfig::new(Some("secret"), false);
+        let app = identity_app(cfg);
+        assert_eq!(send(app, None).await.0, StatusCode::UNAUTHORIZED);
     }
 
     #[test]

@@ -41,7 +41,26 @@ pub(crate) struct BearerAuthLayer {
 }
 
 impl BearerAuthLayer {
+    /// Constructs the layer from `clients`, dropping any entry whose `token` is empty or
+    /// whitespace-only.
+    ///
+    /// An empty token would hash to `blake3::hash(b"")` and match a request presenting
+    /// `Authorization: Bearer ` (empty bearer value) — this is the last line of defense
+    /// against that bypass, independent of whatever validated the tokens upstream (#6270).
+    /// Trims before checking (F5) to stay consistent with `resolve_acp_auth_clients`'s
+    /// existing `!t.trim().is_empty()` check — a whitespace-only token is as weak a secret
+    /// as an empty one, even though it does not collide with the missing-header default.
     pub(crate) fn new(clients: Vec<AcpClientToken>) -> Self {
+        let clients = clients
+            .into_iter()
+            .filter(|c| {
+                let keep = !c.token.trim().is_empty();
+                if !keep {
+                    tracing::warn!(id = %c.id, "BearerAuthLayer: dropping client with empty token");
+                }
+                keep
+            })
+            .collect();
         Self {
             clients: Arc::new(clients),
         }
@@ -197,6 +216,26 @@ mod tests {
         let (status_b, body_b) = send(app, Some("Bearer token-b")).await;
         assert_eq!(status_b, StatusCode::OK);
         assert_eq!(body_b, "bob");
+    }
+
+    #[tokio::test]
+    async fn empty_configured_token_client_is_dropped_and_never_matches() {
+        // #6270: a client constructed with an empty token must not be reachable via an
+        // empty presented bearer value (`Authorization: Bearer `), which would otherwise
+        // hash-match `blake3::hash(b"")` on both sides.
+        let app = app_with_clients(vec![client("bad", ""), client("default", "my-secret")]);
+        assert_eq!(send(app, Some("Bearer ")).await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn whitespace_only_configured_token_client_is_dropped() {
+        // #6270 F5: a whitespace-only token is as weak a secret as an empty one — trimmed
+        // the same way `resolve_acp_auth_clients` already trims vault-resolved tokens.
+        let app = app_with_clients(vec![client("bad", "   "), client("default", "my-secret")]);
+        assert_eq!(
+            send(app, Some("Bearer    ")).await.0,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[tokio::test]

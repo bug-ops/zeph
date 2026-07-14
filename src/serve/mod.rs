@@ -158,7 +158,14 @@ pub(crate) async fn handle_serve_sessions_command(
     ))
     .await?;
 
-    check_require_auth_guard(serve_config, http_addr, auth_token.is_some())?;
+    // Non-emptiness, not `is_some()` (#6268): a vault-resolved secret that resolves to an
+    // empty string must be treated the same as "no token configured", not as a token that
+    // satisfies the require_auth guard while `AuthConfig` (correctly) rejects every request.
+    // Trimmed for consistency with `AuthConfig::new`/`BearerAuthLayer::new`/
+    // `resolve_acp_auth_clients` — not a bypass either way (require_auth's deny-all still
+    // applies), just a clearer error message in the whitespace-only-token edge case.
+    let has_auth_token = auth_token.as_deref().is_some_and(|t| !t.trim().is_empty());
+    check_require_auth_guard(serve_config, http_addr, has_auth_token)?;
 
     let cancel = tokio_util::sync::CancellationToken::new();
     let supervisor = TaskSupervisor::new(cancel.clone());
@@ -235,7 +242,8 @@ async fn run_serve_with_acp(
     check_acp_http_port_clash(http_addr, &acp_bind_addr)?;
 
     let auth_token = deps::resolve_auth_token(&app).await;
-    check_require_auth_guard(&serve_config, http_addr, auth_token.is_some())?;
+    let has_auth_token = auth_token.as_deref().is_some_and(|t| !t.trim().is_empty());
+    check_require_auth_guard(&serve_config, http_addr, has_auth_token)?;
     // M1-security (code review 2026-07-04): serve's own `require_auth` guard only covers
     // `http_addr`. Without an equivalent check here, `[serve] require_auth = true` gives an
     // operator false confidence that the whole combined process is authenticated, while the

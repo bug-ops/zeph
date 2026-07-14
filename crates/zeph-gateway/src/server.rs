@@ -310,7 +310,10 @@ impl GatewayServer {
             webhook_send_timeout: self.webhook_send_timeout,
         };
 
-        if self.auth_token.is_none() {
+        // Non-emptiness, not `is_none()` (#6268): a vault-resolved token that resolves to an
+        // empty string must trigger this warning the same as no token at all — `Some("")`
+        // used to silently suppress it while `AuthConfig` (correctly) rejects every request.
+        if self.auth_token.as_deref().is_none_or(str::is_empty) {
             tracing::warn!(
                 "gateway running without bearer auth — ensure firewall or upstream proxy enforces access control"
             );

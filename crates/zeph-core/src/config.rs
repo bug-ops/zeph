@@ -185,8 +185,17 @@ impl SecretResolver for Config {
             tg.token = Some(val);
         }
         if let Some(val) = vault.get_secret("ZEPH_A2A_AUTH_TOKEN").await? {
-            register_masked_secret(registry, "ZEPH_A2A_AUTH_TOKEN", &val);
-            self.a2a.auth_token = Some(val);
+            // #6268: an empty-string secret must be treated as "not configured", not as a
+            // valid "" bearer token that `AuthConfig`/`auth_middleware` would otherwise
+            // (pre-fix) accept from any request with no Authorization header at all.
+            if val.is_empty() {
+                tracing::warn!(
+                    "ZEPH_A2A_AUTH_TOKEN resolved to an empty string; treating as not configured"
+                );
+            } else {
+                register_masked_secret(registry, "ZEPH_A2A_AUTH_TOKEN", &val);
+                self.a2a.auth_token = Some(val);
+            }
         }
         for entry in &self.llm.providers {
             if entry.provider_type == crate::config::ProviderKind::Compatible
@@ -214,8 +223,16 @@ impl SecretResolver for Config {
             }
         }
         if let Some(val) = vault.get_secret("ZEPH_GATEWAY_TOKEN").await? {
-            register_masked_secret(registry, "ZEPH_GATEWAY_TOKEN", &val);
-            self.gateway.auth_token = Some(val);
+            // #6268: same rationale as ZEPH_A2A_AUTH_TOKEN above — an empty secret is
+            // "not configured", not a valid "" bearer token.
+            if val.is_empty() {
+                tracing::warn!(
+                    "ZEPH_GATEWAY_TOKEN resolved to an empty string; treating as not configured"
+                );
+            } else {
+                register_masked_secret(registry, "ZEPH_GATEWAY_TOKEN", &val);
+                self.gateway.auth_token = Some(val);
+            }
         }
         if let Some(val) = vault.get_secret("ZEPH_DATABASE_URL").await? {
             register_masked_secret(registry, "ZEPH_DATABASE_URL", &val);
@@ -390,5 +407,31 @@ mod tests {
             config.secrets.openai_api_key.as_ref().unwrap().expose(),
             "sk-openai-abc"
         );
+    }
+
+    #[tokio::test]
+    #[cfg(any(test, feature = "mock"))]
+    async fn resolve_secrets_empty_gateway_token_treated_as_not_configured() {
+        use crate::vault::MockVaultProvider;
+
+        // #6268: an empty-string ZEPH_GATEWAY_TOKEN must not become `Some("")` — that would
+        // let AuthConfig hash "" and accept any request with no Authorization header at all.
+        let vault = MockVaultProvider::new().with_secret("ZEPH_GATEWAY_TOKEN", "");
+        let mut config = Config::load(std::path::Path::new("/nonexistent/config.toml")).unwrap();
+        config.resolve_secrets(&vault).await.unwrap();
+
+        assert!(config.gateway.auth_token.is_none());
+    }
+
+    #[tokio::test]
+    #[cfg(any(test, feature = "mock"))]
+    async fn resolve_secrets_empty_a2a_token_treated_as_not_configured() {
+        use crate::vault::MockVaultProvider;
+
+        let vault = MockVaultProvider::new().with_secret("ZEPH_A2A_AUTH_TOKEN", "");
+        let mut config = Config::load(std::path::Path::new("/nonexistent/config.toml")).unwrap();
+        config.resolve_secrets(&vault).await.unwrap();
+
+        assert!(config.a2a.auth_token.is_none());
     }
 }

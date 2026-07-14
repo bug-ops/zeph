@@ -220,6 +220,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Fixed by adding `AgentEvent::SetTaskSupervisor` and forwarding it alongside the existing
   `SetCancelSignal`/`SetMetricsRx` sends. Also wired the `t` keybinding to the previously
   unreachable `Action::ToggleTaskPanel` (#6276).
+- **Security (auth)**: `AuthConfig::new` (`zeph-common`'s shared bearer-auth middleware, used
+  by `zeph-gateway`, `zeph-a2a`, and `zeph serve-sessions`) hashed a configured token without
+  checking for emptiness, so a vault-resolved secret that resolved to `""` produced a valid
+  `Some(blake3::hash(b""))`. `auth_middleware` defaults a request's submitted token to `""`
+  whenever no `Authorization` header is present, so that empty-vs-empty hash comparison
+  matched — silently authenticating every unauthenticated request instead of rejecting them
+  or letting `require_auth` reject them outright. Fixed by treating an empty token the same as
+  `None` in `AuthConfig::new`, checking non-emptiness (not `is_some()`/`is_none()`) at the
+  `zeph-gateway` startup-warning and `zeph serve-sessions` bind-refusal guard call sites, and
+  skipping the `ZEPH_A2A_AUTH_TOKEN`/`ZEPH_GATEWAY_TOKEN` vault-hydration assignment in
+  `zeph-core`'s config resolver when the resolved secret is an empty string (#6268).
+- **Security (ACP auth)**: `resolve_acp_auth_clients` pushed a `[[acp.auth_clients]]` entry's
+  vault-resolved token straight into the client list with no non-emptiness check, so a vault
+  secret resolving to `""` produced an `AcpClientToken` with `token: ""`. `zeph-acp`'s bearer
+  middleware hashes tokens independently of the shared `AuthConfig` primitive, so it was not
+  covered by the `AuthConfig::new` fix above: a request with `Authorization: Bearer ` (empty
+  presented token) hashed to `blake3::hash(b"")` and matched the empty-token client. Fixed by
+  treating an empty/whitespace-only vault-resolved token the same as a missing one (warn and
+  skip) in `resolve_acp_auth_clients`, plus a defense-in-depth filter in `zeph-acp`'s
+  `BearerAuthLayer::new` that drops any client constructed with an empty or whitespace-only
+  token regardless of caller. Additionally, when *every* configured `auth_token`/
+  `auth_clients` entry fails to resolve (leaving the client set empty), `resolve_acp_auth_clients`
+  now fails startup instead of silently falling back to the empty-list state that
+  `zeph_acp::transport::router` treats as intentionally unauthenticated — a declared-but-
+  unresolvable auth configuration must never downgrade to "fully public" (#6270).
 - **Docs**: fixed 11 stale Claude model ID examples across 5 mdBook pages (`acp.md`,
   `sub-agents.md`, `experiments.md`, `wizard.md`, `configuration.md`) that still used the
   outdated `claude-sonnet-4-5`/`claude-sonnet-4-20250514` naming (incorrectly pairing the

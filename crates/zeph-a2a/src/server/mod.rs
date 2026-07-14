@@ -231,7 +231,7 @@ impl A2aServer {
     /// Returns [`A2aError::Server`] if the TCP listener fails to
     /// bind or if the axum server encounters a fatal I/O error during operation.
     pub async fn serve(self) -> Result<(), A2aError> {
-        if self.auth_cfg.token_hash.is_none() {
+        if !self.auth_cfg.is_token_configured() {
             tracing::warn!(
                 "A2A server running without bearer auth — ensure this is a trusted-network-only deployment"
             );

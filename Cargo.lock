@@ -10799,6 +10799,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "tower 0.5.3",
  "tracing",
  "tree-sitter",
  "tree-sitter-bash",
