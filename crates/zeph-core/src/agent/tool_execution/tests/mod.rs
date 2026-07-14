@@ -8,6 +8,7 @@ mod hook_block_cap_tests;
 mod mage_escalation_tests;
 mod native_tests;
 mod parallel_and_handle_tests;
+mod pre_tool_use_concurrency_tests;
 mod pure_helpers_tests;
 mod retry_and_skill_env_tests;
 mod sanitize_and_native_tests;

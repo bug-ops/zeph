@@ -210,6 +210,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **core**: `build_tier_call_futures` fired each tier's `PreToolUse` hooks sequentially,
+  adding `N × hook_latency` of purely serial blocking on the agent turn loop before the
+  tier's already-parallelized tool execution even began — the same defect class already
+  fixed for the `PostToolUse` side (#6128) but never mirrored to `PreToolUse`. Hooks now
+  fire concurrently, bounded by the tier semaphore, with the per-call invariant preserved
+  (each call's own hook still fires before that call's own gate check) (#6259).
+- **core**: `AgentAccess::graph_backfill` extracted entities/edges from each unprocessed
+  message strictly sequentially — one LLM call plus SQLite/Qdrant write at a time — despite
+  the store's `UNIQUE(canonical_name, entity_type)` upsert already making concurrent
+  extraction across messages safe. Now uses `futures::stream::iter(...).buffer_unordered(4)`,
+  matching the existing `semantic_scan_plugin_add` pattern, cutting backfill wall time
+  roughly 4x with no correctness change (#6261).
+- **core**: `Agent::begin_turn` re-derived the MAGE `(AuditSignalType, Severity)` pair from
+  the raw trajectory-signal `u8` code via an independent hand-rolled match, duplicating the
+  code-to-meaning table already authoritative in `RiskSignal::from_code` — the two tables
+  were not compiler-coupled and could silently drift. Now matches on the already-computed
+  `RiskSignal` enum value instead; zero behavior change (#6272).
 - **Security (`ShadowSentinel`)**: `check_tool_call` awaited its two pre-tool-dispatch DB reads
   (`get_trajectory`, `get_tool_history`) with no timeout, so a stalled DB connection (e.g. a
   slow/unresponsive Postgres backend) could block dispatch of every `Shell`/`FileWrite`/

@@ -599,62 +599,91 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                     let ids: Vec<zeph_memory::types::MessageId> =
                         messages.iter().map(|(id, _)| *id).collect();
 
-                    for (_id, content) in &messages {
-                        if content.trim().is_empty() {
-                            continue;
-                        }
-                        let extraction_cfg = GraphExtractionConfig {
-                            max_entities: graph_cfg.max_entities_per_message,
-                            max_edges: graph_cfg.max_edges_per_message,
-                            extraction_timeout_secs: graph_cfg.extraction_timeout_secs,
-                            community_refresh_interval: 0,
-                            expired_edge_retention_days: graph_cfg.expired_edge_retention_days,
-                            max_entities_cap: graph_cfg.max_entities,
-                            community_summary_max_prompt_bytes: graph_cfg
-                                .community_summary_max_prompt_bytes,
-                            community_summary_concurrency: graph_cfg.community_summary_concurrency,
-                            lpa_edge_chunk_size: graph_cfg.lpa_edge_chunk_size,
-                            note_linking: zeph_memory::NoteLinkingConfig::default(),
-                            link_weight_decay_lambda: graph_cfg.link_weight_decay_lambda,
-                            link_weight_decay_interval_secs: graph_cfg
-                                .link_weight_decay_interval_secs,
-                            belief_revision_enabled: graph_cfg.belief_revision.enabled,
-                            belief_revision_similarity_threshold: graph_cfg
-                                .belief_revision
-                                .similarity_threshold,
-                            conversation_id: None,
-                            apex_mem_enabled: graph_cfg.apex_mem.enabled,
-                            llm_timeout_secs: graph_cfg.llm_timeout_secs,
-                            embed_timeout_secs,
-                            turn_index: None,
-                            write_gate_min_relevance: graph_cfg
-                                .write_gate
-                                .enabled
-                                .then_some(graph_cfg.write_gate.min_edge_relevance),
-                            benna_fast_rate: graph_cfg.spreading_activation.benna_fast_rate,
-                            benna_slow_rate: graph_cfg.spreading_activation.benna_slow_rate,
-                            provenance: None,
-                            system_prompt: None,
-                            recall_include_imported: graph_cfg.recall_include_imported,
-                        };
-                        let pool = store.pool().clone();
-                        match extract_and_store(
-                            content.clone(),
-                            vec![],
-                            provider.clone(),
-                            pool,
-                            extraction_cfg,
-                            None,
-                            None,
-                        )
-                        .await
-                        {
-                            Ok(result) => {
-                                total_entities += result.stats.entities_upserted;
-                                total_edges += result.stats.edges_inserted;
-                            }
-                            Err(e) => {
-                                tracing::warn!("backfill extraction error: {e:#}");
+                    // extraction_cfg is loop-invariant (derived only from graph_cfg /
+                    // embed_timeout_secs, never from message content), so it is built once per
+                    // batch and cloned per message below.
+                    let extraction_cfg = GraphExtractionConfig {
+                        max_entities: graph_cfg.max_entities_per_message,
+                        max_edges: graph_cfg.max_edges_per_message,
+                        extraction_timeout_secs: graph_cfg.extraction_timeout_secs,
+                        community_refresh_interval: 0,
+                        expired_edge_retention_days: graph_cfg.expired_edge_retention_days,
+                        max_entities_cap: graph_cfg.max_entities,
+                        community_summary_max_prompt_bytes: graph_cfg
+                            .community_summary_max_prompt_bytes,
+                        community_summary_concurrency: graph_cfg.community_summary_concurrency,
+                        lpa_edge_chunk_size: graph_cfg.lpa_edge_chunk_size,
+                        note_linking: zeph_memory::NoteLinkingConfig::default(),
+                        link_weight_decay_lambda: graph_cfg.link_weight_decay_lambda,
+                        link_weight_decay_interval_secs: graph_cfg.link_weight_decay_interval_secs,
+                        belief_revision_enabled: graph_cfg.belief_revision.enabled,
+                        belief_revision_similarity_threshold: graph_cfg
+                            .belief_revision
+                            .similarity_threshold,
+                        conversation_id: None,
+                        apex_mem_enabled: graph_cfg.apex_mem.enabled,
+                        llm_timeout_secs: graph_cfg.llm_timeout_secs,
+                        embed_timeout_secs,
+                        turn_index: None,
+                        write_gate_min_relevance: graph_cfg
+                            .write_gate
+                            .enabled
+                            .then_some(graph_cfg.write_gate.min_edge_relevance),
+                        benna_fast_rate: graph_cfg.spreading_activation.benna_fast_rate,
+                        benna_slow_rate: graph_cfg.spreading_activation.benna_slow_rate,
+                        provenance: None,
+                        system_prompt: None,
+                        recall_include_imported: graph_cfg.recall_include_imported,
+                    };
+
+                    // Extract concurrently, bounded to 4 in-flight — matches
+                    // semantic_scan_plugin_add's existing batched-LLM-call bound. Safe because
+                    // `extract_and_store` builds a fresh `EntityResolver` per call (its
+                    // `lock_name` guard does not span calls), so the actual concurrency-safety
+                    // mechanism is the DB-level `UNIQUE(canonical_name, entity_type)` constraint
+                    // and `ON CONFLICT ... DO UPDATE ... RETURNING id` upsert in
+                    // `GraphStore::upsert_entity` (plus `add_alias`'s `INSERT OR IGNORE`), which
+                    // makes concurrent entity creation for the same name idempotent regardless of
+                    // in-process locking.
+                    {
+                        use futures::stream::StreamExt as _;
+
+                        let extraction_futs: Vec<_> = messages
+                            .iter()
+                            .filter_map(|(_id, content)| {
+                                if content.trim().is_empty() {
+                                    return None;
+                                }
+                                let content = content.clone();
+                                let provider = provider.clone();
+                                let pool = store.pool().clone();
+                                let extraction_cfg = extraction_cfg.clone();
+                                Some(extract_and_store(
+                                    content,
+                                    vec![],
+                                    provider,
+                                    pool,
+                                    extraction_cfg,
+                                    None,
+                                    None,
+                                ))
+                            })
+                            .collect();
+
+                        let results: Vec<_> = futures::stream::iter(extraction_futs)
+                            .buffer_unordered(4)
+                            .collect()
+                            .await;
+
+                        for result in results {
+                            match result {
+                                Ok(result) => {
+                                    total_entities += result.stats.entities_upserted;
+                                    total_edges += result.stats.edges_inserted;
+                                }
+                                Err(e) => {
+                                    tracing::warn!("backfill extraction error: {e:#}");
+                                }
                             }
                         }
                     }
@@ -2484,6 +2513,191 @@ mod tests {
             result.contains("Backfill complete"),
             "expected 'Backfill complete' but got: {result}"
         );
+    }
+
+    // #6261: graph_backfill extracts each batch's unprocessed messages concurrently via
+    // `futures::stream::iter(...).buffer_unordered(4)` instead of a sequential per-message
+    // loop. buffer_unordered completes futures in an order that need not match input order, so
+    // this test asserts on aggregate totals (immune to completion order) and on per-entity /
+    // per-message presence, proving the concurrent rewrite neither drops nor double-counts
+    // results relative to the pre-#6261 sequential behavior.
+    #[tokio::test]
+    async fn graph_backfill_concurrent_extraction_aggregates_stats_without_dropping_results() {
+        let n = 6;
+        let cfg = crate::config::GraphConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut memory = memory_without_qdrant().await;
+        let store = install_graph_store(&mut memory);
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        for i in 0..n {
+            sqlx::query(zeph_db::sql!(
+                "INSERT INTO messages (conversation_id, role, content) VALUES (?1, 'user', ?2)"
+            ))
+            .bind(cid.0)
+            .bind(format!("message body {i}"))
+            .execute(memory.sqlite().pool())
+            .await
+            .unwrap();
+        }
+
+        // One canned extraction response per message, each yielding exactly one distinct
+        // entity. MockProvider serves responses in call order (not message order), which
+        // mirrors buffer_unordered's out-of-order completion.
+        let responses: Vec<String> = (0..n)
+            .map(|i| {
+                format!(
+                    r#"{{"entities":[{{"name":"Entity{i}","type":"concept","summary":""}}],"edges":[]}}"#
+                )
+            })
+            .collect();
+
+        let mut agent = Agent::new(
+            mock_provider(responses),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_graph_config(cfg);
+
+        let mut progress = vec![];
+        let result = agent
+            .graph_backfill(None, &mut |msg| progress.push(msg))
+            .await
+            .unwrap();
+
+        assert!(
+            result.contains(&format!("{n} entities")),
+            "expected all {n} entities aggregated in the result, got: {result}"
+        );
+        assert!(
+            result.contains(&format!("from {n} messages")),
+            "expected all {n} messages counted as processed, got: {result}"
+        );
+
+        // No drops/double-counts at the store level: every entity must be present exactly once.
+        for i in 0..n {
+            let name = format!("entity{i}");
+            let found = store
+                .find_entity(&name, zeph_memory::EntityType::Concept)
+                .await
+                .unwrap();
+            assert!(found.is_some(), "entity{i} must have been upserted");
+        }
+
+        // Every message in the batch must be marked processed — none left behind by a
+        // buffer_unordered future that was dropped or never polled to completion.
+        let remaining = store.unprocessed_message_count().await.unwrap();
+        assert_eq!(remaining, 0, "all messages must be marked graph_processed");
+    }
+
+    // #6261 follow-up (impl-critic finding): the aggregation test above uses an in-memory
+    // SQLite database, which `zeph-db`'s pool forces to a single connection
+    // (`connect_sqlite`'s `effective_max = if path == ":memory:" { 1 }`, see
+    // `crates/zeph-db/src/pool.rs`) — so it never actually exercises concurrent writers racing
+    // for the SQLite write lock. This test uses a real file-backed database instead (default
+    // pool_size = 5, WAL journal mode + 5s busy_timeout — see `DbConfig::connect_sqlite`) with
+    // more unprocessed messages than the `buffer_unordered(4)` bound, so multiple pooled
+    // connections genuinely contend for writes concurrently. It confirms `extract_and_store`'s
+    // upserts — relying on WAL mode + busy_timeout + `EntityResolver`'s per-entity-name locking,
+    // the same assumption `semantic_scan_plugin_add`'s existing `buffer_unordered(4)` usage
+    // relies on — complete without a "database is locked" error under real multi-connection
+    // write contention.
+    #[tokio::test]
+    async fn graph_backfill_concurrent_extraction_survives_real_sqlite_write_contention() {
+        let n = 8;
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let path = tmp.path().to_str().expect("valid utf-8 path").to_owned();
+
+        let cfg = crate::config::GraphConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut memory = SemanticMemory::new(
+            &path,
+            "http://127.0.0.1:1",
+            None,
+            zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            "test-model",
+        )
+        .await
+        .unwrap();
+        let store = install_graph_store(&mut memory);
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        for i in 0..n {
+            sqlx::query(zeph_db::sql!(
+                "INSERT INTO messages (conversation_id, role, content) VALUES (?1, 'user', ?2)"
+            ))
+            .bind(cid.0)
+            .bind(format!("contention message body {i}"))
+            .execute(memory.sqlite().pool())
+            .await
+            .unwrap();
+        }
+
+        // A small per-call delay forces the (up to 4) concurrently in-flight extraction futures
+        // to genuinely overlap their subsequent SQLite writes, rather than happening to resolve
+        // one at a time fast enough to never actually race.
+        let responses: Vec<String> = (0..n)
+            .map(|i| {
+                format!(
+                    r#"{{"entities":[{{"name":"ContentionEntity{i}","type":"concept","summary":""}}],"edges":[]}}"#
+                )
+            })
+            .collect();
+        let mut provider = zeph_llm::mock::MockProvider::with_responses(responses);
+        provider.delay_ms = 15;
+        let provider = zeph_llm::any::AnyProvider::Mock(provider);
+
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_graph_config(cfg);
+
+        let mut progress = vec![];
+        let result = agent
+            .graph_backfill(None, &mut |msg| progress.push(msg))
+            .await
+            .unwrap();
+
+        assert!(
+            result.contains(&format!("{n} entities")),
+            "expected all {n} entities aggregated despite concurrent SQLite writers, got: {result}"
+        );
+
+        // The decisive assertion: if a concurrent writer had hit "database is locked"
+        // (SQLITE_BUSY surfacing as an error instead of the busy_timeout retry succeeding),
+        // extract_and_store logs a warning and skips that message's upsert (the `Err(e) =>
+        // tracing::warn!(...)` arm in graph_backfill) rather than failing the whole batch — so a
+        // missing entity here is the observable symptom of exactly the failure mode flagged.
+        for i in 0..n {
+            let name = format!("contentionentity{i}");
+            let found = store
+                .find_entity(&name, zeph_memory::EntityType::Concept)
+                .await
+                .unwrap();
+            assert!(
+                found.is_some(),
+                "entity {i} must have been upserted; a missing entity indicates a dropped/failed \
+                 concurrent write (e.g. a 'database is locked' error) under real multi-connection \
+                 contention"
+            );
+        }
+
+        let remaining = store.unprocessed_message_count().await.unwrap();
+        assert_eq!(remaining, 0, "all messages must be marked graph_processed");
     }
 
     // R-4139: graph_entities with enabled graph but no store (Qdrant unreachable) must

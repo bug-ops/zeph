@@ -1980,6 +1980,96 @@ impl<C: Channel> Agent<C> {
             .rate_limiter
             .check_batch(&tier_tool_names);
 
+        // Phase 1: fire PreToolUse hooks for every call in the tier concurrently, bounded by the
+        // same tier semaphore used for tool execution below — mirrors apply_tier_results Phase 2
+        // (#6128), which already parallelized the PostToolUse/RuntimeLayer side of this same
+        // per-index hook-firing pattern. There is no ordering constraint between different
+        // tool-call indices' hook firing; the only required invariant — a call's own gate checks
+        // must observe that same call's own hook result — holds because this whole phase
+        // completes before Phase 2's per-index gate checks below begin.
+        //
+        // Focus/compress tools are synthetic internal calls that never reach hooks or gates (see
+        // the matching `continue` in Phase 2 below), so they are excluded here too.
+        let pre_hooks = self.services.session.hooks_config.pre_tool_use.clone();
+        let mut pre_hook_blocked: std::collections::HashMap<usize, String> =
+            std::collections::HashMap::new();
+        if !pre_hooks.is_empty() {
+            let conv_id_str = self
+                .services
+                .memory
+                .persistence
+                .conversation_id
+                .map(|id| id.0.to_string());
+            let dispatch = self.mcp_dispatch();
+            let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
+                .as_ref()
+                .map(|d| d as &dyn zeph_subagent::McpDispatch);
+
+            let futs = tier_indices.iter().filter_map(|&idx| {
+                let tc = &tool_calls[idx];
+                if tc.name == "compress_context"
+                    || tc.name == "request_compaction"
+                    || (self.services.focus.config.enabled
+                        && (tc.name == "start_focus" || tc.name == "complete_focus"))
+                {
+                    return None;
+                }
+                let matched: Vec<&zeph_config::HookDef> =
+                    zeph_subagent::matching_hooks(&pre_hooks, tc.name.as_str());
+                if matched.is_empty() {
+                    return None;
+                }
+                let has_fail_closed = matched.iter().any(|h| h.fail_closed);
+                let owned: Vec<zeph_config::HookDef> = matched.into_iter().cloned().collect();
+                let env = make_tool_hook_env(tc.name.as_str(), &tc.input, conv_id_str.as_deref());
+                let sem = std::sync::Arc::clone(semaphore);
+                let tool_name = tc.name.clone();
+                Some(async move {
+                    let Ok(_permit) = sem.acquire().await else {
+                        tracing::warn!(
+                            tool = %tool_name,
+                            "semaphore closed during pre-tool hook firing, skipping \
+                             PreToolUse hook for this call"
+                        );
+                        return (idx, None);
+                    };
+                    let result = zeph_subagent::hooks::fire_hooks(&owned, &env, mcp, None)
+                        .instrument(tracing::info_span!(
+                            "core.hooks.pre_tool_use",
+                            tool = %tool_name
+                        ))
+                        .await;
+                    (idx, Some(result.map_err(|e| (e, has_fail_closed))))
+                })
+            });
+
+            for (idx, outcome) in futures::future::join_all(futs).await {
+                let Some(Err((e, has_fail_closed))) = outcome else {
+                    continue;
+                };
+                let tool_name = tool_calls[idx].name.as_str();
+                if has_fail_closed {
+                    self.tool_orchestrator.hook_block_count += 1;
+                    tracing::warn!(
+                        error = %e,
+                        tool = %tool_name,
+                        hook_block_count = self.tool_orchestrator.hook_block_count,
+                        hook_block_cap = self.tool_orchestrator.hook_block_cap,
+                        "PreToolUse hook blocked tool (fail_closed)"
+                    );
+                    pre_hook_blocked.insert(
+                        idx,
+                        format!("[blocked] PreToolUse hook blocked tool `{tool_name}`: {e}"),
+                    );
+                } else {
+                    tracing::warn!(error = %e, tool = %tool_name, "PreToolUse hook failed");
+                }
+            }
+        }
+
+        // Phase 2: per-index gate checks, cache lookups, and execution-future construction.
+        // Stays sequential — it needs `&mut self` throughout, and each idx's control flow
+        // depends on that same idx's own PreToolUse hook outcome computed in Phase 1 above.
         let mut tier_futs: Vec<(usize, ToolExecFut)> = Vec::with_capacity(tier_indices.len());
         for (tier_local_idx, &idx) in tier_indices.iter().enumerate() {
             let tc = &tool_calls[idx];
@@ -1994,65 +2084,15 @@ impl<C: Channel> Agent<C> {
                 continue;
             }
 
-            // Fire PreToolUse hooks before any gate check so the hook always observes the
-            // LLM's tool request, even when a gate (utility, quota, dep, repeat) intercepts it.
-            // Focus/compress tools are excluded by the early `continue` above — they are
-            // synthetic internal tools that must never surface to the hook system.
-            let pre_hooks = self.services.session.hooks_config.pre_tool_use.clone();
-            if !pre_hooks.is_empty() {
-                let matched: Vec<&zeph_config::HookDef> =
-                    zeph_subagent::matching_hooks(&pre_hooks, tc.name.as_str());
-                if !matched.is_empty() {
-                    let conv_id_str = self
-                        .services
-                        .memory
-                        .persistence
-                        .conversation_id
-                        .map(|id| id.0.to_string());
-                    let env =
-                        make_tool_hook_env(tc.name.as_str(), &tc.input, conv_id_str.as_deref());
-                    let has_fail_closed = matched.iter().any(|h| h.fail_closed);
-                    let owned: Vec<zeph_config::HookDef> = matched.into_iter().cloned().collect();
-                    let dispatch = self.mcp_dispatch();
-                    let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
-                        .as_ref()
-                        .map(|d| d as &dyn zeph_subagent::McpDispatch);
-                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&owned, &env, mcp, None)
-                        .instrument(tracing::info_span!(
-                            "core.hooks.pre_tool_use",
-                            tool = %tc.name
-                        ))
-                        .await
-                    {
-                        if has_fail_closed {
-                            self.tool_orchestrator.hook_block_count += 1;
-                            tracing::warn!(
-                                error = %e,
-                                tool = %tc.name,
-                                hook_block_count = self.tool_orchestrator.hook_block_count,
-                                hook_block_cap = self.tool_orchestrator.hook_block_cap,
-                                "PreToolUse hook blocked tool (fail_closed)"
-                            );
-                            let msg = format!(
-                                "[blocked] PreToolUse hook blocked tool `{}`: {e}",
-                                tc.name
-                            );
-                            tier_futs.push((
-                                idx,
-                                Box::pin(std::future::ready(Ok(Some(skipped_output(
-                                    tc.name.clone(),
-                                    msg,
-                                ))))),
-                            ));
-                            continue;
-                        }
-                        tracing::warn!(
-                            error = %e,
-                            tool = %tc.name,
-                            "PreToolUse hook failed"
-                        );
-                    }
-                }
+            if let Some(msg) = pre_hook_blocked.remove(&idx) {
+                tier_futs.push((
+                    idx,
+                    Box::pin(std::future::ready(Ok(Some(skipped_output(
+                        tc.name.clone(),
+                        msg,
+                    ))))),
+                ));
+                continue;
             }
 
             // Check static gates: dep failure, quota, pre-exec block, utility gate, repeat.

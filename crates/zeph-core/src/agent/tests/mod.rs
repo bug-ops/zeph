@@ -20,6 +20,8 @@ mod flush_orphaned_tests;
 #[cfg(test)]
 mod inline_tool_loop_tests;
 #[cfg(test)]
+mod mage_signal_mapping_tests;
+#[cfg(test)]
 mod pre_execution_audit_tests;
 #[cfg(test)]
 mod provider_override_masking_tests;

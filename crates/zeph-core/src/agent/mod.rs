@@ -942,6 +942,7 @@ impl<C: Channel> Agent<C> {
         // Spec 050 §2: drain pending risk signals from executor layers before advancing.
         // Also advance MAGE accumulator (spec 004-16 FR-009) and ingest mapped signals.
         {
+            use crate::agent::trajectory::{RiskSignal, VigilRiskLevel};
             use zeph_memory::shadow::{AuditSignalType as MageSignal, Severity as MageSev};
             let pending: Vec<u8> = {
                 let mut q = self.services.security.trajectory_signal_queue.lock();
@@ -949,17 +950,26 @@ impl<C: Channel> Agent<C> {
             };
             self.services.security.mage_accumulator.advance_turn();
             for code in pending {
-                self.services
-                    .security
-                    .trajectory
-                    .record(crate::agent::trajectory::RiskSignal::from_code(code));
-                // Map signal codes to MAGE AuditSignalType + Severity (spec 004-16 FR-002, FR-007).
-                // Code 1=PolicyDeny, 6=VigilMedium, 7=VigilHigh, 2=ExfiltrationRedaction.
-                let mage_signal: Option<(MageSignal, MageSev)> = match code {
-                    1 => Some((MageSignal::PolicyViolation, MageSev::Medium)),
-                    2 => Some((MageSignal::ToolChainAnomaly, MageSev::Medium)),
-                    6 => Some((MageSignal::PromptInjectionPattern, MageSev::Medium)),
-                    7 => Some((MageSignal::PromptInjectionPattern, MageSev::High)),
+                let signal = RiskSignal::from_code(code);
+                self.services.security.trajectory.record(signal);
+                // Map RiskSignal to MAGE AuditSignalType + Severity (spec 004-16 FR-002, FR-007).
+                // Matching on the already-decoded `RiskSignal` (rather than the raw `code`)
+                // keeps this in sync with `RiskSignal::from_code`, the single source of truth
+                // for the code-to-meaning table. Only the four spec-004-16 signal classes have a
+                // MAGE equivalent; the remaining RiskSignal variants (OutOfScope, PiiRedaction,
+                // ToolFailure, HighCallRate, UnusualReadVolume, ToolPairTransition, and
+                // VigilFlagged(Low)) are trajectory-only and intentionally not surfaced to MAGE.
+                let mage_signal: Option<(MageSignal, MageSev)> = match signal {
+                    RiskSignal::PolicyDeny => Some((MageSignal::PolicyViolation, MageSev::Medium)),
+                    RiskSignal::ExfiltrationRedaction => {
+                        Some((MageSignal::ToolChainAnomaly, MageSev::Medium))
+                    }
+                    RiskSignal::VigilFlagged(VigilRiskLevel::Medium) => {
+                        Some((MageSignal::PromptInjectionPattern, MageSev::Medium))
+                    }
+                    RiskSignal::VigilFlagged(VigilRiskLevel::High) => {
+                        Some((MageSignal::PromptInjectionPattern, MageSev::High))
+                    }
                     _ => None,
                 };
                 if let Some((sig, sev)) = mage_signal {
