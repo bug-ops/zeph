@@ -2315,7 +2315,14 @@ impl<C: Channel> Agent<C> {
             let matched: Vec<&zeph_config::HookDef> =
                 zeph_subagent::matching_hooks(&post_hooks, tc.name.as_str());
             async move {
-                let _permit = sem.acquire().await;
+                let Ok(_permit) = sem.acquire().await else {
+                    tracing::warn!(
+                        tool = %tc.name,
+                        "semaphore closed during post-tool hook firing, skipping \
+                         RuntimeLayer::after_tool/PostToolUse hooks for this result"
+                    );
+                    return (idx, result);
+                };
                 let mut result = result;
 
                 // RuntimeLayer after_tool hooks.

@@ -11,7 +11,7 @@ mod commands_rs_drift_tests;
 mod compaction_e2e;
 #[cfg(test)]
 mod confirmation_propagation_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "scheduler"))]
 mod ensemble_scheduler_loop_tests;
 #[cfg(test)]
 mod flush_orphaned_tests;
