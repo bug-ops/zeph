@@ -286,6 +286,11 @@ struct TaskEntry {
 enum CompletionKind {
     /// Future returned normally.
     Normal,
+    /// Future returned a value that the caller-supplied classifier (see
+    /// [`TaskSupervisor::spawn_oneshot_classified`]) identified as an inner failure —
+    /// distinct from `Normal` even though the outer `JoinHandle` itself resolved
+    /// successfully (no panic, no cancellation).
+    Failed,
     /// Future panicked.
     Panicked,
     /// Future was cancelled via the cancellation token or abort handle.
@@ -630,6 +635,51 @@ impl TaskSupervisor {
         Fut: Future<Output = R> + Send + 'static,
         R: Send + 'static,
     {
+        self.spawn_oneshot_classified(name, factory, |_| true)
+    }
+
+    /// Spawn an async task like [`spawn_oneshot`][Self::spawn_oneshot], but additionally
+    /// classify the produced value's own success/failure via `is_success` instead of only
+    /// the outer `JoinHandle` outcome (normal exit vs. panic vs. cancellation).
+    ///
+    /// This matters whenever `Fut::Output` itself encodes failure (typically
+    /// `Result<T, E>`): without a classifier, a task that runs to completion but produces
+    /// `Err(..)` is classified and logged identically to one that produced `Ok(..)` —
+    /// `spawn_oneshot` alone only observes whether the *outer* future resolved, never what
+    /// value it resolved to. `is_success` is called once, by reference, before the value is
+    /// sent to the returned [`BlockingHandle`]'s receiver — it never consumes or blocks on
+    /// the value, and the value itself is delivered to the caller unchanged either way.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use std::sync::Arc;
+    /// use tokio_util::sync::CancellationToken;
+    /// use zeph_common::task_supervisor::TaskSupervisor;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let sup = TaskSupervisor::new(CancellationToken::new());
+    /// let handle = sup.spawn_oneshot_classified(
+    ///     Arc::from("fallible-task"),
+    ///     || async { Result::<u32, String>::Err("boom".to_string()) },
+    ///     Result::is_ok,
+    /// );
+    /// let result = handle.join().await.unwrap();
+    /// assert!(result.is_err());
+    /// # }
+    /// ```
+    pub fn spawn_oneshot_classified<F, Fut, R>(
+        &self,
+        name: Arc<str>,
+        factory: F,
+        is_success: impl Fn(&R) -> bool + Send + 'static,
+    ) -> BlockingHandle<R>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = R> + Send + 'static,
+        R: Send + 'static,
+    {
         let (tx, rx) = oneshot::channel::<Result<R, BlockingError>>();
         let cancel = self.inner.cancel.clone();
         let span = tracing::info_span!("supervised_task", task.name = %name);
@@ -668,8 +718,13 @@ impl TaskSupervisor {
         tokio::spawn(async move {
             let kind = match join_handle.await {
                 Ok(Some(val)) => {
+                    let kind = if is_success(&val) {
+                        CompletionKind::Normal
+                    } else {
+                        CompletionKind::Failed
+                    };
                     let _ = tx.send(Ok(val));
-                    CompletionKind::Normal
+                    kind
                 }
                 Err(e) if e.is_panic() => {
                     let _ = tx.send(Err(BlockingError::Panicked));
@@ -971,6 +1026,12 @@ impl TaskSupervisor {
             CompletionKind::Panicked => {
                 tracing::warn!(task.name = %completion.name, "supervised task panicked");
             }
+            CompletionKind::Failed => {
+                tracing::warn!(
+                    task.name = %completion.name,
+                    "supervised task completed with an inner failure"
+                );
+            }
             CompletionKind::Normal => {
                 tracing::info!(task.name = %completion.name, "supervised task completed");
             }
@@ -981,7 +1042,13 @@ impl TaskSupervisor {
 
         match entry.restart_policy {
             RestartPolicy::RunOnce => {
-                entry.status = TaskStatus::Completed;
+                entry.status = if completion.kind == CompletionKind::Failed {
+                    TaskStatus::Failed {
+                        reason: "task completed with an inner failure".to_string(),
+                    }
+                } else {
+                    TaskStatus::Completed
+                };
                 state.tasks.remove(&completion.name);
                 None
             }
@@ -1510,6 +1577,110 @@ mod tests {
         );
 
         cancel.cancel();
+    }
+
+    /// `spawn_oneshot_classified` must deliver the factory's actual return value to the
+    /// caller unchanged, regardless of how `is_success` classifies it — the classifier only
+    /// affects internal registry/log bookkeeping, never the value received via `join()`.
+    #[tokio::test]
+    async fn test_oneshot_classified_delivers_actual_value_on_success_and_failure() {
+        let (sup, _cancel) = make_supervisor();
+
+        let ok_handle = sup.spawn_oneshot_classified(
+            Arc::from("classified-ok"),
+            || async { Result::<u32, String>::Ok(7) },
+            Result::is_ok,
+        );
+        assert_eq!(ok_handle.join().await.unwrap(), Ok(7));
+
+        let err_handle = sup.spawn_oneshot_classified(
+            Arc::from("classified-err"),
+            || async { Result::<u32, String>::Err("boom".to_string()) },
+            Result::is_ok,
+        );
+        assert_eq!(
+            err_handle.join().await.unwrap(),
+            Err("boom".to_string()),
+            "the real Err value must reach the caller unchanged even though it is \
+             classified as CompletionKind::Failed internally"
+        );
+    }
+
+    /// Regression test for #6257: an `Err`-returning factory must be classified as
+    /// `CompletionKind::Failed` (logged at `warn` as "completed with an inner failure"),
+    /// not `CompletionKind::Normal` (logged at `info` as a plain completion). This is the
+    /// distinction `spawn_agent_task` (zeph-subagent) relies on so a subagent task that
+    /// returns `Err` after a genuine completion (e.g. a worktree-setup failure) is reported
+    /// as a supervisor-level failure instead of a normal completion. The classification
+    /// only surfaces via the reap driver's log lines — for `RunOnce` the registry entry's
+    /// `Failed`/`Completed` status assignment and its removal happen in the same locked
+    /// critical section (see `classify_completion`), so there is no window in which
+    /// `snapshot()` could observe the transient status; the log line is the only externally
+    /// observable signal of which branch was taken.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn test_oneshot_classified_logs_failed_for_inner_err() {
+        let (sup, _cancel) = make_supervisor();
+
+        let handle = sup.spawn_oneshot_classified(
+            Arc::from("classified-inner-err"),
+            || async { Result::<u32, String>::Err("boom".to_string()) },
+            Result::is_ok,
+        );
+        handle.join().await.unwrap().unwrap_err();
+
+        // Give the reap driver a moment to process the completion event.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            logs_contain("completed with an inner failure"),
+            "an Err value must be classified as CompletionKind::Failed, not Normal"
+        );
+    }
+
+    /// Counterpart to the above: an `Ok`-returning factory must be classified as
+    /// `CompletionKind::Normal` (logged at `info`), never as an inner failure — confirms
+    /// the classifier doesn't over-fire on the success path.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn test_oneshot_classified_logs_normal_for_inner_ok() {
+        let (sup, _cancel) = make_supervisor();
+
+        let handle = sup.spawn_oneshot_classified(
+            Arc::from("classified-inner-ok"),
+            || async { Result::<u32, String>::Ok(1) },
+            Result::is_ok,
+        );
+        handle.join().await.unwrap().unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            !logs_contain("completed with an inner failure"),
+            "an Ok value must not be classified as CompletionKind::Failed"
+        );
+    }
+
+    /// Regression guard for #6257: `spawn_oneshot`'s ~20 existing call sites across the
+    /// workspace must remain unaffected by the addition of `spawn_oneshot_classified` —
+    /// `spawn_oneshot` delegates with an always-true classifier (`|_| true`), so a plain
+    /// (non-`Result`) factory value must still always be classified `Normal`/logged as a
+    /// plain completion, never as an inner failure.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn test_oneshot_backward_compat_never_logs_inner_failure() {
+        let (sup, _cancel) = make_supervisor();
+
+        let handle: BlockingHandle<u32> =
+            sup.spawn_oneshot(Arc::from("plain-oneshot"), || async { 42_u32 });
+        assert_eq!(handle.join().await.unwrap(), 42);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            !logs_contain("completed with an inner failure"),
+            "spawn_oneshot's default always-true classifier must never report an inner failure"
+        );
     }
 
     #[tokio::test]

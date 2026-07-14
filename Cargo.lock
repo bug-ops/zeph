@@ -10801,6 +10801,7 @@ dependencies = [
  "tokio-util",
  "tower 0.5.3",
  "tracing",
+ "tracing-test",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-go",
@@ -11487,6 +11488,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-test",
  "walkdir",
  "zeph-config",
 ]

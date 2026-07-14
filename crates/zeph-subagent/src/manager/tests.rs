@@ -3961,6 +3961,154 @@ mod worktree_cleanup_guard_tests {
     }
 }
 
+/// End-to-end regression tests for #6257: a worktree-setup failure inside `spawn()`'s task
+/// closure must publish a terminal `Failed` status via `send_setup_failure_status` so
+/// `poll_subagents()`-style filtering (`Completed | Failed | Canceled`, see
+/// `crates/zeph-core/src/agent/subagent_commands.rs`) picks the task up and `collect()`
+/// returns the real error — instead of leaving `status_rx` frozen at `Submitted` forever,
+/// permanently occupying a `max_concurrent` slot (the original zombie-spawn bug).
+#[cfg(test)]
+mod worktree_setup_failure_tests {
+    use std::process::Command;
+    use std::sync::Arc;
+
+    use tempfile::TempDir;
+    use zeph_config::WorktreeConfig;
+    use zeph_worktree::{DefaultGitRunner, DefaultWorktreeManager};
+
+    use super::*;
+    use crate::state::SubAgentState;
+
+    fn git(args: &[&str], cwd: &std::path::Path) -> std::process::Output {
+        Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git must be on PATH for this test")
+    }
+
+    /// Real (not faked) git repo — `wm.create()`'s quota check runs a real `git worktree
+    /// list --porcelain` before comparing against `max_worktrees`, so a fake `.git`
+    /// directory (as used by `worktree_cleanup_guard_tests::make_dummy_wm`) would fail with
+    /// `GitCommand`, not the `QuotaExceeded` this test needs to trigger deterministically.
+    fn init_repo() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path();
+        assert!(git(&["init", "-q"], path).status.success());
+        git(&["config", "user.email", "test@example.com"], path);
+        git(&["config", "user.name", "Test"], path);
+        std::fs::write(path.join("README.md"), "test\n").unwrap();
+        git(&["add", "."], path);
+        assert!(git(&["commit", "-q", "-m", "init"], path).status.success());
+        dir
+    }
+
+    fn worktree_def() -> SubAgentDef {
+        SubAgentDef::parse(
+            "---\nname: wt-bot\ndescription: A worktree bot\npermissions:\n  worktree: true\n---\n\nDo things.\n",
+        )
+        .unwrap()
+    }
+
+    /// `wm.create()` fails with `QuotaExceeded` (deterministic via `max_worktrees: Some(0)`
+    /// against a freshly-inited, empty repo — `reconcile()` finds 0 registered secondary
+    /// worktrees, so `0 >= 0` trips immediately). This must surface as a `Failed` status —
+    /// not leave the task frozen at `Submitted` — and `collect()` must return the real
+    /// `SubAgentError::WorktreeSetup` error while releasing the concurrency slot.
+    #[tokio::test]
+    async fn worktree_quota_failure_transitions_to_failed_and_is_collectible() {
+        let dir = init_repo();
+        let wm_config = WorktreeConfig {
+            enabled: true,
+            root: "worktrees".to_string(),
+            max_worktrees: Some(0),
+            ..WorktreeConfig::default()
+        };
+        let wm = Arc::new(
+            DefaultWorktreeManager::new(
+                dir.path().to_path_buf(),
+                wm_config,
+                DefaultGitRunner::new(),
+            )
+            .await
+            .unwrap(),
+        );
+
+        let mut mgr = make_manager();
+        mgr.set_worktree_manager(wm);
+        mgr.definitions.push(worktree_def());
+
+        let active_before = mgr
+            .agents
+            .values()
+            .filter(|h| matches!(h.state, SubAgentState::Working | SubAgentState::Submitted))
+            .count();
+
+        let task_id = mgr
+            .spawn(
+                "wt-bot",
+                "do the thing",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &SubAgentConfig::default(),
+                SpawnContext::default(),
+            )
+            .await
+            .unwrap();
+
+        // Poll until the background task publishes its terminal status — bounded so a
+        // regression back to the #6257 bug (status frozen at Submitted forever) fails this
+        // test with a clear timeout message instead of hanging indefinitely.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let state = mgr.agents[&task_id].status_rx.borrow().state;
+            if state != SubAgentState::Submitted {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "status_rx stuck at Submitted — #6257 zombie-spawn regression"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        // `poll_subagents()` derives its `collect()` candidates from `statuses()`, filtering
+        // on `Completed | Failed | Canceled` — assert the exact same predicate here.
+        let statuses = mgr.statuses();
+        let (_, status) = statuses
+            .iter()
+            .find(|(id, _)| id == &task_id)
+            .expect("task must still be present pending collect()");
+        assert_eq!(
+            status.state,
+            SubAgentState::Failed,
+            "a worktree-quota setup failure must publish Failed so poll_subagents()'s \
+             `Completed | Failed | Canceled` filter picks it up"
+        );
+
+        let result = mgr.collect(&task_id).await;
+        assert!(
+            result.is_err(),
+            "collect() must surface the real WorktreeSetup error: {result:?}"
+        );
+        assert!(
+            !mgr.agents.contains_key(&task_id),
+            "collect() must remove the handle, releasing the max_concurrent slot"
+        );
+
+        let active_after = mgr
+            .agents
+            .values()
+            .filter(|h| matches!(h.state, SubAgentState::Working | SubAgentState::Submitted))
+            .count();
+        assert_eq!(
+            active_after, active_before,
+            "the concurrency slot must be released after collect(), not leaked"
+        );
+    }
+}
+
 // ── TaskSupervisor integration tests ─────────────────────────────────────────
 
 #[tokio::test]

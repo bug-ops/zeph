@@ -456,21 +456,29 @@ impl SubAgentManager {
     /// Falls back to a transient local supervisor when no session supervisor has been wired via
     /// [`SubAgentManager::set_task_supervisor`] — the task runs but is not tracked globally.
     /// The returned [`BlockingHandle`] type is identical in both cases so call sites are uniform.
-    pub(crate) fn spawn_agent_task<F, Fut, R>(
+    ///
+    /// Every agent loop task's future resolves to a `Result<T, E>` (in practice always
+    /// `Result<String, SubAgentError>`), so this classifies via
+    /// [`TaskSupervisor::spawn_oneshot_classified`] rather than plain `spawn_oneshot` — an
+    /// `Err` produced by a genuinely completed task (e.g. a worktree-quota or cwd-guard setup
+    /// failure returned before the agent loop ever starts) is thus classified and logged as a
+    /// supervisor-level failure instead of a normal completion (#6257).
+    pub(crate) fn spawn_agent_task<F, Fut, T, E>(
         &self,
         name: Arc<str>,
         factory: F,
-    ) -> BlockingHandle<R>
+    ) -> BlockingHandle<Result<T, E>>
     where
         F: FnOnce() -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = R> + Send + 'static,
-        R: Send + 'static,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'static,
+        T: Send + 'static,
+        E: Send + 'static,
     {
         if let Some(ref sup) = self.task_supervisor {
-            sup.spawn_oneshot(name, factory)
+            sup.spawn_oneshot_classified(name, factory, Result::is_ok)
         } else {
             let local = TaskSupervisor::new(CancellationToken::new());
-            local.spawn_oneshot(name, factory)
+            local.spawn_oneshot_classified(name, factory, Result::is_ok)
         }
     }
 

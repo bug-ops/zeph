@@ -529,6 +529,27 @@ pub(crate) fn build_context_summary(parent_messages: &[Message], max_chars: usiz
     joined[..end].to_owned()
 }
 
+/// Publishes a terminal `Failed` status before an early return from the cwd-lock/worktree
+/// setup block in [`SubAgentManager::spawn`]'s task closure.
+///
+/// Without this, a setup failure (worktree quota exceeded, cwd-guard construction failure)
+/// returns before [`run_agent_loop`]'s `init_loop_state` ever sends the first status update,
+/// so `status_rx` stays frozen at its initial `Submitted` value forever — `poll_subagents()`
+/// only calls `collect()` for `Completed`/`Failed`/`Canceled` tasks, so the task is never
+/// collected, permanently occupying a `max_concurrent` slot (#6257).
+fn send_setup_failure_status(
+    status_tx: &watch::Sender<SubAgentStatus>,
+    started_at: Instant,
+    error: &SubAgentError,
+) {
+    let _ = status_tx.send(SubAgentStatus {
+        state: SubAgentState::Failed,
+        last_message: Some(error.to_string()),
+        turns_used: 0,
+        started_at,
+    });
+}
+
 // ── SubAgentManager impl ──────────────────────────────────────────────────────
 
 impl SubAgentManager {
@@ -729,13 +750,27 @@ impl SubAgentManager {
                         let handle = wm
                             .create(&task_id_for_worktree)
                             .await
-                            .map_err(|e| SubAgentError::WorktreeSetup(e.to_string()))?;
+                            .map_err(|e| SubAgentError::WorktreeSetup(e.to_string()))
+                            .inspect_err(|err| {
+                                send_setup_failure_status(
+                                    &agent_loop_args.status_tx,
+                                    agent_loop_args.started_at,
+                                    err,
+                                );
+                            })?;
                         tracing::info!(
                             path = %handle.path.display(),
                             "worktree created for sub-agent"
                         );
                         let guard = CwdRestoreGuard::new(&handle.path, owned_guard)
-                            .map_err(|e| SubAgentError::WorktreeSetup(e.to_string()))?;
+                            .map_err(|e| SubAgentError::WorktreeSetup(e.to_string()))
+                            .inspect_err(|err| {
+                                send_setup_failure_status(
+                                    &agent_loop_args.status_tx,
+                                    agent_loop_args.started_at,
+                                    err,
+                                );
+                            })?;
                         let _cleanup = WorktreeCleanupGuard {
                             wm: Arc::clone(wm),
                             handle: handle.clone(),
@@ -755,7 +790,14 @@ impl SubAgentManager {
                     }
 
                     let guard = CwdRestoreGuard::acquire(owned_guard)
-                        .map_err(|e| SubAgentError::WorktreeSetup(e.to_string()))?;
+                        .map_err(|e| SubAgentError::WorktreeSetup(e.to_string()))
+                        .inspect_err(|err| {
+                            send_setup_failure_status(
+                                &agent_loop_args.status_tx,
+                                agent_loop_args.started_at,
+                                err,
+                            );
+                        })?;
                     Some(guard)
                 } else {
                     None

@@ -27,6 +27,7 @@ zeph-config.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+tracing-test.workspace = true
 
 [lints]
 workspace = true

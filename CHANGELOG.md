@@ -640,6 +640,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   validate containment against the nearest existing ancestor before calling
   `create_dir_all`, so a configured root that resolves outside the repository is
   rejected without mutating the filesystem first.
+- **Sub-agents**: `WorktreeManager::reconcile()`'s admission-quota count included every
+  git worktree registered to the repository (`git worktree list --porcelain`), not just
+  ones the subagent worktree subsystem itself created — so worktrees created by
+  unrelated tooling (including this project's own `EnterWorktree` workflow) counted
+  against `max_worktrees` and could silently trip `QuotaExceeded` on a background
+  `/agent bg` spawn. Three compounding gaps then turned that single failure into a
+  permanently stuck task: the error was never logged, `TaskSupervisor::spawn_oneshot`
+  classified a failed inner `Result` as a normal completion, and the task's status
+  channel was never updated past its initial `Submitted` state, so `poll_subagents()`
+  could never collect it — leaking one `max_concurrent` slot per occurrence (#6257).
+  Fixed by: scoping `reconcile()`'s counted entries to the subsystem's own worktree
+  root; logging `WorktreeError` at `warn` in `create()`; adding
+  `CompletionKind::Failed` and a generic `TaskSupervisor::spawn_oneshot_classified`
+  that inspects the inner `Result` (subagent spawns now classify via `Result::is_ok`;
+  the existing `spawn_oneshot` and its ~20 call sites are unaffected); and sending a
+  terminal `Failed` status from all three fallible pre-loop setup points in
+  `spawn()`'s task closure (`wm.create()`, `CwdRestoreGuard::new()`,
+  `CwdRestoreGuard::acquire()`) so a setup failure is now visible via `/agent
+  list`/`/agent status`, its concurrency slot is released, and the real error is
+  retrievable via `collect()`.
 
 ### Testing
 

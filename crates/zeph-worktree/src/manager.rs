@@ -166,13 +166,16 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// [`WorktreeError::QuotaExceeded`] if that count is already `>= max`. The
     /// count includes worktrees created by *other*, concurrently running zeph
     /// sessions over the same `root`, since they consume the same disk budget
-    /// `max_worktrees` is meant to bound. This is a best-effort **soft** cap
-    /// across *processes*: the count-then-`git worktree add` sequence is not
-    /// atomic across separate zeph sessions, so two concurrent `create()`
-    /// calls in different processes can both pass the check and briefly push
-    /// the total above `max`. No cross-process locking is used to close that
-    /// gap — it is out of scope for the size of this feature. Within a single
-    /// process, admission is a **hard** guarantee — see `# Concurrency` below.
+    /// `max_worktrees` is meant to bound — but, per [`reconcile`][Self::reconcile]'s
+    /// "Scope" section, excludes worktrees created by unrelated tooling elsewhere in the
+    /// repository (e.g. `EnterWorktree`, a manual `git worktree add` outside `root`), which
+    /// do not consume this budget and must not count against it (#6257). This is a
+    /// best-effort **soft** cap across *processes*: the count-then-`git worktree add`
+    /// sequence is not atomic across separate zeph sessions, so two concurrent `create()`
+    /// calls in different processes can both pass the check and briefly push the total
+    /// above `max`. No cross-process locking is used to close that gap — it is out of
+    /// scope for the size of this feature. Within a single process, admission is a
+    /// **hard** guarantee — see `# Concurrency` below.
     ///
     /// ## Concurrency
     ///
@@ -213,7 +216,15 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(name = "worktree.create", skip(self), fields(subagent_id = %subagent_id))]
+    // `err(level = WARN)` logs every `Err` return (including `QuotaExceeded`, whose
+    // `Display` already carries `current`/`max`) at `warn` with the `subagent_id` span
+    // field attached — previously this failed silently with zero log evidence (#6257).
+    #[instrument(
+        name = "worktree.create",
+        skip(self),
+        fields(subagent_id = %subagent_id),
+        err(level = tracing::Level::WARN)
+    )]
     pub async fn create(&self, subagent_id: &str) -> Result<WorktreeHandle, WorktreeError> {
         validate_branch_component(subagent_id)?;
 
@@ -386,6 +397,20 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// belong to another, concurrently running session and MUST NOT be
     /// force-removed without an explicit operator override (#6055).
     ///
+    /// ## Scope
+    ///
+    /// Only entries whose path falls under this manager's canonicalised
+    /// `worktree_root` (`config.root`, resolved at construction) are returned. `git
+    /// worktree list --porcelain` reports *every* worktree registered against the
+    /// repository, including ones created by unrelated tooling — e.g. the `EnterWorktree`
+    /// developer tool, or a manual `git worktree add` — under a completely different
+    /// directory. Those are not managed by this subsystem: `zeph worktree clean` must
+    /// never remove them, and [`create`][Self::create]'s `max_worktrees` admission count
+    /// must not be inflated by them (#6257). A worktree created by *another*,
+    /// concurrently running zeph session that shares the same `config.root` still counts
+    /// — it is under `worktree_root` and is legitimately this subsystem's responsibility,
+    /// even though it is untracked by *this* process's in-memory handle list.
+    ///
     /// # Errors
     ///
     /// Returns [`WorktreeError::GitCommand`] if `git worktree list` fails.
@@ -425,6 +450,8 @@ impl<R: GitRunner> WorktreeManager<R> {
             .filter(|e| !session_paths.contains(&e.path))
             // Skip the main worktree (repo_root itself).
             .filter(|e| e.path != self.repo_root)
+            // Skip worktrees not managed by this subsystem (see "Scope" above, #6257).
+            .filter(|e| e.path.starts_with(&self.worktree_root))
             .map(|e| {
                 let branch_name = match (e.branch, e.is_bare) {
                     (Some(branch), _) => branch,
@@ -1147,6 +1174,14 @@ mod tests {
         dir
     }
 
+    /// Canonicalises `dir`'s path the same way `WorktreeManager::new` canonicalises
+    /// `worktree_root`. Required so synthetic `git worktree list --porcelain` fixtures
+    /// match `reconcile()`'s `worktree_root`-scoped filter (#6257) — `TempDir::path()` is
+    /// not canonical on macOS (`/var` is a symlink to `/private/var`).
+    fn canon_repo(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path().canonicalize().unwrap()
+    }
+
     async fn make_manager(
         dir: &tempfile::TempDir,
         runner: FakeGitRunner,
@@ -1490,7 +1525,7 @@ mod tests {
         let runner = FakeGitRunner::new();
         let porcelain = format!(
             "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\nworktree {0}/worktrees/agent-1\nHEAD def456\nbranch refs/heads/agent/agent-1\n\n",
-            dir.path().display()
+            canon_repo(&dir).display()
         );
         runner.push_ok(porcelain.into_bytes());
 
@@ -1509,7 +1544,7 @@ mod tests {
         let runner = FakeGitRunner::new();
         let porcelain = format!(
             "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\nworktree {0}/worktrees/detached-1\nHEAD def456\ndetached\n\n",
-            dir.path().display()
+            canon_repo(&dir).display()
         );
         runner.push_ok(porcelain.into_bytes());
 
@@ -1519,7 +1554,7 @@ mod tests {
         assert_eq!(stale[0].handle.branch_name, DETACHED_BRANCH_SENTINEL);
         assert_eq!(
             stale[0].handle.path,
-            dir.path().join("worktrees/detached-1")
+            canon_repo(&dir).join("worktrees/detached-1")
         );
     }
 
@@ -1563,7 +1598,7 @@ mod tests {
         let runner = FakeGitRunner::new();
         let porcelain = format!(
             "worktree {0}\nHEAD abc123\ndetached\n\nworktree {0}/worktrees/detached-2\nHEAD def456\ndetached\n\n",
-            dir.path().display()
+            canon_repo(&dir).display()
         );
         runner.push_ok(porcelain.into_bytes());
 
@@ -1573,7 +1608,7 @@ mod tests {
         assert_eq!(stale[0].handle.branch_name, DETACHED_BRANCH_SENTINEL);
         assert_eq!(
             stale[0].handle.path,
-            dir.path().join("worktrees/detached-2")
+            canon_repo(&dir).join("worktrees/detached-2")
         );
     }
 
@@ -1609,7 +1644,7 @@ mod tests {
         let runner = FakeGitRunner::new();
         let porcelain = format!(
             "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\nworktree {0}/worktrees/bare-1\nbare\n\nworktree {0}/worktrees/detached-1\nHEAD def456\ndetached\n\n",
-            dir.path().display()
+            canon_repo(&dir).display()
         );
         runner.push_ok(porcelain.into_bytes());
 
@@ -1636,7 +1671,7 @@ mod tests {
         let runner = FakeGitRunner::new();
         let porcelain = format!(
             "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\nworktree {0}/worktrees/agent-1\nHEAD def456\nbranch refs/heads/agent/agent-1\n\n",
-            dir.path().display()
+            canon_repo(&dir).display()
         );
         runner.push_ok(porcelain.into_bytes());
 
@@ -1657,7 +1692,7 @@ mod tests {
         let runner = FakeGitRunner::new();
         let porcelain = format!(
             "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\nworktree {0}/worktrees/gone\nHEAD def456\nbranch refs/heads/agent/gone\nprunable gitdir file points to non-existent location\n\n",
-            dir.path().display()
+            canon_repo(&dir).display()
         );
         runner.push_ok(porcelain.into_bytes());
 
@@ -1669,6 +1704,41 @@ mod tests {
             Some("gitdir file points to non-existent location".to_string())
         );
         assert!(stale[0].is_safe_to_force_remove());
+    }
+
+    /// Regression test for #6257: `reconcile()` must exclude a git-registered worktree
+    /// whose path falls outside this subsystem's canonicalised `worktree_root` — e.g. one
+    /// created by the `EnterWorktree` developer tool or a manual `git worktree add`
+    /// elsewhere in the repository. Only the managed worktree under `worktree_root` may
+    /// appear in the stale list.
+    #[tokio::test]
+    async fn reconcile_excludes_worktree_outside_worktree_root() {
+        let dir = make_repo();
+        let foreign = tempfile::tempdir().unwrap();
+        let foreign_path = foreign.path().canonicalize().unwrap();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
+             worktree {0}/worktrees/agent-1\nHEAD def456\nbranch refs/heads/agent/agent-1\n\n\
+             worktree {1}\nHEAD ghi789\nbranch refs/heads/enter-worktree/fix-123\n\n",
+            canon_repo(&dir).display(),
+            foreign_path.display()
+        );
+        runner.push_ok(porcelain.into_bytes());
+
+        let mgr = make_manager(&dir, runner).await;
+        let stale = mgr.reconcile().await.unwrap();
+
+        assert_eq!(
+            stale.len(),
+            1,
+            "the foreign worktree outside worktree_root must be excluded: {stale:?}"
+        );
+        assert_eq!(stale[0].handle.branch_name, "agent/agent-1");
+        assert_eq!(
+            stale[0].handle.path,
+            canon_repo(&dir).join("worktrees/agent-1")
+        );
     }
 
     // --- prune ---
@@ -1722,7 +1792,7 @@ mod tests {
              worktree {0}/worktrees/prunable-1\nHEAD def456\nbranch refs/heads/agent/prunable-1\n\
              prunable gitdir file points to non-existent location\n\n\
              worktree {0}/worktrees/in-use-1\nHEAD ghi789\nbranch refs/heads/agent/in-use-1\n\n",
-            dir.path().display()
+            canon_repo(&dir).display()
         );
         runner.push_ok(porcelain.into_bytes()); // reconcile: worktree list --porcelain
         runner.push_ok(b"" as &[u8]); // remove prunable-1: worktree remove --force
@@ -1753,7 +1823,7 @@ mod tests {
         let porcelain = format!(
             "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
              worktree {0}/worktrees/in-use-1\nHEAD ghi789\nbranch refs/heads/agent/in-use-1\n\n",
-            dir.path().display()
+            canon_repo(&dir).display()
         );
         runner.push_ok(porcelain.into_bytes());
         runner.push_ok(b"" as &[u8]); // remove in-use-1 (force bypasses the skip-gate)
@@ -1778,7 +1848,7 @@ mod tests {
             "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
              worktree {0}/worktrees/locked-1\nHEAD def456\nbranch refs/heads/agent/locked-1\n\
              prunable gitdir file points to non-existent location\n\n",
-            dir.path().display()
+            canon_repo(&dir).display()
         );
         runner.push_ok(porcelain.into_bytes());
         runner.push_err(b"error: unable to remove worktree: it is locked\n" as &[u8]);
@@ -1805,7 +1875,7 @@ mod tests {
             "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
              worktree {0}/worktrees/prunable-1\nHEAD def456\nbranch refs/heads/agent/prunable-1\n\
              prunable gitdir file points to non-existent location\n\n",
-            dir.path().display()
+            canon_repo(&dir).display()
         );
         runner.push_ok(porcelain.into_bytes());
         runner.push_ok(b"" as &[u8]); // remove succeeds
@@ -1986,6 +2056,82 @@ mod tests {
         assert_matches!(err, WorktreeError::QuotaExceeded { current: 1, max: 1 });
     }
 
+    /// Regression test for #6257: `create()`'s admission quota must not count a
+    /// git-registered worktree that lives outside this subsystem's `worktree_root` (e.g.
+    /// a sibling directory created by the `EnterWorktree` developer tool). With
+    /// `max_worktrees: Some(1)` and only a foreign worktree registered (no managed
+    /// worktree yet), `create()` must still be admitted — before the fix, the foreign
+    /// entry would have inflated the count and spuriously tripped `QuotaExceeded`.
+    #[tokio::test]
+    async fn create_admission_ignores_worktree_outside_worktree_root() {
+        let dir = make_repo();
+        let foreign = tempfile::tempdir().unwrap();
+        let foreign_path = foreign.path().canonicalize().unwrap();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
+             worktree {1}\nHEAD ghi789\nbranch refs/heads/enter-worktree/fix-123\n\n",
+            canon_repo(&dir).display(),
+            foreign_path.display()
+        );
+        // reconcile (quota check) — only the foreign worktree is registered.
+        runner.push_ok(porcelain.into_bytes());
+        // status --porcelain (dirty check)
+        runner.push_ok(b"" as &[u8]);
+        // worktree add
+        runner.push_ok(b"" as &[u8]);
+
+        let config = WorktreeConfig {
+            max_worktrees: Some(1),
+            ..test_config()
+        };
+        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner)
+            .await
+            .unwrap();
+
+        let result = mgr.create("agent-a").await;
+        assert!(
+            result.is_ok(),
+            "admission must not be blocked by a foreign worktree outside worktree_root: {result:?}"
+        );
+    }
+
+    /// Regression test for #6257: `create()` must log a `WARN`-level event when it fails
+    /// (via `#[instrument(err(level = WARN))]`) — previously a `QuotaExceeded` failure had
+    /// zero log evidence, which is how the failure turned into a silent zombie task with no
+    /// diagnostic trail.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn create_logs_warn_on_quota_exceeded() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        let porcelain = format!(
+            "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n",
+            dir.path().display()
+        );
+        runner.push_ok(porcelain.into_bytes());
+
+        let config = WorktreeConfig {
+            max_worktrees: Some(0),
+            ..test_config()
+        };
+        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner)
+            .await
+            .unwrap();
+
+        let err = mgr.create("agent-a").await.unwrap_err();
+        assert_matches!(err, WorktreeError::QuotaExceeded { current: 0, max: 0 });
+
+        assert!(
+            logs_contain("worktree.create"),
+            "expected the worktree.create span to be logged"
+        );
+        assert!(
+            logs_contain("worktree limit reached"),
+            "expected the QuotaExceeded error text to be logged at WARN via err(level = WARN)"
+        );
+    }
+
     /// Test-only [`GitRunner`] wrapper that sleeps before delegating a
     /// `worktree list --porcelain` call (the git call `reconcile` issues as
     /// part of `create`'s quota check). This widens the check-then-act window
@@ -2158,7 +2304,7 @@ mod tests {
             "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
              worktree {0}/worktrees/prunable-1\nHEAD def456\nbranch refs/heads/agent/prunable-1\n\
              prunable gitdir file points to non-existent location\n\n",
-            dir.path().display()
+            canon_repo(&dir).display()
         );
         // sweep()'s single reconcile() call, shared by the clean and count steps.
         runner.push_ok(porcelain_with_prunable.into_bytes());
@@ -2235,7 +2381,7 @@ mod tests {
             "worktree {0}\nHEAD abc123\nbranch refs/heads/main\n\n\
              worktree {0}/worktrees/agent-1\nHEAD def456\nbranch refs/heads/agent/agent-1\n\n\
              worktree {0}/worktrees/agent-2\nHEAD ghi789\nbranch refs/heads/agent/agent-2\n\n",
-            dir.path().display()
+            canon_repo(&dir).display()
         );
         // sweep()'s single reconcile() call (no prunable entries — both skipped, nothing removed).
         runner.push_ok(porcelain.into_bytes());
@@ -2331,7 +2477,7 @@ mod tests {
              worktree {0}/worktrees/skipped-1\nHEAD ghi789\nbranch refs/heads/agent/skipped-1\n\n\
              worktree {0}/worktrees/errored-1\nHEAD jkl012\nbranch refs/heads/agent/errored-1\n\
              prunable gitdir file points to non-existent location\n\n",
-            dir.path().display()
+            canon_repo(&dir).display()
         );
         // sweep()'s single reconcile() call, covering all 3 stale entries.
         runner.push_ok(porcelain.into_bytes());
