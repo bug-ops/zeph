@@ -117,6 +117,8 @@ pub(crate) struct WizardState {
     pub(crate) orchestration_failure_strategy: String,
     pub(crate) orchestration_planner_provider: Option<String>,
     pub(crate) orchestration_persistence_enabled: bool,
+    /// RESERVED — not yet enforced (spec-075-orchestration-node-control-parity, #6021).
+    pub(crate) orchestration_default_idle_timeout_secs: Option<u64>,
     // Ensemble-verified plan verification (spec 073-orch-ensemble-merge, opt-in)
     pub(crate) ensemble_enabled: bool,
     pub(crate) ensemble_members: Vec<String>,
@@ -411,6 +413,7 @@ impl Default for WizardState {
             orchestration_failure_strategy: String::new(),
             orchestration_planner_provider: None,
             orchestration_persistence_enabled: true,
+            orchestration_default_idle_timeout_secs: None,
             ensemble_enabled: false,
             ensemble_members: Vec::new(),
             debug_dump_enabled: false,
@@ -1117,6 +1120,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 .unwrap_or_default(),
         ),
         persistence_enabled: state.orchestration_persistence_enabled,
+        default_idle_timeout_secs: state.orchestration_default_idle_timeout_secs,
         ensemble: zeph_config::EnsembleConfig {
             enabled: state.ensemble_enabled,
             verify: state.ensemble_enabled,

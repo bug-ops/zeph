@@ -391,6 +391,84 @@ fn test_process_event_failed_retry() {
     assert_eq!(scheduler.graph.status, GraphStatus::Running);
 }
 
+/// spec-075 §6 success criterion: "a node with `recovery` configured whose failure also trips
+/// a cascade-abort threshold ends the graph `Failed`, not recovered" — the cascade check in
+/// `handle_failed_outcome()` runs *before* `propagate_failure()` (where `try_recover` lives),
+/// so cascade-abort must structurally preempt recovery. Uses the linear-chain cascade path
+/// (`cascade_chain_threshold`), which needs no `CascadeDetector` setup: A(0) -> B(1) -> C(2),
+/// A and B fail with `Retry` (not exhausted, so their own failures don't independently abort
+/// the graph), C fails with `recovery` configured. C's failure is the 3rd consecutive Failed
+/// entry in the chain, tripping the default `cascade_chain_threshold = 3` — the graph must
+/// abort via `abort_dag_with_lineage()` before `try_recover()` for C is ever reached.
+#[test]
+fn test_cascade_chain_threshold_preempts_recovery() {
+    let graph = graph_from_nodes(vec![
+        make_node(0, &[]),
+        make_node(1, &[0]),
+        make_node(2, &[1]),
+    ]);
+    let mut config = make_config();
+    config.cascade_chain_threshold = 3;
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+    // A and B: Retry with retries available, so their own failures reset them to Ready
+    // rather than independently aborting the graph (which would confound the test — we want
+    // the cascade *chain* check to be the thing that aborts, not an ordinary per-task Abort).
+    scheduler.graph.tasks[0].failure_strategy = Some(crate::graph::FailureStrategy::Retry);
+    scheduler.graph.tasks[0].max_retries = Some(5);
+    scheduler.graph.tasks[1].failure_strategy = Some(crate::graph::FailureStrategy::Retry);
+    scheduler.graph.tasks[1].max_retries = Some(5);
+    // C: recovery configured. If recovery fired, this would end Completed with the injected
+    // output — the assertion below proves it never gets the chance to.
+    scheduler.graph.tasks[2].recovery = Some(crate::graph::RecoveryAction {
+        state_injection: Some("should never be applied".to_string()),
+    });
+
+    for (id, handle) in [(TaskId(0), "h0"), (TaskId(1), "h1"), (TaskId(2), "h2")] {
+        scheduler.graph.tasks[id.index()].status = TaskStatus::Running;
+        scheduler.running.insert(
+            id,
+            RunningTask {
+                agent_handle_id: handle.to_string(),
+                agent_def_name: "worker".to_string(),
+                started_at: std::time::Instant::now(),
+                admission_permit: None,
+            },
+        );
+    }
+
+    // Failures processed in dependency order within a single tick() — each handle_failed_outcome
+    // call records its lineage entry into self.lineage_chains before the next event is drained.
+    for (id, handle) in [(TaskId(0), "h0"), (TaskId(1), "h1"), (TaskId(2), "h2")] {
+        scheduler.buffered_events.push_back(TaskEvent {
+            task_id: id,
+            agent_handle_id: handle.to_string(),
+            outcome: TaskOutcome::Failed {
+                error: "boom".to_string(),
+            },
+        });
+    }
+    scheduler.tick();
+
+    assert_eq!(
+        scheduler.graph.status,
+        GraphStatus::Failed,
+        "cascade chain threshold must abort the graph"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[2].status,
+        TaskStatus::Failed,
+        "the recovery-configured node must NOT be recovered — cascade-abort preempts \
+         propagate_failure() (and thus try_recover()) entirely"
+    );
+    assert!(
+        scheduler.graph.tasks[2].result.is_none(),
+        "no synthetic recovery TaskResult should ever have been set"
+    );
+}
+
 #[test]
 fn test_timeout_cancels_stalled() {
     let graph = graph_from_nodes(vec![make_node(0, &[])]);
@@ -420,6 +498,180 @@ fn test_timeout_cancels_stalled() {
     );
     assert!(has_cancel, "timed-out task should emit Cancel action");
     assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Failed);
+}
+
+#[test]
+fn test_per_task_timeout_override_fires_before_global_default() {
+    // Two running tasks: task 0 has a short per-task override (already exceeded),
+    // task 1 has no override and relies on the (much longer) global default.
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+    let mut config = make_config();
+    config.task_timeout_secs = 300; // long global default
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+    // Use Skip (not the graph default Abort) for the overridden task so a genuine
+    // timeout on task 0 doesn't cascade-abort and collaterally cancel unrelated task 1
+    // — isolates the per-task deadline filter this test targets from cascade semantics.
+    scheduler.graph.tasks[0].failure_strategy = Some(zeph_config::FailureStrategy::Skip);
+    scheduler.graph.tasks[0].timeout = Some(crate::graph::TimeoutPolicy {
+        run_timeout_secs: Some(1),
+        idle_timeout_secs: None,
+    });
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.graph.tasks[1].status = TaskStatus::Running;
+
+    let started_2s_ago = std::time::Instant::now()
+        .checked_sub(Duration::from_secs(2))
+        .unwrap();
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: started_2s_ago,
+            admission_permit: None,
+        },
+    );
+    scheduler.running.insert(
+        TaskId(1),
+        RunningTask {
+            agent_handle_id: "h1".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: started_2s_ago,
+            admission_permit: None,
+        },
+    );
+
+    let actions = scheduler.tick();
+    let canceled: Vec<&str> = actions
+        .iter()
+        .filter_map(|a| match a {
+            SchedulerAction::Cancel { agent_handle_id } => Some(agent_handle_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        canceled,
+        vec!["h0"],
+        "only the overridden task should time out; the other respects the longer global default"
+    );
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Skipped);
+    assert_eq!(scheduler.graph.tasks[1].status, TaskStatus::Running);
+}
+
+#[test]
+fn test_no_overrides_timing_matches_pre_feature_behavior() {
+    // Regression: no per-task overrides anywhere → identical timing to pre-feature code.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut config = make_config();
+    config.task_timeout_secs = 1;
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now()
+                .checked_sub(Duration::from_secs(2))
+                .unwrap(),
+            admission_permit: None,
+        },
+    );
+
+    let actions = scheduler.tick();
+    let has_cancel = actions.iter().any(
+        |a| matches!(a, SchedulerAction::Cancel { agent_handle_id } if agent_handle_id == "h0"),
+    );
+    assert!(
+        has_cancel,
+        "global timeout must still fire with no override"
+    );
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Failed);
+}
+
+/// spec-075 §6 success criterion (FR-005): `idle_timeout_secs` is defined and config-surfaced
+/// but a documented no-op in v1 — a task with a short `idle_timeout_secs` and long idle
+/// execution must never be flagged as timed out by that field. Only `run_timeout_secs` is
+/// enforced; `check_timeouts()` never reads `idle_timeout_secs` at all.
+#[test]
+fn test_idle_timeout_secs_is_a_no_op() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut config = make_config();
+    config.task_timeout_secs = 300; // long global run_timeout default
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+    scheduler.graph.tasks[0].timeout = Some(crate::graph::TimeoutPolicy {
+        run_timeout_secs: None,     // falls back to the long global default above
+        idle_timeout_secs: Some(1), // short — would fire immediately if it were enforced
+    });
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            // Idle well past idle_timeout_secs (1s), but nowhere near run_timeout_secs (300s).
+            started_at: std::time::Instant::now()
+                .checked_sub(Duration::from_secs(5))
+                .unwrap(),
+            admission_permit: None,
+        },
+    );
+
+    let actions = scheduler.tick();
+    let has_cancel = actions
+        .iter()
+        .any(|a| matches!(a, SchedulerAction::Cancel { .. }));
+    assert!(
+        !has_cancel,
+        "idle_timeout_secs must never fire a timeout in v1 — it is a documented no-op"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Running,
+        "the task must remain Running, unaffected by the short idle_timeout_secs value"
+    );
+}
+
+#[test]
+fn test_effective_run_timeout_falls_back_to_global_default() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut config = make_config();
+    config.task_timeout_secs = 300;
+    let defs = vec![make_def("worker")];
+    let scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+    assert_eq!(
+        scheduler.effective_run_timeout(TaskId(0)),
+        Duration::from_mins(5)
+    );
+}
+
+#[test]
+fn test_effective_run_timeout_uses_per_task_override() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut config = make_config();
+    config.task_timeout_secs = 300;
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+    scheduler.graph.tasks[0].timeout = Some(crate::graph::TimeoutPolicy {
+        run_timeout_secs: Some(45),
+        idle_timeout_secs: None,
+    });
+
+    assert_eq!(
+        scheduler.effective_run_timeout(TaskId(0)),
+        Duration::from_secs(45)
+    );
 }
 
 #[test]
@@ -863,6 +1115,60 @@ async fn test_exponential_backoff_duration() {
         elapsed_capped.as_millis() >= 5000,
         "backoff must be capped at 5000ms with high deferrals, got {}ms",
         elapsed_capped.as_millis()
+    );
+}
+
+#[tokio::test]
+async fn test_wait_event_nearest_deadline_reflects_per_task_override() {
+    // task 0 has a short per-task override that has already nearly elapsed; task 1 has
+    // no override and relies on a very long global default. wait_event()'s computed
+    // wait must reflect the nearer (task 0's) deadline, not the uniform global one.
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+    let config = zeph_config::OrchestrationConfig {
+        task_timeout_secs: 300,
+        ..make_config()
+    };
+    let mut scheduler = DagScheduler::new(
+        graph,
+        &config,
+        Box::new(FirstRouter),
+        vec![make_def("worker")],
+        None,
+    )
+    .unwrap();
+
+    scheduler.graph.tasks[0].timeout = Some(crate::graph::TimeoutPolicy {
+        run_timeout_secs: Some(1),
+        idle_timeout_secs: None,
+    });
+    let now = std::time::Instant::now();
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: now.checked_sub(Duration::from_millis(950)).unwrap(),
+            admission_permit: None,
+        },
+    );
+    scheduler.running.insert(
+        TaskId(1),
+        RunningTask {
+            agent_handle_id: "h1".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: now,
+            admission_permit: None,
+        },
+    );
+
+    let start = tokio::time::Instant::now();
+    scheduler.wait_event().await;
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed.as_millis() < 5000,
+        "wait_event must return promptly based on task 0's near-elapsed override, \
+         not the 300s global default; got {}ms",
+        elapsed.as_millis()
     );
 }
 

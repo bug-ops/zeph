@@ -101,9 +101,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `Debug`). Purely additive — `media` is never populated yet, so this PR changes no runtime
   behavior. Decode/validate/attach logic, the ephemeral persistence strip, vision-tier routing,
   and the config/CLI/TUI surface are deferred to P1–P3 follow-up issues.
+- **Orchestration**: `TaskNode` gains an optional per-task `timeout: TimeoutPolicy`
+  (`run_timeout_secs`, enforced on both spawned and `RunInline` dispatch; `idle_timeout_secs`,
+  defined and config-surfaced but a documented no-op in v1 — reserved for a future
+  progress-signal mechanism) and an optional `recovery: RecoveryAction` (`state_injection`,
+  Mode-1 recovery: on terminal `Abort`-default or retry-exhausted `Retry` failure, the node is
+  marked `Completed` with the injected string as its output and the graph continues past the
+  failure without pausing unrelated concurrent work). Both fields are additive — a `TaskNode`
+  with neither set behaves identically to before this feature (spec
+  075-orchestration-node-control-parity, #6021). `validate()` rejects a node that sets both
+  `recovery` and `verify_predicate`, and warns (without rejecting) when `recovery` is set under
+  an effective `Skip`/`Ask` failure strategy, where it is never consulted. New config field
+  `[orchestration].default_idle_timeout_secs: Option<u64>` (reserved, not yet enforced;
+  `config.toml`/`--init`/`--migrate-config` integration, no dedicated CLI/TUI surface, mirroring
+  the existing `task_timeout_secs` precedent). Zero new `tokio::spawn()` sites.
+- **Orchestration**: added a visible, persistent signal (not the transient TUI status line) when
+  plan/task verification judges output incomplete and no automatic repair resolves it — both
+  per-task (`SchedulerAction::Verify`) and whole-plan (`run_whole_plan_verify`) scopes emit an
+  independent `Note: ...` message; previously this case was silently logged at `debug`/`warn`
+  only and never surfaced to the user (#6265).
 
 ### Changed
 
+- **BEHAVIOR CHANGE**: `RunInline` orchestration tasks (dispatched when no sub-agent matches)
+  are now bounded by the graph-global `task_timeout_secs` default (300s) when the task sets no
+  per-task `timeout.run_timeout_secs` override. Previously this dispatch path was entirely
+  unbounded, since `check_timeouts()` cannot observe a task blocking the scheduler tick loop for
+  its whole duration — only spawned sub-agent tasks were timeout-enforced. This closes that
+  inconsistency as part of spec 075-orchestration-node-control-parity (#6021/#6243). Existing
+  configurations with a long-running `RunInline` task and no explicit per-task `timeout` override
+  that previously relied on running past 300s will now be canceled at the global default; set an
+  explicit `timeout.run_timeout_secs` on that task to opt back into a longer (or effectively
+  unbounded, with a very large value) cap.
 - **zeph-common**: extended `treesitter::lang_for_ext` to cover the full extension set
   (`bash`/`sh`/`zsh`, `toml`, `json`/`jsonc`, `md`/`markdown` in addition to the existing
   `rs`, `py`/`pyi`, `js`/`jsx`/`mjs`/`cjs`, `ts`/`tsx`/`mts`/`cts`, `go`) and made it the single

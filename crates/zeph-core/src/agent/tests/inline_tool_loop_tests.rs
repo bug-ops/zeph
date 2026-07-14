@@ -412,3 +412,258 @@ async fn elicitation_event_during_tool_execution_is_handled() {
 
     assert_eq!(result.text, "done");
 }
+
+// spec-075 (#6243) Phase 5: RunInline per-task `run_timeout_secs` enforcement via
+// `handle_run_inline_action`'s third `tokio::select!` branch. These exercise the full
+// `Agent::run_scheduler_loop` seam (not just `run_inline_tool_loop` in isolation), since the
+// timeout branch lives in the scheduler-dispatch wrapper, not the inner tool loop.
+mod run_inline_timeout {
+    use std::time::Duration;
+
+    use zeph_orchestration::{
+        DagScheduler, GraphStatus, RuleBasedRouter, TaskGraph, TaskNode, TaskStatus, TimeoutPolicy,
+    };
+
+    use super::*;
+
+    struct SlowToolExecutor {
+        delay: Duration,
+    }
+
+    impl ToolExecutor for SlowToolExecutor {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+
+        async fn execute_tool_call(
+            &self,
+            _call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            tokio::time::sleep(self.delay).await;
+            Ok(Some(ToolOutput {
+                tool_name: "test_tool".into(),
+                summary: "slow result".into(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+                ..Default::default()
+            }))
+        }
+
+        zeph_tools::tool_executor_no_inner_defaults!();
+    }
+
+    /// T5.3: a `RunInline` task with a short `run_timeout_secs` override and a tool loop that
+    /// runs longer than the override (but well under the long global default) — the timeout
+    /// branch must fire and fail the graph (default `Abort` strategy).
+    #[tokio::test]
+    async fn short_override_fires_before_slow_tool_loop_completes() {
+        let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+            tool_use_response("call-1", "test_tool"),
+            ChatResponse::Text("done".into()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = SlowToolExecutor {
+            delay: Duration::from_secs(3),
+        };
+
+        let mut graph = TaskGraph::new("slow run-inline task");
+        let mut node = TaskNode::new(0, "slow task", "run something slow");
+        node.timeout = Some(TimeoutPolicy {
+            run_timeout_secs: Some(1),
+            idle_timeout_secs: None,
+        });
+        graph.tasks.push(node);
+
+        let config = zeph_config::OrchestrationConfig {
+            task_timeout_secs: 300, // long global default — proves the override (not it) fired
+            ..zeph_config::OrchestrationConfig::default()
+        };
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(RuleBasedRouter), vec![], None).unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.orchestration.orchestration_config = config;
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = tokio::time::timeout(
+            Duration::from_secs(10),
+            agent.run_scheduler_loop(&mut scheduler, 1, token),
+        )
+        .await
+        .expect("run_scheduler_loop must not hang past the 1s override")
+        .unwrap();
+
+        assert_eq!(
+            status,
+            GraphStatus::Failed,
+            "timed-out RunInline task with default Abort strategy fails the graph"
+        );
+        assert_eq!(scheduler.graph().tasks[0].status, TaskStatus::Failed);
+    }
+
+    /// T5.4 regression: a `RunInline` task with no override and a fast-completing tool loop
+    /// completes normally — the new timeout branch must never fire when unused.
+    #[tokio::test]
+    async fn no_override_fast_completion_is_unaffected() {
+        let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+            tool_use_response("call-1", "test_tool"),
+            ChatResponse::Text("done".into()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = CallableToolExecutor::fixed_output("fast result");
+
+        let mut graph = TaskGraph::new("fast run-inline task");
+        let node = TaskNode::new(0, "fast task", "run something fast");
+        graph.tasks.push(node);
+
+        let config = zeph_config::OrchestrationConfig::default();
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(RuleBasedRouter), vec![], None).unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.orchestration.orchestration_config = config;
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = agent
+            .run_scheduler_loop(&mut scheduler, 1, token)
+            .await
+            .unwrap();
+
+        assert_eq!(status, GraphStatus::Completed);
+        assert_eq!(scheduler.graph().tasks[0].status, TaskStatus::Completed);
+    }
+
+    /// Behavior-change regression (CHANGELOG `[Unreleased]` "BEHAVIOR CHANGE" entry): a
+    /// `RunInline` task with **no** per-task `timeout` override was previously unbounded on
+    /// this dispatch path (`check_timeouts()` cannot observe a task blocking the tick loop for
+    /// its whole duration). It is now capped by the graph-global `task_timeout_secs` default,
+    /// exactly like a spawned task. This test uses a short global default (rather than waiting
+    /// out the real 300s default) to prove the cap applies even with zero per-task
+    /// configuration.
+    #[tokio::test]
+    async fn no_override_task_is_capped_by_global_default_previously_unbounded() {
+        let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+            tool_use_response("call-1", "test_tool"),
+            ChatResponse::Text("unused".into()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = SlowToolExecutor {
+            delay: Duration::from_secs(3),
+        };
+
+        let mut graph = TaskGraph::new("no-override slow run-inline task");
+        // No `.timeout` set on this node — relies entirely on the graph-global default.
+        let node = TaskNode::new(0, "slow task, no override", "run something slow");
+        graph.tasks.push(node);
+
+        let config = zeph_config::OrchestrationConfig {
+            task_timeout_secs: 1, // short global default stands in for the real 300s default
+            ..zeph_config::OrchestrationConfig::default()
+        };
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(RuleBasedRouter), vec![], None).unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.orchestration.orchestration_config = config;
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = tokio::time::timeout(
+            Duration::from_secs(10),
+            agent.run_scheduler_loop(&mut scheduler, 1, token),
+        )
+        .await
+        .expect("run_scheduler_loop must not hang past the 1s global default")
+        .unwrap();
+
+        assert_eq!(
+            status,
+            GraphStatus::Failed,
+            "a RunInline task with no override must now be capped by the global default \
+             (previously this dispatch path was entirely unbounded)"
+        );
+        assert_eq!(scheduler.graph().tasks[0].status, TaskStatus::Failed);
+    }
+
+    /// T5.5 (cross-phase Phase 3 + Phase 5): a `RunInline` task with both `timeout` and
+    /// `recovery` configured — the timeout fires, Mode-1 recovery applies (since the default
+    /// strategy is `Abort`), and the dependent task unblocks and dispatches.
+    #[tokio::test]
+    async fn timeout_and_recovery_together_unblocks_dependent() {
+        let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+            // task 0: the tool_use response is consumed, but the ensuing tool call sleeps
+            // past the 1s override — the select! timeout branch cancels the loop before a
+            // second provider call would ever happen for this task.
+            tool_use_response("call-1", "test_tool"),
+            // task 1 (the dependent, unblocked by recovery): completes immediately.
+            ChatResponse::Text("dependent done".into()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = SlowToolExecutor {
+            delay: Duration::from_secs(3),
+        };
+
+        let mut graph = TaskGraph::new("timeout + recovery run-inline test");
+        let mut node0 = TaskNode::new(0, "slow recoverable task", "run something slow");
+        node0.timeout = Some(TimeoutPolicy {
+            run_timeout_secs: Some(1),
+            idle_timeout_secs: None,
+        });
+        node0.recovery = Some(zeph_orchestration::RecoveryAction {
+            state_injection: Some("recovered output".to_string()),
+        });
+        let mut node1 = TaskNode::new(1, "dependent task", "consume the recovered output");
+        node1.depends_on = vec![zeph_orchestration::TaskId(0)];
+        graph.tasks.push(node0);
+        graph.tasks.push(node1);
+
+        let config = zeph_config::OrchestrationConfig {
+            task_timeout_secs: 300,
+            ..zeph_config::OrchestrationConfig::default()
+        };
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(RuleBasedRouter), vec![], None).unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.orchestration.orchestration_config = config;
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = tokio::time::timeout(
+            Duration::from_secs(10),
+            agent.run_scheduler_loop(&mut scheduler, 2, token),
+        )
+        .await
+        .expect("run_scheduler_loop must not hang past the 1s override")
+        .unwrap();
+
+        assert_eq!(
+            status,
+            GraphStatus::Completed,
+            "recovery absorbs task 0's timeout; graph continues and completes via task 1"
+        );
+        assert_eq!(scheduler.graph().tasks[0].status, TaskStatus::Completed);
+        assert_eq!(
+            scheduler.graph().tasks[0]
+                .result
+                .as_ref()
+                .unwrap()
+                .agent_def
+                .as_deref(),
+            Some("__recovery__")
+        );
+        assert_eq!(scheduler.graph().tasks[1].status, TaskStatus::Completed);
+    }
+}

@@ -814,6 +814,59 @@ pub fn migrate_orchestration_asset_sensitivity(
     })
 }
 
+/// Step 88 — add `default_idle_timeout_secs` advisory comment to `[orchestration]`
+/// (spec-075-orchestration-node-control-parity, #6021).
+///
+/// Advisory only: `#[serde(default)]` already makes existing configs load with the field
+/// unset (`None`), so this migration is purely informational — it surfaces the new
+/// reserved-not-yet-enforced option without changing behaviour. Skipped when the key is
+/// already present or `[orchestration]` is absent. Mirrors
+/// [`migrate_orchestration_asset_sensitivity`]'s shape exactly (same section, same
+/// advisory-comment idiom).
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the TOML document cannot be parsed.
+pub fn migrate_orchestration_idle_timeout(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("default_idle_timeout_secs") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    if !section_header_present(toml_src, "orchestration") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# default_idle_timeout_secs = 60  \
+        # reserved — not yet enforced (spec-075-orchestration-node-control-parity, #6021)\n";
+    let output = insert_after_section(toml_src, "orchestration", comment);
+    // Defensive: the guards above already guarantee `[orchestration]` is present and
+    // `insert_after_section` always inserts non-empty content when reached, so this is
+    // currently unreachable — kept for the same reason as `migrate_orchestration_asset_sensitivity`
+    // (#5945: a future change to either guard must not silently regress into reporting a
+    // change that didn't happen).
+    if output == toml_src {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["orchestration.default_idle_timeout_secs".to_owned()],
+    })
+}
+
 /// Step 86 — add a commented-out `[orchestration.ensemble]` advisory block for ORCH-style
 /// deterministic verifier ensemble-merge, if absent (spec 073, #6232).
 ///

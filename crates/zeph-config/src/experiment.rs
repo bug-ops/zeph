@@ -532,6 +532,16 @@ pub struct OrchestrationConfig {
     /// See `specs/073-orch-ensemble-merge/spec.md`.
     #[serde(default)]
     pub ensemble: EnsembleConfig,
+
+    /// Global default idle/no-progress timeout in seconds, used when a `TaskNode`'s own
+    /// `TimeoutPolicy.idle_timeout_secs` is unset.
+    ///
+    /// **RESERVED — not yet enforced.** Defined and config-surfaced so the value can be
+    /// persisted ahead of the progress-signal plumbing (Alt A) that will consume it in a
+    /// future release. `None` = off. See
+    /// `specs/075-orchestration-node-control-parity/spec.md` §4/FR-005.
+    #[serde(default)]
+    pub default_idle_timeout_secs: Option<u64>,
 }
 
 impl Default for OrchestrationConfig {
@@ -576,6 +586,7 @@ impl Default for OrchestrationConfig {
             planner_timeout_secs: default_planner_timeout_secs(),
             verifier_timeout_secs: default_verifier_timeout_secs(),
             ensemble: EnsembleConfig::default(),
+            default_idle_timeout_secs: None,
         }
     }
 }
@@ -919,5 +930,32 @@ mod tests {
         let toml_in = "enabled = true\n";
         let cfg: OrchestrationConfig = toml::from_str(toml_in).expect("deserialize");
         assert_eq!(cfg.default_asset_sensitivity, AssetSensitivity::Public);
+    }
+
+    // ── default_idle_timeout_secs (spec-075-orchestration-node-control-parity, #6021) ──
+
+    #[test]
+    fn orchestration_config_default_idle_timeout_secs_is_none() {
+        let cfg = OrchestrationConfig::default();
+        assert_eq!(cfg.default_idle_timeout_secs, None);
+    }
+
+    #[test]
+    fn orchestration_config_idle_timeout_secs_toml_roundtrip() {
+        let toml_in = "enabled = true\ndefault_idle_timeout_secs = 60\n";
+        let cfg: OrchestrationConfig = toml::from_str(toml_in).expect("deserialize");
+        assert_eq!(cfg.default_idle_timeout_secs, Some(60));
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        let cfg2: OrchestrationConfig = toml::from_str(&serialized).expect("re-deserialize");
+        assert_eq!(cfg2.default_idle_timeout_secs, Some(60));
+    }
+
+    #[test]
+    fn orchestration_config_missing_idle_timeout_secs_migrates_to_none() {
+        // Pre-feature config (no key present) — #[serde(default)] must yield None,
+        // matching what a config persisted before this field existed deserializes to.
+        let toml_in = "enabled = true\n";
+        let cfg: OrchestrationConfig = toml::from_str(toml_in).expect("deserialize");
+        assert_eq!(cfg.default_idle_timeout_secs, None);
     }
 }

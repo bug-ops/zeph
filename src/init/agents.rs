@@ -79,6 +79,16 @@ pub(super) fn step_orchestration(state: &mut WizardState) -> anyhow::Result<()> 
             .default(true)
             .interact()?;
 
+        let idle_timeout_raw: String = Input::new()
+            .with_prompt(
+                "Default idle/no-progress timeout in seconds — RESERVED, not yet enforced \
+                 in this release; leave blank unless you want the value persisted for when \
+                 it ships",
+            )
+            .default(String::new())
+            .interact_text()?;
+        state.orchestration_default_idle_timeout_secs = idle_timeout_raw.trim().parse().ok();
+
         step_ensemble_verify(state)?;
     }
 

@@ -25,8 +25,9 @@ pub use features::{
     migrate_deep_link_config, migrate_five_signal_config, migrate_goals_config,
     migrate_knowledge_config, migrate_magic_docs_config, migrate_microcompact_config,
     migrate_orchestration_asset_sensitivity, migrate_orchestration_ensemble,
-    migrate_orchestration_persistence, migrate_skill_trust_require_check, migrate_skills_registry,
-    migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
+    migrate_orchestration_idle_timeout, migrate_orchestration_persistence,
+    migrate_skill_trust_require_check, migrate_skills_registry, migrate_tui_delights,
+    migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
 };
 pub use infra::*;
 /// Advisory `GonkaGate` migration is crate-internal (registered via the [`MIGRATIONS`] registry).
@@ -613,7 +614,8 @@ use steps::{
     MigrateMemoryPersonaConfig, MigrateMemoryReasoning, MigrateMemoryReasoningJudge,
     MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias, MigrateMemoryTypeAwareCompose,
     MigrateMicrocompactConfig, MigrateNliConfig, MigrateOrchestrationAssetSensitivity,
-    MigrateOrchestrationEnsemble, MigrateOrchestrationPersistence, MigrateOrchestratorProvider,
+    MigrateOrchestrationEnsemble, MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence,
+    MigrateOrchestratorProvider,
     MigrateOtelFilter, MigratePiiFilterNames, MigratePlannerModelToProvider,
     MigratePolicyProviderAndUtilityWindow, MigrateProviderMaxConcurrent, MigrateQdrantApiKey,
     MigrateQdrantTimeoutSecs, MigrateQualityConfig, MigrateSandboxConfig,
@@ -628,7 +630,7 @@ use steps::{
     MigrateWorktreeQuotaFields,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–87).
+/// Ordered registry of all sequential migration steps (steps 1–88).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -793,6 +795,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 87 — add stale_running_after_secs advisory to an existing active
             // [durable.retention] table for the crash-orphan sweep (spec-064, #6254)
             Box::new(MigrateDurableStaleRunningAfterSecs),
+            // Step 88 — add default_idle_timeout_secs advisory comment under [orchestration]
+            // (spec-075-orchestration-node-control-parity, #6021)
+            Box::new(MigrateOrchestrationIdleTimeout),
         ]
     });
 

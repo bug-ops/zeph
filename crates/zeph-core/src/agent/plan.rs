@@ -567,7 +567,15 @@ impl<C: crate::channel::Channel> Agent<C> {
         let should_replan =
             !result.complete && result.confidence < f64::from(threshold) && !result.gaps.is_empty();
 
+        if result.complete {
+            // Plan judged complete — nothing to signal, no replan.
+            return None;
+        }
         if !should_replan {
+            // !complete but the low-confidence/gaps gate wasn't met (confidently
+            // incomplete, or no actionable gaps) — #6265: surface a visible signal
+            // since no replan will be attempted to resolve it.
+            self.signal_plan_incomplete(&result).await;
             return None;
         }
 
@@ -581,15 +589,40 @@ impl<C: crate::channel::Channel> Agent<C> {
             Ok(tasks) => tasks,
             Err(e) => {
                 tracing::warn!(error = %e, "whole-plan replan_from_plan failed (fail-open)");
+                self.signal_plan_incomplete(&result).await;
                 return None;
             }
         };
 
         if gap_tasks.is_empty() {
+            self.signal_plan_incomplete(&result).await;
             return None;
         }
 
-        self.execute_partial_replan_dag(gap_tasks, &goal).await
+        let repaired = self.execute_partial_replan_dag(gap_tasks, &goal).await;
+        if repaired.is_none() {
+            // Replan ran but produced no usable completed task — the gap is still open.
+            self.signal_plan_incomplete(&result).await;
+        }
+        repaired
+    }
+
+    /// #6265: emit a persistent, user-visible signal when whole-plan verification judged
+    /// the plan's output incomplete and no successful replan resolved it. Fail-open —
+    /// matches the surrounding `tracing::warn!` convention for verify-path hiccups.
+    async fn signal_plan_incomplete(&mut self, result: &zeph_orchestration::VerificationResult) {
+        let msg = format!(
+            "Note: the plan output may be incomplete — verification found {} unresolved \
+             gap(s) (verification confidence {:.0}%) and automatic repair did not resolve it.",
+            result.gaps.len(),
+            result.confidence * 100.0
+        );
+        if let Err(e) = self.channel.send(&msg).await {
+            tracing::warn!(
+                error = %e,
+                "failed to send whole-plan verification-incompleteness signal"
+            );
+        }
     }
 
     /// Resolve the transcript path for every completed-with-result task in `graph`, as a

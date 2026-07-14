@@ -312,6 +312,24 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         let event_tx = scheduler.event_sender();
         let max_iter = self.tool_orchestrator.max_iterations;
+        // Per-task run_timeout override (spec-075 FR-004): `RunInline` tasks share the
+        // agent's tick loop, so `check_timeouts()` cannot observe them mid-run — this
+        // `select!` branch is the only enforcement point on this dispatch path. Falls
+        // back to the graph-global `task_timeout_secs` default when unset, consistent
+        // with `check_timeouts()`'s `effective_run_timeout` on the spawned-task path.
+        let global_task_timeout_secs = self
+            .services
+            .orchestration
+            .orchestration_config
+            .task_timeout_secs;
+        let effective_run_timeout_secs = scheduler
+            .graph()
+            .tasks
+            .get(task_id.index())
+            .and_then(|t| t.timeout.as_ref())
+            .and_then(|t| t.run_timeout_secs)
+            .unwrap_or(global_task_timeout_secs);
+        let effective_run_timeout = std::time::Duration::from_secs(effective_run_timeout_secs);
         let outcome = tokio::select! {
             result = self.run_inline_tool_loop(&prompt, max_iter) => {
                 match result {
@@ -330,6 +348,11 @@ impl<C: crate::channel::Channel> Agent<C> {
             () = cancel_token.cancelled() => {
                 zeph_orchestration::TaskOutcome::Failed {
                     error: "canceled".to_string(),
+                }
+            }
+            () = tokio::time::sleep(effective_run_timeout) => {
+                zeph_orchestration::TaskOutcome::Failed {
+                    error: format!("RunInline task exceeded run_timeout ({effective_run_timeout:?})"),
                 }
             }
         };
@@ -710,7 +733,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                                     )
                                 });
 
-                            if should_replan {
+                            let repaired = if should_replan {
                                 let max_tasks_u32 =
                                     self.services.orchestration.orchestration_config.max_tasks;
                                 let max_tasks = max_tasks_u32 as usize;
@@ -719,24 +742,54 @@ impl<C: crate::channel::Channel> Agent<C> {
                                     .await
                                 {
                                     Ok(new_tasks) if !new_tasks.is_empty() => {
-                                        if let Err(e) =
-                                            scheduler.inject_tasks(task_id, new_tasks, max_tasks)
+                                        match scheduler.inject_tasks(task_id, new_tasks, max_tasks)
                                         {
-                                            tracing::warn!(
-                                                error = %e,
-                                                task_id = %task_id,
-                                                "per-task replan inject_tasks failed (fail-open)"
-                                            );
+                                            Ok(()) => true,
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    error = %e,
+                                                    task_id = %task_id,
+                                                    "per-task replan inject_tasks failed \
+                                                     (fail-open)"
+                                                );
+                                                false
+                                            }
                                         }
                                     }
-                                    Ok(_) => {}
+                                    Ok(_) => false,
                                     Err(e) => {
                                         tracing::warn!(
                                             error = %e,
                                             task_id = %task_id,
                                             "per-task replan failed (fail-open)"
                                         );
+                                        false
                                     }
+                                }
+                            } else {
+                                false
+                            };
+
+                            // #6265: surface a visible signal when verification judged this
+                            // task's output incomplete and no repair landed — worded strictly
+                            // local to this task (not the whole plan), since a later
+                            // whole-plan replan may still self-heal the gap (see
+                            // `run_whole_plan_verify`'s own signal for the plan-level case).
+                            if !result.complete && !repaired {
+                                let msg = format!(
+                                    "Note: task \"{}\" verification found {} unresolved gap(s) \
+                                     (verification confidence {:.0}%).",
+                                    task.title,
+                                    result.gaps.len(),
+                                    result.confidence * 100.0
+                                );
+                                if let Err(e) = self.channel.send(&msg).await {
+                                    tracing::warn!(
+                                        error = %e,
+                                        task_id = %task_id,
+                                        "failed to send per-task verification-incompleteness \
+                                         signal"
+                                    );
                                 }
                             }
                         }

@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        87,
-        "MIGRATIONS registry must contain all 87 sequential steps"
+        88,
+        "MIGRATIONS registry must contain all 88 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1110,6 +1110,49 @@ fn migrate_memory_type_aware_compose_config_noop_when_active_section_present() {
     assert_eq!(result.output, base);
 }
 
+// ── Step 88 — migrate_orchestration_idle_timeout (spec-075-orchestration-node-control-parity, #6021) ──
+
+#[test]
+fn step_88_injects_idle_timeout_when_orchestration_present() {
+    let src = "[orchestration]\nenabled = true\n";
+    let result = migrate_orchestration_idle_timeout(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result.output.contains("default_idle_timeout_secs"),
+        "advisory comment must be injected"
+    );
+    assert_eq!(
+        result.sections_changed,
+        vec!["orchestration.default_idle_timeout_secs"]
+    );
+}
+
+#[test]
+fn step_88_noop_when_no_orchestration_section() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_orchestration_idle_timeout(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_88_noop_when_key_already_present() {
+    let src = "[orchestration]\ndefault_idle_timeout_secs = 60\n";
+    let result = migrate_orchestration_idle_timeout(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_88_idempotent_on_commented_output() {
+    let base = "[orchestration]\nenabled = true\n";
+    let first = migrate_orchestration_idle_timeout(base).unwrap();
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_orchestration_idle_timeout(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0, "second run must not double-append");
+    assert_eq!(second.output, first.output);
+}
+
 #[test]
 fn migrate_orchestration_ensemble_idempotent_on_commented_output() {
     let base = "[orchestration]\nenabled = true\n";
@@ -1817,7 +1860,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 87);
+    assert_eq!(MIGRATIONS.len(), 88);
 }
 
 #[test]
@@ -1855,7 +1898,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–87).
+    // Names must follow the documented step order (steps 1–88).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1944,6 +1987,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_memory_type_aware_compose_config",
         "migrate_orchestration_ensemble",
         "migrate_durable_stale_running_after_secs",
+        "migrate_orchestration_idle_timeout",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

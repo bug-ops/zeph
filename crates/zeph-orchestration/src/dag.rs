@@ -16,7 +16,9 @@ use zeph_common::fidelity::PlannedToolHint;
 
 use super::error::OrchestrationError;
 use super::graph::PredicateOutcome;
-use super::graph::{FailureStrategy, GraphStatus, TaskGraph, TaskId, TaskNode, TaskStatus};
+use super::graph::{
+    FailureStrategy, GraphStatus, TaskGraph, TaskId, TaskNode, TaskResult, TaskStatus,
+};
 
 /// Validate that the task slice forms a well-structured DAG.
 ///
@@ -28,13 +30,24 @@ use super::graph::{FailureStrategy, GraphStatus, TaskGraph, TaskId, TaskNode, Ta
 /// - All `depends_on` entries reference valid indices.
 /// - No cycles (via topological sort).
 /// - At least one root (task with no dependencies).
+/// - No task sets both `recovery` and `verify_predicate` (a predicate-gated task must
+///   not be recovery-eligible — recovery bypasses the completion-event handler where
+///   predicate verification runs).
+///
+/// Also warns (does not reject) when a task sets `recovery` but its effective failure
+/// strategy (`task.failure_strategy.unwrap_or(default_failure_strategy)`) is `Skip` or
+/// `Ask` — those arms never consult recovery, so it would be configured but inert.
 ///
 /// # Errors
 ///
 /// Returns `OrchestrationError::InvalidGraph` for structural violations,
 /// or `OrchestrationError::CycleDetected` if a cycle is found.
 #[must_use = "validation result must be checked"]
-pub fn validate(tasks: &[TaskNode], max_tasks: usize) -> Result<(), OrchestrationError> {
+pub fn validate(
+    tasks: &[TaskNode],
+    max_tasks: usize,
+    default_failure_strategy: FailureStrategy,
+) -> Result<(), OrchestrationError> {
     if tasks.len() > max_tasks {
         return Err(OrchestrationError::InvalidGraph(format!(
             "graph has {} tasks, exceeding the limit of {max_tasks}",
@@ -72,6 +85,28 @@ pub fn validate(tasks: &[TaskNode], max_tasks: usize) -> Result<(), Orchestratio
                 return Err(OrchestrationError::InvalidGraph(format!(
                     "task {i} references non-existent task {dep}"
                 )));
+            }
+        }
+
+        if task.recovery.is_some() && task.verify_predicate.is_some() {
+            return Err(OrchestrationError::InvalidGraph(format!(
+                "task {i} sets both recovery and verify_predicate — a predicate-gated \
+                 task must not be recovery-eligible"
+            )));
+        }
+
+        if task.recovery.is_some() {
+            let effective_strategy = task.failure_strategy.unwrap_or(default_failure_strategy);
+            if matches!(
+                effective_strategy,
+                FailureStrategy::Skip | FailureStrategy::Ask
+            ) {
+                tracing::warn!(
+                    task_index = i,
+                    strategy = ?effective_strategy,
+                    "recovery configured but effective failure strategy is Skip/Ask — \
+                     recovery is inert"
+                );
             }
         }
     }
@@ -182,6 +217,15 @@ pub fn ready_tasks(graph: &TaskGraph) -> Vec<TaskId> {
         .iter()
         .filter_map(|task| {
             match task.status {
+                // NOTE: this arm intentionally checks predicate clearance only — it does
+                // NOT re-check `depends_on` completion (that already happened when the
+                // task was transitioned into `Ready`). This bypass is load-bearing for
+                // Mode-1 recovery (spec-075 FR-020): a recovered node's dependents sit in
+                // `Pending`, not `Ready`, and unblock through the `Pending` arm below (which
+                // does check `depends_on` completion) once the recovered node's status
+                // flips to `Completed`. A future refactor that adds a `depends_on`
+                // re-check here would be redundant for the normal path but must not change
+                // dispatch semantics for predicate-gated tasks interacting with recovery.
                 TaskStatus::Ready => {
                     if all_parents_predicate_clear(task, graph) {
                         Some(task.id)
@@ -191,6 +235,9 @@ pub fn ready_tasks(graph: &TaskGraph) -> Vec<TaskId> {
                 }
                 TaskStatus::Pending => {
                     // All deps must be Completed to unblock; also predicate gate must be clear.
+                    // This is the arm a Mode-1-recovered node's dependents pass through: the
+                    // recovered node's status flips to `Completed` synchronously inside
+                    // `propagate_failure()`, so `all_deps_done` sees it on the very next tick.
                     let all_deps_done = task
                         .depends_on
                         .iter()
@@ -205,6 +252,41 @@ pub fn ready_tasks(graph: &TaskGraph) -> Vec<TaskId> {
             }
         })
         .collect()
+}
+
+/// Attempt Mode-1 recovery for a failed task.
+///
+/// If `graph.tasks[failed_id].recovery.state_injection` is set, marks the node
+/// [`TaskStatus::Completed`] with the injected value as its [`TaskResult`] and returns
+/// `true` — the failure is absorbed, `graph.status` is left untouched (independent
+/// branches continue), and the node's dependents unblock on the next
+/// [`ready_tasks`] evaluation via the `Pending` arm's `depends_on` completion check.
+/// Returns `false` (no mutation) when no recovery is configured.
+///
+/// Mutates synchronously with no `.await` — this is what makes the same-tick snapshot
+/// atomicity durability guarantee hold (spec-075 FR-016).
+fn try_recover(graph: &mut TaskGraph, failed_id: TaskId) -> bool {
+    let Some(injection) = graph.tasks[failed_id.index()]
+        .recovery
+        .as_ref()
+        .and_then(|r| r.state_injection.clone())
+    else {
+        return false;
+    };
+    let node = &mut graph.tasks[failed_id.index()];
+    node.status = TaskStatus::Completed;
+    node.result = Some(TaskResult {
+        output: injection,
+        artifacts: Vec::new(),
+        duration_ms: 0,
+        agent_id: None,
+        agent_def: Some("__recovery__".to_string()),
+    });
+    tracing::info!(
+        task_id = %failed_id,
+        "orchestration.dag.recover_task: Mode-1 recovery applied"
+    );
+    true
 }
 
 /// Handle a task failure. Applies the effective failure strategy and mutates the graph.
@@ -241,6 +323,9 @@ pub fn propagate_failure(
 
     match strategy {
         FailureStrategy::Abort => {
+            if try_recover(graph, failed_id) {
+                return Vec::new();
+            }
             graph.status = GraphStatus::Failed;
             // Return IDs of all currently Running tasks for the caller to cancel
             graph
@@ -285,7 +370,10 @@ pub fn propagate_failure(
                 graph.tasks[failed_id.index()].status = TaskStatus::Ready;
                 Vec::new()
             } else {
-                // Retry exhausted — treat as Abort
+                // Retry exhausted — try Mode-1 recovery before falling through to Abort
+                if try_recover(graph, failed_id) {
+                    return Vec::new();
+                }
                 graph.status = GraphStatus::Failed;
                 graph
                     .tasks
@@ -570,7 +658,7 @@ pub fn inject_tasks(
 
     graph.tasks.extend(new_tasks);
 
-    validate(&graph.tasks, max_tasks).map_err(|e| match e {
+    validate(&graph.tasks, max_tasks, graph.default_failure_strategy).map_err(|e| match e {
         OrchestrationError::CycleDetected => {
             OrchestrationError::VerificationFailed("inject_tasks introduced a cycle".to_string())
         }
@@ -618,28 +706,28 @@ mod tests {
 
     #[test]
     fn test_validate_empty_graph() {
-        let err = validate(&[], 20).unwrap_err();
+        let err = validate(&[], 20, FailureStrategy::Abort).unwrap_err();
         assert_matches!(err, OrchestrationError::InvalidGraph(_));
     }
 
     #[test]
     fn test_validate_exceeds_max_tasks() {
         let tasks: Vec<TaskNode> = (0..5).map(|i| make_node(i, &[])).collect();
-        let err = validate(&tasks, 3).unwrap_err();
+        let err = validate(&tasks, 3, FailureStrategy::Abort).unwrap_err();
         assert_matches!(err, OrchestrationError::InvalidGraph(_));
     }
 
     #[test]
     fn test_validate_single_task_no_deps() {
         let tasks = vec![make_node(0, &[])];
-        assert!(validate(&tasks, 20).is_ok());
+        assert!(validate(&tasks, 20, FailureStrategy::Abort).is_ok());
     }
 
     #[test]
     fn test_validate_self_reference() {
         let mut tasks = vec![make_node(0, &[])];
         tasks[0].depends_on = vec![TaskId(0)];
-        let err = validate(&tasks, 20).unwrap_err();
+        let err = validate(&tasks, 20, FailureStrategy::Abort).unwrap_err();
         assert_matches!(err, OrchestrationError::InvalidGraph(_));
     }
 
@@ -647,7 +735,7 @@ mod tests {
     fn test_validate_invalid_taskid_reference() {
         let mut tasks = vec![make_node(0, &[])];
         tasks[0].depends_on = vec![TaskId(99)];
-        let err = validate(&tasks, 20).unwrap_err();
+        let err = validate(&tasks, 20, FailureStrategy::Abort).unwrap_err();
         assert_matches!(err, OrchestrationError::InvalidGraph(_));
     }
 
@@ -655,7 +743,7 @@ mod tests {
     fn test_validate_linear_chain() {
         // A(0) -> B(1) -> C(2)
         let tasks = vec![make_node(0, &[]), make_node(1, &[0]), make_node(2, &[1])];
-        assert!(validate(&tasks, 20).is_ok());
+        assert!(validate(&tasks, 20, FailureStrategy::Abort).is_ok());
     }
 
     #[test]
@@ -667,14 +755,14 @@ mod tests {
             make_node(2, &[0]),
             make_node(3, &[1, 2]),
         ];
-        assert!(validate(&tasks, 20).is_ok());
+        assert!(validate(&tasks, 20, FailureStrategy::Abort).is_ok());
     }
 
     #[test]
     fn test_validate_cycle_two_nodes() {
         // A(0) depends on B(1), B(1) depends on A(0)
         let tasks = vec![make_node(0, &[1]), make_node(1, &[0])];
-        let err = validate(&tasks, 20).unwrap_err();
+        let err = validate(&tasks, 20, FailureStrategy::Abort).unwrap_err();
         assert_matches!(err, OrchestrationError::CycleDetected);
     }
 
@@ -682,7 +770,7 @@ mod tests {
     fn test_validate_cycle_three_nodes() {
         // A(0)->B(1)->C(2)->A(0)
         let tasks = vec![make_node(0, &[2]), make_node(1, &[0]), make_node(2, &[1])];
-        let err = validate(&tasks, 20).unwrap_err();
+        let err = validate(&tasks, 20, FailureStrategy::Abort).unwrap_err();
         assert_matches!(err, OrchestrationError::CycleDetected);
     }
 
@@ -691,8 +779,69 @@ mod tests {
         let mut tasks = vec![make_node(0, &[]), make_node(1, &[0])];
         // Break invariant: tasks[1] should have id TaskId(1) but we set TaskId(5)
         tasks[1].id = TaskId(5);
-        let err = validate(&tasks, 20).unwrap_err();
+        let err = validate(&tasks, 20, FailureStrategy::Abort).unwrap_err();
         assert_matches!(err, OrchestrationError::InvalidGraph(_));
+    }
+
+    // --- recovery validation guard tests ---
+
+    #[test]
+    fn test_validate_rejects_recovery_with_verify_predicate() {
+        let mut tasks = vec![make_node(0, &[])];
+        tasks[0].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: Some("fallback".to_string()),
+        });
+        tasks[0].verify_predicate = Some(crate::graph::VerifyPredicate::Natural(
+            "criterion".to_string(),
+        ));
+        let err = validate(&tasks, 20, FailureStrategy::Abort).unwrap_err();
+        assert_matches!(err, OrchestrationError::InvalidGraph(_));
+    }
+
+    #[test]
+    fn test_validate_recovery_alone_is_ok() {
+        let mut tasks = vec![make_node(0, &[])];
+        tasks[0].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: Some("fallback".to_string()),
+        });
+        assert!(validate(&tasks, 20, FailureStrategy::Abort).is_ok());
+    }
+
+    #[test]
+    fn test_validate_recovery_with_skip_strategy_warns_but_ok() {
+        let mut tasks = vec![make_node(0, &[])];
+        tasks[0].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: Some("fallback".to_string()),
+        });
+        tasks[0].failure_strategy = Some(FailureStrategy::Skip);
+        assert!(validate(&tasks, 20, FailureStrategy::Abort).is_ok());
+    }
+
+    #[test]
+    fn test_validate_recovery_with_ask_strategy_warns_but_ok() {
+        let mut tasks = vec![make_node(0, &[])];
+        tasks[0].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: Some("fallback".to_string()),
+        });
+        tasks[0].failure_strategy = Some(FailureStrategy::Ask);
+        assert!(validate(&tasks, 20, FailureStrategy::Abort).is_ok());
+    }
+
+    #[test]
+    fn test_validate_recovery_with_abort_or_retry_no_warning_ok() {
+        let mut tasks = vec![make_node(0, &[])];
+        tasks[0].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: Some("fallback".to_string()),
+        });
+        tasks[0].failure_strategy = Some(FailureStrategy::Retry);
+        assert!(validate(&tasks, 20, FailureStrategy::Abort).is_ok());
+
+        // Also verify the graph-default-strategy path (no per-task override) is Ok.
+        let mut tasks2 = vec![make_node(0, &[])];
+        tasks2[0].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: Some("fallback".to_string()),
+        });
+        assert!(validate(&tasks2, 20, FailureStrategy::Abort).is_ok());
     }
 
     // --- toposort tests ---
@@ -1023,6 +1172,147 @@ mod tests {
         let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
         assert!(to_cancel.is_empty());
         assert_eq!(graph.status, GraphStatus::Created);
+    }
+
+    // --- Mode-1 recovery tests ---
+
+    #[test]
+    fn test_propagate_failure_abort_recovers_with_state_injection() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.status = GraphStatus::Running;
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.tasks[0].failure_strategy = Some(FailureStrategy::Abort);
+        graph.tasks[0].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: Some("fallback output".to_string()),
+        });
+
+        let __ra = make_rev_adj(&graph);
+
+        let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
+        assert!(to_cancel.is_empty());
+        assert_eq!(graph.tasks[0].status, TaskStatus::Completed);
+        assert_eq!(
+            graph.tasks[0].result.as_ref().unwrap().output,
+            "fallback output"
+        );
+        assert_eq!(
+            graph.tasks[0].result.as_ref().unwrap().agent_def.as_deref(),
+            Some("__recovery__")
+        );
+        assert_eq!(
+            graph.status,
+            GraphStatus::Running,
+            "graph.status must be left untouched by recovery"
+        );
+    }
+
+    #[test]
+    fn test_propagate_failure_retry_exhausted_recovers_with_state_injection() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.status = GraphStatus::Running;
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.tasks[0].failure_strategy = Some(FailureStrategy::Retry);
+        graph.tasks[0].max_retries = Some(3);
+        graph.tasks[0].retry_count = 3; // at max — exhausted
+        graph.tasks[0].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: Some("fallback output".to_string()),
+        });
+
+        let __ra = make_rev_adj(&graph);
+
+        let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
+        assert!(to_cancel.is_empty());
+        assert_eq!(graph.tasks[0].status, TaskStatus::Completed);
+        assert_eq!(
+            graph.tasks[0].result.as_ref().unwrap().output,
+            "fallback output"
+        );
+        assert_eq!(graph.status, GraphStatus::Running);
+    }
+
+    #[test]
+    fn test_propagate_failure_abort_no_recovery_configured_is_unchanged() {
+        // regression: recovery == None on both paths behaves byte-identical to pre-feature
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.tasks[0].failure_strategy = Some(FailureStrategy::Abort);
+
+        let __ra = make_rev_adj(&graph);
+
+        propagate_failure(&mut graph, TaskId(0), &__ra);
+        assert_eq!(graph.status, GraphStatus::Failed);
+        assert_eq!(graph.tasks[0].status, TaskStatus::Failed);
+    }
+
+    #[test]
+    fn test_propagate_failure_retry_exhausted_no_recovery_configured_is_unchanged() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.tasks[0].failure_strategy = Some(FailureStrategy::Retry);
+        graph.tasks[0].max_retries = Some(3);
+        graph.tasks[0].retry_count = 3;
+
+        let __ra = make_rev_adj(&graph);
+
+        propagate_failure(&mut graph, TaskId(0), &__ra);
+        assert_eq!(graph.status, GraphStatus::Failed);
+    }
+
+    #[test]
+    fn test_recovered_task_dependent_becomes_ready() {
+        // A(0) -> B(1): A fails (Abort) with recovery configured; B must unblock.
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.status = GraphStatus::Running;
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.tasks[0].failure_strategy = Some(FailureStrategy::Abort);
+        graph.tasks[0].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: Some("fallback output".to_string()),
+        });
+        graph.tasks[1].status = TaskStatus::Pending;
+
+        let __ra = make_rev_adj(&graph);
+
+        propagate_failure(&mut graph, TaskId(0), &__ra);
+        assert_eq!(graph.tasks[0].status, TaskStatus::Completed);
+
+        let ready = ready_tasks(&graph);
+        assert!(
+            ready.contains(&TaskId(1)),
+            "dependent must unblock via the Pending arm after recovery"
+        );
+    }
+
+    #[test]
+    fn test_skip_strategy_with_recovery_configured_still_skips() {
+        // recovery configured but effective strategy is Skip — recovery must never be
+        // consulted from the Skip arm; the task ends Skipped, not Completed.
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.tasks[0].failure_strategy = Some(FailureStrategy::Skip);
+        graph.tasks[0].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: Some("fallback output".to_string()),
+        });
+
+        let __ra = make_rev_adj(&graph);
+
+        propagate_failure(&mut graph, TaskId(0), &__ra);
+        assert_eq!(graph.tasks[0].status, TaskStatus::Skipped);
+    }
+
+    #[test]
+    fn test_ask_strategy_with_recovery_configured_still_pauses() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.tasks[0].failure_strategy = Some(FailureStrategy::Ask);
+        graph.tasks[0].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: Some("fallback output".to_string()),
+        });
+
+        let __ra = make_rev_adj(&graph);
+
+        propagate_failure(&mut graph, TaskId(0), &__ra);
+        assert_eq!(graph.status, GraphStatus::Paused);
+        assert_ne!(graph.tasks[0].status, TaskStatus::Completed);
     }
 
     // --- reset_for_retry tests ---

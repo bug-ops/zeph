@@ -355,7 +355,11 @@ impl DagScheduler {
             )));
         }
 
-        dag::validate(&graph.tasks, config.max_tasks as usize)?;
+        dag::validate(
+            &graph.tasks,
+            config.max_tasks as usize,
+            graph.default_failure_strategy,
+        )?;
 
         graph.status = GraphStatus::Running;
 
@@ -831,6 +835,7 @@ mod tests {
             planner_timeout_secs: 120,
             verifier_timeout_secs: 30,
             ensemble: Default::default(),
+            default_idle_timeout_secs: None,
         }
     }
 

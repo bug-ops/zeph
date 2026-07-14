@@ -610,7 +610,11 @@ async fn adapt_plan(
         verify_predicate_enabled,
     )?;
 
-    dag::validate(&graph.tasks, max_tasks as usize)?;
+    dag::validate(
+        &graph.tasks,
+        max_tasks as usize,
+        graph.default_failure_strategy,
+    )?;
 
     Ok((graph, usage))
 }

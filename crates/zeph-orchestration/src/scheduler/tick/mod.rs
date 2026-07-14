@@ -265,12 +265,13 @@ impl DagScheduler {
             return;
         }
 
-        // Find the nearest timeout deadline among running tasks.
+        // Find the nearest timeout deadline among running tasks, using each task's
+        // per-task effective run-timeout override when set.
         let nearest_timeout = self
             .running
-            .values()
-            .map(|r| {
-                self.task_timeout
+            .iter()
+            .map(|(id, r)| {
+                self.effective_run_timeout(*id)
                     .checked_sub(r.started_at.elapsed())
                     .unwrap_or(Duration::ZERO)
             })
@@ -741,6 +742,17 @@ impl DagScheduler {
         actions
     }
 
+    /// Compute the effective run-timeout for a task: its per-task
+    /// `TaskNode.timeout.run_timeout_secs` override when set, else the graph-global
+    /// `self.task_timeout` default.
+    fn effective_run_timeout(&self, task_id: TaskId) -> Duration {
+        self.graph.tasks[task_id.index()]
+            .timeout
+            .as_ref()
+            .and_then(|t| t.run_timeout_secs)
+            .map_or(self.task_timeout, Duration::from_secs)
+    }
+
     /// Check all running tasks for timeout violations.
     ///
     /// # Warning: Cooperative Cancellation
@@ -752,7 +764,7 @@ impl DagScheduler {
         let timed_out: Vec<(TaskId, String)> = self
             .running
             .iter()
-            .filter(|(_, r)| r.started_at.elapsed() > self.task_timeout)
+            .filter(|(id, r)| r.started_at.elapsed() > self.effective_run_timeout(**id))
             .map(|(id, r)| (*id, r.agent_handle_id.clone()))
             .collect();
 
@@ -760,7 +772,7 @@ impl DagScheduler {
         for (task_id, agent_handle_id) in timed_out {
             tracing::warn!(
                 task_id = %task_id,
-                timeout_secs = self.task_timeout.as_secs(),
+                timeout_secs = self.effective_run_timeout(task_id).as_secs(),
                 "task timed out"
             );
             self.graph_dirty = true;

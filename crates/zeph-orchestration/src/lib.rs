@@ -108,7 +108,8 @@ pub use dag::lookahead_tools;
 pub use error::OrchestrationError;
 pub use graph::{
     ExecutionMode, FailureStrategy, GraphId, GraphPersistence, GraphStatus, NetworkScope, PlanSlug,
-    PredicateOutcome, TaskGraph, TaskId, TaskNode, TaskResult, TaskStatus, VerifyPredicate,
+    PredicateOutcome, RecoveryAction, TaskGraph, TaskId, TaskNode, TaskResult, TaskStatus,
+    TimeoutPolicy, VerifyPredicate,
 };
 pub use lineage::{ErrorLineage, LineageEntry, LineageKind, classify_error};
 pub use router::{AgentRouter, RuleBasedRouter};

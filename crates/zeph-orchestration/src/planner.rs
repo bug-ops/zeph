@@ -203,7 +203,11 @@ impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
             self.verify_predicate_enabled,
         )?;
         graph.default_failure_strategy = self.default_failure_strategy;
-        dag::validate(&graph.tasks, self.max_tasks as usize)?;
+        dag::validate(
+            &graph.tasks,
+            self.max_tasks as usize,
+            graph.default_failure_strategy,
+        )?;
         Ok((graph, usage))
     }
 

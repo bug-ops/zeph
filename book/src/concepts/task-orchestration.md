@@ -21,7 +21,7 @@ A `TaskGraph` represents a plan: a goal string, a list of `TaskNode` entries, an
 
 ### TaskNode
 
-Each node in the DAG carries a `TaskId` (zero-based index), a title, a description, dependency edges, and an optional agent hint for sub-agent routing. Nodes progress through `TaskStatus`:
+Each node in the DAG carries a `TaskId` (zero-based index), a title, a description, dependency edges, and an optional agent hint for sub-agent routing. A node may also carry an optional `timeout` (`TimeoutPolicy`) and an optional `recovery` (`RecoveryAction`) — see [Per-Task Timeout Override](#per-task-timeout-override) and [Mode-1 Recovery](#mode-1-recovery) below. Both are additive: a node with neither field set behaves identically to a node from before this feature existed. Nodes progress through `TaskStatus`:
 
 | Status | Terminal? | Description |
 |--------|-----------|-------------|
@@ -77,6 +77,8 @@ Applies the effective failure strategy when a task fails:
 | `ask` | Set graph status to `Paused`; await user decision |
 
 Each task can override the graph-level default strategy via its `failure_strategy` and `max_retries` fields.
+
+A task with a `recovery` field set is checked for Mode-1 recovery before either the `abort` branch or the retry-exhausted fallthrough of the `retry` branch takes effect — see [Mode-1 Recovery](#mode-1-recovery).
 
 ## Persistence
 
@@ -267,6 +269,51 @@ A **stale event guard** rejects completion events from agents that were timed ou
 
 The scheduler monitors wall-clock time for each running task against `task_timeout_secs`. When a task exceeds the timeout, the scheduler marks it as failed with a timeout error and applies the configured failure strategy (retry, abort, skip, or ask).
 
+##### Per-Task Timeout Override
+
+Set `timeout.run_timeout_secs` on a `TaskNode` to override the graph-global `task_timeout_secs` default for that single task. The override applies uniformly regardless of dispatch kind:
+
+- **Spawned tasks** — `check_timeouts()` and `wait_event()`'s nearest-deadline computation both resolve the effective timeout per task (per-task override when set, else the graph-global default).
+- **`RunInline` tasks** (no sub-agent configured, the main agent's own tool loop executes the task) — a dedicated `tokio::select!` branch races the inline tool loop against a `tokio::time::sleep(effective_timeout)`, since `check_timeouts()` cannot observe a task blocking the tick loop for its whole duration.
+
+```json
+{
+  "title": "call a slow external API",
+  "description": "...",
+  "timeout": { "run_timeout_secs": 30 }
+}
+```
+
+(the `TaskNode` JSON shape stored in a persisted or cached graph; `run_timeout_secs` overrides the graph-global default for this task only. The current LLM planner schema does not populate `timeout`/`recovery` — set them programmatically, e.g. via `inject_tasks` during a replan.)
+
+> [!NOTE]
+> A `TimeoutPolicy` also carries `idle_timeout_secs` (per-task idle/no-progress cap). It is defined and config-surfaced but **not enforced in v1** — it is reserved for a future progress-signal mechanism. Setting it has no effect today.
+
+#### Mode-1 Recovery
+
+Set `recovery.state_injection` on a `TaskNode` (programmatically — the current LLM planner schema does not populate it) to substitute a synthetic output and let the graph continue past that task's terminal failure, instead of aborting the whole plan. Recovery fires from `propagate_failure()` in two places: the `abort`-default branch, and the retry-exhausted fallthrough of the `retry` branch.
+
+```json
+{
+  "recovery": {
+    "state_injection": "Unable to reach the external API; continuing with cached data."
+  }
+}
+```
+
+When recovery fires:
+
+- The node's status flips to `Completed` and its `TaskResult.output` is set to the injected string (`agent_def` is marked `"__recovery__"` so the synthetic origin is inspectable).
+- `graph.status` is left untouched — recovery absorbs one node's failure without pausing or aborting unrelated concurrent work.
+- Dependents unblock on the very next tick through the normal `ready_tasks()` `Pending` arm, exactly as if the node had completed normally.
+
+**Precedence and limitations:**
+
+- A cascade-abort check (fan-out or linear-chain failure-rate threshold) runs *before* `propagate_failure()` on the event path. If a cascade trips, the graph aborts and recovery never fires for that failure — cascade-abort takes precedence.
+- On the timeout path there is no cascade check, so a timed-out task with `recovery` configured always recovers if `state_injection` is set.
+- Recovery is Mode 1 only (substitute-and-continue). Mode 2 (reroute to an alternate node) is not implemented.
+- `validate()` rejects a node that sets both `recovery` and `verify_predicate` (a predicate-gated task must not be recovery-eligible) and warns — without rejecting — when `recovery` is set under an effective `skip` or `ask` strategy, since those arms never consult recovery.
+
 #### Cross-Task Context Injection
 
 When a task becomes ready, the scheduler collects output from its completed dependencies and injects it into the task prompt as a `<completed-dependencies>` XML block. This gives downstream tasks access to upstream results without manual plumbing.
@@ -414,6 +461,7 @@ confirm_before_execute = true       # Show confirmation before executing a plan 
 aggregator_max_tokens = 4096        # Token budget for the aggregation LLM call (default: 4096)
 # topology_selection = false        # Enable DAG topology classification and adaptive dispatch (requires experiments feature)
 # verify_provider = ""              # Provider for post-task completeness verification; empty = primary provider
+# default_idle_timeout_secs = 60    # RESERVED — not yet enforced; see "Per-Task Timeout Override" above
 
 [orchestration.plan_cache]
 enabled = false                     # Enable plan template caching (default: false)

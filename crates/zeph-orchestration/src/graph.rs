@@ -356,6 +356,54 @@ pub enum NetworkScope {
     Deny,
 }
 
+/// Per-task timeout override, mirroring `LangGraph`'s `TimeoutPolicy`.
+///
+/// Both fields are `Option`; `None` falls back to the graph-global default
+/// (`OrchestrationConfig::task_timeout_secs` for `run_timeout_secs`,
+/// `OrchestrationConfig::default_idle_timeout_secs` for `idle_timeout_secs`).
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::graph::TimeoutPolicy;
+///
+/// let policy = TimeoutPolicy { run_timeout_secs: Some(30), idle_timeout_secs: None };
+/// assert_eq!(policy.run_timeout_secs, Some(30));
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeoutPolicy {
+    /// Hard wall-clock cap on this task's execution. `None` falls back to the
+    /// graph-global `task_timeout_secs` default.
+    pub run_timeout_secs: Option<u64>,
+    /// Idle/no-progress cap. Defined and config-surfaced but **not enforced in v1** —
+    /// reserved for a future progress-signal mechanism. See
+    /// `specs/075-orchestration-node-control-parity/spec.md` §4/FR-005.
+    pub idle_timeout_secs: Option<u64>,
+}
+
+/// Declarative recovery action applied on a node's terminal failure.
+///
+/// v1 supports Mode 1 (`state_injection`) only: on `Abort`-default or retry-exhausted
+/// `Retry` failure, the node is marked [`TaskStatus::Completed`] with the given output
+/// substituted as its [`TaskResult`], letting the graph continue past the failure. Mode 2
+/// (reroute to an alternate node) is deferred — see
+/// `specs/075-orchestration-node-control-parity/spec.md` §7.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::graph::RecoveryAction;
+///
+/// let recovery = RecoveryAction { state_injection: Some("fallback output".to_string()) };
+/// assert_eq!(recovery.state_injection.as_deref(), Some("fallback output"));
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryAction {
+    /// Substitute output injected as this node's [`TaskResult::output`] on recovery.
+    /// `None` disables recovery (equivalent to omitting the field entirely).
+    pub state_injection: Option<String>,
+}
+
 /// A single node in the task DAG.
 ///
 /// Constructed by [`Planner`] and stored inside a [`TaskGraph`].  The
@@ -374,6 +422,8 @@ pub enum NetworkScope {
 /// assert_eq!(node.execution_mode, ExecutionMode::Parallel);
 /// assert!(node.network_scope.is_none());
 /// assert!(node.asset_sensitivity.is_none());
+/// assert!(node.timeout.is_none());
+/// assert!(node.recovery.is_none());
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskNode {
@@ -449,6 +499,17 @@ pub struct TaskNode {
     /// based on this field. See `specs/069-threat-model/spec.md §5`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_sensitivity: Option<zeph_config::AssetSensitivity>,
+
+    /// Per-task timeout override. `None` = use the graph-global `task_timeout_secs`
+    /// default for both spawned and `RunInline` dispatch. See [`TimeoutPolicy`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<TimeoutPolicy>,
+
+    /// Declarative Mode-1 recovery action applied on terminal failure. `None` = no
+    /// recovery, existing `Abort`/retry-exhausted-`Retry` behavior is unchanged. See
+    /// [`RecoveryAction`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoveryAction>,
 }
 
 impl TaskNode {
@@ -475,6 +536,8 @@ impl TaskNode {
             token_budget_cents: None,
             network_scope: None,
             asset_sensitivity: None,
+            timeout: None,
+            recovery: None,
         }
     }
 }
@@ -1004,6 +1067,47 @@ mod tests {
         let node: TaskNode = serde_json::from_str(json).expect("should deserialize old JSON");
         assert!(node.network_scope.is_none());
         assert!(node.asset_sensitivity.is_none());
+        assert!(node.timeout.is_none());
+        assert!(node.recovery.is_none());
+    }
+
+    #[test]
+    fn test_task_node_timeout_recovery_roundtrip() {
+        let mut node = TaskNode::new(0, "t", "d");
+        node.timeout = Some(TimeoutPolicy {
+            run_timeout_secs: Some(30),
+            idle_timeout_secs: Some(10),
+        });
+        node.recovery = Some(RecoveryAction {
+            state_injection: Some("fallback".to_string()),
+        });
+        let json = serde_json::to_string(&node).unwrap();
+        let restored: TaskNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            restored.timeout.as_ref().unwrap().run_timeout_secs,
+            Some(30)
+        );
+        assert_eq!(
+            restored.timeout.as_ref().unwrap().idle_timeout_secs,
+            Some(10)
+        );
+        assert_eq!(
+            restored
+                .recovery
+                .as_ref()
+                .unwrap()
+                .state_injection
+                .as_deref(),
+            Some("fallback")
+        );
+    }
+
+    #[test]
+    fn test_task_node_skip_serializing_if_none_timeout_recovery() {
+        let node = TaskNode::new(0, "t", "d");
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(!json.contains("\"timeout\""), "none should be omitted");
+        assert!(!json.contains("\"recovery\""), "none should be omitted");
     }
 
     #[test]

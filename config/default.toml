@@ -1138,6 +1138,9 @@ verify_max_tokens = 1024
 max_replans = 2
 # Enable post-task completeness verification (best-effort, does not gate dispatch)
 verify_completeness = false
+# Global default idle/no-progress timeout in seconds. RESERVED — not yet enforced; see
+# specs/075-orchestration-node-control-parity/spec.md §4/FR-005. Unset = off.
+# default_idle_timeout_secs = 60
 # Timeout in seconds for aggregation LLM calls (0 rejected by validation). Default: 60.
 # aggregator_timeout_secs = 60
 # Timeout in seconds for planner LLM calls (0 rejected by validation). Default: 120.

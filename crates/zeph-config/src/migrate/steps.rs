@@ -55,7 +55,9 @@
 //! step 86 adds a commented `[orchestration.ensemble]` advisory block for ORCH-style
 //! deterministic verifier ensemble-merge (spec 073, #6232);
 //! step 87 adds a commented `stale_running_after_secs = 3600` advisory to an existing active
-//! `[durable.retention]` table for the crash-orphan sweep (spec-064, #6254).
+//! `[durable.retention]` table for the crash-orphan sweep (spec-064, #6254);
+//! step 88 adds a `default_idle_timeout_secs` advisory comment under `[orchestration]`
+//! (spec-075-orchestration-node-control-parity, #6021).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -81,12 +83,13 @@ use super::{
     migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
     migrate_memory_retrieval_query_bias, migrate_memory_type_aware_compose_config,
     migrate_microcompact_config, migrate_nli_config, migrate_orchestration_asset_sensitivity,
-    migrate_orchestration_ensemble, migrate_orchestration_orchestrator_provider,
-    migrate_orchestration_persistence, migrate_otel_filter, migrate_pii_filter_names,
-    migrate_planner_model_to_provider, migrate_policy_provider_and_utility_window,
-    migrate_provider_max_concurrent, migrate_qdrant_api_key, migrate_qdrant_timeout_secs,
-    migrate_quality_config, migrate_sandbox_config, migrate_sandbox_egress_filter,
-    migrate_scheduler_daemon_config, migrate_secret_masking_config, migrate_serve_config,
+    migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
+    migrate_orchestration_orchestrator_provider, migrate_orchestration_persistence,
+    migrate_otel_filter, migrate_pii_filter_names, migrate_planner_model_to_provider,
+    migrate_policy_provider_and_utility_window, migrate_provider_max_concurrent,
+    migrate_qdrant_api_key, migrate_qdrant_timeout_secs, migrate_quality_config,
+    migrate_sandbox_config, migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
+    migrate_secret_masking_config, migrate_serve_config,
     migrate_session_persist_provider_overrides, migrate_session_persistence_config,
     migrate_session_provider_persistence, migrate_session_recap_config,
     migrate_shadow_sentinel_config, migrate_shell_checkpoints_config, migrate_shell_transactional,
@@ -1086,5 +1089,18 @@ impl Migration for MigrateDurableStaleRunningAfterSecs {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_durable_stale_running_after_secs(toml_src)
+    }
+}
+
+/// Step 88 — adds a `default_idle_timeout_secs` advisory comment under `[orchestration]`
+/// (spec-075-orchestration-node-control-parity, #6021).
+pub(super) struct MigrateOrchestrationIdleTimeout;
+impl Migration for MigrateOrchestrationIdleTimeout {
+    fn name(&self) -> &'static str {
+        "migrate_orchestration_idle_timeout"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_orchestration_idle_timeout(toml_src)
     }
 }
