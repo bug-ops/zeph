@@ -212,6 +212,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   functions the subcommand arms call — no duplicated business logic. `--in-place`/`--diff` now
   `requires = "migrate_config"`, so using them without `--migrate-config` is a clean clap error
   instead of silently falling through to the interactive agent (#6277).
+- **TUI**: the task registry panel (`/tasks` or the `t` key) always showed "supervisor not
+  available" on the default `--tui` launch path. The two-phase/early-start TUI startup
+  (`run_tui_agent` in `src/tui_bridge.rs`) forwarded the cancel signal and metrics channel
+  into the running `App` via `AgentEvent`, but never the `TaskSupervisor` handle — only the
+  legacy (dead-in-practice) startup path wired it correctly via `App::with_task_supervisor`.
+  Fixed by adding `AgentEvent::SetTaskSupervisor` and forwarding it alongside the existing
+  `SetCancelSignal`/`SetMetricsRx` sends. Also wired the `t` keybinding to the previously
+  unreachable `Action::ToggleTaskPanel` (#6276).
 - **Docs**: fixed 11 stale Claude model ID examples across 5 mdBook pages (`acp.md`,
   `sub-agents.md`, `experiments.md`, `wizard.md`, `configuration.md`) that still used the
   outdated `claude-sonnet-4-5`/`claude-sonnet-4-20250514` naming (incorrectly pairing the

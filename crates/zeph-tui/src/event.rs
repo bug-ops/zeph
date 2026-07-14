@@ -231,6 +231,10 @@ pub enum AgentEvent {
     SetCancelSignal(Arc<Notify>),
     /// Wire a metrics receiver into the TUI App after early startup (Phase 2).
     SetMetricsRx(watch::Receiver<MetricsSnapshot>),
+    /// Wire a [`zeph_common::task_supervisor::TaskSupervisor`] into the TUI App after
+    /// early startup (Phase 2), so the task registry panel reflects live task state
+    /// instead of reporting "supervisor not available".
+    SetTaskSupervisor(zeph_common::task_supervisor::TaskSupervisor),
     /// A foreground subagent has been spawned; the TUI should switch view to its transcript.
     ForegroundSubagentStarted {
         /// Stable sub-agent identifier (`task_id` from `SubAgentManager`).

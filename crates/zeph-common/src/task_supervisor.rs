@@ -355,6 +355,15 @@ pub struct TaskSupervisor {
     inner: Arc<Inner>,
 }
 
+impl std::fmt::Debug for TaskSupervisor {
+    /// Prints a stable placeholder rather than task internals (factory closures
+    /// inside `TaskEntry` are not `Debug`); callers needing task details should
+    /// use [`TaskSupervisor::snapshot`] instead.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskSupervisor").finish_non_exhaustive()
+    }
+}
+
 impl TaskSupervisor {
     /// Create a new supervisor and start its reap driver.
     ///

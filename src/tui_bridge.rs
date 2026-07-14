@@ -335,6 +335,11 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
                 .agent_tx
                 .try_send(zeph_tui::AgentEvent::SetMetricsRx(metrics_rx));
         }
+        if let Some(task_supervisor) = params.task_supervisor.take() {
+            let _ = early
+                .agent_tx
+                .try_send(zeph_tui::AgentEvent::SetTaskSupervisor(task_supervisor));
+        }
         (early.tui_done, early.agent_tx)
     } else {
         // Legacy path: TUI hasn't started yet, create App and spawn its thread now.

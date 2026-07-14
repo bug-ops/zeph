@@ -235,6 +235,9 @@ impl App {
             AgentEvent::SetMetricsRx(rx) => {
                 self.set_metrics_rx(rx);
             }
+            AgentEvent::SetTaskSupervisor(supervisor) => {
+                self.set_task_supervisor(supervisor);
+            }
             AgentEvent::ForegroundSubagentStarted { id, name } => {
                 self.sessions.current_mut().status_label =
                     Some(format!("Sub-agent '{name}' running..."));

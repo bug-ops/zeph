@@ -654,6 +654,15 @@ impl App {
         self
     }
 
+    /// Wire a [`TaskSupervisor`] into a running App instance.
+    ///
+    /// Used by the two-phase TUI startup path to connect the supervisor after
+    /// early startup (Phase 2), mirroring [`App::set_cancel_signal`] and
+    /// [`App::set_metrics_rx`] so the task registry panel works on that path too.
+    pub fn set_task_supervisor(&mut self, supervisor: TaskSupervisor) {
+        self.task_supervisor = Some(supervisor);
+    }
+
     /// Refresh the cached task snapshot from the supervisor.
     ///
     /// Must be called once per render tick **before** `terminal.draw()` to avoid

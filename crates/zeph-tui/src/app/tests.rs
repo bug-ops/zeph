@@ -2695,6 +2695,41 @@ async fn supervisor_activity_label_multiple_tasks_shows_more() {
     cancel.cancel();
 }
 
+#[tokio::test]
+async fn set_task_supervisor_event_wires_supervisor_for_phase2_startup() {
+    // Regression for #6276: the phase-2 (early-start) TUI path forwards the
+    // TaskSupervisor via AgentEvent::SetTaskSupervisor rather than the
+    // App::with_task_supervisor builder used by the legacy path.
+    use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let sup = TaskSupervisor::new(cancel.clone());
+    sup.spawn(TaskDescriptor {
+        name: "phase2-task",
+        restart: RestartPolicy::RunOnce,
+        factory: || async { std::future::pending::<()>().await },
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let (mut app, _rx, _tx) = make_app();
+    assert!(app.task_supervisor.is_none());
+
+    app.handle_agent_event(AgentEvent::SetTaskSupervisor(sup));
+    app.refresh_task_snapshots();
+
+    let label = app.supervisor_activity_label();
+    assert!(
+        label.is_some(),
+        "expected Some label after wiring via event"
+    );
+    assert!(
+        label.as_deref().unwrap().contains("phase2-task"),
+        "label should contain task name: {label:?}"
+    );
+
+    cancel.cancel();
+}
+
 #[test]
 fn paste_inserts_text_in_insert_mode() {
     let (mut app, _rx, _tx) = make_app();

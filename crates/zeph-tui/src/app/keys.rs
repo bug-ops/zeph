@@ -820,6 +820,7 @@ impl App {
             KeyCode::Char('D') => Some(Action::SetActivePanel(Panel::Durable)),
             KeyCode::Char('S') => Some(Action::SetActivePanel(Panel::Settings)),
             KeyCode::Char('a') => Some(Action::SetActivePanel(Panel::SubAgents)),
+            KeyCode::Char('t') => Some(Action::ToggleTaskPanel),
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Action::CopyLastAssistant)
             }
@@ -1411,6 +1412,16 @@ mod tests {
         let action = app.decode_key(plain_key('f'));
 
         assert_eq!(action, Some(Action::SetActivePanel(Panel::Fleet)));
+    }
+
+    #[test]
+    fn plain_t_in_normal_mode_toggles_task_panel() {
+        let (mut app, _user_rx, _agent_tx) = make_app();
+        app.sessions.current_mut().input_mode = InputMode::Normal;
+
+        let action = app.decode_key(plain_key('t'));
+
+        assert_eq!(action, Some(Action::ToggleTaskPanel));
     }
 
     #[test]
