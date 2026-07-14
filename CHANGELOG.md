@@ -202,6 +202,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **core**: `apply_tier_results`'s Phase 2 hook-firing future (`RuntimeLayer::after_tool` +
+  `PostToolUse`) discarded the `Result` from `sem.acquire()`, silently proceeding as if a
+  permit were held if the local semaphore were ever closed. It now matches the sibling
+  `make_exec_future` pattern: on a closed semaphore it logs via `tracing::warn!` and returns
+  the original tool result unchanged, skipping hook firing for that index instead of running
+  unbounded (#6258).
+- **core**: `crates/zeph-core/src/agent/tests/ensemble_scheduler_loop_tests.rs` declared its
+  helper functions and `zeph_orchestration` imports at module scope with no feature gate,
+  while its four test functions were individually gated `#[cfg(feature = "scheduler")]`. Since
+  `zeph-core`'s default features don't include `scheduler`, a plain `cargo nextest run -p
+  zeph-core` compiled the now-unused helpers/imports as dead code, which the workspace's
+  `build.warnings = "deny"` turned into a hard build failure. The module declaration in
+  `agent/tests/mod.rs` is now gated `#[cfg(all(test, feature = "scheduler"))]` so the whole
+  file compiles only when the feature enabling its content is enabled (#6274).
 - **ACP**: `session/delete` only removed the in-memory session entry, never touching the
   configured persistence store — a deleted session's `acp_sessions` row (and its associated
   conversation history / config snapshot) survived, so it could resurrect via a subsequent
