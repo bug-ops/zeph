@@ -858,21 +858,28 @@ async fn close_session_removes_session_from_memory() {
         .await;
 }
 
-/// `session/delete` removes the session from `session/list` (#5367).
+/// `session/delete` removes the session from `session/list` (#5367) and, when a store is
+/// configured, permanently removes the persisted row too — a deleted session must never
+/// resurrect via `session/load`/`session/resume` (#6271).
 #[tokio::test(flavor = "current_thread")]
 async fn delete_session_removes_session_from_list() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
             let workdir = temp_workdir();
+            let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
+            let sqlite_path = db_dir
+                .path()
+                .join("acp-delete-test.db")
+                .to_string_lossy()
+                .into_owned();
             let (sw, sr, cw, cr) = duplex_pair();
-            let server_fut = serve_connection(
-                noop_spawner(),
-                test_config("test-agent"),
-                sw,
-                sr,
-                "acp-local".to_owned(),
-            );
+            let config = AcpServerConfig {
+                sqlite_path: Some(sqlite_path.clone()),
+                ..test_config("test-agent")
+            };
+            let server_fut =
+                serve_connection(noop_spawner(), config, sw, sr, "acp-local".to_owned());
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
@@ -902,14 +909,29 @@ async fn delete_session_removes_session_from_list() {
                     !ids.contains(&&session_id),
                     "deleted session must not appear in session/list: {ids:?}"
                 );
-                Ok(())
+                Ok(session_id)
             });
-            tokio::select! {
+            let session_id = tokio::select! {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
-                    assert!(result.is_ok(), "delete_session test failed: {result:?}");
+                    result.expect("delete_session test failed")
                 }
-            }
+            };
+
+            // Verify the row is actually gone from the persistence store, not just absent
+            // from the in-memory session/list — the regression this test guards against
+            // (#6271) is a deleted session resurrecting via load/resume because the store
+            // row survived.
+            let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
+                .await
+                .expect("SqliteStore::new");
+            assert!(
+                !store
+                    .acp_session_exists(&session_id.to_string())
+                    .await
+                    .expect("acp_session_exists query failed"),
+                "deleted session must not survive in the persistence store"
+            );
         })
         .await;
 }
@@ -2140,6 +2162,99 @@ async fn load_session_cross_owner_fails() {
                     );
                 }
             }
+        })
+        .await;
+}
+
+/// `session/delete` on a session owned by a different connection must not remove the
+/// persisted row — mirrors `load_session_cross_owner_fails`/`resume_session_cross_owner_fails`
+/// but for the delete path, at the ACP-protocol handler level (the underlying
+/// `delete_acp_session_for_owner` SQL owner-scoping is already unit-tested in
+/// `zeph-memory`; the HTTP CRUD transport has its own
+/// `delete_session_cross_owner_returns_404_and_does_not_delete` — this is the missing
+/// coverage for the `do_delete_session` ACP handler itself) (#6271).
+#[tokio::test(flavor = "current_thread")]
+async fn delete_session_cross_owner_fails() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
+            let sqlite_path = db_dir
+                .path()
+                .join("acp-owner-delete-test.db")
+                .to_string_lossy()
+                .into_owned();
+
+            let session_id = {
+                let (sw, sr, cw, cr) = duplex_pair();
+                let config = AcpServerConfig {
+                    sqlite_path: Some(sqlite_path.clone()),
+                    ..test_config("test-agent")
+                };
+                let server_fut =
+                    serve_connection(noop_spawner(), config, sw, sr, "alice".to_owned());
+                let client_fut =
+                    acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::schema::v1::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
+                        let session_id = cx
+                            .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
+                        Ok(session_id)
+                    });
+                tokio::select! {
+                    res = server_fut => panic!("server exited before client: {res:?}"),
+                    result = client_fut => result.expect("session/new failed"),
+                }
+            };
+
+            let (sw, sr, cw, cr) = duplex_pair();
+            let config = AcpServerConfig {
+                sqlite_path: Some(sqlite_path.clone()),
+                ..test_config("test-agent")
+            };
+            let server_fut = serve_connection(noop_spawner(), config, sw, sr, "bob".to_owned());
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+                // Bob's request may return Ok (delete is a no-op for a foreign/nonexistent id,
+                // same uniform non-distinguishing shape as `claim_acp_session_for_owner`) or
+                // Err — either is acceptable here; what matters is verified below: alice's row
+                // must survive.
+                let _ = cx
+                    .send_request(acp::schema::v1::DeleteSessionRequest::new(
+                        session_id.clone(),
+                    ))
+                    .block_task()
+                    .await;
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    result.expect("bob's delete_session request errored unexpectedly");
+                }
+            }
+
+            let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
+                .await
+                .expect("SqliteStore::new");
+            assert!(
+                store
+                    .acp_session_exists(&session_id.to_string())
+                    .await
+                    .expect("acp_session_exists query failed"),
+                "bob must not be able to delete alice's session from the store"
+            );
         })
         .await;
 }

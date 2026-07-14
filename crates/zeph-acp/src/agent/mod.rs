@@ -1720,7 +1720,6 @@ impl ZephAcpAgentState {
         Ok(acp::schema::v1::CloseSessionResponse::default())
     }
 
-    #[allow(clippy::unused_async)]
     #[tracing::instrument(skip_all, name = "acp.handler.delete_session", fields(session_id = %args.session_id))]
     pub(crate) async fn do_delete_session(
         &self,
@@ -1728,9 +1727,28 @@ impl ZephAcpAgentState {
     ) -> acp::Result<acp::schema::v1::DeleteSessionResponse> {
         tracing::debug!(session_id = %args.session_id, "ACP session deleted");
         // Permanent deletion — no usage summary is sent. See do_close_session for graceful
-        // close that emits a cumulative UsageUpdate before removing the session.
+        // close that emits a cumulative UsageUpdate before removing the session. In-memory
+        // removal is unconditional and happens first: the id lookup here is not owner-scoped
+        // (unlike the store delete below), which is benign only because `self.sessions` is
+        // private to this connection's owner — if it is ever shared across owners, this
+        // becomes a cross-owner eviction bug. Persisted-store deletion failure is surfaced as
+        // an error rather than swallowed: `delete_acp_session_for_owner` deletes by id, so a
+        // retry is safe (the in-memory removal above is already a no-op on retry), and a
+        // silent failure here would let a transient DB error (lock/disk full/pool exhaustion)
+        // report success to the client while the persisted row — and the resurrection risk it
+        // carries — survives.
         if let Some(entry) = self.sessions.lock().remove(&args.session_id) {
             entry.cancel_signal.notify_one();
+        }
+        if let Some(ref store) = self.store
+            && let Err(e) = store
+                .delete_acp_session_for_owner(&args.session_id.to_string(), &self.owner_key)
+                .await
+        {
+            tracing::warn!(error = %e, session_id = %args.session_id, "failed to delete persisted ACP session");
+            // Static message only (matches do_load_session/do_fork_session) — the raw
+            // MemoryError Display could leak DB URL/SQL error text to the client.
+            return Err(acp::Error::internal_error().data("session deletion not persisted"));
         }
         Ok(acp::schema::v1::DeleteSessionResponse::default())
     }

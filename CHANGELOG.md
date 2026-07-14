@@ -202,6 +202,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **ACP**: `session/delete` only removed the in-memory session entry, never touching the
+  configured persistence store — a deleted session's `acp_sessions` row (and its associated
+  conversation history / config snapshot) survived, so it could resurrect via a subsequent
+  `session/load` or `session/resume`. `do_delete_session` now also calls
+  `SqliteStore::delete_acp_session_for_owner`, matching the owner-scoped pattern already used
+  by `do_load_session`/`do_fork_session`/`do_resume_session`. In-memory removal remains
+  unconditional and always happens first; a persisted-store deletion failure is now surfaced
+  to the caller as an error (rather than logged and silently swallowed) so a transient DB
+  failure never reports false success while the persisted row — and the resurrection risk it
+  carries — survives. The delete is idempotent by id, so the client can safely retry (#6271).
 - **CLI**: `--init` / `--migrate-config` were documented as top-level flags everywhere (both
   `CLAUDE.md` files, `.zeph/zeph.md`, `crates/zeph-config/AGENTS.md`, the worktree-disk-quota
   playbook, and `src/cli.rs`'s own doc comments) but only existed as `clap` subcommands (`zeph
