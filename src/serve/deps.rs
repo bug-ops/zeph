@@ -198,7 +198,17 @@ pub(crate) async fn build_serve_deps(
 ) -> anyhow::Result<(ServeAgentDeps, Option<String>)> {
     use crate::bootstrap::AppBuilder;
 
-    let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path, safe_mode).await?;
+    // Serve wires no hooks or MCP tools today (see `ServeSessionsArgs::safe_mode` doc), so
+    // there is no media-passthrough surface to gate here — pass `false` unconditionally.
+    let app = AppBuilder::new(
+        config_path,
+        vault_backend,
+        vault_key,
+        vault_path,
+        safe_mode,
+        false,
+    )
+    .await?;
     let auth_token = resolve_auth_token(&app).await;
 
     let cancel = tokio_util::sync::CancellationToken::new();

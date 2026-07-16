@@ -195,6 +195,13 @@ impl AppBuilder {
     /// together into `config.cli.safe_mode` rather than one silently overriding
     /// the other.
     ///
+    /// `no_mcp_media` forces MCP image passthrough off for this session
+    /// (`--no-mcp-media`, spec-072). OR'd into `config.cli.no_mcp_media` the same way as
+    /// `safe_mode` above (no env overlay for this flag — CLI-only), so every entry point
+    /// that builds its `McpToolExecutor` from `app.config()` (runner, daemon, ACP) reads a
+    /// single, correctly-populated source of truth instead of each needing its own
+    /// case-by-case plumbing.
+    ///
     /// # Errors
     ///
     /// Returns [`BootstrapError`] if config loading, validation, vault backend parsing,
@@ -205,10 +212,12 @@ impl AppBuilder {
         vault_key_override: Option<&Path>,
         vault_path_override: Option<&Path>,
         safe_mode: bool,
+        no_mcp_media: bool,
     ) -> Result<Self, BootstrapError> {
         let config_path = resolve_config_path(config_override);
         let mut config = Config::load(&config_path)?;
         config.cli.safe_mode |= safe_mode;
+        config.cli.no_mcp_media |= no_mcp_media;
         config.validate()?;
         config.llm.check_legacy_format()?;
 

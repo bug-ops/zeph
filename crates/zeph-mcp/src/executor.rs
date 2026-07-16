@@ -44,6 +44,9 @@ pub struct McpToolExecutor {
     max_images_per_result: usize,
     /// Audit logger for MCP media accept/reject decisions.
     audit_logger: Option<Arc<zeph_tools::AuditLogger>>,
+    /// Status sender for the mandatory TUI/CLI decode spinner (`CLAUDE.md` "TUI Rules").
+    /// `None` disables the indicator only — sanitization still runs.
+    status_tx: Option<zeph_llm::provider::StatusTx>,
 }
 
 impl McpToolExecutor {
@@ -60,6 +63,7 @@ impl McpToolExecutor {
             media_sanitizer: None,
             max_images_per_result: 0,
             audit_logger: None,
+            status_tx: None,
         }
     }
 
@@ -83,6 +87,17 @@ impl McpToolExecutor {
     #[must_use]
     pub fn with_audit(mut self, logger: Arc<zeph_tools::AuditLogger>) -> Self {
         self.audit_logger = Some(logger);
+        self
+    }
+
+    /// Attach a status sender used to surface a `"Decoding MCP image…"` indicator while
+    /// [`zeph_sanitizer::MediaSanitizer::sanitize_image`]'s `spawn_blocking` decode runs
+    /// (`CLAUDE.md` "TUI Rules" — every background/implicit operation needs a visible
+    /// status indicator). Without this, decoding is silent in the UI; sanitization itself
+    /// is unaffected.
+    #[must_use]
+    pub fn with_status_tx(mut self, tx: zeph_llm::provider::StatusTx) -> Self {
+        self.status_tx = Some(tx);
         self
     }
 
@@ -127,6 +142,13 @@ impl McpToolExecutor {
         };
         if !self.manager.media_passthrough_allowed(server_id).await {
             return Vec::new();
+        }
+
+        let has_images = content
+            .iter()
+            .any(|b| matches!(b, rmcp::model::ContentBlock::Image(_)));
+        if has_images {
+            self.send_status("Decoding MCP image\u{2026}");
         }
 
         let mut media = Vec::new();
@@ -179,7 +201,19 @@ impl McpToolExecutor {
                 }
             }
         }
+        if has_images {
+            self.send_status("");
+        }
         media
+    }
+
+    /// Send a best-effort status update via [`Self::status_tx`], when attached. Mirrors the
+    /// `let _ = stx.send(...)` idiom used for MCP OAuth status messages
+    /// (`crates/zeph-mcp/src/manager/connect.rs`).
+    fn send_status(&self, text: &str) {
+        if let Some(ref tx) = self.status_tx {
+            let _ = tx.send(text.to_owned());
+        }
     }
 
     /// Log an accepted MCP media validation via the tool audit path (spec-072 AC-14).
@@ -568,6 +602,55 @@ mod tests {
             .collect_media("srv", "tool", std::slice::from_ref(&mismatched))
             .await;
         assert!(media.is_empty(), "MIME mismatch must be rejected (AC-4)");
+    }
+
+    #[tokio::test]
+    async fn collect_media_emits_decode_status_and_clears_it() {
+        let entry = media_entry("srv", true, crate::manager::McpTrustLevel::Untrusted);
+        let mgr = Arc::new(McpManager::new(
+            vec![entry],
+            vec![],
+            PolicyEnforcer::new(vec![]),
+        ));
+        let tools = Arc::new(RwLock::new(vec![]));
+        let sanitizer = Arc::new(zeph_sanitizer::MediaSanitizer::new(
+            &zeph_config::McpMediaConfig::default(),
+        ));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let executor = McpToolExecutor::new(mgr, tools)
+            .with_media(sanitizer, 4)
+            .with_status_tx(tx);
+
+        let media = executor
+            .collect_media("srv", "tool", std::slice::from_ref(&png_image_block()))
+            .await;
+        assert_eq!(media.len(), 1);
+
+        assert_eq!(rx.try_recv().unwrap(), "Decoding MCP image\u{2026}");
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            "",
+            "status must be cleared once decoding finishes"
+        );
+        assert!(rx.try_recv().is_err(), "no further status messages");
+    }
+
+    #[tokio::test]
+    async fn collect_media_skips_status_when_no_images_in_result() {
+        let entry = media_entry("srv", true, crate::manager::McpTrustLevel::Untrusted);
+        let executor = executor_with_media(entry);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let executor = executor.with_status_tx(tx);
+
+        let text_block = rmcp::model::ContentBlock::text("no images here".to_owned());
+        let media = executor
+            .collect_media("srv", "tool", std::slice::from_ref(&text_block))
+            .await;
+        assert!(media.is_empty());
+        assert!(
+            rx.try_recv().is_err(),
+            "no status update when there are no image blocks to decode"
+        );
     }
 
     #[test]

@@ -69,6 +69,48 @@ max_dynamic_servers = 10
 
 Environment variables containing secrets (API keys, tokens, credentials — 21 variables plus `BASH_FUNC_*` patterns) are automatically stripped from MCP child process environments. See [MCP Security](../reference/security/mcp.md) for the full blocklist.
 
+### Image Passthrough
+
+MCP servers can return images (e.g. a screenshot tool, a chart renderer) as part of a tool
+result. By default these are dropped, leaving only the text placeholder. Set
+`media_passthrough = true` on a server to decode and attach its images as native
+`MessagePart::Image` siblings for vision-capable providers:
+
+```toml
+[[mcp.servers]]
+id = "screenshot-tool"
+command = "screenshot-mcp"
+trust_level = "trusted"
+media_passthrough = true
+```
+
+`media_passthrough` is independent of `trust_level`, but always hard-blocked when
+`trust_level = "sandboxed"`, regardless of this flag. Images are only attached when the
+turn's selected provider is vision-capable — otherwise they are dropped with a warning and
+the text placeholder remains.
+
+Global caps for every server with `media_passthrough = true` are configured under
+`[mcp.media]`:
+
+```toml
+[mcp.media]
+max_image_bytes = 5242880       # 5 MiB
+max_dimension_px = 8192
+max_pixels = 64000000           # ~64 MP, decompression-bomb defense
+max_images_per_result = 4
+max_images_per_turn = 8
+allowed_formats = ["jpeg", "png", "gif", "webp"]
+```
+
+Every image is validated by `MediaSanitizer` before it ever reaches an LLM request: a
+magic-byte sniff against the declared MIME type, a format allowlist check, the byte-size
+cap, and the dimension/pixel caps (checked both from the image header and after a full
+decode) — rejecting a mismatched, disallowed, oversized, or decompression-bomb image
+instead of decoding it. The `--init` wizard asks whether to enable image passthrough per
+remote server (default No); `--migrate-config` adds `media_passthrough = false` and a
+commented `[mcp.media]` block to configs written before this feature existed. Use
+`--no-mcp-media` to force passthrough off for a session regardless of config.
+
 ## Dynamic Management
 
 Add and remove MCP servers at runtime via chat commands:

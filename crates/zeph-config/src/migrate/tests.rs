@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        88,
-        "MIGRATIONS registry must contain all 88 sequential steps"
+        89,
+        "MIGRATIONS registry must contain all 89 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1860,7 +1860,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 88);
+    assert_eq!(MIGRATIONS.len(), 89);
 }
 
 #[test]
@@ -1988,6 +1988,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_orchestration_ensemble",
         "migrate_durable_stale_running_after_secs",
         "migrate_orchestration_idle_timeout",
+        "migrate_mcp_media_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -4573,6 +4574,76 @@ fn step_84_is_idempotent() {
     let first = migrate_a2a_server_remove_inert_fields(src).expect("first migrate");
     assert_eq!(first.changed_count, 2);
     let second = migrate_a2a_server_remove_inert_fields(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
+    );
+}
+
+// ── Step 89 — migrate_mcp_media_config (spec-072, #6241) ─────────────────
+
+#[test]
+fn step_89_adds_media_passthrough_to_existing_servers() {
+    let src = "[mcp]\n\n[[mcp.servers]]\nid = \"foo\"\ncommand = \"foo\"\n\n[[mcp.servers]]\nid = \"bar\"\ncommand = \"bar\"\n";
+    let result = migrate_mcp_media_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 3, "2 servers + 1 [mcp.media] block");
+    assert_eq!(
+        result.output.matches("media_passthrough = false").count(),
+        2
+    );
+    assert!(result.output.contains("# [mcp.media]"));
+    assert!(
+        result
+            .sections_changed
+            .contains(&"mcp.servers.media_passthrough".to_owned())
+    );
+    assert!(result.sections_changed.contains(&"mcp.media".to_owned()));
+}
+
+#[test]
+fn step_89_skips_servers_that_already_have_the_key() {
+    let src = "[mcp]\n\n[[mcp.servers]]\nid = \"foo\"\nmedia_passthrough = true\n";
+    let result = migrate_mcp_media_config(src).expect("migrate");
+    // Only the [mcp.media] block is added; the existing server entry is untouched.
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("media_passthrough = true"));
+    assert!(!result.output.contains("media_passthrough = false"));
+}
+
+#[test]
+fn step_89_noop_when_no_mcp_section() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_mcp_media_config(src).expect("migrate");
+    assert_eq!(
+        result.changed_count, 1,
+        "only the [mcp.media] block is added"
+    );
+    assert!(result.output.contains("# [mcp.media]"));
+}
+
+#[test]
+fn step_89_noop_when_mcp_media_already_present() {
+    let src = "[mcp]\n\n[mcp.media]\nmax_image_bytes = 1048576\n";
+    let result = migrate_mcp_media_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_89_noop_when_mcp_media_only_commented() {
+    let src = "[mcp]\n# [mcp.media]\n# max_image_bytes = 1048576\n";
+    let result = migrate_mcp_media_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_89_is_idempotent() {
+    let src = "[mcp]\n\n[[mcp.servers]]\nid = \"foo\"\ncommand = \"foo\"\n";
+    let first = migrate_mcp_media_config(src).expect("first migrate");
+    assert_eq!(first.changed_count, 2, "1 server + 1 [mcp.media] block");
+    let second = migrate_mcp_media_config(&first.output).expect("second migrate");
     assert_eq!(second.changed_count, 0, "second run must be a no-op");
     assert_eq!(
         second.output, first.output,

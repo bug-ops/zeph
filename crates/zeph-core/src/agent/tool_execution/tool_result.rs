@@ -485,7 +485,8 @@ impl<C: Channel> Agent<C> {
                 media,
                 result_parts,
                 images_attached_this_turn,
-            );
+            )
+            .await;
         }
 
         Ok(())
@@ -504,7 +505,7 @@ impl<C: Channel> Agent<C> {
     /// 400/422. Both multi-provider implementations enforce this at dispatch time:
     /// `TriageRouter::chat_with_tools` (escalate-or-strip) and `RouterProvider::chat_with_tools`
     /// (per-provider strip on every dispatch branch — Cascade/Bandit/Ema/Thompson).
-    fn emit_media_parts(
+    async fn emit_media_parts(
         &mut self,
         tool_name: &str,
         media: Vec<zeph_llm::ImageData>,
@@ -519,7 +520,11 @@ impl<C: Channel> Agent<C> {
             );
             return;
         }
+        let server_id = tool_name
+            .split_once(':')
+            .map_or(tool_name, |(server, _)| server);
         let max_images_per_turn = self.runtime.config.mcp_media.max_images_per_turn;
+        let mut attached = 0usize;
         for img in media {
             if *images_attached_this_turn >= max_images_per_turn {
                 tracing::warn!(
@@ -531,6 +536,21 @@ impl<C: Channel> Agent<C> {
             }
             result_parts.push(MessagePart::Image(Box::new(img)));
             *images_attached_this_turn += 1;
+            attached += 1;
+        }
+        if attached > 0 {
+            // Mandatory TUI status indicator (CLAUDE.md "TUI Rules") — surfaces which MCP
+            // server contributed an image attached to the outgoing LLM request. Deliberately
+            // NOT self-cleared: with zero work between a set and a clear on the last-write-wins
+            // `StatusTx` slot, an immediate `send_status_best_effort("")` would blank the label
+            // before the render loop ever has a chance to pick it up, making it invisible. Left
+            // set so the next natural status update (following tool call, LLM response) replaces
+            // it once real work actually happens.
+            self.channel
+                .send_status_best_effort(&format!(
+                    "Image attached from mcp:{server_id} ({attached})"
+                ))
+                .await;
         }
     }
 

@@ -292,6 +292,13 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) safe_mode: bool,
 
+    /// Force MCP image passthrough (spec-072) off for this session, regardless of
+    /// per-server `media_passthrough` or `[mcp.media]` config. Quick incident-response
+    /// kill-switch — MCP tool calls and text results are unaffected; only image
+    /// decode/attach is disabled. Session-scoped only; never persisted to config.toml.
+    #[arg(long)]
+    pub(crate) no_mcp_media: bool,
+
     /// Emit structured JSON events to stdout (JSONL, one event per line).
     /// Safe for piping into `jq`. Forces all log output to stderr.
     /// Mutually exclusive with `--tui` and `--acp`.

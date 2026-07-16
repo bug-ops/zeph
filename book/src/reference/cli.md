@@ -771,6 +771,7 @@ channels.
 | `--extended-context` | Enable Claude 1M extended context window. Tokens above 200K use long-context pricing. Requires a Claude provider. Overrides `llm.cloud.enable_extended_context` |
 | `--scan-skills-on-load` | Scan skill content for prompt injection patterns on load. Advisory only — logs warnings; does not block tool calls |
 | `--no-pre-execution-verify` | Disable pre-execution verifiers for tool calls. Use in trusted environments when verifiers produce false positives |
+| `--no-mcp-media` | Force MCP image passthrough off for this session, regardless of per-server `media_passthrough` or `[mcp.media]` config. Quick incident-response kill-switch — MCP tool calls and text results are unaffected |
 | `--policy-file <PATH>` | Path to external policy rules TOML file. Overrides `tools.policy.policy_file` |
 | `--dump-format <FORMAT>` | Override debug dump format: `json`, `raw`, or `trace` (OTel OTLP spans) |
 | `--scheduler-tick <SECS>` | Override scheduler tick interval in seconds (requires `scheduler` feature) |

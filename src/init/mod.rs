@@ -2400,6 +2400,79 @@ mod tests {
     }
 
     #[test]
+    fn build_config_mcp_remote_server_media_passthrough_round_trips() {
+        // spec-072 P3: the wizard's per-server image-passthrough prompt result must reach
+        // `config.mcp.servers` unchanged (#6241).
+        let state = WizardState {
+            mcp_remote_servers: vec![McpServerConfig {
+                id: "vision-tool".to_owned(),
+                command: None,
+                args: Vec::new(),
+                env: std::collections::HashMap::new(),
+                url: Some("https://mcp.example.com".to_owned()),
+                timeout: 30,
+                policy: zeph_config::McpPolicy::default(),
+                headers: std::collections::HashMap::new(),
+                oauth: None,
+                trust_level: McpTrustLevel::Untrusted,
+                tool_allowlist: None,
+                expected_tools: Vec::new(),
+                roots: Vec::new(),
+                tool_metadata: std::collections::HashMap::new(),
+                elicitation_enabled: None,
+                env_isolation: None,
+                media_passthrough: true,
+            }],
+            ..single_provider_state()
+        };
+        let config = build_config(&state);
+        let server = config
+            .mcp
+            .servers
+            .iter()
+            .find(|s| s.id == "vision-tool")
+            .expect("server must be present in config.mcp.servers");
+        assert!(
+            server.media_passthrough,
+            "media_passthrough=true must round-trip from WizardState to Config"
+        );
+    }
+
+    #[test]
+    fn build_config_mcp_remote_server_media_passthrough_defaults_false() {
+        let state = WizardState {
+            mcp_remote_servers: vec![McpServerConfig {
+                id: "text-tool".to_owned(),
+                command: None,
+                args: Vec::new(),
+                env: std::collections::HashMap::new(),
+                url: Some("https://mcp.example.com".to_owned()),
+                timeout: 30,
+                policy: zeph_config::McpPolicy::default(),
+                headers: std::collections::HashMap::new(),
+                oauth: None,
+                trust_level: McpTrustLevel::Untrusted,
+                tool_allowlist: None,
+                expected_tools: Vec::new(),
+                roots: Vec::new(),
+                tool_metadata: std::collections::HashMap::new(),
+                elicitation_enabled: None,
+                env_isolation: None,
+                media_passthrough: false,
+            }],
+            ..single_provider_state()
+        };
+        let config = build_config(&state);
+        let server = config
+            .mcp
+            .servers
+            .iter()
+            .find(|s| s.id == "text-tool")
+            .expect("server must be present in config.mcp.servers");
+        assert!(!server.media_passthrough, "default-No must stay false");
+    }
+
+    #[test]
     fn build_config_claude_skips_embedding_model() {
         let state = WizardState {
             provider: Some(ProviderKind::Claude),

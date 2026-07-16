@@ -227,3 +227,65 @@ pub fn migrate_mcp_retry_and_tool_timeout(toml_src: &str) -> Result<MigrationRes
         })
     }
 }
+
+/// Add `media_passthrough = false` to every existing `[[mcp.servers]]` entry that lacks it,
+/// and a commented-out `[mcp.media]` advisory block with pinned defaults, for configs that
+/// predate the MCP image passthrough feature (spec-072, #6241).
+///
+/// Neither addition changes behavior: `media_passthrough` already defaults to `false` via
+/// `#[serde(default)]`, and `[mcp.media]`'s caps only take effect for servers that opt in.
+/// Both are surfaced for discoverability, mirroring [`migrate_mcp_trust_levels`]'s
+/// array-of-tables write for the per-server flag and the standalone commented-block append
+/// used by [`super::migrate_nli_config`] for the new section.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_mcp_media_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    let mut changed_count = 0usize;
+    let mut sections_changed: Vec<String> = Vec::new();
+
+    if let Some(servers) = doc
+        .get_mut("mcp")
+        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(|mcp| mcp.get_mut("servers"))
+        .and_then(toml_edit::Item::as_array_of_tables_mut)
+    {
+        let mut added = 0usize;
+        for entry in servers.iter_mut() {
+            if !entry.contains_key("media_passthrough") {
+                entry.insert("media_passthrough", toml_edit::value(false));
+                added += 1;
+            }
+        }
+        if added > 0 {
+            changed_count += added;
+            sections_changed.push("mcp.servers.media_passthrough".to_owned());
+        }
+    }
+
+    let mut output = doc.to_string();
+
+    let media_commented_present = output.lines().any(|l| l.trim() == "# [mcp.media]");
+    if !section_header_present(&output, "mcp.media") && !media_commented_present {
+        let block = "\n# Global caps for MCP image passthrough (spec-072). Applies to every\n\
+             # server with media_passthrough = true.\n\
+             # [mcp.media]\n\
+             # max_image_bytes = 5242880       # 5 MiB\n\
+             # max_dimension_px = 8192\n\
+             # max_pixels = 64000000           # ~64 MP (decompression-bomb defense)\n\
+             # max_images_per_result = 4\n\
+             # max_images_per_turn = 8\n\
+             # allowed_formats = [\"jpeg\", \"png\", \"gif\", \"webp\"]\n";
+        output = format!("{}{}", output.trim_end(), block);
+        changed_count += 1;
+        sections_changed.push("mcp.media".to_owned());
+    }
+
+    Ok(MigrationResult {
+        output,
+        changed_count,
+        sections_changed,
+    })
+}

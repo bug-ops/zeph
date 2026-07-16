@@ -1919,6 +1919,63 @@ mod reasoning_amplification_call_site {
     }
 
     #[tokio::test]
+    async fn process_one_tool_result_emits_source_labeled_status_when_media_attached() {
+        // Mandatory TUI status indicator (CLAUDE.md "TUI Rules") — the channel must see a
+        // status update naming the MCP server that contributed the attached image, followed
+        // by a clearing update.
+        use crate::agent::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider_with_vision,
+        };
+        let provider = mock_provider_with_vision(vec!["ok".to_owned()]);
+        let channel = MockChannel::new(vec![]);
+        let statuses = std::sync::Arc::clone(&channel.statuses);
+        let mut agent = crate::agent::Agent::new(
+            provider,
+            channel,
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        // A qualified `server:tool` name, matching real MCP dispatch (`McpTool::qualified_name`).
+        let tc = make_tool_use_request("id-media-status", "srv:tool");
+        let mut result_parts = Vec::new();
+        let mut images_attached = 0usize;
+
+        agent
+            .process_one_tool_result(
+                &tc,
+                "id-media-status",
+                &std::time::Instant::now(),
+                Ok(Some(tool_output_with_media(1))),
+                &mut result_parts,
+                &mut Vec::new(),
+                &mut false,
+                &mut None,
+                &mut Vec::new(),
+                &mut images_attached,
+            )
+            .await
+            .unwrap();
+
+        let recorded = statuses.lock().unwrap();
+        assert!(
+            recorded
+                .iter()
+                .any(|s| s == "Image attached from mcp:srv (1)"),
+            "expected a source-labeled status update, got {recorded:?}"
+        );
+        // Deliberately NOT self-cleared (M2): an immediate clear with zero work between set
+        // and clear would blank the label before the render loop ever sees it, making the
+        // mandatory source-label indicator invisible. It must stay set until the next
+        // natural status update replaces it.
+        assert!(
+            !recorded.last().is_some_and(String::is_empty),
+            "status must not be self-cleared immediately, got {recorded:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn process_one_tool_result_drops_media_when_provider_not_vision_capable() {
         use crate::agent::agent_tests::{
             MockChannel, MockToolExecutor, create_test_registry, mock_provider,

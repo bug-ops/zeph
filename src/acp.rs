@@ -803,10 +803,15 @@ async fn build_acp_deps(
     };
     let mcp_shared_tools = std::sync::Arc::new(RwLock::new(mcp_tools.clone()));
     let mut mcp_executor =
-        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone()).with_media(
+        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
+    if config.cli.no_mcp_media {
+        tracing::info!("--no-mcp-media: MCP image passthrough disabled for this session");
+    } else {
+        mcp_executor = mcp_executor.with_media(
             std::sync::Arc::new(zeph_sanitizer::MediaSanitizer::new(&config.mcp.media)),
             config.mcp.media.max_images_per_result,
         );
+    }
     if let Some(ref logger) = acp_audit_logger {
         mcp_executor = mcp_executor.with_audit(std::sync::Arc::clone(logger));
     }
@@ -2504,10 +2509,19 @@ pub(crate) async fn run_acp_server(
     cli_auth_methods: Vec<String>,
     cli_message_ids: Option<bool>,
     safe_mode: bool,
+    no_mcp_media: bool,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
-    let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path, safe_mode).await?;
+    let app = AppBuilder::new(
+        config_path,
+        vault_backend,
+        vault_key,
+        vault_path,
+        safe_mode,
+        no_mcp_media,
+    )
+    .await?;
     let (mut deps, _keepalive) = Box::pin(build_acp_deps(&app, None, None)).await?;
     let available_models = std::sync::Arc::clone(&deps.acp_available_models);
     let provider = deps.provider.clone();
@@ -2612,11 +2626,20 @@ pub(crate) async fn run_acp_http_server(
     bind_override: Option<&str>,
     auth_token_override: Option<String>,
     safe_mode: bool,
+    no_mcp_media: bool,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
-    let app = AppBuilder::new(config_path, vault_backend, vault_key, vault_path, safe_mode).await?;
+    let app = AppBuilder::new(
+        config_path,
+        vault_backend,
+        vault_key,
+        vault_path,
+        safe_mode,
+        no_mcp_media,
+    )
+    .await?;
     log_acp_runtime_paths(app.config(), app.config_path());
     let bind_addr = bind_override.map_or_else(|| app.config().acp.http_bind.clone(), str::to_owned);
 

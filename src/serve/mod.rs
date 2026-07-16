@@ -223,12 +223,15 @@ async fn run_serve_with_acp(
     http_addr: SocketAddr,
     max_sessions: usize,
 ) -> anyhow::Result<()> {
+    // Serve wires no hooks or MCP tools today (see `ServeSessionsArgs::safe_mode` doc), so
+    // there is no media-passthrough surface to gate here — pass `false` unconditionally.
     let app = crate::bootstrap::AppBuilder::new(
         config_path,
         args.vault_backend.as_deref(),
         args.vault_key.as_deref(),
         args.vault_path.as_deref(),
         args.safe_mode,
+        false,
     )
     .await?;
     let serve_config = app.config().serve.clone();

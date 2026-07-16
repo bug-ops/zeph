@@ -19,6 +19,7 @@ pub(crate) struct ExecutionMode {
     pub(crate) safe_mode: bool,
     pub(crate) json: bool,
     pub(crate) auto: bool,
+    pub(crate) no_mcp_media: bool,
 }
 
 impl ExecutionMode {
@@ -29,6 +30,7 @@ impl ExecutionMode {
             safe_mode: cli.safe_mode || cfg.cli.safe_mode,
             json: cli.json || cfg.cli.json,
             auto: cli.auto || cfg.cli.auto,
+            no_mcp_media: cli.no_mcp_media || cfg.cli.no_mcp_media,
         }
     }
 }
@@ -60,7 +62,24 @@ mod tests {
     #[test]
     fn all_false_by_default() {
         let mode = ExecutionMode::default();
-        assert!(!mode.bare && !mode.safe_mode && !mode.json && !mode.auto);
+        assert!(!mode.bare && !mode.safe_mode && !mode.json && !mode.auto && !mode.no_mcp_media);
+    }
+
+    #[test]
+    fn cli_no_mcp_media_flag_activates_kill_switch() {
+        let mut cli = default_cli();
+        cli.no_mcp_media = true;
+        let mode = ExecutionMode::from_cli_and_config(&cli, &Config::default());
+        assert!(mode.no_mcp_media);
+        assert!(!mode.bare);
+    }
+
+    #[test]
+    fn config_no_mcp_media_activates_kill_switch() {
+        let mut cfg = Config::default();
+        cfg.cli.no_mcp_media = true;
+        let mode = ExecutionMode::from_cli_and_config(&default_cli(), &cfg);
+        assert!(mode.no_mcp_media);
     }
 
     #[test]

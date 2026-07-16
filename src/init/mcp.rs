@@ -199,6 +199,22 @@ pub(super) fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
             _ => McpTrustLevel::Untrusted,
         };
 
+        // Sandboxed servers always hard-block media passthrough regardless of the answer
+        // (spec-072) — skip the interactive prompt entirely so the wizard doesn't offer a
+        // no-op choice; `resolve_media_passthrough` still re-asserts the invariant.
+        let prompt_answer = if trust_level == McpTrustLevel::Sandboxed {
+            false
+        } else {
+            Confirm::new()
+                .with_prompt(
+                    "Enable image passthrough for this server? (images returned by this tool \
+                     will be shown to vision-capable models)",
+                )
+                .default(false)
+                .interact()?
+        };
+        let media_passthrough = resolve_media_passthrough(trust_level, prompt_answer);
+
         state.mcp_remote_servers.push(McpServerConfig {
             id,
             command: None,
@@ -216,7 +232,7 @@ pub(super) fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
             tool_metadata: std::collections::HashMap::new(),
             elicitation_enabled: None,
             env_isolation: None,
-            media_passthrough: false,
+            media_passthrough,
         });
 
         println!("Server added.");
@@ -263,4 +279,39 @@ pub(super) fn step_mcp_discovery(state: &mut WizardState) -> anyhow::Result<()> 
 
     println!();
     Ok(())
+}
+
+/// Whether `media_passthrough` should end up `true` for a server, given its resolved
+/// trust level and the wizard's `prompt_answer` (irrelevant when Sandboxed — the caller
+/// should skip asking and pass `false`).
+///
+/// Sandboxed servers always resolve to `false` regardless of `prompt_answer`: passthrough
+/// is hard-blocked for them at runtime by `McpManager::media_passthrough_allowed`
+/// (spec-072 C2), so the wizard must never suggest it is actually enabled for one. Extracted
+/// as a pure function so the invariant is unit-testable without driving `dialoguer` I/O.
+fn resolve_media_passthrough(trust_level: McpTrustLevel, prompt_answer: bool) -> bool {
+    trust_level != McpTrustLevel::Sandboxed && prompt_answer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_media_passthrough_sandboxed_forces_false() {
+        assert!(!resolve_media_passthrough(McpTrustLevel::Sandboxed, true));
+        assert!(!resolve_media_passthrough(McpTrustLevel::Sandboxed, false));
+    }
+
+    #[test]
+    fn resolve_media_passthrough_untrusted_follows_prompt_answer() {
+        assert!(resolve_media_passthrough(McpTrustLevel::Untrusted, true));
+        assert!(!resolve_media_passthrough(McpTrustLevel::Untrusted, false));
+    }
+
+    #[test]
+    fn resolve_media_passthrough_trusted_follows_prompt_answer() {
+        assert!(resolve_media_passthrough(McpTrustLevel::Trusted, true));
+        assert!(!resolve_media_passthrough(McpTrustLevel::Trusted, false));
+    }
 }

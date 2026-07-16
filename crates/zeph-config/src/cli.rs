@@ -21,6 +21,11 @@ pub struct CliConfig {
     /// troubleshooting-flag precedent but gating a disjoint set of subsystems.
     #[serde(skip)]
     pub safe_mode: bool,
+    /// Force MCP image passthrough (spec-072) off for this session (`--no-mcp-media`),
+    /// regardless of per-server `media_passthrough` or `[mcp.media]` config. Session-scoped
+    /// only — never persisted to `config.toml` (`#[serde(skip)]`), mirroring `safe_mode`.
+    #[serde(skip)]
+    pub no_mcp_media: bool,
     /// Emit structured JSON events (JSONL) to stdout. Forces logs to stderr.
     pub json: bool,
     /// Auto-approve trust-gate prompts (`-y` / `--auto`).

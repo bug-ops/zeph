@@ -81,6 +81,14 @@ pub(crate) struct ToolSetup {
     /// Pass the same `Arc` to `AgentBuilder::with_risk_chain_accumulator` so
     /// `begin_turn()` resets the per-turn score at each turn boundary.
     pub(crate) risk_chain_accumulator: Arc<zeph_tools::RiskChainAccumulator>,
+    /// `true` when the built `mcp_executor` had a `MediaSanitizer` attached (spec-072 P3,
+    /// #6241). `false` when `--no-mcp-media` disabled it for the session. Read only by
+    /// `build_tool_setup`'s own tests (`build_tool_setup_no_mcp_media_disables_media_sanitizer`)
+    /// — no production call site needs it, since the concrete `McpToolExecutor` is folded
+    /// into the type-erased `executor: DynExecutor` above and cannot be introspected
+    /// afterward any other way.
+    #[allow(dead_code)]
+    pub(crate) mcp_media_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -428,6 +436,7 @@ pub(crate) async fn build_tool_setup(
     with_tool_events: bool,
     bare: bool,
     safe_mode: bool,
+    no_mcp_media: bool,
     runtime_ctx: RuntimeContext,
     age_vault: Option<&Arc<std::sync::RwLock<zeph_core::vault::AgeVaultProvider>>>,
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
@@ -533,8 +542,8 @@ pub(crate) async fn build_tool_setup(
         runtime_ctx.suppress_stderr(),
         age_vault,
     );
-    if let Some(tx) = status_tx {
-        mcp_manager_builder = mcp_manager_builder.with_status_tx(tx);
+    if let Some(ref tx) = status_tx {
+        mcp_manager_builder = mcp_manager_builder.with_status_tx(tx.clone());
     }
     mcp_manager_builder =
         crate::bootstrap::wire_trust_calibration(mcp_manager_builder, config, pool).await;
@@ -589,10 +598,19 @@ pub(crate) async fn build_tool_setup(
 
     let mcp_shared_tools = Arc::new(RwLock::new(mcp_tools.clone()));
     let mut mcp_executor =
-        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone()).with_media(
+        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
+    let mcp_media_enabled = !no_mcp_media;
+    if no_mcp_media {
+        tracing::info!("--no-mcp-media: MCP image passthrough disabled for this session");
+    } else {
+        mcp_executor = mcp_executor.with_media(
             Arc::new(zeph_sanitizer::MediaSanitizer::new(&config.mcp.media)),
             config.mcp.media.max_images_per_result,
         );
+        if let Some(ref tx) = status_tx {
+            mcp_executor = mcp_executor.with_status_tx(tx.clone());
+        }
+    }
     if let Some(ref logger) = audit_logger {
         mcp_executor = mcp_executor.with_audit(Arc::clone(logger));
     }
@@ -636,6 +654,7 @@ pub(crate) async fn build_tool_setup(
         background_completion_rx: Some(bg_completion_rx),
         shell_executor_handle,
         risk_chain_accumulator,
+        mcp_media_enabled,
     }
 }
 
@@ -2941,6 +2960,62 @@ mod tests {
             "expected Some(pipeline) when config.quality.self_check is true and \
              QualityConfig::validate() passes with the default per_call_timeout_ms/ \
              latency_budget_ms/min_evidence values"
+        );
+    }
+
+    /// #6241 Gap B (tester): closes the gap where only the upstream `ExecutionMode.no_mcp_media`
+    /// bool-plumbing was tested — this proves `build_tool_setup` itself actually skips
+    /// attaching a `MediaSanitizer` to the built `McpToolExecutor` when the kill-switch is set,
+    /// not just that the flag flows through unchanged.
+    #[tokio::test]
+    async fn build_tool_setup_no_mcp_media_disables_media_sanitizer() {
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        let pool = memory_pool().await;
+        let provider = offline_provider();
+        let tool_setup = build_tool_setup(
+            &config,
+            zeph_tools::PermissionPolicy::default(),
+            false,
+            true, // bare: skip any real MCP connection attempts
+            false,
+            true, // no_mcp_media
+            RuntimeContext::default(),
+            None,
+            None,
+            Some(&pool),
+            &provider,
+            None,
+        )
+        .await;
+        assert!(
+            !tool_setup.mcp_media_enabled,
+            "--no-mcp-media must disable the MediaSanitizer attachment"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_tool_setup_media_enabled_by_default() {
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        let pool = memory_pool().await;
+        let provider = offline_provider();
+        let tool_setup = build_tool_setup(
+            &config,
+            zeph_tools::PermissionPolicy::default(),
+            false,
+            true, // bare: skip any real MCP connection attempts
+            false,
+            false, // no_mcp_media
+            RuntimeContext::default(),
+            None,
+            None,
+            Some(&pool),
+            &provider,
+            None,
+        )
+        .await;
+        assert!(
+            tool_setup.mcp_media_enabled,
+            "MediaSanitizer must be attached when --no-mcp-media is not set"
         );
     }
 

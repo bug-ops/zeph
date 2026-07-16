@@ -57,7 +57,9 @@
 //! step 87 adds a commented `stale_running_after_secs = 3600` advisory to an existing active
 //! `[durable.retention]` table for the crash-orphan sweep (spec-064, #6254);
 //! step 88 adds a `default_idle_timeout_secs` advisory comment under `[orchestration]`
-//! (spec-075-orchestration-node-control-parity, #6021).
+//! (spec-075-orchestration-node-control-parity, #6021);
+//! step 89 adds `media_passthrough = false` to existing `[[mcp.servers]]` entries and a
+//! commented `[mcp.media]` advisory block (spec-072, #6241).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -75,7 +77,7 @@ use super::{
     migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_config,
     migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
     migrate_knowledge_config, migrate_llm_stream_limits, migrate_magic_docs_config,
-    migrate_mcp_elicitation_config, migrate_mcp_max_connect_attempts,
+    migrate_mcp_elicitation_config, migrate_mcp_max_connect_attempts, migrate_mcp_media_config,
     migrate_mcp_retry_and_tool_timeout, migrate_mcp_trust_levels, migrate_memory_graph_config,
     migrate_memory_graph_recall_include_imported, migrate_memory_hebbian_config,
     migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
@@ -1102,5 +1104,19 @@ impl Migration for MigrateOrchestrationIdleTimeout {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_orchestration_idle_timeout(toml_src)
+    }
+}
+
+/// Step 89 — adds `media_passthrough = false` to existing `[[mcp.servers]]` entries and a
+/// commented `[mcp.media]` advisory block, for configs that predate MCP image passthrough
+/// (spec-072, #6241).
+pub(super) struct MigrateMcpMediaConfig;
+impl Migration for MigrateMcpMediaConfig {
+    fn name(&self) -> &'static str {
+        "migrate_mcp_media_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_mcp_media_config(toml_src)
     }
 }

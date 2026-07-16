@@ -468,10 +468,19 @@ pub(crate) async fn run_daemon(
     vault_key: Option<&std::path::Path>,
     vault_path: Option<&std::path::Path>,
     safe_mode: bool,
+    no_mcp_media: bool,
 ) -> anyhow::Result<()> {
     use zeph_core::daemon::{ComponentHandle, DaemonSupervisor, PidGuard};
 
-    let app = AppBuilder::new(config_path, vault, vault_key, vault_path, safe_mode).await?;
+    let app = AppBuilder::new(
+        config_path,
+        vault,
+        vault_key,
+        vault_path,
+        safe_mode,
+        no_mcp_media,
+    )
+    .await?;
     let config = app.config();
 
     // Atomically acquire the daemon pid file lock — fails fast with `AlreadyRunning` if another
@@ -694,7 +703,7 @@ pub(crate) async fn run_daemon(
         daemon_runtime_ctx.suppress_stderr(),
         app.age_vault_arc(),
     )
-    .with_status_tx(status_tx);
+    .with_status_tx(status_tx.clone());
     let mcp_manager_builder = crate::bootstrap::wire_trust_calibration(
         mcp_manager_builder,
         config,
@@ -714,10 +723,17 @@ pub(crate) async fn run_daemon(
     let shutdown_mcp_manager = std::sync::Arc::clone(&mcp_manager);
     let mcp_shared_tools = std::sync::Arc::new(RwLock::new(mcp_tools.clone()));
     let mut mcp_executor =
-        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone()).with_media(
-            std::sync::Arc::new(zeph_sanitizer::MediaSanitizer::new(&config.mcp.media)),
-            config.mcp.media.max_images_per_result,
-        );
+        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
+    if config.cli.no_mcp_media {
+        tracing::info!("--no-mcp-media: MCP image passthrough disabled for this session");
+    } else {
+        mcp_executor = mcp_executor
+            .with_media(
+                std::sync::Arc::new(zeph_sanitizer::MediaSanitizer::new(&config.mcp.media)),
+                config.mcp.media.max_images_per_result,
+            )
+            .with_status_tx(status_tx.clone());
+    }
     if let Some(ref logger) = daemon_audit_logger {
         mcp_executor = mcp_executor.with_audit(std::sync::Arc::clone(logger));
     }

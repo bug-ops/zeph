@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Added
 
+- **MCP image passthrough — config/CLI/TUI surface** (spec-072 P3, #6241): completes the
+  opt-in MCP image passthrough feature (#6331) with the remaining integration points.
+  - `--init`: the MCP remote-server wizard now asks "Enable image passthrough for this
+    server?" (default No) for each added server; Sandboxed-trust servers skip the prompt
+    since passthrough is always hard-blocked for them regardless of the flag.
+  - `--migrate-config`: new step 89 adds `media_passthrough = false` to existing
+    `[[mcp.servers]]` entries and a commented `[mcp.media]` advisory block with the pinned
+    defaults, for configs written before this feature existed.
+  - TUI/CLI status indicators: a `"Decoding MCP image…"` status during
+    `MediaSanitizer::sanitize_image`'s `spawn_blocking` decode, and a source-labeled
+    `"Image attached from mcp:<server> (<n>)"` status when validated images are attached
+    to the outgoing LLM request (`CLAUDE.md` TUI Rules).
+  - `--no-mcp-media`: a global CLI kill-switch that forces MCP image passthrough off for
+    the session regardless of config, for quick incident response.
 - **zeph-orchestration** / **zeph-subagent** / **zeph-core**: `idle_timeout_secs` (per-task
   `TimeoutPolicy` and global `default_idle_timeout_secs`) is now enforced — previously it was
   defined and config-surfaced but a documented no-op (#6245, Alt-A progress-signal plumbing

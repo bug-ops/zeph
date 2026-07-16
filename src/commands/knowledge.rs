@@ -267,7 +267,7 @@ async fn resolve_effective_max(max_documents: usize, config_path: Option<&Path>)
     if max_documents > 0 {
         return max_documents;
     }
-    AppBuilder::new(config_path, None, None, None, false)
+    AppBuilder::new(config_path, None, None, None, false, false)
         .await
         .map_or(0, |a| a.config().knowledge.max_documents)
 }
@@ -668,7 +668,7 @@ async fn build_ingest_resources(
     provider_override: Option<&str>,
     yes: bool,
 ) -> anyhow::Result<(IngestionPipeline, IngestLedger, String, String)> {
-    let app = AppBuilder::new(config_path, None, None, None, false).await?;
+    let app = AppBuilder::new(config_path, None, None, None, false, false).await?;
     let config = app.config();
     let qdrant = QdrantOps::new(
         &config.memory.qdrant_url,
@@ -932,7 +932,7 @@ async fn run_graph_ingest(
     root: &Path,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let app = AppBuilder::new(config_path, None, None, None, false).await?;
+    let app = AppBuilder::new(config_path, None, None, None, false, false).await?;
     let config = app.config();
 
     // Enforce transcript_scope (INV-6: only "current-project" is supported).
@@ -1542,7 +1542,7 @@ async fn handle_external_agent_ingest(
     println!("  Ingesting {total} document(s) into knowledge graph…");
 
     // Phase 3: write to graph via SemanticMemory.
-    let app = AppBuilder::new(config_path, None, None, None, false).await?;
+    let app = AppBuilder::new(config_path, None, None, None, false, false).await?;
     let app_config = app.config();
     let (provider, _status_tx, _status_rx) = app.build_provider().await?;
     // #5444 S1: build_memory (via attach_reasoning_memory) would otherwise destructively
@@ -1706,7 +1706,7 @@ async fn handle_rollback(
     yes: bool,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let app = AppBuilder::new(config_path, None, None, None, false).await?;
+    let app = AppBuilder::new(config_path, None, None, None, false, false).await?;
     let config = app.config();
 
     let store = SqliteStore::new(&config.memory.sqlite_path)
@@ -1794,7 +1794,7 @@ async fn handle_rollback(
 ///
 /// Returns an error when config loading or database access fails.
 async fn handle_status(config_path: Option<&Path>) -> anyhow::Result<()> {
-    let app = AppBuilder::new(config_path, None, None, None, false).await?;
+    let app = AppBuilder::new(config_path, None, None, None, false, false).await?;
     let config = app.config();
 
     let store = SqliteStore::new(&config.memory.sqlite_path)
@@ -2463,7 +2463,7 @@ collection = "{collection}"
         let dir = tempfile::tempdir().unwrap();
         let config_path = write_ollama_test_config(dir.path(), "unused_collection", Some("embed"));
 
-        let app = AppBuilder::new(Some(&config_path), None, None, None, false)
+        let app = AppBuilder::new(Some(&config_path), None, None, None, false, false)
             .await
             .expect("AppBuilder::new should succeed with a valid ollama-only config");
         let config = app.config();
@@ -2488,7 +2488,7 @@ collection = "{collection}"
         let dir = tempfile::tempdir().unwrap();
         let config_path = write_ollama_test_config(dir.path(), "unused_collection", None);
 
-        let app = AppBuilder::new(Some(&config_path), None, None, None, false)
+        let app = AppBuilder::new(Some(&config_path), None, None, None, false, false)
             .await
             .expect("AppBuilder::new should succeed with a valid ollama-only config");
         let config = app.config();
@@ -2778,7 +2778,7 @@ collection = "zeph_test_reasoning_guard_unused_documents"
         let _ = qdrant.delete_collection(collection).await;
         qdrant.ensure_collection(collection, 4).await.unwrap();
 
-        let app = AppBuilder::new(Some(&config_path), None, None, None, false)
+        let app = AppBuilder::new(Some(&config_path), None, None, None, false, false)
             .await
             .expect("AppBuilder::new should succeed with a valid ollama+qdrant config");
         let config = app.config();
@@ -2834,7 +2834,7 @@ collection = "zeph_test_reasoning_guard_unused_documents"
         // memory.reasoning.enabled defaults to false.
         let config_path = write_ollama_test_config(dir.path(), "unused_collection", Some("embed"));
 
-        let app = AppBuilder::new(Some(&config_path), None, None, None, false)
+        let app = AppBuilder::new(Some(&config_path), None, None, None, false, false)
             .await
             .expect("AppBuilder::new should succeed with a valid ollama-only config");
         let config = app.config();
