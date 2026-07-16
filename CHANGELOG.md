@@ -141,6 +141,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Docs
 
+- **Spec 067 §7.1 (knowledge ingest)**: recorded the hub-degree kill-criterion re-measurement
+  (#5625), follow-up to #5467. N=5 fixed dry-runs (`knowledge ingest --source subagents --dry-run`)
+  against the real 29-transcript `.zeph/subagents/` corpus: top-entity share 25.8-29.3% (median
+  27.9%, 0/5 runs ≤15%) — a clean, decisive FAIL. #5467's Rule 3 language/tool anchoring fix
+  measurably relocated degree away from `Python` (now mid-table, never top), but hub formation
+  migrated to other incidentally-repeated command names (`bash`, `curl`). The conditional
+  `prompt.rs` fix was **not applied**: it requires re-measuring the S/N (signal-to-noise) arm
+  alongside hub-degree, but the S/N ratio is not derivable from the existing dry-run report without
+  adding instrumentation (out of scope here). Recommends deferring the epic #5012 graph-sink
+  go/no-go call — no corpus available in this environment is production-representative. Also
+  recommends re-running the same 29-transcript corpus with the cloud provider (`openai-stt`/
+  gpt-4o-mini) once quota is restored, to isolate the provider variable and confirm the
+  qualitative FAIL verdict holds independent of model choice. Full writeup:
+  `specs/067-knowledge-ingest/spec.md` §7.1 and
+  `.local/testing/playbooks/knowledge-ingest.md` (main-repo path) G3 section.
+
 - **Spec 034 (zeph-bench)**: corrected a stale "bench-namespaced Qdrant collection" claim in
   FR-002, FR-012, NFR-001, US-002, the Out of Scope list, the Edge Cases table, and the Agent
   Boundaries section (#6237). `zeph-bench` has zero Qdrant/collection code — the only isolation

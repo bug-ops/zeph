@@ -353,6 +353,115 @@ S1 (graph-vs-notes) and S2 (taxonomy/hub-node pollution).
 
 The spike result and decision are recorded in the live-testing playbook before the Phase 2 PR is opened.
 
+### 7.1 Re-measurement (2026-07-17, #5625)
+
+Follow-up to #5467 (first live measurement, top entity `Python` at 24.3%) and its own fix PR,
+which added the Rule 3 language/tool anchoring clause to `TECH_DOC_SYSTEM_PROMPT`. #5467's own
+re-runs after that fix already showed the gate still failing in most runs (15.9/16.9/17.1/20.8%,
+alternating `bash`/`Python` hubs) and filed this issue to re-measure on the full corpus before any
+further go/no-go call.
+
+**Corpus.** The real `.zeph/subagents/*.jsonl` corpus: 29 transcript files (29 paired `.meta.json`),
+74 documents after chunking. Confirmed non-diverse: dominated by small CI-marker / smoke-test
+scenarios (network-deny proof scripts using `curl`, hello-world `bash`/Python scripts, a
+"Rust ownership" Q&A turn, a coindesk API-fetch script) rather than production
+architecture/spec/code-review/debugging sessions. Not a constructed/synthetic corpus — this is
+Option A (the real corpus) per the architect-revised, critic-approved plan; Option B (a
+deliberately-diverse constructed corpus) was explicitly excluded from the decision path and was
+not built.
+
+**§7 spec-drift note (C4).** This section's spike header reads "run via `--dry-run` over 10 specs +
+all current-project subagent transcripts." Verified in code (`src/commands/knowledge.rs`,
+`_ => notes_sources` dispatch): `--source specs` routes to the **notes** sink and produces **zero
+graph edges** — a no-op for the hub-degree arm specifically. This re-measurement is over the
+subagent-transcript corpus only; the "10 specs" half of the header does not apply to this arm.
+
+**Provider.** `[memory.graph] extract_provider = "openai-stt"` (gpt-4o-mini, cloud) was
+**unreachable** this session — a live API call returned HTTP 429 `insufficient_quota` (account-level
+billing stop, consistent with the project's known 2026-07 cloud-account exhaustion). Per the
+plan's contingency, baseline was measured against a **local Ollama `qwen2.5:7b`** scratch provider
+instead (`.local/config/testing.toml`, gitignored, not part of this PR's diff). Because the
+conditional prompt fix could not be applied in this PR regardless (see below), the plan's
+same-provider constraint between baseline and post-fix runs is moot here — there is no post-fix
+arm to keep consistent with. **Caveat:** this measurement is not directly numerically comparable to
+#5467's own gpt-4o-mini-based re-runs (15.9-20.8%) — a weaker local model may extract a less diverse
+entity/relation set and could overstate hub concentration relative to the cloud model. The two
+measurements agree qualitatively (gate fails, hub above 15%), which is the load-bearing finding
+here, but the magnitudes should not be averaged or directly diffed across the two cycles.
+
+**Measurement protocol.** N=5 fixed upfront (pre-registered, no discarding/re-rolling), command
+`cargo run --features full -- --config .local/config/testing.toml knowledge ingest --source
+subagents --dry-run`, identical corpus and provider across all 5 runs:
+
+| Run | Top entity | % of edges | Verdict |
+|-----|-----------|-----------|---------|
+| 1 | `bash` | 27.8% | WARN |
+| 2 | `bash` | 27.9% | WARN |
+| 3 | `curl` | 25.8% | WARN |
+| 4 | `curl` | 29.3% | WARN |
+| 5 | `curl` | 28.8% | WARN |
+
+Min 25.8%, median 27.9%, max 29.3%, count ≤15% = 0/5. Representative top-10 table (run 1):
+
+```
+Entity                                              Degree  % edges
+--------------------------------------------------------------------
+bash                                                    20    27.8% ⚠ HUB
+curl                                                    19    26.4% ⚠ HUB
+sleep                                                    5     6.9%
+/tmp/zeph_netdeny_proof_allow.json                       5     6.9%
+Python                                                   5     6.9%
+Rust ownership                                           5     6.9%
+echo                                                     4     5.6%
+Zeph                                                     3     4.2%
+marker file                                              3     4.2%
+vault                                                    3     4.2%
+--------------------------------------------------------------------
+Top entity: 27.8% of edges — WARN — top entity exceeds hub-degree threshold
+```
+
+**Decision.** Per the pre-registered rule: no straddle (max 29.3% is nowhere near 15%, min 25.8% is
+still clearly above it), median clearly >15%, 5/5 runs >15% → **clean, decisive FAIL**, not a
+straddle or marginal-WARN. The Rule 3 language/tool anchoring fix from #5467 measurably relocated
+degree away from `Python` specifically (`Python` is now a mid-table entry at 4.7-6.9%, not the top
+entity in any of the 5 runs), but hub formation migrated to other incidentally-repeated command/tool
+names (`bash`, `curl`) exactly as #5467's own root-cause analysis predicted ("degree just migrates
+to a slightly-less-generic hub" on a corpus where nearly every transcript shares near-identical
+CI-test anchors).
+
+**Conditional fix precondition check (§4).** A clean decisive FAIL satisfies precondition 1 (a fix
+may be considered). However, precondition 3 requires the re-measurement to cover **both** hub-degree
+**and** the S/N (signal-to-noise, ≥50% non-trivial edges) arm on the same corpus+provider. The S/N
+ratio is **not derivable** from the existing dry-run output: `IngestReport`
+(`crates/zeph-memory/src/graph/ingest/report.rs`) carries only `entities_total`/`edges_total`/
+`hub_degree` (entity name + degree), with no `edge_type`/relation breakdown anywhere in the printed
+report or in any `tracing::debug!`/`trace!` call on the ingest path — confirmed by reading
+`print_graph_ingest_report` and grepping the extractor/ingest modules. Deriving it would require
+adding instrumentation, which is out of scope for this PR (would expand the change surface beyond
+the conditionally-gated `prompt.rs` static). **Precondition 3 is not met → the conditional fix was
+NOT applied. `crates/zeph-memory/src/graph/ingest/prompt.rs` is unchanged in this PR.**
+
+Per the critic's C8 refinement: even had precondition 3 been met, a post-fix PASS on this same
+non-representative corpus would not validate the gate for production — the corpus-non-diversity
+caveat would still apply to any post-fix number. Since no fix was applied, the go/no-go conclusion
+does not depend on that caveat at all here — it is the same as the honest-PASS case already
+described above.
+
+**Recommendation.** Defer the epic #5012 graph-sink go/no-go call. Two independent, non-representative
+measurement cycles (#5467's cloud-model runs and this local-model re-measurement) both show the gate
+failing above 15%, which is a real signal that a prompt-only fix targeting one hub identity at a
+time (language/tool names, then presumably command names) does not durably solve hub formation on a
+corpus dominated by repeated CI-test scaffolding — but neither cycle used a corpus representative of
+production usage, so this does not by itself justify abandoning the graph sink either. Recommended
+next steps (follow-up issues, not filed by this PR's author): (a) add S/N instrumentation to the
+dry-run report so precondition 3 is measurable in a future cycle without expanding an unrelated PR's
+scope, and (b) accumulate or construct a genuinely diverse production-representative subagent
+transcript corpus (architecture/spec/code-review/debugging sessions) before attempting any further
+prompt-level or structural hub-suppression fix, per this section's Option-A-only decision basis; and
+(c) re-run the same 29-transcript corpus with the cloud provider (`openai-stt`/gpt-4o-mini) once
+quota is restored, to isolate the provider variable and confirm the qualitative FAIL verdict holds
+independent of model choice.
+
 ---
 
 ## 8. Integration Points (CLAUDE.md Development Rules 1–7)
