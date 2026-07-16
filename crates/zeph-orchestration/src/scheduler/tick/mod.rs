@@ -3,6 +3,8 @@
 
 //! Core tick/execution loop, event processing, and spawn record-keeping.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::{DagScheduler, RunningTask, SchedulerAction, TaskEvent, TaskOutcome};
@@ -313,11 +315,18 @@ impl DagScheduler {
     /// [`DagScheduler::record_batch_backoff`]: `record_spawn` provides an immediate reset on the first
     /// success within a batch, while [`DagScheduler::record_batch_backoff`] governs the tick-granular
     /// failure counter used for exponential wait backoff.
+    ///
+    /// `last_progress_at` is the progress-heartbeat handle (issue #6245) for idle-timeout
+    /// detection: `Some(handle)` for normally-dispatched tasks (the caller must pass the same
+    /// `Arc` whose clone was threaded into the sub-agent loop via
+    /// `SpawnContext::progress_at`), or `None` for tasks that are never idle-tracked (the
+    /// `RunInline` dispatch path — see its call site for why `None` is safe there).
     pub fn record_spawn(
         &mut self,
         task_id: TaskId,
         agent_handle_id: String,
         agent_def_name: String,
+        last_progress_at: Option<Arc<AtomicU64>>,
     ) {
         self.consecutive_spawn_failures = 0;
         self.graph.tasks[task_id.index()].assigned_agent = Some(agent_handle_id.clone());
@@ -329,6 +338,7 @@ impl DagScheduler {
                 agent_def_name,
                 started_at: std::time::Instant::now(),
                 admission_permit,
+                last_progress_at,
             },
         );
     }
@@ -753,7 +763,36 @@ impl DagScheduler {
             .map_or(self.task_timeout, Duration::from_secs)
     }
 
+    /// Compute the effective idle-timeout for a task: its per-task
+    /// `TaskNode.timeout.idle_timeout_secs` override when set, else the graph-global
+    /// `self.default_idle_timeout` default. Returns `None` when neither is set — idle
+    /// enforcement is opt-in, unlike `effective_run_timeout` which always has a value.
+    fn effective_idle_timeout(&self, task_id: TaskId) -> Option<Duration> {
+        self.graph.tasks[task_id.index()]
+            .timeout
+            .as_ref()
+            .and_then(|t| t.idle_timeout_secs)
+            .map(Duration::from_secs)
+            .or(self.default_idle_timeout)
+    }
+
     /// Check all running tasks for timeout violations.
+    ///
+    /// Evaluates run-timeout before idle-timeout for each task, so a task that has
+    /// exceeded both on the same tick is reported with a single cause: run wins (it is the
+    /// hard wall-clock cap; idle is the softer no-progress liveness signal). Satisfies
+    /// NFR-OB-01 (spec-075 §"timeout-cause disambiguation") — the log line and the
+    /// synthetic `TaskResult.output` below always name exactly one mechanism.
+    ///
+    /// Idle detection reads `RunningTask::last_progress_at` with `Ordering::Relaxed`. A
+    /// stale `Relaxed` load can only observe an *older* heartbeat timestamp, which biases
+    /// toward firing *earlier* than the true idle time — never later — so this can never
+    /// mask a genuinely idle task. The false-positive risk from that bias is vanishingly
+    /// small in practice: staleness is bounded by cache-coherence propagation (sub-µs on
+    /// tier-1 hardware) versus a threshold measured in seconds-to-minutes, and every tick
+    /// re-`load`s a fresh value, so a value missed on one tick is observed well before a
+    /// second wrongful crossing on the next. `Acquire`/`Release` would remove even that
+    /// vanishing risk but is unjustified overhead for a cooperative liveness timeout.
     ///
     /// # Warning: Cooperative Cancellation
     ///
@@ -761,23 +800,63 @@ impl DagScheduler {
     /// at the time of cancellation complete before the agent loop checks the cancellation
     /// token. Partially-written artifacts may remain on disk after cancellation.
     fn check_timeouts(&mut self) -> Vec<SchedulerAction> {
-        let timed_out: Vec<(TaskId, String)> = self
+        let timed_out: Vec<(TaskId, String, TimeoutCause, Duration)> = self
             .running
             .iter()
-            .filter(|(id, r)| r.started_at.elapsed() > self.effective_run_timeout(**id))
-            .map(|(id, r)| (*id, r.agent_handle_id.clone()))
+            .filter_map(|(id, r)| {
+                let run_limit = self.effective_run_timeout(*id);
+                if r.started_at.elapsed() > run_limit {
+                    return Some((*id, r.agent_handle_id.clone(), TimeoutCause::Run, run_limit));
+                }
+
+                let idle_limit = self.effective_idle_timeout(*id)?;
+                let progress = r.last_progress_at.as_ref()?;
+                let idle_elapsed_ms = zeph_common::monotonic_millis()
+                    .saturating_sub(progress.load(Ordering::Relaxed));
+                let idle_limit_ms = u64::try_from(idle_limit.as_millis()).unwrap_or(u64::MAX);
+                (idle_elapsed_ms > idle_limit_ms).then(|| {
+                    (
+                        *id,
+                        r.agent_handle_id.clone(),
+                        TimeoutCause::Idle,
+                        idle_limit,
+                    )
+                })
+            })
             .collect();
 
         let mut actions = Vec::new();
-        for (task_id, agent_handle_id) in timed_out {
+        for (task_id, agent_handle_id, cause, limit) in timed_out {
             tracing::warn!(
                 task_id = %task_id,
-                timeout_secs = self.effective_run_timeout(task_id).as_secs(),
+                cause = ?cause,
+                timeout_secs = limit.as_secs(),
                 "task timed out"
             );
             self.graph_dirty = true;
-            self.running.remove(&task_id);
+
+            let removed = self.running.remove(&task_id);
             self.graph.tasks[task_id.index()].status = TaskStatus::Failed;
+
+            let duration_ms = removed.as_ref().map_or(0, |r| {
+                u64::try_from(r.started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
+            });
+            let agent_def_name = removed.map(|r| r.agent_def_name);
+            self.graph.tasks[task_id.index()].result = Some(TaskResult {
+                output: match cause {
+                    TimeoutCause::Run => {
+                        format!("task exceeded run timeout ({}s)", limit.as_secs())
+                    }
+                    TimeoutCause::Idle => format!(
+                        "task exceeded idle timeout ({}s of no progress)",
+                        limit.as_secs()
+                    ),
+                },
+                artifacts: Vec::new(),
+                duration_ms,
+                agent_id: Some(agent_handle_id.clone()),
+                agent_def: agent_def_name,
+            });
 
             actions.push(SchedulerAction::Cancel { agent_handle_id });
 
@@ -802,6 +881,18 @@ impl DagScheduler {
 
         actions
     }
+}
+
+/// Which mechanism fired a task timeout — carried through `check_timeouts` so the log line
+/// and the synthetic `TaskResult.output` always name a single cause (NFR-OB-01).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimeoutCause {
+    /// Hard wall-clock cap exceeded (`effective_run_timeout`). Always enforced.
+    Run,
+    /// No progress heartbeat observed within the idle window (`effective_idle_timeout`).
+    /// Opt-in: only fires when an idle limit is configured AND the task carries a live
+    /// progress handle (`RunningTask::last_progress_at.is_some()`).
+    Idle,
 }
 
 #[cfg(test)]

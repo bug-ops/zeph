@@ -10,6 +10,7 @@ mod tick;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
@@ -42,7 +43,7 @@ use zeph_config::OrchestrationConfig;
 ///         match action {
 ///             SchedulerAction::Spawn { task_id, agent_def_name, prompt } => {
 ///                 match manager.spawn_for_task(task_id, &agent_def_name, &prompt) {
-///                     Ok(handle_id) => scheduler.record_spawn(task_id, handle_id, agent_def_name),
+///                     Ok(handle_id) => scheduler.record_spawn(task_id, handle_id, agent_def_name, Some(progress_at)),
 ///                     Err(e) => {
 ///                         for a in scheduler.record_spawn_failure(task_id, &e) {
 ///                             // execute cancel action…
@@ -175,6 +176,19 @@ pub(super) struct RunningTask {
     /// `DagScheduler` skips `running` (it logs `running_count` instead).
     #[allow(dead_code)]
     pub(super) admission_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    /// Shared progress heartbeat (issue #6245), written once per turn boundary by
+    /// `zeph_subagent::agent_loop::run_agent_loop` and read by `DagScheduler::check_timeouts`
+    /// (private, in the `tick` submodule) to detect idle (no-progress) tasks.
+    ///
+    /// `None` means this task is never idle-tracked, regardless of `effective_idle_timeout`:
+    /// currently `RunInline` tasks (dispatched via `SchedulerAction::RunInline`, which shares
+    /// the scheduler's own tick loop and so cannot be observed mid-run by `check_timeouts` in
+    /// the first place — see `record_spawn` call site in `scheduler_loop.rs`) and tasks
+    /// reconstructed by [`DagScheduler::resume_from`] after a process restart (no live
+    /// heartbeat exists to reattach to). The idle branch in `check_timeouts` skips a task
+    /// entirely when this is `None`, so the exemption holds regardless of any tick-ordering
+    /// invariant elsewhere.
+    pub(super) last_progress_at: Option<Arc<AtomicU64>>,
 }
 
 /// DAG execution engine.
@@ -191,7 +205,7 @@ pub(super) struct RunningTask {
 ///         match action {
 ///             Spawn { task_id, agent_def_name, prompt } => {
 ///                 match manager.spawn_for_task(...) {
-///                     Ok(handle_id) => scheduler.record_spawn(task_id, handle_id),
+///                     Ok(handle_id) => scheduler.record_spawn(task_id, handle_id, agent_def_name, Some(progress_at)),
 ///                     Err(e) => { for a in scheduler.record_spawn_failure(task_id, &e) { /* exec */ } }
 ///                 }
 ///             }
@@ -221,6 +235,10 @@ pub struct DagScheduler {
     pub(super) event_tx: mpsc::Sender<TaskEvent>,
     /// Per-task wall-clock timeout.
     pub(super) task_timeout: Duration,
+    /// Global default idle/no-progress timeout, used when a task's own
+    /// `TimeoutPolicy.idle_timeout_secs` is unset. `None` = idle enforcement disabled by
+    /// default (idle is opt-in, unlike `task_timeout` which always has a value).
+    pub(super) default_idle_timeout: Option<Duration>,
     /// Router for agent selection.
     pub(super) router: Box<dyn AgentRouter>,
     /// Available agent definitions (cached from `SubAgentManager`).
@@ -438,6 +456,11 @@ impl DagScheduler {
                         started_at: Instant::now(),
                         // Permits are not persisted; resumed tasks start without a slot.
                         admission_permit: None,
+                        // No live subagent loop is reattached here — this entry only
+                        // guards against a stale completion event for the pre-restart
+                        // task, so there is no real heartbeat to track. run_timeout still
+                        // applies via started_at above; idle enforcement is skipped.
+                        last_progress_at: None,
                     },
                 ))
             })
@@ -531,22 +554,7 @@ impl DagScheduler {
 
         let (event_tx, event_rx) = mpsc::channel(64);
 
-        // Reserved-field hint (FR-005 / specs/075): idle_timeout_secs is accepted in config
-        // and per-task TimeoutPolicy but not enforced in this release — warn once per
-        // scheduler construction (covers both `new()` and `resume_from()`, never per-tick).
-        if config.default_idle_timeout_secs.is_some()
-            || graph.tasks.iter().any(|t| {
-                t.timeout
-                    .as_ref()
-                    .is_some_and(|tp| tp.idle_timeout_secs.is_some())
-            })
-        {
-            tracing::warn!(
-                "idle_timeout_secs is set but not enforced in this release (reserved for a \
-                 future progress-signal mechanism, see FR-005 / specs/075); only \
-                 run_timeout_secs is currently enforced"
-            );
-        }
+        let default_idle_timeout = config.default_idle_timeout_secs.map(Duration::from_secs);
 
         let task_timeout = if config.task_timeout_secs > 0 {
             Duration::from_secs(config.task_timeout_secs)
@@ -583,6 +591,7 @@ impl DagScheduler {
             event_rx,
             event_tx,
             task_timeout,
+            default_idle_timeout,
             router,
             available_agents,
             dependency_context_budget: config.dependency_context_budget,
@@ -949,96 +958,5 @@ mod tests {
             scheduler.orchestrator_provider_name().is_empty(),
             "default config must yield empty orchestrator_provider_name"
         );
-    }
-
-    // --- idle_timeout_secs reserved-field hint (#6302) ---
-
-    const IDLE_TIMEOUT_HINT: &str = "idle_timeout_secs is set but not enforced";
-
-    #[test]
-    #[tracing_test::traced_test]
-    fn idle_timeout_hint_silent_when_unset() {
-        let graph = graph_from_nodes(vec![make_node(0, &[])]);
-        let _scheduler =
-            DagScheduler::new(graph, &make_config(), Box::new(FirstRouter), vec![], None).unwrap();
-        assert!(
-            !logs_contain(IDLE_TIMEOUT_HINT),
-            "no idle_timeout_secs is set anywhere; the hint must not fire"
-        );
-    }
-
-    #[test]
-    #[tracing_test::traced_test]
-    fn idle_timeout_hint_warns_once_on_config_default() {
-        let graph = graph_from_nodes(vec![make_node(0, &[])]);
-        let config = zeph_config::OrchestrationConfig {
-            default_idle_timeout_secs: Some(30),
-            ..make_config()
-        };
-        let _scheduler =
-            DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![], None).unwrap();
-        assert!(logs_contain(IDLE_TIMEOUT_HINT));
-        logs_assert(|lines: &[&str]| {
-            match lines
-                .iter()
-                .filter(|line| line.contains(IDLE_TIMEOUT_HINT))
-                .count()
-            {
-                1 => Ok(()),
-                n => Err(format!("expected exactly one idle_timeout hint, got {n}")),
-            }
-        });
-    }
-
-    #[test]
-    #[tracing_test::traced_test]
-    fn idle_timeout_hint_warns_once_on_per_task_policy_even_with_multiple_tasks() {
-        let mut task_a = make_node(0, &[]);
-        task_a.timeout = Some(crate::graph::TimeoutPolicy {
-            run_timeout_secs: None,
-            idle_timeout_secs: Some(10),
-        });
-        let mut task_b = make_node(1, &[]);
-        task_b.timeout = Some(crate::graph::TimeoutPolicy {
-            run_timeout_secs: None,
-            idle_timeout_secs: Some(20),
-        });
-        let graph = graph_from_nodes(vec![task_a, task_b]);
-        let _scheduler =
-            DagScheduler::new(graph, &make_config(), Box::new(FirstRouter), vec![], None).unwrap();
-        assert!(logs_contain(IDLE_TIMEOUT_HINT));
-        logs_assert(|lines: &[&str]| {
-            match lines
-                .iter()
-                .filter(|line| line.contains(IDLE_TIMEOUT_HINT))
-                .count()
-            {
-                1 => Ok(()),
-                n => Err(format!("expected exactly one idle_timeout hint, got {n}")),
-            }
-        });
-    }
-
-    #[test]
-    #[tracing_test::traced_test]
-    fn idle_timeout_hint_warns_once_on_resume() {
-        let graph = graph_from_nodes(vec![make_node(0, &[])]);
-        let config = zeph_config::OrchestrationConfig {
-            default_idle_timeout_secs: Some(30),
-            ..make_config()
-        };
-        let _scheduler =
-            DagScheduler::resume_from(graph, &config, Box::new(FirstRouter), vec![], None).unwrap();
-        assert!(logs_contain(IDLE_TIMEOUT_HINT));
-        logs_assert(|lines: &[&str]| {
-            match lines
-                .iter()
-                .filter(|line| line.contains(IDLE_TIMEOUT_HINT))
-                .count()
-            {
-                1 => Ok(()),
-                n => Err(format!("expected exactly one idle_timeout hint, got {n}")),
-            }
-        });
     }
 }

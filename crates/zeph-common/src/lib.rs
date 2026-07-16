@@ -22,6 +22,7 @@ pub mod http_middleware;
 pub mod llm_response;
 pub mod math;
 pub mod memory;
+pub mod monotonic;
 pub mod net;
 pub mod path_guard;
 pub mod patterns;
@@ -48,6 +49,7 @@ pub const OVERFLOW_NOTICE_PREFIX: &str = "[full output stored \u{2014} ID: ";
 
 pub use fidelity::{ContextFidelity, PlannedToolHint};
 pub use math::{EmbeddingVector, Normalized, Unnormalized};
+pub use monotonic::monotonic_millis;
 pub use policy::{PolicyLlmClient, PolicyMessage, PolicyRole};
 pub use sanitize::{IdentitySanitizer, OutputSanitizer};
 pub use security_event::SecurityEventCategory;

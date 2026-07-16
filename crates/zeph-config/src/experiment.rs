@@ -534,11 +534,15 @@ pub struct OrchestrationConfig {
     pub ensemble: EnsembleConfig,
 
     /// Global default idle/no-progress timeout in seconds, used when a `TaskNode`'s own
-    /// `TimeoutPolicy.idle_timeout_secs` is unset.
+    /// `TimeoutPolicy.idle_timeout_secs` is unset. `None` (the default) disables idle
+    /// enforcement — it is opt-in, unlike `task_timeout_secs`.
     ///
-    /// **RESERVED — not yet enforced.** Defined and config-surfaced so the value can be
-    /// persisted ahead of the progress-signal plumbing (Alt A) that will consume it in a
-    /// future release. `None` = off. See
+    /// A task is killed if no progress heartbeat is observed for this many seconds — a
+    /// heartbeat is written once per agent-loop turn boundary, so **this value must be set
+    /// above the longest expected single-turn (single LLM call + its tool calls) duration**,
+    /// or a healthy task performing one long-running tool call can be killed spuriously.
+    /// Only enforced on the normal spawn dispatch path; `RunInline` tasks (no sub-agent
+    /// definitions configured) are exempt. See
     /// `specs/075-orchestration-node-control-parity/spec.md` §4/FR-005.
     #[serde(default)]
     pub default_idle_timeout_secs: Option<u64>,

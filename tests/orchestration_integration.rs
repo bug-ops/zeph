@@ -103,7 +103,7 @@ mod orchestration_integration {
                         ..
                     } => {
                         let handle_id = format!("handle-{}", task_id.index());
-                        scheduler.record_spawn(task_id, handle_id.clone(), agent_def_name);
+                        scheduler.record_spawn(task_id, handle_id.clone(), agent_def_name, None);
                         spawned.push((task_id, handle_id));
                     }
                     SchedulerAction::Done { status } => {
@@ -332,7 +332,7 @@ mod orchestration_integration {
                     } => {
                         let handle_id = format!("handle-{attempt}");
                         attempt += 1;
-                        scheduler.record_spawn(task_id, handle_id.clone(), agent_def_name);
+                        scheduler.record_spawn(task_id, handle_id.clone(), agent_def_name, None);
                         spawned.push((task_id, handle_id));
                     }
                     SchedulerAction::Done { status } => {

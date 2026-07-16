@@ -82,9 +82,10 @@ pub(super) fn step_orchestration(state: &mut WizardState) -> anyhow::Result<()> 
 
         let idle_timeout_raw: String = Input::new()
             .with_prompt(
-                "Default idle/no-progress timeout in seconds — RESERVED, not yet enforced \
-                 in this release; leave blank unless you want the value persisted for when \
-                 it ships",
+                "Default idle/no-progress timeout in seconds — kills a task if it emits no \
+                 progress for this long; leave blank to disable. IMPORTANT: set this above \
+                 the longest expected single-turn (single LLM call + its tool calls) \
+                 duration, or a healthy long-running task may be killed spuriously",
             )
             .allow_empty(true)
             .validate_with(|s: &String| -> Result<(), String> {

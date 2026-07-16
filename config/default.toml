@@ -1160,8 +1160,12 @@ verify_max_tokens = 1024
 max_replans = 2
 # Enable post-task completeness verification (best-effort, does not gate dispatch)
 verify_completeness = false
-# Global default idle/no-progress timeout in seconds. RESERVED — not yet enforced; see
-# specs/075-orchestration-node-control-parity/spec.md §4/FR-005. Unset = off.
+# Global default idle/no-progress timeout in seconds. Kills a task if it emits no progress
+# heartbeat (written once per agent-loop turn) for this long. Opt-in — unset = off. Only
+# enforced on the normal spawn dispatch path; RunInline tasks are exempt. IMPORTANT: set this
+# above the longest expected single-turn (single LLM call + its tool calls) duration, or a
+# healthy long-running task may be killed spuriously. See
+# specs/075-orchestration-node-control-parity/spec.md §4/FR-005.
 # default_idle_timeout_secs = 60
 # Timeout in seconds for aggregation LLM calls (0 rejected by validation). Default: 60.
 # aggregator_timeout_secs = 60

@@ -158,6 +158,19 @@ pub struct SpawnContext {
     /// `false` (the default) imposes no restriction beyond the executor/global
     /// `allow_network` default.
     pub network_denied: bool,
+
+    /// Shared progress heartbeat for idle-timeout detection (issue #6245).
+    ///
+    /// Set by the orchestration driver (`handle_scheduler_spawn_action` in `zeph-core`'s
+    /// `scheduler_loop.rs`) alongside [`network_denied`][Self::network_denied] — same
+    /// post-construction assignment pattern, not part of `build_spawn_context`'s base
+    /// literal. The driver creates the `Arc`, clones it in here, and keeps the original for
+    /// `zeph_orchestration::DagScheduler::record_spawn`'s `last_progress_at` parameter so
+    /// both the running loop and the scheduler observe the same counter.
+    ///
+    /// `None` (the default) for spawns not tracked by a `DagScheduler` — e.g. the standalone
+    /// `/agent run` command — which are never idle-tracked.
+    pub progress_at: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 /// Live status snapshot of a running sub-agent.

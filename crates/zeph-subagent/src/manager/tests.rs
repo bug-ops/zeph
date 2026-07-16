@@ -2222,6 +2222,7 @@ fn make_agent_loop_args(
         content_isolation: ContentIsolationConfig::default(),
         max_history_messages: 200,
         llm_timeout: std::time::Duration::from_mins(2),
+        progress_at: None,
     }
 }
 
@@ -2329,6 +2330,57 @@ async fn run_agent_loop_passes_tools_to_provider() {
         1,
         "chat_with_tools must have been called exactly once"
     );
+}
+
+// ── idle-timeout progress heartbeat (#6245) ──────────────────────────────
+
+#[tokio::test]
+async fn run_agent_loop_writes_progress_heartbeat_on_a_real_turn() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Proves the full path end-to-end: a real `run_agent_loop` turn actually stores into
+    // the `Arc<AtomicU64>` that a `DagScheduler` would later read via `RunningTask::
+    // last_progress_at` — not just that the low-level `record_progress` helper works in
+    // isolation (covered separately in `agent_loop.rs`'s `record_progress_tests`).
+    let provider = mock_provider(vec!["done"]);
+    let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
+
+    // u64::MAX as the placeholder (not 0) — a young test process can legitimately have
+    // monotonic_millis() itself read 0, which would make an unwritten handle
+    // indistinguishable from a written one.
+    let handle = Arc::new(AtomicU64::new(u64::MAX));
+    let before = zeph_common::monotonic_millis();
+    let args = AgentLoopArgs {
+        progress_at: Some(Arc::clone(&handle)),
+        ..make_agent_loop_args(provider, executor, 1)
+    };
+
+    let result = run_agent_loop(args).await;
+    assert!(result.is_ok(), "loop failed: {result:?}");
+
+    let stored = handle.load(Ordering::Relaxed);
+    assert_ne!(
+        stored,
+        u64::MAX,
+        "run_agent_loop must have written to the progress handle during the turn"
+    );
+    assert!(
+        stored >= before,
+        "stored heartbeat ({stored}) must be a monotonic reading taken during or after the \
+         turn ({before})"
+    );
+}
+
+#[tokio::test]
+async fn run_agent_loop_none_progress_handle_is_unaffected() {
+    // RunInline-style: no handle at all — the loop must run to completion without touching
+    // anything (no panic, no attempted write). Regression guard for the `Option` branch.
+    let provider = mock_provider(vec!["done"]);
+    let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
+    let args = make_agent_loop_args(provider, executor, 1); // progress_at: None by default
+
+    let result = run_agent_loop(args).await;
+    assert!(result.is_ok(), "loop failed: {result:?}");
 }
 
 #[tokio::test]

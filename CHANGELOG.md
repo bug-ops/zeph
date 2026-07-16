@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+
+- **zeph-orchestration** / **zeph-subagent** / **zeph-core**: `idle_timeout_secs` (per-task
+  `TimeoutPolicy` and global `default_idle_timeout_secs`) is now enforced — previously it was
+  defined and config-surfaced but a documented no-op (#6245, Alt-A progress-signal plumbing
+  for spec-075's FR-005). A per-task `Arc<AtomicU64>` progress heartbeat, anchored to a new
+  process-lifetime `zeph_common::monotonic_millis()` clock, is written once per agent-loop
+  turn boundary and read by the scheduler's `check_timeouts()`; a task with no observed
+  progress for longer than its effective idle timeout is killed. Idle enforcement is opt-in
+  (unset = disabled) and applies only to the normal spawn dispatch path — `RunInline` tasks
+  are exempt (documented invariant, defense-in-depth via a `None` progress handle). When both
+  run-timeout and idle-timeout are exceeded on the same tick, run-timeout wins (it is the hard
+  wall-clock cap). `--init` wizard text, `config.toml` comments, and the `TimeoutPolicy`/
+  `default_idle_timeout_secs` doc comments now describe the enforced semantics and warn that
+  the value must be set above the longest expected single-turn duration.
+
 ### Changed
 
 - `zeph-experiments`: `ParameterKind::as_str`, `ParameterKind::is_integer`,
@@ -41,7 +57,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   after writing the rebuilt prompt into `messages[0]`, so the counter always reflects the
   actual outgoing prompt on every turn.
 
+- **zeph-orchestration**: a task killed by `run_timeout` (or the new `idle_timeout`) now
+  populates `TaskResult.output` with a human-readable cause (e.g. `"task exceeded run timeout
+  (60s)"`) before marking the task `Failed` (#6245). Previously the timeout path left
+  `result: None`, so the TUI/CLI showed no reason at all for a timeout-killed task — reuses
+  the existing `TaskGraphSnapshot` conversion (`metrics.rs`), no new widget or snapshot field.
+
 ### Testing
+
+- **zeph-orchestration** / **zeph-subagent**: closed three coverage gaps in the idle-timeout
+  progress plumbing (#6245) flagged during review: direct unit tests for `effective_idle_timeout()`'s
+  global-fallback branch (mirroring the existing `effective_run_timeout()` tests), a direct
+  unit test for the `record_progress()` atomic-store helper plus an end-to-end test proving a
+  real `run_agent_loop` turn writes into the `Arc<AtomicU64>` a `DagScheduler` later reads, and
+  a multi-task test confirming two tasks' progress heartbeats are independent (one stale task
+  is idle-killed while a sibling with its own fresh heartbeat survives).
 
 - **zeph-core**: added end-to-end coverage for `TurnSummary.tool_calls` / `TurnSummary.llm_requests`
   (#6330), closing the gap left by #6328: no prior test drove a real turn through

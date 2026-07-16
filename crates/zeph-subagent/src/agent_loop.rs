@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
@@ -70,6 +72,22 @@ pub(super) struct AgentLoopArgs {
     pub(super) content_isolation: zeph_config::ContentIsolationConfig,
     /// Maximum wall time for a single LLM call inside an agent turn.
     pub(super) llm_timeout: std::time::Duration,
+    /// Shared progress heartbeat for idle-timeout detection (issue #6245).
+    ///
+    /// `Some` when this spawn is orchestration-dispatched via `DagScheduler` — the driver
+    /// clones the `Arc` in here and keeps the original for `DagScheduler::record_spawn`'s
+    /// `last_progress_at`. `run_agent_loop` stores `monotonic_millis()` into it once per
+    /// turn boundary. `None` for spawns not tracked by an orchestration scheduler (the
+    /// standalone `/agent run`/`resume` commands), which are never idle-tracked.
+    pub(super) progress_at: Option<Arc<AtomicU64>>,
+}
+
+/// Record a progress heartbeat, if this loop has a live handle. No-op for `None` (untracked
+/// or `RunInline`-style spawns — see [`AgentLoopArgs::progress_at`]).
+fn record_progress(progress_at: Option<&Arc<AtomicU64>>) {
+    if let Some(p) = progress_at {
+        p.store(zeph_common::monotonic_millis(), Ordering::Relaxed);
+    }
 }
 
 pub(super) fn make_message(role: Role, content: String) -> Message {
@@ -733,6 +751,7 @@ pub(super) async fn run_agent_loop(
         mcp_tool_names,
         content_isolation,
         llm_timeout,
+        progress_at,
     } = args;
 
     let sanitizer = ContentSanitizer::new(&content_isolation);
@@ -761,6 +780,8 @@ pub(super) async fn run_agent_loop(
     let mut granted_secrets: HashMap<String, GrantedSecret> = HashMap::new();
 
     loop {
+        record_progress(progress_at.as_ref());
+
         if cancel.is_cancelled() {
             tracing::debug!("sub-agent cancelled, stopping loop");
             break;
@@ -799,6 +820,8 @@ pub(super) async fn run_agent_loop(
             TurnOutcome::NudgeSent | TurnOutcome::SecretHandled => {}
             TurnOutcome::Done | TurnOutcome::Cancelled => break,
         }
+
+        record_progress(progress_at.as_ref());
 
         trim_message_history(&mut messages, max_history_messages);
     }
@@ -878,6 +901,58 @@ mod trim_message_history_tests {
         trim_message_history(&mut msgs, 3);
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0].role, Role::System);
+    }
+}
+
+#[cfg(test)]
+mod record_progress_tests {
+    use super::*;
+
+    #[test]
+    fn none_handle_is_a_noop() {
+        // Must not panic and must not affect anything — this is the RunInline/untracked path.
+        record_progress(None);
+    }
+
+    #[test]
+    fn some_handle_stores_a_fresh_monotonic_reading() {
+        // Seed with a sentinel a real monotonic_millis() reading can never produce (0 is not
+        // safe here — an isolated test binary can be young enough that monotonic_millis()
+        // itself legitimately reads 0, which would make an unwritten handle indistinguishable
+        // from a written one). u64::MAX proves the write actually happened; the >= check
+        // proves it reflects a reading taken at-or-after this test's own pre-call timestamp.
+        let before = zeph_common::monotonic_millis();
+        let handle = Arc::new(AtomicU64::new(u64::MAX));
+
+        record_progress(Some(&handle));
+
+        let stored = handle.load(Ordering::Relaxed);
+        assert_ne!(
+            stored,
+            u64::MAX,
+            "record_progress must overwrite the initial placeholder value"
+        );
+        assert!(
+            stored >= before,
+            "stored value ({stored}) must be a monotonic reading taken at-or-after the pre-call \
+             timestamp ({before})"
+        );
+    }
+
+    #[test]
+    fn some_handle_overwrites_a_stale_previous_value() {
+        let handle = Arc::new(AtomicU64::new(0));
+        record_progress(Some(&handle));
+        let first = handle.load(Ordering::Relaxed);
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        record_progress(Some(&handle));
+        let second = handle.load(Ordering::Relaxed);
+
+        assert!(
+            second >= first,
+            "a second call must never move the stored heartbeat backward"
+        );
     }
 }
 

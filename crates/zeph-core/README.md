@@ -313,7 +313,7 @@ Key `OrchestrationConfig` fields (TOML section `[orchestration]`):
 | `dependency_context_budget` | usize | `16384` | Character budget injected as cross-task context |
 | `confirm_before_execute` | bool | `true` | Require `/plan confirm` before executing a new plan |
 | `aggregator_max_tokens` | u32 | `4096` | Token budget for the `LlmAggregator` synthesis call; divided equally across completed tasks |
-| `default_idle_timeout_secs` | `Option<u64>` | `None` | Graph-wide default for `TaskNode::idle_timeout_secs` (reserved, currently a documented no-op); per-task `run_timeout` enforcement applies independently to both spawned and `RunInline` dispatch, defaulting `RunInline` tasks to the graph-global 300s bound instead of running unbounded |
+| `default_idle_timeout_secs` | `Option<u64>` | `None` | Graph-wide default for `TaskNode::idle_timeout_secs`; kills a task if it emits no progress heartbeat (written once per agent-loop turn) for this many seconds. Opt-in — `None` disables idle enforcement. Only enforced on the normal spawn dispatch path; `RunInline` tasks are exempt. Must be set above the longest expected single-turn duration. Independent of `run_timeout` enforcement, which applies to both spawned and `RunInline` dispatch, defaulting `RunInline` tasks to the graph-global 300s bound instead of running unbounded |
 
 > [!NOTE]
 > A task whose verification (plan-level or per-task) judges output incomplete and for which no automatic repair resolves it now surfaces a visible signal to the user instead of only a debug/warn log line. `state_injection` recovery lets the graph continue past a failed node on terminal `Abort`/retry-exhausted failures instead of pausing unrelated work.

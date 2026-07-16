@@ -118,7 +118,8 @@ pub(crate) struct WizardState {
     pub(crate) orchestration_failure_strategy: String,
     pub(crate) orchestration_planner_provider: Option<String>,
     pub(crate) orchestration_persistence_enabled: bool,
-    /// RESERVED — not yet enforced (spec-075-orchestration-node-control-parity, #6021).
+    /// Kills a task if it emits no progress for this many seconds (opt-in; `None` disables).
+    /// Must be set above the longest expected single-turn duration (spec-075-orchestration-node-control-parity, #6021, enforced by #6245).
     pub(crate) orchestration_default_idle_timeout_secs: Option<u64>,
     // Ensemble-verified plan verification (spec 073-orch-ensemble-merge, opt-in)
     pub(crate) ensemble_enabled: bool,

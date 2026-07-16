@@ -86,6 +86,7 @@ fn test_completion_event_marks_deps_ready() {
             agent_def_name: "worker".to_string(),
             started_at: std::time::Instant::now(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -162,7 +163,12 @@ fn test_plan_with_verify_criteria_and_predicate_disabled_reaches_completed() {
             .iter()
             .any(|a| matches!(a, SchedulerAction::Spawn { task_id, .. } if *task_id == TaskId(0)))
     );
-    scheduler.record_spawn(TaskId(0), "handle-parent".to_string(), "worker".to_string());
+    scheduler.record_spawn(
+        TaskId(0),
+        "handle-parent".to_string(),
+        "worker".to_string(),
+        None,
+    );
     scheduler.buffered_events.push_back(TaskEvent {
         task_id: TaskId(0),
         agent_handle_id: "handle-parent".to_string(),
@@ -183,7 +189,12 @@ fn test_plan_with_verify_criteria_and_predicate_disabled_reaches_completed() {
             .any(|a| matches!(a, SchedulerAction::Spawn { task_id, .. } if *task_id == TaskId(1))),
         "child must be dispatched once its only dependency completes"
     );
-    scheduler.record_spawn(TaskId(1), "handle-child".to_string(), "worker".to_string());
+    scheduler.record_spawn(
+        TaskId(1),
+        "handle-child".to_string(),
+        "worker".to_string(),
+        None,
+    );
     scheduler.buffered_events.push_back(TaskEvent {
         task_id: TaskId(1),
         agent_handle_id: "handle-child".to_string(),
@@ -226,6 +237,7 @@ fn test_failure_abort_cancels_running() {
             agent_def_name: "worker".to_string(),
             started_at: std::time::Instant::now(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
     scheduler.graph.tasks[1].status = TaskStatus::Running;
@@ -236,6 +248,7 @@ fn test_failure_abort_cancels_running() {
             agent_def_name: "worker".to_string(),
             started_at: std::time::Instant::now(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -286,6 +299,7 @@ fn test_failure_skip_propagates() {
             agent_def_name: "worker".to_string(),
             started_at: std::time::Instant::now(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -321,6 +335,7 @@ fn test_failure_retry_reschedules() {
             agent_def_name: "worker".to_string(),
             started_at: std::time::Instant::now(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -365,6 +380,7 @@ fn test_process_event_failed_retry() {
             agent_def_name: "worker".to_string(),
             started_at: std::time::Instant::now(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -435,6 +451,7 @@ fn test_cascade_chain_threshold_preempts_recovery() {
                 agent_def_name: "worker".to_string(),
                 started_at: std::time::Instant::now(),
                 admission_permit: None,
+                last_progress_at: None,
             },
         );
     }
@@ -489,6 +506,7 @@ fn test_timeout_cancels_stalled() {
                 .checked_sub(Duration::from_secs(2))
                 .unwrap(), // already timed out
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -532,6 +550,7 @@ fn test_per_task_timeout_override_fires_before_global_default() {
             agent_def_name: "worker".to_string(),
             started_at: started_2s_ago,
             admission_permit: None,
+            last_progress_at: None,
         },
     );
     scheduler.running.insert(
@@ -541,6 +560,7 @@ fn test_per_task_timeout_override_fires_before_global_default() {
             agent_def_name: "worker".to_string(),
             started_at: started_2s_ago,
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -581,6 +601,7 @@ fn test_no_overrides_timing_matches_pre_feature_behavior() {
                 .checked_sub(Duration::from_secs(2))
                 .unwrap(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -595,22 +616,36 @@ fn test_no_overrides_timing_matches_pre_feature_behavior() {
     assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Failed);
 }
 
-/// spec-075 §6 success criterion (FR-005): `idle_timeout_secs` is defined and config-surfaced
-/// but a documented no-op in v1 — a task with a short `idle_timeout_secs` and long idle
-/// execution must never be flagged as timed out by that field. Only `run_timeout_secs` is
-/// enforced; `check_timeouts()` never reads `idle_timeout_secs` at all.
+// --- idle_timeout_secs enforcement (issue #6245, Alt-A progress-signal plumbing) ---
+
+/// A heartbeat recording the current instant, as if the sub-agent loop just wrote to it.
+///
+/// To simulate a *stale* heartbeat, record one and then let real time pass
+/// (`std::thread::sleep`) before checking — subtracting an offset from `monotonic_millis()`
+/// to fake staleness would underflow (`saturating_sub` clamps to 0) whenever the process,
+/// and therefore its `PROCESS_START` origin, is young — which it always is at the start of
+/// an isolated test binary.
+fn progress_handle_now() -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+    std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
+        zeph_common::monotonic_millis(),
+    ))
+}
+
+/// spec-075 §6 (FR-005, activated by #6245): a task with a short `idle_timeout_secs` and a
+/// stale progress heartbeat (no turn boundary reached within the window) must be killed
+/// with `TimeoutCause::Idle`, distinguishable via the synthetic `TaskResult.output` (F5).
 #[test]
-fn test_idle_timeout_secs_is_a_no_op() {
+fn test_idle_timeout_fires_on_stale_progress() {
     let graph = graph_from_nodes(vec![make_node(0, &[])]);
     let mut config = make_config();
-    config.task_timeout_secs = 300; // long global run_timeout default
+    config.task_timeout_secs = 300; // long global run_timeout — must not be what fires
     let defs = vec![make_def("worker")];
     let mut scheduler =
         DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
 
     scheduler.graph.tasks[0].timeout = Some(crate::graph::TimeoutPolicy {
-        run_timeout_secs: None,     // falls back to the long global default above
-        idle_timeout_secs: Some(1), // short — would fire immediately if it were enforced
+        run_timeout_secs: None,
+        idle_timeout_secs: Some(1), // short — we sleep past it below
     });
     scheduler.graph.tasks[0].status = TaskStatus::Running;
     scheduler.running.insert(
@@ -618,11 +653,59 @@ fn test_idle_timeout_secs_is_a_no_op() {
         RunningTask {
             agent_handle_id: "h0".to_string(),
             agent_def_name: "worker".to_string(),
-            // Idle well past idle_timeout_secs (1s), but nowhere near run_timeout_secs (300s).
-            started_at: std::time::Instant::now()
-                .checked_sub(Duration::from_secs(5))
-                .unwrap(),
+            started_at: std::time::Instant::now(), // recent — run_timeout nowhere close
             admission_permit: None,
+            last_progress_at: Some(progress_handle_now()),
+        },
+    );
+    std::thread::sleep(Duration::from_millis(1_100)); // let the 1s idle_timeout actually elapse
+
+    let actions = scheduler.tick();
+    let has_cancel = actions
+        .iter()
+        .any(|a| matches!(a, SchedulerAction::Cancel { .. }));
+    assert!(
+        has_cancel,
+        "stale progress heartbeat must fire idle timeout"
+    );
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Failed);
+    let output = scheduler.graph.tasks[0]
+        .result
+        .as_ref()
+        .expect("timeout must populate TaskResult")
+        .output
+        .clone();
+    assert!(
+        output.contains("idle timeout"),
+        "TaskResult.output must name the idle cause, got: {output}"
+    );
+}
+
+/// Mirror of the fire test: a task with the same short `idle_timeout_secs` but a heartbeat
+/// that was just refreshed must NOT be killed — idle enforcement tracks real progress, not
+/// just task age.
+#[test]
+fn test_idle_timeout_does_not_fire_while_progress_continues() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut config = make_config();
+    config.task_timeout_secs = 300;
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+    scheduler.graph.tasks[0].timeout = Some(crate::graph::TimeoutPolicy {
+        run_timeout_secs: None,
+        idle_timeout_secs: Some(60), // generous relative to the fresh heartbeat below
+    });
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+            last_progress_at: Some(progress_handle_now()),
         },
     );
 
@@ -632,13 +715,220 @@ fn test_idle_timeout_secs_is_a_no_op() {
         .any(|a| matches!(a, SchedulerAction::Cancel { .. }));
     assert!(
         !has_cancel,
-        "idle_timeout_secs must never fire a timeout in v1 — it is a documented no-op"
+        "a task with a fresh heartbeat must not be idle-killed"
+    );
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Running);
+}
+
+/// F2 regression: a task with `last_progress_at: None` (the `RunInline` exemption — see
+/// `RunningTask::last_progress_at` doc and the `record_spawn` call site in
+/// `scheduler_loop.rs::handle_run_inline_action`) must never be idle-killed, even with an
+/// idle timeout configured and a task age far past it. This is the `DagScheduler`-level half
+/// of the guarantee; the exemption holds regardless of how stale `started_at` is because the
+/// idle branch short-circuits on `last_progress_at.is_none()` before ever comparing durations.
+#[test]
+fn test_idle_timeout_exempt_without_progress_handle() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut config = make_config();
+    config.task_timeout_secs = 300; // long — run_timeout must not be what's tested here
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+    scheduler.graph.tasks[0].timeout = Some(crate::graph::TimeoutPolicy {
+        run_timeout_secs: None,
+        idle_timeout_secs: Some(1), // short — would fire immediately if last_progress_at were Some
+    });
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now()
+                .checked_sub(Duration::from_secs(5))
+                .unwrap(),
+            admission_permit: None,
+            last_progress_at: None, // RunInline-style exemption
+        },
+    );
+
+    let actions = scheduler.tick();
+    let has_cancel = actions
+        .iter()
+        .any(|a| matches!(a, SchedulerAction::Cancel { .. }));
+    assert!(
+        !has_cancel,
+        "a task with no progress handle must never be idle-killed, regardless of age"
+    );
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Running);
+}
+
+/// Multi-task isolation: two independently-running tasks each carry their own
+/// `Arc<AtomicU64>` heartbeat. A stale heartbeat on one task must not affect the other —
+/// every idle-timeout test above uses a single-task graph, which cannot by itself rule out
+/// a bug that reads/writes the wrong task's handle (e.g. an accidental shared `Arc`, or a
+/// `check_timeouts` loop that mixes up per-task state).
+#[test]
+fn test_idle_timeout_multi_task_heartbeats_are_independent() {
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+    let mut config = make_config();
+    config.task_timeout_secs = 300; // long — isolate idle-timeout behavior from run-timeout
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+    let short_idle = crate::graph::TimeoutPolicy {
+        run_timeout_secs: None,
+        idle_timeout_secs: Some(1),
+    };
+    scheduler.graph.tasks[0].timeout = Some(short_idle.clone());
+    scheduler.graph.tasks[1].timeout = Some(short_idle);
+    // Use Skip (not the graph default Abort) on task 0 so its idle-timeout kill doesn't
+    // cascade-abort the whole graph and collaterally cancel unrelated task 1 (mirrors
+    // test_per_task_timeout_override_fires_before_global_default's rationale) — isolates
+    // per-task heartbeat independence from unrelated Abort cascade semantics.
+    scheduler.graph.tasks[0].failure_strategy = Some(zeph_config::FailureStrategy::Skip);
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.graph.tasks[1].status = TaskStatus::Running;
+
+    // Task 0's heartbeat is recorded first, then we sleep past the 1s idle window, then
+    // task 1's heartbeat is recorded fresh — so task 0's Arc is genuinely stale relative to
+    // the idle window while task 1's is not, and each task holds a distinct Arc.
+    let handle0 = progress_handle_now();
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+            last_progress_at: Some(handle0),
+        },
+    );
+    std::thread::sleep(Duration::from_millis(1_100));
+    let handle1 = progress_handle_now();
+    scheduler.running.insert(
+        TaskId(1),
+        RunningTask {
+            agent_handle_id: "h1".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+            last_progress_at: Some(handle1),
+        },
+    );
+
+    let actions = scheduler.tick();
+    let canceled: Vec<&str> = actions
+        .iter()
+        .filter_map(|a| match a {
+            SchedulerAction::Cancel { agent_handle_id } => Some(agent_handle_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        canceled,
+        vec!["h0"],
+        "only the task with the stale heartbeat should be idle-killed"
     );
     assert_eq!(
         scheduler.graph.tasks[0].status,
-        TaskStatus::Running,
-        "the task must remain Running, unaffected by the short idle_timeout_secs value"
+        TaskStatus::Skipped,
+        "task 0 (stale heartbeat) must be killed — Skip strategy turns the timeout-Failed \
+         status into Skipped via propagate_failure, same as the existing per-task-timeout test"
     );
+    assert_eq!(
+        scheduler.graph.tasks[1].status,
+        TaskStatus::Running,
+        "task 1's own fresh heartbeat must keep it alive, unaffected by task 0's staleness"
+    );
+}
+
+/// F4: when both run-timeout and idle-timeout are exceeded on the same tick, run must win
+/// — it is the hard wall-clock cap, idle the softer liveness signal. Verified indirectly via
+/// the synthetic `TaskResult.output` cause string (the `TimeoutCause` enum itself is private).
+#[test]
+fn test_run_timeout_wins_precedence_over_idle_on_same_tick() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut config = make_config();
+    config.task_timeout_secs = 1; // both run and idle will be exceeded
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+    scheduler.graph.tasks[0].timeout = Some(crate::graph::TimeoutPolicy {
+        run_timeout_secs: None,
+        idle_timeout_secs: Some(1),
+    });
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now()
+                .checked_sub(Duration::from_secs(10))
+                .unwrap(),
+            admission_permit: None,
+            // Value irrelevant to this test: run-timeout is checked first and already
+            // exceeded via started_at above, so the idle branch is never reached regardless
+            // of heartbeat freshness.
+            last_progress_at: Some(progress_handle_now()),
+        },
+    );
+
+    scheduler.tick();
+    let output = scheduler.graph.tasks[0]
+        .result
+        .as_ref()
+        .expect("timeout must populate TaskResult")
+        .output
+        .clone();
+    assert!(
+        output.contains("run timeout"),
+        "run timeout must win precedence on a same-tick tie, got: {output}"
+    );
+    assert!(
+        !output.contains("idle timeout"),
+        "only one cause must be reported per NFR-OB-01, got: {output}"
+    );
+}
+
+/// F5: a run-timeout kill (no idle policy configured at all) must also populate
+/// `TaskResult.output` with a cause — this was a latent bug (timeout kills previously left
+/// `result: None`, showing no reason anywhere in the TUI/CLI).
+#[test]
+fn test_run_timeout_populates_task_result_cause() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut config = make_config();
+    config.task_timeout_secs = 1;
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now()
+                .checked_sub(Duration::from_secs(2))
+                .unwrap(),
+            admission_permit: None,
+            last_progress_at: None,
+        },
+    );
+
+    scheduler.tick();
+    let result = scheduler.graph.tasks[0]
+        .result
+        .as_ref()
+        .expect("run-timeout kill must populate TaskResult (F5 fix)");
+    assert!(result.output.contains("run timeout"));
+    assert_eq!(result.agent_id.as_deref(), Some("h0"));
+    assert_eq!(result.agent_def.as_deref(), Some("worker"));
 }
 
 #[test]
@@ -675,6 +965,56 @@ fn test_effective_run_timeout_uses_per_task_override() {
 }
 
 #[test]
+fn test_effective_idle_timeout_none_when_unset_anywhere() {
+    // Unlike effective_run_timeout, idle is opt-in — with no per-task override and no
+    // global default configured, the effective value must be None (disabled), never a
+    // sentinel Duration.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let defs = vec![make_def("worker")];
+    let scheduler =
+        DagScheduler::new(graph, &make_config(), Box::new(FirstRouter), defs, None).unwrap();
+    assert_eq!(scheduler.effective_idle_timeout(TaskId(0)), None);
+}
+
+#[test]
+fn test_effective_idle_timeout_falls_back_to_global_default() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let config = zeph_config::OrchestrationConfig {
+        default_idle_timeout_secs: Some(30),
+        ..make_config()
+    };
+    let defs = vec![make_def("worker")];
+    let scheduler = DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+    assert_eq!(
+        scheduler.effective_idle_timeout(TaskId(0)),
+        Some(Duration::from_secs(30))
+    );
+}
+
+#[test]
+fn test_effective_idle_timeout_uses_per_task_override_over_global_default() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let config = zeph_config::OrchestrationConfig {
+        default_idle_timeout_secs: Some(30),
+        ..make_config()
+    };
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+    scheduler.graph.tasks[0].timeout = Some(crate::graph::TimeoutPolicy {
+        run_timeout_secs: None,
+        idle_timeout_secs: Some(5),
+    });
+
+    assert_eq!(
+        scheduler.effective_idle_timeout(TaskId(0)),
+        Some(Duration::from_secs(5)),
+        "per-task override must win over the global default (30s), not merge with it"
+    );
+}
+
+#[test]
 fn test_cancel_all() {
     let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
     let mut scheduler = make_scheduler(graph);
@@ -687,6 +1027,7 @@ fn test_cancel_all() {
             agent_def_name: "worker".to_string(),
             started_at: std::time::Instant::now(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
     scheduler.graph.tasks[1].status = TaskStatus::Running;
@@ -697,6 +1038,7 @@ fn test_cancel_all() {
             agent_def_name: "worker".to_string(),
             started_at: std::time::Instant::now(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -791,6 +1133,7 @@ fn test_concurrency_deferral_does_not_affect_running_task() {
             agent_def_name: "worker".to_string(),
             started_at: std::time::Instant::now(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
     scheduler.graph.tasks[1].status = TaskStatus::Running;
@@ -939,6 +1282,7 @@ fn test_stale_event_rejected() {
             agent_def_name: "worker".to_string(),
             started_at: std::time::Instant::now(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -989,6 +1333,7 @@ fn test_duration_ms_computed_correctly() {
                 .checked_sub(Duration::from_millis(50))
                 .unwrap(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -1061,7 +1406,12 @@ fn test_consecutive_spawn_failures_resets_on_success() {
     scheduler.record_batch_backoff(false, true);
     assert_eq!(scheduler.consecutive_spawn_failures, 2);
 
-    scheduler.record_spawn(TaskId(0), "handle-0".to_string(), "worker".to_string());
+    scheduler.record_spawn(
+        TaskId(0),
+        "handle-0".to_string(),
+        "worker".to_string(),
+        None,
+    );
     assert_eq!(
         scheduler.consecutive_spawn_failures, 0,
         "record_spawn must reset consecutive_spawn_failures to 0"
@@ -1149,6 +1499,7 @@ async fn test_wait_event_nearest_deadline_reflects_per_task_override() {
             agent_def_name: "worker".to_string(),
             started_at: now.checked_sub(Duration::from_millis(950)).unwrap(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
     scheduler.running.insert(
@@ -1158,6 +1509,7 @@ async fn test_wait_event_nearest_deadline_reflects_per_task_override() {
             agent_def_name: "worker".to_string(),
             started_at: now,
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -1260,7 +1612,7 @@ fn test_record_spawn_resets_consecutive_failures() {
     scheduler.consecutive_spawn_failures = 3;
     let task_id = TaskId(0);
     scheduler.graph.tasks[0].status = TaskStatus::Running;
-    scheduler.record_spawn(task_id, "handle-1".into(), "worker".into());
+    scheduler.record_spawn(task_id, "handle-1".into(), "worker".into(), None);
 
     assert_eq!(scheduler.consecutive_spawn_failures, 0);
 }
@@ -1570,7 +1922,7 @@ fn admission_gate_permit_transferred_to_running() {
     );
 
     scheduler.graph.tasks[task_id.index()].status = TaskStatus::Running;
-    scheduler.record_spawn(task_id, "handle-1".into(), "worker".into());
+    scheduler.record_spawn(task_id, "handle-1".into(), "worker".into(), None);
 
     assert!(
         !scheduler.pending_permits.contains_key(&task_id),
@@ -1676,6 +2028,7 @@ fn take_graph_dirty_true_after_task_completes() {
             agent_def_name: "worker".to_string(),
             started_at: std::time::Instant::now(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -1715,6 +2068,7 @@ fn take_graph_dirty_true_after_task_fails() {
             agent_def_name: "worker".to_string(),
             started_at: std::time::Instant::now(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -1786,6 +2140,7 @@ fn take_graph_dirty_true_after_cancel_all() {
             agent_def_name: "worker".to_string(),
             started_at: std::time::Instant::now(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 
@@ -1822,6 +2177,7 @@ fn take_graph_dirty_true_after_timeout() {
                 .checked_sub(Duration::from_secs(2))
                 .unwrap(),
             admission_permit: None,
+            last_progress_at: None,
         },
     );
 

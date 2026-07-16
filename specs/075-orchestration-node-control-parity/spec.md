@@ -26,6 +26,12 @@ issues:
 # Spec: Orchestration Node Control Parity — Per-Task Timeouts and Retry-Exhausted Recovery Routing (GitHub #6021)
 
 > [!info]
+> **Status update (#6245):** `idle_timeout_secs` moved from documented no-op to enforced —
+> see the Alt-A progress-signal plumbing design in `.local/handoff/2026-07-16T21-37-11-architect.md`
+> (+ amendment `2026-07-16T21-53-03-architect.md`). FR-005 below and the "documented no-op"
+> language throughout this spec describe the v1 state this spec originally shipped; treat
+> them as historical for `idle_timeout_secs` specifically — run-timeout behavior is unchanged.
+>
 > `TaskNode` gains an optional per-task `TimeoutPolicy` (hard `run_timeout_secs` override,
 > enforced; `idle_timeout_secs`, defined but a documented no-op in v1) and an optional
 > `RecoveryAction` (`state_injection` — substitute a synthetic output and continue, on terminal

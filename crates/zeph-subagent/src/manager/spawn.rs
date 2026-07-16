@@ -737,6 +737,7 @@ impl SubAgentManager {
             mcp_tool_names,
             content_isolation: ctx.content_isolation,
             llm_timeout: std::time::Duration::from_secs(config.llm_timeout_secs),
+            progress_at: ctx.progress_at,
         };
 
         let join_handle = self.spawn_agent_task(Arc::from(task_id.as_str()), move || async move {
@@ -1166,6 +1167,9 @@ impl SubAgentManager {
                 mcp_tool_names: resumed_mcp_tool_names,
                 content_isolation: ContentIsolationConfig::default(),
                 llm_timeout,
+                // `resume()` is the standalone `/agent resume` command path, never tracked
+                // by a `DagScheduler` — no progress handle to reattach to.
+                progress_at: None,
             })
         });
 

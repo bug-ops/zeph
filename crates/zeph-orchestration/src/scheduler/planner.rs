@@ -375,6 +375,7 @@ mod tests {
                 agent_def_name: "worker".to_string(),
                 started_at: std::time::Instant::now(),
                 admission_permit: None,
+                last_progress_at: None,
             },
         );
 

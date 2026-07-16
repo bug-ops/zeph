@@ -375,9 +375,22 @@ pub struct TimeoutPolicy {
     /// Hard wall-clock cap on this task's execution. `None` falls back to the
     /// graph-global `task_timeout_secs` default.
     pub run_timeout_secs: Option<u64>,
-    /// Idle/no-progress cap. Defined and config-surfaced but **not enforced in v1** —
-    /// reserved for a future progress-signal mechanism. See
-    /// `specs/075-orchestration-node-control-parity/spec.md` §4/FR-005.
+    /// Idle/no-progress cap. `None` falls back to the graph-global
+    /// `default_idle_timeout_secs` default (itself `None` = idle enforcement disabled).
+    ///
+    /// The task is killed if no progress heartbeat is observed for this many seconds — a
+    /// heartbeat is written once per agent-loop turn boundary (LLM call + its tool calls),
+    /// so **this must be set above the longest expected single-turn duration**, or a
+    /// healthy task performing one long-running tool call can be killed spuriously. Only
+    /// enforced on the normal spawn dispatch path; `RunInline` tasks are exempt (see
+    /// `specs/075-orchestration-node-control-parity/spec.md` §4/FR-005).
+    ///
+    /// **`Some(0)` means "kill on the very next idle check", not "use the default"** — unlike
+    /// `run_timeout_secs`, where a caller-set `0` is not specially interpreted and simply
+    /// produces an (unrealistic) immediate-timeout duration through the same code path, this
+    /// field's `0` is not rejected by validation at the per-task level (only the global
+    /// `default_idle_timeout_secs` config field rejects `Some(0)`). Leave the field `None`
+    /// to disable idle enforcement for a task; do not use `0` expecting default behavior.
     pub idle_timeout_secs: Option<u64>,
 }
 

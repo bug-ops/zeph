@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use tokio_util::sync::CancellationToken;
 use zeph_llm::provider::LlmProvider;
@@ -175,6 +176,14 @@ impl<C: crate::channel::Channel> Agent<C> {
         let mut spawn_ctx = self.build_spawn_context(&cfg);
         spawn_ctx.network_denied = network_denied;
 
+        // Idle-timeout progress heartbeat (issue #6245, Alt-A): the driver owns creation of
+        // the Arc. One clone flows into the sub-agent loop via `spawn_ctx.progress_at`
+        // (`run_agent_loop` writes `monotonic_millis()` to it once per turn boundary); the
+        // original is handed to `record_spawn` below on successful spawn so the scheduler's
+        // `check_timeouts()` reads the same counter.
+        let progress_at = Arc::new(AtomicU64::new(zeph_common::monotonic_millis()));
+        spawn_ctx.progress_at = Some(Arc::clone(&progress_at));
+
         let mgr = self
             .services
             .orchestration
@@ -241,7 +250,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                         "Executing task {spawn_counter}/{task_count}: {task_title}..."
                     ))
                     .await;
-                scheduler.record_spawn(task_id, handle_id, agent_def_name);
+                scheduler.record_spawn(task_id, handle_id, agent_def_name, Some(progress_at));
                 (true, false, None)
             }
             Err(e) => {
@@ -278,7 +287,17 @@ impl<C: crate::channel::Channel> Agent<C> {
             .await;
 
         let handle_id = format!("__inline_{task_id}__");
-        scheduler.record_spawn(task_id, handle_id.clone(), "__main__".to_string());
+        // Idle-timeout exemption (issue #6245, F2): `RunInline` tasks pass `None` for the
+        // progress handle — they are never idle-tracked. Primary guard: `check_timeouts`'s
+        // idle branch short-circuits on `RunningTask::last_progress_at.is_none()`, so the
+        // exemption holds unconditionally. Secondary (explanatory) reason: this action runs
+        // synchronously inside the current tick's action loop, so `check_timeouts` cannot
+        // observe it mid-run anyway, and its completion event is sent in-band (awaited,
+        // below) and drained by the next `tick()` before `check_timeouts` runs — never
+        // detach that send (e.g. via `spawn_oneshot` as the spawn path's `on_done` does) or
+        // a completed-but-still-`running` inline task could be spuriously idle-killed if the
+        // primary guard above were ever removed.
+        scheduler.record_spawn(task_id, handle_id.clone(), "__main__".to_string(), None);
 
         // Inject per-task execution environment so that ToolCalls built inside this
         // inline loop carry the right named env for ShellExecutor::resolve_context.

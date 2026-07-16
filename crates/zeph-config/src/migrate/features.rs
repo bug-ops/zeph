@@ -815,14 +815,13 @@ pub fn migrate_orchestration_asset_sensitivity(
 }
 
 /// Step 88 — add `default_idle_timeout_secs` advisory comment to `[orchestration]`
-/// (spec-075-orchestration-node-control-parity, #6021).
+/// (spec-075-orchestration-node-control-parity, #6021; enforcement activated by #6245).
 ///
 /// Advisory only: `#[serde(default)]` already makes existing configs load with the field
-/// unset (`None`), so this migration is purely informational — it surfaces the new
-/// reserved-not-yet-enforced option without changing behaviour. Skipped when the key is
-/// already present or `[orchestration]` is absent. Mirrors
-/// [`migrate_orchestration_asset_sensitivity`]'s shape exactly (same section, same
-/// advisory-comment idiom).
+/// unset (`None`), so this migration is purely informational — it surfaces the option
+/// without changing behaviour. Skipped when the key is already present or
+/// `[orchestration]` is absent. Mirrors [`migrate_orchestration_asset_sensitivity`]'s shape
+/// exactly (same section, same advisory-comment idiom).
 ///
 /// # Errors
 ///
@@ -845,7 +844,8 @@ pub fn migrate_orchestration_idle_timeout(toml_src: &str) -> Result<MigrationRes
     }
 
     let comment = "\n# default_idle_timeout_secs = 60  \
-        # reserved — not yet enforced (spec-075-orchestration-node-control-parity, #6021)\n";
+        # kill a task if it emits no progress for this many seconds; must be set above the \
+        # longest expected single-turn duration (spec-075-orchestration-node-control-parity, #6021)\n";
     let output = insert_after_section(toml_src, "orchestration", comment);
     // Defensive: the guards above already guarantee `[orchestration]` is present and
     // `insert_after_section` always inserts non-empty content when reached, so this is
