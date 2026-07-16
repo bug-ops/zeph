@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Docs
+
+- **Spec 072 §4**: updated to enumerate all four persistence surfaces that must strip `MessagePart::Image`
+  (issue #6311). Previously listed only three surfaces: SQLite `parts_json`, Qdrant embeddings, and durable
+  JSONL log. Added the fourth surface (sub-agent transcript JSONL files via `TranscriptWriter::append`) to
+  sections C1, FR-008, AC-5, and the threat model. Implementation landed in PR #6310.
+
 ### Security
 
 - **zeph-subagent**: `TranscriptWriter::append` now strips every `MessagePart::Image` from a

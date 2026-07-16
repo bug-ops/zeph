@@ -113,7 +113,7 @@ binary-specific controls (format/size/dimension validation, ephemeral-only lifet
 | FR-005 | WHEN an image fails `MediaSanitizer` validation (bad magic bytes, disallowed format, oversized, over-dimension, over per-turn budget) THE SYSTEM SHALL drop that image, keep the text placeholder, and log the rejection reason via the tool audit path | must |
 | FR-006 | WHEN a tool result is an error or partial result THE SYSTEM SHALL NOT emit an `Image` part for it, regardless of `media_passthrough` — only `process_one_tool_result`'s success path may attach media | must |
 | FR-007 | WHEN a `MessagePart::ToolResult`'s companion text is quarantined by the existing sanitizer quarantine flow THE SYSTEM SHALL NOT emit that result's `Image` sibling | must |
-| FR-008 | WHEN any message is passed to `serialize_parts_json` (SQLite persist), the Qdrant embed-text extraction path, or `SessionSink::record_message`/`record_user_message` (durable JSONL log) THE SYSTEM SHALL exclude all `MessagePart::Image` parts — persistence is scoped to the durable projection paths listed here (memory-window pruning during a live turn is out of scope; see §4 C1) | must |
+| FR-008 | WHEN any message is passed to `serialize_parts_json` (SQLite persist), the Qdrant embed-text extraction path, `SessionSink::record_message`/`record_user_message` (durable JSONL log), or `TranscriptWriter::append` (sub-agent transcript JSONL) THE SYSTEM SHALL exclude all `MessagePart::Image` parts — persistence is scoped to the durable projection paths listed here (memory-window pruning during a live turn is out of scope; see §4 C1) | must |
 | FR-009 | WHEN `zeph-config --migrate-config` runs on a pre-072 config THE SYSTEM SHALL add `media_passthrough = false` to every existing `[[mcp.servers]]` entry and add default `[mcp.media]` values | must |
 | FR-010 | WHEN `--init` runs the MCP server wizard step THE SYSTEM SHALL prompt for media passthrough per server, defaulting to `No` | should |
 | FR-011 | WHEN media passthrough is enabled for at least one configured server in the session THE SYSTEM SHALL add one static system-prompt line at session/config-assembly time (never per-turn) warning that MCP-sourced images are untrusted content | must |
@@ -266,10 +266,13 @@ user-upload image path (project has 9+ prior Debug-derive content-leak incidents
 
 ### C1 — Ephemeral media: single, explicit strip point above all persistence surfaces (M5-refined)
 
-**There are three persistence/embed surfaces, not two:** (1) SQLite `parts_json`
-(`serialize_parts_json`, `embed.rs:122`), (2) the Qdrant embed-text extraction path, and (3) the
+**There are four persistence/embed surfaces:** (1) SQLite `parts_json`
+(`serialize_parts_json`, `embed.rs:122`), (2) the Qdrant embed-text extraction path, (3) the
 durable JSONL session-event log (`SessionSink::record_message`, `session_sink.rs`), which
-dual-writes and — per its own doc comment — runs **before** `PersistenceService::persist_message`.
+dual-writes and — per its own doc comment — runs **before** `PersistenceService::persist_message`,
+and (4) sub-agent transcript JSONL files (`TranscriptWriter::append`,
+`crates/zeph-subagent/src/transcript.rs`), which persist via a separate, structurally
+independent path.
 
 **Binding placement:** the strip happens once, in `Agent::persist_message`
 (`crates/zeph-core/src/agent/persistence/store.rs:24`), on the `parts` slice, **before** it is
@@ -282,11 +285,12 @@ carries an unused `image_refs: Vec<_>` field; a future change populating it woul
 reintroduce the leak past a downstream-only strip, which is why the strip must sit above the
 fan-out to both writers.
 
-**Scope:** strip **all** `MessagePart::Image` parts from persistence/embed, not only
+**Scope:** strip **all** `MessagePart::Image` parts from all four persistence/embed surfaces, not only
 MCP-sourced ones. `hydrate.rs` (`:285,338,359,420`) already reconstructs only
 `Text`/`ToolUse`/`ToolResult` on rehydrate — persisting any `Image` today is already dead weight
 (base64 written, then silently dropped on hydrate). Making persist consistent with hydrate is
-strictly better and avoids needing per-image provenance tagging to decide what to strip.
+strictly better and avoids needing per-image provenance tagging to decide what to strip. Sub-agent
+transcripts (`TranscriptWriter::append`) also strip all `Image` parts before writing to disk.
 
 **In-memory scope (not persistence):** the live `Message.parts` pushed via `push_message`
 (`tier_loop.rs:2580`) keeps its `Image` parts for the *current* turn's provider request only.
@@ -369,7 +373,7 @@ All criteria are observable and testable.
 | AC-2 | Opt-in end-to-end: with `media_passthrough = true` on an `Untrusted`-or-`Trusted` server and a vision-capable provider, a valid PNG/JPEG/GIF/WebP tool-result image is attached as `MessagePart::Image` in the same turn | Integration test against a mock provider asserting the parts vector |
 | AC-3 | `Sandboxed` override: `media_passthrough = true` on a `Sandboxed` server never attaches media | Config-level unit test |
 | AC-4 | Validation rejects: a magic-byte mismatch, an oversized file, and an over-dimension image are each rejected with the text placeholder retained and a logged reason | Unit tests per rejection class, one for each of byte-cap / dimension-cap / format-mismatch |
-| AC-5 | Persistence exclusion (C1): after a full tool-result round-trip with an attached `Image` part, the message is **not** present in SQLite `parts_json`, **not** present in any Qdrant payload/vector, and **not** present in the durable session JSONL log | Integration test asserting all three surfaces post-turn |
+| AC-5 | Persistence exclusion (C1): after a full tool-result round-trip with an attached `Image` part, the message is **not** present in SQLite `parts_json`, **not** present in any Qdrant payload/vector, **not** present in the durable session JSONL log, and **not** present in any sub-agent transcript JSONL file | Integration test asserting all four surfaces post-turn |
 | AC-6 | Vision-tier routing (C3): a cascade pool `[text-only cheap tier, vision-capable quality tier]` handling a turn with an attached `Image` part either routes to the vision tier or drops the image before the request — in no run does the provider return 400/422 | Live cascade + MCP-image session test (mandatory pre-merge per LLM Serialization Gate) plus an automated regression test simulating the tier-selection seam |
 | AC-7 | Error/partial results never carry media (FR-006) | Unit test: an `Err(ToolError::..)` and an `Ok(None)` tool result both produce empty `ToolResultClassification.media` regardless of what `ToolOutput.media` would have contained |
 | AC-8 | Quarantine suppression (FR-007) | Unit test: a tool result whose text companion triggers `VigilOutcome::Blocked` does not emit its `Image` sibling |
@@ -416,7 +420,7 @@ Controls (all binding, see §4 for the corresponding invariants):
    declared-vs-actual MIME check, byte cap, dimension/pixel cap (decompression-bomb defense),
    per-result and per-turn count caps.
 4. **Ephemeral, never persisted** (C1). MCP-sourced (and all) `Image` parts never reach SQLite,
-   Qdrant, or the durable JSONL log — no sleeper-channel re-entry via hydrate, compaction, or
+   Qdrant, the durable JSONL log, or any sub-agent transcript file — no sleeper-channel re-entry via hydrate, compaction, or
    session resume.
 5. **Never silently sent to an incapable provider** (C3). A routing mismatch degrades to the
    text placeholder, never a runtime error.
