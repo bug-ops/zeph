@@ -59,6 +59,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `.github/workflows/ci.yml`: the `ci-status` gate job did not depend on `detect-changes`
+  and never checked its `result`. GitHub Actions marks every job with
+  `needs: detect-changes` as `skipped` (not `failure`) when `detect-changes` itself fails,
+  and `ci-status`'s check loop already treated `skipped` as an acceptable result — so a
+  hard failure in `detect-changes` (e.g. the `dorny/paths-filter` action erroring) cascaded
+  into an all-`skipped` downstream that `ci-status` reported as "All jobs passed",
+  incorrectly marking the PR mergeable. `detect-changes` is now included in `ci-status`'s
+  `needs` array and `results` check.
 - `zeph-core`: `cached_prompt_tokens` was never recomputed after `rebuild_system_prompt`
   rewrote `messages[0]` with the real, per-turn-filtered system prompt, leaving the counter
   pinned at whatever value it held before the rebuild — on turn 0 this was the
