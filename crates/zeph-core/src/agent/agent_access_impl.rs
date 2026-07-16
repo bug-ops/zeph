@@ -223,6 +223,25 @@ async fn semantic_scan_plugin_add(
     Ok(None)
 }
 
+/// Delegates an `AgentAccess` command handler to an inner async method, wrapping the
+/// inner method's error in [`CommandError`]. Covers the pass-through shape shared by
+/// most command handlers below: an optional single argument forwarded verbatim, and
+/// the returned `Result<T, E>` mapped to `Result<T, CommandError>` via `e.to_string()`.
+macro_rules! delegate_cmd {
+    ($name:ident, $inner:ident $(, $arg:ident : $arg_ty:ty)? => $out:ty) => {
+        fn $name<'a>(
+            &'a mut self,
+            $($arg: $arg_ty)?
+        ) -> Pin<Box<dyn Future<Output = Result<$out, CommandError>> + Send + 'a>> {
+            Box::pin(async move {
+                self.$inner($($arg)?)
+                    .await
+                    .map_err(|e| CommandError::new(e.to_string()))
+            })
+        }
+    };
+}
+
 impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
     // ----- /memory -----
 
@@ -1056,15 +1075,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
     // ----- /lsp -----
 
-    fn lsp_status<'a>(
-        &'a mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            self.handle_lsp_status_as_string()
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))
-        })
-    }
+    delegate_cmd!(lsp_status, handle_lsp_status_as_string => String);
 
     // ----- /recap -----
 
@@ -1298,59 +1309,20 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
     // ----- /skill -----
 
-    fn handle_skill<'a>(
-        &'a mut self,
-        args: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        let args_owned = args.to_owned();
-        Box::pin(async move {
-            self.handle_skill_command_as_string(&args_owned)
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))
-        })
-    }
+    delegate_cmd!(handle_skill, handle_skill_command_as_string, args: &'a str => String);
 
     // ----- /skills -----
 
-    fn handle_skills<'a>(
-        &'a mut self,
-        args: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        let args_owned = args.to_owned();
-        Box::pin(async move {
-            self.handle_skills_as_string(&args_owned)
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))
-        })
-    }
+    delegate_cmd!(handle_skills, handle_skills_as_string, args: &'a str => String);
 
     // ----- /feedback -----
 
-    fn handle_feedback_command<'a>(
-        &'a mut self,
-        args: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        let args_owned = args.to_owned();
-        Box::pin(async move {
-            self.handle_feedback_as_string(&args_owned)
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))
-        })
-    }
+    delegate_cmd!(handle_feedback_command, handle_feedback_as_string, args: &'a str => String);
 
     // ----- /plan -----
 
     #[cfg(feature = "scheduler")]
-    fn handle_plan<'a>(
-        &'a mut self,
-        input: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            self.dispatch_plan_command_as_string(input)
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))
-        })
-    }
+    delegate_cmd!(handle_plan, dispatch_plan_command_as_string, input: &'a str => String);
 
     #[cfg(not(feature = "scheduler"))]
     fn handle_plan<'a>(
@@ -1362,16 +1334,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
     // ----- /experiment -----
 
-    fn handle_experiment<'a>(
-        &'a mut self,
-        input: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            self.handle_experiment_command_as_string(input)
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))
-        })
-    }
+    delegate_cmd!(handle_experiment, handle_experiment_command_as_string, input: &'a str => String);
 
     // ----- /agent, @mention -----
 
@@ -1514,16 +1477,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
     // ----- /cocoon -----
 
     #[cfg(feature = "cocoon")]
-    fn handle_cocoon<'a>(
-        &'a mut self,
-        args: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            self.handle_cocoon_as_string(args)
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))
-        })
-    }
+    delegate_cmd!(handle_cocoon, handle_cocoon_as_string, args: &'a str => String);
 
     #[cfg(not(feature = "cocoon"))]
     fn handle_cocoon<'a>(
@@ -1883,26 +1837,9 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
     // ----- /worktree -----
 
-    fn list_worktrees<'a>(
-        &'a mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            self.handle_worktree_list_as_string()
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))
-        })
-    }
+    delegate_cmd!(list_worktrees, handle_worktree_list_as_string => Option<String>);
 
-    fn clean_worktrees<'a>(
-        &'a mut self,
-        force: bool,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            self.handle_worktree_clean_as_string(force)
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))
-        })
-    }
+    delegate_cmd!(clean_worktrees, handle_worktree_clean_as_string, force: bool => Option<String>);
 
     // ----- /cd -----
 

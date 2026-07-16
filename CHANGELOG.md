@@ -71,6 +71,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   set it directly in `config.toml` or a task graph (bypassing the `--init` wizard, which
   already documents the reservation) a runtime signal that the value is currently inert.
 
+### Fixed
+
+- `zeph-core`: `TurnSummary::tool_calls` was hardcoded to `0` at its only production
+  construction site, so any consumer of the per-turn completion notification always saw
+  zero tool calls regardless of actual turn activity (#6273). Added a `turn_tool_calls`
+  counter to `LifecycleState`, mirroring the existing `turn_llm_requests` pattern: reset
+  in `begin_turn`, incremented in `check_and_update_quota` for every tool call in a
+  dispatch batch, and read into `TurnSummary::tool_calls` when the turn's notification
+  summary is built.
+
+### Changed
+
+- `zeph-core`: collapsed 9 of 10 identified near-identical `CommandError`-wrapping delegate
+  boilerplate blocks in `agent_access_impl.rs` (#6262) into a single `delegate_cmd!`
+  declarative macro that forwards an optional argument to an inner async method and maps
+  its error via `CommandError::new(e.to_string())`. Covers `lsp_status`, `handle_skill`,
+  `handle_skills`, `handle_feedback_command`, `handle_plan` (scheduler feature),
+  `handle_experiment`, `list_worktrees`, `clean_worktrees`, and `handle_cocoon` (cocoon
+  feature). The 10th identified site, `handle_mcp`'s `_` match arm, was intentionally left
+  inline — it is a match arm inside a larger `match sub.as_str()` block, not a standalone
+  handler fn, so it does not fit the macro's shape. No behavior change.
+
 ## [0.22.1] - 2026-07-15
 ### Fixed
 

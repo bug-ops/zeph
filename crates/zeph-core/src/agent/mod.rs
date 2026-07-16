@@ -938,6 +938,8 @@ impl<C: Channel> Agent<C> {
         self.services.security.user_provided_urls.write().clear();
         // Reset per-turn LLM request counter for the notification gate.
         self.runtime.lifecycle.turn_llm_requests = 0;
+        // Reset per-turn tool-call dispatch counter (feeds TurnSummary::tool_calls).
+        self.runtime.lifecycle.turn_tool_calls = 0;
 
         // Spec 050 §2: drain pending risk signals from executor layers before advancing.
         // Also advance MAGE accumulator (spec 004-16 FR-009) and ingest mapped signals.
@@ -1391,8 +1393,7 @@ impl<C: Channel> Agent<C> {
         let summary = crate::notifications::TurnSummary {
             duration_ms,
             preview: self.last_assistant_preview(160),
-            // TODO: wire turn_tool_calls counter once LifecycleState tracks it (Phase 2).
-            tool_calls: 0,
+            tool_calls: self.runtime.lifecycle.turn_tool_calls,
             llm_requests: self.runtime.lifecycle.turn_llm_requests,
             exit_status: if is_error {
                 crate::notifications::TurnExitStatus::Error

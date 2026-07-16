@@ -551,6 +551,9 @@ pub(crate) struct LifecycleState {
     pub(crate) notifier: Option<crate::notifications::Notifier>,
     /// Per-turn LLM request counter. Incremented by `process_response`; reset at turn start.
     pub(crate) turn_llm_requests: u32,
+    /// Per-turn tool-call dispatch counter. Incremented by `check_and_update_quota` for every
+    /// tool call in a dispatch batch; reset at turn start. Feeds `TurnSummary::tool_calls`.
+    pub(crate) turn_tool_calls: u32,
     /// Timestamp of the last turn that ended with `LlmError::NoProviders`.
     ///
     /// Used to gate `advance_context_lifecycle`: when all providers are down, context preparation
@@ -1442,6 +1445,7 @@ impl LifecycleState {
             bg_metrics_tick: None,
             notifier: None,
             turn_llm_requests: 0,
+            turn_tool_calls: 0,
             last_no_providers_at: None,
             pending_background_completions: VecDeque::new(),
             background_completion_rx: None,

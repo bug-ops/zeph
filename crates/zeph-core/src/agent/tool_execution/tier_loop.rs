@@ -1206,10 +1206,16 @@ impl<C: Channel> Agent<C> {
             );
             return true;
         }
+        let batch_count = u32::try_from(batch_len).unwrap_or(u32::MAX);
         self.tool_orchestrator.session_tool_call_count = self
             .tool_orchestrator
             .session_tool_call_count
-            .saturating_add(u32::try_from(batch_len).unwrap_or(u32::MAX));
+            .saturating_add(batch_count);
+        self.runtime.lifecycle.turn_tool_calls = self
+            .runtime
+            .lifecycle
+            .turn_tool_calls
+            .saturating_add(batch_count);
         false
     }
 
