@@ -338,6 +338,41 @@ impl MessagePart {
             None
         }
     }
+
+    /// Return a cloned copy of `parts` with every `Image` entry removed.
+    ///
+    /// `Image` parts are ephemeral, current-turn-only vision input (spec-072 §4, C1) and must
+    /// never reach a persistence sink — `SQLite` `parts_json`, the Qdrant embed path, the durable
+    /// JSONL session log, or a sub-agent transcript file. Callers apply this once, immediately
+    /// above the persistence write, leaving the in-memory slice used for the current turn's
+    /// provider request untouched.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::provider::{ImageData, MessagePart};
+    ///
+    /// let parts = vec![
+    ///     MessagePart::Text {
+    ///         text: "hello".to_owned(),
+    ///     },
+    ///     MessagePart::Image(Box::new(ImageData {
+    ///         data: vec![0xFF, 0xD8, 0xFF, 0xE0],
+    ///         mime_type: "image/jpeg".to_owned(),
+    ///     })),
+    /// ];
+    /// let stripped = MessagePart::strip_images(&parts);
+    /// assert_eq!(stripped.len(), 1);
+    /// assert!(!stripped.iter().any(|p| matches!(p, MessagePart::Image(_))));
+    /// ```
+    #[must_use]
+    pub fn strip_images(parts: &[MessagePart]) -> Vec<MessagePart> {
+        parts
+            .iter()
+            .filter(|p| !matches!(p, MessagePart::Image(_)))
+            .cloned()
+            .collect()
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]

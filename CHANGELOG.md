@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Security
+
+- **zeph-subagent**: `TranscriptWriter::append` now strips every `MessagePart::Image` from a
+  message's `parts` before serializing it to the sub-agent's `<task_id>.jsonl` transcript file
+  (spec-072 §4 C1, #6305). Sub-agents never go through `Agent::persist_message`, so their
+  transcripts were a structurally separate persistence path that bypassed the strip landed in
+  #6307 entirely — currently not reachable in practice (no sub-agent turn produces an `Image`
+  part yet), but closes the defense-in-depth gap before #6240 (MCP image emission inside
+  tool-result processing) can produce one. The strip logic is shared: `MessagePart::strip_images`
+  is now a public helper on `zeph-llm`'s `MessagePart`, and both `Agent::persist_message` and
+  `TranscriptWriter::append` call it instead of duplicating the filter. The caller's in-memory
+  `Message` is unaffected; only the persisted copy is stripped.
 
 ## [0.22.1] - 2026-07-15
 ### Fixed

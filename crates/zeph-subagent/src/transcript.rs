@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use zeph_llm::provider::Message;
+use zeph_llm::provider::{Message, MessagePart};
 
 use super::error::SubAgentError;
 use super::state::SubAgentState;
@@ -111,6 +111,13 @@ impl TranscriptWriter {
 
     /// Append a single message as a JSON line and flush immediately.
     ///
+    /// `MessagePart::Image` parts are stripped (via [`MessagePart::strip_images`]) from the
+    /// persisted copy before serialization — they are ephemeral, current-turn-only vision input
+    /// (spec-072 §4, C1) and must never reach a transcript file on disk, mirroring the strip point
+    /// already enforced for `Agent::persist_message`'s `SQLite`/Qdrant/durable-JSONL writers. The
+    /// caller's `message` is untouched, so callers that hold onto it for the current turn's
+    /// provider request keep their `Image` parts.
+    ///
     /// Serialization is done on the caller's thread; the blocking write and flush
     /// are offloaded to `tokio::task::spawn_blocking` so the Tokio executor is not stalled.
     ///
@@ -118,10 +125,12 @@ impl TranscriptWriter {
     ///
     /// Returns `io::Error` on serialization, write failure, lock poison, or thread-pool panic.
     pub async fn append(&self, seq: u32, message: &Message) -> io::Result<()> {
+        let mut persisted_message = message.clone();
+        persisted_message.parts = MessagePart::strip_images(&persisted_message.parts);
         let entry = TranscriptEntry {
             seq,
             timestamp: utc_now(),
-            message: message.clone(),
+            message: persisted_message,
         };
         let line = serde_json::to_string(&entry)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -455,7 +464,7 @@ fn epoch_to_parts(epoch: u64) -> (u32, u32, u32, u32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
-    use zeph_llm::provider::{Message, MessageMetadata, Role};
+    use zeph_llm::provider::{ImageData, Message, MessageMetadata, MessagePart, Role};
 
     use super::*;
 
@@ -499,6 +508,97 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "hello");
         assert_eq!(messages[1].content, "world");
+    }
+
+    /// #6305: `MessagePart::Image` must never reach the on-disk transcript — it is ephemeral,
+    /// current-turn-only vision input (spec-072 §4, C1), mirroring the strip already enforced
+    /// for `Agent::persist_message`'s `SQLite`/Qdrant/durable-JSONL writers.
+    #[tokio::test]
+    async fn append_strips_image_parts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.jsonl");
+
+        let mut msg = test_message(Role::User, "look at this");
+        msg.parts = vec![
+            MessagePart::Text {
+                text: "look at this".to_owned(),
+            },
+            MessagePart::Image(Box::new(ImageData {
+                data: vec![0xFFu8, 0xD8, 0xFF, 0xE0],
+                mime_type: "image/jpeg".to_owned(),
+            })),
+        ];
+
+        let writer = TranscriptWriter::new(&path).unwrap();
+        writer.append(0, &msg).await.unwrap();
+
+        // The caller's own copy keeps the Image part for the current turn's provider request.
+        assert_eq!(msg.parts.len(), 2);
+
+        let messages = TranscriptReader::load(&path).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].parts.len(), 1);
+        assert!(matches!(messages[0].parts[0], MessagePart::Text { .. }));
+        assert!(
+            !messages[0]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Image(_))),
+            "transcript must not retain Image parts"
+        );
+
+        // The image payload must not appear anywhere in the file on disk either.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !raw.contains("mime_type") && !raw.contains("image/jpeg"),
+            "raw image payload leaked into transcript file"
+        );
+    }
+
+    #[tokio::test]
+    async fn append_preserves_non_image_parts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.jsonl");
+
+        let mut msg = test_message(Role::Assistant, "used a tool");
+        msg.parts = vec![
+            MessagePart::Text {
+                text: "used a tool".to_owned(),
+            },
+            MessagePart::ToolUse {
+                id: "call-1".to_owned(),
+                name: "search".to_owned(),
+                input: serde_json::json!({"query": "rust"}),
+            },
+        ];
+
+        let writer = TranscriptWriter::new(&path).unwrap();
+        writer.append(0, &msg).await.unwrap();
+
+        let messages = TranscriptReader::load(&path).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].parts.len(), 2);
+        assert!(matches!(messages[0].parts[0], MessagePart::Text { .. }));
+        assert!(matches!(messages[0].parts[1], MessagePart::ToolUse { .. }));
+    }
+
+    #[tokio::test]
+    async fn append_empty_parts_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.jsonl");
+
+        // Mirrors the `task_msg` / turn-generated-message call sites in `agent_loop.rs`, which
+        // always pass an empty `parts` vec — the strip must be a no-op for them.
+        let msg = test_message(Role::User, "plain task message");
+        assert!(msg.parts.is_empty());
+
+        let writer = TranscriptWriter::new(&path).unwrap();
+        writer.append(0, &msg).await.unwrap();
+
+        let messages = TranscriptReader::load(&path).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].parts.is_empty());
+        assert_eq!(messages[0].content, "plain task message");
     }
 
     #[test]

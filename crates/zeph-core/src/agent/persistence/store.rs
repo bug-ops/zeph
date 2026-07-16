@@ -21,12 +21,13 @@ impl<C: Channel> Agent<C> {
     /// When `true` and `guard_memory_writes` is enabled, only `SQLite` is written — the message
     /// is saved for conversation continuity but will not pollute semantic search (M2, D2).
     ///
-    /// `MessagePart::Image` parts are deliberately stripped before either persistence writer
-    /// below sees `parts` — they are ephemeral, current-turn-only content (spec-072 §4, C1) and
-    /// must never reach `SQLite` `parts_json`, the Qdrant embed path, or the durable JSONL session
-    /// log. This is a single, explicit strip point above both writers, not an omission; the
-    /// `parts` slice passed in by the caller is untouched, so the in-memory `Message` already
-    /// pushed via `push_message` keeps its `Image` parts for the current turn's provider request.
+    /// `MessagePart::Image` parts are deliberately stripped (via [`MessagePart::strip_images`])
+    /// before either persistence writer below sees `parts` — they are ephemeral, current-turn-only
+    /// content (spec-072 §4, C1) and must never reach `SQLite` `parts_json`, the Qdrant embed path,
+    /// or the durable JSONL session log. This is a single, explicit strip point above both writers,
+    /// not an omission; the `parts` slice passed in by the caller is untouched, so the in-memory
+    /// `Message` already pushed via `push_message` keeps its `Image` parts for the current turn's
+    /// provider request.
     #[tracing::instrument(name = "core.persist.persist_message", skip_all, level = "debug")]
     pub(crate) async fn persist_message(
         &mut self,
@@ -58,11 +59,7 @@ impl<C: Channel> Agent<C> {
         // C1 (spec-072 §4): strip Image parts once, above both persistence writers below.
         // Neither `sink.record_message` nor `PersistMessageRequest::from_borrowed`/
         // `svc.persist_message` may see an unstripped `parts` slice — see the doc comment above.
-        let persisted_parts: Vec<MessagePart> = parts
-            .iter()
-            .filter(|p| !matches!(p, MessagePart::Image(_)))
-            .cloned()
-            .collect();
+        let persisted_parts: Vec<MessagePart> = MessagePart::strip_images(parts);
 
         // INV-SP-1 (spec-068 §13): the durable event log must be appended and flushed before the
         // SQLite `messages` projection is written — the projection must never lead the log. A
