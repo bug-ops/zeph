@@ -37,5 +37,7 @@ mod shutdown_summary_tests;
 mod small_misc_tests;
 #[cfg(test)]
 mod trim_parent_messages_tests;
+#[cfg(test)]
+mod turn_summary_counters_tests;
 #[cfg(all(test, feature = "scheduler"))]
 mod whole_plan_verify_signal_tests;

@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Testing
 
+- **zeph-core**: added end-to-end coverage for `TurnSummary.tool_calls` / `TurnSummary.llm_requests`
+  (#6330), closing the gap left by #6328: no prior test drove a real turn through
+  `check_and_update_quota` and asserted the resulting counters reflected actual per-turn
+  dispatch counts rather than a stale or hardcoded value. `text_only_turn_reports_zero_tool_calls_and_one_llm_request`
+  covers the zero-tool-call baseline; `single_turn_with_multiple_tool_calls_counts_full_batch`
+  dispatches 3 tool calls in a single batch to catch batch-counting/off-by-one bugs; and
+  `tool_call_counter_resets_between_turns_not_accumulated` runs two consecutive turns to prove
+  `LifecycleState::turn_tool_calls`/`turn_llm_requests` are reset in `begin_turn` rather than
+  leaking across turns. No production code changed.
+
 - **zeph-orchestration** / **zeph-core**: added direct test coverage for two spec-075 §7
   success criteria that were only transitively covered (#6301, deferred from #6243/#6265).
   `test_build_prompt_includes_mode1_recovered_state_injection` drives Mode-1 recovery
