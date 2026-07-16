@@ -30,14 +30,14 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-targets: "false"
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-      - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2 # nextest
+      - uses: taiki-e/install-action@b265f9a422509a38f0c716115e5f17af22dfc631 # nextest
       - name: Build and archive tests
         run: cargo nextest archive --config-file .github/nextest.toml --workspace --features full --lib --bins --archive-file nextest-archive.tar.zst
         env:
@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2 # nextest
+      - uses: taiki-e/install-action@b265f9a422509a38f0c716115e5f17af22dfc631 # nextest
       - name: Download test archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
