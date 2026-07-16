@@ -35,6 +35,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `default_idle_timeout_secs` doc comments now describe the enforced semantics and warn that
   the value must be set above the longest expected single-turn duration.
 
+- `zeph-mcp`/`zeph-core`: an MCP server can now request a larger per-call truncation limit
+  for a single tool result via `_meta["zeph/maxResultSizeChars"]`, bounded by a new
+  operator-configured hard ceiling, `[tools.overflow].max_per_call_override` (default
+  `131072` = 128 KiB) (#3079). The server's requested size is clamped to
+  `min(requested, max_per_call_override)` and can only raise the effective truncation limit
+  above `[tools.overflow].threshold`, never lower it; any absent or malformed `_meta` value
+  falls back to exactly the prior global-threshold behavior. Setting `max_per_call_override`
+  to `0` (or any value `<=` `threshold`) disables the feature entirely and now logs a
+  `tracing::warn!` at config-apply time to flag the silent-disable footgun. Note: for
+  sanitized/untrusted MCP output, `zeph-sanitizer`'s `max_content_size` (65536 bytes by
+  default) is a separate, smaller downstream cap, so the real effective ceiling under
+  default config is closer to 64 KiB than the full 128 KiB `max_per_call_override` default.
+
 ### Changed
 
 - `zeph-experiments`: `ParameterKind::as_str`, `ParameterKind::is_integer`,

@@ -59,7 +59,9 @@
 //! step 88 adds a `default_idle_timeout_secs` advisory comment under `[orchestration]`
 //! (spec-075-orchestration-node-control-parity, #6021);
 //! step 89 adds `media_passthrough = false` to existing `[[mcp.servers]]` entries and a
-//! commented `[mcp.media]` advisory block (spec-072, #6241).
+//! commented `[mcp.media]` advisory block (spec-072, #6241);
+//! step 90 adds a commented `max_per_call_override = 131072` advisory under
+//! `[tools.overflow]` (#3079).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -87,11 +89,11 @@ use super::{
     migrate_microcompact_config, migrate_nli_config, migrate_orchestration_asset_sensitivity,
     migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
     migrate_orchestration_orchestrator_provider, migrate_orchestration_persistence,
-    migrate_otel_filter, migrate_pii_filter_names, migrate_planner_model_to_provider,
-    migrate_policy_provider_and_utility_window, migrate_provider_max_concurrent,
-    migrate_qdrant_api_key, migrate_qdrant_timeout_secs, migrate_quality_config,
-    migrate_sandbox_config, migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
-    migrate_secret_masking_config, migrate_serve_config,
+    migrate_otel_filter, migrate_overflow_max_per_call_override, migrate_pii_filter_names,
+    migrate_planner_model_to_provider, migrate_policy_provider_and_utility_window,
+    migrate_provider_max_concurrent, migrate_qdrant_api_key, migrate_qdrant_timeout_secs,
+    migrate_quality_config, migrate_sandbox_config, migrate_sandbox_egress_filter,
+    migrate_scheduler_daemon_config, migrate_secret_masking_config, migrate_serve_config,
     migrate_session_persist_provider_overrides, migrate_session_persistence_config,
     migrate_session_provider_persistence, migrate_session_recap_config,
     migrate_shadow_sentinel_config, migrate_shell_checkpoints_config, migrate_shell_transactional,
@@ -1118,5 +1120,18 @@ impl Migration for MigrateMcpMediaConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_mcp_media_config(toml_src)
+    }
+}
+
+/// Step 90 — adds a commented `max_per_call_override = 131072` advisory under
+/// `[tools.overflow]` (#3079).
+pub(super) struct MigrateOverflowMaxPerCallOverride;
+impl Migration for MigrateOverflowMaxPerCallOverride {
+    fn name(&self) -> &'static str {
+        "migrate_overflow_max_per_call_override"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_overflow_max_per_call_override(toml_src)
     }
 }

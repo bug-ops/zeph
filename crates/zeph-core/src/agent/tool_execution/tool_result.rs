@@ -297,6 +297,7 @@ impl<C: Channel> Agent<C> {
                     is_quality_failure: false,
                     tool_err_category: None,
                     media: out.media,
+                    max_result_size_chars: out.max_result_size_chars,
                 }
             }
             Ok(None) => ToolResultClassification {
@@ -310,6 +311,7 @@ impl<C: Channel> Agent<C> {
                 is_quality_failure: false,
                 tool_err_category: None,
                 media: Vec::new(),
+                max_result_size_chars: None,
             },
             Err(ref e) => {
                 let category = e.category();
@@ -356,6 +358,7 @@ impl<C: Channel> Agent<C> {
                     is_quality_failure,
                     tool_err_category: Some(category),
                     media: Vec::new(),
+                    max_result_size_chars: None,
                 }
             }
         }
@@ -393,6 +396,7 @@ impl<C: Channel> Agent<C> {
             is_quality_failure,
             mut tool_err_category,
             media,
+            max_result_size_chars,
         } = self.classify_tool_result(tc, tool_result);
 
         self.record_tool_execution_telemetry(tc.name.as_str(), started_at, is_error, &output);
@@ -411,7 +415,8 @@ impl<C: Channel> Agent<C> {
         let processed = if tc.name == OverflowToolExecutor::TOOL_NAME {
             output.clone()
         } else {
-            self.maybe_summarize_tool_output(&output).await
+            self.maybe_summarize_tool_output(&output, max_result_size_chars)
+                .await
         };
         let body = if let Some(ref stats) = inline_stats {
             format!("{stats}\n{processed}")
@@ -761,7 +766,9 @@ impl<C: Channel> Agent<C> {
             };
             d.dump_tool_output(output.tool_name.as_str(), &dump_content);
         }
-        let processed = self.maybe_summarize_tool_output(&output.summary).await;
+        let processed = self
+            .maybe_summarize_tool_output(&output.summary, output.max_result_size_chars)
+            .await;
         let body = if let Some(ref fs) = output.filter_stats
             && fs.filtered_chars < fs.raw_chars
         {
@@ -859,7 +866,9 @@ impl<C: Channel> Agent<C> {
                     };
                     d.dump_tool_output(out.tool_name.as_str(), &dump_content);
                 }
-                let processed = self.maybe_summarize_tool_output(&out.summary).await;
+                let processed = self
+                    .maybe_summarize_tool_output(&out.summary, out.max_result_size_chars)
+                    .await;
                 let formatted = format_tool_output(out.tool_name.as_str(), &processed);
                 self.channel
                     .send_tool_output(ToolOutputEvent {

@@ -164,6 +164,16 @@ impl ToolOrchestrator {
         self.recent_tool_calls = VecDeque::with_capacity(2 * tool_repeat_threshold.max(1));
         self.max_tool_calls_per_session = max_tool_calls_per_session;
         self.summarize_tool_output_enabled = tool_summarization;
+        if overflow_config.max_per_call_override > 0
+            && overflow_config.max_per_call_override <= overflow_config.threshold
+        {
+            tracing::warn!(
+                max_per_call_override = overflow_config.max_per_call_override,
+                threshold = overflow_config.threshold,
+                "tools.overflow.max_per_call_override <= threshold: per-call MCP result-size \
+                 override is disabled, _meta[\"zeph/maxResultSizeChars\"] hints will have no effect"
+            );
+        }
         self.overflow_config = overflow_config;
     }
 
@@ -370,6 +380,105 @@ mod tests {
         assert_eq!(o.repeat_threshold, 2);
         assert_eq!(o.max_tool_retries, 2);
         assert_eq!(o.max_retry_duration_secs, 30);
+    }
+
+    // ── #3079 M2: apply_config misconfiguration warning ─────────────────────────
+    //
+    // `max_per_call_override > 0 && max_per_call_override <= threshold` means the per-call
+    // override is silently inert (the clamp in `maybe_summarize_tool_output` always floors
+    // at `threshold`) — apply_config must warn so an operator notices the misconfiguration.
+    // `max_per_call_override == 0` is the deliberate explicit-disable value and must NOT warn.
+
+    fn apply_overflow_config(o: &mut ToolOrchestrator, overflow_config: OverflowConfig) {
+        o.apply_config(
+            10,
+            2,
+            30,
+            500,
+            5_000,
+            String::new(),
+            2,
+            None,
+            false,
+            overflow_config,
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn apply_config_warns_when_ceiling_below_threshold() {
+        let mut o = ToolOrchestrator::new();
+        apply_overflow_config(
+            &mut o,
+            OverflowConfig {
+                threshold: 1000,
+                retention_days: 7,
+                max_overflow_bytes: 0,
+                max_per_call_override: 500,
+            },
+        );
+        assert!(
+            logs_contain("max_per_call_override <= threshold"),
+            "ceiling (500) below threshold (1000) must emit the misconfiguration warning"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn apply_config_warns_at_exact_boundary_ceiling_equals_threshold() {
+        let mut o = ToolOrchestrator::new();
+        apply_overflow_config(
+            &mut o,
+            OverflowConfig {
+                threshold: 1000,
+                retention_days: 7,
+                max_overflow_bytes: 0,
+                max_per_call_override: 1000,
+            },
+        );
+        assert!(
+            logs_contain("max_per_call_override <= threshold"),
+            "ceiling == threshold is still the inert boundary case and must warn"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn apply_config_no_warn_when_ceiling_explicitly_disabled_zero() {
+        let mut o = ToolOrchestrator::new();
+        apply_overflow_config(
+            &mut o,
+            OverflowConfig {
+                threshold: 1000,
+                retention_days: 7,
+                max_overflow_bytes: 0,
+                max_per_call_override: 0,
+            },
+        );
+        assert!(
+            !logs_contain("max_per_call_override <= threshold"),
+            "ceiling=0 is the deliberate explicit-disable value, not a misconfiguration — \
+             must not warn"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn apply_config_no_warn_when_ceiling_above_threshold() {
+        let mut o = ToolOrchestrator::new();
+        apply_overflow_config(
+            &mut o,
+            OverflowConfig {
+                threshold: 1000,
+                retention_days: 7,
+                max_overflow_bytes: 0,
+                max_per_call_override: 131_072,
+            },
+        );
+        assert!(
+            !logs_contain("max_per_call_override <= threshold"),
+            "a correctly configured ceiling above the threshold must not warn"
+        );
     }
 
     #[test]

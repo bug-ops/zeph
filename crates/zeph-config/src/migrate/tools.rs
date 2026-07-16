@@ -332,3 +332,39 @@ pub fn migrate_shell_checkpoints_config(toml_src: &str) -> Result<MigrationResul
         sections_changed: vec!["tools.shell".to_owned()],
     })
 }
+
+/// Add a commented-out `max_per_call_override` hint under `[tools.overflow]` when absent.
+///
+/// Introduced alongside `OverflowConfig::max_per_call_override` (#3079): a hard ceiling on a
+/// per-call result-size override an MCP server may request via
+/// `_meta["zeph/maxResultSizeChars"]`. The field has its own `#[serde(default)]`, so existing
+/// configs parse unchanged; this step only surfaces the option for discoverability, mirroring
+/// [`migrate_shell_checkpoints_config`] and [`migrate_utility_high_gain_tools`].
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
+pub fn migrate_overflow_max_per_call_override(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("max_per_call_override") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Hard ceiling (chars) on a per-call result-size override an MCP server may\n\
+         # request via _meta[\"zeph/maxResultSizeChars\"]; clamped to min(requested, this) and\n\
+         # can only raise the limit above `threshold`, never lower it. Set <= threshold to\n\
+         # disable (0 disables — unlike max_overflow_bytes, 0 here is NOT unlimited) (#3079).\n\
+         # [tools.overflow]\n\
+         # max_per_call_override = 131072\n";
+
+    Ok(MigrationResult {
+        output: format!("{toml_src}{comment}"),
+        changed_count: 1,
+        sections_changed: vec!["tools.overflow.max_per_call_override".to_owned()],
+    })
+}

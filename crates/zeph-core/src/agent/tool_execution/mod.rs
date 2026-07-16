@@ -99,6 +99,10 @@ struct ToolResultClassification {
     /// of `classify_tool_result` — always empty for `Ok(None)`/`Err`, which mechanically
     /// satisfies FR-006 (error/partial results never carry media) by construction.
     media: Vec<zeph_llm::ImageData>,
+    /// Per-call result-size override propagated from the source `ToolOutput`
+    /// (`_meta["zeph/maxResultSizeChars"]`, see [`zeph_tools::ToolOutput::max_result_size_chars`]).
+    /// Empty/`Ok(None)`/`Err` arms leave this `None`, matching `media`.
+    max_result_size_chars: Option<usize>,
 }
 
 enum AnomalyOutcome {
@@ -261,8 +265,22 @@ impl<C: Channel> Agent<C> {
         skip_all,
         level = "debug"
     )]
-    pub(super) async fn maybe_summarize_tool_output(&self, output: &str) -> String {
-        let threshold = self.tool_orchestrator.overflow_config.threshold;
+    pub(super) async fn maybe_summarize_tool_output(
+        &self,
+        output: &str,
+        per_call_override: Option<usize>,
+    ) -> String {
+        let overflow_config = &self.tool_orchestrator.overflow_config;
+        // Server-requested size is clamped to the operator ceiling, then the effective
+        // limit is floored at the global default — a server can only raise its own
+        // call's limit, never lower it below `threshold`. Absent/malformed override
+        // (`None`) falls through to exactly `threshold`, matching prior behavior.
+        let threshold = match per_call_override {
+            Some(requested) => overflow_config
+                .threshold
+                .max(requested.min(overflow_config.max_per_call_override)),
+            None => overflow_config.threshold,
+        };
         if output.len() <= threshold {
             return output.to_string();
         }

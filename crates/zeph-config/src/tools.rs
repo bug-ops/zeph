@@ -429,6 +429,10 @@ fn default_max_overflow_bytes() -> usize {
     10 * 1024 * 1024
 }
 
+fn default_max_per_call_override() -> usize {
+    131_072
+}
+
 /// Configuration for large tool response offload to `SQLite`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OverflowConfig {
@@ -441,6 +445,26 @@ pub struct OverflowConfig {
     /// Maximum bytes per overflow entry. `0` means unlimited. Default: `10 MiB`.
     #[serde(default = "default_max_overflow_bytes")]
     pub max_overflow_bytes: usize,
+    /// Hard ceiling (in chars) on a per-call result-size override that an MCP
+    /// server may request via `_meta["zeph/maxResultSizeChars"]`. The server's
+    /// request is clamped to `min(requested, max_per_call_override)` and may only
+    /// raise the effective limit above [`threshold`](Self::threshold), never lower
+    /// it. A value at or below `threshold` disables per-call overrides entirely.
+    /// Raising the effective limit also enlarges how much of that call's output
+    /// counts against the turn's context budget, not just summarizer cost.
+    /// Default: `131072` (128 KiB).
+    ///
+    /// Note: unlike [`max_overflow_bytes`](Self::max_overflow_bytes), `0` here
+    /// does NOT mean "unlimited" — it disables overrides (the clamp floors at
+    /// `threshold`).
+    ///
+    /// Note: for sanitized (external/untrusted, `:`-qualified) MCP output, the effective
+    /// in-context ceiling under default config is actually `zeph-sanitizer`'s
+    /// `ContentIsolationConfig::max_content_size` (65536 bytes by default), which is
+    /// smaller than this field's 131072-char default and caps what reaches the LLM
+    /// downstream of this clamp — a fail-safe (lower, not higher) bound, not a hole.
+    #[serde(default = "default_max_per_call_override")]
+    pub max_per_call_override: usize,
 }
 
 impl Default for OverflowConfig {
@@ -449,6 +473,7 @@ impl Default for OverflowConfig {
             threshold: default_overflow_threshold(),
             retention_days: default_retention_days(),
             max_overflow_bytes: default_max_overflow_bytes(),
+            max_per_call_override: default_max_per_call_override(),
         }
     }
 }

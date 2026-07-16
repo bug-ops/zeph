@@ -2186,3 +2186,200 @@ mod reasoning_amplification_call_site {
         assert_eq!(images_attached, 2);
     }
 }
+
+// --- #3079: per-tool MCP result-size override, end-to-end through process_one_tool_result ---
+//
+// These tests drive the real production path from a `ToolOutput` carrying
+// `max_result_size_chars` (as set by `zeph-mcp`'s `_meta["zeph/maxResultSizeChars"]`
+// extraction) through `classify_tool_result` -> `maybe_summarize_tool_output`, using an
+// explicit `OverflowConfig` (not the built-in defaults). This is the natural integration
+// point in `zeph-core`: the MCP wire protocol never reaches this crate directly, `zeph-mcp`
+// always hands off a typed `ToolOutput` first.
+//
+// Payload sizes are kept well under `zeph-sanitizer`'s own (unrelated) default
+// `ContentIsolationConfig::max_content_size` of 65_536 chars, which independently caps the
+// `<external-data>` wrapper applied to MCP-sourced (`':'`-qualified) tool names — a payload
+// above that cap gets silently re-truncated by the sanitizer after `maybe_summarize_tool_output`
+// runs, which would mask (not reflect) the behavior these tests exist to verify.
+mod per_call_result_size_override_tests {
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use zeph_llm::provider::MessagePart;
+    use zeph_tools::OverflowConfig;
+    use zeph_tools::executor::ToolOutput;
+
+    use super::make_tool_use_request;
+
+    fn tool_result_content(parts: &[MessagePart]) -> &str {
+        parts
+            .iter()
+            .find_map(|p| match p {
+                MessagePart::ToolResult { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .expect("expected a ToolResult message part")
+    }
+
+    fn make_agent_with_overflow_config(
+        overflow_config: OverflowConfig,
+    ) -> crate::agent::Agent<MockChannel> {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = crate::agent::Agent::new(
+            provider,
+            channel,
+            registry,
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.tool_orchestrator.overflow_config = overflow_config;
+        agent
+    }
+
+    #[tokio::test]
+    async fn override_within_ceiling_avoids_global_threshold_truncation() {
+        // threshold=5_000, ceiling=20_000. 10_000-char output is above the threshold but
+        // within a 15_000 per-call override (itself within the ceiling) — must NOT truncate.
+        let mut agent = make_agent_with_overflow_config(OverflowConfig {
+            threshold: 5_000,
+            retention_days: 7,
+            max_overflow_bytes: 0,
+            max_per_call_override: 20_000,
+        });
+
+        let long_output = "x".repeat(10_000);
+        let tc = make_tool_use_request("id-ovr-within", "srv:big_tool");
+        let mut result_parts = Vec::new();
+        agent
+            .process_one_tool_result(
+                &tc,
+                "id-ovr-within",
+                &std::time::Instant::now(),
+                Ok(Some(ToolOutput {
+                    tool_name: "srv:big_tool".into(),
+                    summary: long_output.clone(),
+                    max_result_size_chars: Some(15_000),
+                    ..Default::default()
+                })),
+                &mut result_parts,
+                &mut Vec::new(),
+                &mut false,
+                &mut None,
+                &mut Vec::new(),
+                &mut 0,
+            )
+            .await
+            .unwrap();
+
+        let content = tool_result_content(&result_parts);
+        assert!(
+            !content.contains("truncated"),
+            "10K output with a 15K per-call override (under the 20K ceiling) must not be \
+             truncated at the 5K global threshold, got: {}",
+            &content[..content.len().min(300)]
+        );
+        assert!(
+            content.contains(&long_output),
+            "full output must be present unchanged, not just a fragment"
+        );
+    }
+
+    #[tokio::test]
+    async fn override_above_ceiling_clamps_to_ceiling_not_unbounded() {
+        // threshold=5_000, ceiling=20_000. A requested override of 999_999 (far above the
+        // ceiling) must clamp to 20_000 and still truncate a 25_000-char output, proving a
+        // hostile or misbehaving server cannot request an unbounded window (security
+        // invariant).
+        let mut agent = make_agent_with_overflow_config(OverflowConfig {
+            threshold: 5_000,
+            retention_days: 7,
+            max_overflow_bytes: 0,
+            max_per_call_override: 20_000,
+        });
+
+        let long_output = "x".repeat(25_000);
+        let tc = make_tool_use_request("id-ovr-above", "srv:big_tool");
+        let mut result_parts = Vec::new();
+        agent
+            .process_one_tool_result(
+                &tc,
+                "id-ovr-above",
+                &std::time::Instant::now(),
+                Ok(Some(ToolOutput {
+                    tool_name: "srv:big_tool".into(),
+                    summary: long_output.clone(),
+                    max_result_size_chars: Some(999_999),
+                    ..Default::default()
+                })),
+                &mut result_parts,
+                &mut Vec::new(),
+                &mut false,
+                &mut None,
+                &mut Vec::new(),
+                &mut 0,
+            )
+            .await
+            .unwrap();
+
+        let content = tool_result_content(&result_parts);
+        assert!(
+            content.contains("truncated"),
+            "a requested override (999_999) above the operator ceiling (20K) must still be \
+             clamped and truncated, not honored unbounded, got: {}",
+            &content[..content.len().min(300)]
+        );
+        assert!(
+            !content.contains(&long_output),
+            "the full untruncated 25K output must not appear verbatim in the result"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_override_same_size_output_still_truncates_at_global_threshold() {
+        // Negative control / regression guard: the exact same 10K output as the first test,
+        // same OverflowConfig, but with no per-call override (None) — must truncate at the
+        // 5K global threshold, proving the tests above are actually exercising the override,
+        // not some other unrelated behavior change.
+        let mut agent = make_agent_with_overflow_config(OverflowConfig {
+            threshold: 5_000,
+            retention_days: 7,
+            max_overflow_bytes: 0,
+            max_per_call_override: 20_000,
+        });
+
+        let long_output = "x".repeat(10_000);
+        let tc = make_tool_use_request("id-no-ovr", "srv:big_tool");
+        let mut result_parts = Vec::new();
+        agent
+            .process_one_tool_result(
+                &tc,
+                "id-no-ovr",
+                &std::time::Instant::now(),
+                Ok(Some(ToolOutput {
+                    tool_name: "srv:big_tool".into(),
+                    summary: long_output.clone(),
+                    max_result_size_chars: None,
+                    ..Default::default()
+                })),
+                &mut result_parts,
+                &mut Vec::new(),
+                &mut false,
+                &mut None,
+                &mut Vec::new(),
+                &mut 0,
+            )
+            .await
+            .unwrap();
+
+        let content = tool_result_content(&result_parts);
+        assert!(
+            content.contains("truncated"),
+            "without a per-call override, 10K output must still truncate at the 5K global \
+             threshold (byte-identical to pre-#3079 behavior), got: {}",
+            &content[..content.len().min(300)]
+        );
+    }
+}

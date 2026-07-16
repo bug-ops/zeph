@@ -84,7 +84,7 @@ async fn test_maybe_summarize_short_output_passthrough() {
     agent.tool_orchestrator.summarize_tool_output_enabled = true;
 
     let short = "short output";
-    let result = agent.maybe_summarize_tool_output(short).await;
+    let result = agent.maybe_summarize_tool_output(short, None).await;
     assert_eq!(result, short);
 }
 
@@ -123,10 +123,11 @@ async fn test_overflow_notice_contains_uuid() {
         threshold: 100,
         retention_days: 7,
         max_overflow_bytes: 0,
+        max_per_call_override: 131_072,
     };
 
     let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
-    let result = agent.maybe_summarize_tool_output(&long).await;
+    let result = agent.maybe_summarize_tool_output(&long, None).await;
     assert!(
         result.contains("full output stored"),
         "notice must contain overflow storage notice, got: {result}"
@@ -158,12 +159,13 @@ async fn test_maybe_summarize_long_output_disabled_truncates() {
         threshold: 1000,
         retention_days: 7,
         max_overflow_bytes: 0,
+        max_per_call_override: 131_072,
     };
 
     // Must exceed overflow threshold (1000) so that truncate_tool_output_at produces
     // the "truncated" marker. MAX_TOOL_OUTPUT_CHARS is no longer used in this path.
     let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
-    let result = agent.maybe_summarize_tool_output(&long).await;
+    let result = agent.maybe_summarize_tool_output(&long, None).await;
     assert!(result.contains("truncated"));
 }
 
@@ -180,10 +182,11 @@ async fn test_maybe_summarize_long_output_enabled_calls_llm() {
         threshold: 1000,
         retention_days: 7,
         max_overflow_bytes: 0,
+        max_per_call_override: 131_072,
     };
 
     let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
-    let result = agent.maybe_summarize_tool_output(&long).await;
+    let result = agent.maybe_summarize_tool_output(&long, None).await;
     assert!(result.contains("summary text"));
     assert!(result.contains("[tool output summary]"));
     assert!(!result.contains("truncated"));
@@ -202,11 +205,163 @@ async fn test_summarize_tool_output_llm_failure_fallback() {
         threshold: 1000,
         retention_days: 7,
         max_overflow_bytes: 0,
+        max_per_call_override: 131_072,
     };
 
     let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
-    let result = agent.maybe_summarize_tool_output(&long).await;
+    let result = agent.maybe_summarize_tool_output(&long, None).await;
     assert!(result.contains("truncated"));
+}
+
+// --- #3079: clamp formula edge cases for `maybe_summarize_tool_output`'s
+// `per_call_override` argument. Formula under test (tool_execution/mod.rs):
+// `effective = threshold.max(min(requested, max_per_call_override))`, `None` -> `threshold`.
+
+#[tokio::test]
+async fn override_requested_zero_degrades_to_threshold() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    agent.tool_orchestrator.overflow_config = zeph_tools::OverflowConfig {
+        threshold: 100,
+        retention_days: 7,
+        max_overflow_bytes: 0,
+        max_per_call_override: 131_072,
+    };
+
+    // requested=0 -> threshold.max(0.min(131_072)) == threshold: identical to `None`.
+    let long = "x".repeat(150);
+    let result = agent.maybe_summarize_tool_output(&long, Some(0)).await;
+    assert!(
+        result.contains("truncated"),
+        "requested=0 must degrade to the global threshold, got: {result}"
+    );
+}
+
+#[tokio::test]
+async fn override_above_ceiling_is_clamped_to_ceiling() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    agent.tool_orchestrator.overflow_config = zeph_tools::OverflowConfig {
+        threshold: 100,
+        retention_days: 7,
+        max_overflow_bytes: 0,
+        max_per_call_override: 500,
+    };
+
+    // Requested (999_999) is clamped to the ceiling (500). Output exactly at the ceiling
+    // must NOT be truncated, even though it is far above the 100-char global threshold.
+    let at_ceiling = "x".repeat(500);
+    let result = agent
+        .maybe_summarize_tool_output(&at_ceiling, Some(999_999))
+        .await;
+    assert_eq!(
+        result, at_ceiling,
+        "output at the clamped ceiling must pass through unchanged"
+    );
+
+    // One char beyond the ceiling must still truncate.
+    let beyond_ceiling = "x".repeat(501);
+    let result = agent
+        .maybe_summarize_tool_output(&beyond_ceiling, Some(999_999))
+        .await;
+    assert!(
+        result.contains("truncated"),
+        "output beyond the clamped ceiling must still truncate, got: {result}"
+    );
+}
+
+#[tokio::test]
+async fn override_ceiling_zero_disables_feature() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    agent.tool_orchestrator.overflow_config = zeph_tools::OverflowConfig {
+        threshold: 100,
+        retention_days: 7,
+        max_overflow_bytes: 0,
+        max_per_call_override: 0,
+    };
+
+    // ceiling=0 -> threshold.max(requested.min(0)) == threshold, regardless of `requested`.
+    let mid = "x".repeat(150);
+    let result = agent.maybe_summarize_tool_output(&mid, Some(140)).await;
+    assert!(
+        result.contains("truncated"),
+        "max_per_call_override=0 must disable the override entirely, got: {result}"
+    );
+}
+
+#[tokio::test]
+async fn override_misconfigured_ceiling_below_threshold_stays_inert() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    // Misconfiguration: ceiling (200) <= threshold (1000). The clamp floors at `threshold`
+    // regardless of the requested value, matching the M2 tracing::warn! condition in
+    // tool_orchestrator.rs.
+    agent.tool_orchestrator.overflow_config = zeph_tools::OverflowConfig {
+        threshold: 1000,
+        retention_days: 7,
+        max_overflow_bytes: 0,
+        max_per_call_override: 200,
+    };
+
+    // 300 chars: above the (inert) ceiling, but below the threshold that actually applies.
+    let output = "x".repeat(300);
+    let result = agent.maybe_summarize_tool_output(&output, Some(500)).await;
+    assert_eq!(
+        result, output,
+        "misconfigured override (ceiling <= threshold) must be safely inert, falling back \
+         to the threshold, got: {result}"
+    );
+}
+
+#[tokio::test]
+async fn none_override_exact_threshold_boundary_matches_pre_3079_behavior() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    agent.tool_orchestrator.overflow_config = zeph_tools::OverflowConfig {
+        threshold: 200,
+        retention_days: 7,
+        max_overflow_bytes: 0,
+        max_per_call_override: 131_072,
+    };
+
+    // Regression guard: with no override, the effective limit must be exactly `threshold`
+    // (byte-identical to pre-#3079 behavior) — verified at both sides of the boundary.
+    let at_threshold = "x".repeat(200);
+    let result = agent.maybe_summarize_tool_output(&at_threshold, None).await;
+    assert_eq!(
+        result, at_threshold,
+        "output exactly at threshold with no override must pass through unchanged"
+    );
+
+    let over_threshold = "x".repeat(201);
+    let result = agent
+        .maybe_summarize_tool_output(&over_threshold, None)
+        .await;
+    assert_ne!(
+        result, over_threshold,
+        "output one char over threshold with no override must be truncated/processed"
+    );
 }
 
 #[tokio::test] // lgtm[rust/cleartext-logging]
@@ -223,11 +378,12 @@ async fn test_overflow_no_memory_backend_s3_fallback() {
         threshold: 100,
         retention_days: 7,
         max_overflow_bytes: 0,
+        max_per_call_override: 131_072,
     };
     // No memory backend set.
 
     let long = "x".repeat(200);
-    let result = agent.maybe_summarize_tool_output(&long).await;
+    let result = agent.maybe_summarize_tool_output(&long, None).await;
     assert!(
         result.contains("could not be saved — no memory backend or conversation available"),
         "S3 fallback message must appear when no memory backend, got: {result}"

@@ -616,21 +616,21 @@ use steps::{
     MigrateMemoryRetrievalQueryBias, MigrateMemoryTypeAwareCompose, MigrateMicrocompactConfig,
     MigrateNliConfig, MigrateOrchestrationAssetSensitivity, MigrateOrchestrationEnsemble,
     MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence, MigrateOrchestratorProvider,
-    MigrateOtelFilter, MigratePiiFilterNames, MigratePlannerModelToProvider,
-    MigratePolicyProviderAndUtilityWindow, MigrateProviderMaxConcurrent, MigrateQdrantApiKey,
-    MigrateQdrantTimeoutSecs, MigrateQualityConfig, MigrateSandboxConfig,
-    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSecretMaskingConfig,
-    MigrateServeConfig, MigrateSessionPersistProviderOverrides, MigrateSessionPersistenceConfig,
-    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShadowSentinelConfig,
-    MigrateShellCheckpointsConfig, MigrateShellTransactional, MigrateSkillTrustRequireCheck,
-    MigrateSkillsRegistry, MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
-    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
-    MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateUtilityHighGainTools,
-    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
-    MigrateWorktreeQuotaFields,
+    MigrateOtelFilter, MigrateOverflowMaxPerCallOverride, MigratePiiFilterNames,
+    MigratePlannerModelToProvider, MigratePolicyProviderAndUtilityWindow,
+    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQdrantTimeoutSecs,
+    MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
+    MigrateSecretMaskingConfig, MigrateServeConfig, MigrateSessionPersistProviderOverrides,
+    MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
+    MigrateShadowSentinelConfig, MigrateShellCheckpointsConfig, MigrateShellTransactional,
+    MigrateSkillTrustRequireCheck, MigrateSkillsRegistry, MigrateSttToProvider,
+    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
+    MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig,
+    MigrateTuiThemeDefaults, MigrateUtilityHighGainTools, MigrateVigilConfig,
+    MigrateWorktreeConfig, MigrateWorktreeGitTimeout, MigrateWorktreeQuotaFields,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–89).
+/// Ordered registry of all sequential migration steps (steps 1–90).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -801,6 +801,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 89 — add media_passthrough = false to existing [[mcp.servers]] entries and
             // a commented [mcp.media] advisory block (spec-072, #6241)
             Box::new(MigrateMcpMediaConfig),
+            // Step 90 — add max_per_call_override advisory comment under [tools.overflow]
+            // (#3079)
+            Box::new(MigrateOverflowMaxPerCallOverride),
         ]
     });
 

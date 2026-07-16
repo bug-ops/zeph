@@ -446,6 +446,11 @@ threshold = 50000
 retention_days = 7
 # Maximum bytes per overflow entry; 0 means unlimited (default: 10485760 = 10 MiB)
 max_overflow_bytes = 10485760
+# Hard ceiling (chars) on a per-call result-size override an MCP server may request
+# via _meta["zeph/maxResultSizeChars"]; clamped to min(requested, this) and can only
+# raise the limit above `threshold`, never lower it. Set <= threshold to disable
+# (0 disables — unlike max_overflow_bytes, 0 here is NOT unlimited). (default: 131072 = 128 KiB)
+max_per_call_override = 131072
 
 [tools.audit]
 # Enable audit logging for tool executions

@@ -284,6 +284,11 @@ pub struct ToolOutput {
     /// Validated image data carried across the tool boundary (e.g. MCP `ContentBlock::Image`
     /// passthrough, spec-072). Empty for executors that don't produce media.
     pub media: Vec<zeph_llm::ImageData>,
+    /// Per-call result-size override (chars) requested by an MCP server via
+    /// `_meta["zeph/maxResultSizeChars"]`. Clamped by `[tools.overflow].max_per_call_override`
+    /// at truncation time. `None` for executors that don't emit the hint, or when the
+    /// server-provided value was malformed (fail-closed to the global threshold).
+    pub max_result_size_chars: Option<usize>,
 }
 
 impl fmt::Display for ToolOutput {

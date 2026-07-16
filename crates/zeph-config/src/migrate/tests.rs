@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        89,
-        "MIGRATIONS registry must contain all 89 sequential steps"
+        90,
+        "MIGRATIONS registry must contain all 90 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1153,6 +1153,50 @@ fn step_88_idempotent_on_commented_output() {
     assert_eq!(second.output, first.output);
 }
 
+// ── Step 90 — migrate_overflow_max_per_call_override (#3079) ──────────────
+
+#[test]
+fn step_90_adds_max_per_call_override_block_when_absent() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_overflow_max_per_call_override(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result
+            .sections_changed
+            .contains(&"tools.overflow.max_per_call_override".to_owned()),
+        "sections_changed must include 'tools.overflow.max_per_call_override'"
+    );
+    assert!(
+        result.output.contains("max_per_call_override"),
+        "output must contain max_per_call_override"
+    );
+    assert!(
+        result.output.contains("[tools.overflow]"),
+        "output must reference [tools.overflow]"
+    );
+}
+
+#[test]
+fn step_90_noop_when_max_per_call_override_present() {
+    let src = "[tools.overflow]\nmax_per_call_override = 131072\n";
+    let result = migrate_overflow_max_per_call_override(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_90_idempotent_on_own_output() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let first = migrate_overflow_max_per_call_override(src).expect("migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_overflow_max_per_call_override(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output must be unchanged on second run"
+    );
+}
+
 #[test]
 fn migrate_orchestration_ensemble_idempotent_on_commented_output() {
     let base = "[orchestration]\nenabled = true\n";
@@ -1860,7 +1904,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 89);
+    assert_eq!(MIGRATIONS.len(), 90);
 }
 
 #[test]
@@ -1898,7 +1942,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–88).
+    // Names must follow the documented step order (steps 1–90).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1989,6 +2033,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_durable_stale_running_after_secs",
         "migrate_orchestration_idle_timeout",
         "migrate_mcp_media_config",
+        "migrate_overflow_max_per_call_override",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

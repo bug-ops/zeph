@@ -361,6 +361,16 @@ impl ToolExecutor for McpToolExecutor {
             .collect_media(&tool.server_id, &tool.name, &result.content)
             .await;
 
+        // Fail-closed: any malformed value (wrong type, negative, non-integer, or a
+        // magnitude that doesn't fit `usize`) yields `None`, which downstream means
+        // "use the global threshold" — never "unlimited".
+        let max_result_size_chars = result
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.0.get("zeph/maxResultSizeChars"))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok());
+
         Ok(Some(ToolOutput {
             tool_name: tool.qualified_name().into(),
             summary: text,
@@ -373,6 +383,7 @@ impl ToolExecutor for McpToolExecutor {
             raw_response: None,
             claim_source: Some(zeph_tools::ClaimSource::Mcp),
             media,
+            max_result_size_chars,
         }))
     }
 
@@ -1009,5 +1020,110 @@ mod tests {
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
             "id contains invalid chars: {id}"
         );
+    }
+
+    // --- #3079: fail-closed `_meta["zeph/maxResultSizeChars"]` parsing ---
+    //
+    // `execute_tool_call` (line ~333) cannot be unit-tested end-to-end without a live,
+    // connected `McpClient` — `self.manager.call_tool()` requires an entry in
+    // `McpManager`'s private `clients` map, which is only populated by the real
+    // connect path or by `commit_added_server` (`pub(super)` to the `manager` module,
+    // not reachable from here). `extract_max_result_size_chars` below is a byte-for-byte
+    // copy of the extraction expression at executor.rs:333-338, so these tests verify the
+    // parsing *formula* against the real `rmcp::model::Meta`/`serde_json::Value` types, not
+    // the literal call site. See the #3079 tester handoff for the concrete follow-up needed
+    // to close this gap (extend `client.rs`'s `DuplexTestServer` harness to emit `_meta`,
+    // and route it through `McpManager`/`McpToolExecutor`).
+    mod meta_max_result_size_chars_parsing {
+        use rmcp::model::Meta;
+        use serde_json::Value;
+
+        /// Mirrors executor.rs:333-338 exactly.
+        fn extract_max_result_size_chars(meta: Option<&Meta>) -> Option<usize> {
+            meta.and_then(|m| m.0.get("zeph/maxResultSizeChars"))
+                .and_then(Value::as_u64)
+                .and_then(|n| usize::try_from(n).ok())
+        }
+
+        fn meta_with(key: &str, value: Value) -> Meta {
+            let mut map = serde_json::Map::new();
+            map.insert(key.to_owned(), value);
+            Meta(map)
+        }
+
+        #[test]
+        fn valid_value_parses() {
+            let meta = meta_with("zeph/maxResultSizeChars", serde_json::json!(100_000));
+            assert_eq!(extract_max_result_size_chars(Some(&meta)), Some(100_000));
+        }
+
+        #[test]
+        fn zero_value_parses_to_some_zero() {
+            // Not fail-closed at this layer — 0 is a syntactically valid usize. The clamp
+            // formula in `tool_execution/mod.rs` is what degrades `requested=0` to the
+            // global threshold; that behavior is covered by
+            // `metrics_summary_tests::override_requested_zero_degrades_to_threshold`.
+            let meta = meta_with("zeph/maxResultSizeChars", serde_json::json!(0));
+            assert_eq!(extract_max_result_size_chars(Some(&meta)), Some(0));
+        }
+
+        #[test]
+        fn no_meta_at_all_is_none() {
+            assert_eq!(extract_max_result_size_chars(None), None);
+        }
+
+        #[test]
+        fn meta_present_key_missing_is_none() {
+            let meta = meta_with("some/otherKey", serde_json::json!(1));
+            assert_eq!(extract_max_result_size_chars(Some(&meta)), None);
+        }
+
+        #[test]
+        fn string_value_is_none() {
+            let meta = meta_with("zeph/maxResultSizeChars", serde_json::json!("100000"));
+            assert_eq!(extract_max_result_size_chars(Some(&meta)), None);
+        }
+
+        #[test]
+        fn negative_value_is_none() {
+            let meta = meta_with("zeph/maxResultSizeChars", serde_json::json!(-5));
+            assert_eq!(extract_max_result_size_chars(Some(&meta)), None);
+        }
+
+        #[test]
+        fn float_value_is_none() {
+            let meta = meta_with("zeph/maxResultSizeChars", serde_json::json!(100.5));
+            assert_eq!(extract_max_result_size_chars(Some(&meta)), None);
+        }
+
+        #[test]
+        fn bool_value_is_none() {
+            let meta = meta_with("zeph/maxResultSizeChars", serde_json::json!(true));
+            assert_eq!(extract_max_result_size_chars(Some(&meta)), None);
+        }
+
+        #[test]
+        fn null_value_is_none() {
+            let meta = meta_with("zeph/maxResultSizeChars", serde_json::Value::Null);
+            assert_eq!(extract_max_result_size_chars(Some(&meta)), None);
+        }
+
+        #[test]
+        fn array_value_is_none() {
+            let meta = meta_with("zeph/maxResultSizeChars", serde_json::json!([1, 2, 3]));
+            assert_eq!(extract_max_result_size_chars(Some(&meta)), None);
+        }
+
+        #[test]
+        fn number_beyond_u64_range_is_none() {
+            // Without serde_json's `arbitrary_precision` feature, an integer literal that
+            // overflows u64 is deserialized as f64, so `as_u64()` returns `None` — fails
+            // closed via the first `and_then`, not `usize::try_from`. The `usize::try_from`
+            // failure branch is only reachable on 32-bit targets (where usize < u64); on
+            // this (64-bit) platform this is the practically-reachable overflow path.
+            let huge: Value = serde_json::from_str("99999999999999999999999999999999").unwrap();
+            let meta = meta_with("zeph/maxResultSizeChars", huge);
+            assert_eq!(extract_max_result_size_chars(Some(&meta)), None);
+        }
     }
 }
