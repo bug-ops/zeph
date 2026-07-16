@@ -4,6 +4,7 @@
 use std::borrow::Cow;
 use std::sync::LazyLock;
 
+use base64::Engine as _;
 use regex::Regex;
 use zeph_common::secrets::{BEARER_TOKEN_PATTERN, JWT_PATTERN, PATH_PREFIXES, SECRET_PREFIXES};
 
@@ -101,6 +102,65 @@ pub fn sanitize_paths(text: &str) -> Cow<'_, str> {
         Cow::Borrowed(_) => Cow::Borrowed(text),
         Cow::Owned(s) => Cow::Owned(s),
     }
+}
+
+/// Minimum length of a contiguous base64-alphabet run to treat as probable binary data.
+///
+/// Set well above a typical hash/ID length: natural language and code essentially never
+/// produce 200+ unbroken base64-alphabet characters by accident, so this threshold favors
+/// avoiding false positives on legitimate short tokens over catching chunked/wrapped base64
+/// (e.g. MIME-encoded with embedded newlines), which will not match a single contiguous run.
+const MIN_BLOB_LEN: usize = 200;
+
+// Matches contiguous runs of base64-alphabet characters, optionally with trailing padding.
+static BASE64_BLOB_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(r"[A-Za-z0-9+/]{{{MIN_BLOB_LEN},}}={{0,2}}"))
+        .expect("base64 blob redaction regex is valid")
+});
+
+/// Replace long contiguous base64-alphabet runs with a length/hash marker.
+///
+/// Guards against tool output that embeds raw binary data (e.g. a vision tool returning
+/// image bytes as plain text instead of a typed image part) from being written unredacted
+/// to debug dumps. Returns `Cow::Borrowed` when no run is found (zero-allocation fast path).
+///
+/// Known limitations (accepted for this MVP heuristic, not solved): base64 wrapped with
+/// embedded newlines (e.g. 76-char MIME line length) does not form one contiguous run and
+/// slips through undetected. Similarly, two adjacent blobs concatenated with no separator can
+/// either merge into one run that still clears the threshold, or — if an internal `=` from an
+/// unaligned blob boundary sits mid-string — get split into two independently-scored fragments
+/// that can each fall under the 200-character threshold and escape redaction even though the
+/// combined data would have tripped the heuristic as a single run.
+#[must_use]
+pub fn redact_binary_blobs(text: &str) -> Cow<'_, str> {
+    if !BASE64_BLOB_REGEX.is_match(text) {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(
+        BASE64_BLOB_REGEX
+            .replace_all(text, |caps: &regex::Captures<'_>| {
+                let encoded = &caps[0];
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map_or_else(
+                        |_| {
+                            format!(
+                                "<redacted possible binary data: undecodable, {} chars>",
+                                encoded.len()
+                            )
+                        },
+                        |bytes| {
+                            let hash = blake3::hash(&bytes).to_hex();
+                            format!(
+                                "<redacted possible binary data: {} bytes, blake3:{}>",
+                                bytes.len(),
+                                &hash[..16]
+                            )
+                        },
+                    )
+            })
+            .into_owned(),
+    )
 }
 
 #[cfg(test)]
@@ -461,7 +521,67 @@ mod tests {
         assert!(!result.contains("eyJhbG"), "raw JWT must not appear");
     }
 
+    // ── #6315: redact_binary_blobs ──────────────────────────────────────────────────
+
+    #[test]
+    fn redact_binary_blobs_redacts_long_base64_run() {
+        let payload = "A".repeat(300);
+        let text = format!("tool output: {payload} end");
+        let result = redact_binary_blobs(&text);
+        assert!(result.contains("<redacted possible binary data:"));
+        assert!(!result.contains(&payload));
+        assert!(result.contains("bytes, blake3:"));
+    }
+
+    #[test]
+    fn redact_binary_blobs_marker_is_stable_for_same_input() {
+        let payload = "B".repeat(250);
+        let first = redact_binary_blobs(&payload).into_owned();
+        let second = redact_binary_blobs(&payload).into_owned();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn redact_binary_blobs_leaves_short_base64_looking_strings_alone() {
+        let text = "id=".to_owned() + &"C".repeat(199);
+        let result = redact_binary_blobs(&text);
+        assert_matches!(result, Cow::Borrowed(_));
+        assert_eq!(result.as_ref(), text);
+    }
+
+    #[test]
+    fn redact_binary_blobs_leaves_non_base64_text_alone() {
+        let text = "This is a normal sentence with no binary data in it at all.";
+        let result = redact_binary_blobs(text);
+        assert_matches!(result, Cow::Borrowed(_));
+        assert_eq!(result.as_ref(), text);
+    }
+
+    #[test]
+    fn redact_binary_blobs_does_not_over_redact_typical_short_ids() {
+        // Typical UUIDs, git hashes, and hex digests are all well under MIN_BLOB_LEN.
+        let text = "commit 77442b11d2f3, uuid 550e8400-e29b-41d4-a716-446655440000, sha256:abc123";
+        let result = redact_binary_blobs(text);
+        assert_matches!(result, Cow::Borrowed(_));
+        assert_eq!(result.as_ref(), text);
+    }
+
+    #[test]
+    fn redact_binary_blobs_undecodable_run_gets_fallback_marker() {
+        // 200 'A's decode fine as base64 in isolation, so force an invalid-length run
+        // (not a multiple of 4, no valid padding) to hit the undecodable fallback path.
+        let payload = "A".repeat(201);
+        let result = redact_binary_blobs(&payload);
+        assert!(result.contains("<redacted possible binary data: undecodable"));
+        assert!(!result.contains(&payload));
+    }
+
     proptest! {
+        #[test]
+        fn redact_binary_blobs_never_panics(s in ".*") {
+            let _ = redact_binary_blobs(&s);
+        }
+
         #[test]
         fn redact_secrets_never_panics(s in ".*") {
             let _ = redact_secrets(&s);

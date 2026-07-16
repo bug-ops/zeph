@@ -9,6 +9,7 @@
 
 pub mod trace;
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -16,7 +17,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use base64::Engine as _;
 use zeph_llm::provider::{Message, MessagePart, Role, ToolDefinition};
 
-use crate::redact::scrub_content;
+use crate::redact::{redact_binary_blobs, scrub_content};
 
 pub use zeph_config::DumpFormat;
 
@@ -164,7 +165,9 @@ impl DebugDumper {
         if self.format == DumpFormat::Trace {
             return;
         }
-        self.write(&format!("{id:04}-response.txt"), response.as_bytes());
+        let redacted = scrub_content(response);
+        let redacted = redact_binary_blobs(&redacted);
+        self.write(&format!("{id:04}-response.txt"), redacted.as_bytes());
     }
 
     /// Dump raw tool output before any truncation or summarization.
@@ -175,7 +178,12 @@ impl DebugDumper {
         }
         let id = self.next_id();
         let safe_name = sanitize_dump_name(tool_name);
-        self.write(&format!("{id:04}-tool-{safe_name}.txt"), output.as_bytes());
+        let redacted = scrub_content(output);
+        let redacted = redact_binary_blobs(&redacted);
+        self.write(
+            &format!("{id:04}-tool-{safe_name}.txt"),
+            redacted.as_bytes(),
+        );
     }
 
     /// Dump pruning scores computed by task-aware or MIG scoring.
@@ -311,10 +319,9 @@ impl DebugDumper {
             return;
         }
         let id = self.next_id();
-        self.write(
-            &format!("{id:04}-focus-knowledge.txt"),
-            knowledge.as_bytes(),
-        );
+        let redacted = scrub_content(knowledge);
+        let redacted = redact_binary_blobs(&redacted);
+        self.write(&format!("{id:04}-focus-knowledge.txt"), redacted.as_bytes());
     }
 
     /// Dump `SideQuest` eviction state: cursor list with eviction flags and freed token count.
@@ -396,9 +403,12 @@ impl DebugDumper {
         }
         let id = self.next_id();
         let safe_name = sanitize_dump_name(tool_name);
+        let error_text = error.to_string();
+        let error_text = scrub_content(&error_text);
+        let error_text = redact_binary_blobs(&error_text);
         let payload = serde_json::json!({
             "tool": tool_name,
-            "error": error.to_string(),
+            "error": error_text,
             "kind": error.kind().to_string(),
         });
         match serde_json::to_string_pretty(&payload) {
@@ -416,15 +426,11 @@ impl DebugDumper {
 }
 
 fn json_dump(request: &RequestDebugDump<'_>, include_raw_images: bool) -> String {
-    let mut messages =
-        serde_json::to_value(request.messages).unwrap_or(serde_json::Value::Array(vec![]));
-    if !include_raw_images {
-        redact_image_payloads(&mut messages);
-    }
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "model": extract_model(&request.provider_request, request.model_name),
         "max_tokens": extract_max_tokens(&request.provider_request),
-        "messages": messages,
+        "messages": serde_json::to_value(request.messages)
+            .unwrap_or(serde_json::Value::Array(vec![])),
         "tools": extract_tools(&request.provider_request, request.tools),
         "temperature": request
             .provider_request
@@ -438,6 +444,7 @@ fn json_dump(request: &RequestDebugDump<'_>, include_raw_images: bool) -> String
             .unwrap_or(serde_json::Value::Null),
         "memcot_state": request.memcot_state,
     });
+    redact_dump_tree(&mut payload, include_raw_images);
     serde_json::to_string_pretty(&payload).unwrap_or_else(|e| format!("serialization error: {e}"))
 }
 
@@ -484,9 +491,7 @@ fn raw_dump(request: &RequestDebugDump<'_>, include_raw_images: bool) -> String 
             }
         }
     }
-    if !include_raw_images {
-        redact_image_payloads(&mut payload);
-    }
+    redact_dump_tree(&mut payload, include_raw_images);
     serde_json::to_string_pretty(&payload).unwrap_or_else(|e| format!("serialization error: {e}"))
 }
 
@@ -495,19 +500,47 @@ fn raw_dump(request: &RequestDebugDump<'_>, include_raw_images: bool) -> String 
 /// that happen to occupy a key named `images` (e.g. a tool argument) with a redaction marker.
 const MIN_IMAGE_BASE64_LEN: usize = 64;
 
-/// Recursively redacts base64-encoded image payloads from a dumped JSON tree, replacing
-/// them with a size/format marker (see [`image_marker`]).
+/// Recursively walks a dumped JSON tree, redacting both image payloads and free-text
+/// secrets/binary blobs before the tree is written to disk.
 ///
 /// `MessagePart::Image` bytes reach the dump under different key shapes depending on the
-/// dump format and target LLM provider, so the whole tree is walked rather than assuming
-/// one shape:
+/// dump format and target LLM provider:
 /// - This crate's internal `MessagePart` serde form (`json_dump`, `part_to_block`) and
 ///   Claude/Anthropic content blocks: `{"type":"image","source":{"data":...,"media_type":...}}`
 ///   or `{"kind":"image","data":...,"mime_type":...}`.
 /// - `OpenAI`: `{"image_url":{"url":"data:<mime>;base64,<data>"}}`.
 /// - Gemini: `{"inlineData":{"mimeType":...,"data":...}}`.
 /// - Ollama: `{"images":["<base64>", ...]}`.
-fn redact_image_payloads(value: &mut serde_json::Value) {
+///
+/// For every other string in the tree, [`scrub_content`] (secrets/JWTs/paths) always runs, and
+/// [`redact_binary_blobs`] (the 200+ char base64-run heuristic, #6315) always runs too.
+///
+/// `include_raw_images` (#6306) is scoped narrowly, matching its documented contract
+/// (`DebugConfig::include_raw_images`: "full wire-payload fidelity for image-related
+/// debugging"): when `true`, only the single leaf value actually recognized as image data
+/// (e.g. `source.data`, `image_url.url` when it's a `data:` URL, `inlineData.data`, a long-enough
+/// `images[]` element) is left completely untouched — every other string in the tree, *including
+/// siblings inside the same recognized container*, is still fully redacted regardless of the
+/// flag.
+///
+/// Exemption is tracked at leaf granularity, not container granularity: a container key
+/// (`source`, `image_url`, `inlineData`, `images`) is only ever skipped by the *outer* recursion
+/// loop below after this function has already recursed into every one of that container's other
+/// fields/elements itself. Two prior versions of this function got progressively looser and had
+/// to be tightened back down after critic review:
+/// - v1 skipped `redact_binary_blobs` for the *entire* tree whenever `include_raw_images` was
+///   `true`, reopening #6315's leak for any non-image tool returning binary-looking freeform
+///   text.
+/// - v2 fixed that but exempted the *whole subtree* under a recognized container key (e.g. all
+///   of `image_url`, not just its `url` field) — regardless of whether that container's leaf
+///   value even matched an image shape. `OpenAI`'s Vision API accepts `image_url.url` as either a
+///   `data:` URL *or* a plain external URL; a plain URL with embedded HTTP basic-auth credentials
+///   (`https://user:pass@host/img`) would hit the `image_url` branch, fail the `data:` check
+///   (correctly, since it isn't image data), but still get its whole container exempted from
+///   `scrub_content` — leaking live credentials unconditionally, even with `include_raw_images =
+///   false` (the secure default). This version fixes that by only exempting the one leaf that
+///   was actually matched, per container, and fully recursing into everything else.
+fn redact_dump_tree(value: &mut serde_json::Value, include_raw_images: bool) {
     match value {
         serde_json::Value::Object(map) => {
             let is_image_kind =
@@ -515,54 +548,194 @@ fn redact_image_payloads(value: &mut serde_json::Value) {
             let is_image_type =
                 map.get("type").and_then(serde_json::Value::as_str) == Some("image");
 
+            // Container keys fully handled below (recognized leaf redacted/preserved per
+            // `include_raw_images`, every other field already recursed into normally by the
+            // per-field helpers themselves) are skipped by the outer loop so they aren't
+            // double-processed.
+            let mut exempt_keys: Vec<&'static str> = Vec::new();
+
             if is_image_kind {
-                redact_base64_field(map, "data", "mime_type");
+                redact_image_kind_field(map, include_raw_images);
+                // "data" is a same-level sibling of "mime_type" on `map` itself (not a nested
+                // container), so the outer loop below already reaches "mime_type" normally —
+                // only "data" itself needs exempting here.
+                exempt_keys.push("data");
             }
-            if is_image_type
-                && let Some(source) = map
-                    .get_mut("source")
-                    .and_then(serde_json::Value::as_object_mut)
-            {
-                redact_base64_field(source, "data", "media_type");
+            if is_image_type && redact_image_type_source_field(map, include_raw_images) {
+                exempt_keys.push("source");
             }
-            if let Some(image_url) = map
-                .get_mut("image_url")
-                .and_then(serde_json::Value::as_object_mut)
-                && let Some(marker) = image_url
-                    .get("url")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(redact_data_url)
-            {
-                image_url.insert("url".to_owned(), serde_json::Value::String(marker));
+            if redact_image_url_field(map, include_raw_images) {
+                exempt_keys.push("image_url");
             }
-            if let Some(inline) = map
-                .get_mut("inlineData")
-                .and_then(serde_json::Value::as_object_mut)
-            {
-                redact_base64_field(inline, "data", "mimeType");
+            if redact_inline_data_field(map, include_raw_images) {
+                exempt_keys.push("inlineData");
             }
-            if let Some(images) = map
-                .get_mut("images")
-                .and_then(serde_json::Value::as_array_mut)
-            {
-                for img in images.iter_mut() {
-                    if let Some(encoded) = img.as_str().filter(|s| s.len() >= MIN_IMAGE_BASE64_LEN)
-                    {
-                        *img =
-                            serde_json::Value::String(image_marker_from_base64("image", encoded));
+            if redact_images_array_field(map, include_raw_images) {
+                exempt_keys.push("images");
+            }
+
+            for (key, v) in map.iter_mut() {
+                if exempt_keys.contains(&key.as_str()) {
+                    continue;
+                }
+                redact_dump_tree(v, include_raw_images);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for v in items.iter_mut() {
+                redact_dump_tree(v, include_raw_images);
+            }
+        }
+        serde_json::Value::String(s) => {
+            let scrubbed = scrub_content(s);
+            match redact_binary_blobs(scrubbed.as_ref()) {
+                Cow::Borrowed(_) => {
+                    if let Cow::Owned(owned) = scrubbed {
+                        *s = owned;
                     }
                 }
-            }
-            for v in map.values_mut() {
-                redact_image_payloads(v);
+                Cow::Owned(owned) => *s = owned,
             }
         }
-        serde_json::Value::Array(arr) => {
-            for v in arr.iter_mut() {
-                redact_image_payloads(v);
-            }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+/// Handles a `{"kind":"image","data":...,"mime_type":...}` object: redacts `data` in place
+/// unless `include_raw_images`. `data` is a same-level field on the caller's map, so the caller
+/// exempts it from its own generic recursion directly.
+fn redact_image_kind_field(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    include_raw_images: bool,
+) {
+    if !include_raw_images {
+        redact_base64_field(map, "data", "mime_type");
+    }
+}
+
+/// Handles `{"type":"image","source":{"data":...,"media_type":...}}`. Returns `true` if a
+/// `source` object was present (so the caller can exempt it from its own generic recursion --
+/// every field of `source` other than `data` has already been recursed into here).
+fn redact_image_type_source_field(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    include_raw_images: bool,
+) -> bool {
+    let Some(source) = map
+        .get_mut("source")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return false;
+    };
+    if !include_raw_images {
+        redact_base64_field(source, "data", "media_type");
+    }
+    redact_object_fields_except(source, "data", include_raw_images);
+    true
+}
+
+/// Handles `{"image_url":{"url":...}}` (`OpenAI`). `url` may be a `data:` URL (recognized image
+/// data, exempted per `include_raw_images`) or a plain external URL (never image data, always
+/// gets full `redact_dump_tree` treatment). Returns `true` if an `image_url` object was present.
+fn redact_image_url_field(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    include_raw_images: bool,
+) -> bool {
+    let Some(image_url) = map
+        .get_mut("image_url")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return false;
+    };
+    let is_data_url = image_url
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|u| u.starts_with("data:"));
+    if is_data_url {
+        if !include_raw_images
+            && let Some(marker) = image_url
+                .get("url")
+                .and_then(serde_json::Value::as_str)
+                .and_then(redact_data_url)
+        {
+            image_url.insert("url".to_owned(), serde_json::Value::String(marker));
         }
-        _ => {}
+        // else (include_raw_images=true): deliberately leave the recognized data: URL raw.
+    } else if let Some(url) = image_url.get_mut("url") {
+        // Not a data: URL (e.g. a plain external image URL, also valid per OpenAI's Vision
+        // API) -- never image data, so it still needs full secret/blob redaction regardless
+        // of include_raw_images.
+        redact_dump_tree(url, include_raw_images);
+    }
+    redact_object_fields_except(image_url, "url", include_raw_images);
+    true
+}
+
+/// Handles `{"inlineData":{"mimeType":...,"data":...}}` (Gemini). Returns `true` if an
+/// `inlineData` object was present.
+fn redact_inline_data_field(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    include_raw_images: bool,
+) -> bool {
+    let Some(inline) = map
+        .get_mut("inlineData")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return false;
+    };
+    if !include_raw_images {
+        redact_base64_field(inline, "data", "mimeType");
+    }
+    redact_object_fields_except(inline, "data", include_raw_images);
+    true
+}
+
+/// Handles `{"images":["<base64>", ...]}` (Ollama). Only elements at least
+/// [`MIN_IMAGE_BASE64_LEN`] long are treated as recognized image data; shorter elements still
+/// get the full generic pass. Returns `true` if an `images` array was present.
+fn redact_images_array_field(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    include_raw_images: bool,
+) -> bool {
+    let Some(images) = map
+        .get_mut("images")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return false;
+    };
+    for img in images.iter_mut() {
+        let is_recognized = img
+            .as_str()
+            .is_some_and(|s| s.len() >= MIN_IMAGE_BASE64_LEN);
+        if is_recognized {
+            if !include_raw_images && let Some(encoded) = img.as_str() {
+                *img = serde_json::Value::String(image_marker_from_base64("image", encoded));
+            }
+            // else (include_raw_images=true): deliberately leave recognized image bytes raw.
+        } else {
+            // Too short to plausibly be image data -- not exempted, still gets the full
+            // generic pass (e.g. a stray secret sitting under an "images" key).
+            redact_dump_tree(img, include_raw_images);
+        }
+    }
+    true
+}
+
+/// Recurses into every field of `obj` except `skip_key` (the one field the caller already
+/// handled directly as a recognized image-data leaf), applying [`redact_dump_tree`] to each.
+///
+/// Ensures sibling fields inside a recognized image-shaped container — or the leaf itself when
+/// it turns out not to be image data after all — still receive `scrub_content` +
+/// `redact_binary_blobs`, instead of being silently exempted along with the whole container.
+fn redact_object_fields_except(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    skip_key: &str,
+    include_raw_images: bool,
+) {
+    for (k, v) in obj.iter_mut() {
+        if k == skip_key {
+            continue;
+        }
+        redact_dump_tree(v, include_raw_images);
     }
 }
 
@@ -876,6 +1049,32 @@ mod tests {
         );
     }
 
+    /// Polls for a plain-text dump file by name, mirroring `read_request_dump`. Requires
+    /// non-empty content (not just a successful open) to avoid a truncate-then-write race in
+    /// `write_private`: `write()` opens the file with `truncate` before `write_all` runs, so a
+    /// read landing in that window would otherwise see an empty file instead of retrying.
+    async fn read_dump_file(dir: &Path, filename: &str) -> String {
+        let session = std::fs::read_dir(dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let path = session.join(filename);
+        for _ in 0..200 {
+            if let Ok(content) = std::fs::read_to_string(&path)
+                && !content.is_empty()
+            {
+                return content;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!(
+            "debug dump file not written within timeout: {}",
+            path.display()
+        );
+    }
+
     #[tokio::test]
     async fn json_dump_request_includes_request_metadata() {
         let dir = tempdir().unwrap();
@@ -934,6 +1133,150 @@ mod tests {
         assert_eq!(payload["tools"][0]["function"]["name"], "read_file");
         assert_eq!(payload["temperature"], 0.3);
         assert_eq!(payload["messages"][0]["content"], "hello");
+    }
+
+    /// #6315 (critic follow-up, C1): a binary blob redacted out of `dump_tool_output` must not
+    /// reappear unredacted in the next turn's `dump_request` once it becomes message history.
+    #[tokio::test]
+    async fn json_dump_request_redacts_binary_blob_in_message_history() {
+        let dir = tempdir().unwrap();
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
+        let blob = "A".repeat(300);
+        let messages = vec![
+            Message::from_legacy(Role::System, "system prompt"),
+            Message::from_legacy(Role::User, format!("tool output: {blob}")),
+        ];
+        let tools = sample_tools();
+
+        let _ = dumper.dump_request(&RequestDebugDump {
+            model_name: "test-model",
+            messages: &messages,
+            tools: &tools,
+            provider_request: serde_json::json!({ "model": "test-model", "max_tokens": 1024 }),
+            memcot_state: None,
+        });
+
+        let payload = read_request_dump(dir.path()).await;
+        let content = payload["messages"][1]["content"].as_str().unwrap();
+        assert!(
+            content.contains("<redacted possible binary data:"),
+            "message history must carry the redaction marker: {content}"
+        );
+        assert!(
+            !content.contains(&blob),
+            "raw blob must not reappear in dump_request: {content}"
+        );
+    }
+
+    /// #6315 (critic follow-up, C1): `raw_dump` clones `provider_request` verbatim, so any
+    /// secret embedded in its `messages` field must also be scrubbed before writing to disk.
+    #[tokio::test]
+    async fn raw_dump_request_redacts_secrets_in_provider_request_messages() {
+        let dir = tempdir().unwrap();
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Raw).unwrap();
+        let messages = sample_messages();
+        let tools = sample_tools();
+
+        let _ = dumper.dump_request(&RequestDebugDump {
+            model_name: "gpt-5-mini",
+            messages: &messages,
+            tools: &tools,
+            provider_request: serde_json::json!({
+                "model": "gpt-5-mini",
+                "messages": [{ "role": "user", "content": "use key sk-abc123def456 please" }],
+            }),
+            memcot_state: None,
+        });
+
+        let payload = read_request_dump(dir.path()).await;
+        let content = payload["messages"][0]["content"].as_str().unwrap();
+        assert!(
+            content.contains("[REDACTED]"),
+            "secret must be redacted: {content}"
+        );
+        assert!(
+            !content.contains("sk-abc123def456"),
+            "raw secret must not appear: {content}"
+        );
+    }
+
+    /// #6315 code review (I1): end-to-end coverage that `dump_tool_output` -- the issue's
+    /// literal reported symptom -- actually redacts through the public method, not just via
+    /// `redact_binary_blobs`/`scrub_content` unit tests in isolation.
+    #[tokio::test]
+    async fn dump_tool_output_redacts_binary_blob_before_writing() {
+        let dir = tempdir().unwrap();
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
+        let blob = "A".repeat(300);
+        dumper.dump_tool_output("ocr_tool", &format!("output: {blob}"));
+
+        let content = read_dump_file(dir.path(), "0000-tool-ocr_tool.txt").await;
+        assert!(
+            content.contains("<redacted possible binary data:"),
+            "tool output must carry the redaction marker: {content}"
+        );
+        assert!(
+            !content.contains(&blob),
+            "raw blob must not reach disk: {content}"
+        );
+    }
+
+    /// #6315 code review (I1 follow-up): same end-to-end coverage for `dump_response`.
+    #[tokio::test]
+    async fn dump_response_redacts_secret_before_writing() {
+        let dir = tempdir().unwrap();
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
+        dumper.dump_response(0, "here is the key: sk-abc123def456");
+
+        let content = read_dump_file(dir.path(), "0000-response.txt").await;
+        assert!(
+            content.contains("[REDACTED]"),
+            "secret must be redacted: {content}"
+        );
+        assert!(
+            !content.contains("sk-abc123def456"),
+            "raw secret must not reach disk: {content}"
+        );
+    }
+
+    /// #6315 code review (I1 follow-up): same end-to-end coverage for `dump_tool_error`.
+    #[tokio::test]
+    async fn dump_tool_error_redacts_binary_blob_before_writing() {
+        let dir = tempdir().unwrap();
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
+        let blob = "B".repeat(300);
+        let error = zeph_tools::ToolError::InvalidParams {
+            message: format!("failed on input: {blob}"),
+        };
+        dumper.dump_tool_error("vision_tool", &error);
+
+        let content = read_dump_file(dir.path(), "0000-tool-error-vision_tool.json").await;
+        assert!(
+            content.contains("<redacted possible binary data:"),
+            "tool error must carry the redaction marker: {content}"
+        );
+        assert!(
+            !content.contains(&blob),
+            "raw blob must not reach disk: {content}"
+        );
+    }
+
+    /// #6315 code review (I1 follow-up): same end-to-end coverage for `dump_focus_knowledge`.
+    #[tokio::test]
+    async fn dump_focus_knowledge_redacts_secret_before_writing() {
+        let dir = tempdir().unwrap();
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
+        dumper.dump_focus_knowledge("summary mentions key sk-abc123def456 from the scrape");
+
+        let content = read_dump_file(dir.path(), "0000-focus-knowledge.txt").await;
+        assert!(
+            content.contains("[REDACTED]"),
+            "secret must be redacted: {content}"
+        );
+        assert!(
+            !content.contains("sk-abc123def456"),
+            "raw secret must not reach disk: {content}"
+        );
     }
 
     #[tokio::test]
@@ -1189,8 +1532,196 @@ mod tests {
         }
     }
 
-    /// Cross-crate regression guard (#6306 critic finding S1): the 6 tests above all hand-author
-    /// JSON matching `redact_image_payloads`'s own assumed shapes, which only proves the
+    /// #6306 x #6315 rebase interaction: `redact_dump_tree`'s `redact_binary_blobs` component
+    /// (200+ char base64-run heuristic, #6315) must not clobber image bytes that are recognized
+    /// as image data and skipped via `include_raw_images = true` (#6306). Uses a payload large
+    /// enough (`> 200` base64 chars) to actually trip the blob heuristic --
+    /// `sample_image_base64()` alone is too short to exercise this interaction.
+    #[tokio::test]
+    async fn include_raw_images_survives_binary_blob_heuristic_for_large_images() {
+        let large_bytes: Vec<u8> = std::iter::repeat(0..=255u8).flatten().take(300).collect();
+        let large_b64 = base64::engine::general_purpose::STANDARD.encode(&large_bytes);
+        assert!(
+            large_b64.len() > 200,
+            "test setup sanity check: encoded image must exceed redact_binary_blobs's 200-char threshold"
+        );
+        let messages = vec![
+            Message::from_legacy(Role::System, "system prompt"),
+            Message::from_parts(
+                Role::User,
+                vec![
+                    MessagePart::Text {
+                        text: "describe this".to_owned(),
+                    },
+                    MessagePart::Image(Box::new(zeph_llm::provider::ImageData {
+                        data: large_bytes,
+                        mime_type: "image/png".to_owned(),
+                    })),
+                ],
+            ),
+        ];
+        let tools = sample_tools();
+
+        for fmt in [DumpFormat::Json, DumpFormat::Raw] {
+            let dir = tempdir().unwrap();
+            let dumper = DebugDumper::new(dir.path(), fmt)
+                .unwrap()
+                .with_include_raw_images(true);
+
+            let _ = dumper.dump_request(&RequestDebugDump {
+                model_name: "test-model",
+                messages: &messages,
+                tools: &tools,
+                provider_request: serde_json::json!({ "model": "test-model" }),
+                memcot_state: None,
+            });
+
+            let payload = read_request_dump(dir.path()).await;
+            assert!(
+                payload.to_string().contains(&large_b64),
+                "{fmt:?}: include_raw_images=true must preserve full image bytes even though \
+                 they exceed redact_binary_blobs's 200-char threshold"
+            );
+        }
+    }
+
+    /// #6315 x #6306 scope-limit fix (critic finding, rebase round 2): `include_raw_images` must
+    /// stay scoped to fields recognized as image data -- it must NOT disable
+    /// `redact_binary_blobs` for the rest of the dump. A non-image tool (e.g. the original
+    /// #6315 scenario: a vision tool emitting base64 as plain text instead of a typed
+    /// `MessagePart::Image`) must still get its binary blob redacted even while
+    /// `include_raw_images = true` is active for genuine image debugging in the same session.
+    #[tokio::test]
+    async fn include_raw_images_does_not_widen_scope_to_non_image_blobs() {
+        let blob = "A".repeat(300);
+        let messages = vec![
+            Message::from_legacy(Role::System, "system prompt"),
+            Message::from_legacy(Role::User, format!("tool output: {blob}")),
+        ];
+        let tools = sample_tools();
+
+        for fmt in [DumpFormat::Json, DumpFormat::Raw] {
+            let dir = tempdir().unwrap();
+            let dumper = DebugDumper::new(dir.path(), fmt)
+                .unwrap()
+                .with_include_raw_images(true);
+
+            let _ = dumper.dump_request(&RequestDebugDump {
+                model_name: "test-model",
+                messages: &messages,
+                tools: &tools,
+                provider_request: serde_json::json!({ "model": "test-model" }),
+                memcot_state: None,
+            });
+
+            let payload = read_request_dump(dir.path()).await;
+            let dumped_json = payload.to_string();
+            assert!(
+                dumped_json.contains("<redacted possible binary data:"),
+                "{fmt:?}: include_raw_images=true must not suppress redact_binary_blobs for \
+                 non-image freeform text: {dumped_json}"
+            );
+            assert!(
+                !dumped_json.contains(&blob),
+                "{fmt:?}: raw non-image blob must not survive even with include_raw_images=true: \
+                 {dumped_json}"
+            );
+        }
+    }
+
+    /// #6315 x #6306 critic finding (round 3, critical): `OpenAI`'s Vision API accepts
+    /// `image_url.url` as either a `data:` URL or a plain external URL. A plain URL is never
+    /// recognized as image data (it fails the `data:` prefix check), so it must still get full
+    /// `scrub_content` treatment -- fires unconditionally, with no `include_raw_images` opt-in
+    /// needed, since this is the secure default path.
+    #[tokio::test]
+    async fn image_url_with_external_url_still_gets_secret_scrubbed() {
+        let dir = tempdir().unwrap();
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Raw).unwrap();
+        let messages = sample_messages();
+        let tools = sample_tools();
+
+        let _ = dumper.dump_request(&RequestDebugDump {
+            model_name: "gpt-5-mini",
+            messages: &messages,
+            tools: &tools,
+            provider_request: serde_json::json!({
+                "model": "gpt-5-mini",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        { "type": "text", "text": "describe this" },
+                        {
+                            "type": "image_url",
+                            "image_url": { "url": "https://user:s3cr3t-key@cdn.example.com/photo.png" },
+                        },
+                    ],
+                }],
+            }),
+            memcot_state: None,
+        });
+
+        let payload = read_request_dump(dir.path()).await;
+        let url = payload["messages"][0]["content"][1]["image_url"]["url"]
+            .as_str()
+            .unwrap();
+        assert!(
+            url.contains("[REDACTED]"),
+            "external image_url.url with embedded credentials must still be scrubbed: {url}"
+        );
+        assert!(
+            !url.contains("s3cr3t-key"),
+            "raw credential must not survive: {url}"
+        );
+    }
+
+    /// #6315 x #6306 critic finding (round 3, same class): a `source` object recognized via
+    /// `type == "image"` but without a `data` key (e.g. a hypothetical URL-referenced source
+    /// rather than a base64-embedded one) must still get its other fields fully redacted, not
+    /// silently exempted as a whole alongside the (here, absent) recognized `data` leaf.
+    #[tokio::test]
+    async fn image_type_source_without_data_key_still_gets_secret_scrubbed() {
+        let dir = tempdir().unwrap();
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Raw).unwrap();
+        let messages = sample_messages();
+        let tools = sample_tools();
+
+        let _ = dumper.dump_request(&RequestDebugDump {
+            model_name: "claude-sonnet-test",
+            messages: &messages,
+            tools: &tools,
+            provider_request: serde_json::json!({
+                "model": "claude-sonnet-test",
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "image",
+                        "source": {
+                            "type": "url",
+                            "url": "https://user:s3cr3t-key@cdn.example.com/photo.png",
+                        },
+                    }],
+                }],
+            }),
+            memcot_state: None,
+        });
+
+        let payload = read_request_dump(dir.path()).await;
+        let url = payload["messages"][0]["content"][0]["source"]["url"]
+            .as_str()
+            .unwrap();
+        assert!(
+            url.contains("[REDACTED]"),
+            "source object without a data key must still get secret-scrubbed: {url}"
+        );
+        assert!(
+            !url.contains("s3cr3t-key"),
+            "raw credential must not survive: {url}"
+        );
+    }
+
+    /// Cross-crate regression guard (#6306 critic finding S1): the tests above all hand-author
+    /// JSON matching `redact_dump_tree`'s own assumed image-data shapes, which only proves the
     /// redactor redacts shapes it already knows about — a real provider renaming/restructuring
     /// its image field (or a new provider) could silently reopen the leak with every other test
     /// still green. This drives the *actual* `LlmProvider::debug_request_json` implementation
@@ -1265,7 +1796,7 @@ mod tests {
     }
 
     #[test]
-    fn redact_image_payloads_leaves_non_image_values_untouched() {
+    fn redact_dump_tree_leaves_clean_non_image_values_untouched() {
         let mut value = serde_json::json!({
             "model": "test-model",
             "messages": [{
@@ -1279,10 +1810,10 @@ mod tests {
             "temperature": 0.5,
         });
         let before = value.clone();
-        redact_image_payloads(&mut value);
+        redact_dump_tree(&mut value, false);
         assert_eq!(
             value, before,
-            "non-image JSON must be unchanged by redaction"
+            "JSON with no secrets/blobs/image data must be unchanged by redaction"
         );
     }
 }

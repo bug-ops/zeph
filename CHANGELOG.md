@@ -29,6 +29,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **zeph-core**: the debug dump writer (`crates/zeph-core/src/debug_dump/mod.rs`) now redacts
+  text before writing it to disk instead of writing it raw (#6315). `dump_tool_output`,
+  `dump_response`, `dump_tool_error`, and `dump_focus_knowledge` call the existing
+  `scrub_content` (secrets, Bearer/JWT, path redaction) plus a new `redact_binary_blobs`
+  (`crates/zeph-core/src/redact.rs`), which replaces contiguous runs of 200+ base64-alphabet
+  characters with a `<redacted possible binary data: N bytes, blake3:...>` marker. Closes the
+  gap where a tool returning raw base64 (e.g. a vision/screenshot tool emitting image bytes as
+  plain text instead of a typed `MessagePart::Image`) leaked full binary payloads into debug
+  dump files. Critically, `dump_request` (`json_dump`/`raw_dump`) also recursively redacts every
+  string leaf of its assembled JSON payload via a new `redact_dump_tree` helper — without this,
+  a blob redacted out of `dump_tool_output` would still leak unredacted one turn later, once it
+  becomes message history serialized into the next `dump_request` dump. `dump_tool_error` and
+  `dump_focus_knowledge` get the same treatment as low-cost scope extensions, since both write
+  the same unredacted shape. No new config flag of its own; `dump_tool_output`/`dump_response`/
+  `dump_tool_error`/`dump_focus_knowledge` redact unconditionally. `dump_request`'s
+  `redact_dump_tree` also runs unconditionally except for the specific JSON fields already
+  recognized as image data by #6306's `[debug] include_raw_images` flag — those, and only those,
+  are exempted when the flag is `true`, so the blob heuristic still covers every non-image string
+  in the payload regardless of that flag's setting. Debug dumps remain an opt-in, off-by-default
+  diagnostic aid.
+
 - **zeph-subagent**: `TranscriptWriter::append` now strips every `MessagePart::Image` from a
   message's `parts` before serializing it to the sub-agent's `<task_id>.jsonl` transcript file
   (spec-072 §4 C1, #6305). Sub-agents never go through `Agent::persist_message`, so their
@@ -46,7 +67,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   vision request shapes) — now redact image payloads to a
   `<redacted image: {mime_type}, {n} bytes, blake3:{prefix}>` marker. A new opt-in
   `[debug] include_raw_images` config flag (default `false`) restores the previous
-  full-byte behavior for developers who explicitly need wire-payload fidelity (#6306).
+  full-byte behavior for developers who explicitly need wire-payload fidelity (#6306). Scoped
+  narrowly per its own documented contract: enabling it only exempts the specific leaf values
+  recognized as image data (Claude/internal `source.data`/`kind`+`data` shapes, OpenAI
+  `image_url.url` when it's a `data:` URL, Gemini `inlineData.data`, long-enough `images[]`
+  elements) from redaction — sibling fields inside the same container (e.g. a plain external
+  `image_url.url`, not a `data:` URL) still get full redaction, and it does not disable #6315's separate
+  base64-blob heuristic for any other field in the dump.
 
 ### Fixed
 
