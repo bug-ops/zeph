@@ -96,8 +96,12 @@ impl DagScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{TaskResult, TaskStatus};
+    use crate::dag::propagate_failure;
+    use crate::graph::{
+        FailureStrategy, GraphStatus, RecoveryAction, TaskId, TaskResult, TaskStatus,
+    };
     use crate::scheduler::tests::*;
+    use crate::topology::build_rev_adj;
 
     #[test]
     fn test_build_prompt_no_deps() {
@@ -207,6 +211,50 @@ mod tests {
         assert!(
             prompt.contains("[truncated:"),
             "prompt must contain truncation notice. Prompt: {prompt}"
+        );
+    }
+
+    #[test]
+    fn test_build_prompt_includes_mode1_recovered_state_injection() {
+        // Drives the real Mode-1 recovery path (propagate_failure -> try_recover in dag.rs)
+        // end-to-end, rather than hand-constructing the recovered TaskNode, so this test
+        // breaks if try_recover()'s field mapping or completion marker ever changes.
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.status = GraphStatus::Running;
+        graph.tasks[0].status = TaskStatus::Failed;
+        graph.tasks[0].failure_strategy = Some(FailureStrategy::Abort);
+        graph.tasks[0].recovery = Some(RecoveryAction {
+            state_injection: Some("fallback output".to_string()),
+        });
+
+        let rev_adj = build_rev_adj(&graph.tasks);
+        let to_cancel = propagate_failure(&mut graph, TaskId(0), &rev_adj);
+        assert!(to_cancel.is_empty());
+        assert_eq!(graph.tasks[0].status, TaskStatus::Completed);
+
+        // DagScheduler::new independently requires a freshly-`Created` graph; recovery leaves
+        // `graph.status` untouched (`Running`), so reset it here purely to satisfy that
+        // unrelated constructor invariant -- it does not affect the recovered task state above.
+        graph.status = GraphStatus::Created;
+
+        let config = make_config();
+        let scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+            None,
+        )
+        .unwrap();
+
+        let prompt = scheduler.build_task_prompt(&scheduler.graph.tasks[1]);
+        assert!(
+            prompt.contains("fallback output"),
+            "dependent's prompt must include the recovered dependency's synthetic output. Prompt: {prompt}"
+        );
+        assert!(
+            !prompt.contains("__recovery__"),
+            "agent_def marker must not leak into the prompt. Prompt: {prompt}"
         );
     }
 }

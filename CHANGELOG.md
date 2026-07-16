@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Testing
+
+- **zeph-orchestration** / **zeph-core**: added direct test coverage for two spec-075 §7
+  success criteria that were only transitively covered (#6301, deferred from #6243/#6265).
+  `test_build_prompt_includes_mode1_recovered_state_injection` drives Mode-1 recovery
+  end-to-end (`propagate_failure` → `try_recover` → synthetic `TaskResult`) and asserts the
+  injected `state_injection` value actually reaches `build_task_prompt()` for a downstream
+  dependent, without leaking the internal `__recovery__` completion marker (SC-4).
+  `finalize_plan_execution_recovery_derived_task_counted_in_tasks_completed` asserts a
+  `__recovery__`-derived `Completed` task is counted by `finalize_plan_completed`'s generic,
+  status-based `tasks_completed` counter — with a sibling `Failed` task in the same graph
+  confirmed excluded, giving a real recovered-vs-failed contrast (SC-9). No production code
+  changed; both mechanisms already behaved correctly, this closes the direct-assertion gap
+  only.
+
 ### Docs
 
 - **Spec 072 §4**: updated to enumerate all four persistence surfaces that must strip `MessagePart::Image`

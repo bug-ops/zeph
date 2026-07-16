@@ -1528,6 +1528,71 @@ async fn finalize_plan_execution_completed_increments_aggregator_metrics() {
     );
 }
 
+/// SC-9 regression guard on the *absence* of recovery-specific special-casing -- this does
+/// NOT drive `try_recover()` end-to-end: that function is private to `zeph-orchestration` and
+/// not exercisable cross-crate without adding a production-only export purely for this test,
+/// which is out of scope for this issue. Instead it proves that a recovery-*shaped* task --
+/// shaped exactly as `try_recover()` in `zeph-orchestration`'s `dag.rs` synthesizes it
+/// (`status=Completed`, `result.agent_def=Some("__recovery__")`) -- flows through
+/// `finalize_plan_completed`'s (crates/zeph-core/src/agent/plan.rs) generic, purely
+/// status-derived counting path exactly like any other `Completed` task, with no
+/// `agent_def`-based exclusion. A sibling `Failed` task (no recovery) in the same graph is
+/// asserted NOT counted, making the recovered-vs-failed distinction a real contrast rather
+/// than a trivially-true single-task positive.
+#[cfg(feature = "scheduler")]
+#[tokio::test]
+async fn finalize_plan_execution_recovery_derived_task_counted_in_tasks_completed() {
+    use zeph_subagent::SubAgentManager;
+
+    let provider = mock_provider(vec!["synthesis".into()]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let (tx, rx) = watch::channel(MetricsSnapshot::default());
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+    agent.services.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+
+    let mut graph = TaskGraph::new("recovery finalize test");
+    let mut recovered = TaskNode::new(0, "task-recovered", "desc");
+    recovered.status = TaskStatus::Completed;
+    recovered.result = Some(TaskResult {
+        output: "fallback output".into(),
+        artifacts: vec![],
+        duration_ms: 0,
+        agent_id: None,
+        agent_def: Some("__recovery__".to_string()),
+    });
+    graph.tasks.push(recovered);
+
+    let mut failed = TaskNode::new(1, "task-failed", "desc");
+    failed.status = TaskStatus::Failed;
+    failed.result = Some(TaskResult {
+        output: "error: no recovery configured".into(),
+        artifacts: vec![],
+        duration_ms: 0,
+        agent_id: None,
+        agent_def: None,
+    });
+    graph.tasks.push(failed);
+
+    graph.status = GraphStatus::Completed;
+
+    agent
+        .finalize_plan_execution(graph, GraphStatus::Completed)
+        .await
+        .unwrap();
+
+    let snapshot = rx.borrow().clone();
+    assert_eq!(
+        snapshot.orchestration.tasks_completed, 1,
+        "only the __recovery__-derived Completed task must be counted in tasks_completed via \
+         the generic status-based counting path; the sibling Failed task must not be counted; \
+         got: {}",
+        snapshot.orchestration.tasks_completed
+    );
+}
+
 /// Regression for #1879: mixed failure — some tasks failed, some canceled.
 /// Message must say "Plan failed. X/M tasks failed, Y canceled:" (not misleading).
 #[cfg(feature = "scheduler")]
