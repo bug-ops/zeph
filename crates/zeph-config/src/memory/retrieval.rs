@@ -293,9 +293,9 @@ impl Default for TieredRetrievalConfig {
     }
 }
 
-// ── MemGuard type-aware retrieval-composition config (spec 064, issue #6086) ──────────────────
+// ── MemGuard type-aware retrieval-composition config (spec 004-16, issue #6086) ──────────────────
 
-/// `MemGuard`-inspired type-aware memory retrieval composition (spec 064, issue #6086).
+/// `MemGuard`-inspired type-aware memory retrieval composition (spec 004-16, issue #6086).
 ///
 /// Retrieval-only, fetch-time gate: it does **not** touch write paths, does not add a new
 /// Qdrant collection, and does not migrate stored data. When `enabled = false` (the default),
@@ -325,7 +325,7 @@ pub struct TypeAwareComposeConfig {
     ///
     /// Empty (default) means *all types* — the same composition as today. Strict parse:
     /// an unknown/typo'd type string is a hard config-load error, never a silent fallback
-    /// to "all types" (spec 064 §4, critic finding S4).
+    /// to "all types" (spec 004-16 §4, critic finding S4).
     pub default_compose_types: Vec<FunctionalType>,
     /// When `true`, additionally widen the active set per classified query intent using the
     /// static `IntentClass -> FunctionalType[]` table (reuses the existing heuristic memory

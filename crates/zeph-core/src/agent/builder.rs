@@ -302,10 +302,10 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    /// Wire `MemGuard` type-aware retrieval composition config snapshot (spec 064, #6086).
+    /// Wire `MemGuard` type-aware retrieval composition config snapshot (spec 004-16, #6086).
     ///
     /// No LLM providers involved — v1 resolves the active `FunctionalType` set from static
-    /// config plus, when `intent_scoped`, the existing no-LLM `HeuristicRouter` (spec 064 §5).
+    /// config plus, when `intent_scoped`, the existing no-LLM `HeuristicRouter` (spec 004-16 §5).
     #[must_use]
     pub fn with_type_aware_compose_config(
         mut self,

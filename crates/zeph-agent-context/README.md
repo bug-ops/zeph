@@ -68,7 +68,7 @@ let chosen_order = svc.disambiguate_skills(query, &all_meta, &scored, &providers
 | `ProviderHandles` | Arc-cloned primary and embedding LLM provider handles |
 
 `type_aware_compose::resolve_active_functional_types` resolves the MemGuard-inspired active
-`FunctionalType` set (spec-064, #6086) that `prepare_context` uses to gate memory-fetcher
+`FunctionalType` set (spec-004-16, #6086) that `prepare_context` uses to gate memory-fetcher
 composition per turn — retrieval-only, no storage or write-path change; a byte-for-byte no-op
 when `[memory.type_aware_compose]` is disabled (the default).
 

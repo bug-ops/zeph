@@ -58,7 +58,7 @@ pub struct ContextAssemblyInput<'a> {
     /// accept that an empty slice disables tier-based filtering entirely.
     pub active_levels: &'a [CompressionLevel],
     /// Active functional memory types for this turn's type-aware retrieval composition
-    /// (spec 064, #6086), resolved by `zeph-agent-context` from `TypeAwareComposeConfig`.
+    /// (spec 004-16, #6086), resolved by `zeph-agent-context` from `TypeAwareComposeConfig`.
     ///
     /// An empty slice means "no type gating" — every gated fetcher runs subject to its
     /// existing activity/budget guard, identical to pre-#6086 behaviour. This is both the

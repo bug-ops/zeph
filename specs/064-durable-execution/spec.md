@@ -19,7 +19,7 @@ related:
   - "[[specs/038-vault/spec]]"
   - "[[specs/039-background-task-supervisor/spec]]"
   - "[[specs/029-feature-flags/spec]]"
-  - "[[specs/057-agent-persistence/spec]]"
+  - "[[specs/078-agent-persistence/spec]]"
   - "[[specs/063-worktree-subsystem/spec]]"
   - "[[constitution]]"
 ---
@@ -1518,8 +1518,6 @@ wiring; `zeph-durable` provides the key via `StepHandle`, not a config field.
 
 ## Housekeeping Note (Out of Scope)
 
-Pre-existing spec number collision: `specs/057-agent-persistence` and
-`specs/057-autoskill-versioned-merging` both carry number 057; similarly `058-plugins` and
-`058-autoskill-query-rewriting` both carry 058. These duplicates are a housekeeping concern
-unrelated to this spec and should be addressed in a separate renumbering task. Number 064 is
-confirmed unused and is locked for this spec.
+Pre-existing spec number collisions were resolved in issue #6308: `specs/057-agent-persistence`
+was renumbered to `specs/078-agent-persistence`, and `specs/058-plugins` was renumbered to
+`specs/079-plugins`. Number 064 is confirmed unused and is locked for this spec.

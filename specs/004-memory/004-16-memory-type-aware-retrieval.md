@@ -36,9 +36,10 @@ related:
 > into `/specs/064-durable-execution/spec.md` would land on the wrong subsystem entirely. This
 > document is filed as `004-16` (memory sub-spec numbering, following the `004-N` convention
 > already used for 004-1 through 004-15) specifically to avoid colliding with the permanent `064`
-> slot. The in-code comment citations are a known, minor documentation-staleness artifact — not
-> corrected here since this task is scoped to `/specs/`, not `crates/`; flagged for a future
-> doc-only follow-up.
+> slot. The in-code comment citations were mis-cited as "spec 064" at first; the citations in
+> `crates/zeph-common/src/memory.rs`, `crates/zeph-config/src/memory/retrieval.rs`,
+> `crates/zeph-agent-context/src/type_aware_compose.rs`, and all other locations were corrected
+> to "spec 004-16" in issue #6308.
 
 ## Sources
 

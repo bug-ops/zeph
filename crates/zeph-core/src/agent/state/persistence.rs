@@ -64,12 +64,12 @@ pub(crate) struct MemoryPersistenceState {
     /// construction, never changed at runtime.
     pub(crate) tiered_retrieval_validator: Option<Arc<AnyProvider>>,
 
-    // ── MemGuard type-aware retrieval composition (spec 064, #6086) ──────────────
+    // ── MemGuard type-aware retrieval composition (spec 004-16, #6086) ──────────────
     /// Type-aware retrieval composition configuration snapshot (`[memory.type_aware_compose]`).
     ///
     /// Stored here so `ContextAssemblyView` can read it without accessing the full config
     /// tree. Set by `with_type_aware_compose_config`. No LLM providers are involved (v1 has
-    /// no LLM classifier — see spec 064 §5).
+    /// no LLM classifier — see spec 004-16 §5).
     pub(crate) type_aware_compose_config: TypeAwareComposeConfig,
 }
 

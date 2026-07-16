@@ -332,7 +332,7 @@ impl FromStr for EdgeType {
 
 // ── FunctionalType ────────────────────────────────────────────────────────────
 
-/// MemGuard-inspired functional-role classification of a memory source (spec 064, #6086).
+/// MemGuard-inspired functional-role classification of a memory source (spec 004-16, #6086).
 ///
 /// Each variant names one of the memory sources composed during context assembly
 /// (`schedule_context_fetchers` in `zeph-context`) — not a storage tier
@@ -354,7 +354,7 @@ pub enum FunctionalType {
     /// Raw episodic conversation recall (`fetch_semantic_recall` → `zeph_conversations`).
     Episodic,
     /// User preference/attribute facts (`fetch_persona_facts` → SQL `persona_memory`,
-    /// **not** the `zeph_key_facts` collection — that surface is out of scope, see spec 064 §4).
+    /// **not** the `zeph_key_facts` collection — that surface is out of scope, see spec 004-16 §4).
     UserFact,
     /// Past user corrections (`fetch_corrections` → `zeph_corrections`).
     ///
@@ -404,7 +404,7 @@ impl FromStr for FunctionalType {
 
     /// Strict parse: an unrecognised string is a hard error, never a silent fallback.
     ///
-    /// This is deliberate (spec 064 §4, critic finding S4): a config typo in
+    /// This is deliberate (spec 004-16 §4, critic finding S4): a config typo in
     /// `default_compose_types` must fail config load, not silently widen to "all types".
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {

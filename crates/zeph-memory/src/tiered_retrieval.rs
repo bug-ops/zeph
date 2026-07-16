@@ -61,7 +61,7 @@ impl IntentClass {
     /// Classify a routing decision into an intent tier.
     ///
     /// Pure function, no I/O — reused by `zeph-agent-context`'s type-aware retrieval
-    /// composition (spec 064, #6086) to widen the active `FunctionalType` set per classified
+    /// composition (spec 004-16, #6086) to widen the active `FunctionalType` set per classified
     /// intent without adding a new LLM call: pass the result of `HeuristicRouter::route`.
     ///
     /// # Examples

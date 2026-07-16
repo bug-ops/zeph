@@ -657,7 +657,7 @@ impl ContextService {
 
         let router = crate::memory_backend::build_memory_router(view.context_manager);
 
-        // Type-aware retrieval composition (spec 064, #6086): resolve once per turn from
+        // Type-aware retrieval composition (spec 004-16, #6086): resolve once per turn from
         // config; `enabled = false` (default) resolves to an empty slice, which
         // `schedule_context_fetchers` treats identically to today's unfiltered composition.
         let active_types = crate::type_aware_compose::resolve_active_functional_types(

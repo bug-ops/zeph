@@ -17,7 +17,7 @@ related:
   - "[[specs/065-ephemeral-plugins-provider-overrides/srs]]"
   - "[[specs/065-ephemeral-plugins-provider-overrides/nfr]]"
   - "[[specs/065-ephemeral-plugins-provider-overrides/plan]]"
-  - "[[specs/058-plugins/spec]]"
+  - "[[specs/079-plugins/spec]]"
   - "[[specs/003-llm-providers/spec]]"
   - "[[specs/010-security/spec]]"
 ---
@@ -198,7 +198,7 @@ Per project rules, all new functionality must wire up:
 
 | This spec | Existing spec | Relationship |
 |-----------|---------------|-------------|
-| Feature A | `[[specs/058-plugins/spec]]` | Extends plugin system with ephemeral variant |
+| Feature A | `[[specs/079-plugins/spec]]` | Extends plugin system with ephemeral variant |
 | Feature A | `[[specs/010-security/spec]]` | Must comply with SSRF + path traversal guards |
 | Feature B | `[[specs/003-llm-providers/spec]]` | Extends provider persistence; `ProviderOverrides` is a new type in the provider config layer |
 | Feature B | `[[specs/021-config-loading/spec]]` | New `persist_provider_overrides` key follows existing config resolution rules |

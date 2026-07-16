@@ -111,7 +111,7 @@ Zeph's skill + memory + learning ecosystem already implements:
 | Component | Current Implementation | Spec |
 |-----------|------------------------|------|
 | **Cross-Session Reward** | SAGE RL: measure skill success across sessions via feedback detection | [[015-self-learning]] |
-| **Feedback Detection** | FeedbackDetector (regex) + JudgeDetector (LLM): implicit correction signals | [[016-agent-feedback]] |
+| **Feedback Detection** | FeedbackDetector (regex) + JudgeDetector (LLM): implicit correction signals | [[054-agent-feedback]] |
 | **Skill Evolution** | ARISE trace improvement + STEM pattern migration; Wilson score reranking | [[015-self-learning]] |
 | **Memory Consolidation** | HeLa-Mem: periodic identification of dense clusters + consolidation daemon | [[004-11-memory-hela-mem]] |
 | **Provenance Tracking** | APEX-MEM edges store episode_id, confidence, temporal metadata | [[004-7-memory-apex-magma]] |
@@ -375,4 +375,4 @@ As part of context budget optimization:
 - [[005-skills/spec]] — Skills layer (promotion destination)
 - [[015-self-learning/spec]] — SAGE RL and cross-session reward (namespace clarification needed)
 - [[024-complexity-triage-routing]] — Triage router (to be extended with feedback loop)
-- [[016-agent-feedback]] — Feedback detection (signals for routing escalation)
+- [[054-agent-feedback]] — Feedback detection (signals for routing escalation)

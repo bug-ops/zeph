@@ -45,7 +45,7 @@ pub(crate) fn levels_to_flags(levels: &[CompressionLevel]) -> (bool, bool, bool)
     (episodic, procedural, declarative)
 }
 
-/// Whether `t` is in the active `FunctionalType` set (spec 064, `MemGuard` type-aware retrieval,
+/// Whether `t` is in the active `FunctionalType` set (spec 004-16, `MemGuard` type-aware retrieval,
 /// #6086).
 ///
 /// An empty `active` slice means "no type filtering": every type is active. This mirrors
@@ -188,7 +188,7 @@ fn schedule_context_fetchers<'r>(
     // (#3455 follow-up; unrelated to the FunctionalType gate below).
     //
     // The semantic-recall vs document-RAG bundling that this TODO originally flagged has been
-    // split (#6086, spec 064 N2): the FunctionalType::Episodic gate below applies only to the
+    // split (#6086, spec 004-16 N2): the FunctionalType::Episodic gate below applies only to the
     // semantic-recall push, so doc_rag stays scheduled whenever `episodic_active` is true
     // regardless of whether Episodic is in the active functional-type set.
     let (episodic_active, procedural_active, declarative_active) = levels_to_flags(active_levels);
@@ -225,7 +225,7 @@ fn schedule_context_fetchers<'r>(
                 .map(|(msg, score)| ContextSlot::SemanticRecall(msg, score))
         }));
     }
-    // Document RAG is not yet a gated FunctionalType (spec 064 §4: v2 extension) — it stays
+    // Document RAG is not yet a gated FunctionalType (spec 004-16 §4: v2 extension) — it stays
     // always-composed within its existing `episodic_active` activity gate, independent of
     // whether FunctionalType::Episodic is in the active set (N2: must not be silently disabled
     // by the Episodic gate above).
@@ -283,7 +283,7 @@ fn schedule_context_fetchers<'r>(
                 .map(ContextSlot::PersonaFacts)
         }));
     }
-    // Trajectory hints are not yet a gated FunctionalType (spec 064 §4: v2 extension) — stays
+    // Trajectory hints are not yet a gated FunctionalType (spec 004-16 §4: v2 extension) — stays
     // always-composed within its existing `procedural_active` activity gate.
     if procedural_active && memory.trajectory_config.context_budget_tokens > 0 {
         fetchers.push(Box::pin(async move {
@@ -293,7 +293,7 @@ fn schedule_context_fetchers<'r>(
                 .map(ContextSlot::TrajectoryHints)
         }));
     }
-    // Tree memory is not yet a gated FunctionalType (spec 064 §4: v2 extension) — stays
+    // Tree memory is not yet a gated FunctionalType (spec 004-16 §4: v2 extension) — stays
     // always-composed within its existing `declarative_active` activity gate.
     if declarative_active && memory.tree_config.context_budget_tokens > 0 {
         fetchers.push(Box::pin(async move {
@@ -1387,7 +1387,7 @@ mod tests {
         assert!(d);
     }
 
-    // ── type_active (spec 064, MemGuard type-aware retrieval, #6086) ───────────
+    // ── type_active (spec 004-16, MemGuard type-aware retrieval, #6086) ───────────
 
     #[test]
     fn type_active_empty_active_set_means_all_types() {
@@ -1404,7 +1404,7 @@ mod tests {
         assert!(!type_active(&active, FunctionalType::GraphFact));
     }
 
-    // ── schedule_context_fetchers type gating (spec 064, #6086) ────────────────
+    // ── schedule_context_fetchers type gating (spec 004-16, #6086) ────────────────
 
     struct NoopRouter;
     impl zeph_common::memory::MemoryRouter for NoopRouter {
@@ -1486,7 +1486,7 @@ mod tests {
         // SC#1: with an active set of [UserFact], only fetch_persona_facts (plus the always-on
         // fetch_corrections) should be scheduled among the type-gated sources. Un-type-gated v2
         // slots (trajectory_hints, tree_memory, document_rag) still schedule under their own
-        // existing activity/budget gate — they are not yet a FunctionalType axis (spec 064 §4).
+        // existing activity/budget gate — they are not yet a FunctionalType axis (spec 004-16 §4).
         let view = full_active_view();
         let tc = NaiveTokenCounter;
         let router = NoopRouter;
@@ -1513,7 +1513,7 @@ mod tests {
 
     #[test]
     fn schedule_context_fetchers_gates_cross_session_summary_both_slots() {
-        // CrossSessionSummary gates both fetch_summaries and fetch_cross_session (spec 064 §4).
+        // CrossSessionSummary gates both fetch_summaries and fetch_cross_session (spec 004-16 §4).
         let view = full_active_view();
         let tc = NaiveTokenCounter;
         let router = NoopRouter;
@@ -1523,7 +1523,7 @@ mod tests {
         assert_eq!(fetchers.len(), 6);
     }
 
-    // ── ContextAssembler::gather (SC#4, spec 064 §12.4) ─────────────────────────
+    // ── ContextAssembler::gather (SC#4, spec 004-16 §12.4) ─────────────────────────
     //
     // SC#4 requires the type-exclusion half to be measured at the PreparedContext/token layer,
     // not re-derived from `schedule_context_fetchers`'s scheduling counts alone (round-1 critic

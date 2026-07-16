@@ -14,7 +14,7 @@ related:
   - "[[specs/065-ephemeral-plugins-provider-overrides/spec]]"
   - "[[specs/065-ephemeral-plugins-provider-overrides/srs]]"
   - "[[specs/065-ephemeral-plugins-provider-overrides/nfr]]"
-  - "[[specs/058-plugins/spec]]"
+  - "[[specs/079-plugins/spec]]"
   - "[[specs/003-llm-providers/spec]]"
 ---
 

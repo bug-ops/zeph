@@ -455,7 +455,7 @@ pub struct MemoryConfig {
     /// `DeepReasoning`) with optional validation and tier escalation.
     #[serde(default)]
     pub tiered_retrieval: TieredRetrievalConfig,
-    /// `MemGuard`-inspired type-aware retrieval composition (spec 064, issue #6086).
+    /// `MemGuard`-inspired type-aware retrieval composition (spec 004-16, issue #6086).
     ///
     /// When `type_aware_compose.enabled = true`, `schedule_context_fetchers` composes only the
     /// functional memory types in the active set instead of unconditionally injecting all of

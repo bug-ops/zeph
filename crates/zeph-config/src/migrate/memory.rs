@@ -802,7 +802,7 @@ pub fn migrate_fidelity_timeout_defaults(toml_src: &str) -> Result<MigrationResu
     }
 }
 
-/// Add a commented-out `[memory.type_aware_compose]` section if absent (spec 064, #6086).
+/// Add a commented-out `[memory.type_aware_compose]` section if absent (spec 004-16, #6086).
 ///
 /// All `TypeAwareComposeConfig` fields have `#[serde(default)]` so existing configs parse
 /// unchanged. This step surfaces the new section for users upgrading from older configs.

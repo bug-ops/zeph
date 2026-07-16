@@ -786,7 +786,7 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // active [a2a] table (#5885)
             Box::new(MigrateA2aServerRemoveInertFields),
             // Step 85 — add [memory.type_aware_compose] advisory block for MemGuard
-            // type-aware retrieval composition (spec 064, #6086)
+            // type-aware retrieval composition (spec 004-16, #6086)
             Box::new(MigrateMemoryTypeAwareCompose),
             // Step 86 — add [orchestration.ensemble] advisory block for ORCH-style
             // deterministic verifier ensemble-merge (spec 073, #6232)

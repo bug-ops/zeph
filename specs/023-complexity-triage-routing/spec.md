@@ -304,7 +304,7 @@ This ensures cost-aware memory retrieval without repeating full semantic search 
 When retrieval success rate diverges from baseline, adaptive escalation adjusts tier routing to recover performance. Per [[004-15-memory-skill-coevolution-rfc-decision]]:
 
 **Success Rate Tracking**:
-- Measure success (via [[016-agent-feedback]]) on last N retrieval queries (sliding window, default 20)
+- Measure success (via [[054-agent-feedback]]) on last N retrieval queries (sliding window, default 20)
 - Per-tier tracking: `success_rate[tier] = successes / total_queries`
 
 **Escalation Policy**:
@@ -330,7 +330,7 @@ escalation_cooldown_turns = 5
 consecutive_degradation_threshold = 3
 ```
 
-**Integration**: FeedbackDetector signals (from [[016-agent-feedback]]) feed into tier escalation logic. On turn completion, emit `memory.routing.escalation{from, to}` metric if escalation fires.
+**Integration**: FeedbackDetector signals (from [[054-agent-feedback]]) feed into tier escalation logic. On turn completion, emit `memory.routing.escalation{from, to}` metric if escalation fires.
 
 ---
 

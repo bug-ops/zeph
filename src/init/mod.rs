@@ -291,7 +291,7 @@ pub(crate) struct WizardState {
     // CAM fidelity (#4547)
     /// Enable heuristic fidelity scoring (Full/Compressed/Placeholder).
     pub(crate) fidelity_enabled: bool,
-    // MemGuard type-aware retrieval composition (spec 064, #6086)
+    // MemGuard type-aware retrieval composition (spec 004-16, #6086)
     /// Enable type-aware retrieval composition (`[memory.type_aware_compose]`).
     pub(crate) type_aware_compose_enabled: bool,
     /// Widen the active set per classified query intent when type-aware composition is enabled.

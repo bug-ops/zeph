@@ -51,7 +51,7 @@
 //! step 84 drops the inert `require_tls`/`ssrf_protection` keys from an existing active
 //! `[a2a]` table (#5885);
 //! step 85 adds a commented `[memory.type_aware_compose]` advisory block for `MemGuard`
-//! type-aware retrieval composition (spec 064, #6086);
+//! type-aware retrieval composition (spec 004-16, #6086);
 //! step 86 adds a commented `[orchestration.ensemble]` advisory block for ORCH-style
 //! deterministic verifier ensemble-merge (spec 073, #6232);
 //! step 87 adds a commented `stale_running_after_secs = 3600` advisory to an existing active
@@ -1054,7 +1054,7 @@ impl Migration for MigrateA2aServerRemoveInertFields {
 }
 
 /// Step 85 — adds a commented `[memory.type_aware_compose]` advisory block for `MemGuard`
-/// type-aware retrieval composition (spec 064, #6086).
+/// type-aware retrieval composition (spec 004-16, #6086).
 pub(super) struct MigrateMemoryTypeAwareCompose;
 impl Migration for MigrateMemoryTypeAwareCompose {
     fn name(&self) -> &'static str {

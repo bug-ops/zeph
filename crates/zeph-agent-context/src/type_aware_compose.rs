@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Active-set resolution for MemGuard-inspired type-aware retrieval composition (spec 064,
+//! Active-set resolution for MemGuard-inspired type-aware retrieval composition (spec 004-16,
 //! issue #6086).
 //!
 //! This module resolves the [`zeph_common::memory::FunctionalType`] set that
@@ -13,7 +13,7 @@ use zeph_common::memory::{FunctionalType, MemoryRoute, MemoryRouter};
 use zeph_config::memory::TypeAwareComposeConfig;
 use zeph_memory::{HeuristicRouter, IntentClass};
 
-/// Static `IntentClass -> FunctionalType[]` widening table (spec 064 §3 Q3).
+/// Static `IntentClass -> FunctionalType[]` widening table (spec 004-16 §3 Q3).
 ///
 /// Used only when `intent_scoped = true`: it *adds* types to an already-resolved active set,
 /// it never narrows. `IntentClass` is `#[non_exhaustive]`, so an unrecognised future variant
@@ -42,12 +42,12 @@ fn intent_functional_types(intent: IntentClass) -> &'static [FunctionalType] {
 /// Returns an empty `Vec` when `config.enabled` is `false` or when `default_compose_types`
 /// is empty and `intent_scoped` is `false` — both cases mean "no type gating", which
 /// `schedule_context_fetchers` treats identically to today's unfiltered composition
-/// (spec 064 edge cases: `enabled = false` and empty `default_compose_types` are the same
+/// (spec 004-16 edge cases: `enabled = false` and empty `default_compose_types` are the same
 /// no-op code path).
 ///
 /// `intent_scoped = true` uses [`HeuristicRouter`] — a pure, synchronous, no-I/O function of
 /// `query` — to classify the query into an [`IntentClass`] and widen the set via the static
-/// table above. This adds no new LLM call (spec 064 §5 Multi-Model note): it reuses the same
+/// table above. This adds no new LLM call (spec 004-16 §5 Multi-Model note): it reuses the same
 /// heuristic router `MemFlow` tiered retrieval already uses for its no-LLM fallback path.
 #[must_use]
 pub fn resolve_active_functional_types(

@@ -15,7 +15,7 @@ related:
   - "[[005-skills/spec]]"
   - "[[015-self-learning/spec]]"
   - "[[001-system-invariants/spec]]"
-  - "[[057-agent-persistence/spec]]"
+  - "[[078-agent-persistence/spec]]"
 ---
 
 # Spec: Conversation Trace → Skill Extraction Pipeline (AutoSkill A1)
