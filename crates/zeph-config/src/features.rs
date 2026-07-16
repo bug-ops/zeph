@@ -1596,6 +1596,15 @@ pub struct DebugConfig {
     pub format: crate::dump_format::DumpFormat,
     /// `OTel` trace configuration (only used when `format = "trace"`).
     pub traces: TraceConfig,
+    /// Include full raw base64 `MessagePart::Image` bytes in debug dumps instead of a
+    /// redacted `<redacted image: ...>` marker (#6306).
+    ///
+    /// Default: `false`. Image payloads are redacted by default to avoid writing
+    /// potentially large or sensitive binary data to disk on an opt-in debugging feature.
+    /// Enable only when a developer explicitly needs full wire-payload fidelity for
+    /// image-related debugging.
+    #[serde(default)]
+    pub include_raw_images: bool,
 }
 
 impl Default for DebugConfig {
@@ -1604,6 +1613,7 @@ impl Default for DebugConfig {
             enabled: false,
             output_dir: super::defaults::default_debug_output_dir(),
             format: crate::dump_format::DumpFormat::default(),
+            include_raw_images: false,
             traces: TraceConfig::default(),
         }
     }

@@ -814,6 +814,7 @@ max_files = 7                 # Rotated log files to retain (default: 7)
 [debug]
 enabled = false             # Enable debug dump at startup (default: false)
 output_dir = "/absolute/path/to/debug"  # Optional override; omit to use the platform default in the user data dir (%LOCALAPPDATA%\Zeph\debug on Windows)
+include_raw_images = false  # Include full raw base64 image bytes instead of a redacted marker (default: false)
 
 # Requires `classifiers` feature.
 # ML-backed injection detection and PII detection via Candle/DeBERTa models.

@@ -279,6 +279,7 @@ pub(crate) async fn build_agent_factory(
                 agent,
                 session_dump_dir.as_path(),
                 debug_config.format,
+                debug_config.include_raw_images,
             )
             .0;
         }

@@ -1202,6 +1202,7 @@ pub(crate) async fn run_daemon(
             agent,
             config.debug.output_dir.as_path(),
             config.debug.format,
+            config.debug.include_raw_images,
         )
         .0;
     }

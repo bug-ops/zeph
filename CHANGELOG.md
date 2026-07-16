@@ -18,6 +18,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `TranscriptWriter::append` call it instead of duplicating the filter. The caller's in-memory
   `Message` is unaffected; only the persisted copy is stripped.
 
+- `zeph-core`: debug dumps (`[debug] enabled = true`) no longer write full raw base64
+  `MessagePart::Image` bytes to disk by default. Both dump formats — `json` (typed message
+  serialization) and `raw` (provider wire payload, covering Claude/OpenAI/Gemini/Ollama
+  vision request shapes) — now redact image payloads to a
+  `<redacted image: {mime_type}, {n} bytes, blake3:{prefix}>` marker. A new opt-in
+  `[debug] include_raw_images` config flag (default `false`) restores the previous
+  full-byte behavior for developers who explicitly need wire-payload fidelity (#6306).
+
 ## [0.22.1] - 2026-07-15
 ### Fixed
 

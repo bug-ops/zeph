@@ -70,6 +70,7 @@ Both the streaming and non-streaming LLM code paths are instrumented. Tool outpu
 [debug]
 enabled = false             # Enable at startup (default: false)
 output_dir = ".zeph/debug" # Base directory for dump files (default: ".zeph/debug")
+include_raw_images = false # Include full raw base64 image bytes instead of a redacted marker (default: false)
 ```
 
 The `--debug-dump` CLI flag overrides both fields: if `PATH` is provided it overrides `output_dir`; if omitted, `output_dir` is used. If neither the flag nor `enabled = true` is set, no files are written.
@@ -79,6 +80,8 @@ The `--debug-dump` CLI flag overrides both fields: if `PATH` is provided it over
 ## Security
 
 Dump files contain the full conversation context including any secrets, tokens, or sensitive data present in messages and tool output. Do not store dump directories in version-controlled or publicly accessible locations.
+
+Image content (`MessagePart::Image`, vision requests) is redacted by default: instead of the full base64 payload, dump files contain a `<redacted image: {mime_type}, {n} bytes, blake3:{prefix}>` marker — enough to identify format, size, and correlate the same image across dumps without ever writing raw image bytes to disk. Set `[debug] include_raw_images = true` only when you explicitly need full wire-payload fidelity for image-related debugging; the raw bytes are then written exactly as sent to the provider.
 
 Add `.zeph/debug/` to `.gitignore` (covered by the `.zeph/*` rule in the default `.gitignore`) to keep dumps out of your repository.
 

@@ -1011,6 +1011,10 @@ enabled = false
 #   "trace" — OpenTelemetry-compatible OTLP JSON spans written to trace.json at session end
 #             Use --dump-format trace on the CLI to override at runtime.
 format = "json"
+# Include full raw base64 image bytes (MessagePart::Image) in debug dumps instead of a
+# redacted "<redacted image: ...>" marker. Default false — leave disabled unless a developer
+# explicitly needs full wire-payload fidelity for image-related debugging (#6306).
+include_raw_images = false
 
 [debug.traces]
 # OTLP gRPC endpoint for trace export (only used when format = "trace" and otel feature enabled).

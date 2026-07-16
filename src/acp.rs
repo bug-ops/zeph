@@ -2158,9 +2158,13 @@ async fn spawn_acp_agent(
         let session_dump_dir = debug_config
             .output_dir
             .join(session_ctx.session_id.to_string());
-        agent =
-            agent_setup::apply_debug_dumper(agent, session_dump_dir.as_path(), debug_config.format)
-                .0;
+        agent = agent_setup::apply_debug_dumper(
+            agent,
+            session_dump_dir.as_path(),
+            debug_config.format,
+            debug_config.include_raw_images,
+        )
+        .0;
     }
 
     if !safe_mode {

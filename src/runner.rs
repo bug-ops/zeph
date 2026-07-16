@@ -3251,8 +3251,12 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                     .then(|| config.debug.output_dir.clone())
             });
         if let Some(ref dir) = dump_dir {
-            let (agent, session_dir) =
-                agent_setup::apply_debug_dumper(agent, dir.as_path(), effective_format);
+            let (agent, session_dir) = agent_setup::apply_debug_dumper(
+                agent,
+                dir.as_path(),
+                effective_format,
+                config.debug.include_raw_images,
+            );
             // Store trace config so runtime `/dump-format trace` can create a collector (CR-04).
             let agent = agent.with_trace_config(
                 dir.clone(),

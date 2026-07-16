@@ -1306,9 +1306,11 @@ pub(crate) fn apply_debug_dumper<C: Channel>(
     agent: Agent<C>,
     dir: &Path,
     format: zeph_core::debug_dump::DumpFormat,
+    include_raw_images: bool,
 ) -> (Agent<C>, PathBuf) {
     match zeph_core::debug_dump::DebugDumper::new(dir, format) {
         Ok(dumper) => {
+            let dumper = dumper.with_include_raw_images(include_raw_images);
             let session_dir = dumper.dir().to_owned();
             (agent.with_debug_dumper(dumper), session_dir)
         }
@@ -3608,7 +3610,7 @@ mod tests {
         // that create_dir_all call fails, forcing the Err branch.
         let dir = tmp.path().to_owned();
         let (result_agent, result_dir) =
-            apply_debug_dumper(agent, &dir, zeph_core::debug_dump::DumpFormat::Raw);
+            apply_debug_dumper(agent, &dir, zeph_core::debug_dump::DumpFormat::Raw, false);
         assert_eq!(
             result_dir, dir,
             "on DebugDumper::new failure, the original dir must be returned unchanged"
