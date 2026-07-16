@@ -111,6 +111,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SubAgentManager::transcript_path_for()`, which is computed from config alone, so reaping
   handles on the dispatch path cannot silently degrade per-task or whole-plan verifier grounding
   (spec 009 §§ Verifier Tool-Call Grounding, Whole-Plan Grounding) to fail-open `None`.
+
+- `zeph-core`: `DebugDumper::write`/`write_sync` now use `zeph_common::fs_secure::atomic_write_private`
+  (write-to-`.tmp`-then-rename) instead of the non-atomic `write_private` (open-truncate then
+  `write_all`) (#6327). Under `write_private`, a reader polling for the dump file could open it
+  in the truncate-but-not-yet-written window and observe an empty file, which is what made the
+  `read_request_dump` test helper flaky under parallel `nextest` execution (~1 in 5-7 runs,
+  `serde_json` "EOF while parsing a value" panic). The atomic rename means the target path never
+  becomes visible until the complete content is already flushed and synced, fixing the race for
+  both production callers and tests; `read_request_dump`'s own empty-content retry guard is
+  therefore unnecessary and was left unchanged.
+
+- `zeph-core`: fixed the `rustdoc::broken_intra_doc_links` gate failure in `provider_factory.rs`
+  (#6329). `spawn_cocoon_health_checks`'s doc comment referenced `[TaskSupervisor::snapshot]`
+  without `TaskSupervisor` being in scope in this file (unlike other files that `use` it) — now
+  a fully-qualified `[zeph_common::TaskSupervisor::snapshot]` link. The same doc comment also
+  linked to two private helpers (`build_cocoon_provider`, `resolve_cocoon_client_params`) from a
+  public function's docs, triggering `private_intra_doc_links` warnings; both are now plain
+  inline code spans instead of unresolvable intra-doc links.
+
 - `--init` wizard: the orchestration `default_idle_timeout_secs` prompt silently dropped
   invalid input (non-numeric, negative, or `0`) to `None` via a bare `.parse().ok()`, with
   zero re-prompt or feedback to the operator (#6303). It now uses the same

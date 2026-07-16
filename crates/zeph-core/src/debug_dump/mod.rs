@@ -123,7 +123,7 @@ impl DebugDumper {
         // for this fix. Recorded here per the exception clause in
         // .claude/rules/continuous-improvement.md rather than left as a silent deviation.
         tokio::task::spawn_blocking(move || {
-            if let Err(e) = zeph_common::fs_secure::write_private(&path, &content) {
+            if let Err(e) = zeph_common::fs_secure::atomic_write_private(&path, &content) {
                 tracing::warn!(path = %path.display(), error = %e, "debug dump write failed");
             }
         });
@@ -134,7 +134,7 @@ impl DebugDumper {
     /// out of scope for the #6029 hot-path fix — see the issue for the tracked follow-up.
     fn write_sync(&self, filename: &str, content: &[u8]) {
         let path = self.dir.join(filename);
-        if let Err(e) = zeph_common::fs_secure::write_private(&path, content) {
+        if let Err(e) = zeph_common::fs_secure::atomic_write_private(&path, content) {
             tracing::warn!(path = %path.display(), error = %e, "debug dump write failed");
         }
     }
@@ -1050,9 +1050,9 @@ mod tests {
     }
 
     /// Polls for a plain-text dump file by name, mirroring `read_request_dump`. Requires
-    /// non-empty content (not just a successful open) to avoid a truncate-then-write race in
-    /// `write_private`: `write()` opens the file with `truncate` before `write_all` runs, so a
-    /// read landing in that window would otherwise see an empty file instead of retrying.
+    /// non-empty content (not just a successful open) as defense-in-depth; `write`/`write_sync`
+    /// now use `atomic_write_private` (write-to-`.tmp`-then-rename, #6327), so the target path
+    /// only ever becomes visible once fully written.
     async fn read_dump_file(dir: &Path, filename: &str) -> String {
         let session = std::fs::read_dir(dir)
             .unwrap()

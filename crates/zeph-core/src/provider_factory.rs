@@ -648,12 +648,12 @@ fn build_cocoon_provider(
 /// Spawn an advisory health-check for all Cocoon providers that have `cocoon_health_check = true`.
 ///
 /// Registers each check as a one-shot supervised task so it is observable via
-/// [`TaskSupervisor::snapshot`] and abortable on shutdown. Failures are logged at `warn` level
-/// and never propagated — the check is purely advisory. Gating logic for `access_hash`/`base_url`
-/// is shared with [`build_cocoon_provider`] via [`resolve_cocoon_client_params`]; unlike the
-/// provider-build path, a resolution error here only skips that entry's health check (logged at
-/// `warn`) rather than failing bootstrap, since this path is advisory and runs after providers
-/// have already been built successfully.
+/// [`zeph_common::TaskSupervisor::snapshot`] and abortable on shutdown. Failures are logged at
+/// `warn` level and never propagated — the check is purely advisory. Gating logic for
+/// `access_hash`/`base_url` is shared with `build_cocoon_provider` via
+/// `resolve_cocoon_client_params`; unlike the provider-build path, a resolution error here only
+/// skips that entry's health check (logged at `warn`) rather than failing bootstrap, since this
+/// path is advisory and runs after providers have already been built successfully.
 ///
 /// Call this once after [`build_provider_from_entry`] has succeeded for all providers, passing
 /// the session-level supervisor. The function is a no-op when `cocoon` feature is not enabled
