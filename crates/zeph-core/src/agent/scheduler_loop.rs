@@ -434,8 +434,15 @@ impl<C: crate::channel::Channel> Agent<C> {
 
             let mut any_spawn_success = false;
             let mut any_concurrency_failure = false;
+            // Set by the `Spawn` (forced-Done-on-failure) and `Done` arms below. Deferring the
+            // `'tick` break until after `collect_finished_subagents()` (below the `for` loop)
+            // ensures a task whose completion coincides with graph completion in the same tick —
+            // the common case for the last task of a plan — still has its handle reaped instead
+            // of leaking (issue #6288: an unconditional `break 'tick` here would bypass the
+            // per-tick reap entirely on the terminating tick).
+            let mut done_status: Option<zeph_orchestration::GraphStatus> = None;
 
-            for action in actions {
+            'actions: for action in actions {
                 match action {
                     SchedulerAction::Spawn {
                         task_id,
@@ -455,7 +462,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                         any_spawn_success |= success;
                         any_concurrency_failure |= fail;
                         if let Some(s) = done {
-                            break 'tick s;
+                            done_status = Some(s);
+                            break 'actions;
                         }
                     }
                     SchedulerAction::Cancel { agent_handle_id } => {
@@ -478,7 +486,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                         .await;
                     }
                     SchedulerAction::Done { status } => {
-                        break 'tick status;
+                        done_status = Some(status);
+                        break 'actions;
                     }
                     SchedulerAction::VerifyPredicate {
                         task_id,
@@ -798,6 +807,12 @@ impl<C: crate::channel::Channel> Agent<C> {
                 }
             }
 
+            self.collect_finished_subagents().await;
+
+            if let Some(status) = done_status {
+                break 'tick status;
+            }
+
             scheduler.record_batch_backoff(any_spawn_success, any_concurrency_failure);
 
             self.process_pending_secret_requests(&mut denied_secrets)
@@ -1054,8 +1069,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     ) -> Option<Vec<zeph_orchestration::ToolCallSummary>> {
         let agent_id = task.result.as_ref().and_then(|r| r.agent_id.as_deref())?;
         let mgr = self.services.orchestration.subagent_manager.as_ref()?;
-        let dir = mgr.agent_transcript_dir(agent_id)?;
-        let path = dir.join(format!("{agent_id}.jsonl"));
+        let path = mgr.transcript_path_for(&self.services.orchestration.subagent_config, agent_id);
         match zeph_subagent::TranscriptReader::load_strict(&path) {
             Ok(messages) => Some(tool_trace_from_messages(&messages)),
             Err(e) => {
@@ -1066,6 +1080,38 @@ impl<C: crate::channel::Channel> Agent<C> {
                     "tool-trace transcript read failed or partial — grounding fails open for this task"
                 );
                 None
+            }
+        }
+    }
+
+    /// Reap sub-agent handles that have reached a terminal state, writing their final
+    /// `TranscriptMeta` sidecar and removing them from [`zeph_subagent::SubAgentManager`].
+    ///
+    /// Safe to call at any point in the tick loop: [`Self::build_tool_trace_for_task`] no longer
+    /// depends on handle residency, so ordering relative to `SchedulerAction::Verify` is not
+    /// load-bearing here (spec 009 § Verifier Tool-Call Grounding, issue #6288). Errors are
+    /// logged, not propagated — a collection failure for one task must not abort the tick loop
+    /// for the rest of the plan.
+    pub(super) async fn collect_finished_subagents(&mut self) {
+        let Some(mgr) = &mut self.services.orchestration.subagent_manager else {
+            return;
+        };
+        let finished: Vec<String> = mgr
+            .statuses()
+            .into_iter()
+            .filter_map(|(id, status)| {
+                matches!(
+                    status.state,
+                    zeph_subagent::SubAgentState::Completed
+                        | zeph_subagent::SubAgentState::Failed
+                        | zeph_subagent::SubAgentState::Canceled
+                )
+                .then_some(id)
+            })
+            .collect();
+        for task_id in finished {
+            if let Err(e) = mgr.collect(&task_id).await {
+                tracing::warn!(task_id, error = %e, "failed to collect finished orchestration sub-agent");
             }
         }
     }
@@ -1434,6 +1480,226 @@ mod tests {
             trace_after_tear.is_none(),
             "a torn/malformed transcript line must fail closed to None, not Some(partial): \
              {trace_after_tear:?}"
+        );
+    }
+
+    /// Regression test for issue #6288: `build_tool_trace_for_task` must still resolve the real
+    /// trace after the sub-agent's handle has already been reaped via
+    /// `SubAgentManager::collect()` — this is the exact scenario the spec's residency note used
+    /// to warn against (a naive `collect()` call site degrading grounding to fail-open `None`).
+    /// `transcript_path_for` (unlike `agent_transcript_dir`) is computed from `config` alone, so
+    /// it must not depend on the handle still being resident in `mgr.agents`.
+    #[tokio::test]
+    async fn build_tool_trace_for_task_recovers_after_handle_is_collected() {
+        use crate::agent::agent_tests::*;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = mock_provider(vec!["task completed successfully".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let full_id = spawn_worker_and_wait_completed(&mut agent, tmp.path()).await;
+
+        let mut task = zeph_orchestration::TaskNode::new(0, "t", "d");
+        task.result = Some(zeph_orchestration::TaskResult {
+            output: String::new(),
+            artifacts: vec![],
+            duration_ms: 0,
+            agent_id: Some(full_id.clone()),
+            agent_def: None,
+        });
+
+        let dir = agent
+            .services
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .unwrap()
+            .agent_transcript_dir(&full_id)
+            .expect("transcript dir must be resolvable for a just-spawned agent")
+            .to_path_buf();
+        let jsonl_path = dir.join(format!("{full_id}.jsonl"));
+        append_tool_round(&jsonl_path).await;
+
+        agent
+            .services
+            .orchestration
+            .subagent_manager
+            .as_mut()
+            .unwrap()
+            .collect(&full_id)
+            .await
+            .expect("collect must succeed for a completed handle");
+
+        let trace = agent
+            .build_tool_trace_for_task(&task)
+            .expect("trace must still resolve to Some after the handle has been collected");
+        assert!(
+            trace
+                .iter()
+                .any(|t| t.tool == "bash" && t.args_summary.as_deref() == Some("cargo test")),
+            "post-collection trace must still reconstruct the real bash/cargo-test call: {trace:?}"
+        );
+    }
+
+    /// Regression test for issue #6288: every `Spawn`-dispatched task's sub-agent handle must be
+    /// reaped from `SubAgentManager` once it reaches a terminal state — the orchestration
+    /// dispatch path previously never called `collect()`, leaking a handle (and never writing
+    /// the final `TranscriptMeta` sidecar) for every plan-executed task.
+    #[tokio::test]
+    async fn run_scheduler_loop_reaps_completed_spawn_dispatched_subagent() {
+        use crate::agent::agent_tests::*;
+        use zeph_orchestration::{DagScheduler, GraphStatus, RuleBasedRouter, TaskGraph, TaskNode};
+        use zeph_subagent::{SubAgentDef, SubAgentManager};
+
+        let mut graph = TaskGraph::new("goal");
+        graph.tasks.push(TaskNode::new(0, "t", "do a task"));
+
+        let def =
+            SubAgentDef::parse("---\nname: worker\ndescription: A worker\n---\n\nDo things.\n")
+                .unwrap();
+
+        let config = zeph_config::OrchestrationConfig::default();
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(RuleBasedRouter),
+            vec![def.clone()],
+            None,
+        )
+        .unwrap();
+
+        let provider = mock_provider(vec!["task completed successfully".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.orchestration.orchestration_config = config;
+
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(def);
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            agent.run_scheduler_loop(&mut scheduler, 1, token),
+        )
+        .await
+        .expect("run_scheduler_loop must not hang")
+        .unwrap();
+
+        assert_eq!(status, GraphStatus::Completed);
+        assert!(
+            agent
+                .services
+                .orchestration
+                .subagent_manager
+                .as_ref()
+                .unwrap()
+                .statuses()
+                .is_empty(),
+            "completed spawn-dispatched sub-agent handle must be reaped, not leaked"
+        );
+    }
+
+    /// Regression test for issue #6288: `collect_finished_subagents()` must be a no-op (not
+    /// panic) when orchestration is not spawning any sub-agents this session, i.e.
+    /// `subagent_manager` is `None`. `run_scheduler_loop` calls it unconditionally every tick
+    /// regardless of whether the plan uses `Spawn` at all.
+    #[tokio::test]
+    async fn collect_finished_subagents_is_noop_when_subagent_manager_is_none() {
+        use crate::agent::agent_tests::*;
+
+        let provider = mock_provider(vec!["unused".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        assert!(agent.services.orchestration.subagent_manager.is_none());
+
+        agent.collect_finished_subagents().await;
+    }
+
+    /// Regression test for issue #6288: a sub-agent handle canceled mid-plan (e.g. via `/plan
+    /// cancel` triggering `cancel_agents_from_actions`) must also be reaped by
+    /// `collect_finished_subagents()` — the reap filter matches `Completed | Failed | Canceled`,
+    /// not just `Completed`, since a Verify-arm-only or Completed-only hook would permanently
+    /// leak canceled handles.
+    #[tokio::test]
+    async fn collect_finished_subagents_reaps_canceled_handle() {
+        use crate::agent::agent_tests::*;
+        use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use zeph_subagent::hooks::SubagentHooks;
+        use zeph_subagent::{SpawnContext, SubAgentDef, SubAgentManager};
+
+        let provider = mock_provider(vec!["unused".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let def = SubAgentDef {
+            name: "worker".into(),
+            description: "A worker bot".into(),
+            model: None,
+            tools: ToolPolicy::InheritAll,
+            disallowed_tools: vec![],
+            permissions: SubAgentPermissions::default(),
+            skills: SkillFilter::default(),
+            system_prompt: "You are a worker.".into(),
+            hooks: SubagentHooks::default(),
+            memory: None,
+            source: None,
+            file_path: None,
+        };
+
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(def);
+        let task_id = mgr
+            .spawn(
+                "worker",
+                "do a long task",
+                mock_provider(vec!["should not matter, canceled first".into()]),
+                std::sync::Arc::new(MockToolExecutor::no_tools()),
+                None,
+                &zeph_config::SubAgentConfig::default(),
+                SpawnContext::default(),
+            )
+            .await
+            .unwrap();
+        mgr.cancel(&task_id).unwrap();
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        assert_eq!(
+            agent
+                .services
+                .orchestration
+                .subagent_manager
+                .as_ref()
+                .unwrap()
+                .statuses()
+                .iter()
+                .find(|(id, _)| id == &task_id)
+                .map(|(_, s)| s.state),
+            Some(zeph_subagent::SubAgentState::Canceled),
+            "precondition: handle must report Canceled before reaping"
+        );
+
+        agent.collect_finished_subagents().await;
+
+        assert!(
+            agent
+                .services
+                .orchestration
+                .subagent_manager
+                .as_ref()
+                .unwrap()
+                .statuses()
+                .is_empty(),
+            "canceled sub-agent handle must be reaped, not leaked"
         );
     }
 }

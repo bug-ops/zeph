@@ -50,6 +50,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`/`zeph-subagent`: orchestration-dispatched sub-agents (`SchedulerAction::Spawn` via
+  `run_scheduler_loop`) are now reaped once they reach a terminal state (`Completed`/`Failed`/
+  `Canceled`) — `SubAgentManager::collect()` was previously only called from the interactive
+  `/agent` polling path, so every plan-executed sub-agent leaked its handle and never wrote a
+  final `TranscriptMeta` sidecar (issue #6288). Grounding trace reads
+  (`build_tool_trace_for_task`, `resolve_whole_plan_trace_paths`) no longer depend on the handle
+  remaining resident in `SubAgentManager` — both now resolve the transcript path via the new
+  `SubAgentManager::transcript_path_for()`, which is computed from config alone, so reaping
+  handles on the dispatch path cannot silently degrade per-task or whole-plan verifier grounding
+  (spec 009 §§ Verifier Tool-Call Grounding, Whole-Plan Grounding) to fail-open `None`.
 - `--init` wizard: the orchestration `default_idle_timeout_secs` prompt silently dropped
   invalid input (non-numeric, negative, or `0`) to `None` via a bare `.parse().ok()`, with
   zero re-prompt or feedback to the operator (#6303). It now uses the same

@@ -205,6 +205,67 @@ async fn collect_unknown_task_id_returns_not_found() {
     assert_matches!(err, SubAgentError::NotFound(_));
 }
 
+/// Regression test for issue #6288: `transcript_path_for` must resolve the identical path
+/// whether or not the agent's handle is still resident in `mgr.agents`, and a transcript
+/// read against that path must succeed after `collect()` has removed the handle — proving
+/// grounding reads (`build_tool_trace_for_task` in `zeph-core`) do not silently degrade to
+/// `None` merely because the orchestration dispatch path has already reaped the handle.
+#[tokio::test]
+async fn transcript_path_for_stable_across_collect_and_readable_after() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = SubAgentConfig {
+        transcript_dir: Some(tmp.path().to_path_buf()),
+        transcript_enabled: true,
+        ..SubAgentConfig::default()
+    };
+
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+
+    let task_id = mgr
+        .spawn(
+            "bot",
+            "do stuff",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &config,
+            SpawnContext::default(),
+        )
+        .await
+        .unwrap();
+
+    let path_before = mgr.transcript_path_for(&config, &task_id);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let completed = mgr
+            .statuses()
+            .into_iter()
+            .any(|(id, status)| id == task_id && status.state == SubAgentState::Completed);
+        if completed {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() <= deadline,
+            "sub-agent did not complete within timeout"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    mgr.collect(&task_id).await.unwrap();
+
+    let path_after = mgr.transcript_path_for(&config, &task_id);
+    assert_eq!(
+        path_before, path_after,
+        "transcript_path_for must return the identical path before and after collect()"
+    );
+    assert!(!mgr.agents.contains_key(&task_id));
+
+    crate::transcript::TranscriptReader::load_strict(&path_after)
+        .expect("transcript must still be readable after the handle has been collected");
+}
+
 #[tokio::test]
 async fn approve_secret_grants_access() {
     let mut mgr = make_manager();

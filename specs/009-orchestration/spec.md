@@ -479,11 +479,15 @@ line-skipping reader that silently drops a `ToolUse` entry on a partial read wou
 false-positive an honest claim. This is a code-level precondition at the read site, not spec
 prose alone.
 
-**Residency note (spawn path).** The spawn-path trace is reconstructed from the sub-agent
-transcript, which today is guaranteed resident only because `SubAgentManager::collect()` is
-never called on the orchestration dispatch path. If `collect()` is ever wired into dispatch,
-the grounding read MUST move ahead of it; until then, the read MUST fail-closed to `None` on
-any lookup miss rather than assume residency.
+**Residency note (spawn path) — resolved (issue #6288).** The spawn-path trace read no longer
+depends on the sub-agent's handle remaining resident in `SubAgentManager`.
+`SubAgentManager::collect()` **is** wired into the orchestration dispatch path (`Agent::
+collect_finished_subagents()`, called once per scheduler tick in `run_scheduler_loop`), and the
+grounding read is unaffected by its timing: `SubAgentManager::transcript_path_for()` resolves the
+transcript path purely from `SubAgentConfig` and `agent_id`, with no dependency on
+`self.agents` — unlike the residency-coupled `agent_transcript_dir()` accessor it replaced. The
+read still MUST fail-closed to `None` on any lookup miss (missing `agent_id`, missing
+`SubAgentManager`, or a transcript read error), independent of collection timing.
 
 ### Implementation Surface
 
@@ -491,8 +495,8 @@ any lookup miss rather than assume residency.
 dispatch path sources it differently, since only one of the two has a transcript file:
 
 - **Spawn path.** Sourced from the sub-agent transcript: `TaskResult.agent_id` →
-  `SubAgentManager::agent_transcript_dir()` → `TranscriptReader::load`. The read happens at the
-  `SchedulerAction::Verify` handler in `scheduler_loop.rs`, subject to the fail-closed-to-`None`
+  `SubAgentManager::transcript_path_for()` → `TranscriptReader::load_strict`. The read happens at
+  the `SchedulerAction::Verify` handler in `scheduler_loop.rs`, subject to the fail-closed-to-`None`
   contract above.
 - **RunInline path.** There is no transcript file for this path, so the trace is collected
   directly inside `run_inline_tool_loop`'s tool-call loop and threaded through a new field on
@@ -597,7 +601,7 @@ laundering a hallucinated claim that only surfaces once outputs are aggregated a
 **Aggregation is transcript-derived, not per-task-verify-derived.** At `run_whole_plan_verify`
 time the DAG-wide trace is rebuilt from source, per completed-with-result task, by reimplementing
 the same resolution logic `build_tool_trace_for_task` uses for the per-task path (`TaskResult.agent_id`
-→ `SubAgentManager::agent_transcript_dir()` → `TranscriptReader::load_strict`) — split across
+→ `SubAgentManager::transcript_path_for()` → `TranscriptReader::load_strict`) — split across
 `resolve_whole_plan_trace_paths` (synchronous path resolution) and `build_whole_plan_tool_trace`
 (the actual reads, offloaded to `spawn_blocking`). `build_tool_trace_for_task` itself is
 module-private to `scheduler_loop.rs` and is not called directly from the whole-plan path (a
@@ -607,6 +611,14 @@ from the transcript — rather than reusing a value cached during per-task `Veri
 it makes whole-plan grounding correct *even when per-task `Verify` was skipped* for some task,
 which is exactly the future gap this closes. The reads are already-persisted transcripts; no
 per-task LLM claim-extraction is re-run.
+
+**Residency note (whole-plan path) — resolved (issue #6288).** `run_whole_plan_verify` runs
+strictly after `run_scheduler_loop` returns (`plan.rs`), i.e. after every per-tick
+`collect_finished_subagents()` call for the just-completed plan has already run — every
+spawn-dispatched completed task's handle is reaped from `SubAgentManager` by the time this path
+resolves transcript paths. Like the per-task path above, `resolve_whole_plan_trace_paths` uses
+`transcript_path_for()` (not `agent_transcript_dir()`), so it does not depend on handle residency
+and is unaffected by that ordering.
 
 **Trace availability is all-or-nothing, lifted to the DAG level.** The aggregate is
 `Some(union)` only if **every** completed-with-result task resolves to `Some(trace)`; if **any**

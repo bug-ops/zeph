@@ -631,13 +631,13 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// Takes a plain `&TaskGraph` (not `&DagScheduler`) so it is testable without spinning up
     /// full scheduler machinery — the caller passes `scheduler.graph()`.
     ///
-    /// Pure in-memory work (`agent_transcript_dir` is a `HashMap` lookup, no I/O) — deliberately
-    /// kept synchronous and `&self`-borrowing so it never needs to cross an `.await` point,
-    /// which would otherwise require `Agent<C>: Sync` to keep the caller's future `Send` (spec
-    /// 009 § Whole-Plan Grounding, issue #6287). Returns `None` the moment any one task's path
-    /// cannot be resolved (missing `agent_id` — e.g. a `RunInline` task, whose in-loop trace is
-    /// never persisted — or no `SubAgentManager`/transcript dir), matching the all-or-nothing
-    /// availability contract.
+    /// Pure in-memory work (`transcript_path_for` is computed from `config` alone, no I/O and no
+    /// dependence on handle residency in `SubAgentManager` — see issue #6288) — deliberately kept
+    /// synchronous and `&self`-borrowing so it never needs to cross an `.await` point, which
+    /// would otherwise require `Agent<C>: Sync` to keep the caller's future `Send` (spec 009 §
+    /// Whole-Plan Grounding, issue #6287). Returns `None` the moment any one task's path cannot
+    /// be resolved (missing `agent_id` — e.g. a `RunInline` task, whose in-loop trace is never
+    /// persisted — or no `SubAgentManager`), matching the all-or-nothing availability contract.
     fn resolve_whole_plan_trace_paths(
         &self,
         graph: &zeph_orchestration::TaskGraph,
@@ -667,16 +667,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                 );
                 return None;
             };
-            let Some(dir) = mgr.agent_transcript_dir(agent_id) else {
-                tracing::debug!(
-                    task_id = %task.id,
-                    agent_id = %agent_id,
-                    "whole-plan tool-trace union: transcript dir unresolvable, aggregate \
-                     unavailable"
-                );
-                return None;
-            };
-            paths.push(dir.join(format!("{agent_id}.jsonl")));
+            let cfg = &self.services.orchestration.subagent_config;
+            paths.push(mgr.transcript_path_for(cfg, agent_id));
         }
         Some(paths)
     }
@@ -1786,6 +1778,79 @@ mod tests {
                 .iter()
                 .any(|t| t.tool == "bash" && t.args_summary.as_deref() == Some("cargo test")),
             "union must include the tool call recorded on task 0's transcript: {union:?}"
+        );
+    }
+
+    /// Regression test for issue #6288 (hazard found during implementation, not part of the
+    /// original debugger sketch): `run_whole_plan_verify` runs strictly after `run_scheduler_loop`
+    /// returns, i.e. after every per-tick `collect_finished_subagents()` call has already reaped
+    /// completed spawn-dispatched handles. Before `resolve_whole_plan_trace_paths` was re-plumbed
+    /// to use `transcript_path_for` (residency-independent) instead of `agent_transcript_dir`
+    /// (requires the handle still resident in `mgr.agents`), wiring `collect()` into the
+    /// dispatch path would have silently and permanently degraded whole-plan grounding to `None`
+    /// for every plan run — this proves the union still resolves after both handles are
+    /// collected, not just while they remain resident (as
+    /// `whole_plan_trace_union_combines_multiple_tasks` above already covers).
+    #[tokio::test]
+    async fn whole_plan_trace_union_resolves_after_handles_are_collected() {
+        use crate::agent::agent_tests::*;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = mock_provider(vec![
+            "task completed successfully".into(),
+            "task completed successfully".into(),
+        ]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let id1 = spawn_worker_and_wait_completed_shared(&mut agent, tmp.path()).await;
+        let id2 = spawn_worker_and_wait_completed_shared(&mut agent, tmp.path()).await;
+
+        let dir = agent
+            .services
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .unwrap()
+            .agent_transcript_dir(&id1)
+            .unwrap()
+            .to_path_buf();
+        append_tool_round(&dir.join(format!("{id1}.jsonl"))).await;
+
+        let mgr = agent
+            .services
+            .orchestration
+            .subagent_manager
+            .as_mut()
+            .unwrap();
+        mgr.collect(&id1).await.expect("collect must succeed");
+        mgr.collect(&id2).await.expect("collect must succeed");
+        assert!(
+            mgr.statuses().is_empty(),
+            "both handles must be gone before resolving trace paths, to prove residency \
+             independence"
+        );
+
+        let mut graph = zeph_orchestration::TaskGraph::new("goal");
+        graph.tasks = vec![
+            completed_task_with_agent(0, &id1),
+            completed_task_with_agent(1, &id2),
+        ];
+
+        let paths = agent.resolve_whole_plan_trace_paths(&graph).expect(
+            "trace paths must still resolve after collect() — must not degrade to None \
+                 merely because the handles are no longer resident",
+        );
+        let union = Agent::<MockChannel>::build_whole_plan_tool_trace(paths)
+            .await
+            .expect("post-collection transcripts must still be readable");
+        assert!(
+            union
+                .iter()
+                .any(|t| t.tool == "bash" && t.args_summary.as_deref() == Some("cargo test")),
+            "post-collection union must still include the recorded tool call: {union:?}"
         );
     }
 

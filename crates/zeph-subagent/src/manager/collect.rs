@@ -164,6 +164,32 @@ impl SubAgentManager {
             .and_then(|h| h.transcript_dir.as_deref())
     }
 
+    /// Resolve the transcript file path for `agent_id` from `config`, independent of whether the
+    /// agent's handle is still resident in this manager.
+    ///
+    /// Unlike [`Self::agent_transcript_dir`] (which only returns a path for agents still tracked
+    /// in `self.agents`), this is safe to call after [`Self::collect`] has already removed the
+    /// handle — the path is fully determined by `config` and `agent_id`, matching exactly what
+    /// `handle.transcript_dir` held at spawn time (see the `handle_transcript_dir` construction
+    /// in `manager/spawn.rs`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_config::SubAgentConfig;
+    /// use zeph_subagent::SubAgentManager;
+    ///
+    /// let mgr = SubAgentManager::new(4);
+    /// let config = SubAgentConfig::default();
+    /// let path = mgr.transcript_path_for(&config, "task-123");
+    /// assert!(path.ends_with("task-123.jsonl"));
+    /// ```
+    #[must_use]
+    pub fn transcript_path_for(&self, config: &SubAgentConfig, agent_id: &str) -> PathBuf {
+        self.effective_transcript_dir(config)
+            .join(format!("{agent_id}.jsonl"))
+    }
+
     /// Create a transcript writer if transcripts are enabled.
     ///
     /// All three blocking FS operations (sweep, file open, meta write) are offloaded via
