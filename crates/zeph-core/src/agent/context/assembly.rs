@@ -1065,6 +1065,7 @@ impl<C: Channel> Agent<C> {
         if let Some(msg) = self.msg.messages.first_mut() {
             msg.content = system_prompt;
         }
+        self.recompute_prompt_tokens();
     }
 
     /// Rewrites `query` via a fast background-provider LLM call to improve skill-matching

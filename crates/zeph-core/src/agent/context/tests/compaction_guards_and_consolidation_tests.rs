@@ -1063,6 +1063,45 @@ async fn rebuild_system_prompt_omits_memory_save_hint_when_tool_not_used() {
     );
 }
 
+// --- #6332: cached_prompt_tokens must be recomputed after rebuild_system_prompt ---
+
+/// #6332 regression: `rebuild_system_prompt` writes a freshly assembled system prompt into
+/// `messages[0]` but must also recompute `cached_prompt_tokens` from the real message set —
+/// otherwise the counter stays pinned at whatever stale value it held before the rebuild
+/// (e.g. the construction-time seed), causing the turn-0 context-budget check and the
+/// TUI/channel context estimate to see a value disconnected from the actual outgoing prompt.
+#[tokio::test]
+async fn rebuild_system_prompt_recomputes_cached_prompt_tokens() {
+    use zeph_skills::registry::SkillRegistry;
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = SkillRegistry::default();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    // Simulate a stale/mis-seeded counter (e.g. Defect 1's inflated construction-time
+    // estimate) that must NOT survive a rebuild.
+    agent.runtime.providers.cached_prompt_tokens = 100_106;
+
+    agent.rebuild_system_prompt("test query").await;
+
+    let actual: u64 = agent
+        .msg
+        .messages
+        .iter()
+        .map(|m| agent.runtime.metrics.token_counter.count_message_tokens(m) as u64)
+        .sum();
+
+    assert_eq!(
+        agent.runtime.providers.cached_prompt_tokens, actual,
+        "cached_prompt_tokens must reflect the just-rebuilt system prompt, not a stale seed"
+    );
+    assert_ne!(
+        agent.runtime.providers.cached_prompt_tokens, 100_106,
+        "the stale seed must have been overwritten by the recompute"
+    );
+}
+
 /// Verify that `maybe_proactive_compress` routes to `run_focus_auto_consolidation_pass`
 /// when the strategy is `CompressionStrategy::Focus` and `should_proactively_compress`
 /// returns `Some`.

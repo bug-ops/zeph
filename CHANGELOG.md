@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+
+- `zeph-core`: `cached_prompt_tokens` was never recomputed after `rebuild_system_prompt`
+  rewrote `messages[0]` with the real, per-turn-filtered system prompt, leaving the counter
+  pinned at whatever value it held before the rebuild — on turn 0 this was the
+  construction-time seed derived from the entire unfiltered skill registry, which could
+  reach ~100K tokens regardless of what was actually sent to the LLM (#6332). This caused
+  the tool-loop context-budget early-stop check (`tier_loop.rs`) to potentially trigger a
+  premature "context window nearly full" stop on a brand-new session, and the TUI/channel
+  context estimate to show a misleading token count before the first LLM call.
+  `assemble_final_system_prompt` now calls `self.recompute_prompt_tokens()` immediately
+  after writing the rebuilt prompt into `messages[0]`, so the counter always reflects the
+  actual outgoing prompt on every turn.
+
 ### Testing
 
 - **zeph-core**: added end-to-end coverage for `TurnSummary.tool_calls` / `TurnSummary.llm_requests`
