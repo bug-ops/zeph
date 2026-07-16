@@ -13,7 +13,7 @@ RUN mkdir -p /app/.zeph/data && \
     chown -R 65532:65532 /app
 
 # Stage 2: minimal distroless runtime — no shell, no package manager, zero CVEs.
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b
 
 COPY --from=setup /app /app
 
