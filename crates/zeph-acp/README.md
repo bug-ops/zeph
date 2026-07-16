@@ -369,9 +369,8 @@ The `initialize` response includes an `auth_hint` key in its metadata map. For s
 | `unstable-llm-providers` | unstable | Exposes the `LlmProtocol` wire type for advertising available LLM providers to the IDE. |
 | `unstable-logout` | unstable | Enables the `logout` ACP method and advertises `auth.logout` capability. Zeph logout is a no-op (vault-based auth). |
 | `unstable-auth-methods` | unstable | Enables the ACP auth-methods extension. |
-| `unstable-boolean-config` | unstable | Enables boolean-valued session config options. |
 | `unstable-cancel-request` | unstable | Wires the real `$/cancel_request` protocol notification onto the internal cancel signal. |
-| `unstable-message-id` / `unstable-session-add-dirs` / `unstable-session-delete` | stable in SDK | Retained as no-op flags; the underlying methods stabilized upstream and need no gate. |
+| `unstable-message-id` / `unstable-session-add-dirs` / `unstable-session-delete` / `unstable-boolean-config` | stable in SDK | Retained as no-op flags; the underlying methods/types stabilized upstream and need no gate. |
 
 **Warning:**
 > All `unstable-*` features have wire protocol that is not yet finalized. Expect breaking changes before these features graduate to stable.

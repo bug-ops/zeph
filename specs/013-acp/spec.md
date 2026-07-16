@@ -8,7 +8,7 @@ tags:
   - protocol
   - acp
 created: 2026-04-08
-updated: 2026-07-01
+updated: 2026-07-17
 status: approved
 related:
   - "[[MOC-specs]]"
@@ -19,7 +19,7 @@ related:
 
 > [!info]
 > ACP transports, session management, permissions, fork/resume,
-> capability advertisement, agent-client-protocol 1.0.1 / schema =1.1.0 compatibility.
+> capability advertisement, agent-client-protocol 1.2.0 / schema =1.4.0 compatibility.
 
 ## Spec Changelog
 
@@ -33,6 +33,7 @@ related:
 | 1.5 | 2026-07-01 | developer | Adopt `model_config` option category (#5361): new `config_id="temperature"` `session/set_config_option`, presets precise/balanced/creative, `[acp.model_config]` config section, CLI + wizard integration. Wire `unstable_cancel_request` (#5362): new `unstable-cancel-request` Cargo feature (not in `default`), `$/cancel_request` bridged onto `cancel_signal: Arc<Notify>` via `Responder::cancellation()` in `session/prompt`, plus a low-level tracing-only `CancelRequestNotification` handler in the `Agent.builder()` chain. Added test coverage for the 8 previously-untested handler files (#5367). |
 | 1.6 | 2026-07-01 | developer | Review fix pass on #5361/#5362: (S-C1) `default_temperature_preset` is now primed into the effective `provider_override` at session creation (`do_new_session`/`do_load_session`/`do_fork_session`/`do_resume_session`), not just advertised in the IDE dropdown; (S-C2) the `$/cancel_request` watcher select is now `biased` with prompt completion checked first, and `drain_agent_events` drains a stale `cancel_signal` permit before its main loop, so a cancellation resolving at/after prompt completion can no longer leak into the next, unrelated prompt (also hardens the pre-existing `session/cancel` no-active-prompt race — `cancel_before_prompt_returns_cancelled` renamed to `cancel_before_prompt_is_a_no_op` to reflect the corrected semantics). Documented fork/resume reset behavior for `temperature_preset` (#5373 tracking issue filed); filed #5374 for the untested `resume_session` store-backed path. |
 | 1.7 | 2026-07-01 | developer | Fixed #5379: `zeph acp model-config show` now loads the resolved config and marks the active `[acp.model_config].default_temperature_preset` in its output, instead of only printing the static preset table. Resolved #5373: `session/fork` and `session/resume` now inherit `model`/`temperature_preset`/`thinking_enabled`/`auto_approve_level` from the source session (live in-memory state, falling back to a persisted close-time snapshot, falling back to configured defaults) instead of always resetting to defaults — new `acp_sessions` columns via migration `105_acp_session_config`; see "Fork/Resume Config Inheritance" below. |
+| 1.8 | 2026-07-17 | developer | Renovate `rust-minor-patch` bundle bumped core `1.0.1`→`1.2.0`, schema `=1.1.0`→`=1.4.0`. Core `1.1.0` stabilized `$/cancel_request` unconditionally and dropped its `unstable_cancel_request` forward — `unstable-cancel-request` is now a local-only opt-in gate (Cargo feature unchanged, but no longer maps to an upstream feature); `unstable-boolean-config` tombstoned the same way after schema `1.1.0` made `SessionConfigOptionValue::Boolean` unconditional. Schema `1.4.0` renamed `SetProviderRequest`/`DisableProviderRequest`/`ProviderInfo`'s `id: String` field to `provider_id: ProviderId` (`Arc<str>` newtype) — updated all `providers.rs` call sites and tests. No handler/transport/builder-chain logic changed otherwise. |
 
 ---
 
@@ -297,13 +298,13 @@ exposing tools over ACP.
 | `unstable-elicitation` | **active** | Now also adds `agent-client-protocol/unstable_elicitation` passthrough so core wires `elicitation/create` |
 | `unstable-llm-providers` | **active** | Still gated upstream (`unstable_llm_providers`); provider type renames apply here (see Providers API) |
 | `unstable-auth-methods` | **active** | Still gated upstream (`unstable_auth_methods`) |
-| `unstable-boolean-config` | **active** | Still gated upstream (`unstable_boolean_config`) |
+| `unstable-boolean-config` | **tombstone** `= []` | Stabilized — `SessionConfigOptionValue::Boolean` is unconditional since schema 1.1.0 (core 1.1.0 dropped its `unstable_boolean_config` forward). `do_set_session_config_option` always matches the enum; flag retained as no-op. |
 | `unstable-session-delete` | **tombstone** `= []` | Stabilized — `session/delete` handler is unconditional in core 1.0.1 (since the 0.14.0 bump). Flag retained as no-op for workspace forwarding (root `Cargo.toml` references it). |
 | `unstable-session-resume` | **tombstone** `= []` | Stabilized — `session/resume` handler is unconditional in core 1.0.1 (since the 0.14.0 bump). Flag retained as no-op. |
 | `unstable-logout` | **tombstone** `= []` | Stabilized — logout handler is unconditional in core 1.0.1 (since the 0.14.0 bump). Flag retained as no-op. |
 | `unstable-session-add-dirs` | **tombstone** `= []` | Stabilized — `additional_directories` field is plain `Vec<PathBuf>`, unconditional since schema 0.13.6 (now schema 1.1.0). Flag retained as no-op. |
 | `unstable-message-id` | **tombstone** `= []` | Removed — `PromptRequest.message_id` and `PromptResponse.user_message_id` deleted upstream. Entire inbound echo feature removed. Flag retained as no-op for workspace forwarding. |
-| `unstable-cancel-request` | **active** | Implemented (#5362). Maps to upstream `agent-client-protocol/unstable_cancel_request` (available at the ACP-crate level since SDK 0.15.1). Not in `default` — opt-in only. The `session/prompt` handler (`agent/handlers/prompt.rs`) bridges `Responder::cancellation()`, scoped to that specific JSON-RPC request, onto the session's existing `cancel_signal: Arc<Notify>` (the same signal `session/cancel` notifies in `agent/handlers/cancel.rs`) via a short-lived watcher task that races cancellation against prompt completion. A low-level `CancelRequestNotification` handler is also registered in the `Agent.builder()` chain (`agent/mod.rs`) for tracing-only observability — the SDK updates per-request cancellation markers automatically regardless of whether a handler is registered. |
+| `unstable-cancel-request` | **active (local-only gate)** | Implemented (#5362). Core `1.1.0` made `$/cancel_request` unconditional and dropped the `unstable_cancel_request` feature entirely, so this Zeph flag no longer forwards to any upstream feature — it is now purely a local opt-in for the zeph-acp bridge itself. Not in `default`. The `session/prompt` handler (`agent/handlers/prompt.rs`) bridges `Responder::cancellation()`, scoped to that specific JSON-RPC request, onto the session's existing `cancel_signal: Arc<Notify>` (the same signal `session/cancel` notifies in `agent/handlers/cancel.rs`) via a short-lived watcher task that races cancellation against prompt completion. A low-level `CancelRequestNotification` handler is also registered in the `Agent.builder()` chain (`agent/mod.rs`) for tracing-only observability — the SDK updates per-request cancellation markers automatically regardless of whether a handler is registered. |
 | `unstable-session-model` | **DELETED** | Removed entirely — `session/set_model` RPC deleted upstream. Feature name removed from Cargo.toml and root `Cargo.toml`. Model switching survives via `set_config_option`. |
 
 > **Tombstone flags** are `= []` no-ops retained solely so root `Cargo.toml` feature forwarding
@@ -454,6 +455,13 @@ Schema 0.11.7 introduced a providers management API (`unstable` in SDK):
 
 All renamed types have `::new()` constructors. All four remain gated behind
 `unstable_llm_providers` (Zeph flag `unstable-llm-providers` retained).
+
+**Breaking change in schema 1.4.0 bump — field rename:** `SetProviderRequest`,
+`DisableProviderRequest`, and `ProviderInfo` all renamed their `id: String` field to
+`provider_id: ProviderId` (`ProviderId` is a new `#[non_exhaustive] struct ProviderId(pub Arc<str>)`
+newtype implementing `Display`/`From<Arc<str>>`/`From<String>`/`From<&'static str>`). All
+`providers.rs` handler and test call sites updated to the new field name and to convert via
+`.0.as_ref()` / `.to_string()` where a borrowed `&str` or owned `String` is needed.
 
 **Design note — impedance mismatch**: The Providers API is NOT a direct mapping to Zeph's
 `[[llm.providers]]` TOML config. Key tensions:

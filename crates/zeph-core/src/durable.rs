@@ -29,7 +29,7 @@
 
 use chacha20poly1305::{
     Key, KeyInit, XChaCha20Poly1305, XNonce,
-    aead::{Aead, AeadCore, OsRng, Payload},
+    aead::{Aead, Generate, Payload},
 };
 use zeph_durable::{CipherError, PayloadAad, PayloadCipher};
 use zeroize::Zeroize;
@@ -81,7 +81,7 @@ struct KeySlot {
 impl KeySlot {
     /// Build a slot, copying the key into the AEAD state and zeroizing the transient input.
     fn new(key_id: u8, mut key: [u8; KEY_LEN]) -> Self {
-        let cipher = XChaCha20Poly1305::new(Key::from_slice(&key));
+        let cipher = XChaCha20Poly1305::new((&key).into());
         key.zeroize();
         Self { key_id, cipher }
     }
@@ -245,14 +245,14 @@ pub fn derive_control_hmac_key_b64(b64_key: &str) -> Result<[u8; KEY_LEN], Ciphe
 #[must_use]
 pub fn generate_durable_key_b64() -> String {
     use base64::Engine as _;
-    let key = XChaCha20Poly1305::generate_key(&mut OsRng);
+    let key = Key::generate();
     base64::engine::general_purpose::STANDARD.encode(key.as_slice())
 }
 
 impl PayloadCipher for XChaCha20Poly1305Cipher {
     fn seal(&self, plaintext: &[u8], aad: &PayloadAad) -> Result<Vec<u8>, CipherError> {
         let aad_bytes = aad.canonical_bytes();
-        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let nonce = XNonce::generate();
         let ciphertext = self
             .current
             .cipher
@@ -283,13 +283,17 @@ impl PayloadCipher for XChaCha20Poly1305Cipher {
             .select(key_id)
             .ok_or(CipherError::UnknownKeyId { key_id })?;
 
-        let nonce = XNonce::from_slice(&sealed[KEY_ID_LEN..NONCE_END]);
+        let nonce = XNonce::try_from(&sealed[KEY_ID_LEN..NONCE_END]).map_err(|_| {
+            CipherError::Malformed {
+                context: "nonce slice is not exactly NONCE_LEN bytes",
+            }
+        })?;
         let ciphertext = &sealed[NONCE_END..];
         let aad_bytes = aad.canonical_bytes();
 
         cipher
             .decrypt(
-                nonce,
+                &nonce,
                 Payload {
                     msg: ciphertext,
                     aad: &aad_bytes,

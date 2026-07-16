@@ -31,10 +31,13 @@ unstable-llm-providers = ["dep:agent-client-protocol-schema", "agent-client-prot
 # logout stabilized in acp 0.13.0; no upstream feature gate needed
 unstable-logout = []
 unstable-auth-methods = ["agent-client-protocol/unstable_auth_methods"]
-unstable-boolean-config = ["agent-client-protocol/unstable_boolean_config"]
-# Wires the real $/cancel_request protocol notification (agent-client-protocol crate level,
-# available since SDK 0.15.1) onto the existing internal cancel_signal. Not in `default` — see #5362.
-unstable-cancel-request = ["agent-client-protocol/unstable_cancel_request"]
+# boolean session-config values stabilized in acp-schema 1.1.0 (SessionConfigOptionValue::Boolean
+# is now unconditional); no upstream feature gate needed
+unstable-boolean-config = []
+# Wires the real $/cancel_request protocol notification onto the existing internal cancel_signal.
+# Cancellation itself was stabilized upstream in acp 1.1.0 (no feature gate needed there anymore);
+# this stays a local opt-in gate for the zeph-acp integration. Not in `default` — see #5362.
+unstable-cancel-request = []
 # message-id stabilized in acp 0.14.0; no upstream feature gate needed
 unstable-message-id = []
 # session-add-dirs stabilized in acp 0.14.0; no upstream feature gate needed

@@ -74,10 +74,12 @@ impl PayloadCipher for BenchCipher {
         if key_id != 0 {
             return Err(CipherError::UnknownKeyId { key_id });
         }
-        let nonce = XNonce::from_slice(&sealed[1..25]);
+        let nonce = XNonce::try_from(&sealed[1..25]).map_err(|_| CipherError::Malformed {
+            context: "nonce slice is not exactly 24 bytes",
+        })?;
         self.inner
             .decrypt(
-                nonce,
+                &nonce,
                 chacha20poly1305::aead::Payload {
                     msg: &sealed[25..],
                     aad: &aad.canonical_bytes(),

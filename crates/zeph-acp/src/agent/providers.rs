@@ -78,7 +78,7 @@ impl ZephAcpAgentState {
                 let req: schema::DisableProviderRequest =
                     serde_json::from_str(args.params.get())
                         .map_err(|e| acp::Error::invalid_request().data(e.to_string()))?;
-                let resp = self.do_disable_providers(req)?;
+                let resp = self.do_disable_providers(&req)?;
                 let json = serde_json::to_string(&resp)
                     .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
                 let raw = serde_json::value::RawValue::from_string(json)
@@ -142,26 +142,29 @@ impl ZephAcpAgentState {
     ///
     /// # Errors
     ///
-    /// Returns `invalid_params` if `req.id` is not in the registered provider list.
+    /// Returns `invalid_params` if `req.provider_id` is not in the registered provider list.
     #[tracing::instrument(skip_all, name = "acp.handler.set_providers")]
     pub(crate) fn do_set_providers(
         &self,
         req: agent_client_protocol_schema::v1::SetProviderRequest,
     ) -> acp::Result<agent_client_protocol_schema::v1::SetProviderResponse> {
-        if !self.provider_names.iter().any(|(name, _)| name == &req.id) {
-            return Err(
-                acp::Error::invalid_params().data(format!("unknown provider id: {}", req.id))
-            );
+        if !self
+            .provider_names
+            .iter()
+            .any(|(name, _)| name.as_str() == req.provider_id.0.as_ref())
+        {
+            return Err(acp::Error::invalid_params()
+                .data(format!("unknown provider id: {}", req.provider_id)));
         }
         self.global_provider_overrides.lock().insert(
-            req.id.clone(),
+            req.provider_id.to_string(),
             ProviderSetOverride {
                 api_type: req.api_type,
                 base_url: req.base_url,
                 headers: req.headers,
             },
         );
-        tracing::debug!(provider_id = %req.id, "provider override set");
+        tracing::debug!(provider_id = %req.provider_id, "provider override set");
         Ok(agent_client_protocol_schema::v1::SetProviderResponse::new())
     }
 
@@ -175,9 +178,9 @@ impl ZephAcpAgentState {
     #[tracing::instrument(skip_all, name = "acp.handler.disable_providers")]
     pub(crate) fn do_disable_providers(
         &self,
-        req: agent_client_protocol_schema::v1::DisableProviderRequest,
+        req: &agent_client_protocol_schema::v1::DisableProviderRequest,
     ) -> acp::Result<agent_client_protocol_schema::v1::DisableProviderResponse> {
-        let id = req.id;
+        let id = req.provider_id.to_string();
         tracing::debug!(provider_id = %id, "provider disabled");
         self.global_disabled_providers.lock().insert(id);
         Ok(agent_client_protocol_schema::v1::DisableProviderResponse::new())
@@ -207,7 +210,11 @@ mod tests {
             .do_list_providers(schema::ListProvidersRequest::new())
             .unwrap();
         assert_eq!(resp.providers.len(), 2);
-        let ids: Vec<&str> = resp.providers.iter().map(|p| p.id.as_str()).collect();
+        let ids: Vec<&str> = resp
+            .providers
+            .iter()
+            .map(|p| p.provider_id.0.as_ref())
+            .collect();
         assert!(ids.contains(&"openai"));
         assert!(ids.contains(&"claude"));
     }
@@ -228,7 +235,11 @@ mod tests {
         let resp = state
             .do_list_providers(schema::ListProvidersRequest::new())
             .unwrap();
-        let openai = resp.providers.iter().find(|p| p.id == "openai").unwrap();
+        let openai = resp
+            .providers
+            .iter()
+            .find(|p| p.provider_id.0.as_ref() == "openai")
+            .unwrap();
         let current = openai
             .current
             .as_ref()
@@ -238,7 +249,11 @@ mod tests {
             schema::LlmProtocol::OpenAi,
             "openai provider must report OpenAi protocol"
         );
-        let claude = resp.providers.iter().find(|p| p.id == "claude").unwrap();
+        let claude = resp
+            .providers
+            .iter()
+            .find(|p| p.provider_id.0.as_ref() == "claude")
+            .unwrap();
         let current = claude
             .current
             .as_ref()
@@ -254,17 +269,25 @@ mod tests {
     fn disable_provider_hides_current_config_in_list() {
         let state = make_state();
         state
-            .do_disable_providers(schema::DisableProviderRequest::new("openai"))
+            .do_disable_providers(&schema::DisableProviderRequest::new("openai"))
             .unwrap();
         let resp = state
             .do_list_providers(schema::ListProvidersRequest::new())
             .unwrap();
-        let openai = resp.providers.iter().find(|p| p.id == "openai").unwrap();
+        let openai = resp
+            .providers
+            .iter()
+            .find(|p| p.provider_id.0.as_ref() == "openai")
+            .unwrap();
         assert!(
             openai.current.is_none(),
             "disabled provider must have no current config"
         );
-        let claude = resp.providers.iter().find(|p| p.id == "claude").unwrap();
+        let claude = resp
+            .providers
+            .iter()
+            .find(|p| p.provider_id.0.as_ref() == "claude")
+            .unwrap();
         assert!(
             claude.current.is_some(),
             "non-disabled provider must still have current config"
@@ -275,7 +298,7 @@ mod tests {
     fn disable_unknown_provider_succeeds() {
         let state = make_state();
         state
-            .do_disable_providers(schema::DisableProviderRequest::new("nonexistent"))
+            .do_disable_providers(&schema::DisableProviderRequest::new("nonexistent"))
             .unwrap();
     }
 
@@ -315,7 +338,11 @@ mod tests {
         let resp = state
             .do_list_providers(schema::ListProvidersRequest::new())
             .unwrap();
-        let openai = resp.providers.iter().find(|p| p.id == "openai").unwrap();
+        let openai = resp
+            .providers
+            .iter()
+            .find(|p| p.provider_id.0.as_ref() == "openai")
+            .unwrap();
         let current = openai.current.as_ref().expect("override must be present");
         assert_eq!(current.base_url, "https://custom.example.com");
     }
@@ -334,12 +361,16 @@ mod tests {
             )
             .unwrap();
         state
-            .do_disable_providers(schema::DisableProviderRequest::new("openai"))
+            .do_disable_providers(&schema::DisableProviderRequest::new("openai"))
             .unwrap();
         let resp = state
             .do_list_providers(schema::ListProvidersRequest::new())
             .unwrap();
-        let openai = resp.providers.iter().find(|p| p.id == "openai").unwrap();
+        let openai = resp
+            .providers
+            .iter()
+            .find(|p| p.provider_id.0.as_ref() == "openai")
+            .unwrap();
         assert!(
             openai.current.is_none(),
             "provider disabled after set must have no current config"

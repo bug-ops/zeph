@@ -2250,9 +2250,8 @@ impl ZephAcpAgentState {
         args: acp::schema::v1::SetSessionConfigOptionRequest,
     ) -> acp::Result<acp::schema::v1::SetSessionConfigOptionResponse> {
         let config_id = args.config_id.0.clone();
-        #[cfg(not(feature = "unstable-boolean-config"))]
-        let value_str: std::sync::Arc<str> = args.value.0.clone();
-        #[cfg(feature = "unstable-boolean-config")]
+        // `SessionConfigOptionValue::Boolean` was stabilized in acp-schema 1.1.0 and the enum
+        // shape is now unconditional, so this always matches (no feature gate needed).
         let value_str: std::sync::Arc<str> = match &args.value {
             acp::schema::v1::SessionConfigOptionValue::ValueId { value } => value.0.clone(),
             acp::schema::v1::SessionConfigOptionValue::Boolean { value } => {

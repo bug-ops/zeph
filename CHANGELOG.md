@@ -63,6 +63,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `result: None`, so the TUI/CLI showed no reason at all for a timeout-killed task — reuses
   the existing `TaskGraphSnapshot` conversion (`metrics.rs`), no new widget or snapshot field.
 
+- **Dependencies**: fixed build breakage from the `rust-minor-patch` Renovate bundle
+  (`agent-client-protocol` 1.0.1 → 1.2.0, `agent-client-protocol-schema` =1.1.0 → =1.4.0,
+  `chacha20poly1305` 0.10.1 → 0.11.0, among other patch/minor bumps). `agent-client-protocol`
+  1.1.0 stabilized (and removed) the `unstable_boolean_config`/`unstable_cancel_request`
+  feature flags that `zeph-acp/Cargo.toml` still forwarded to, breaking `cargo metadata`
+  resolution outright; both are now local no-op features, matching the existing pattern for
+  other upstream-stabilized flags. Schema 1.4.0 also renamed `SetProviderRequest`/
+  `DisableProviderRequest`/`ProviderInfo`'s `id: String` field to `provider_id: ProviderId`
+  (a new `Arc<str>` newtype) and made `SessionConfigOptionValue::Boolean` unconditional —
+  `crates/zeph-acp/src/agent/providers.rs` and `mod.rs::do_set_session_config_option` updated
+  accordingly. `chacha20poly1305` 0.11's `aead` 0.6 bump deprecated/removed
+  `Array::from_slice`, `KeyInit::generate_key`, and `AeadCore::generate_nonce` in favor of
+  `TryFrom`/the new `Generate` trait; updated `crates/zeph-core/src/durable.rs` and
+  `crates/zeph-durable/benches/durable_benches.rs` accordingly. Also reverted an incorrect bump
+  of `zeph-llm`'s pinned `reqwest012` alias (a separate `reqwest 0.12.x` build needed only for
+  ABI compatibility with `ollama-rs`'s own `^0.12.28` requirement) from `0.13.4` back to `0.12`,
+  which Renovate had bumped past the version `ollama-rs` actually depends on, breaking the
+  `rustls-tls` feature name in the process.
+
 ### Testing
 
 - **zeph-orchestration** / **zeph-subagent**: closed three coverage gaps in the idle-timeout
