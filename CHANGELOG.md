@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Changed
+
+- `zeph-experiments`: `ParameterKind::as_str`, `ParameterKind::is_integer`,
+  `ConfigSnapshot::get`, and `ConfigSnapshot::set` are now exhaustive matches over
+  every current variant instead of relying on a wildcard arm (`_ => "unknown"` /
+  `_ => 0.0` / `_ => {}`) guarded by `#[allow(unreachable_patterns)]` (#5948).
+  `ConfigSnapshot::diff` now iterates the new `ParameterKind::ALL` constant instead of
+  a second hand-maintained list of variants. Previously, adding a `ParameterKind`
+  variant without updating all four match sites and the `diff` list compiled cleanly
+  but silently made the new parameter a no-op (`get` returned `0.0`, `set` discarded
+  writes, `diff` never detected it as changed). Forgetting to update `as_str`,
+  `is_integer`, `get`, or `set` for a new variant now fails to compile. `ParameterKind::ALL`
+  itself is a plain array literal, not a match, so it is not directly compiler-checked
+  against the enum's variant count — a colocated private const fn
+  (`_all_variants_exhaustive`, evaluated at compile time) provides the same guarantee
+  in practice: it is an exhaustive match with no wildcard, so a new variant fails the
+  build there too, pointing the author back at `ALL`. The `zeph-experiments` test suite
+  additionally asserts that its own hand-enumerated fixtures stay the same length as
+  `ParameterKind::ALL`, which keeps those fixtures from silently drifting out of sync
+  with `ALL` (but does not by itself detect a variant missing from `ALL`). No behavior
+  change for any of the 9 existing variants.
+
 ### Fixed
 
 - `zeph-core`: `cached_prompt_tokens` was never recomputed after `rebuild_system_prompt`

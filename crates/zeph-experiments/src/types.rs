@@ -80,6 +80,53 @@ pub enum ParameterKind {
 }
 
 impl ParameterKind {
+    /// Every variant of this enum, in declaration order.
+    ///
+    /// This is the single source of truth for code that must iterate all parameters,
+    /// e.g. [`ConfigSnapshot::diff`](crate::ConfigSnapshot::diff) and tests asserting
+    /// full-coverage behavior. `as_str`, `is_integer`, and `ConfigSnapshot::get`/`set`
+    /// are exhaustive matches and fail to compile if a new variant is left unhandled —
+    /// but this array is a plain literal, not a match, so adding a variant here is
+    /// **not** compiler-enforced. The `_all_variants_exhaustive` check directly below
+    /// forces a compile error pointing back at this array when a variant is added to
+    /// the enum, which is the practical guard against forgetting to extend `ALL`.
+    pub const ALL: [Self; 9] = [
+        Self::Temperature,
+        Self::TopP,
+        Self::TopK,
+        Self::FrequencyPenalty,
+        Self::PresencePenalty,
+        Self::RetrievalTopK,
+        Self::SimilarityThreshold,
+        Self::TemporalDecay,
+        Self::GroupStructured,
+    ];
+
+    /// Compile-time reminder to extend [`Self::ALL`] when a variant is added.
+    ///
+    /// Evaluated once at compile time via the `_ASSERT_ALL_VARIANTS_HANDLED` const below
+    /// (never called at runtime). Its only purpose is that adding a `ParameterKind`
+    /// variant without a corresponding arm here fails the build with `E0004:
+    /// non-exhaustive patterns`, pointing the author at `ALL` immediately above. It does
+    /// not verify `ALL`'s *length* or *contents* match the enum, only that every variant
+    /// has been acknowledged somewhere in this match.
+    const fn _all_variants_exhaustive(kind: Self) {
+        match kind {
+            Self::Temperature
+            | Self::TopP
+            | Self::TopK
+            | Self::FrequencyPenalty
+            | Self::PresencePenalty
+            | Self::RetrievalTopK
+            | Self::SimilarityThreshold
+            | Self::TemporalDecay
+            | Self::GroupStructured => {}
+        }
+    }
+
+    /// Forces [`Self::_all_variants_exhaustive`] to be checked at compile time.
+    const _ASSERT_ALL_VARIANTS_HANDLED: () = Self::_all_variants_exhaustive(Self::Temperature);
+
     /// Return the canonical snake_case name of this parameter.
     ///
     /// The returned string matches the key used in config files and experiment
@@ -95,7 +142,6 @@ impl ParameterKind {
     /// ```
     #[must_use]
     pub fn as_str(&self) -> &'static str {
-        #[allow(unreachable_patterns)]
         match self {
             Self::Temperature => "temperature",
             Self::TopP => "top_p",
@@ -106,7 +152,6 @@ impl ParameterKind {
             Self::SimilarityThreshold => "similarity_threshold",
             Self::TemporalDecay => "temporal_decay",
             Self::GroupStructured => "group_structured",
-            _ => "unknown",
         }
     }
 
@@ -126,7 +171,16 @@ impl ParameterKind {
     /// ```
     #[must_use]
     pub fn is_integer(&self) -> bool {
-        matches!(self, Self::TopK | Self::RetrievalTopK)
+        match self {
+            Self::TopK | Self::RetrievalTopK => true,
+            Self::Temperature
+            | Self::TopP
+            | Self::FrequencyPenalty
+            | Self::PresencePenalty
+            | Self::SimilarityThreshold
+            | Self::TemporalDecay
+            | Self::GroupStructured => false,
+        }
     }
 }
 
@@ -307,6 +361,11 @@ mod tests {
             (ParameterKind::TemporalDecay, "temporal_decay"),
             (ParameterKind::GroupStructured, "group_structured"),
         ];
+        assert_eq!(
+            cases.len(),
+            ParameterKind::ALL.len(),
+            "fixture must cover every ParameterKind variant"
+        );
         for (kind, expected) in cases {
             assert_eq!(kind.as_str(), expected);
             assert_eq!(kind.to_string(), expected);

@@ -141,19 +141,8 @@ impl ConfigSnapshot {
     /// Integer parameters (`TopK`, `RetrievalTopK`) produce a [`VariationValue::Int`] variant.
     #[must_use]
     pub fn diff(&self, other: &ConfigSnapshot) -> Option<Variation> {
-        let kinds = [
-            ParameterKind::Temperature,
-            ParameterKind::TopP,
-            ParameterKind::TopK,
-            ParameterKind::FrequencyPenalty,
-            ParameterKind::PresencePenalty,
-            ParameterKind::RetrievalTopK,
-            ParameterKind::SimilarityThreshold,
-            ParameterKind::TemporalDecay,
-            ParameterKind::GroupStructured,
-        ];
         let mut result = None;
-        for kind in kinds {
+        for kind in ParameterKind::ALL {
             let a = self.get(kind);
             let b = other.get(kind);
             if (a - b).abs() > f64::EPSILON {
@@ -177,7 +166,8 @@ impl ConfigSnapshot {
 
     /// Get the current value of a parameter by kind.
     ///
-    /// Unknown kinds (from `#[non_exhaustive]` additions) return `0.0`.
+    /// The match is exhaustive over every current [`ParameterKind`] variant — adding a
+    /// new variant to the enum without a matching arm here fails to compile.
     ///
     /// # Examples
     ///
@@ -190,7 +180,6 @@ impl ConfigSnapshot {
     /// ```
     #[must_use]
     pub fn get(&self, kind: ParameterKind) -> f64 {
-        #[allow(unreachable_patterns)]
         match kind {
             ParameterKind::Temperature => self.temperature,
             ParameterKind::TopP => self.top_p,
@@ -201,13 +190,13 @@ impl ConfigSnapshot {
             ParameterKind::SimilarityThreshold => self.similarity_threshold,
             ParameterKind::TemporalDecay => self.temporal_decay,
             ParameterKind::GroupStructured => self.group_structured,
-            _ => 0.0,
         }
     }
 
     /// Set the value of a parameter by kind.
     ///
-    /// Unknown kinds (from `#[non_exhaustive]` additions) are silently ignored.
+    /// The match is exhaustive over every current [`ParameterKind`] variant — adding a
+    /// new variant to the enum without a matching arm here fails to compile.
     ///
     /// # Examples
     ///
@@ -219,7 +208,6 @@ impl ConfigSnapshot {
     /// assert!((s.temperature - 1.2).abs() < f64::EPSILON);
     /// ```
     pub fn set(&mut self, kind: ParameterKind, value: f64) {
-        #[allow(unreachable_patterns)]
         match kind {
             ParameterKind::Temperature => self.temperature = value,
             ParameterKind::TopP => self.top_p = value,
@@ -230,7 +218,6 @@ impl ConfigSnapshot {
             ParameterKind::SimilarityThreshold => self.similarity_threshold = value,
             ParameterKind::TemporalDecay => self.temporal_decay = value,
             ParameterKind::GroupStructured => self.group_structured = value,
-            _ => {}
         }
     }
 
@@ -419,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn diff_all_nine_kinds() {
+    fn diff_all_kinds() {
         let fields: &[(ParameterKind, fn(&mut ConfigSnapshot))] = &[
             (ParameterKind::Temperature, |s| s.temperature = 1.5),
             (ParameterKind::TopP, |s| s.top_p = 0.5),
@@ -435,6 +422,13 @@ mod tests {
             (ParameterKind::TemporalDecay, |s| s.temporal_decay = 60.0),
             (ParameterKind::GroupStructured, |s| s.group_structured = 1.0),
         ];
+        // If a variant is added to `ParameterKind::ALL` without adding a fixture entry
+        // here, this catches the gap instead of silently under-covering the new kind.
+        assert_eq!(
+            fields.len(),
+            ParameterKind::ALL.len(),
+            "fixture must cover every ParameterKind variant"
+        );
         for (kind, mutate) in fields {
             let a = ConfigSnapshot::default();
             let mut b = ConfigSnapshot::default();
@@ -443,6 +437,22 @@ mod tests {
                 .diff(&b)
                 .unwrap_or_else(|| panic!("expected diff for {kind:?}"));
             assert_eq!(v.parameter, *kind);
+        }
+    }
+
+    #[test]
+    fn get_set_round_trip_all_kinds() {
+        // Derived from `ParameterKind::ALL` (not hand-enumerated) so a newly added
+        // variant is automatically exercised here.
+        let mut s = ConfigSnapshot::default();
+        for (i, kind) in ParameterKind::ALL.into_iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let value = i as f64 + 1.0;
+            s.set(kind, value);
+            assert!(
+                (s.get(kind) - value).abs() < f64::EPSILON,
+                "get/set round-trip failed for {kind:?}"
+            );
         }
     }
 
