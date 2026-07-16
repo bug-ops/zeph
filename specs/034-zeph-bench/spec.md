@@ -49,7 +49,7 @@ internal regression tracking.
 - Real-time TUI rendering during benchmark runs (headless mode only for
   reproducibility)
 - Parallel multi-scenario execution (single scenario at a time to avoid
-  Qdrant/SQLite contention)
+  SQLite contention)
 
 ---
 
@@ -82,9 +82,8 @@ per-scenario scores.
 ```
 GIVEN a benchmark with N scenarios
 WHEN scenario K begins
-THEN the Qdrant collection is bench-namespaced for the run and the SQLite
-  conversation history is a fresh, uniquely-named per-scenario database file,
-  so no traces of scenario K-1 can exist
+THEN the SQLite-backed conversation history is a fresh, uniquely-named
+  per-scenario database file, so no traces of scenario K-1 can exist
 ```
 
 ### US-003: Deterministic mode
@@ -138,7 +137,7 @@ THEN a table of supported datasets is printed with name, description, scenario c
 | ID | Requirement | Priority |
 |----|-------------|----------|
 | FR-001 | WHEN `zeph bench run --dataset <name>` is invoked THE SYSTEM SHALL download the dataset if not locally cached, run all scenarios sequentially, and write results to the output directory | must |
-| FR-002 | WHEN a benchmark scenario begins THE SYSTEM SHALL use a bench-namespaced Qdrant collection and a fresh, uniquely-named per-scenario SQLite database, so no prior scenario's conversation history is visible before the first message | must |
+| FR-002 | WHEN a benchmark scenario begins THE SYSTEM SHALL use a fresh, uniquely-named, bench-namespaced per-scenario SQLite database, so no prior scenario's conversation history is visible before the first message | must |
 | FR-003 | WHEN deterministic mode is active (default) THE SYSTEM SHALL override temperature to 0.0 and set a fixed seed (0) for all LLM calls in the bench session | must |
 | FR-004 | WHEN a scenario response is collected THE SYSTEM SHALL evaluate it against the dataset's ground-truth answer using the dataset's canonical metric (exact match, F1, or LLM judge) | must |
 | FR-005 | WHEN a benchmark run completes THE SYSTEM SHALL write a `results.json` file in the leaderboard-compatible schema for the dataset and a human-readable `summary.md` | must |
@@ -148,7 +147,7 @@ THEN a table of supported datasets is printed with name, description, scenario c
 | FR-009 | WHEN `zeph bench list` is invoked THE SYSTEM SHALL print a table of supported datasets, their canonical metric, scenario count (if cached), and cache path | must |
 | FR-010 | WHEN a dataset is not yet cached THE SYSTEM SHALL print a download prompt and require explicit `--download` flag or `zeph bench download --dataset <name>` before running | should |
 | FR-011 | WHEN an LLM call times out or errors during a scenario THE SYSTEM SHALL mark the scenario as `error` in results and continue to the next scenario without aborting the run | must |
-| FR-012 | WHEN the harness is active THE SYSTEM SHALL never write to memory collections or SQLite databases used by non-bench agent sessions | must |
+| FR-012 | WHEN the harness is active THE SYSTEM SHALL never write to SQLite databases used by non-bench agent sessions | must |
 | FR-013 | WHEN `--provider <name>` flag is provided THE SYSTEM SHALL use only that named provider from `[[llm.providers]]` for all LLM calls in the run | should |
 
 ---
@@ -157,7 +156,7 @@ THEN a table of supported datasets is printed with name, description, scenario c
 
 | ID | Category | Requirement |
 |----|----------|-------------|
-| NFR-001 | Isolation | Bench sessions use a dedicated Qdrant collection prefix (`bench_<dataset>_<run_id>`) and a dedicated, per-scenario SQLite DB path (`bench-<run_id>-<scenario_id>.db`) — never the agent's production collections |
+| NFR-001 | Isolation | Bench sessions use a dedicated, per-scenario SQLite DB path (`bench-<run_id>-<scenario_id>.db`) — never the agent's production SQLite database |
 | NFR-002 | Reproducibility | Given identical dataset, model, and config, two runs on the same binary must produce identical per-scenario responses (temperature=0, fixed seed) |
 | NFR-003 | Architecture | `BenchmarkChannel` implements `Channel` from `zeph-core` — no changes to agent core, context builder, memory pipeline, or tool executor |
 | NFR-004 | Feature gate | All `zeph-bench` code is gated behind the `bench` feature flag; no bench code compiles into default or `full` builds |
@@ -202,7 +201,7 @@ in follow-up issues against the same spec.
 | Scenario | Expected Behavior |
 |----------|-------------------|
 | Dataset not cached | Print descriptive error with `zeph bench download` instruction; exit 1 |
-| Qdrant unavailable | Abort run with error; do not leave partial results file |
+| Per-scenario SQLite backend initialization fails | Abort run with error; do not leave partial results file |
 | LLM call times out in scenario | Mark scenario as `error`, continue to next |
 | Ground truth absent for a scenario | Score as 0.0, flag in results with `missing_gt: true` |
 | `--resume` but no partial results file | Run from the beginning as if `--resume` were absent |
@@ -282,7 +281,7 @@ zeph bench show --results <path>
 
 ### Always (without asking)
 - Run `cargo nextest run --features bench` after changes
-- Use `bench_` prefixed Qdrant collection names and dedicated SQLite path
+- Use a dedicated, bench-namespaced per-scenario SQLite path (`bench-<run_id>-<scenario_id>.db`)
 - Force temperature=0 in deterministic mode regardless of config
 - Mark errored scenarios in output instead of aborting the run
 

@@ -46,6 +46,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Docs
 
+- **Spec 034 (zeph-bench)**: corrected a stale "bench-namespaced Qdrant collection" claim in
+  FR-002, FR-012, NFR-001, US-002, the Out of Scope list, the Edge Cases table, and the Agent
+  Boundaries section (#6237). `zeph-bench` has zero Qdrant/collection code — the only isolation
+  mechanism is a fresh, uniquely-named per-scenario `SQLite` database via
+  `SemanticMemory::with_sqlite_backend`. The premise predates #6236 but was restated more
+  confidently by that PR's rewrite instead of being corrected. Also fixed the same premise in
+  `.local/testing/playbooks/zeph-bench.md`'s prerequisites, "Verify isolation" step, error
+  resilience scenario, and verification checklist.
+
 - **Spec 072 §4**: updated to enumerate all four persistence surfaces that must strip `MessagePart::Image`
   (issue #6311). Previously listed only three surfaces: SQLite `parts_json`, Qdrant embeddings, and durable
   JSONL log. Added the fourth surface (sub-agent transcript JSONL files via `TranscriptWriter::append`) to
