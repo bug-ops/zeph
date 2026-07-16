@@ -430,6 +430,7 @@ fn configured_acp_autostart_transport(config: &Config, cli: &Cli) -> Option<AcpT
 }
 
 #[cfg(feature = "acp")]
+#[allow(clippy::too_many_lines)]
 async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> anyhow::Result<()> {
     let config_path = cli.config.clone();
     let vault_backend = cli.vault.clone();

@@ -2617,7 +2617,7 @@ pub(crate) async fn run_acp_server(
 ///
 /// Returns an error if the agent stack cannot be built or the server fails to bind.
 #[cfg(feature = "acp-http")]
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // CLI/env passthrough for one session-bootstrap call; grouping into a struct would not reduce complexity
 pub(crate) async fn run_acp_http_server(
     config_path: Option<&std::path::Path>,
     vault_backend: Option<&str>,
