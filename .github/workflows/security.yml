@@ -22,6 +22,6 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: taiki-e/install-action@afc483d62172accfff644fa56e82b4dab50727fc # cargo-deny
       - name: Check advisories and licenses
-        run: cargo deny check --config .github/deny.toml
+        run: cargo deny --config .github/deny.toml check
         env:
           RUSTC_WRAPPER: ""
