@@ -41,6 +41,7 @@ futures.workspace = true
 tempfile.workspace = true
 testcontainers = { workspace = true, features = ["watchdog"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing-test.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }
 zeph-memory.workspace = true
 

@@ -33,6 +33,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[debug] include_raw_images` config flag (default `false`) restores the previous
   full-byte behavior for developers who explicitly need wire-payload fidelity (#6306).
 
+### Fixed
+
+- `--init` wizard: the orchestration `default_idle_timeout_secs` prompt silently dropped
+  invalid input (non-numeric, negative, or `0`) to `None` via a bare `.parse().ok()`, with
+  zero re-prompt or feedback to the operator (#6303). It now uses the same
+  `allow_empty(true)` + `validate_with(...)` re-prompt pattern already used for
+  `worktree_max_worktrees`/`worktree_disk_quota_mb`, sharing the extracted
+  `parse_optional_nonzero` helper (moved from `src/init/worktree.rs` into a new
+  `src/init/validate.rs` module, now used by three call sites). `Config::validate()` also
+  now rejects `orchestration.default_idle_timeout_secs = Some(0)`, matching the
+  `worktree.max_worktrees`/`worktree.disk_quota_mb` convention, so the wizard and the
+  config loader agree on what a valid value is.
+
+### Added
+
+- `zeph-orchestration`: `DagScheduler::new`/`resume_from` now emit a one-time
+  `tracing::warn!` when `orchestration.default_idle_timeout_secs` or any task's
+  `TimeoutPolicy.idle_timeout_secs` is set, since the field is accepted but not yet
+  enforced in this release (spec-075 FR-005) (#6302). The warning fires exactly once per
+  scheduler construction regardless of how many tasks set the field, giving operators who
+  set it directly in `config.toml` or a task graph (bypassing the `--init` wizard, which
+  already documents the reservation) a runtime signal that the value is currently inert.
+
 ## [0.22.1] - 2026-07-15
 ### Fixed
 

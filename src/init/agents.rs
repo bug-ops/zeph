@@ -7,6 +7,7 @@ use dialoguer::{Confirm, Input, Select};
 use zeph_subagent::def::{MemoryScope, PermissionMode};
 
 use super::WizardState;
+use super::validate::parse_optional_nonzero;
 
 pub(super) fn step_orchestration(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Orchestration (/plan command) ==\n");
@@ -85,9 +86,13 @@ pub(super) fn step_orchestration(state: &mut WizardState) -> anyhow::Result<()> 
                  in this release; leave blank unless you want the value persisted for when \
                  it ships",
             )
-            .default(String::new())
+            .allow_empty(true)
+            .validate_with(|s: &String| -> Result<(), String> {
+                parse_optional_nonzero::<u64>(s).map(|_| ())
+            })
             .interact_text()?;
-        state.orchestration_default_idle_timeout_secs = idle_timeout_raw.trim().parse().ok();
+        state.orchestration_default_idle_timeout_secs =
+            parse_optional_nonzero(&idle_timeout_raw).map_err(|e| anyhow::anyhow!(e))?;
 
         step_ensemble_verify(state)?;
     }

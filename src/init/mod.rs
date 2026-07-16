@@ -23,6 +23,7 @@ pub(super) mod mcp;
 pub(super) mod memory;
 pub(super) mod security;
 pub(super) mod session;
+pub(super) mod validate;
 pub(super) mod worktree;
 
 use agents::{step_agents, step_learning, step_orchestration, step_router};

@@ -5,6 +5,7 @@ use dialoguer::{Confirm, Input, Select};
 use zeph_config::{BgIsolation, WorktreeBaseRef};
 
 use super::WizardState;
+use super::validate::parse_optional_nonzero;
 
 /// Interactive wizard step that configures `[worktree]` in the generated config.
 ///
@@ -111,53 +112,4 @@ pub(super) fn step_worktree(state: &mut WizardState) -> anyhow::Result<()> {
 
     println!();
     Ok(())
-}
-
-/// Parses an optional positive integer field: blank input means "unset" (`None`); a `0`
-/// is rejected (matches `Config::validate`'s rejection of `Some(0)` for `max_worktrees`/
-/// `disk_quota_mb` — see `crates/zeph-config/src/loader.rs`) so the wizard cannot emit a
-/// self-contradictory config.
-fn parse_optional_nonzero<T>(input: &str) -> Result<Option<T>, String>
-where
-    T: std::str::FromStr + PartialEq + Default,
-{
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    let value: T = trimmed
-        .parse()
-        .map_err(|_| format!("'{trimmed}' is not a valid positive integer"))?;
-    if value == T::default() {
-        return Err("must be > 0, or blank for unlimited/no accounting".to_owned());
-    }
-    Ok(Some(value))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_optional_nonzero_blank_is_none() {
-        assert_eq!(parse_optional_nonzero::<usize>(""), Ok(None));
-        assert_eq!(parse_optional_nonzero::<usize>("   "), Ok(None));
-    }
-
-    #[test]
-    fn parse_optional_nonzero_positive_value_ok() {
-        assert_eq!(parse_optional_nonzero::<usize>("5"), Ok(Some(5)));
-        assert_eq!(parse_optional_nonzero::<u64>("2048"), Ok(Some(2048)));
-    }
-
-    #[test]
-    fn parse_optional_nonzero_rejects_zero() {
-        assert!(parse_optional_nonzero::<usize>("0").is_err());
-        assert!(parse_optional_nonzero::<u64>("0").is_err());
-    }
-
-    #[test]
-    fn parse_optional_nonzero_rejects_non_numeric() {
-        assert!(parse_optional_nonzero::<usize>("abc").is_err());
-    }
 }

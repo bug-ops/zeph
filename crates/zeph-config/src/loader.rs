@@ -432,6 +432,13 @@ impl Config {
                 "orchestration.verifier_timeout_secs must be > 0".into(),
             ));
         }
+        if self.orchestration.default_idle_timeout_secs == Some(0) {
+            return Err(ConfigError::Validation(
+                "orchestration.default_idle_timeout_secs must be > 0 or unset; 0 would mean \
+                 an instant idle timeout"
+                    .into(),
+            ));
+        }
         Ok(())
     }
 
@@ -1173,6 +1180,31 @@ weight = 0.3
             err.contains("verifier_timeout_secs"),
             "expected verifier_timeout_secs in error, got: {err}"
         );
+    }
+
+    #[test]
+    fn validate_default_idle_timeout_zero_rejected() {
+        let mut cfg = Config::default();
+        cfg.orchestration.default_idle_timeout_secs = Some(0);
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("default_idle_timeout_secs"),
+            "expected default_idle_timeout_secs in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_default_idle_timeout_none_accepted() {
+        let mut cfg = Config::default();
+        cfg.orchestration.default_idle_timeout_secs = None;
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_default_idle_timeout_positive_accepted() {
+        let mut cfg = Config::default();
+        cfg.orchestration.default_idle_timeout_secs = Some(60);
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

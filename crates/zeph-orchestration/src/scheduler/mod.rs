@@ -531,6 +531,23 @@ impl DagScheduler {
 
         let (event_tx, event_rx) = mpsc::channel(64);
 
+        // Reserved-field hint (FR-005 / specs/075): idle_timeout_secs is accepted in config
+        // and per-task TimeoutPolicy but not enforced in this release — warn once per
+        // scheduler construction (covers both `new()` and `resume_from()`, never per-tick).
+        if config.default_idle_timeout_secs.is_some()
+            || graph.tasks.iter().any(|t| {
+                t.timeout
+                    .as_ref()
+                    .is_some_and(|tp| tp.idle_timeout_secs.is_some())
+            })
+        {
+            tracing::warn!(
+                "idle_timeout_secs is set but not enforced in this release (reserved for a \
+                 future progress-signal mechanism, see FR-005 / specs/075); only \
+                 run_timeout_secs is currently enforced"
+            );
+        }
+
         let task_timeout = if config.task_timeout_secs > 0 {
             Duration::from_secs(config.task_timeout_secs)
         } else {
@@ -932,5 +949,96 @@ mod tests {
             scheduler.orchestrator_provider_name().is_empty(),
             "default config must yield empty orchestrator_provider_name"
         );
+    }
+
+    // --- idle_timeout_secs reserved-field hint (#6302) ---
+
+    const IDLE_TIMEOUT_HINT: &str = "idle_timeout_secs is set but not enforced";
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn idle_timeout_hint_silent_when_unset() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let _scheduler =
+            DagScheduler::new(graph, &make_config(), Box::new(FirstRouter), vec![], None).unwrap();
+        assert!(
+            !logs_contain(IDLE_TIMEOUT_HINT),
+            "no idle_timeout_secs is set anywhere; the hint must not fire"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn idle_timeout_hint_warns_once_on_config_default() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let config = zeph_config::OrchestrationConfig {
+            default_idle_timeout_secs: Some(30),
+            ..make_config()
+        };
+        let _scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![], None).unwrap();
+        assert!(logs_contain(IDLE_TIMEOUT_HINT));
+        logs_assert(|lines: &[&str]| {
+            match lines
+                .iter()
+                .filter(|line| line.contains(IDLE_TIMEOUT_HINT))
+                .count()
+            {
+                1 => Ok(()),
+                n => Err(format!("expected exactly one idle_timeout hint, got {n}")),
+            }
+        });
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn idle_timeout_hint_warns_once_on_per_task_policy_even_with_multiple_tasks() {
+        let mut task_a = make_node(0, &[]);
+        task_a.timeout = Some(crate::graph::TimeoutPolicy {
+            run_timeout_secs: None,
+            idle_timeout_secs: Some(10),
+        });
+        let mut task_b = make_node(1, &[]);
+        task_b.timeout = Some(crate::graph::TimeoutPolicy {
+            run_timeout_secs: None,
+            idle_timeout_secs: Some(20),
+        });
+        let graph = graph_from_nodes(vec![task_a, task_b]);
+        let _scheduler =
+            DagScheduler::new(graph, &make_config(), Box::new(FirstRouter), vec![], None).unwrap();
+        assert!(logs_contain(IDLE_TIMEOUT_HINT));
+        logs_assert(|lines: &[&str]| {
+            match lines
+                .iter()
+                .filter(|line| line.contains(IDLE_TIMEOUT_HINT))
+                .count()
+            {
+                1 => Ok(()),
+                n => Err(format!("expected exactly one idle_timeout hint, got {n}")),
+            }
+        });
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn idle_timeout_hint_warns_once_on_resume() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let config = zeph_config::OrchestrationConfig {
+            default_idle_timeout_secs: Some(30),
+            ..make_config()
+        };
+        let _scheduler =
+            DagScheduler::resume_from(graph, &config, Box::new(FirstRouter), vec![], None).unwrap();
+        assert!(logs_contain(IDLE_TIMEOUT_HINT));
+        logs_assert(|lines: &[&str]| {
+            match lines
+                .iter()
+                .filter(|line| line.contains(IDLE_TIMEOUT_HINT))
+                .count()
+            {
+                1 => Ok(()),
+                n => Err(format!("expected exactly one idle_timeout hint, got {n}")),
+            }
+        });
     }
 }

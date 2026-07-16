@@ -303,7 +303,7 @@ performed.
 | Scenario | Expected Behavior |
 |----------|-------------------|
 | Per-task `run_timeout_secs` shorter than time already elapsed when set mid-run (e.g. hot-reloaded graph data) | Flagged as timed out on the next `check_timeouts()`/`wait_event()` evaluation — no special-cased grace period, consistent with existing `check_timeouts()` semantics |
-| `idle_timeout_secs` set (per-task or global) | Documented no-op in v1 — never fires, never treated as "always idle" by omission; `--init`/config.toml text states this explicitly (FR-005) |
+| `idle_timeout_secs` set (per-task or global) | Documented no-op in v1 — never fires, never treated as "always idle" by omission; `--init`/config.toml text states this explicitly (FR-005). Additive completion (#6302, not a spec deviation): `DagScheduler::init_common()` also emits a one-time `tracing::warn!` per scheduler construction when the field is set anywhere in config or the graph, giving FR-005's "loudly marked reserved" requirement a runtime signal in addition to the static docs/wizard text — the warning only logs, it never enforces or partially enforces the timeout |
 | `recovery.state_injection` set but effective strategy is `Skip` | `validate()` warns at graph-construction time; at runtime the task is `Skipped` via the existing `Skip` arm — recovery is never consulted (that arm does not call the recovery branch) |
 | `recovery.state_injection` set but effective strategy is `Ask` | Same as `Skip` — `validate()` warns; runtime pauses the graph via the existing `Ask` arm, recovery is never consulted |
 | `recovery.state_injection` set AND `verify_predicate` set on the same node | `validate()` rejects the graph at construction time (FR-011) — never reaches runtime |
