@@ -13,13 +13,12 @@
 //! are exactly what a constructed `TurnSummary` for that turn would carry.
 //!
 //! This is real regression coverage for the counter logic (reset site, increment site, batch
-//! counting) — not an end-to-end proof of delivery to a downstream consumer. As of this writing
-//! `TurnSummary::llm_requests` does have a shipped consumer (`Notifier::should_fire` gates on
-//! it, and it is exported to `turn_complete` hooks as `ZEPH_TURN_LLM_REQUESTS` —
-//! `crate::notifications` / `mod.rs`'s hook-env-building code), but `TurnSummary::tool_calls` is
-//! currently write-only: no gate reads it, no notification body includes it, and no hook env var
-//! exports it. That gap is a separate, pre-existing product issue tracked outside this PR, not
-//! something these tests can or should paper over.
+//! counting) — not an end-to-end proof of delivery to a downstream consumer. Both
+//! `TurnSummary::llm_requests` and `TurnSummary::tool_calls` now have shipped consumers:
+//! `llm_requests` gates `Notifier::should_fire` and is exported to `turn_complete` hooks as
+//! `ZEPH_TURN_LLM_REQUESTS`; `tool_calls` feeds the notification body (non-zero counts only,
+//! see `crate::notifications::build_notification_message`) and is exported as
+//! `ZEPH_TURN_TOOL_CALLS` — both in `crate::notifications` / `mod.rs`'s hook-env-building code.
 
 use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
@@ -28,6 +27,7 @@ use zeph_tools::executor::ToolOutput;
 
 use crate::agent::Agent;
 use crate::agent::agent_tests::{MockChannel, MockToolExecutor, create_test_registry};
+use crate::notifications::{TurnExitStatus, TurnSummary};
 
 fn tool_output(name: &str, summary: &str) -> ToolOutput {
     ToolOutput {
@@ -156,4 +156,24 @@ async fn tool_call_counter_resets_between_turns_not_accumulated() {
         agent.runtime.lifecycle.turn_llm_requests, 1,
         "turn 2 made exactly one LLM round-trip; an accumulated counter would show 3 here"
     );
+}
+
+/// Regression coverage for #6335: `TurnSummary::tool_calls` must reach the `turn_complete`
+/// hook environment as `ZEPH_TURN_TOOL_CALLS`, mirroring `ZEPH_TURN_LLM_REQUESTS`.
+#[test]
+fn hook_env_includes_tool_calls_count() {
+    let summary = TurnSummary {
+        duration_ms: 1234,
+        preview: "done".to_owned(),
+        tool_calls: 3,
+        llm_requests: 2,
+        exit_status: TurnExitStatus::Success,
+    };
+
+    let env = crate::agent::build_turn_hook_env(&summary, false);
+
+    assert_eq!(env.get("ZEPH_TURN_TOOL_CALLS"), Some(&"3".to_owned()));
+    assert_eq!(env.get("ZEPH_TURN_LLM_REQUESTS"), Some(&"2".to_owned()));
+    assert_eq!(env.get("ZEPH_TURN_DURATION_MS"), Some(&"1234".to_owned()));
+    assert_eq!(env.get("ZEPH_TURN_STATUS"), Some(&"success".to_owned()));
 }

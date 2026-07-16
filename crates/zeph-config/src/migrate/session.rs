@@ -190,7 +190,7 @@ pub fn migrate_hooks_turn_complete_config(toml_src: &str) -> Result<MigrationRes
 
     let comment = "\n# [[hooks.turn_complete]] — hook fired after every agent turn completes (#3308).\n\
          # Available env vars: ZEPH_TURN_DURATION_MS, ZEPH_TURN_STATUS, ZEPH_TURN_PREVIEW,\n\
-         # ZEPH_TURN_LLM_REQUESTS.\n\
+         # ZEPH_TURN_LLM_REQUESTS, ZEPH_TURN_TOOL_CALLS.\n\
          # Note: ZEPH_TURN_PREVIEW is available as env var but should not be embedded\n\
          # directly in the command string to avoid shell injection. Use a wrapper script instead.\n\
          # [[hooks.turn_complete]]\n\

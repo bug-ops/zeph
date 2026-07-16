@@ -120,6 +120,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: `TurnSummary::tool_calls` was computed every turn but had no downstream consumer,
+  unlike its sibling `llm_requests` (issue #6335). It is now exported to `turn_complete` hooks as
+  `ZEPH_TURN_TOOL_CALLS` (mirroring `ZEPH_TURN_LLM_REQUESTS`) and included in the completion
+  notification body (`Notifier`, both macOS-native and ntfy webhook channels) whenever a turn
+  dispatches at least one tool call. `Notifier::should_fire` gating is unchanged — `tool_calls`
+  does not gate notifications, only `llm_requests` does.
 - `zeph-core`/`zeph-subagent`: orchestration-dispatched sub-agents (`SchedulerAction::Spawn` via
   `run_scheduler_loop`) are now reaped once they reach a terminal state (`Completed`/`Failed`/
   `Canceled`) — `SubAgentManager::collect()` was previously only called from the interactive

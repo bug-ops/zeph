@@ -191,6 +191,36 @@ enum DispatchFlow {
     Fallthrough,
 }
 
+/// Build the `turn_complete` hook environment from a turn summary.
+///
+/// Mirrors the fields exposed on [`crate::notifications::TurnSummary`]: duration, status,
+/// redacted preview, LLM round-trip count, and tool-call count. Extracted as a pure function
+/// so the env var set can be asserted without driving a full agent turn.
+fn build_turn_hook_env(
+    summary: &crate::notifications::TurnSummary,
+    is_error: bool,
+) -> std::collections::HashMap<String, String> {
+    let mut env = std::collections::HashMap::new();
+    env.insert(
+        "ZEPH_TURN_DURATION_MS".to_owned(),
+        summary.duration_ms.to_string(),
+    );
+    env.insert(
+        "ZEPH_TURN_STATUS".to_owned(),
+        if is_error { "error" } else { "success" }.to_owned(),
+    );
+    env.insert("ZEPH_TURN_PREVIEW".to_owned(), summary.preview.clone());
+    env.insert(
+        "ZEPH_TURN_LLM_REQUESTS".to_owned(),
+        summary.llm_requests.to_string(),
+    );
+    env.insert(
+        "ZEPH_TURN_TOOL_CALLS".to_owned(),
+        summary.tool_calls.to_string(),
+    );
+    env
+}
+
 impl<C: Channel> Agent<C> {
     /// Create a new agent instance with the given LLM provider, I/O channel, and subsystems.
     ///
@@ -1423,20 +1453,7 @@ impl<C: Channel> Agent<C> {
         // borrow is created inside the future from the owned dispatch value.
         let hooks = self.services.session.hooks_config.turn_complete.clone();
         if !hooks.is_empty() && gate_ok {
-            let mut env = std::collections::HashMap::new();
-            env.insert(
-                "ZEPH_TURN_DURATION_MS".to_owned(),
-                summary.duration_ms.to_string(),
-            );
-            env.insert(
-                "ZEPH_TURN_STATUS".to_owned(),
-                if is_error { "error" } else { "success" }.to_owned(),
-            );
-            env.insert("ZEPH_TURN_PREVIEW".to_owned(), summary.preview.clone());
-            env.insert(
-                "ZEPH_TURN_LLM_REQUESTS".to_owned(),
-                summary.llm_requests.to_string(),
-            );
+            let mut env = build_turn_hook_env(&summary, is_error);
             let conv_id_str = self
                 .services
                 .memory

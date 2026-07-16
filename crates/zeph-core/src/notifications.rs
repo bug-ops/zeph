@@ -20,6 +20,11 @@
 //! 4. Duration gate (`min_turn_duration_ms`) applies only to successful turns;
 //!    error turns always fire regardless of duration
 //!
+//! `tool_calls` does not participate in gating — a turn can legitimately dispatch
+//! zero tool calls (e.g. an LLM response with no tool use) and still fire. It only
+//! feeds the notification body and the `turn_complete` hook env (see
+//! [`TurnSummary::tool_calls`]).
+//!
 //! # Examples
 //!
 //! ```no_run
@@ -77,6 +82,10 @@ pub struct TurnSummary {
     /// First ≤ 160 chars of the assistant response, already redacted by the caller.
     pub preview: String,
     /// Number of tool calls dispatched this turn.
+    ///
+    /// Included in the notification body when non-zero, and exported to
+    /// `turn_complete` hooks as `ZEPH_TURN_TOOL_CALLS`. Does not participate in
+    /// [`Notifier::should_fire`] gating.
     pub tool_calls: u32,
     /// Number of completed LLM round-trips this turn.
     /// Zero for slash commands, cache-only turns, and security-blocked inputs.
@@ -136,6 +145,9 @@ impl Notifier {
     /// 3. If `only_on_error`: turn must have errored
     /// 4. For successful turns: `duration_ms >= min_turn_duration_ms`
     ///    (error turns bypass the duration gate)
+    ///
+    /// `summary.tool_calls` is never gated on — a turn with `tool_calls == 0` but
+    /// `llm_requests > 0` (an LLM response with no tool use) still fires.
     #[must_use]
     pub fn should_fire(&self, summary: &TurnSummary) -> bool {
         if !self.cfg.enabled {
@@ -275,17 +287,28 @@ fn build_notification_message(summary: &TurnSummary) -> String {
         "Done"
     };
 
+    let header = if summary.tool_calls > 0 {
+        let noun = if summary.tool_calls == 1 {
+            "tool call"
+        } else {
+            "tool calls"
+        };
+        format!(
+            "{status} — {dur}ms, {calls} {noun}",
+            dur = summary.duration_ms,
+            calls = summary.tool_calls,
+        )
+    } else {
+        format!("{status} — {dur}ms", dur = summary.duration_ms)
+    };
+
     // Apply scrub_content to redact any secrets that may be in the preview.
     let safe_preview = scrub_content(&summary.preview);
 
     if safe_preview.is_empty() {
-        format!("{status} — {dur}ms", dur = summary.duration_ms)
+        header
     } else {
-        format!(
-            "{status} — {dur}ms\n{preview}",
-            dur = summary.duration_ms,
-            preview = safe_preview,
-        )
+        format!("{header}\n{safe_preview}")
     }
 }
 
@@ -642,6 +665,46 @@ mod tests {
         let summary = error_summary(500, 1);
         let msg = build_notification_message(&summary);
         assert!(msg.starts_with("Error"));
+    }
+
+    #[test]
+    fn notification_message_includes_tool_calls_when_nonzero() {
+        let summary = TurnSummary {
+            duration_ms: 1234,
+            preview: "All done.".to_owned(),
+            tool_calls: 3,
+            llm_requests: 1,
+            exit_status: TurnExitStatus::Success,
+        };
+        let msg = build_notification_message(&summary);
+        assert!(
+            msg.contains("3 tool calls"),
+            "message should mention the tool-call count: {msg}"
+        );
+    }
+
+    #[test]
+    fn notification_message_singular_tool_call() {
+        let summary = TurnSummary {
+            duration_ms: 1234,
+            preview: "All done.".to_owned(),
+            tool_calls: 1,
+            llm_requests: 1,
+            exit_status: TurnExitStatus::Success,
+        };
+        let msg = build_notification_message(&summary);
+        assert!(
+            msg.contains("1 tool call") && !msg.contains("1 tool calls"),
+            "singular count should use singular noun: {msg}"
+        );
+    }
+
+    #[test]
+    fn notification_message_omits_tool_calls_when_zero() {
+        // tool_calls == 0 (e.g. slash commands, plain LLM replies) must not clutter the banner.
+        let summary = success_summary(1234, 1);
+        let msg = build_notification_message(&summary);
+        assert!(!msg.contains("tool call"), "message should be: {msg}");
     }
 
     #[test]

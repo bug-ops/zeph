@@ -94,6 +94,7 @@ pub struct HooksConfig {
     /// - `ZEPH_TURN_STATUS`        — `"success"` or `"error"`.
     /// - `ZEPH_TURN_PREVIEW`       — redacted first ≤ 160 chars of the assistant response.
     /// - `ZEPH_TURN_LLM_REQUESTS`  — number of completed LLM round-trips this turn.
+    /// - `ZEPH_TURN_TOOL_CALLS`    — number of tool calls dispatched this turn.
     #[serde(default)]
     pub turn_complete: Vec<HookDef>,
     /// Maximum number of `PreToolUse` hook blocks allowed per turn before the turn is ended
