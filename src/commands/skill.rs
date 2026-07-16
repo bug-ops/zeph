@@ -813,12 +813,12 @@ mod trust_promotion_tests {
         )
         .unwrap();
 
-        handle_skill_command(
+        Box::pin(handle_skill_command(
             SkillCommand::Install {
                 source: skill_src.to_string_lossy().into_owned(),
             },
             Some(&config_path),
-        )
+        ))
         .await
         .unwrap();
 
@@ -840,7 +840,7 @@ mod trust_promotion_tests {
         let dir = tempfile::tempdir().unwrap();
         let (config_path, name, prev_xdg) = Box::pin(install_test_skill(dir.path())).await;
 
-        let result = handle_skill_command(
+        let result = Box::pin(handle_skill_command(
             SkillCommand::Trust {
                 name: name.clone(),
                 level: "trusted".to_owned(),
@@ -848,7 +848,7 @@ mod trust_promotion_tests {
                 no_require_check: false,
             },
             Some(&config_path),
-        )
+        ))
         .await;
 
         let db_path = dir.path().join("test.db");
@@ -873,7 +873,7 @@ mod trust_promotion_tests {
         let dir = tempfile::tempdir().unwrap();
         let (config_path, name, prev_xdg) = Box::pin(install_test_skill(dir.path())).await;
 
-        let result = handle_skill_command(
+        let result = Box::pin(handle_skill_command(
             SkillCommand::Trust {
                 name: name.clone(),
                 level: "trusted".to_owned(),
@@ -881,7 +881,7 @@ mod trust_promotion_tests {
                 no_require_check: true,
             },
             Some(&config_path),
-        )
+        ))
         .await;
 
         let db_path = dir.path().join("test.db");
