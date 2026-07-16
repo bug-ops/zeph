@@ -2280,3 +2280,119 @@ fn mock_provider_effective_model_identifier_defaults_to_model_identifier() {
     assert_eq!(p.effective_model_identifier(), p.model_identifier());
     assert_eq!(p.effective_model_identifier(), "o3-mini");
 }
+
+// ── spec-072 S1 fix: RouterProvider vision-tier safety net (Cascade/Bandit/Ema/Thompson) ──
+
+fn image_msg() -> Message {
+    Message {
+        role: Role::User,
+        content: String::new(),
+        parts: vec![crate::provider::MessagePart::Image(Box::new(
+            crate::provider::ImageData {
+                data: vec![1, 2, 3],
+                mime_type: "image/png".into(),
+            },
+        ))],
+        metadata: crate::provider::MessageMetadata::default(),
+    }
+}
+
+#[test]
+fn router_supports_vision_true_when_any_provider_supports_it() {
+    use crate::mock::MockProvider;
+
+    let text_only = AnyProvider::Mock(MockProvider::default().with_name("text-only"));
+    let vision = AnyProvider::Mock(MockProvider::default().with_name("vision").with_vision());
+    let r = RouterProvider::new(vec![text_only, vision]);
+    assert!(r.supports_vision());
+}
+
+#[test]
+fn router_supports_vision_false_when_no_provider_supports_it() {
+    use crate::mock::MockProvider;
+
+    let text_only = AnyProvider::Mock(MockProvider::default().with_name("text-only"));
+    let r = RouterProvider::new(vec![text_only]);
+    assert!(!r.supports_vision());
+}
+
+/// Default (Ema/Thompson-style ordered-fallback) dispatch: a non-vision-capable provider
+/// must never receive the `Image` part, even though the router aggregate `supports_vision()`
+/// is `true` because a later provider in the pool does support vision (C3/AC-6).
+#[tokio::test]
+async fn chat_with_tools_strips_image_for_non_vision_provider_in_ordered_dispatch() {
+    use crate::mock::MockProvider;
+
+    let (non_vision, recorded) =
+        MockProvider::with_responses(vec!["ok".to_owned()]).with_recording();
+    let non_vision = AnyProvider::Mock(non_vision);
+    let vision = AnyProvider::Mock(
+        MockProvider::with_responses(vec!["unused".to_owned()])
+            .with_name("vision-p")
+            .with_vision(),
+    );
+    // Router aggregate supports_vision() is true (the second provider supports it), but the
+    // ordered dispatch loop tries `non_vision` first — it must never see the Image part.
+    let r = RouterProvider::new(vec![non_vision, vision]);
+    assert!(r.supports_vision());
+
+    let messages = vec![image_msg()];
+    let result = r.chat_with_tools(&messages, &[]).await.unwrap();
+    assert!(matches!(result, crate::provider::ChatResponse::Text(t) if t == "ok"));
+
+    let calls = recorded.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert!(
+        !messages_contain_image(&calls[0]),
+        "non-vision-capable provider must never receive an Image part (C3, AC-6)"
+    );
+}
+
+/// Bandit strategy: the single bandit-selected provider must have the image stripped when
+/// it does not itself support vision.
+#[tokio::test]
+async fn chat_with_tools_strips_image_for_non_vision_bandit_selected_provider() {
+    use crate::mock::MockProvider;
+
+    let (non_vision, recorded) =
+        MockProvider::with_responses(vec!["ok".to_owned()]).with_recording();
+    let non_vision = AnyProvider::Mock(non_vision);
+    let r = RouterProvider::new(vec![non_vision]).with_bandit(
+        BanditRouterConfig::default(),
+        None,
+        None,
+    );
+
+    let messages = vec![image_msg()];
+    let result = r.chat_with_tools(&messages, &[]).await.unwrap();
+    assert!(matches!(result, crate::provider::ChatResponse::Text(t) if t == "ok"));
+
+    let calls = recorded.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert!(
+        !messages_contain_image(&calls[0]),
+        "bandit-selected non-vision-capable provider must never receive an Image part"
+    );
+}
+
+/// When the dispatched provider DOES support vision, the Image part must reach it unchanged
+/// (byte-for-byte) — the safety net must not strip images unconditionally.
+#[tokio::test]
+async fn chat_with_tools_preserves_image_for_vision_capable_provider() {
+    use crate::mock::MockProvider;
+
+    let (vision_provider, recorded) = MockProvider::with_responses(vec!["ok".to_owned()])
+        .with_vision()
+        .with_recording();
+    let r = RouterProvider::new(vec![AnyProvider::Mock(vision_provider)]);
+
+    let messages = vec![image_msg()];
+    r.chat_with_tools(&messages, &[]).await.unwrap();
+
+    let calls = recorded.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert!(
+        messages_contain_image(&calls[0]),
+        "a vision-capable provider must still receive the Image part"
+    );
+}

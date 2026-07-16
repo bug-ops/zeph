@@ -18,6 +18,8 @@ use crate::provider::{
     ChatResponse, ChatStream, LlmProvider, Message, MessageMetadata, Role, StatusTx, ToolDefinition,
 };
 
+use super::{messages_contain_image, strip_image_parts};
+
 /// Complexity tier for input classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -533,6 +535,57 @@ impl TriageRouter {
         }
         escalated
     }
+
+    /// Ensure the tier selected for a request carrying tool-result `MessagePart::Image`
+    /// parts is vision-capable, escalating like [`Self::escalate_for_tool_support`] — prefers
+    /// a higher tier first, falls back to a lower tier, and every candidate must also support
+    /// tool use and fit `context_tokens` (spec-072 §3.3, C3).
+    ///
+    /// Returns `None` when no configured tier can serve the request with vision support
+    /// within the required context/tool-use budget — the caller must then strip the `Image`
+    /// parts before dispatch so the request never reaches an incapable tier as a 400/422.
+    fn escalate_for_vision_support(&self, idx: usize, context_tokens: usize) -> Option<usize> {
+        if self.tier_providers[idx].1.supports_vision() {
+            return Some(idx);
+        }
+        let current_tier = self.tier_providers[idx].0;
+        let fits = |provider: &AnyProvider| {
+            provider.supports_vision()
+                && provider.supports_tool_use()
+                && provider
+                    .context_window()
+                    .is_none_or(|window| context_tokens <= window * 4 / 5)
+        };
+        let escalated = ComplexityTier::ascending()
+            .into_iter()
+            .filter(|t| t.index() > current_tier.index())
+            .find_map(|t| {
+                self.tier_providers
+                    .iter()
+                    .position(|(pt, p)| *pt == t && fits(p))
+            })
+            .or_else(|| {
+                ComplexityTier::ascending()
+                    .into_iter()
+                    .rev()
+                    .filter(|t| t.index() < current_tier.index())
+                    .find_map(|t| {
+                        self.tier_providers
+                            .iter()
+                            .position(|(pt, p)| *pt == t && fits(p))
+                    })
+            });
+        if let Some(new_idx) = escalated {
+            self.metrics.escalations.fetch_add(1, Ordering::Relaxed);
+            tracing::debug!(
+                original_tier = current_tier.as_str(),
+                escalated_tier = self.tier_providers[new_idx].0.as_str(),
+                context_tokens,
+                "triage: escalated for vision support"
+            );
+        }
+        escalated
+    }
 }
 
 fn build_triage_prompt(messages: &[Message]) -> String {
@@ -732,6 +785,12 @@ impl LlmProvider for TriageRouter {
     }
 
     /// Classify + delegate: each method independently performs triage (MF-2).
+    ///
+    /// When `messages` carries a tool-result `MessagePart::Image` sibling (spec-072), the
+    /// selected tier is additionally escalated to guarantee vision support; if no tier can
+    /// serve the request with vision support, the `Image` part(s) are stripped before dispatch
+    /// so the request never reaches an incapable tier as a 400/422 (C3, AC-6) — the text
+    /// placeholder remains as the guaranteed fallback.
     #[allow(refining_impl_trait_reachable)]
     fn chat_with_tools(
         &self,
@@ -749,6 +808,20 @@ impl LlmProvider for TriageRouter {
                 tracing::warn!("triage: no tier provider supports tool use");
                 return Err(LlmError::NoProviders);
             };
+
+            let (idx, messages) = if !messages_contain_image(&messages) {
+                (idx, messages)
+            } else if let Some(vision_idx) = router.escalate_for_vision_support(idx, context_tokens)
+            {
+                (vision_idx, messages)
+            } else {
+                tracing::warn!(
+                    "triage: no vision-capable tier available for image-bearing request, \
+                     dropping image part(s) (text placeholder remains)"
+                );
+                (idx, strip_image_parts(&messages))
+            };
+
             let (tier, provider) = &router.tier_providers[idx];
             tracing::debug!(
                 tier = tier.as_str(),
@@ -1781,5 +1854,143 @@ mod tests {
             !prompt.contains("tokens"),
             "prompt must not contain 'tokens' context metadata"
         );
+    }
+
+    // ── spec-072: vision-tier routing (C3, AC-6) ──────────────────────────────
+
+    fn image_msg() -> Message {
+        Message {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![crate::provider::MessagePart::Image(Box::new(
+                crate::provider::ImageData {
+                    data: vec![1, 2, 3],
+                    mime_type: "image/png".into(),
+                },
+            ))],
+            metadata: MessageMetadata::default(),
+        }
+    }
+
+    #[test]
+    fn messages_contain_image_detects_sibling_part() {
+        assert!(messages_contain_image(&[image_msg()]));
+        assert!(!messages_contain_image(&[make_user_msg("hi")]));
+    }
+
+    #[test]
+    fn strip_image_parts_removes_image_keeps_other_parts() {
+        let mut msg = image_msg();
+        msg.parts.push(crate::provider::MessagePart::Text {
+            text: "placeholder".into(),
+        });
+        let stripped = strip_image_parts(&[msg]);
+        assert!(!messages_contain_image(&stripped));
+        assert_eq!(stripped[0].parts.len(), 1);
+    }
+
+    #[test]
+    fn escalate_for_vision_support_no_op_when_current_tier_supports_it() {
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![(
+                ComplexityTier::Simple,
+                AnyProvider::Mock(MockProvider::default().with_vision()),
+            )],
+            5,
+            50,
+        );
+        assert_eq!(router.escalate_for_vision_support(0, 0), Some(0));
+        assert_eq!(router.metrics.escalations.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn escalate_for_vision_support_escalates_to_higher_tier() {
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![
+                (ComplexityTier::Simple, mock_provider("simple-p")),
+                (
+                    ComplexityTier::Expert,
+                    AnyProvider::Mock(MockProvider::default().with_vision()),
+                ),
+            ],
+            5,
+            50,
+        );
+        assert_eq!(router.escalate_for_vision_support(0, 0), Some(1));
+        assert_eq!(router.metrics.escalations.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn escalate_for_vision_support_none_when_no_tier_supports_vision() {
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![(ComplexityTier::Simple, mock_provider("simple-p"))],
+            5,
+            50,
+        );
+        assert_eq!(router.escalate_for_vision_support(0, 0), None);
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_escalates_to_vision_capable_tier_for_image_bearing_request() {
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![
+                (ComplexityTier::Simple, mock_provider("simple-p")),
+                (
+                    ComplexityTier::Expert,
+                    AnyProvider::Mock(
+                        MockProvider::with_responses(vec!["vision answer".to_owned()])
+                            .with_vision(),
+                    ),
+                ),
+            ],
+            5,
+            50,
+        );
+        let messages = vec![make_user_msg("describe this screenshot"), image_msg()];
+        let result = router.chat_with_tools(&messages, &[]).await.unwrap();
+        assert!(matches!(result, ChatResponse::Text(t) if t == "vision answer"));
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_drops_image_when_no_tier_is_vision_capable() {
+        // Neither tier supports vision — the image must be stripped before dispatch so the
+        // request never reaches a 400/422; the tool-capable simple tier still answers using
+        // just the text placeholder (AC-6, C3).
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![(
+                ComplexityTier::Simple,
+                AnyProvider::Mock(MockProvider::with_responses(vec![
+                    "text-only answer".to_owned(),
+                ])),
+            )],
+            5,
+            50,
+        );
+        let messages = vec![make_user_msg("describe this screenshot"), image_msg()];
+        let result = router.chat_with_tools(&messages, &[]).await.unwrap();
+        assert!(matches!(result, ChatResponse::Text(t) if t == "text-only answer"));
+    }
+
+    #[test]
+    fn chat_with_tools_never_sends_image_to_incapable_tier_regression() {
+        // Automated regression complementing the mandatory live cascade session test (AC-6):
+        // for every configured tier lacking vision support, escalate_for_vision_support must
+        // never select it when an Image part is present.
+        let router = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![
+                (ComplexityTier::Simple, mock_provider("text-only")),
+                (ComplexityTier::Medium, mock_provider("also-text-only")),
+            ],
+            5,
+            50,
+        );
+        assert_eq!(router.escalate_for_vision_support(0, 0), None);
+        assert_eq!(router.escalate_for_vision_support(1, 0), None);
     }
 }

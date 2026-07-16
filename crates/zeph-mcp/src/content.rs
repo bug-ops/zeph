@@ -58,6 +58,8 @@ pub fn render_content_block(block: &ContentBlock) -> String {
         ContentBlock::Image(img) => {
             format!("[image: {}, {} bytes]", img.mime_type, img.data.len())
         }
+        // TODO(#5366): Audio/blob/resource-link MCP passthrough deferred — Audio needs
+        // Ask-First MessagePart::Audio variant (invariant #4); see specs/072.
         ContentBlock::Audio(audio) => {
             format!("[audio: {}, {} bytes]", audio.mime_type, audio.data.len())
         }

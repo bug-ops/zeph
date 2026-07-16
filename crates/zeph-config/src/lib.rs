@@ -118,8 +118,8 @@ pub use agent::{
 };
 pub use channels::{
     A2aClientConfig, A2aServerConfig, CardTrustPolicy, ChannelSkillsConfig, DiscordConfig,
-    IbctKeyConfig, McpConfig, McpOAuthConfig, McpPolicy, McpServerConfig, McpTrustLevel,
-    OAuthTokenStorage, RateLimit, SlackConfig, TelegramConfig, ToolDiscoveryConfig,
+    IbctKeyConfig, McpConfig, McpMediaConfig, McpOAuthConfig, McpPolicy, McpServerConfig,
+    McpTrustLevel, OAuthTokenStorage, RateLimit, SlackConfig, TelegramConfig, ToolDiscoveryConfig,
     ToolDiscoveryStrategyConfig, ToolPruningConfig, TrustCalibrationConfig, TrustedAgentKey,
     is_skill_allowed,
 };

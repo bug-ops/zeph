@@ -14,8 +14,8 @@ readme = "README.md"
 
 [features]
 profiling = []
-sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite", "zeph-tools/sqlite"]
-postgres = ["zeph-db/postgres", "zeph-memory/postgres", "zeph-tools/postgres"]
+sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite", "zeph-sanitizer/sqlite", "zeph-tools/sqlite"]
+postgres = ["zeph-db/postgres", "zeph-memory/postgres", "zeph-sanitizer/postgres", "zeph-tools/postgres"]
 default = ["sqlite"]
 mock = []
 # Enables test utilities and testcontainers for PostgreSQL integration tests.
@@ -23,6 +23,7 @@ test-utils = ["dep:testcontainers-modules", "postgres"]
 
 [dependencies]
 async-trait.workspace = true
+base64.workspace = true
 blake3.workspace = true
 dashmap.workspace = true
 futures.workspace = true
@@ -51,6 +52,7 @@ zeph-config.workspace = true
 zeph-db.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true
+zeph-sanitizer.workspace = true
 zeph-tools.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 

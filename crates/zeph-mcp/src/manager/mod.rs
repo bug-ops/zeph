@@ -212,6 +212,13 @@ pub struct ServerEntry {
     /// Default: `false` (backward compatible).
     #[serde(default)]
     pub env_isolation: bool,
+    /// Opt-in: decode and attach images this server returns as native `MessagePart::Image`
+    /// siblings for vision-capable providers (spec-072). Mirrors
+    /// [`McpServerConfig::media_passthrough`](zeph_config::McpServerConfig::media_passthrough).
+    /// Always hard-blocked when `trust_level == McpTrustLevel::Sandboxed`, regardless of
+    /// this flag. Default: `false`.
+    #[serde(default)]
+    pub media_passthrough: bool,
 }
 
 /// Configurable byte caps applied during tool ingestion and server-instructions storage.

@@ -95,6 +95,10 @@ struct ToolResultClassification {
     anomaly_outcome: AnomalyOutcome,
     is_quality_failure: bool,
     tool_err_category: Option<zeph_tools::error_taxonomy::ToolErrorCategory>,
+    /// Validated MCP-sourced images (spec-072). Populated only in the `Ok(Some(out))` arm
+    /// of `classify_tool_result` — always empty for `Ok(None)`/`Err`, which mechanically
+    /// satisfies FR-006 (error/partial results never carry media) by construction.
+    media: Vec<zeph_llm::ImageData>,
 }
 
 enum AnomalyOutcome {

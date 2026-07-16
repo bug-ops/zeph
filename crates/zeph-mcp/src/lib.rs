@@ -87,6 +87,7 @@
 //!     elicitation_enabled: false,
 //!     elicitation_timeout_secs: 120,
 //!     env_isolation: false,
+//!     media_passthrough: false,
 //! };
 //!
 //! let manager = McpManager::new(

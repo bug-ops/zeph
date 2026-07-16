@@ -103,6 +103,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   inline — it is a match arm inside a larger `match sub.as_str()` block, not a standalone
   handler fn, so it does not fit the macro's shape. No behavior change.
 
+### Added
+
+- MCP image passthrough (opt-in, default off, spec-072 phase P2, #6240): an MCP server can
+  now return an image in a tool result and have it attached as a native `MessagePart::Image`
+  sibling part, visible to a vision-capable provider, instead of the previous text-only
+  `[image: mime, N bytes]` placeholder.
+  - New `[[mcp.servers]].media_passthrough` per-server opt-in flag (default `false`);
+    always hard-blocked when `trust_level = "sandboxed"` regardless of the flag.
+  - New `[mcp.media]` global caps: `max_image_bytes` (5 MiB), `max_dimension_px` (8192),
+    `max_pixels` (~64 MP, decompression-bomb defense), `max_images_per_result` (4),
+    `max_images_per_turn` (8), `allowed_formats` (`jpeg`/`png`/`gif`/`webp`).
+  - New `zeph-sanitizer::MediaSanitizer`: magic-byte sniff vs. declared MIME, format
+    allowlist, byte-size cap, a header-only dimension pre-check (`image::ImageReader::
+    into_dimensions`, no pixel buffer allocated) before a `spawn_blocking` full decode via
+    the `image` crate, with the same dimension/pixel caps re-enforced on the decoded image —
+    the header check rejects an oversized image without paying for the full decode's memory
+    allocation (decompression-bomb defense-in-depth).
+  - `zeph-mcp::McpToolExecutor` gates media decode on the opt-in flag and trust level, logs
+    every accept/reject decision via the existing tool audit path.
+  - `TriageRouter::chat_with_tools` (`zeph-llm`) escalates to a vision-capable tier when the
+    pending request carries a tool-result image, or strips the image before dispatch when no
+    tier can be guaranteed vision-capable — an image-bearing request never reaches an
+    incapable tier as an HTTP 400/422. `RouterProvider::chat_with_tools` (Cascade/Bandit/
+    Ema/Thompson strategies) applies the same safety net on every dispatch branch, backed by
+    an aggregated `RouterProvider::supports_vision()`.
+  - A static system-prompt caveat line is added once per session (not per turn) when any
+    configured server has `media_passthrough = true`, marking tool-sourced images as
+    untrusted data.
+  - MCP-sourced (and all) `MessagePart::Image` parts remain ephemeral: never persisted to
+    SQLite, Qdrant, or the durable JSONL session log (enforced since #6307).
+  - Debug-dump redaction of image payloads (spec-072 C4/AC-9), including Gemini's
+    camelCase `mimeType`/`inlineData` shape, is already covered by #6306 above.
+
 ## [0.22.1] - 2026-07-15
 ### Fixed
 

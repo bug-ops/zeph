@@ -335,6 +335,13 @@ pub(crate) struct RuntimeConfig {
     /// re-runs instruction discovery — a safe-mode session must never silently re-load
     /// project instructions mid-session, which would defeat the flag.
     pub(crate) safe_mode: bool,
+    /// Global caps for MCP image passthrough (spec-072). Read by `emit_media_parts` to
+    /// enforce `max_images_per_turn` when attaching MCP-sourced images.
+    pub(crate) mcp_media: zeph_config::McpMediaConfig,
+    /// `true` when at least one configured MCP server has `media_passthrough = true`
+    /// (spec-072 FR-011). Read by `assemble_final_system_prompt` to add the static
+    /// untrusted-image caveat line once per session.
+    pub(crate) media_passthrough_note_enabled: bool,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.
@@ -1326,6 +1333,8 @@ impl Default for RuntimeConfig {
             goals: GoalRuntimeConfig::default(),
             bare: false,
             safe_mode: false,
+            mcp_media: zeph_config::McpMediaConfig::default(),
+            media_passthrough_note_enabled: false,
         }
     }
 }

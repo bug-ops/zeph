@@ -28,6 +28,7 @@ fn make_entry(id: &str) -> ServerEntry {
         elicitation_enabled: false,
         elicitation_timeout_secs: 120,
         env_isolation: false,
+        media_passthrough: false,
     }
 }
 
@@ -360,6 +361,7 @@ fn make_http_entry(id: &str) -> ServerEntry {
         elicitation_enabled: false,
         elicitation_timeout_secs: 120,
         env_isolation: false,
+        media_passthrough: false,
     }
 }
 
@@ -723,6 +725,7 @@ fn make_oauth_entry(id: &str) -> ServerEntry {
         elicitation_enabled: false,
         elicitation_timeout_secs: 120,
         env_isolation: false,
+        media_passthrough: false,
     }
 }
 

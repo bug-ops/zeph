@@ -1286,6 +1286,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             tool_metadata: std::collections::HashMap::new(),
             elicitation_enabled: None,
             env_isolation: None,
+            media_passthrough: false,
         });
     }
     for server in state.mcp_remote_servers.clone() {

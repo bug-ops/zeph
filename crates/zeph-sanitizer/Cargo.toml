@@ -13,6 +13,7 @@ description = "Content sanitization, exfiltration guard, PII filtering, and quar
 readme = "README.md"
 
 [dependencies]
+image = { workspace = true, features = ["jpeg", "png", "gif", "webp"] }
 parking_lot.workspace = true
 rand.workspace = true
 regex.workspace = true

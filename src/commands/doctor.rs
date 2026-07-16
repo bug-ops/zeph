@@ -668,6 +668,7 @@ async fn check_mcp_server(
         env_isolation: server
             .env_isolation
             .unwrap_or(mcp_config.default_env_isolation),
+        media_passthrough: server.media_passthrough,
     };
 
     let enforcer = PolicyEnforcer::new(vec![(server.id.clone(), McpPolicy::default())]);

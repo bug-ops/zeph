@@ -88,6 +88,7 @@ pub fn acp_mcp_servers_to_entries(
                         elicitation_default_timeout_secs,
                     ),
                     env_isolation: false,
+                    media_passthrough: false,
                 })
             }
             acp::schema::v1::McpServer::Http(http) => Some(ServerEntry {
@@ -108,6 +109,7 @@ pub fn acp_mcp_servers_to_entries(
                     elicitation_default_timeout_secs,
                 ),
                 env_isolation: false,
+                media_passthrough: false,
             }),
             acp::schema::v1::McpServer::Sse(sse) => {
                 // SSE is a legacy MCP transport; map to Streamable HTTP which is
@@ -130,6 +132,7 @@ pub fn acp_mcp_servers_to_entries(
                         elicitation_default_timeout_secs,
                     ),
                     env_isolation: false,
+                    media_passthrough: false,
                 })
             }
             _ => {

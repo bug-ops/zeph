@@ -129,6 +129,15 @@ pub struct AgentSessionConfig {
 
     /// CAM fidelity scoring configuration (#4547). `None` → scoring disabled.
     pub fidelity_config: Option<zeph_config::FidelityConfig>,
+
+    /// Global caps for MCP image passthrough (spec-072), used by the vision-tier
+    /// emission gate in `process_one_tool_result` to enforce `max_images_per_turn`.
+    pub mcp_media: zeph_config::McpMediaConfig,
+
+    /// `true` when at least one configured `[[mcp.servers]]` entry has
+    /// `media_passthrough = true` (spec-072 FR-011). Gates the static untrusted-image
+    /// caveat line added once at session-assembly time in `assemble_final_system_prompt`.
+    pub media_passthrough_note_enabled: bool,
 }
 
 impl AgentSessionConfig {
@@ -208,6 +217,8 @@ impl AgentSessionConfig {
                 }
                 fc
             },
+            mcp_media: config.mcp.media.clone(),
+            media_passthrough_note_enabled: config.mcp.servers.iter().any(|s| s.media_passthrough),
         }
     }
 }

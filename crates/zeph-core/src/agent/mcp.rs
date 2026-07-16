@@ -730,6 +730,7 @@ fn build_server_entry(id: &str, target: &str, extra_args: &[&str]) -> zeph_mcp::
         elicitation_enabled: false,
         elicitation_timeout_secs: 120,
         env_isolation: false,
+        media_passthrough: false,
     }
 }
 

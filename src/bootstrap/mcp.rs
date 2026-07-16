@@ -53,6 +53,7 @@ pub fn create_mcp_manager_with_vault(
                 elicitation_enabled,
                 elicitation_timeout_secs: config.mcp.elicitation_timeout,
                 env_isolation: s.env_isolation.unwrap_or(config.mcp.default_env_isolation),
+                media_passthrough: s.media_passthrough,
             }
         })
         .collect();

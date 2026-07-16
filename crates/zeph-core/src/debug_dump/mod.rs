@@ -778,6 +778,9 @@ fn part_to_block(part: &MessagePart, is_assistant: bool) -> Option<serde_json::V
             "source": {
                 "type": "base64",
                 "media_type": img.mime_type,
+                // Real base64 here is intentional — `raw_dump` runs the whole payload
+                // through `redact_image_payloads` before writing, which redacts this `data`
+                // field via the `media_type` sibling signal (spec-072 FR-012/C4).
                 "data": base64::engine::general_purpose::STANDARD.encode(&img.data),
             },
         })),

@@ -296,6 +296,7 @@ impl<C: Channel> Agent<C> {
                     anomaly_outcome,
                     is_quality_failure: false,
                     tool_err_category: None,
+                    media: out.media,
                 }
             }
             Ok(None) => ToolResultClassification {
@@ -308,6 +309,7 @@ impl<C: Channel> Agent<C> {
                 anomaly_outcome: AnomalyOutcome::Success,
                 is_quality_failure: false,
                 tool_err_category: None,
+                media: Vec::new(),
             },
             Err(ref e) => {
                 let category = e.category();
@@ -353,6 +355,7 @@ impl<C: Channel> Agent<C> {
                     anomaly_outcome,
                     is_quality_failure,
                     tool_err_category: Some(category),
+                    media: Vec::new(),
                 }
             }
         }
@@ -377,6 +380,7 @@ impl<C: Channel> Agent<C> {
         has_any_injection_flags: &mut bool,
         pending_reflection: &mut Option<String>,
         pending_outcomes: &mut Vec<crate::agent::learning::PendingSkillOutcome>,
+        images_attached_this_turn: &mut usize,
     ) -> Result<(), crate::agent::error::AgentError> {
         let ToolResultClassification {
             output,
@@ -388,6 +392,7 @@ impl<C: Channel> Agent<C> {
             anomaly_outcome,
             is_quality_failure,
             mut tool_err_category,
+            media,
         } = self.classify_tool_result(tc, tool_result);
 
         self.record_tool_execution_telemetry(tc.name.as_str(), started_at, is_error, &output);
@@ -473,7 +478,60 @@ impl<C: Channel> Agent<C> {
             content: llm_content,
             is_error,
         });
+
+        if !is_error && !vigil_blocked && !media.is_empty() {
+            self.emit_media_parts(
+                tc.name.as_str(),
+                media,
+                result_parts,
+                images_attached_this_turn,
+            );
+        }
+
         Ok(())
+    }
+
+    /// Push sibling [`MessagePart::Image`] entries for validated MCP-sourced images
+    /// (spec-072 §3.2-3.3), respecting `max_images_per_turn` as a running counter shared
+    /// across the whole tool-call batch. Called only from the success path — the caller
+    /// already excludes error and quarantined results (FR-006/FR-007).
+    ///
+    /// Gates on `self.provider.supports_vision()`, mirroring the existing user-upload
+    /// image gate in `build_user_message` (`agent/mod.rs`). For a router/cascade provider
+    /// this is a coarse, optimistic check (aggregates `.any()` across tiers) — the
+    /// concrete per-request tier-selection seam (spec-072 §3.3, C3) is responsible for the
+    /// final safety net so an unresolved-vision image never reaches an incapable tier as a
+    /// 400/422. Both multi-provider implementations enforce this at dispatch time:
+    /// `TriageRouter::chat_with_tools` (escalate-or-strip) and `RouterProvider::chat_with_tools`
+    /// (per-provider strip on every dispatch branch — Cascade/Bandit/Ema/Thompson).
+    fn emit_media_parts(
+        &mut self,
+        tool_name: &str,
+        media: Vec<zeph_llm::ImageData>,
+        result_parts: &mut Vec<MessagePart>,
+        images_attached_this_turn: &mut usize,
+    ) {
+        if !self.provider.supports_vision() {
+            tracing::warn!(
+                tool_name,
+                count = media.len(),
+                "MCP media: provider is not vision-capable, dropping image(s) (text placeholder remains)"
+            );
+            return;
+        }
+        let max_images_per_turn = self.runtime.config.mcp_media.max_images_per_turn;
+        for img in media {
+            if *images_attached_this_turn >= max_images_per_turn {
+                tracing::warn!(
+                    tool_name,
+                    cap = max_images_per_turn,
+                    "MCP media: per-turn image budget reached, remaining image(s) dropped"
+                );
+                break;
+            }
+            result_parts.push(MessagePart::Image(Box::new(img)));
+            *images_attached_this_turn += 1;
+        }
     }
 
     async fn observe_paste_transition(

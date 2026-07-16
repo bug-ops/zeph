@@ -13,7 +13,7 @@ use parking_lot::Mutex;
 
 use super::coe::{CoeDecision, run_coe};
 use super::embed_cache::TurnEmbedCache;
-use super::{RouterProvider, RouterStrategy};
+use super::{RouterProvider, RouterStrategy, messages_contain_image, strip_image_parts};
 use crate::embed::owned_strs;
 use crate::error::LlmError;
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
@@ -305,6 +305,18 @@ impl LlmProvider for RouterProvider {
             .providers
             .iter()
             .any(LlmProvider::supports_streaming)
+    }
+
+    /// Aggregate: `true` if any configured provider supports vision. This is a coarse,
+    /// optimistic signal (mirrors `TriageRouter::supports_vision`'s known v1 limitation,
+    /// spec-072 §7) — the concrete tool-call dispatch in [`Self::chat_with_tools`] applies
+    /// the real per-provider safety net (C3) so an image is never sent to a provider that
+    /// individually reports `supports_vision() == false`.
+    fn supports_vision(&self) -> bool {
+        self.state
+            .providers
+            .iter()
+            .any(LlmProvider::supports_vision)
     }
 
     #[allow(clippy::too_many_lines)] // retry + timeout + fallback + availability tracking: splitting would break the shared `last_err` accumulator
@@ -602,6 +614,7 @@ impl LlmProvider for RouterProvider {
     }
 
     #[allow(refining_impl_trait_reachable)]
+    #[allow(clippy::too_many_lines)] // fallback loop + bandit branch + spec-072 vision safety net
     fn chat_with_tools(
         &self,
         messages: &[Message],
@@ -614,6 +627,24 @@ impl LlmProvider for RouterProvider {
         let router = self.clone();
         let model = self.model_identifier().to_owned();
         let fut = Box::pin(async move {
+            // spec-072 C3: an Image part must never reach a provider whose own
+            // `supports_vision()` is `false` — computed once, applied per-provider below
+            // (never per-router-aggregate) since `RouterProvider` can dispatch to any
+            // configured provider regardless of strategy.
+            let has_image = messages_contain_image(&messages);
+            let stripped_messages = if has_image {
+                Some(strip_image_parts(&messages))
+            } else {
+                None
+            };
+            let dispatch_messages_for = |p: &crate::any::AnyProvider| -> &[Message] {
+                if has_image && !p.supports_vision() {
+                    stripped_messages.as_deref().unwrap_or(&messages)
+                } else {
+                    &messages
+                }
+            };
+
             // Bandit routing for tool calls: select a single provider, no quality escalation.
             if router.strategy == RouterStrategy::Bandit {
                 let query = messages
@@ -627,7 +658,14 @@ impl LlmProvider for RouterProvider {
                 if !p.supports_tool_use() {
                     return Err(LlmError::NoProviders);
                 }
-                let result = p.chat_with_tools(&messages, &tools).await;
+                if has_image && !p.supports_vision() {
+                    tracing::warn!(
+                        provider = p.name(),
+                        "router: bandit-selected provider is not vision-capable, dropping \
+                         image part(s) (text placeholder remains)"
+                    );
+                }
+                let result = p.chat_with_tools(dispatch_messages_for(&p), &tools).await;
                 if result.is_ok() {
                     *router.state.last_active_provider.lock() = Some(p.name().to_owned());
                 }
@@ -647,8 +685,15 @@ impl LlmProvider for RouterProvider {
                 if !p.supports_tool_use() {
                     continue;
                 }
+                if has_image && !p.supports_vision() {
+                    tracing::warn!(
+                        provider = p.name(),
+                        "router: provider is not vision-capable, dropping image part(s) for \
+                         this dispatch (text placeholder remains)"
+                    );
+                }
                 let start = std::time::Instant::now();
-                match p.chat_with_tools(&messages, &tools).await {
+                match p.chat_with_tools(dispatch_messages_for(p), &tools).await {
                     Ok(r) => {
                         router.record_availability(
                             p.name(),

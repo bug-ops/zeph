@@ -713,8 +713,14 @@ pub(crate) async fn run_daemon(
     // tokio runtime is still live (fixes #2693: ChildWithCleanup::drop races with shutdown).
     let shutdown_mcp_manager = std::sync::Arc::clone(&mcp_manager);
     let mcp_shared_tools = std::sync::Arc::new(RwLock::new(mcp_tools.clone()));
-    let mcp_executor =
-        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
+    let mut mcp_executor =
+        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone()).with_media(
+            std::sync::Arc::new(zeph_sanitizer::MediaSanitizer::new(&config.mcp.media)),
+            config.mcp.media.max_images_per_result,
+        );
+    if let Some(ref logger) = daemon_audit_logger {
+        mcp_executor = mcp_executor.with_audit(std::sync::Arc::clone(logger));
+    }
     let shell_policy_handle = shell_executor.policy_handle();
     let diagnostics_executor = agent_setup::build_diagnostics_executor(config);
     // #5611: base chain stays ungated here; it is composed with mcp/search/skill_loader/

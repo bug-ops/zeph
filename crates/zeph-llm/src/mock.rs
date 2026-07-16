@@ -29,6 +29,10 @@ pub struct MockProvider {
     /// set via [`MockProvider::with_context_window`] to test context-fit escalation paths
     /// without needing a real `OllamaProvider`.
     pub context_window: Option<usize>,
+    /// Whether `supports_vision()` reports `true`. Defaults to `false` (matches the trait
+    /// default); set via [`MockProvider::with_vision`] to test vision-tier routing/escalation
+    /// paths (spec-072) without needing a real vision-capable provider.
+    pub supports_vision: bool,
     /// Milliseconds to sleep before returning a response.
     pub delay_ms: u64,
     /// Sequence of errors to return before switching to normal responses.
@@ -94,6 +98,7 @@ impl Default for MockProvider {
             fail_chat: false,
             supports_tool_use: true,
             context_window: None,
+            supports_vision: false,
             delay_ms: 0,
             errors: Arc::new(Mutex::new(VecDeque::new())),
             recorded: None,
@@ -395,6 +400,14 @@ impl MockProvider {
         self.context_window = Some(window);
         self
     }
+
+    /// Make `supports_vision()` report `true`. Used to test router/triage vision-tier
+    /// escalation logic (spec-072) without needing a real vision-capable provider.
+    #[must_use]
+    pub fn with_vision(mut self) -> Self {
+        self.supports_vision = true;
+        self
+    }
 }
 
 impl LlmProvider for MockProvider {
@@ -524,6 +537,10 @@ impl LlmProvider for MockProvider {
 
     fn supports_tool_use(&self) -> bool {
         self.supports_tool_use
+    }
+
+    fn supports_vision(&self) -> bool {
+        self.supports_vision
     }
 
     fn context_window(&self) -> Option<usize> {

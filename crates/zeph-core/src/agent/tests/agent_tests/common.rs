@@ -75,6 +75,12 @@ pub(crate) fn mock_provider_streaming(responses: Vec<String>) -> AnyProvider {
     AnyProvider::Mock(MockProvider::with_responses(responses).with_streaming())
 }
 
+/// Vision-capable mock provider (spec-072): used to test the vision-tier emission gate in
+/// `process_one_tool_result`/`emit_media_parts` without needing a real provider.
+pub(crate) fn mock_provider_with_vision(responses: Vec<String>) -> AnyProvider {
+    AnyProvider::Mock(MockProvider::with_responses(responses).with_vision())
+}
+
 pub(crate) fn mock_provider_failing() -> AnyProvider {
     AnyProvider::Mock(MockProvider::failing())
 }

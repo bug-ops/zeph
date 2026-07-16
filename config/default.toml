@@ -537,6 +537,22 @@ max_dynamic_servers = 10
 # Maximum accepted value: 3600 s.
 # tool_timeout_secs = 60
 
+[mcp.media]
+# Global caps for MCP image passthrough (spec-072). Applies to every server with
+# media_passthrough = true (see [[mcp.servers]] below). Opt-in, default OFF per server.
+# Maximum encoded byte size of a single image, checked before any decode attempt.
+# max_image_bytes = 5242880   # 5 MiB
+# Maximum width or height in pixels, enforced on the decoded image.
+# max_dimension_px = 8192
+# Maximum total pixel count (width * height) — decompression-bomb defense.
+# max_pixels = 64000000       # ~64 MP
+# Maximum number of images validated/attached per single tool result.
+# max_images_per_result = 4
+# Maximum number of images attached per turn, aggregated across all tool calls in the batch.
+# max_images_per_turn = 8
+# Allowed image formats (short names).
+# allowed_formats = ["jpeg", "png", "gif", "webp"]
+
 [mcp.pruning]
 # Enable dynamic MCP tool pruning (LLM-based relevance filter before main inference)
 enabled = false
@@ -574,6 +590,8 @@ strict = false
 # timeout = 30
 # trust_level = "untrusted"     # "trusted" (skip SSRF), "untrusted" (default), or "sandboxed"
 # tool_allowlist = []           # empty = all tools exposed; non-empty = only listed tools visible
+# media_passthrough = false     # opt-in: attach this server's returned images to vision-capable
+#                                # providers (spec-072). Hard-blocked when trust_level = "sandboxed".
 
 # HTTP transport with static auth header (Mode A — static Bearer token):
 # Store the token in the vault: `zeph vault set TODOIST_API_TOKEN <value>`

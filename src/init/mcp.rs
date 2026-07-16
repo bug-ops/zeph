@@ -216,6 +216,7 @@ pub(super) fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
             tool_metadata: std::collections::HashMap::new(),
             elicitation_enabled: None,
             env_isolation: None,
+            media_passthrough: false,
         });
 
         println!("Server added.");

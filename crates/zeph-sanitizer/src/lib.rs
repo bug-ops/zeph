@@ -66,6 +66,7 @@ pub mod causal_ipi;
 pub mod exfiltration;
 pub mod guardrail;
 pub mod ipi_filter;
+mod media;
 pub mod memory_validation;
 pub mod nli;
 pub mod pii;
@@ -77,6 +78,7 @@ pub mod shadow_memory;
 pub mod types;
 
 pub use ipi_filter::{IpiFilter, IpiVerdict};
+pub use media::{MediaRejected, MediaSanitizer};
 pub use nli::{NliConfig, NliSanitizer, NliVerdict};
 pub use sanitizer::ContentSanitizer;
 pub use secret_mask::{SecretCategory, SecretMaskRegistry};
@@ -87,7 +89,7 @@ pub use types::{
 };
 #[cfg(feature = "classifiers")]
 pub use types::{InjectionVerdict, InstructionClass};
-pub use zeph_config::{ContentIsolationConfig, QuarantineConfig};
+pub use zeph_config::{ContentIsolationConfig, McpMediaConfig, QuarantineConfig};
 
 // ---------------------------------------------------------------------------
 // Tests

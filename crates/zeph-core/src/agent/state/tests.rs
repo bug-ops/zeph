@@ -122,6 +122,8 @@ fn make_runtime_config() -> RuntimeConfig {
         goals: crate::agent::state::GoalRuntimeConfig::default(),
         bare: false,
         safe_mode: false,
+        mcp_media: zeph_config::McpMediaConfig::default(),
+        media_passthrough_note_enabled: false,
     }
 }
 

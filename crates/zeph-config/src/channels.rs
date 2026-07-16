@@ -1326,6 +1326,10 @@ pub struct McpConfig {
         deserialize_with = "validate_tool_timeout_secs"
     )]
     pub tool_timeout_secs: Option<u64>,
+    /// Global caps for MCP image passthrough (spec-072). Applies to every server with
+    /// `media_passthrough = true`.
+    #[serde(default)]
+    pub media: McpMediaConfig,
 }
 
 impl Default for McpConfig {
@@ -1350,6 +1354,53 @@ impl Default for McpConfig {
             max_connect_attempts: default_max_connect_attempts(),
             startup_retry_backoff_ms: default_startup_retry_backoff_ms(),
             tool_timeout_secs: None,
+            media: McpMediaConfig::default(),
+        }
+    }
+}
+
+/// Global caps enforced by `MediaSanitizer` (`zeph-sanitizer`) on every MCP-sourced image,
+/// for servers with `media_passthrough = true` (spec-072 §3.4).
+///
+/// Defaults are conservative starting points, tunable per deployment; a follow-up
+/// benchmarking pass may adjust them (spec-072 §10, OQ-1).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct McpMediaConfig {
+    /// Maximum encoded byte size of a single image, checked before any decode attempt.
+    /// Default: 5 MiB — below the existing 20 MiB user-upload `MAX_IMAGE_BYTES`.
+    pub max_image_bytes: usize,
+    /// Maximum width or height in pixels, enforced on the decoded image.
+    /// Default: 8192.
+    pub max_dimension_px: u32,
+    /// Maximum total pixel count (width * height), enforced on the decoded image —
+    /// decompression-bomb defense that a byte cap alone cannot provide. Default: 64,000,000 (~64 MP).
+    pub max_pixels: u64,
+    /// Maximum number of images validated/attached per single tool result.
+    /// Default: 4.
+    pub max_images_per_result: usize,
+    /// Maximum number of images attached per turn, aggregated across all tool calls
+    /// in the batch. Default: 8.
+    pub max_images_per_turn: usize,
+    /// Allowed image formats (short names, e.g. `"png"`, `"jpeg"`, `"gif"`, `"webp"`).
+    /// Default: all four.
+    pub allowed_formats: Vec<String>,
+}
+
+impl Default for McpMediaConfig {
+    fn default() -> Self {
+        Self {
+            max_image_bytes: 5 * 1024 * 1024,
+            max_dimension_px: 8192,
+            max_pixels: 64_000_000,
+            max_images_per_result: 4,
+            max_images_per_turn: 8,
+            allowed_formats: vec![
+                "jpeg".to_owned(),
+                "png".to_owned(),
+                "gif".to_owned(),
+                "webp".to_owned(),
+            ],
         }
     }
 }
@@ -1431,6 +1482,13 @@ pub struct McpServerConfig {
     /// Default: `false` (backward compatible).
     #[serde(default)]
     pub env_isolation: Option<bool>,
+    /// Opt-in: decode and attach images this server returns as native `MessagePart::Image`
+    /// siblings for vision-capable providers (spec-072). Default: `false`.
+    ///
+    /// Independent of [`trust_level`](Self::trust_level) but always hard-blocked when
+    /// `trust_level == McpTrustLevel::Sandboxed`, regardless of this flag.
+    #[serde(default)]
+    pub media_passthrough: bool,
 }
 
 /// A filesystem root exposed to an MCP server via `roots/list`.
@@ -1520,6 +1578,7 @@ impl std::fmt::Debug for McpServerConfig {
             )
             .field("elicitation_enabled", &self.elicitation_enabled)
             .field("env_isolation", &self.env_isolation)
+            .field("media_passthrough", &self.media_passthrough)
             .finish()
     }
 }

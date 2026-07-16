@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use parking_lot::RwLock;
 
 use zeph_common::ToolName;
@@ -35,6 +37,13 @@ use crate::tool::McpTool;
 pub struct McpToolExecutor {
     manager: Arc<McpManager>,
     tools: Arc<RwLock<Vec<McpTool>>>,
+    /// Validator for MCP-sourced images (spec-072). `None` disables media passthrough
+    /// entirely — `media_passthrough` server config becomes a no-op without it.
+    media_sanitizer: Option<Arc<zeph_sanitizer::MediaSanitizer>>,
+    /// Per-tool-result cap on validated images (`[mcp.media].max_images_per_result`).
+    max_images_per_result: usize,
+    /// Audit logger for MCP media accept/reject decisions.
+    audit_logger: Option<Arc<zeph_tools::AuditLogger>>,
 }
 
 impl McpToolExecutor {
@@ -45,7 +54,36 @@ impl McpToolExecutor {
     /// and the code that handles `tools/list_changed` events.
     #[must_use]
     pub fn new(manager: Arc<McpManager>, tools: Arc<RwLock<Vec<McpTool>>>) -> Self {
-        Self { manager, tools }
+        Self {
+            manager,
+            tools,
+            media_sanitizer: None,
+            max_images_per_result: 0,
+            audit_logger: None,
+        }
+    }
+
+    /// Attach a [`zeph_sanitizer::MediaSanitizer`] and its per-result image cap.
+    ///
+    /// Without this, every server's `media_passthrough` config is a no-op — there is no
+    /// sanitizer to validate `ContentBlock::Image` blocks through, so `execute_tool_call`
+    /// never populates `ToolOutput.media`.
+    #[must_use]
+    pub fn with_media(
+        mut self,
+        sanitizer: Arc<zeph_sanitizer::MediaSanitizer>,
+        max_images_per_result: usize,
+    ) -> Self {
+        self.media_sanitizer = Some(sanitizer);
+        self.max_images_per_result = max_images_per_result;
+        self
+    }
+
+    /// Attach an audit logger for MCP media accept/reject decisions.
+    #[must_use]
+    pub fn with_audit(mut self, logger: Arc<zeph_tools::AuditLogger>) -> Self {
+        self.audit_logger = Some(logger);
+        self
     }
 
     /// Replace the registered tool snapshot.
@@ -69,6 +107,169 @@ impl McpToolExecutor {
         }
         let mut guard = self.tools.write();
         *guard = tools;
+    }
+
+    /// Validate `ContentBlock::Image` blocks in a tool result through the configured
+    /// [`zeph_sanitizer::MediaSanitizer`], up to `max_images_per_result`.
+    ///
+    /// Returns an empty `Vec` (no-op) when no sanitizer is attached, `server_id` has
+    /// `media_passthrough` unset/false, or the server is `McpTrustLevel::Sandboxed`
+    /// (spec-072 FR-001/FR-002/C2) — the text placeholder from `render_content_blocks`
+    /// always remains as the fallback regardless of this outcome.
+    async fn collect_media(
+        &self,
+        server_id: &str,
+        tool_name: &str,
+        content: &[rmcp::model::ContentBlock],
+    ) -> Vec<zeph_llm::provider::ImageData> {
+        let Some(ref sanitizer) = self.media_sanitizer else {
+            return Vec::new();
+        };
+        if !self.manager.media_passthrough_allowed(server_id).await {
+            return Vec::new();
+        }
+
+        let mut media = Vec::new();
+        for block in content {
+            let rmcp::model::ContentBlock::Image(img) = block else {
+                continue;
+            };
+            if media.len() >= self.max_images_per_result {
+                tracing::warn!(
+                    server_id,
+                    tool_name,
+                    cap = self.max_images_per_result,
+                    "MCP media: per-result image cap reached, remaining image(s) dropped"
+                );
+                break;
+            }
+            let decoded = match BASE64.decode(&img.data) {
+                Ok(b) => b,
+                Err(e) => {
+                    self.audit_media_decision(
+                        server_id,
+                        tool_name,
+                        &img.mime_type,
+                        0,
+                        &format!("base64 decode failed: {e}"),
+                    )
+                    .await;
+                    continue;
+                }
+            };
+            let byte_len = decoded.len();
+            match sanitizer
+                .sanitize_image(&decoded, &img.mime_type, server_id)
+                .await
+            {
+                Ok(image_data) => {
+                    self.audit_media_accept(server_id, tool_name, &img.mime_type, byte_len)
+                        .await;
+                    media.push(image_data);
+                }
+                Err(rejected) => {
+                    self.audit_media_decision(
+                        server_id,
+                        tool_name,
+                        &img.mime_type,
+                        byte_len,
+                        &rejected.to_string(),
+                    )
+                    .await;
+                }
+            }
+        }
+        media
+    }
+
+    /// Log an accepted MCP media validation via the tool audit path (spec-072 AC-14).
+    async fn audit_media_accept(&self, server_id: &str, tool_name: &str, mime: &str, bytes: usize) {
+        tracing::debug!(server_id, tool_name, mime, bytes, "MCP media: accepted");
+        let Some(ref logger) = self.audit_logger else {
+            return;
+        };
+        logger
+            .log(&zeph_tools::AuditEntry {
+                timestamp: zeph_tools::chrono_now(),
+                tool: tool_name.to_owned().into(),
+                command: format!("mime={mime} bytes={bytes}"),
+                result: zeph_tools::AuditResult::Success,
+                duration_ms: 0,
+                error_category: None,
+                error_domain: None,
+                error_phase: None,
+                claim_source: Some(zeph_tools::ClaimSource::Mcp),
+                mcp_server_id: Some(server_id.to_owned()),
+                injection_flagged: false,
+                embedding_anomalous: false,
+                cross_boundary_mcp_to_acp: false,
+                adversarial_policy_decision: None,
+                exit_code: None,
+                truncated: false,
+                caller_id: None,
+                policy_match: None,
+                correlation_id: None,
+                vigil_risk: None,
+                execution_env: None,
+                resolved_cwd: None,
+                scope_at_definition: None,
+                scope_at_dispatch: None,
+                skill_name: None,
+            })
+            .await;
+    }
+
+    /// Log a rejected MCP media validation via the tool audit path (spec-072 AC-14, FR-005).
+    async fn audit_media_decision(
+        &self,
+        server_id: &str,
+        tool_name: &str,
+        mime: &str,
+        bytes: usize,
+        reason: &str,
+    ) {
+        tracing::warn!(
+            server_id,
+            tool_name,
+            mime,
+            bytes,
+            reason,
+            "MCP media: rejected"
+        );
+        let Some(ref logger) = self.audit_logger else {
+            return;
+        };
+        logger
+            .log(&zeph_tools::AuditEntry {
+                timestamp: zeph_tools::chrono_now(),
+                tool: tool_name.to_owned().into(),
+                command: format!("mime={mime} bytes={bytes}"),
+                result: zeph_tools::AuditResult::Blocked {
+                    reason: reason.to_owned(),
+                },
+                duration_ms: 0,
+                error_category: Some("media_rejected".to_owned()),
+                error_domain: Some("security".to_owned()),
+                error_phase: None,
+                claim_source: Some(zeph_tools::ClaimSource::Mcp),
+                mcp_server_id: Some(server_id.to_owned()),
+                injection_flagged: false,
+                embedding_anomalous: false,
+                cross_boundary_mcp_to_acp: false,
+                adversarial_policy_decision: None,
+                exit_code: None,
+                truncated: false,
+                caller_id: None,
+                policy_match: None,
+                correlation_id: None,
+                vigil_risk: None,
+                execution_env: None,
+                resolved_cwd: None,
+                scope_at_definition: None,
+                scope_at_dispatch: None,
+                skill_name: None,
+            })
+            .await;
     }
 }
 
@@ -122,6 +323,10 @@ impl ToolExecutor for McpToolExecutor {
 
         let text = crate::sanitize::intent_anchor_wrap(&tool.server_id, &tool.name, &raw_text);
 
+        let media = self
+            .collect_media(&tool.server_id, &tool.name, &result.content)
+            .await;
+
         Ok(Some(ToolOutput {
             tool_name: tool.qualified_name().into(),
             summary: text,
@@ -133,7 +338,7 @@ impl ToolExecutor for McpToolExecutor {
             locations: None,
             raw_response: None,
             claim_source: Some(zeph_tools::ClaimSource::Mcp),
-            ..Default::default()
+            media,
         }))
     }
 
@@ -230,6 +435,139 @@ mod tests {
         let mgr = Arc::new(McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])));
         let tools = Arc::new(RwLock::new(vec![]));
         McpToolExecutor::new(mgr, tools)
+    }
+
+    // --- MediaSanitizer / media_passthrough gating (spec-072) ---
+
+    // 1x1 valid PNG fixture (magic bytes + minimal IHDR/IDAT/IEND chunks).
+    const PNG_1X1: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0xF8,
+        0xCF, 0xC0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0xC9, 0xFE, 0x92, 0xEF, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    fn media_entry(
+        id: &str,
+        media_passthrough: bool,
+        trust_level: crate::manager::McpTrustLevel,
+    ) -> crate::manager::ServerEntry {
+        crate::manager::ServerEntry {
+            id: id.to_owned(),
+            transport: crate::manager::McpTransport::Stdio {
+                command: "nonexistent-mcp-binary".into(),
+                args: Vec::new(),
+                env: std::collections::HashMap::new(),
+            },
+            timeout: std::time::Duration::from_secs(5),
+            trust_level,
+            tool_allowlist: None,
+            expected_tools: Vec::new(),
+            roots: Vec::new(),
+            tool_metadata: std::collections::HashMap::new(),
+            elicitation_enabled: false,
+            elicitation_timeout_secs: 120,
+            env_isolation: false,
+            media_passthrough,
+        }
+    }
+
+    fn executor_with_media(entry: crate::manager::ServerEntry) -> McpToolExecutor {
+        let mgr = Arc::new(McpManager::new(
+            vec![entry],
+            vec![],
+            PolicyEnforcer::new(vec![]),
+        ));
+        let tools = Arc::new(RwLock::new(vec![]));
+        let sanitizer = Arc::new(zeph_sanitizer::MediaSanitizer::new(
+            &zeph_config::McpMediaConfig::default(),
+        ));
+        McpToolExecutor::new(mgr, tools).with_media(sanitizer, 4)
+    }
+
+    fn png_image_block() -> rmcp::model::ContentBlock {
+        rmcp::model::ContentBlock::image(BASE64.encode(PNG_1X1), "image/png")
+    }
+
+    #[tokio::test]
+    async fn collect_media_noop_without_sanitizer_attached() {
+        let executor = make_executor();
+        let media = executor
+            .collect_media("srv", "tool", std::slice::from_ref(&png_image_block()))
+            .await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn collect_media_noop_when_media_passthrough_disabled() {
+        let entry = media_entry("srv", false, crate::manager::McpTrustLevel::Untrusted);
+        let executor = executor_with_media(entry);
+        let media = executor
+            .collect_media("srv", "tool", std::slice::from_ref(&png_image_block()))
+            .await;
+        assert!(
+            media.is_empty(),
+            "media_passthrough=false must never populate media (AC-1)"
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_media_populates_when_opted_in() {
+        let entry = media_entry("srv", true, crate::manager::McpTrustLevel::Untrusted);
+        let executor = executor_with_media(entry);
+        let media = executor
+            .collect_media("srv", "tool", std::slice::from_ref(&png_image_block()))
+            .await;
+        assert_eq!(
+            media.len(),
+            1,
+            "opted-in server must attach the image (AC-2)"
+        );
+        assert_eq!(media[0].mime_type, "image/png");
+    }
+
+    #[tokio::test]
+    async fn collect_media_sandboxed_server_never_populates() {
+        let entry = media_entry("srv", true, crate::manager::McpTrustLevel::Sandboxed);
+        let executor = executor_with_media(entry);
+        let media = executor
+            .collect_media("srv", "tool", std::slice::from_ref(&png_image_block()))
+            .await;
+        assert!(
+            media.is_empty(),
+            "Sandboxed trust level must hard-block media regardless of the flag (AC-3, C2)"
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_media_respects_per_result_cap() {
+        let entry = media_entry("srv", true, crate::manager::McpTrustLevel::Untrusted);
+        let mgr = Arc::new(McpManager::new(
+            vec![entry],
+            vec![],
+            PolicyEnforcer::new(vec![]),
+        ));
+        let tools = Arc::new(RwLock::new(vec![]));
+        let sanitizer = Arc::new(zeph_sanitizer::MediaSanitizer::new(
+            &zeph_config::McpMediaConfig::default(),
+        ));
+        // Cap of 2, but 3 images in the result — only the first 2 are attached (AC-13).
+        let executor = McpToolExecutor::new(mgr, tools).with_media(sanitizer, 2);
+        let blocks = vec![png_image_block(), png_image_block(), png_image_block()];
+        let media = executor.collect_media("srv", "tool", &blocks).await;
+        assert_eq!(media.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn collect_media_rejects_mime_mismatch() {
+        let entry = media_entry("srv", true, crate::manager::McpTrustLevel::Untrusted);
+        let executor = executor_with_media(entry);
+        let mismatched = rmcp::model::ContentBlock::image(BASE64.encode(PNG_1X1), "image/jpeg");
+        let media = executor
+            .collect_media("srv", "tool", std::slice::from_ref(&mismatched))
+            .await;
+        assert!(media.is_empty(), "MIME mismatch must be rejected (AC-4)");
     }
 
     #[test]

@@ -588,8 +588,14 @@ pub(crate) async fn build_tool_setup(
     }
 
     let mcp_shared_tools = Arc::new(RwLock::new(mcp_tools.clone()));
-    let mcp_executor =
-        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
+    let mut mcp_executor =
+        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone()).with_media(
+            Arc::new(zeph_sanitizer::MediaSanitizer::new(&config.mcp.media)),
+            config.mcp.media.max_images_per_result,
+        );
+    if let Some(ref logger) = audit_logger {
+        mcp_executor = mcp_executor.with_audit(Arc::clone(logger));
+    }
     let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(None));
     shell_executor = shell_executor.with_risk_chain(Arc::clone(&risk_chain_accumulator));
     tracing::info!("security.risk_chain: RiskChainAccumulator wired to ShellExecutor");

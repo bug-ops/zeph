@@ -2570,6 +2570,9 @@ impl<C: Channel> Agent<C> {
         // Accumulate skill outcomes during the tool loop; flushed once after the loop via
         // flush_skill_outcomes to avoid N×M×13 sequential SQLite awaits (#2770).
         let mut pending_outcomes: Vec<crate::agent::learning::PendingSkillOutcome> = Vec::new();
+        // Running per-turn counter for attached MCP-sourced images (spec-072 §3.4
+        // max_images_per_turn), aggregated across every tool call in this batch.
+        let mut images_attached_this_turn: usize = 0;
         for idx in 0..tool_calls.len() {
             let tc = &tool_calls[idx];
             let tool_call_id = &tool_call_ids[idx];
@@ -2585,6 +2588,7 @@ impl<C: Channel> Agent<C> {
                 &mut has_any_injection_flags,
                 &mut pending_reflection,
                 &mut pending_outcomes,
+                &mut images_attached_this_turn,
             )
             .await?;
         }
@@ -3733,6 +3737,145 @@ mod tests {
             );
         } else {
             panic!("expected ToolResult part");
+        }
+    }
+
+    // spec-072 C5/AC-15 (T-213): pre-assembly pass safety with an interleaved Image sibling.
+    // `run_causal_ipi_post_probe` and `record_shadow_event` take `result_parts`/`tool_calls`
+    // by shared reference and never touch `MessagePart::Image` at all, so they cannot
+    // mutate/drop it by construction. `apply_acon_compression` is the only pass that mutates
+    // `result_parts` in place — this test proves its `tool_use_id`-based `ToolResult`
+    // targeting is unaffected by the presence/position of a non-`ToolResult` sibling, and
+    // that the `Image` part itself survives all three passes byte-for-byte.
+    #[test]
+    #[allow(clippy::too_many_lines)] // control + interleaved runs, both passes asserted
+    fn pre_assembly_passes_preserve_image_sibling() {
+        use crate::testing::{MockChannel, MockToolExecutor, mock_provider};
+        use zeph_llm::provider::{ImageData, ToolUseRequest};
+        use zeph_skills::registry::SkillRegistry;
+
+        fn make_agent() -> Agent<MockChannel> {
+            let mut agent = Agent::new(
+                mock_provider(vec![]),
+                MockChannel::new(vec![] as Vec<String>),
+                SkillRegistry::empty(),
+                None,
+                5,
+                MockToolExecutor::no_tools(),
+            );
+            // Default passthrough_threshold (2000 tokens) is well below the ~9000-token
+            // bodies below, so compression actually runs (not a PassThrough no-op).
+            agent.services.memory.subsystems.acon_config.enabled = true;
+            agent
+        }
+
+        fn tool_result(id: &str, content: String) -> MessagePart {
+            MessagePart::ToolResult {
+                tool_use_id: id.to_owned(),
+                content,
+                is_error: false,
+            }
+        }
+
+        let big_a = "alpha ".repeat(3000);
+        let big_b = "bravo ".repeat(3000);
+        let calls = vec![
+            ToolUseRequest {
+                id: "id_a".to_owned(),
+                name: "read".into(),
+                input: serde_json::Value::Null,
+            },
+            ToolUseRequest {
+                id: "id_b".to_owned(),
+                name: "read".into(),
+                input: serde_json::Value::Null,
+            },
+        ];
+        let image_bytes = vec![1u8, 2, 3, 4, 5];
+        let image_mime = "image/png".to_owned();
+        let image = MessagePart::Image(Box::new(ImageData {
+            data: image_bytes.clone(),
+            mime_type: image_mime.clone(),
+        }));
+
+        // Control run: no Image sibling at all.
+        let big_a_original_len = big_a.len();
+        let mut control_parts = vec![
+            tool_result("id_a", big_a.clone()),
+            tool_result("id_b", big_b.clone()),
+        ];
+        let mut control_agent = make_agent();
+        control_agent.apply_acon_compression(&calls, &mut control_parts);
+
+        // Interleaved run: Image positioned between the two ToolResult parts.
+        let mut interleaved_parts = vec![
+            tool_result("id_a", big_a),
+            image,
+            tool_result("id_b", big_b),
+        ];
+        let mut agent = make_agent();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            agent
+                .run_causal_ipi_post_probe(None, &interleaved_parts)
+                .await;
+        });
+        agent.record_shadow_event(&calls, "goal summary".into());
+        agent.apply_acon_compression(&calls, &mut interleaved_parts);
+
+        // (a) Compression output for both ToolResult parts is unaffected by the interleaved
+        // Image sibling: identical to the control run without it.
+        let MessagePart::ToolResult {
+            content: control_a, ..
+        } = &control_parts[0]
+        else {
+            panic!("expected ToolResult part in control run");
+        };
+        let MessagePart::ToolResult {
+            content: control_b, ..
+        } = &control_parts[1]
+        else {
+            panic!("expected ToolResult part in control run");
+        };
+        let MessagePart::ToolResult {
+            content: interleaved_a,
+            ..
+        } = &interleaved_parts[0]
+        else {
+            panic!("expected ToolResult part at index 0");
+        };
+        let MessagePart::ToolResult {
+            content: interleaved_b,
+            ..
+        } = &interleaved_parts[2]
+        else {
+            panic!("expected ToolResult part at index 2");
+        };
+        assert!(
+            control_a.len() < big_a_original_len,
+            "sanity: compression must actually run (control_a shorter than original)"
+        );
+        assert_eq!(
+            control_a, interleaved_a,
+            "id_a compression must be identical with/without the interleaved Image sibling"
+        );
+        assert_eq!(
+            control_b, interleaved_b,
+            "id_b compression must be identical with/without the interleaved Image sibling"
+        );
+
+        // (b) The Image part itself survives all three passes byte-for-byte.
+        match &interleaved_parts[1] {
+            MessagePart::Image(img) => {
+                assert_eq!(img.data, image_bytes, "Image bytes must be unchanged");
+                assert_eq!(
+                    img.mime_type, image_mime,
+                    "Image mime_type must be unchanged"
+                );
+            }
+            other => panic!("expected Image part at index 1, got {other:?}"),
         }
     }
 

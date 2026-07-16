@@ -103,6 +103,37 @@ fn blocking_load<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
+/// Returns `true` when any message carries a `MessagePart::Image`.
+///
+/// Shared by [`triage::TriageRouter`] and [`RouterProvider`]'s vision-tier dispatch safety
+/// net (spec-072 C3).
+pub(crate) fn messages_contain_image(messages: &[crate::provider::Message]) -> bool {
+    messages.iter().any(|m| {
+        m.parts
+            .iter()
+            .any(|p| matches!(p, crate::provider::MessagePart::Image(_)))
+    })
+}
+
+/// Drop every `MessagePart::Image` from a message set — the text placeholder from the
+/// companion `MessagePart::ToolResult` (spec-072 §8 control 2) always remains as the
+/// fallback, so the request stays well-formed for a provider/tier that cannot see the image.
+///
+/// Delegates the per-message filter to [`crate::provider::MessagePart::strip_images`], the
+/// same helper `Agent::persist_message`/`TranscriptWriter::append` use (#6305/#6307).
+pub(crate) fn strip_image_parts(
+    messages: &[crate::provider::Message],
+) -> Vec<crate::provider::Message> {
+    messages
+        .iter()
+        .cloned()
+        .map(|mut m| {
+            m.parts = crate::provider::MessagePart::strip_images(&m.parts);
+            m
+        })
+        .collect()
+}
+
 /// Multi-provider LLM router implementing [`LlmProvider`](crate::provider::LlmProvider).
 ///
 /// Construct with [`RouterProvider::new`] and configure a routing strategy via the
