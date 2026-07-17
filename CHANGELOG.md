@@ -128,6 +128,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   as graph extraction so raw tool output and injection-flagged content never enter the tree.
   Best-effort: a single lightweight `INSERT ... RETURNING id`, no LLM/embedding call, failures
   logged and never propagated.
+- `zeph-orchestration` / `zeph-core`: an orchestrated `/plan` task was marked `Completed` even
+  when every real tool call it attempted failed, including `policy_blocked` security-gate
+  denials — task completion status was decided purely by "did the sub-agent's turn finish
+  without throwing an exception," never by inspecting what its tool calls actually did (#6380).
+  `DagScheduler::handle_completed_outcome` now inspects the task's tool-call trace
+  (`ToolCallSummary.ok`) before finalizing status: for the `RunInline` dispatch path, where the
+  trace is already known synchronously, a task whose every tool call failed is routed through
+  the existing failure machinery instead of being marked `Completed`. For the spawn dispatch
+  path, where the trace previously was only ever reconstructed when the opt-in
+  `verify_completeness` flag was enabled (default `false`, so never reconstructed in the
+  issue's repro config), a new `SchedulerAction::CheckToolOutcome` is now emitted
+  unconditionally after every task completion; its handler (calling
+  `DagScheduler::correct_completed_to_failed_if_all_tool_calls_failed` from
+  `scheduler_loop.rs`) resolves the trace from the sub-agent transcript and corrects the task's
+  status from `Completed` to `Failed` post-hoc if every call failed. The post-hoc correction is
+  deliberately lighter-weight than a full failure-machinery reuse (no cascade/lineage/retry
+  side effects) to avoid double-counting the task in `CascadeDetector::RegionHealth`, since its
+  original `Completed` transition already recorded a success outcome before the async
+  correction could run. `TaskStatus::Failed` already rendered correctly in the TUI `PlanView`
+  (red color, error marker) — no TUI changes were needed. Scoped to total task failure (100%
+  of tool calls failed); partial-failure / write-type-specific detection is out of scope
+  (`ToolCallSummary` has no read/write classification field).
 - `zeph-llm` (`ollama`): `convert_message_structured` dropped `MessagePart::Image` siblings
   on messages carrying a `ToolResult` part — the function early-returned
   `ChatMessage::tool(content)` built only from concatenated tool-result text, discarding any

@@ -572,6 +572,25 @@ impl<C: crate::channel::Channel> Agent<C> {
                             );
                         }
                     }
+                    SchedulerAction::CheckToolOutcome {
+                        task_id,
+                        tool_trace,
+                    } => {
+                        // #6380: deterministic, always-on check (never gated on
+                        // verify_completeness) — a task whose every real tool call failed
+                        // (including policy_blocked denials) must not remain Completed.
+                        // Same trace-resolution contract as SchedulerAction::Verify below.
+                        let task = scheduler.graph().tasks.get(task_id.index()).cloned();
+                        if let Some(task) = task {
+                            let resolved_tool_trace: Option<
+                                Vec<zeph_orchestration::ToolCallSummary>,
+                            > = tool_trace.or_else(|| self.build_tool_trace_for_task(&task));
+                            scheduler.correct_completed_to_failed_if_all_tool_calls_failed(
+                                task_id,
+                                resolved_tool_trace.as_deref(),
+                            );
+                        }
+                    }
                     SchedulerAction::Verify {
                         task_id,
                         output,
@@ -1720,5 +1739,177 @@ mod tests {
                 .is_empty(),
             "canceled sub-agent handle must be reaped, not leaked"
         );
+    }
+
+    // ── #6380: spawn-path total tool-call failure must not leave a task Completed ──────
+
+    /// Regression test for issue #6380 (the actual reported repro path): a `/plan`-orchestrated
+    /// task dispatched via `Spawn` whose sub-agent's only real tool call was rejected
+    /// (`is_error: true`, e.g. `policy_blocked`) must not be reported `Completed` by
+    /// `run_scheduler_loop`, even with `verify_completeness` left at its default `false` — the
+    /// bug this fix closes is specifically that the opt-in `Verify` action never ran for this
+    /// config, so nothing ever inspected the tool outcome. This drives the real
+    /// `SchedulerAction::CheckToolOutcome` handler arm end-to-end: spawn dispatch, sub-agent
+    /// tool-call failure, transcript-based trace reconstruction, and the status correction.
+    #[tokio::test]
+    async fn run_scheduler_loop_corrects_spawn_task_to_failed_when_all_tool_calls_policy_blocked() {
+        use crate::agent::agent_tests::*;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        use zeph_orchestration::{
+            DagScheduler, GraphStatus, RuleBasedRouter, TaskGraph, TaskNode, TaskStatus,
+        };
+        use zeph_subagent::{SubAgentDef, SubAgentManager};
+        use zeph_tools::executor::ToolError;
+
+        let mut graph = TaskGraph::new("goal");
+        graph.tasks.push(TaskNode::new(0, "t", "do a task"));
+
+        let def =
+            SubAgentDef::parse("---\nname: worker\ndescription: A worker\n---\n\nDo things.\n")
+                .unwrap();
+
+        let config = zeph_config::OrchestrationConfig::default();
+        assert!(
+            !config.verify_completeness,
+            "repro precondition: issue #6380 reproduces with verify_completeness at its \
+             default (false) — the fix must not rely on the opt-in verify feature"
+        );
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(RuleBasedRouter),
+            vec![def.clone()],
+            None,
+        )
+        .unwrap();
+
+        // Sub-agent's LLM narrates a single tool call, then a final "done" text turn — the
+        // tool call itself is rejected by the executor below, simulating a policy_blocked
+        // denial (same `is_error: true` transcript shape either way; see policy_gate.rs).
+        let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![ToolUseRequest {
+                    id: "call-1".into(),
+                    name: "write".into(),
+                    input: serde_json::json!({ "path": "out.txt" }),
+                }],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("done".into()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::new(vec![Err(ToolError::Blocked {
+            command: "write".into(),
+        })]);
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.orchestration.orchestration_config = config;
+
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(def);
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            agent.run_scheduler_loop(&mut scheduler, 1, token),
+        )
+        .await
+        .expect("run_scheduler_loop must not hang")
+        .unwrap();
+
+        assert_eq!(
+            scheduler.graph().tasks[0].status,
+            TaskStatus::Failed,
+            "spawn-dispatched task whose every real tool call was policy_blocked must be \
+             corrected to Failed by SchedulerAction::CheckToolOutcome, not remain Completed \
+             -- this is the actual issue #6380 repro path (PlanView reads per-task status)"
+        );
+        // Known, deliberate scope limit (critic finding S1, .local/handoff/*-critic.md):
+        // the spawn-path correction is status-only and does not re-run graph completion, so
+        // a single-task plan's overall GraphStatus stays Completed even though its only task
+        // was just corrected to Failed. Pinning this down so a future change to propagate the
+        // correction is a conscious decision, not an accidental behavior change caught here.
+        assert_eq!(
+            status,
+            GraphStatus::Completed,
+            "documents the current accepted tradeoff: post-hoc task correction does not \
+             recompute graph-level status (see critic finding S1)"
+        );
+    }
+
+    /// Companion no-op case for the previous test: a spawn-dispatched task whose sub-agent's
+    /// tool call actually succeeded must not be touched by `CheckToolOutcome` and must remain
+    /// `Completed`.
+    #[tokio::test]
+    async fn run_scheduler_loop_leaves_spawn_task_completed_when_tool_call_succeeds() {
+        use crate::agent::agent_tests::*;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        use zeph_orchestration::{
+            DagScheduler, GraphStatus, RuleBasedRouter, TaskGraph, TaskNode, TaskStatus,
+        };
+        use zeph_subagent::{SubAgentDef, SubAgentManager};
+
+        let mut graph = TaskGraph::new("goal");
+        graph.tasks.push(TaskNode::new(0, "t", "do a task"));
+
+        let def =
+            SubAgentDef::parse("---\nname: worker\ndescription: A worker\n---\n\nDo things.\n")
+                .unwrap();
+
+        let config = zeph_config::OrchestrationConfig::default();
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(RuleBasedRouter),
+            vec![def.clone()],
+            None,
+        )
+        .unwrap();
+
+        let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![ToolUseRequest {
+                    id: "call-1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({ "path": "in.txt" }),
+                }],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("done".into()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::with_output("read", "file contents");
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.orchestration.orchestration_config = config;
+
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(def);
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            agent.run_scheduler_loop(&mut scheduler, 1, token),
+        )
+        .await
+        .expect("run_scheduler_loop must not hang")
+        .unwrap();
+
+        assert_eq!(
+            scheduler.graph().tasks[0].status,
+            TaskStatus::Completed,
+            "a genuinely successful tool call must not be corrected away from Completed"
+        );
+        assert_eq!(status, GraphStatus::Completed);
     }
 }

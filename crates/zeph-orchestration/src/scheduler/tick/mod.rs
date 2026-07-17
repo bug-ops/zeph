@@ -22,6 +22,27 @@ struct CompletedTaskData {
     tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
 }
 
+/// `true` when `trace` is non-empty and every call in it failed (`ok == false`) — including
+/// `policy_blocked` denials. Issue #6380: a task can finish its sub-agent loop without
+/// throwing an exception while every real tool call it attempted was rejected, producing
+/// zero actual work. An empty trace is deliberately *not* treated as total failure (a task
+/// that made no tool calls at all — e.g. pure reasoning/narration — is not this defect).
+///
+/// # Known limitation: mixed traces are not caught
+///
+/// A trace with even one successful call (any `ok == true` entry) is *not* flagged by this
+/// heuristic, even if every write-type call in it failed. This is plausibly the common
+/// real-world shape of #6380: read-type tools (`read`, `grep`, `list_directory`, ...) are not
+/// present in `zeph_common::quarantine::QUARANTINE_DENIED`, so a quarantined sub-agent that
+/// successfully reads context before every write call is policy-blocked produces exactly this
+/// uncaught mixed trace — it still ends up `Completed` despite having produced zero durable
+/// work. Catching that shape needs a read/write classification field on `ToolCallSummary`,
+/// which is out of scope for this fix (see `ToolCallSummary::ok`'s own doc comment and the
+/// #6380 fix's scope note); tracked as a follow-up.
+fn all_tool_calls_failed(trace: &[crate::verifier::ToolCallSummary]) -> bool {
+    !trace.is_empty() && trace.iter().all(|c| !c.ok)
+}
+
 impl DagScheduler {
     /// Process pending events and produce actions for the caller.
     ///
@@ -582,6 +603,26 @@ impl DagScheduler {
             tool_trace,
         } = completed;
 
+        // #6380: when the real tool-call trace is already known synchronously (RunInline
+        // dispatch path — always `Some`, per `TaskOutcome::Completed`'s doc comment) and
+        // every call in it failed, route through the existing failure machinery instead of
+        // marking the task Completed. This branches out before any Completed-side-effect
+        // runs (cascade record_outcome, downstream unblocking), so there is no double-count
+        // risk here — unlike the spawn dispatch path, whose tool_trace is always `None` at
+        // this call site and is corrected post-hoc via the `CheckToolOutcome` action emitted
+        // below instead (see `DagScheduler::correct_completed_to_failed_if_all_tool_calls_failed`
+        // for why that correction is deliberately lighter-weight than a full re-route here).
+        if let Some(trace) = tool_trace.as_ref()
+            && all_tool_calls_failed(trace)
+        {
+            let error = format!(
+                "all {} tool call(s) in this task failed or were policy-blocked; \
+                 narration: {output}",
+                trace.len()
+            );
+            return self.handle_failed_outcome(task_id, &error);
+        }
+
         self.graph_dirty = true;
         self.graph.tasks[task_id.index()].status = TaskStatus::Completed;
         self.graph.tasks[task_id.index()].result = Some(TaskResult {
@@ -626,20 +667,102 @@ impl DagScheduler {
             }
         }
 
+        // #6380: always request a deterministic tool-outcome check — unlike Verify below,
+        // this is cheap (no LLM call) and must run regardless of verify_completeness, since
+        // that flag defaults to false and the defect this guards against has nothing to do
+        // with completeness verification.
+        let mut actions = vec![SchedulerAction::CheckToolOutcome {
+            task_id,
+            tool_trace: tool_trace.clone(),
+        }];
+
         // Emit Verify action when verify_completeness is enabled.
         // The replan budget is enforced inside inject_tasks() — the observation
         // (emitting Verify) must not be gated on the mutation budget, or tasks
         // after budget exhaustion never receive verification at all.
         // max_replans=0 still emits Verify; gaps are logged only (no inject_tasks call).
         if self.verify_completeness {
-            vec![SchedulerAction::Verify {
+            actions.push(SchedulerAction::Verify {
                 task_id,
                 output,
                 tool_trace,
-            }]
-        } else {
-            Vec::new()
+            });
         }
+        actions
+    }
+
+    /// Post-hoc correction for a `Completed` task whose real tool-call trace shows every
+    /// call failed, including `policy_blocked` denials (issue #6380). No-op (returns
+    /// `false`) when `tool_trace` is `None`, empty, or contains at least one successful
+    /// call, and when the task is no longer `Completed` (already corrected, or moved on to
+    /// some other status by a later transition — never clobber that).
+    ///
+    /// # Design note: why this is not a `handle_failed_outcome` reuse
+    ///
+    /// This method is called from the `SchedulerAction::CheckToolOutcome` handler, which
+    /// always runs *after* `handle_completed_outcome`'s full `Completed` side-effect set has
+    /// already executed for this task: `cascade_detector.record_outcome` was already called
+    /// with `succeeded = true`, and downstream tasks were already unblocked to `Ready` (that
+    /// unblocking is intentionally not gated on any later verification — see the identical,
+    /// pre-existing precedent for `SchedulerAction::Verify` at the `Completed` transition).
+    /// Routing this correction through `handle_failed_outcome` instead would double-record
+    /// this task in [`crate::cascade::CascadeDetector`]'s `RegionHealth` (once as success,
+    /// once as failure) and could trigger a fan-out/chain cascade abort off that stale
+    /// dual-counted state — skewing failure-rate metrics that `FailureStrategy` and
+    /// whole-plan verify (#6379) rely on for accuracy, for a comparatively rare correction
+    /// path. So this method deliberately only flips `TaskStatus` and annotates
+    /// `TaskResult::output`; it does not touch `cascade_detector`, `lineage_chains`, or any
+    /// retry/abort machinery.
+    ///
+    /// (The synchronously-available `RunInline` case does not go through this method at all —
+    /// `handle_completed_outcome` detects total tool-call failure *before* running any
+    /// `Completed` side effect and routes straight to `handle_failed_outcome`, so no
+    /// double-counting question arises there.)
+    ///
+    /// # Consequence: downstream is not retroactively unwound
+    ///
+    /// Because the correction is status-only, dependents of this task that were already
+    /// unblocked to `Ready` (or already dispatched/`Running`) before this method runs are
+    /// **not** retroactively canceled — they proceed as if the task had genuinely completed.
+    /// Likewise, `GraphStatus` can remain `Completed` for the whole plan even though this one
+    /// constituent task ends up `TaskStatus::Failed`: nothing here re-evaluates the graph's
+    /// overall terminal status. A caller inspecting only `GraphStatus` will not learn that a
+    /// task silently failed after the fact; per-task status (e.g. via `TaskGraphSnapshot`,
+    /// which the TUI `PlanView` already renders) is the only reliable signal for this case.
+    pub fn correct_completed_to_failed_if_all_tool_calls_failed(
+        &mut self,
+        task_id: TaskId,
+        tool_trace: Option<&[crate::verifier::ToolCallSummary]>,
+    ) -> bool {
+        let Some(trace) = tool_trace else {
+            return false;
+        };
+        if !all_tool_calls_failed(trace) {
+            return false;
+        }
+        let Some(task) = self.graph.tasks.get_mut(task_id.index()) else {
+            return false;
+        };
+        if task.status != TaskStatus::Completed {
+            return false;
+        }
+
+        tracing::warn!(
+            task_id = %task_id,
+            tool_call_count = trace.len(),
+            "correcting task status Completed -> Failed: all tool calls failed or were \
+             policy-blocked (#6380)"
+        );
+        task.status = TaskStatus::Failed;
+        if let Some(result) = task.result.as_mut() {
+            result.output = format!(
+                "{} [corrected: all {} tool call(s) failed or were policy-blocked]",
+                result.output,
+                trace.len()
+            );
+        }
+        self.graph_dirty = true;
+        true
     }
 
     /// Apply the Failed outcome branch: build lineage, evaluate cascade abort, propagate failure.

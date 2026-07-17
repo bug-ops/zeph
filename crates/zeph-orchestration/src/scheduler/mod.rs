@@ -124,6 +124,29 @@ pub enum SchedulerAction {
         /// Surface"). Transient: never persisted in `TaskResult`.
         tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
     },
+    /// Request a deterministic tool-outcome check for a just-completed task (issue #6380).
+    ///
+    /// Emitted **unconditionally** from `tick()` for every `Completed` task — unlike
+    /// [`SchedulerAction::Verify`], this is not gated behind `verify_completeness`: the
+    /// check is a cheap, deterministic scan over already-known or fetchable tool-call
+    /// outcomes (no LLM call), so it is safe to always run. It exists because task
+    /// completion status was previously decided purely by "did the sub-agent's turn finish
+    /// without throwing an exception," never by inspecting what its tool calls actually did
+    /// — so a task whose every real tool call was denied by policy (`policy_blocked`) or
+    /// otherwise failed was still marked `Completed` with zero real work performed.
+    ///
+    /// The caller must resolve `tool_trace` the same way as `Verify::tool_trace`: `Some` for
+    /// `RunInline` tasks (already known at emission time), `None` for the spawn dispatch
+    /// path — reconstruct it from the sub-agent transcript, then call
+    /// [`DagScheduler::correct_completed_to_failed_if_all_tool_calls_failed`] with the
+    /// resolved trace.
+    CheckToolOutcome {
+        /// Task whose tool trace should be inspected.
+        task_id: TaskId,
+        /// Real tool-call trace collected in-loop for `RunInline` tasks (`Some`), or `None`
+        /// for spawn-path tasks — same resolution contract as `Verify::tool_trace`.
+        tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
+    },
 }
 
 /// Event sent by a sub-agent loop when it terminates.

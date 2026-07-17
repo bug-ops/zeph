@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use super::*;
 use crate::scheduler::tests::*;
+use crate::verifier::ToolCallSummary;
 
 #[test]
 fn test_tick_produces_spawn_for_ready() {
@@ -2205,5 +2206,322 @@ fn take_graph_dirty_true_after_timeout() {
     assert!(
         !scheduler.take_graph_dirty(),
         "take_graph_dirty must reset to false on second call"
+    );
+}
+
+// ── #6380: total tool-call failure must not leave a task Completed ────────────
+
+fn make_running_task(scheduler: &mut DagScheduler, task_id: TaskId, handle_id: &str) {
+    scheduler.graph.tasks[task_id.index()].status = TaskStatus::Running;
+    scheduler.running.insert(
+        task_id,
+        RunningTask {
+            agent_handle_id: handle_id.to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+            last_progress_at: None,
+        },
+    );
+}
+
+fn completed_event(
+    task_id: TaskId,
+    handle_id: &str,
+    tool_trace: Option<Vec<ToolCallSummary>>,
+) -> TaskEvent {
+    TaskEvent {
+        task_id,
+        agent_handle_id: handle_id.to_string(),
+        outcome: TaskOutcome::Completed {
+            output: "narration".to_string(),
+            artifacts: vec![],
+            tool_trace,
+        },
+    }
+}
+
+#[test]
+fn handle_completed_outcome_all_tools_failed_marks_task_failed() {
+    // Part A (RunInline path): every real tool call in the synchronously-available trace
+    // failed (including policy_blocked denials) — the task must not remain Completed.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    make_running_task(&mut scheduler, TaskId(0), "h0");
+
+    scheduler.buffered_events.push_back(completed_event(
+        TaskId(0),
+        "h0",
+        Some(vec![
+            ToolCallSummary {
+                tool: "create_directory".to_string(),
+                args_summary: None,
+                ok: false,
+            },
+            ToolCallSummary {
+                tool: "write".to_string(),
+                args_summary: None,
+                ok: false,
+            },
+        ]),
+    ));
+
+    scheduler.tick();
+
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Failed,
+        "a task whose every tool call failed must be marked Failed, not Completed"
+    );
+}
+
+#[test]
+fn handle_completed_outcome_mixed_tool_trace_preserves_completed() {
+    // Partial failure is explicitly out of scope (issue #6380, Part D) — a task with at
+    // least one successful tool call must still complete normally.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    make_running_task(&mut scheduler, TaskId(0), "h0");
+
+    scheduler.buffered_events.push_back(completed_event(
+        TaskId(0),
+        "h0",
+        Some(vec![
+            ToolCallSummary {
+                tool: "write".to_string(),
+                args_summary: None,
+                ok: false,
+            },
+            ToolCallSummary {
+                tool: "read".to_string(),
+                args_summary: None,
+                ok: true,
+            },
+        ]),
+    ));
+
+    scheduler.tick();
+
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Completed,
+        "a mixed trace (at least one successful tool call) must preserve Completed"
+    );
+}
+
+#[test]
+fn handle_completed_outcome_empty_tool_trace_preserves_completed() {
+    // A task that made zero tool calls (pure reasoning/narration) is deliberately not
+    // treated as total failure, per `all_tool_calls_failed`'s doc comment.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    make_running_task(&mut scheduler, TaskId(0), "h0");
+
+    scheduler
+        .buffered_events
+        .push_back(completed_event(TaskId(0), "h0", Some(vec![])));
+
+    scheduler.tick();
+
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Completed,
+        "an empty tool trace (no tool calls made) must preserve Completed"
+    );
+}
+
+#[test]
+fn handle_completed_outcome_none_tool_trace_preserves_completed() {
+    // Pre-existing behavior (spawn dispatch path before the CheckToolOutcome correction
+    // runs) must not regress: `tool_trace: None` never triggers the Part A check.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    make_running_task(&mut scheduler, TaskId(0), "h0");
+
+    scheduler
+        .buffered_events
+        .push_back(completed_event(TaskId(0), "h0", None));
+
+    scheduler.tick();
+
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Completed,
+        "tool_trace: None must preserve Completed (no synchronous trace available)"
+    );
+}
+
+#[test]
+fn handle_completed_outcome_all_tools_failed_does_not_double_count_cascade() {
+    // Part A branches out via `handle_failed_outcome` *before* any Completed-branch side
+    // effect runs, so the task must be recorded in `CascadeDetector::RegionHealth` exactly
+    // once (as a failure), never twice (once success, once failure).
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let config = zeph_config::OrchestrationConfig {
+        cascade_routing: true,
+        topology_selection: true,
+        ..make_config()
+    };
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+    assert!(
+        scheduler.cascade_detector.is_some(),
+        "test precondition: cascade_detector must be enabled"
+    );
+    make_running_task(&mut scheduler, TaskId(0), "h0");
+
+    scheduler.buffered_events.push_back(completed_event(
+        TaskId(0),
+        "h0",
+        Some(vec![ToolCallSummary {
+            tool: "write".to_string(),
+            args_summary: None,
+            ok: false,
+        }]),
+    ));
+
+    scheduler.tick();
+
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Failed);
+    let health = scheduler
+        .cascade_detector
+        .as_ref()
+        .unwrap()
+        .region_health()
+        .get(&TaskId(0))
+        .expect("region health must be recorded for this task's region");
+    assert_eq!(
+        health.total_tasks, 1,
+        "task must be recorded exactly once in RegionHealth, not double-counted \
+         (success then failure): {health:?}"
+    );
+    assert_eq!(
+        health.failed_tasks, 1,
+        "the single recorded outcome must be a failure"
+    );
+}
+
+// ── DagScheduler::correct_completed_to_failed_if_all_tool_calls_failed ────────
+
+fn scheduler_with_completed_task() -> (DagScheduler, TaskId) {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    let task_id = TaskId(0);
+    scheduler.graph.tasks[task_id.index()].status = TaskStatus::Completed;
+    scheduler.graph.tasks[task_id.index()].result = Some(TaskResult {
+        output: "original output".to_string(),
+        artifacts: vec![],
+        duration_ms: 10,
+        agent_id: Some("agent-1".to_string()),
+        agent_def: Some("worker".to_string()),
+    });
+    let _ = scheduler.take_graph_dirty(); // reset dirty flag set by DagScheduler::new()/init
+    (scheduler, task_id)
+}
+
+#[test]
+fn correct_completed_to_failed_noop_on_none_trace() {
+    let (mut scheduler, task_id) = scheduler_with_completed_task();
+    let corrected = scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, None);
+    assert!(!corrected);
+    assert_eq!(
+        scheduler.graph.tasks[task_id.index()].status,
+        TaskStatus::Completed
+    );
+    assert!(!scheduler.take_graph_dirty());
+}
+
+#[test]
+fn correct_completed_to_failed_noop_on_all_ok_trace() {
+    let (mut scheduler, task_id) = scheduler_with_completed_task();
+    let trace = vec![ToolCallSummary {
+        tool: "read".to_string(),
+        args_summary: None,
+        ok: true,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, Some(&trace));
+    assert!(!corrected);
+    assert_eq!(
+        scheduler.graph.tasks[task_id.index()].status,
+        TaskStatus::Completed
+    );
+    assert!(!scheduler.take_graph_dirty());
+}
+
+#[test]
+fn correct_completed_to_failed_noop_on_empty_trace() {
+    let (mut scheduler, task_id) = scheduler_with_completed_task();
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, Some(&[]));
+    assert!(!corrected);
+    assert_eq!(
+        scheduler.graph.tasks[task_id.index()].status,
+        TaskStatus::Completed
+    );
+}
+
+#[test]
+fn correct_completed_to_failed_noop_when_task_not_completed() {
+    // Must never clobber a later transition — e.g. a task already Failed by a different
+    // path, or still Running.
+    let (mut scheduler, task_id) = scheduler_with_completed_task();
+    scheduler.graph.tasks[task_id.index()].status = TaskStatus::Failed;
+    let trace = vec![ToolCallSummary {
+        tool: "write".to_string(),
+        args_summary: None,
+        ok: false,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, Some(&trace));
+    assert!(
+        !corrected,
+        "correction must no-op when the task's current status is not Completed"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[task_id.index()].status,
+        TaskStatus::Failed
+    );
+}
+
+#[test]
+fn correct_completed_to_failed_success_flips_status_and_marks_output() {
+    let (mut scheduler, task_id) = scheduler_with_completed_task();
+    let trace = vec![
+        ToolCallSummary {
+            tool: "write".to_string(),
+            args_summary: None,
+            ok: false,
+        },
+        ToolCallSummary {
+            tool: "bash".to_string(),
+            args_summary: None,
+            ok: false,
+        },
+    ];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, Some(&trace));
+    assert!(corrected);
+    assert_eq!(
+        scheduler.graph.tasks[task_id.index()].status,
+        TaskStatus::Failed
+    );
+    let output = &scheduler.graph.tasks[task_id.index()]
+        .result
+        .as_ref()
+        .unwrap()
+        .output;
+    assert!(
+        output.starts_with("original output"),
+        "correction must append to, not replace, the original output: {output}"
+    );
+    assert!(
+        output.contains("corrected") && output.contains('2'),
+        "correction marker must be present and mention the failed call count: {output}"
+    );
+    assert!(
+        scheduler.take_graph_dirty(),
+        "a genuine status correction must set graph_dirty"
     );
 }
