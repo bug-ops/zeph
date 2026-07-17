@@ -201,6 +201,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `Arc`-backed) and `zeph-core`'s new `PiiScrubbingDumpSink`, which wraps `DebugDumper` and
   applies the same `PiiFilter` scrub top-level dumps get before delegating; `build_spawn_context`
   now threads a cloned `PiiFilter` handle into the sub-agent `DebugDumpSink` this way.
+- `zeph-subagent`/`zeph-core`: `collect_finished_subagents()` determined reapability purely
+  from `status_rx`'s terminal state, so a sub-agent task that exited via a panic inside
+  `run_agent_loop` — without ever publishing a terminal `SubAgentStatus` — left its handle
+  frozen in the last observed `Working` value forever, reproducing the same zombie-sidebar-entry
+  symptom as #6381 through a path #6406 did not close (#6408). Added
+  `zeph_common::task_supervisor::BlockingHandle::is_finished` and
+  `SubAgentManager::is_task_finished`, an independent runtime-level terminal signal now checked
+  alongside `status_rx` state. Also fixed a related bug in `SubAgentManager::collect()`: it
+  early-returned via `?` on a panicked `join_handle`, skipping the fleet `mark_terminal` call and
+  the final `TranscriptMeta` write for panicked tasks; the double-`Result` is now flattened so
+  both still run.
 - `src/channel.rs`: `impl Channel for AppChannel` forwarded most `Channel` trait methods via
   `dispatch_app_channel!` but never overrode `elicit()` or `send_context_estimate()`, so both
   calls fell through to the trait's default methods instead of reaching `AnyChannel`/`TuiChannel`'s

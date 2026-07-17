@@ -2761,7 +2761,7 @@ mod tests {
             Result<String, zeph_subagent::SubAgentError>,
         > = supervisor.spawn_oneshot_classified(
             std::sync::Arc::from("still-running-test-agent"),
-            || std::future::pending(),
+            std::future::pending,
             Result::is_ok,
         );
         assert!(
