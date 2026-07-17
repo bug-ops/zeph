@@ -233,11 +233,13 @@ fn detect_name_spans(text: &str) -> Vec<PiiSpan> {
 // Internal pattern record
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 struct PiiPattern {
     regex: Regex,
     replacement: &'static str,
 }
 
+#[derive(Clone)]
 struct CustomPiiPatternCompiled {
     regex: Regex,
     replacement: String,
@@ -336,6 +338,11 @@ pub fn redact_spans(text: &str, spans: &[PiiSpan]) -> String {
 /// Stateless PII filter. Construct once from [`PiiFilterConfig`] and store on the agent.
 ///
 /// When disabled, all methods are no-ops that return the input unchanged.
+///
+/// `Clone` is cheap: compiled `Regex` values are internally `Arc`-backed, so cloning only
+/// bumps reference counts. This lets callers hand an independent handle to a sub-agent's
+/// debug-dump sink without sharing mutable state (#6407).
+#[derive(Clone)]
 pub struct PiiFilter {
     enabled: bool,
     /// Built-in patterns selected by config flags.

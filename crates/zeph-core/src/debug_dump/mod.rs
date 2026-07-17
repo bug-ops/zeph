@@ -172,10 +172,9 @@ impl DebugDumper {
 
     /// Response text extracted from a `ChatResponse`, mirroring
     /// [`DebugState::write_chat_debug_dump`](crate::agent::state::DebugState) — kept as a free
-    /// function so [`DebugDumpSink::dump_response`] can reuse it without a PII-filter dependency
-    /// (sub-agent dumps rely on the baseline `scrub_content`/`redact_binary_blobs` pass already
-    /// inside [`DebugDumper::dump_response`], skipping the optional extra `PiiFilter` layer that
-    /// top-level dumps get — see #6391).
+    /// function so both the plain [`DebugDumpSink`] impl on [`DebugDumper`] (baseline
+    /// `scrub_content`/`redact_binary_blobs` only) and [`PiiScrubbingDumpSink`] (adds the
+    /// optional `PiiFilter` layer, see #6407) can reuse it.
     pub(crate) fn chat_response_dump_text(response: &ChatResponse) -> String {
         match response {
             ChatResponse::Text(t) => t.clone(),
@@ -479,6 +478,58 @@ impl zeph_llm::debug_dump::DebugDumpSink for DebugDumper {
 
     fn dump_response(&self, id: u32, response: &ChatResponse) {
         DebugDumper::dump_response(self, id, &DebugDumper::chat_response_dump_text(response));
+    }
+}
+
+/// Wraps a [`DebugDumper`] with a [`zeph_sanitizer::pii::PiiFilter`] so sub-agent-executed LLM
+/// calls get the same optional PII-redaction layer top-level dumps receive via
+/// [`DebugState::write_chat_debug_dump`](crate::agent::state::DebugState::write_chat_debug_dump)
+/// — the baseline `scrub_content`/`redact_binary_blobs` pass inside [`DebugDumper::dump_response`]
+/// always applies, but the extra `PiiFilter.scrub()` layer is opt-in per config and was
+/// previously only wired into the top-level path (#6407).
+pub struct PiiScrubbingDumpSink {
+    inner: DebugDumper,
+    pii_filter: zeph_sanitizer::pii::PiiFilter,
+}
+
+impl PiiScrubbingDumpSink {
+    /// Wraps `inner` so every [`DebugDumpSink::dump_response`](zeph_llm::debug_dump::DebugDumpSink::dump_response)
+    /// call is scrubbed through `pii_filter` before being written to disk.
+    #[must_use]
+    pub fn new(inner: DebugDumper, pii_filter: zeph_sanitizer::pii::PiiFilter) -> Self {
+        Self { inner, pii_filter }
+    }
+}
+
+impl zeph_llm::debug_dump::DebugDumpSink for PiiScrubbingDumpSink {
+    fn is_trace_format(&self) -> bool {
+        self.inner.is_trace_format()
+    }
+
+    fn dump_request(
+        &self,
+        model_name: &str,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        provider_request: serde_json::Value,
+    ) -> u32 {
+        <DebugDumper as zeph_llm::debug_dump::DebugDumpSink>::dump_request(
+            &self.inner,
+            model_name,
+            messages,
+            tools,
+            provider_request,
+        )
+    }
+
+    fn dump_response(&self, id: u32, response: &ChatResponse) {
+        let raw = DebugDumper::chat_response_dump_text(response);
+        let text = if self.pii_filter.is_enabled() {
+            self.pii_filter.scrub(&raw).into_owned()
+        } else {
+            raw
+        };
+        self.inner.dump_response(id, &text);
     }
 }
 
@@ -1293,6 +1344,68 @@ mod tests {
         assert!(
             !content.contains("sk-abc123def456"),
             "raw secret must not reach disk: {content}"
+        );
+    }
+
+    /// #6407: sub-agent dumps (routed through the `DebugDumpSink` trait via
+    /// `PiiScrubbingDumpSink`) must get the same optional `PiiFilter` scrub top-level dumps
+    /// get via `DebugState::write_chat_debug_dump`, not just the baseline secret/JWT scrub.
+    #[tokio::test]
+    async fn pii_scrubbing_dump_sink_scrubs_pii_when_filter_enabled() {
+        use zeph_llm::debug_dump::DebugDumpSink as _;
+        use zeph_llm::provider::ChatResponse;
+        use zeph_sanitizer::pii::{PiiFilter, PiiFilterConfig};
+
+        let dir = tempdir().unwrap();
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
+        let pii_filter = PiiFilter::new(PiiFilterConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        let sink = PiiScrubbingDumpSink::new(dumper, pii_filter);
+
+        sink.dump_response(
+            0,
+            &ChatResponse::Text("contact me at someone@example.com".to_owned()),
+        );
+
+        let content = read_dump_file(dir.path(), "0000-response.txt").await;
+        assert!(
+            content.contains("[PII:email]"),
+            "email must be scrubbed by the PiiFilter layer: {content}"
+        );
+        assert!(
+            !content.contains("someone@example.com"),
+            "raw email must not reach disk: {content}"
+        );
+    }
+
+    /// Mirrors the above with the filter disabled (config default: `enabled = true`, so this
+    /// exercises the explicit opt-out) — only baseline `scrub_content`/`redact_binary_blobs`
+    /// applies, matching `DebugState::write_chat_debug_dump`'s `is_enabled()` gate.
+    #[tokio::test]
+    async fn pii_scrubbing_dump_sink_skips_pii_scrub_when_filter_disabled() {
+        use zeph_llm::debug_dump::DebugDumpSink as _;
+        use zeph_llm::provider::ChatResponse;
+        use zeph_sanitizer::pii::{PiiFilter, PiiFilterConfig};
+
+        let dir = tempdir().unwrap();
+        let dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
+        let pii_filter = PiiFilter::new(PiiFilterConfig {
+            enabled: false,
+            ..Default::default()
+        });
+        let sink = PiiScrubbingDumpSink::new(dumper, pii_filter);
+
+        sink.dump_response(
+            0,
+            &ChatResponse::Text("contact me at someone@example.com".to_owned()),
+        );
+
+        let content = read_dump_file(dir.path(), "0000-response.txt").await;
+        assert!(
+            content.contains("someone@example.com"),
+            "disabled PiiFilter must not scrub email: {content}"
         );
     }
 

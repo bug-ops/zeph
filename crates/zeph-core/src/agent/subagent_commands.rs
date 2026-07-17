@@ -751,12 +751,16 @@ impl<C: Channel> Agent<C> {
             // Threaded down so sub-agent LLM calls are captured through the same
             // `--debug-dump` pipeline as the top-level agent loop (#6391). `None` when
             // debug dumps are disabled, mirroring the top-level `debug_dumper: None` case.
-            debug_dump_sink: self
-                .runtime
-                .debug
-                .debug_dumper
-                .clone()
-                .map(|d| Arc::new(d) as Arc<dyn zeph_llm::debug_dump::DebugDumpSink>),
+            // Wrapped in `PiiScrubbingDumpSink` so sub-agent dumps get the same optional
+            // `PiiFilter` layer top-level dumps get via `write_chat_debug_dump` — the plain
+            // `DebugDumpSink` impl on `DebugDumper` only applies the baseline
+            // `scrub_content`/`redact_binary_blobs` pass (#6407).
+            debug_dump_sink: self.runtime.debug.debug_dumper.clone().map(|d| {
+                Arc::new(crate::debug_dump::PiiScrubbingDumpSink::new(
+                    d,
+                    self.services.security.pii_filter.clone(),
+                )) as Arc<dyn zeph_llm::debug_dump::DebugDumpSink>
+            }),
             // Constraint propagation (#3993): populated by orchestration layer when spawning
             // with explicit trust/tool restrictions. Top-level agent sessions leave these None.
             ..Default::default()
