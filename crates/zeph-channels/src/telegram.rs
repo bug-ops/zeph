@@ -1101,6 +1101,7 @@ impl Channel for TelegramChannel {
                 attachments: incoming.attachments,
                 is_guest_context: is_guest,
                 is_from_bot: incoming.is_from_bot,
+                owner_key: None,
             }
         })
     }
@@ -1150,6 +1151,7 @@ impl Channel for TelegramChannel {
                             attachments: vec![],
                             is_guest_context: false,
                             is_from_bot: false,
+                            owner_key: None,
                         }));
                     }
                     "/skills" => {
@@ -1158,6 +1160,7 @@ impl Channel for TelegramChannel {
                             attachments: vec![],
                             is_guest_context: false,
                             is_from_bot: false,
+                            owner_key: None,
                         }));
                     }
                     _ => {}
@@ -1169,6 +1172,7 @@ impl Channel for TelegramChannel {
                 attachments: incoming.attachments,
                 is_guest_context: is_guest,
                 is_from_bot: incoming.is_from_bot,
+                owner_key: None,
             }));
         }
     }

@@ -108,6 +108,7 @@ impl Channel for JsonCliChannel {
                         attachments: Vec::new(),
                         is_guest_context: false,
                         is_from_bot: false,
+                        owner_key: None,
                     }));
                 }
                 Some(None) | None => return Ok(None), // EOF
@@ -138,6 +139,7 @@ impl Channel for JsonCliChannel {
                             attachments: Vec::new(),
                             is_guest_context: false,
                             is_from_bot: false,
+                            owner_key: None,
                         })
                     }
                 }

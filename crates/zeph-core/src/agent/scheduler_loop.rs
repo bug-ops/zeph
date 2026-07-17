@@ -11,7 +11,6 @@ use zeph_llm::provider::LlmProvider;
 use super::Agent;
 use super::error;
 use super::shutdown_signal;
-use super::state::persistence::DEFAULT_OWNER_KEY;
 use super::tool_execution;
 
 /// Upper bound on a single cross-thread-store I/O call from the Command-handoff seam
@@ -152,16 +151,21 @@ pub(super) struct CommandHandoffContext {
     pub(super) store_config: zeph_config::CrossThreadStoreConfig,
     pub(super) memory: Option<Arc<zeph_memory::semantic::SemanticMemory>>,
     pub(super) sanitizer: zeph_sanitizer::ContentSanitizer,
+    /// Cross-thread store owner key for the dispatching turn (spec-080 §10 OQ-1, GitHub
+    /// #6389) — `DEFAULT_OWNER_KEY` for CLI/TUI/Telegram, a gateway/A2A-derived key when
+    /// the graph run was triggered from one of those dispatch paths.
+    pub(super) owner_key: String,
 }
 
 /// Determine whether a completed task's raw `output` is an ordinary completion or a
 /// Command-style dynamic handoff (spec-080 §5.2): parse, sanitizer-scan, and persist the
 /// `update` payload into the cross-thread store, all inline.
 ///
-/// `tool_trace` is threaded through unchanged into `TaskOutcome::Completed` when no handoff
-/// is attempted — `None` on the spawn path (the real trace is resolved later, at the
-/// `SchedulerAction::Verify` handler, from the sub-agent transcript), `Some(trace)` on the
-/// `RunInline` path (already collected in-loop).
+/// `tool_trace` is threaded through unchanged into whichever terminal outcome this function
+/// returns — `TaskOutcome::Completed` when no handoff is attempted, or `TaskOutcome::Handoff`
+/// on a successful Command parse (issue #6394) — `None` on the spawn path (the real trace is
+/// resolved later, at the `SchedulerAction::CheckToolOutcome`/`Verify` handlers, from the
+/// sub-agent transcript), `Some(trace)` on the `RunInline` path (already collected in-loop).
 ///
 /// A malformed, sanitizer-rejected, or unpersistable handoff attempt produces a loud
 /// `TaskOutcome::Failed` — never a silent fallback to `Completed` (FR-B-009, spec-080 §6
@@ -260,6 +264,7 @@ pub(super) async fn determine_task_outcome(
     TaskOutcome::Handoff {
         output,
         goto: command.goto,
+        tool_trace,
     }
 }
 
@@ -332,7 +337,7 @@ async fn persist_handoff_update(
 ) -> Result<(), String> {
     for (key, value) in update {
         let write = memory.sqlite().store_put(
-            DEFAULT_OWNER_KEY,
+            ctx.owner_key.as_str(),
             namespace,
             key,
             value,
@@ -396,7 +401,7 @@ pub(super) async fn append_shared_state_block(
     let namespace_prefix = format!("orch/{graph_id}");
     let read = memory
         .sqlite()
-        .store_list(DEFAULT_OWNER_KEY, &namespace_prefix, 0);
+        .store_list(ctx.owner_key.as_str(), &namespace_prefix, 0);
     let items = match tokio::time::timeout(STORE_IO_TIMEOUT, read).await {
         Ok(Ok(items)) => items,
         Ok(Err(e)) => {
@@ -450,6 +455,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             store_config: self.services.memory.persistence.store_config.clone(),
             memory: self.services.memory.persistence.memory.clone(),
             sanitizer: self.services.security.sanitizer.clone(),
+            owner_key: self.services.session.owner_key.clone(),
         }
     }
 
@@ -1741,6 +1747,7 @@ mod tests {
             },
             memory: Some(std::sync::Arc::new(test_memory().await)),
             sanitizer: test_sanitizer(),
+            owner_key: crate::agent::state::persistence::DEFAULT_OWNER_KEY.to_owned(),
         }
     }
 

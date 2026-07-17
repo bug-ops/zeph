@@ -83,6 +83,7 @@ impl Channel for MockChannel {
                 attachments: vec![],
                 is_guest_context: false,
                 is_from_bot: false,
+                owner_key: None,
             }))
         }
     }
@@ -97,6 +98,7 @@ impl Channel for MockChannel {
                 attachments: vec![],
                 is_guest_context: false,
                 is_from_bot: false,
+                owner_key: None,
             })
         }
     }

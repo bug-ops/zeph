@@ -23,6 +23,15 @@ struct CompletedTaskData {
     tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
 }
 
+/// Bundles the fields carried by `TaskOutcome::Handoff` (issue #6394 added `tool_trace`,
+/// pushing the parameter count over clippy's `too_many_arguments` threshold) — mirrors
+/// `CompletedTaskData`'s role for `handle_completed_outcome`.
+struct HandoffTaskData {
+    output: String,
+    goto: TaskRef,
+    tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
+}
+
 /// `true` when a call counts toward the "did this task do work that matters" judgment used
 /// by `all_tool_calls_failed` — i.e. it is *not* a call the heuristic should silently
 /// ignore even if it succeeded.
@@ -597,13 +606,20 @@ impl DagScheduler {
                 },
             ),
             TaskOutcome::Failed { error } => self.handle_failed_outcome(task_id, &error),
-            TaskOutcome::Handoff { output, goto } => self.handle_handoff_outcome(
+            TaskOutcome::Handoff {
+                output,
+                goto,
+                tool_trace,
+            } => self.handle_handoff_outcome(
                 task_id,
                 agent_handle_id,
                 agent_def_name,
                 duration_ms,
-                output,
-                &goto,
+                HandoffTaskData {
+                    output,
+                    goto,
+                    tool_trace,
+                },
             ),
         }
     }
@@ -862,30 +878,71 @@ impl DagScheduler {
     /// remains readable by any node that later reads `<shared-state>` in this graph, it
     /// is simply not the entry that was supposed to signal a completed handoff step.
     ///
-    /// # Known gap: no completeness verification (M2, review finding)
+    /// # Completeness verification parity with `Completed` (issue #6394)
     ///
-    /// Unlike [`Self::handle_completed_outcome`], this method never emits
-    /// `SchedulerAction::Verify` — a Command-handoff node's "I'm done" claim skips the
-    /// completeness-check/replan pass an ordinary `Completed` node gets. Identified during
-    /// code review as a real, non-blocking design gap (the feature is opt-in and
-    /// default-off) and deliberately deferred rather than expanding this PR's scope
-    /// further: fixing it needs `TaskOutcome::Handoff` to carry `tool_trace` first (it
-    /// doesn't today, unlike `Completed`), plus a decision on whether `Verify`'s
-    /// replan/`inject_tasks` side effects are sound for a node that already named its own
-    /// next hop. Tracked as GitHub #6394.
+    /// Like [`Self::handle_completed_outcome`], this method (a) branches out to
+    /// [`Self::handle_failed_outcome`] *before* any Completed/Handoff side effect runs
+    /// when the synchronously-known `RunInline` trace (`tool_trace: Some`) shows every
+    /// tool call failed or was policy-blocked (#6380/#6397) — a Command-handoff node's
+    /// "I'm done, go to X" claim is exactly as bogus as an ordinary node's in that case,
+    /// so the routing intent is abandoned along with the rest of the outcome, and (b)
+    /// unconditionally emits `SchedulerAction::CheckToolOutcome`, plus
+    /// `SchedulerAction::Verify` when `verify_completeness` is enabled, once the node has
+    /// been marked `Completed` and the handoff attempt (accepted or rejected) has run. The
+    /// spawn dispatch path (`tool_trace: None`) is corrected post-hoc through the same
+    /// `CheckToolOutcome` → [`Self::correct_completed_to_failed_if_all_tool_calls_failed`]
+    /// → [`Self::propagate_corrected_task_failure`] chain `Completed` already uses; no
+    /// Handoff-specific correction path was added; a status flip only ever touches
+    /// `TaskStatus`/`TaskResult::output` for this `task_id`, so it carries no risk of
+    /// double-recording this node in `cascade_detector` (see
+    /// `correct_completed_to_failed_if_all_tool_calls_failed`'s doc comment for the full
+    /// double-count analysis, which applies here unchanged).
+    ///
+    /// If a post-hoc correction later flips this node to `Failed`, a `goto` target
+    /// `try_handoff` below already activated is linked by `commanded_from`, not
+    /// `depends_on` (that is the whole point of runtime-chosen routing) — so it is *not*
+    /// reachable by `propagate_failure`/`propagate_failure_forced_terminal`'s ordinary
+    /// `depends_on`-walking cancellation. This is a wider gap than the accepted
+    /// "already-unblocked work is not unwound" limitation `propagate_corrected_task_failure`
+    /// documents for ordinary dependents, since it applies even to a target that has not
+    /// started at all (`Pending`/`Ready`), not just already-`Running`/terminal ones — a
+    /// cost-free cancellation was being skipped, not a genuinely-in-flight one (code
+    /// review Finding 1, 2026-07-17). `propagate_corrected_task_failure` therefore calls
+    /// `dag::cancel_dangling_commanded_targets` to close this specifically for
+    /// `Pending`/`Ready` targets; an already-`Running` or terminal target remains the
+    /// pre-existing, accepted limitation.
     fn handle_handoff_outcome(
         &mut self,
         task_id: TaskId,
         agent_handle_id: String,
         agent_def_name: Option<String>,
         duration_ms: u64,
-        output: String,
-        goto: &TaskRef,
+        handoff: HandoffTaskData,
     ) -> Vec<SchedulerAction> {
+        let HandoffTaskData {
+            output,
+            goto,
+            tool_trace,
+        } = handoff;
+
+        // #6394: mirrors handle_completed_outcome's early branch-out — runs before any
+        // Completed/Handoff side effect (cascade record_outcome, try_handoff activation),
+        // so there is no double-count risk here, same reasoning as the Completed path.
+        if let Some(trace) = tool_trace.as_ref()
+            && all_tool_calls_failed(trace)
+        {
+            let error = format!(
+                "all {} tool call(s) in this task failed or were policy-blocked; \
+                 narration: {output}",
+                trace.len()
+            );
+            return self.handle_failed_outcome(task_id, &error);
+        }
+
         self.graph_dirty = true;
         self.graph.tasks[task_id.index()].status = TaskStatus::Completed;
         self.graph.tasks[task_id.index()].result = Some(TaskResult {
-            output,
+            output: output.clone(),
             artifacts: Vec::new(),
             duration_ms,
             agent_id: Some(agent_handle_id),
@@ -898,7 +955,7 @@ impl DagScheduler {
             detector.record_outcome(task_id, true, &self.graph);
         }
 
-        match dag::try_handoff(&mut self.graph, task_id, goto, self.max_handoffs) {
+        match dag::try_handoff(&mut self.graph, task_id, &goto, self.max_handoffs) {
             Ok(target) => {
                 tracing::info!(
                     task_id = %task_id,
@@ -930,7 +987,22 @@ impl DagScheduler {
             }
         }
 
-        Vec::new()
+        // #6394: same completeness-check treatment as handle_completed_outcome — always
+        // request the deterministic tool-outcome check, and Verify when enabled, so a
+        // Command-handoff node's "I'm done" claim does not skip the checks an ordinary
+        // Completed node gets.
+        let mut actions = vec![SchedulerAction::CheckToolOutcome {
+            task_id,
+            tool_trace: tool_trace.clone(),
+        }];
+        if self.verify_completeness {
+            actions.push(SchedulerAction::Verify {
+                task_id,
+                output,
+                tool_trace,
+            });
+        }
+        actions
     }
 
     /// Propagate a just-applied
@@ -997,16 +1069,30 @@ impl DagScheduler {
     /// `record_outcome`; `try_recover` un-fails the task entirely), which is exactly what the
     /// special-cases prevent.
     ///
+    /// # Command-handoff targets (issue #6394, code review Finding 1, 2026-07-17)
+    ///
+    /// If `task_id` had already emitted a `Handoff` outcome whose `try_handoff` activated a
+    /// `goto` target before this correction landed, that target is linked via
+    /// `commanded_from`, not `depends_on` — invisible to `dag::propagate_failure`/
+    /// `propagate_failure_forced_terminal` above, which only walk `depends_on`-derived
+    /// `rev_adj`. This method closes that gap by additionally calling
+    /// `dag::cancel_dangling_commanded_targets`, which cancels the target (and its own
+    /// `depends_on` subtree) when it is still `Pending`/`Ready` — see that function's doc
+    /// comment for why an already-`Running`/terminal target stays out of scope (folded into
+    /// the "Remaining limitation" below rather than a separate hazard).
+    ///
     /// # Remaining limitation
     ///
-    /// Dependents that already reached a terminal status (most commonly `Completed`, having
-    /// already consumed this task's now-invalidated output) before this correction landed
-    /// are **not** retroactively unwound — neither propagation function's cancellation/skip
-    /// logic affects dependents already past `Pending`/`Ready`/`Running`. This mirrors the
+    /// Dependents (ordinary `depends_on` ones, and now `commanded_from` Command-handoff
+    /// targets too) that already reached `Running` or a terminal status (most commonly
+    /// `Completed`, having already consumed this task's now-invalidated output) before this
+    /// correction landed are **not** retroactively unwound — none of the cancellation/skip
+    /// logic above affects anything already past `Pending`/`Ready`. This mirrors the
     /// `RunInline` path's own limitation (a `Completed` dependent is never revisited there
-    /// either) and is intentionally out of scope here — fully unwinding already-finished
-    /// downstream work would require re-running or invalidating those tasks, a materially
-    /// larger change than restoring propagation parity.
+    /// either) and is intentionally out of scope here — fully unwinding already-finished or
+    /// already-running downstream work would require cancelling a live sub-agent or
+    /// re-running/invalidating those tasks, a materially larger and separately risky change
+    /// than restoring propagation parity for not-yet-started work.
     pub fn propagate_corrected_task_failure(&mut self, task_id: TaskId) -> Vec<SchedulerAction> {
         let task = &self.graph.tasks[task_id.index()];
         let effective_strategy = task
@@ -1029,11 +1115,22 @@ impl DagScheduler {
                 effective_strategy,
                 zeph_config::FailureStrategy::Retry | zeph_config::FailureStrategy::Ask
             ) || (effective_strategy == zeph_config::FailureStrategy::Abort && has_state_injection);
-        let cancel_ids = if needs_forced_terminal {
+        let mut cancel_ids = if needs_forced_terminal {
             dag::propagate_failure_forced_terminal(&mut self.graph, task_id)
         } else {
             dag::propagate_failure(&mut self.graph, task_id, &self.topology.rev_adj)
         };
+        // Finding 1 (code review, 2026-07-17): a Command-handoff target this task already
+        // activated via `try_handoff` before the correction landed is linked by
+        // `commanded_from`, not `depends_on` — neither `propagate_failure` call above can
+        // reach it. Cancel it here if it hasn't started yet (see
+        // `dag::cancel_dangling_commanded_targets`'s doc comment for the full rationale and
+        // why `Running`/terminal targets are deliberately out of scope).
+        cancel_ids.extend(dag::cancel_dangling_commanded_targets(
+            &mut self.graph,
+            task_id,
+            &self.topology.rev_adj,
+        ));
         let mut actions = Vec::new();
 
         for cancel_task_id in cancel_ids {

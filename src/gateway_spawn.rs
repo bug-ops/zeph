@@ -206,6 +206,25 @@ impl<C: zeph_core::channel::Channel> zeph_core::channel::Channel for GatewayChan
 /// gateway bearer token proves the sender knows the shared secret, not that the content is safe
 /// (#5432). Returns when `webhook_rx` is closed or `agent_input_tx`'s receiver has been dropped
 /// (agent shutdown).
+/// Derives a cross-thread store owner key (spec-080 §10 OQ-1, GitHub #6389) from a webhook
+/// payload's `sender` field, so distinct gateway callers land in distinct store buckets
+/// instead of every gateway message collapsing into the shared `"local"` bucket alongside
+/// the CLI/TUI operator.
+///
+/// `sender` is unauthenticated free text within a single shared bearer token (NFR-SEC-02) —
+/// any caller holding the gateway token can claim any `sender` value, so this is a
+/// defense-in-depth partition against accidental cross-sender collisions, not a hard tenant
+/// boundary; the bearer token itself remains the only real authentication gate on this path
+/// (unchanged by this key). `sender` is already control-character-stripped and
+/// length-validated (`WebhookPayload::validate`, <=256 bytes) by `webhook_handler` before
+/// `WebhookMessage` is constructed, so no further sanitization is needed here. The
+/// `gateway:` prefix keeps this namespace disjoint from the A2A-derived and default `"local"`
+/// buckets even if the raw sender text happens to collide with either.
+#[cfg(feature = "gateway")]
+fn gateway_owner_key(sender: &str) -> String {
+    format!("gateway:{sender}")
+}
+
 #[cfg(feature = "gateway")]
 async fn forward_webhooks(
     sanitizer: zeph_core::ContentSanitizer,
@@ -230,6 +249,7 @@ async fn forward_webhooks(
             attachments: vec![],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: Some(gateway_owner_key(&payload.sender)),
         };
         if agent_input_tx.send(msg).await.is_err() {
             tracing::debug!("gateway: agent input channel closed, stopping webhook forwarder");
@@ -365,6 +385,7 @@ mod tests {
             attachments: vec![],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: None,
         };
         webhook_tx.try_send(msg).unwrap();
 
@@ -389,6 +410,7 @@ mod tests {
             attachments: vec![],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: None,
         };
         webhook_tx.send(msg).await.unwrap();
 
@@ -427,6 +449,7 @@ mod tests {
                 attachments: vec![],
                 is_guest_context: false,
                 is_from_bot: false,
+                owner_key: None,
             }))
         }
 
@@ -469,6 +492,7 @@ mod tests {
                 attachments: vec![],
                 is_guest_context: false,
                 is_from_bot: false,
+                owner_key: None,
             })
             .await
             .unwrap();
@@ -500,6 +524,7 @@ mod tests {
                 attachments: vec![],
                 is_guest_context: false,
                 is_from_bot: false,
+                owner_key: None,
             })
             .await
             .unwrap();
@@ -701,5 +726,67 @@ mod tests {
             forwarder.is_ok(),
             "forward_webhooks must return promptly once agent_input_tx is closed"
         );
+    }
+
+    /// #6389 regression: `gateway_owner_key` must derive distinct keys for distinct senders,
+    /// so two gateway callers sharing one bearer token land in distinct cross-thread store
+    /// buckets instead of both collapsing into `"local"`.
+    #[test]
+    fn gateway_owner_key_distinct_per_sender() {
+        assert_ne!(gateway_owner_key("alice"), gateway_owner_key("bob"));
+        assert_eq!(gateway_owner_key("alice"), gateway_owner_key("alice"));
+    }
+
+    /// The derived key must never equal the `"local"` bucket CLI/TUI/Telegram use, even for
+    /// a sender literally named `"local"` — the `gateway:` prefix keeps the namespaces
+    /// disjoint.
+    #[test]
+    fn gateway_owner_key_never_collides_with_default_local() {
+        assert_ne!(gateway_owner_key("local"), "local");
+        assert_eq!(gateway_owner_key("local"), "gateway:local");
+    }
+
+    /// #6389 end-to-end: two webhook payloads with different `sender` values must produce
+    /// `ChannelMessage`s with distinct, non-`None` `owner_key`s once forwarded through the
+    /// real `forward_webhooks` function `spawn_gateway_server` spawns.
+    #[tokio::test]
+    async fn forward_webhooks_threads_distinct_owner_key_per_sender() {
+        let sanitizer =
+            zeph_core::ContentSanitizer::new(&zeph_core::ContentIsolationConfig::default());
+        let (webhook_tx, webhook_rx) =
+            tokio::sync::mpsc::channel::<zeph_gateway::WebhookMessage>(4);
+        let (agent_input_tx, mut agent_input_rx) = tokio::sync::mpsc::channel::<ChannelMessage>(4);
+
+        let forwarder = tokio::spawn(forward_webhooks(sanitizer, webhook_rx, agent_input_tx));
+
+        webhook_tx
+            .send(zeph_gateway::WebhookMessage {
+                sender: "alice".into(),
+                channel: "discord".into(),
+                body: "hi from alice".into(),
+            })
+            .await
+            .unwrap();
+        webhook_tx
+            .send(zeph_gateway::WebhookMessage {
+                sender: "bob".into(),
+                channel: "discord".into(),
+                body: "hi from bob".into(),
+            })
+            .await
+            .unwrap();
+        drop(webhook_tx);
+
+        let alice_msg = agent_input_rx
+            .recv()
+            .await
+            .expect("alice message forwarded");
+        let bob_msg = agent_input_rx.recv().await.expect("bob message forwarded");
+
+        assert_eq!(alice_msg.owner_key.as_deref(), Some("gateway:alice"));
+        assert_eq!(bob_msg.owner_key.as_deref(), Some("gateway:bob"));
+        assert_ne!(alice_msg.owner_key, bob_msg.owner_key);
+
+        forwarder.await.unwrap();
     }
 }

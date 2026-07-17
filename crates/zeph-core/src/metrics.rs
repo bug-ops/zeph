@@ -72,6 +72,13 @@ pub struct TaskSnapshotRow {
     pub duration_ms: u64,
     /// Truncated error message (first 80 chars) when the task failed.
     pub error: Option<String>,
+    /// Truncated rejection reason (first 80 chars) when this task emitted a Command-style
+    /// handoff (spec-080) whose `goto` was rejected by `dag::try_handoff` — mirrors
+    /// `TaskNode::handoff_rejected` (issue #6390). The task itself stays `Completed`
+    /// (its own output is preserved); this field surfaces that the *extra* routing intent
+    /// was dropped, which previously had no display surface — only logs and the
+    /// persisted-but-unsurfaced graph field.
+    pub handoff_rejected: Option<String>,
 }
 
 /// Lightweight snapshot of a `TaskGraph` for TUI display.
@@ -713,6 +720,18 @@ fn strip_ctrl(s: &str) -> String {
     out
 }
 
+/// Strip control chars, then truncate at 80 chars with an ellipsis (SEC-P6-01) — shared by
+/// every free-text field surfaced from task-graph content (`error`, `handoff_rejected`).
+fn strip_and_truncate_80(s: &str) -> String {
+    let s = strip_ctrl(s);
+    if s.len() > 80 {
+        let end = s.floor_char_boundary(79);
+        format!("{}…", &s[..end])
+    } else {
+        s
+    }
+}
+
 /// Convert a live `TaskGraph` into a lightweight snapshot for TUI display.
 impl From<&zeph_orchestration::TaskGraph> for TaskGraphSnapshot {
     fn from(graph: &zeph_orchestration::TaskGraph) -> Self {
@@ -728,16 +747,10 @@ impl From<&zeph_orchestration::TaskGraph> for TaskGraphSnapshot {
                         if r.output.is_empty() {
                             None
                         } else {
-                            // Strip control chars, then truncate at 80 chars (SEC-P6-01).
-                            let s = strip_ctrl(&r.output);
-                            if s.len() > 80 {
-                                let end = s.floor_char_boundary(79);
-                                Some(format!("{}…", &s[..end]))
-                            } else {
-                                Some(s)
-                            }
+                            Some(strip_and_truncate_80(&r.output))
                         }
                     });
+                let handoff_rejected = t.handoff_rejected.as_deref().map(strip_and_truncate_80);
                 let duration_ms = t.result.as_ref().map_or(0, |r| r.duration_ms);
                 TaskSnapshotRow {
                     id: t.id.as_u32(),
@@ -746,6 +759,7 @@ impl From<&zeph_orchestration::TaskGraph> for TaskGraphSnapshot {
                     agent: t.assigned_agent.as_deref().map(strip_ctrl),
                     duration_ms,
                     error,
+                    handoff_rejected,
                 }
             })
             .collect();
@@ -1254,6 +1268,34 @@ mod tests {
             !snap.tasks[0].title.contains('\x00'),
             "title must not contain null byte"
         );
+    }
+
+    // #6390: handoff_rejected is mapped, stripped, and truncated the same way error is.
+    #[test]
+    fn task_graph_snapshot_maps_handoff_rejected() {
+        use zeph_orchestration::{TaskGraph, TaskNode, TaskStatus};
+
+        let mut graph = TaskGraph::new("goal");
+        let mut task = TaskNode::new(0, "Router", "d");
+        task.status = TaskStatus::Completed;
+        task.handoff_rejected = Some("goto target already completed\x00".to_string());
+        graph.tasks.push(task);
+
+        let snap = TaskGraphSnapshot::from(&graph);
+        let rejected = snap.tasks[0].handoff_rejected.as_ref().unwrap();
+        assert!(rejected.contains("goto target already completed"));
+        assert!(!rejected.contains('\x00'), "control chars must be stripped");
+    }
+
+    #[test]
+    fn task_graph_snapshot_handoff_rejected_none_by_default() {
+        use zeph_orchestration::{TaskGraph, TaskNode};
+
+        let mut graph = TaskGraph::new("goal");
+        graph.tasks.push(TaskNode::new(0, "Router", "d"));
+
+        let snap = TaskGraphSnapshot::from(&graph);
+        assert!(snap.tasks[0].handoff_rejected.is_none());
     }
 
     #[test]

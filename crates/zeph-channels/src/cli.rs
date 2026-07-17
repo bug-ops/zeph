@@ -209,6 +209,7 @@ async fn process_line(
         attachments,
         is_guest_context: false,
         is_from_bot: false,
+        owner_key: None,
     }))
 }
 
@@ -1002,6 +1003,7 @@ mod tests {
             attachments: vec![],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: None,
         })
         .await
         .unwrap();

@@ -26,6 +26,50 @@ pub(super) fn format_plan_summary(graph: &zeph_orchestration::TaskGraph) -> Stri
     out
 }
 
+/// Render the `/plan status` message for an active graph: a status-specific summary line,
+/// plus (issue #6390) any Command-handoff `goto` rejections recorded on
+/// `TaskNode::handoff_rejected` (spec-080) — previously persisted and logged but not
+/// surfaced on any CLI/TUI display, leaving an operator to log-dive or query graph state
+/// manually to notice a dropped routing intent. The task itself stays `Completed` with its
+/// real output preserved; this section only surfaces that the *extra* routing never fired.
+pub(super) fn format_plan_status(graph: &zeph_orchestration::TaskGraph) -> String {
+    use zeph_orchestration::GraphStatus;
+
+    let base = match graph.status {
+        GraphStatus::Created => {
+            "A plan is awaiting confirmation. Type `/plan confirm` to execute or `/plan cancel` to abort."
+        }
+        GraphStatus::Running => "Plan is currently running.",
+        GraphStatus::Paused => {
+            "Plan is paused. Use `/plan resume` to continue or `/plan cancel` to abort."
+        }
+        GraphStatus::Failed => {
+            "Plan failed. Use `/plan retry` to retry or `/plan cancel` to discard."
+        }
+        GraphStatus::Completed => "Plan completed successfully.",
+        GraphStatus::Canceled => "Plan was canceled.",
+        _ => "Plan is in an unknown state.",
+    };
+
+    let rejected: Vec<String> = graph
+        .tasks
+        .iter()
+        .filter_map(|t| {
+            t.handoff_rejected
+                .as_deref()
+                .map(|reason| format!("  - Task {} \"{}\": {reason}", t.id, t.title))
+        })
+        .collect();
+    if rejected.is_empty() {
+        base.to_owned()
+    } else {
+        format!(
+            "{base}\n\nRejected Command handoff(s):\n{}",
+            rejected.join("\n")
+        )
+    }
+}
+
 pub(super) fn collect_and_truncate_task_outputs(
     graph: &zeph_orchestration::TaskGraph,
     max_tokens: u32,
@@ -1216,26 +1260,10 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 
     pub(super) fn handle_plan_status_as_string(&mut self, _graph_id: Option<&str>) -> String {
-        use zeph_orchestration::GraphStatus;
         let Some(ref graph) = self.services.orchestration.pending_graph else {
             return "No active plan.".to_owned();
         };
-        match graph.status {
-            GraphStatus::Created => {
-                "A plan is awaiting confirmation. Type `/plan confirm` to execute or `/plan cancel` to abort."
-            }
-            GraphStatus::Running => "Plan is currently running.",
-            GraphStatus::Paused => {
-                "Plan is paused. Use `/plan resume` to continue or `/plan cancel` to abort."
-            }
-            GraphStatus::Failed => {
-                "Plan failed. Use `/plan retry` to retry or `/plan cancel` to discard."
-            }
-            GraphStatus::Completed => "Plan completed successfully.",
-            GraphStatus::Canceled => "Plan was canceled.",
-            _ => "Plan is in an unknown state.",
-        }
-        .to_owned()
+        format_plan_status(graph)
     }
 
     pub(super) fn handle_plan_list_as_string(&mut self) -> String {
@@ -1550,6 +1578,47 @@ mod tests {
             orchestration: false,
             ..zeph_config::DurableConfig::default()
         }
+    }
+
+    // #6390: format_plan_status surfaces TaskNode::handoff_rejected (spec-080) — this was
+    // persisted and logged but had no CLI/TUI display surface before this fix.
+    #[test]
+    fn format_plan_status_no_rejections_is_base_message_only() {
+        use zeph_orchestration::TaskGraph;
+        let graph = TaskGraph::new("goal");
+        let msg = format_plan_status(&graph);
+        assert!(!msg.contains("Rejected Command handoff"));
+    }
+
+    #[test]
+    fn format_plan_status_includes_rejected_handoff_with_task_id_and_title() {
+        use zeph_orchestration::{TaskGraph, TaskNode};
+        let mut graph = TaskGraph::new("goal");
+        let mut task = TaskNode::new(0, "Router", "d");
+        task.handoff_rejected = Some("goto target already completed".to_string());
+        graph.tasks.push(task);
+
+        let msg = format_plan_status(&graph);
+        assert!(msg.contains("Rejected Command handoff(s):"));
+        assert!(msg.contains("Task 0"));
+        assert!(msg.contains("Router"));
+        assert!(msg.contains("goto target already completed"));
+    }
+
+    #[test]
+    fn format_plan_status_lists_multiple_rejected_handoffs() {
+        use zeph_orchestration::{TaskGraph, TaskNode};
+        let mut graph = TaskGraph::new("goal");
+        let mut t0 = TaskNode::new(0, "A", "d");
+        t0.handoff_rejected = Some("reason A".to_string());
+        let mut t1 = TaskNode::new(1, "B", "d");
+        t1.handoff_rejected = Some("reason B".to_string());
+        graph.tasks.push(t0);
+        graph.tasks.push(t1);
+
+        let msg = format_plan_status(&graph);
+        assert!(msg.contains("reason A"));
+        assert!(msg.contains("reason B"));
     }
 
     // FR-DE-13 AC: when durable is absent, disabled, or orchestration=false → no-op.

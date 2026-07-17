@@ -205,6 +205,27 @@ pub(crate) struct AgentTaskProcessor {
     pub(crate) drain_timeout: std::time::Duration,
 }
 
+/// Derives a cross-thread store owner key (spec-080 §10 OQ-1, GitHub #6389) from an A2A
+/// message's `context_id` — the A2A protocol's own conversation-scoping identifier ("shared
+/// with other tasks in the same session"), `crates/zeph-a2a/src/types.rs` — so distinct A2A
+/// callers/sessions land in distinct store buckets instead of every A2A message collapsing
+/// into the shared `"local"` bucket alongside the CLI/TUI operator.
+///
+/// Like the gateway's `sender`-derived key, `context_id` is client-supplied within a single
+/// shared bearer token (`AuthIdentity` has no per-caller id) — a defense-in-depth partition
+/// against accidental cross-caller collisions, not a hard tenant boundary; the bearer token
+/// remains the only real authentication gate on this path. A message with no `context_id`
+/// still gets a distinct `a2a:default` bucket rather than falling back to `"local"`, so A2A
+/// traffic never blends into the single-user CLI/TUI bucket. Capped at 256 chars to bound the
+/// value written into `owner_key` (a `cross_thread_store` primary-key column), mirroring the
+/// length limit the gateway already enforces on `sender` (`WebhookPayload::validate`).
+fn a2a_owner_key(message: &zeph_a2a::Message) -> String {
+    match &message.context_id {
+        Some(cid) => format!("a2a:{}", cid.chars().take(256).collect::<String>()),
+        None => "a2a:default".to_owned(),
+    }
+}
+
 impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
     fn process(
         &self,
@@ -230,6 +251,7 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
                     zeph_core::ContentSource::new(zeph_core::ContentSourceKind::A2aMessage),
                 )
                 .body;
+            let owner_key = a2a_owner_key(&message);
             let mut handle = handle.lock().await;
 
             handle
@@ -239,6 +261,7 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
                     attachments: vec![],
                     is_guest_context: false,
                     is_from_bot: false,
+                    owner_key: Some(owner_key),
                 })
                 .await
                 .map_err(|_| zeph_a2a::A2aError::Server("agent channel closed".to_owned()))?;
@@ -2631,5 +2654,40 @@ mod tests {
         assert!(card.capabilities.audio);
         assert!(card.capabilities.files);
         assert!(card.capabilities.streaming);
+    }
+
+    // --- a2a_owner_key (#6389) ---
+
+    /// #6389 regression: distinct `context_id`s must derive distinct owner keys, so two A2A
+    /// callers/sessions sharing one bearer token land in distinct cross-thread store buckets
+    /// instead of both collapsing into `"local"`.
+    #[test]
+    fn a2a_owner_key_distinct_per_context_id() {
+        let mut alice = zeph_a2a::Message::user_text("hi");
+        alice.context_id = Some("alice-session".into());
+        let mut bob = zeph_a2a::Message::user_text("hi");
+        bob.context_id = Some("bob-session".into());
+
+        assert_ne!(a2a_owner_key(&alice), a2a_owner_key(&bob));
+        assert_eq!(a2a_owner_key(&alice), "a2a:alice-session");
+    }
+
+    /// A message with no `context_id` still gets a distinct, non-`"local"` bucket rather than
+    /// silently falling back to the CLI/TUI default.
+    #[test]
+    fn a2a_owner_key_missing_context_id_uses_distinct_default() {
+        let message = zeph_a2a::Message::user_text("hi");
+        assert_eq!(a2a_owner_key(&message), "a2a:default");
+        assert_ne!(a2a_owner_key(&message), "local");
+    }
+
+    /// A `context_id` longer than 256 chars must be truncated, bounding the value written
+    /// into the `cross_thread_store` `owner_key` primary-key column.
+    #[test]
+    fn a2a_owner_key_truncates_long_context_id() {
+        let mut message = zeph_a2a::Message::user_text("hi");
+        message.context_id = Some("x".repeat(500));
+        let key = a2a_owner_key(&message);
+        assert_eq!(key, format!("a2a:{}", "x".repeat(256)));
     }
 }

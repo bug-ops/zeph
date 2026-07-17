@@ -106,6 +106,10 @@ pub enum SchedulerAction {
     },
     /// Request verification of a completed task's output (emitted when `verify_completeness=true`).
     ///
+    /// Emitted for both `TaskOutcome::Completed` and — since issue #6394 —
+    /// `TaskOutcome::Handoff`, so a Command-handoff node's completeness claim is
+    /// replan-checked the same as an ordinary `Completed` node's.
+    ///
     /// The task remains `Completed` during verification. Downstream tasks are unblocked
     /// immediately — verification is best-effort and does not gate dispatch. The caller
     /// should run [`PlanVerifier::verify`], optionally [`PlanVerifier::replan`], and then
@@ -126,7 +130,10 @@ pub enum SchedulerAction {
     },
     /// Request a deterministic tool-outcome check for a just-completed task (issue #6380).
     ///
-    /// Emitted **unconditionally** from `tick()` for every `Completed` task — unlike
+    /// Emitted **unconditionally** from `tick()` for every `Completed` task, and — since
+    /// issue #6394 — for every `Handoff` task too, since a Command-handoff node's "I'm
+    /// done" claim is held to the same deterministic tool-outcome bar as an ordinary
+    /// `Completed` node. Unlike
     /// [`SchedulerAction::Verify`], this is not gated behind `verify_completeness`: the
     /// check is a cheap, deterministic scan over already-known or fetchable tool-call
     /// outcomes (no LLM call), so it is safe to always run. It exists because task
@@ -204,6 +211,11 @@ pub enum TaskOutcome {
         /// Routing target, already resolved from the parsed `HandoffCommand` and
         /// sanitizer-scanned by zeph-core.
         goto: super::command::TaskRef,
+        /// Real tool-call trace collected in-loop, `RunInline` dispatch path only. `None`
+        /// for the spawn dispatch path — resolved from the sub-agent transcript at
+        /// `SchedulerAction::CheckToolOutcome`/`SchedulerAction::Verify` handling time
+        /// instead, same resolution contract as `Completed::tool_trace` (issue #6394).
+        tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
     },
 }
 

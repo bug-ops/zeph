@@ -59,6 +59,15 @@ fn build_task_row(task: &crate::metrics::TaskSnapshotRow, tick: u8, ascii: bool)
         } else {
             title_display
         }
+    } else if let Some(ref rejected) = task.handoff_rejected {
+        // spec-080/#6390: a Command-handoff `goto` rejection itself does not change the
+        // node's own status (it stays completed with its real output) — surface it as a
+        // title suffix regardless of status, mirroring the failed-error suffix above. A
+        // *later*, independent post-hoc correction (#6394's CheckToolOutcome) can still
+        // flip that same node to `failed` afterward, which is exactly why this branch is
+        // reached only when the `status == "failed"` arm above didn't already match —
+        // see the precedence test below for that now-reachable combination.
+        format!("{title_display} [handoff rejected: {rejected}]")
     } else {
         title_display
     };
@@ -221,6 +230,7 @@ mod tests {
                     agent: None,
                     duration_ms: 0,
                     error: None,
+                    handoff_rejected: None,
                 })
                 .collect(),
             completed_at: None,
@@ -343,6 +353,50 @@ mod tests {
         assert!(rendered.contains("Step 2"));
         assert!(rendered.contains("Step 3"));
         assert!(rendered.contains("Step 4"));
+    }
+
+    #[test]
+    fn handoff_rejected_task_shows_suffix_in_title() {
+        // #6390: a rejected Command handoff has no dedicated display surface today —
+        // it must render as a title suffix even though the task itself stays "completed".
+        let mut snap = make_snapshot("running", vec![("Router Task", "completed")]);
+        snap.tasks[0].handoff_rejected = Some("goto target already completed".to_owned());
+        let metrics = MetricsSnapshot {
+            orchestration_graph: Some(snap),
+            ..MetricsSnapshot::default()
+        };
+        let rendered = render_to_buffer(&metrics);
+        assert!(
+            rendered.contains("handoff rejected"),
+            "expected rejection suffix in rendered output, got: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn failed_task_error_suffix_takes_precedence_over_handoff_rejected() {
+        // Both fields CAN be set on the same node in practice: `try_handoff` sets
+        // `handoff_rejected` on a still-`Completed` node (spec-080), and issue #6394's
+        // post-hoc `CheckToolOutcome` correction can independently flip that same node's
+        // status to `failed` afterward (code review Finding 3, 2026-07-17) — so this is
+        // not a hypothetical precedence rule, it is a reachable state. The failed-error
+        // branch stays the first match so a genuinely failed task's error is never masked.
+        // Note this creates a deliberate CLI/TUI display divergence: `format_plan_status`
+        // (zeph-core/agent/plan.rs) lists `handoff_rejected` for every task regardless of
+        // status, so the CLI still surfaces the rejection reason in this state — only the
+        // TUI title suffix drops it in favor of the (more actionable) failure reason.
+        let mut snap = make_snapshot("running", vec![("Router Task", "failed")]);
+        snap.tasks[0].error = Some("boom".to_owned());
+        snap.tasks[0].handoff_rejected = Some("goto target already completed".to_owned());
+        let metrics = MetricsSnapshot {
+            orchestration_graph: Some(snap),
+            ..MetricsSnapshot::default()
+        };
+        let rendered = render_to_buffer(&metrics);
+        assert!(
+            rendered.contains("[boom]"),
+            "expected error suffix, got: {rendered:?}"
+        );
+        assert!(!rendered.contains("handoff rejected"));
     }
 
     #[test]

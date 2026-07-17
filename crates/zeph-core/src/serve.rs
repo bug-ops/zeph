@@ -326,6 +326,7 @@ impl SessionActor {
                                     attachments: Vec::new(),
                                     is_guest_context: false,
                                     is_from_bot: false,
+                                    owner_key: None,
                                 };
                                 tracing::debug!("session actor: forwarding prompt to agent channel");
                                 let _ = tx.send(msg).await;

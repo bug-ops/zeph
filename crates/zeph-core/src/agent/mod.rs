@@ -436,6 +436,7 @@ impl<C: Channel> Agent<C> {
                         attachments: queued.raw_attachments,
                         is_guest_context: false,
                         is_from_bot: false,
+                        owner_key: None,
                     };
                     self.resolve_message(msg).await
                 }
@@ -475,6 +476,7 @@ impl<C: Channel> Agent<C> {
                             attachments: Vec::new(),
                             is_guest_context: false,
                             is_from_bot: false,
+                            owner_key: None,
                         };
                         self.drain_channel();
                         self.resolve_message(msg).await
@@ -489,6 +491,7 @@ impl<C: Channel> Agent<C> {
                             attachments: Vec::new(),
                             is_guest_context: false,
                             is_from_bot: false,
+                            owner_key: None,
                         };
                         self.drain_channel();
                         self.resolve_message(msg).await
@@ -509,6 +512,10 @@ impl<C: Channel> Agent<C> {
                     }
                     Some(LoopEvent::Message(msg)) => {
                         self.services.session.is_guest_context = msg.is_guest_context;
+                        self.services.session.owner_key = msg
+                            .owner_key
+                            .clone()
+                            .unwrap_or_else(|| state::persistence::DEFAULT_OWNER_KEY.to_owned());
                         self.drain_channel();
                         self.resolve_message(msg).await
                     }
@@ -1092,6 +1099,12 @@ impl<C: Channel> Agent<C> {
         self.services.session.current_turn_intent = None;
         // Clear guest context flag: each turn is independently classified.
         self.services.session.is_guest_context = false;
+        // Reset the cross-thread store owner key (#6389) at turn end, same as
+        // is_guest_context above. Like is_guest_context, this reset can be skipped on a
+        // fast-path dispatch (e.g. a slash command) that exits before reaching end_turn,
+        // leaving a stale value for whatever runs next — a pre-existing gap shared with
+        // is_guest_context, not new to this field.
+        state::persistence::DEFAULT_OWNER_KEY.clone_into(&mut self.services.session.owner_key);
         // Cancel all in-flight speculative handles at turn boundary.
         if let Some(ref engine) = self.services.speculation_engine {
             let metrics = engine.end_turn();

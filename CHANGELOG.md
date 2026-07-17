@@ -58,11 +58,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     both, defaulting to No.
   - `zeph-orchestration` gained no new production dependency on `zeph-memory` — all store
     I/O lives in `zeph-core`, per the spec's binding layering invariant.
-  - Known limitations tracked as follow-ups: gateway/A2A dispatch paths do not yet thread a
-    real per-caller `owner_key` into the store (#6389); a rejected Command handoff's
+  - Known limitations tracked as follow-ups: a rejected Command handoff's
     `TaskNode.handoff_rejected` marker is persisted and logged but has no dedicated
     TUI/CLI display surface yet (#6390); a Command-handoff outcome skips the
     `SchedulerAction::Verify` completeness check ordinary `Completed` outcomes get (#6394).
+- **Cross-thread store: real per-caller `owner_key` for gateway/A2A dispatch** (spec-080 §10
+  OQ-1, #6389): `ChannelMessage` gains an `owner_key: Option<String>` field, set per-turn on
+  `SessionState.owner_key` (mirroring the existing `is_guest_context` per-turn propagation,
+  reset at `end_turn`) and read by both the `/store` slash command and the Command-handoff
+  store write/read (`scheduler_loop.rs`). The gateway webhook forwarder derives
+  `gateway:{sender}` from `WebhookPayload.sender`; the A2A task processor derives
+  `a2a:{context_id}` (or `a2a:default` when absent) from the A2A protocol's own
+  conversation-scoping `Message.context_id`. Two distinct gateway/A2A callers sharing one
+  bearer token now land in distinct cross-thread store buckets instead of both collapsing
+  into `"local"`. This is a defense-in-depth partition, not a hard tenant boundary — the
+  bearer token remains the sole authentication gate on both paths, unchanged by this key.
+  CLI/TUI/Telegram/ACP behavior is unchanged (still `DEFAULT_OWNER_KEY = "local"`).
 - **MCP image passthrough — config/CLI/TUI surface** (spec-072 P3, #6241): completes the
   opt-in MCP image passthrough feature (#6331) with the remaining integration points.
   - `--init`: the MCP remote-server wizard now asks "Enable image passthrough for this
@@ -177,6 +188,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   array — `Bootstrap::build_provider` now probes and caches this alongside its existing
   context-window auto-detection. Fails safe to `false` (no vision) if the model info fetch fails
   or the server predates the `capabilities` field, matching the trait's documented default.
+- `zeph-orchestration`: a Command-style dynamic task handoff outcome (`TaskOutcome::Handoff`,
+  spec-080) never emitted `SchedulerAction::Verify` or `SchedulerAction::CheckToolOutcome`,
+  so a handoff node's "I'm done, go to X" claim skipped both the completeness-check/replan
+  pass and the deterministic all-tool-calls-failed check (#6380/#6397) that an ordinary
+  `Completed` node gets (#6394). `TaskOutcome::Handoff` now carries `tool_trace` like
+  `Completed` does; `handle_handoff_outcome` branches to the existing failure path before
+  any Handoff side effect when the synchronously-known trace shows total tool-call failure,
+  and otherwise emits `CheckToolOutcome` unconditionally plus `Verify` when
+  `verify_completeness` is enabled — reusing the same post-hoc correction chain the spawn
+  dispatch path already uses for `Completed`, with no new double-counting risk.
+- `zeph-core`/`zeph-tui`: `TaskNode.handoff_rejected` (spec-080) — set when a Command
+  handoff's `goto` target is rejected at consume time — was persisted and logged but had no
+  CLI or TUI display surface (#6390). `/plan status` now lists any rejected handoffs by task
+  id/title/reason, and the TUI plan view's task row shows a `[handoff rejected: ...]` title
+  suffix, mirroring the existing failed-task error suffix.
 - `zeph-core`: the sanitizer's ML-backed injection and PII classifier calls
   (`ContentSanitizer::classify_injection`/`detect_pii`) were never recorded in the TUI
   metrics panel (#6382). The shared `Arc<ClassifierMetrics>` ring buffer they record into was

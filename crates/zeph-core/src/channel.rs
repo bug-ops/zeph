@@ -203,6 +203,13 @@ pub struct ChannelMessage {
     pub is_guest_context: bool,
     /// `true` when the sender is a Telegram bot (`from.is_bot = true`).
     pub is_from_bot: bool,
+    /// Cross-thread store owner key (spec-080 §10 OQ-1, GitHub #6389) derived by the
+    /// originating dispatch path from its own caller identity — the gateway webhook
+    /// forwarder derives it from `WebhookPayload.sender`, the A2A task processor from
+    /// `Message.context_id`. `None` for CLI/TUI/Telegram, which intentionally collapse to
+    /// the default local owner bucket (single-user deployment model, unchanged by this
+    /// field).
+    pub owner_key: Option<String>,
 }
 
 /// Upper bound on [`Channel::send_status_best_effort`]. Status sends are a UX nicety, not a
@@ -839,6 +846,7 @@ mod tests {
             attachments: vec![],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: None,
         };
         assert_eq!(msg.text, "hello");
         assert!(msg.attachments.is_empty());
@@ -1037,6 +1045,7 @@ mod tests {
             attachments: vec![],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: None,
         };
         let cloned = msg.clone();
         assert_eq!(cloned.text, "test");
@@ -1049,6 +1058,7 @@ mod tests {
             attachments: vec![],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: None,
         };
         let debug = format!("{msg:?}");
         assert!(debug.contains("debug"));
@@ -1083,6 +1093,7 @@ mod tests {
             }],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: None,
         };
         assert_eq!(msg.attachments.len(), 1);
         assert_eq!(msg.attachments[0].kind, AttachmentKind::Audio);
@@ -1140,6 +1151,7 @@ mod tests {
                 attachments: vec![],
                 is_guest_context: false,
                 is_from_bot: false,
+                owner_key: None,
             })
             .await
             .unwrap();

@@ -695,6 +695,62 @@ fn skip_subtree(graph: &mut TaskGraph, seed: TaskId, rev_adj: &[Vec<TaskId>]) ->
     to_cancel
 }
 
+/// Cancel any `commanded_from`-linked Command-handoff target of `source` that has not yet
+/// started (`Pending`/`Ready`), for use when `source` is corrected `Completed -> Failed`
+/// post-hoc (issue #6394, code-review Finding 1, 2026-07-17).
+///
+/// [`try_handoff`] links its activated target via `commanded_from`, never `depends_on` —
+/// that is the whole point of runtime-chosen routing, distinct from the plan's static
+/// edges. [`propagate_failure`]/[`propagate_failure_forced_terminal`] walk `rev_adj`, which
+/// is built strictly from `depends_on`, so neither can ever reach a `commanded_from` target.
+/// Without this function, a target already activated by a since-corrected spawn-path source
+/// (see `DagScheduler::propagate_corrected_task_failure`, whose post-hoc correction can only
+/// run *after* `try_handoff` already activated the target — the `RunInline` path branches
+/// out before activation ever happens, so this gap is spawn-path-only) would run against
+/// state its source never legitimately produced, defeating #6394's "routing intent is
+/// abandoned along with the rest of the outcome" goal for exactly the failure class
+/// #6395/#6397 exist to catch.
+///
+/// Deliberately scoped to `Pending`/`Ready` targets only — cancelling a target already
+/// `Running` (or terminal) is the pre-existing, accepted "already-unblocked work is not
+/// unwound" limitation `propagate_corrected_task_failure`'s doc comment describes for
+/// ordinary `depends_on` dependents; a live sub-agent run is a materially different (and
+/// separately risky) thing to interrupt than a `Pending`/`Ready` node that has not started
+/// any work yet, so it stays out of this fix's scope.
+///
+/// Also skips the target's own transitive `depends_on` subtree via [`skip_subtree`] — a
+/// `Pending` dependent of a now-`Skipped` target would otherwise strand forever waiting for
+/// a `Completed` that will never come, the same reasoning [`resolve_dormant_after_terminal`]
+/// already applies to an un-triggered `route_to` fallback. Returns the `Running` task IDs
+/// found in that subtree walk for the caller to cancel (the target itself is never
+/// `Running`, by the guard above).
+pub(crate) fn cancel_dangling_commanded_targets(
+    graph: &mut TaskGraph,
+    source: TaskId,
+    rev_adj: &[Vec<TaskId>],
+) -> Vec<TaskId> {
+    let targets: Vec<TaskId> = graph
+        .tasks
+        .iter()
+        .filter(|t| t.commanded_from == Some(source))
+        .filter(|t| matches!(t.status, TaskStatus::Pending | TaskStatus::Ready))
+        .map(|t| t.id)
+        .collect();
+
+    let mut to_cancel = Vec::new();
+    for target in targets {
+        tracing::warn!(
+            source = %source,
+            target = %target,
+            "orchestration.dag.cancel_dangling_commanded_targets: skipping Command-handoff \
+             target whose source was corrected Completed -> Failed post-hoc (#6394)"
+        );
+        graph.tasks[target.index()].status = TaskStatus::Skipped;
+        to_cancel.extend(skip_subtree(graph, target, rev_adj));
+    }
+    to_cancel
+}
+
 /// Resolve every still-[`TaskStatus::Dormant`] `route_to` fallback whose source has
 /// terminalized without rerouting.
 ///

@@ -1616,6 +1616,7 @@ impl ZephAcpAgentState {
                 attachments,
                 is_guest_context: false,
                 is_from_bot: false,
+                owner_key: None,
             })
             .await
             .map_err(|_| acp::Error::internal_error().data("agent channel closed"))?;
@@ -2570,6 +2571,7 @@ impl ZephAcpAgentState {
                         attachments: vec![],
                         is_guest_context: false,
                         is_from_bot: false,
+                        owner_key: None,
                     });
                 }
                 "Session history cleared.".to_owned()
@@ -2634,6 +2636,7 @@ impl ZephAcpAgentState {
                 attachments: vec![],
                 is_guest_context: false,
                 is_from_bot: false,
+                owner_key: None,
             })
             .is_err()
         {

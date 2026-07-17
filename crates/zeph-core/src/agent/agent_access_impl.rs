@@ -861,7 +861,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                     return Ok("Memory not configured.".to_owned());
                 };
 
-                let owner_key = super::state::persistence::DEFAULT_OWNER_KEY;
+                let owner_key = self.services.session.owner_key.as_str();
                 let mut parts = args.split_whitespace();
                 let Some(sub) = parts.next() else {
                     return Ok(USAGE.to_owned());

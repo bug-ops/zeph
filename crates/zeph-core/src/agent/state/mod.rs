@@ -916,6 +916,18 @@ pub(crate) struct SessionState {
     /// When `true`, the agent prompt includes a brief guest-context annotation, and the response
     /// is delivered via `answerGuestQuery` instead of `sendMessage`.
     pub(crate) is_guest_context: bool,
+    /// Cross-thread store owner key for the current turn (spec-080 §10 OQ-1, GitHub #6389).
+    ///
+    /// Set from `ChannelMessage::owner_key` when a `LoopEvent::Message` is dispatched
+    /// (falls back to [`persistence::DEFAULT_OWNER_KEY`] when the originating channel
+    /// leaves it unset — CLI/TUI/Telegram) and reset to the default at [`Agent::end_turn`],
+    /// same as `is_guest_context` above — including that reset's same pre-existing gap: a
+    /// fast-path dispatch that exits before reaching `end_turn` can leave a stale value for
+    /// whatever runs next. Read by `/store` (`agent_access_impl.rs`) and the Command-handoff
+    /// store writes/reads (`scheduler_loop.rs`).
+    ///
+    /// [`Agent::end_turn`]: crate::agent::Agent::end_turn
+    pub(crate) owner_key: String,
     /// Active durable execution context for the P1 agent-loop adapter (spec-064 §P1, #5452).
     ///
     /// `Some` when `[durable] enabled = true` and `agent_turns = true`. The context is opened
@@ -1363,6 +1375,7 @@ impl SessionState {
             policy_config: None,
             hooks_config: HooksConfigSnapshot::default(),
             is_guest_context: false,
+            owner_key: persistence::DEFAULT_OWNER_KEY.to_owned(),
             durable_ctx: None,
             durable_subagent: false,
             durable_turn_replayed: false,

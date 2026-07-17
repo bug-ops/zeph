@@ -575,6 +575,7 @@ mod resolve_message_tests {
             attachments: vec![],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: None,
         };
         assert_eq!(agent.resolve_message(msg).await.0, "hello");
     }
@@ -587,6 +588,7 @@ mod resolve_message_tests {
             attachments: vec![audio_attachment(b"audio-data")],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: None,
         };
         assert_eq!(agent.resolve_message(msg).await.0, "hello");
     }
@@ -599,6 +601,7 @@ mod resolve_message_tests {
             attachments: vec![audio_attachment(b"audio-data")],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: None,
         };
         let (result, _) = agent.resolve_message(msg).await;
         assert!(result.contains("[transcribed audio]"));
@@ -614,6 +617,7 @@ mod resolve_message_tests {
             attachments: vec![audio_attachment(b"audio-data")],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: None,
         };
         let (result, _) = agent.resolve_message(msg).await;
         assert_eq!(result, "transcribed text");
@@ -627,6 +631,7 @@ mod resolve_message_tests {
             attachments: vec![audio_attachment(b"audio-data")],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: None,
         };
         assert_eq!(agent.resolve_message(msg).await.0, "original");
     }
@@ -643,6 +648,7 @@ mod resolve_message_tests {
             ],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: None,
         };
         let (result, _) = agent.resolve_message(msg).await;
         assert_eq!(result, "chunk\nchunk\nchunk");
@@ -661,6 +667,7 @@ mod resolve_message_tests {
             }],
             is_guest_context: false,
             is_from_bot: false,
+            owner_key: None,
         };
         assert_eq!(agent.resolve_message(msg).await.0, "original");
     }

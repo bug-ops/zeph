@@ -43,6 +43,7 @@ async fn resolve_message_extracts_image_attachment() {
         }],
         is_guest_context: false,
         is_from_bot: false,
+        owner_key: None,
     };
     let (text, parts) = agent.resolve_message(msg).await;
     assert_eq!(text, "look at this");
@@ -73,6 +74,7 @@ async fn resolve_message_drops_oversized_image() {
         }],
         is_guest_context: false,
         is_from_bot: false,
+        owner_key: None,
     };
     let (text, parts) = agent.resolve_message(msg).await;
     assert_eq!(text, "big image");

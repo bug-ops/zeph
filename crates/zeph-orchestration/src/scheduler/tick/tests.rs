@@ -145,6 +145,7 @@ fn test_handoff_event_marks_source_completed_and_activates_target() {
         outcome: TaskOutcome::Handoff {
             output: "handing off".to_string(),
             goto: TaskRef::ById(TaskId(1)),
+            tool_trace: None,
         },
     });
 
@@ -204,10 +205,11 @@ fn test_handoff_event_rejection_leaves_source_completed_not_failed() {
         outcome: TaskOutcome::Handoff {
             output: "handing off".to_string(),
             goto: TaskRef::ById(TaskId(1)),
+            tool_trace: None,
         },
     });
 
-    scheduler.tick();
+    let actions = scheduler.tick();
 
     assert_eq!(
         scheduler.graph.tasks[0].status,
@@ -222,6 +224,179 @@ fn test_handoff_event_rejection_leaves_source_completed_not_failed() {
         scheduler.graph.tasks[0].handoff_rejected.is_some(),
         "critic finding C1: a rejected handoff must be recorded as a graph-visible, \
          persisted signal, not just a log line"
+    );
+    // Tester Gap 2 (2026-07-17): the CheckToolOutcome/Verify action-emission block runs
+    // unconditionally after the try_handoff match (both Ok and Err arms fall through to
+    // the same trailing code, tick/mod.rs) -- prove that on the actual returned actions,
+    // not just by code inspection, so a rejected handoff still gets the same completeness
+    // treatment as an accepted one.
+    assert!(
+        actions.iter().any(|a| matches!(
+            a,
+            SchedulerAction::CheckToolOutcome { task_id, .. } if *task_id == TaskId(0)
+        )),
+        "CheckToolOutcome must still be emitted for a rejected handoff's own task_id: \
+         {actions:?}"
+    );
+}
+
+#[test]
+fn test_handoff_event_emits_check_tool_outcome_action() {
+    // #6394: a Handoff outcome must get the same deterministic tool-outcome check an
+    // ordinary Completed outcome gets — unconditionally, not gated on verify_completeness.
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "handle-0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+            last_progress_at: None,
+        },
+    );
+
+    scheduler.buffered_events.push_back(TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "handle-0".to_string(),
+        outcome: TaskOutcome::Handoff {
+            output: "handing off".to_string(),
+            goto: TaskRef::ById(TaskId(1)),
+            tool_trace: None,
+        },
+    });
+
+    let actions = scheduler.tick();
+
+    let has_check = actions.iter().any(|a| {
+        matches!(
+            a,
+            SchedulerAction::CheckToolOutcome { task_id, .. } if *task_id == TaskId(0)
+        )
+    });
+    assert!(
+        has_check,
+        "a Handoff outcome must emit CheckToolOutcome for its own task_id (#6394)"
+    );
+    // Tester Gap 1 (2026-07-17): `make_scheduler`/`make_config` default
+    // `verify_completeness` to `false` — prove the flag actually suppresses `Verify` for
+    // the Handoff outcome too, not just that the enabled case (separately tested below)
+    // emits it.
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, SchedulerAction::Verify { .. })),
+        "Verify must NOT be emitted when verify_completeness is disabled (#6394): {actions:?}"
+    );
+}
+
+#[test]
+fn test_handoff_event_emits_verify_action_when_verify_completeness_enabled() {
+    // #6394: with verify_completeness enabled, a Handoff outcome must also emit Verify,
+    // mirroring handle_completed_outcome, carrying the handoff node's own output.
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+    let mut config = make_config();
+    config.verify_completeness = true;
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "handle-0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+            last_progress_at: None,
+        },
+    );
+
+    scheduler.buffered_events.push_back(TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "handle-0".to_string(),
+        outcome: TaskOutcome::Handoff {
+            output: "handing off".to_string(),
+            goto: TaskRef::ById(TaskId(1)),
+            tool_trace: None,
+        },
+    });
+
+    let actions = scheduler.tick();
+
+    let verify_output = actions.iter().find_map(|a| match a {
+        SchedulerAction::Verify {
+            task_id, output, ..
+        } if *task_id == TaskId(0) => Some(output.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        verify_output.as_deref(),
+        Some("handing off"),
+        "Verify must be emitted for the handoff node and carry its own output (#6394)"
+    );
+}
+
+#[test]
+fn test_handoff_event_all_tools_failed_marks_task_failed_not_handoff() {
+    // #6394/#6380/#6397 parity: a Command-handoff node whose synchronously-known
+    // (RunInline) tool trace shows every call failed or was policy-blocked must not be
+    // allowed to route anywhere — the "I'm done, go to X" claim is bogus, so it is routed
+    // to handle_failed_outcome before any Handoff side effect (cascade record,
+    // try_handoff activation) runs, mirroring handle_completed_outcome's early branch.
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "handle-0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+            last_progress_at: None,
+        },
+    );
+
+    scheduler.buffered_events.push_back(TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "handle-0".to_string(),
+        outcome: TaskOutcome::Handoff {
+            output: "claiming completion".to_string(),
+            goto: TaskRef::ById(TaskId(1)),
+            tool_trace: Some(vec![ToolCallSummary {
+                tool: "write".to_string(),
+                args_summary: None,
+                ok: false,
+                is_read_only: false,
+            }]),
+        },
+    });
+
+    scheduler.tick();
+
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Failed,
+        "a Handoff outcome with an all-failed tool trace must be Failed, not Completed"
+    );
+    assert!(
+        scheduler.graph.tasks[1].commanded_from.is_none(),
+        "try_handoff must never run when the handoff node itself is corrected to Failed"
+    );
+    assert_eq!(
+        scheduler.graph.handoff_count, 0,
+        "no handoff budget must be consumed when the outcome is corrected to Failed"
+    );
+    assert!(
+        scheduler.graph.tasks[0].handoff_rejected.is_none(),
+        "handoff_rejected is a try_handoff-rejection signal, not used for the \
+         all-tool-calls-failed short-circuit"
     );
 }
 
@@ -2992,6 +3167,110 @@ fn propagate_corrected_task_failure_cancels_running_dependent_and_fails_graph() 
     assert!(
         !scheduler.running.contains_key(&TaskId(1)),
         "the canceled dependent must be removed from the running map"
+    );
+}
+
+#[test]
+fn propagate_corrected_task_failure_cancels_pending_commanded_from_target() {
+    // Finding 1 (code review, 2026-07-17): a Command-handoff target `try_handoff` already
+    // activated (linked via `commanded_from`, not `depends_on` -- the whole point of
+    // runtime-chosen routing) before a spawn-path source is corrected Completed -> Failed
+    // must be cancelled too, or it runs against state its source never legitimately
+    // produced. Three-task graph: 0 is the corrected source, 1 is its handoff target (no
+    // depends_on edge back to 0), 2 depends on 1 -- proves both the direct target and its
+    // own transitive depends_on subtree get skipped (mirrors
+    // `resolve_dormant_after_terminal`'s reasoning for an un-triggered route_to fallback).
+    let graph = graph_from_nodes(vec![
+        make_node(0, &[]),
+        make_node(1, &[]),
+        make_node(2, &[1]),
+    ]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Completed;
+    scheduler.graph.tasks[0].result = Some(TaskResult {
+        output: "claimed done, handed off".to_string(),
+        artifacts: vec![],
+        duration_ms: 10,
+        agent_id: Some("agent-0".to_string()),
+        agent_def: Some("worker".to_string()),
+    });
+    // Simulate try_handoff's post-activation state: target 1 is Ready, commanded_from
+    // links back to source 0, with no depends_on edge.
+    scheduler.graph.tasks[1].status = TaskStatus::Ready;
+    scheduler.graph.tasks[1].commanded_from = Some(TaskId(0));
+
+    let trace = vec![ToolCallSummary {
+        tool: "write".to_string(),
+        args_summary: None,
+        ok: false,
+        is_read_only: false,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(TaskId(0), Some(&trace));
+    assert!(corrected, "test precondition: task 0 must be corrected");
+
+    let _ = scheduler.propagate_corrected_task_failure(TaskId(0));
+
+    assert_eq!(
+        scheduler.graph.tasks[1].status,
+        TaskStatus::Skipped,
+        "a Pending/Ready commanded_from target must be cancelled when its source is \
+         corrected to Failed post-hoc"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[2].status,
+        TaskStatus::Skipped,
+        "a depends_on dependent of the cancelled commanded_from target must also be \
+         skipped, or it would strand in Pending forever"
+    );
+}
+
+#[test]
+fn propagate_corrected_task_failure_leaves_running_commanded_from_target_untouched() {
+    // Deliberate scope boundary (Finding 1's fix): an already-Running commanded_from
+    // target is the pre-existing, accepted "already-unblocked work is not unwound"
+    // limitation, same as an ordinary Running depends_on dependent -- must not be
+    // cancelled/skipped by this fix. Uses a per-task Skip failure strategy on the source
+    // (rather than the default Abort) so the assertion isolates this fix's own behavior
+    // from Abort's unrelated "cancel every Running task in the graph" global effect.
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Completed;
+    scheduler.graph.tasks[0].failure_strategy = Some(zeph_config::FailureStrategy::Skip);
+    scheduler.graph.tasks[0].result = Some(TaskResult {
+        output: "claimed done, handed off".to_string(),
+        artifacts: vec![],
+        duration_ms: 10,
+        agent_id: Some("agent-0".to_string()),
+        agent_def: Some("worker".to_string()),
+    });
+    scheduler.graph.tasks[1].commanded_from = Some(TaskId(0));
+    make_running_task(&mut scheduler, TaskId(1), "h1");
+
+    let trace = vec![ToolCallSummary {
+        tool: "write".to_string(),
+        args_summary: None,
+        ok: false,
+        is_read_only: false,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(TaskId(0), Some(&trace));
+    assert!(corrected, "test precondition: task 0 must be corrected");
+
+    let actions = scheduler.propagate_corrected_task_failure(TaskId(0));
+
+    assert_eq!(
+        scheduler.graph.tasks[1].status,
+        TaskStatus::Running,
+        "an already-Running commanded_from target is out of this fix's scope"
+    );
+    assert!(
+        !actions.iter().any(
+            |a| matches!(a, SchedulerAction::Cancel { agent_handle_id } if agent_handle_id == "h1")
+        ),
+        "a Running commanded_from target must not be cancelled by this fix: {actions:?}"
     );
 }
 

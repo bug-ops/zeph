@@ -71,6 +71,7 @@ fn make_session_state() -> SessionState {
         hooks_config: HooksConfigSnapshot::default(),
         last_assistant_at: None,
         is_guest_context: false,
+        owner_key: super::persistence::DEFAULT_OWNER_KEY.to_owned(),
         caveman_active: false,
         durable_ctx: None,
         durable_subagent: false,

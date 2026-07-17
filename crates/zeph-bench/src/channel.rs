@@ -297,6 +297,7 @@ impl zeph_core::channel::Channel for BenchmarkChannel {
                     attachments: vec![],
                     is_guest_context: false,
                     is_from_bot: false,
+                    owner_key: None,
                 }))
             }
             None => Ok(None),
