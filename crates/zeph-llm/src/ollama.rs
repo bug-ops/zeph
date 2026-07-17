@@ -608,20 +608,32 @@ fn convert_message_structured(msg: &Message) -> ChatMessage {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        return ChatMessage::tool(content);
+        let tool_message = ChatMessage::tool(content);
+        // Sibling Image parts (e.g. from MCP media passthrough) must not be dropped:
+        // ollama-rs does not role-restrict ChatMessage.images, so attach them here too.
+        let images = extract_images(msg);
+        return if images.is_empty() {
+            tool_message
+        } else {
+            tool_message.with_images(images)
+        };
     }
     convert_message(msg)
 }
 
-fn convert_message(msg: &Message) -> ChatMessage {
-    let images: Vec<OllamaImage> = msg
-        .parts
+/// Collect all `MessagePart::Image` siblings from a message, base64-encoded for `ollama-rs`.
+fn extract_images(msg: &Message) -> Vec<OllamaImage> {
+    msg.parts
         .iter()
         .filter_map(|p| match p {
             MessagePart::Image(img) => Some(OllamaImage::from_base64(STANDARD.encode(&img.data))),
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+fn convert_message(msg: &Message) -> ChatMessage {
+    let images = extract_images(msg);
 
     let text = msg.to_llm_content().to_string();
 
@@ -1267,6 +1279,38 @@ mod tests {
             ollama_rs::generation::chat::MessageRole::Tool
         );
         assert_eq!(chat_msg.content, "file list");
+        assert!(chat_msg.images.is_none());
+    }
+
+    #[test]
+    fn convert_message_structured_tool_result_with_image_sibling_attaches_image() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+
+        let data = vec![0xFFu8, 0xD8, 0xFF];
+        let msg = Message::from_parts(
+            Role::User,
+            vec![
+                MessagePart::ToolResult {
+                    tool_use_id: "id1".into(),
+                    content: "file list".into(),
+                    is_error: false,
+                },
+                MessagePart::Image(Box::new(ImageData {
+                    data: data.clone(),
+                    mime_type: "image/jpeg".into(),
+                })),
+            ],
+        );
+        let chat_msg = convert_message_structured(&msg);
+        assert_eq!(
+            chat_msg.role,
+            ollama_rs::generation::chat::MessageRole::Tool
+        );
+        assert_eq!(chat_msg.content, "file list");
+        let images = chat_msg.images.expect("image sibling must be attached");
+        assert_eq!(images.len(), 1);
+        let img_debug = format!("{:?}", images[0]);
+        assert!(img_debug.contains(&STANDARD.encode(&data)));
     }
 
     #[test]

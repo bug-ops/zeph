@@ -112,6 +112,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-llm` (`ollama`): `convert_message_structured` dropped `MessagePart::Image` siblings
+  on messages carrying a `ToolResult` part — the function early-returned
+  `ChatMessage::tool(content)` built only from concatenated tool-result text, discarding any
+  validated image pushed alongside it by `emit_media_parts` (MCP image passthrough,
+  `media_passthrough = true`). The image never reached the Ollama API request (#6374).
+  `ollama-rs` does not role-restrict `ChatMessage.images`, so the tool-role message now
+  attaches the same siblings via `.with_images(...)` (mirroring the existing pattern in
+  `convert_message`) when at least one `MessagePart::Image` is present.
 - `zeph-core`: `DebugDumper::dump_tool_output` — the per-tool-call raw dump written before
   truncation/summarization, with `scrub_content`/`redact_binary_blobs` redaction applied
   (#6315) — had no reachable production call site; the only callers were `#[cfg(test)]`-gated
