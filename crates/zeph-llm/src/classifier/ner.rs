@@ -258,29 +258,43 @@ impl CandleNerClassifier {
         repo_id: &str,
         hf_token: Option<&str>,
     ) -> Result<CandleNerClassifierInner, LlmError> {
-        let api = hf_hub::api::sync::ApiBuilder::new()
-            .with_token(hf_token.map(str::to_owned))
-            .build()
-            .map_err(|e| {
-                LlmError::ModelLoad(format!("failed to create HuggingFace API client: {e}"))
-            })?;
-        let repo = api.model(repo_id.to_owned());
+        let client = match hf_token {
+            Some(token) => hf_hub::HFClientBuilder::new().token(token).build_sync(),
+            None => hf_hub::HFClientSync::new(),
+        }
+        .map_err(|e| {
+            LlmError::ModelLoad(format!("failed to create HuggingFace API client: {e}"))
+        })?;
+        let (owner, name) = hf_hub::split_id(repo_id);
+        let repo = client.model(owner, name);
 
-        let config_path = repo.get("config.json").map_err(|e| {
-            LlmError::ModelLoad(format!(
-                "failed to download config.json from {repo_id}: {e}"
-            ))
-        })?;
-        let tokenizer_path = repo.get("tokenizer.json").map_err(|e| {
-            LlmError::ModelLoad(format!(
-                "failed to download tokenizer.json from {repo_id}: {e}"
-            ))
-        })?;
-        let weights_path = repo.get("model.safetensors").map_err(|e| {
-            LlmError::ModelLoad(format!(
-                "failed to download model.safetensors from {repo_id}: {e}"
-            ))
-        })?;
+        let config_path = repo
+            .download_file()
+            .filename("config.json")
+            .send()
+            .map_err(|e| {
+                LlmError::ModelLoad(format!(
+                    "failed to download config.json from {repo_id}: {e}"
+                ))
+            })?;
+        let tokenizer_path = repo
+            .download_file()
+            .filename("tokenizer.json")
+            .send()
+            .map_err(|e| {
+                LlmError::ModelLoad(format!(
+                    "failed to download tokenizer.json from {repo_id}: {e}"
+                ))
+            })?;
+        let weights_path = repo
+            .download_file()
+            .filename("model.safetensors")
+            .send()
+            .map_err(|e| {
+                LlmError::ModelLoad(format!(
+                    "failed to download model.safetensors from {repo_id}: {e}"
+                ))
+            })?;
 
         let config_str = std::fs::read_to_string(&config_path)
             .map_err(|e| LlmError::ModelLoad(format!("failed to read DeBERTa config: {e}")))?;

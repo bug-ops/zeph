@@ -83,26 +83,36 @@ pub fn load_chat_model(
             filename,
             sha256,
         } => {
-            let api = hf_hub::api::sync::ApiBuilder::new()
-                .with_token(hf_token.map(str::to_owned))
-                .build()
-                .map_err(|e| {
-                    LlmError::ModelLoad(format!("failed to create HuggingFace API client: {e}"))
-                })?;
-            let repo = api.model(repo_id.clone());
+            let client = match hf_token {
+                Some(token) => hf_hub::HFClientBuilder::new().token(token).build_sync(),
+                None => hf_hub::HFClientSync::new(),
+            }
+            .map_err(|e| {
+                LlmError::ModelLoad(format!("failed to create HuggingFace API client: {e}"))
+            })?;
+            let (owner, name) = hf_hub::split_id(repo_id);
+            let repo = client.model(owner, name);
 
             let model_filename = filename.as_deref().unwrap_or("model.gguf");
-            let model_path = repo.get(model_filename).map_err(|e| {
-                LlmError::ModelLoad(format!(
-                    "failed to download {model_filename} from {repo_id}: {e}"
-                ))
-            })?;
+            let model_path = repo
+                .download_file()
+                .filename(model_filename)
+                .send()
+                .map_err(|e| {
+                    LlmError::ModelLoad(format!(
+                        "failed to download {model_filename} from {repo_id}: {e}"
+                    ))
+                })?;
 
-            let tokenizer_path = repo.get("tokenizer.json").map_err(|e| {
-                LlmError::ModelLoad(format!(
-                    "failed to download tokenizer.json from {repo_id}: {e}"
-                ))
-            })?;
+            let tokenizer_path = repo
+                .download_file()
+                .filename("tokenizer.json")
+                .send()
+                .map_err(|e| {
+                    LlmError::ModelLoad(format!(
+                        "failed to download tokenizer.json from {repo_id}: {e}"
+                    ))
+                })?;
 
             if let Some(expected_hash) = sha256 {
                 crate::classifier::verify_sha256(&model_path, expected_hash)?;

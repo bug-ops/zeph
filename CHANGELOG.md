@@ -100,6 +100,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-llm` (`candle` feature): migrated off `hf-hub` 0.5's `api::sync::{Api, ApiBuilder}` to
+  the 1.0 API (`HFClient`/`HFClientSync`, `split_id`, `.model(owner, name).download_file()
+  .filename(...).send()`) across all seven `HuggingFace` Hub download call sites
+  (`candle_whisper.rs`, `candle_provider/{loader,embed}.rs`,
+  `classifier/{candle,candle_pii,ner,three_class}.rs`). The 1.0 rewrite dropped the crate's
+  `tokio` and `ureq` Cargo features in favor of a single `blocking` feature gating the new
+  `*Sync` handles, so `crates/zeph-llm/Cargo.toml`'s `hf-hub` feature list was updated to
+  match — the stale `features = ["tokio", ...]` request made every workspace `cargo metadata`
+  call fail dependency resolution (`hf-hub` does not have that feature`), breaking clippy,
+  nextest archiving, rustdoc, and bundle-check CI jobs regardless of whether the `candle`
+  feature was actually enabled for a given job.
 - `.github/workflows/ci.yml`: the `ci-status` gate job did not depend on `detect-changes`
   and never checked its `result`. GitHub Actions marks every job with
   `needs: detect-changes` as `skipped` (not `failure`) when `detect-changes` itself fails,

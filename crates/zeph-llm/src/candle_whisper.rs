@@ -63,18 +63,25 @@ impl CandleWhisperProvider {
             "loading candle whisper model"
         );
 
-        let api = hf_hub::api::sync::Api::new()
+        let client = hf_hub::HFClientSync::new()
             .map_err(|e| LlmError::ModelLoad(format!("hf-hub init: {e}")))?;
-        let repo = api.model(repo_id.to_string());
+        let (owner, name) = hf_hub::split_id(repo_id);
+        let repo = client.model(owner, name);
 
         let config_path = repo
-            .get("config.json")
+            .download_file()
+            .filename("config.json")
+            .send()
             .map_err(|e| LlmError::ModelLoad(format!("config.json: {e}")))?;
         let tokenizer_path = repo
-            .get("tokenizer.json")
+            .download_file()
+            .filename("tokenizer.json")
+            .send()
             .map_err(|e| LlmError::ModelLoad(format!("tokenizer.json: {e}")))?;
         let weights_path = repo
-            .get("model.safetensors")
+            .download_file()
+            .filename("model.safetensors")
+            .send()
             .map_err(|e| LlmError::ModelLoad(format!("model.safetensors: {e}")))?;
 
         if let Some(expected_hash) = expected_sha256 {

@@ -35,7 +35,7 @@ eventsource-stream.workspace = true
 futures.workspace = true
 futures-core.workspace = true
 hex = { workspace = true, optional = true }
-hf-hub = { workspace = true, optional = true, features = ["tokio", "rustls-tls", "ureq"] }
+hf-hub = { workspace = true, optional = true, features = ["blocking", "rustls-tls"] }
 k256 = { workspace = true, optional = true, features = ["ecdsa", "std", "sha256"] }
 ollama-rs = { workspace = true, features = ["rustls", "stream"] }
 parking_lot.workspace = true
