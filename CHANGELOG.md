@@ -100,6 +100,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: `DebugDumper::dump_tool_output` — the per-tool-call raw dump written before
+  truncation/summarization, with `scrub_content`/`redact_binary_blobs` redaction applied
+  (#6315) — had no reachable production call site; the only callers were `#[cfg(test)]`-gated
+  legacy functions (`process_successful_tool_output`, `handle_confirmation_required`) that are
+  no longer part of the real tool-result path (#6364). `process_one_tool_result`
+  (`tool_execution/tool_result.rs`) now calls `dump_tool_output` for every non-error result,
+  after classification but before `maybe_summarize_tool_output` truncates or summarizes it, so
+  debug dumps capture a blob that would otherwise be summarized away before it ever reaches
+  message history. Since `handle_confirmation_phase` resolves confirmation-required tool calls
+  into the same `tool_results` batch that `process_one_tool_result` processes, the
+  confirmation-required path is covered by the same call site with no extra wiring needed. The
+  legacy `#[cfg(test)]`-only functions remain test-only scaffolding (retained to exercise
+  `sanitize_tool_output`/`maybe_summarize_tool_output` via a simpler single-call harness) and
+  are now documented as such.
 - `zeph-llm` (`candle` feature): migrated off `hf-hub` 0.5's `api::sync::{Api, ApiBuilder}` to
   the 1.0 API (`HFClient`/`HFClientSync`, `split_id`, `.model(owner, name).download_file()
   .filename(...).send()`) across all seven `HuggingFace` Hub download call sites

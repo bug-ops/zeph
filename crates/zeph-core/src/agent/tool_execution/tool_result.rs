@@ -197,6 +197,25 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Writes the raw, pre-summarization tool output to the debug dump directory, so a blob
+    /// that later gets truncated or summarized away is still recoverable (#6364). No-op when
+    /// debug dumps are disabled or the result was an error (errors go through
+    /// `dump_tool_error` in `classify_tool_result` instead).
+    fn dump_raw_tool_output(&self, tool_name: &str, is_error: bool, output: &str) {
+        if is_error {
+            return;
+        }
+        let Some(ref d) = self.runtime.debug.debug_dumper else {
+            return;
+        };
+        let dump_content = if self.services.security.pii_filter.is_enabled() {
+            self.services.security.pii_filter.scrub(output).into_owned()
+        } else {
+            output.to_owned()
+        };
+        d.dump_tool_output(tool_name, &dump_content);
+    }
+
     fn handle_tool_failure_outcomes(
         &mut self,
         output: &str,
@@ -412,6 +431,8 @@ impl<C: Channel> Agent<C> {
         );
         let _ = self.record_anomaly_outcome(anomaly_outcome).await;
 
+        self.dump_raw_tool_output(tc.name.as_str(), is_error, &output);
+
         let processed = if tc.name == OverflowToolExecutor::TOOL_NAME {
             output.clone()
         } else {
@@ -621,6 +642,12 @@ impl<C: Channel> Agent<C> {
             .insert(skill_name, tool_name.to_owned());
     }
 
+    // Legacy sequential-dispatch harness, superseded in production by
+    // `process_one_tool_result`/`handle_confirmation_phase` (tier_loop.rs), which processes
+    // every tool result — including confirmation-resolved ones — through the same batched path.
+    // Retained `#[cfg(test)]`-only to keep exercising `sanitize_tool_output`/
+    // `maybe_summarize_tool_output`/`dump_tool_output` via a simpler single-call harness; not
+    // dead in the sense of untested, but unreachable from any production call site (#6364).
     #[cfg(test)]
     pub(super) async fn handle_tool_result(
         &mut self,
@@ -727,6 +754,9 @@ impl<C: Channel> Agent<C> {
         Ok(false)
     }
 
+    // This function's `dump_tool_output` call below is one of the two legacy sites whose
+    // green `#[cfg(test)]` coverage gave false confidence that `dump_tool_output` was reachable
+    // in production — it wasn't (#6364). See the retention note above `handle_tool_result`.
     #[cfg(test)]
     async fn process_successful_tool_output(
         &mut self,
@@ -828,6 +858,9 @@ impl<C: Channel> Agent<C> {
         Ok(true)
     }
 
+    // This function's `dump_tool_output` call below is the other legacy site whose green
+    // `#[cfg(test)]` coverage gave false confidence that `dump_tool_output` was reachable in
+    // production — it wasn't (#6364). See the retention note above `handle_tool_result`.
     #[cfg(test)]
     async fn handle_confirmation_required(
         &mut self,

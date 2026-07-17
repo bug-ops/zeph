@@ -3,6 +3,7 @@
 
 mod apply_tier_results_tests;
 mod boundary_and_classifier_tests;
+mod dump_raw_tool_output_tests;
 mod focus_tests;
 mod hook_block_cap_tests;
 mod mage_escalation_tests;
