@@ -195,12 +195,16 @@ struct SessionMetadataResponse {
 /// Returns `404` only when the session is neither live nor known to `SessionStore` — a session
 /// that was created, then its actor ended (idle eviction, explicit delete, or process restart),
 /// still returns its metadata with `live: false`, since the durable log allows it to be resumed.
+///
+/// Returns `400` if `id` is empty or contains a path separator, `..`, or a NUL byte — `id` is
+/// caller-supplied and gets joined onto a filesystem path downstream, so it is validated via
+/// [`SessionId::try_new`] rather than the trusted-input [`SessionId::new`].
 #[tracing::instrument(name = "serve.handlers.get_session", skip_all, level = "debug", fields(session_id = %id))]
 pub(super) async fn get_session_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let session_id = SessionId::new(id);
+    let session_id = SessionId::try_new(id).map_err(|_| StatusCode::BAD_REQUEST)?;
     let live = state.registry.get(&session_id).is_some();
 
     let store = zeph_session::SessionStore::new(state.deps.memory.sqlite().pool().clone());
@@ -226,13 +230,17 @@ pub(super) async fn get_session_handler(
 /// its own [`zeph_core::serve::SessionActorHandle::cancel`] token — the same mechanism
 /// `serve.evict` uses for idle eviction, just caller-initiated instead of TTL-triggered.
 ///
-/// Returns `404` if the session is not currently live (already ended, or never existed).
+/// Returns `404` if the session is not currently live (already ended, or never existed), or `400`
+/// if `id` is empty or contains a path separator, `..`, or a NUL byte (see
+/// [`get_session_handler`] for why this handler validates via [`SessionId::try_new`]).
 #[tracing::instrument(name = "serve.handlers.delete_session", skip_all, level = "info", fields(session_id = %id))]
 pub(super) async fn delete_session_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> StatusCode {
-    let session_id = SessionId::new(id);
+    let Ok(session_id) = SessionId::try_new(id) else {
+        return StatusCode::BAD_REQUEST;
+    };
     match state.registry.remove(&session_id) {
         Some(handle) => {
             handle.cancel.cancel();
@@ -266,16 +274,20 @@ pub(super) struct PromptRequest {
 /// `src/gateway_spawn.rs::forward_webhooks`) and A2A messages (`A2aMessage`,
 /// `src/daemon.rs::AgentTaskProcessor::process`) (#5474).
 ///
-/// Returns `202 Accepted` once queued, `404` if the session is neither live nor durably known
-/// (or reactivation failed — see [`reactivate_session`], D-12), or `410 Gone` if the session's
-/// mailbox has already closed (actor exiting/exited between the registry lookup and the send).
+/// Returns `202 Accepted` once queued, `400` if `id` is empty or contains a path separator, `..`,
+/// or a NUL byte (see [`get_session_handler`]), `404` if the session is neither live nor durably
+/// known (or reactivation failed — see [`reactivate_session`], D-12), or `410 Gone` if the
+/// session's mailbox has already closed (actor exiting/exited between the registry lookup and the
+/// send).
 #[tracing::instrument(name = "serve.handlers.prompt_session", skip_all, level = "info", fields(session_id = %id))]
 pub(super) async fn prompt_session_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(body): Json<PromptRequest>,
 ) -> StatusCode {
-    let session_id = SessionId::new(id);
+    let Ok(session_id) = SessionId::try_new(id) else {
+        return StatusCode::BAD_REQUEST;
+    };
     let Some(handle) = Box::pin(
         state
             .registry
@@ -322,14 +334,15 @@ pub(super) async fn prompt_session_handler(
 /// dropped rather than the connection closed — the durable event log (when `[session] enabled =
 /// true`) is the source of truth for anything a lagged subscriber missed.
 ///
-/// Returns `404` if the session is neither live nor durably known (or reactivation failed — see
-/// [`reactivate_session`], D-12).
+/// Returns `400` if `id` is empty or contains a path separator, `..`, or a NUL byte (see
+/// [`get_session_handler`]), or `404` if the session is neither live nor durably known (or
+/// reactivation failed — see [`reactivate_session`], D-12).
 #[tracing::instrument(name = "serve.handlers.events_session", skip_all, level = "info", fields(session_id = %id))]
 pub(super) async fn events_session_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
-    let session_id = SessionId::new(id);
+    let session_id = SessionId::try_new(id).map_err(|_| StatusCode::BAD_REQUEST)?;
     let Some(handle) = Box::pin(
         state
             .registry
@@ -376,7 +389,8 @@ struct ForkSessionResponse {
 ///
 /// Returns `404` if the source session has no durable log (`ForkEngine::fork`'s
 /// `SessionError::NotFound`), `400` if `at_seq` exceeds the source log's event count
-/// (`SessionError::InvalidForkPoint`), or `503` when `[serve] max_sessions` is already reached
+/// (`SessionError::InvalidForkPoint`) or `id` is empty/contains a path separator, `..`, or a NUL
+/// byte (see [`get_session_handler`]), or `503` when `[serve] max_sessions` is already reached
 /// (the child is a new live session, counted the same as any other).
 #[tracing::instrument(name = "serve.handlers.fork_session", skip_all, level = "info", fields(session_id = %id))]
 pub(super) async fn fork_session_handler(
@@ -392,7 +406,7 @@ pub(super) async fn fork_session_handler(
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    let src_id = SessionId::new(id);
+    let src_id = SessionId::try_new(id).map_err(|_| StatusCode::BAD_REQUEST)?;
     let new_id = SessionId::generate();
     let data_dir = PathBuf::from(&state.deps.session_persistence_config.data_dir);
     let store = zeph_session::SessionStore::new(state.deps.memory.sqlite().pool().clone());
@@ -738,5 +752,60 @@ mod tests {
         ))
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// #6349: `id` is caller-supplied and gets joined onto a filesystem path downstream
+    /// (`zeph_session::session_dir`), so every handler must reject a path-traversal id with `400`
+    /// rather than silently accepting it via `SessionId::new`.
+    #[tokio::test]
+    async fn prompt_session_handler_rejects_path_traversal_id() {
+        let state = make_state().await;
+
+        let status = Box::pin(prompt_session_handler(
+            State(state),
+            Path("../../etc/passwd".to_owned()),
+            Json(PromptRequest {
+                text: "hello".to_owned(),
+            }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn get_session_handler_rejects_path_traversal_id() {
+        let state = make_state().await;
+
+        let result = Box::pin(get_session_handler(
+            State(state),
+            Path("../evil".to_owned()),
+        ))
+        .await;
+        assert_eq!(result.err(), Some(StatusCode::BAD_REQUEST));
+    }
+
+    #[tokio::test]
+    async fn delete_session_handler_rejects_path_traversal_id() {
+        let state = make_state().await;
+
+        let status = Box::pin(delete_session_handler(
+            State(state),
+            Path("foo/../bar".to_owned()),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn fork_session_handler_rejects_path_traversal_id() {
+        let state = make_state().await;
+
+        let result = Box::pin(fork_session_handler(
+            State(state),
+            Path("foo\\bar".to_owned()),
+            Json(ForkRequest::default()),
+        ))
+        .await;
+        assert_eq!(result.err(), Some(StatusCode::BAD_REQUEST));
     }
 }

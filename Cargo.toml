@@ -217,6 +217,11 @@ linker_messages = "allow"
 [workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
+# #6355: holding a lock guard across an `.await` point risks deadlocks (another task
+# needing the same lock stalls the executor) and, per CLAUDE.md's Await Discipline rule,
+# is disallowed on any hot path. Verified zero hits workspace-wide before enabling
+# (`cargo clippy --workspace --all-targets --features "desktop,ide,server,chat,pdf,scheduler,testing" -- -W clippy::await_holding_lock`).
+await_holding_lock = "warn"
 
 [package]
 name = "zeph"

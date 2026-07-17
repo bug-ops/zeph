@@ -36,6 +36,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use parking_lot::RwLock;
+use rand::TryRng;
+use rand::rngs::SysRng;
 
 /// Minimum byte length a secret value must have to be registered for masking.
 ///
@@ -148,6 +150,11 @@ impl std::fmt::Debug for SecretMaskRegistry {
 impl SecretMaskRegistry {
     /// Create a new registry with a freshly generated session nonce.
     ///
+    /// # Panics
+    ///
+    /// Panics if the OS entropy source is unavailable to seed the nonce — this would
+    /// indicate a broken host environment, not a recoverable application error.
+    ///
     /// # Examples
     ///
     /// ```rust
@@ -159,7 +166,11 @@ impl SecretMaskRegistry {
     /// ```
     #[must_use]
     pub fn new() -> Self {
-        let nonce: u64 = rand::random();
+        // Explicit OS-backed CSPRNG, rather than `rand::random`'s default thread-local
+        // generator, so the nonce's unguessability requirement is self-evident here.
+        let nonce: u64 = SysRng
+            .try_next_u64()
+            .expect("OS entropy source must be available to generate the secret-mask nonce");
         let nonce = format!("{nonce:016x}");
         Self {
             forward: RwLock::new(HashMap::new()),

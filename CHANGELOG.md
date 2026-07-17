@@ -276,6 +276,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **zeph-common** / **zeph-sanitizer**: three defense-in-depth hardening fixes, none of which
+  are exploitable today (#6349).
+  - `SessionId` gained a validating constructor, `SessionId::try_new`, that rejects an empty
+    string and any string containing `/`, `\`, a `..` segment, or a NUL byte — the characters
+    that could let a session id escape its intended directory once joined onto a filesystem
+    path by `zeph_session::session_dir`. Every HTTP handler in `src/serve/handlers.rs` that
+    takes a session id from the URL path (`GET`/`DELETE /sessions/:id`, `POST
+    /sessions/:id/prompt`, `GET /sessions/:id/events`, `POST /sessions/:id/fork`) now
+    validates via `try_new` and returns `400` on rejection, instead of `SessionId::new`'s
+    unconditional accept. `SessionId::new` itself is unchanged and remains the constructor for
+    trusted call sites (internal generation, test fixtures, already-validated round-trips).
+  - `SecretMaskRegistry::new` now draws its per-registry nonce from `rand::rngs::SysRng` (the
+    explicit OS-backed CSPRNG), rather than `rand::random()`'s default thread-local generator,
+    so the nonce's unguessability requirement is self-evident at the call site.
+  - `src/main.rs`'s doc comment claiming "all unsafe code in the project is confined to this
+    module" was stale — corrected to acknowledge the other, already `// SAFETY:`-documented
+    `unsafe` blocks in `zeph-llm`'s candle-backed embedders/classifiers and `src/runner.rs`.
+
+- Enabled `clippy::await_holding_lock` workspace-wide via `[workspace.lints.clippy]` (#6355),
+  after verifying zero hits across every crate and feature combination used by CI. Holding a
+  lock guard across an `.await` point risks a deadlock (another task needing the same lock
+  stalls the executor) and is already disallowed on hot paths by this project's Await
+  Discipline convention — the new lint now enforces it at compile time instead of relying
+  solely on code review.
+
 - **zeph-core**: the debug dump writer (`crates/zeph-core/src/debug_dump/mod.rs`) now redacts
   text before writing it to disk instead of writing it raw (#6315). `dump_tool_output`,
   `dump_response`, `dump_tool_error`, and `dump_focus_knowledge` call the existing

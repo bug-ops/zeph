@@ -17,6 +17,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 /// Generates an `Arc<str>`-backed newtype with the shared trait surface used by
 /// `ToolName`, `ProviderName`, and `SkillName`: `Default`, `Display`, `AsRef<str>`,
@@ -374,6 +375,14 @@ arc_str_newtype!(
 /// [`SessionId::generate`] time; [`SessionId::new`] accepts any non-empty string for
 /// flexibility in test fixtures.
 ///
+/// Session IDs are joined onto a filesystem path by `zeph_session::session_dir`, so a
+/// string containing `/`, `\`, `..`, or a NUL byte could in principle escape the
+/// intended session directory. Every call site in this codebase constructs `SessionId`
+/// from either [`SessionId::generate`]'s own UUID output or a value already gated by a
+/// registry/`SessionStore` lookup, so this is not exploitable today — but callers that
+/// accept a session id from an untrusted boundary (e.g. an HTTP path parameter) should
+/// use [`SessionId::try_new`] instead, which rejects those characters up front.
+///
 /// # Serialization
 ///
 /// `SessionId` uses `#[serde(transparent)]` — it serializes as a plain JSON string
@@ -402,12 +411,29 @@ arc_str_newtype!(
 #[serde(transparent)]
 pub struct SessionId(String);
 
+/// Rejection reasons for [`SessionId::try_new`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum SessionIdError {
+    /// The candidate string was empty.
+    #[error("session id must not be empty")]
+    Empty,
+    /// The candidate string contains a path separator (`/` or `\`), a `..` traversal
+    /// segment, or a NUL byte — any of which could escape the intended directory when
+    /// joined onto a filesystem path by `zeph_session::session_dir`.
+    #[error("session id must not contain path separators, '..', or NUL bytes")]
+    UnsafeCharacters,
+}
+
 impl SessionId {
     /// Create a `SessionId` from any non-empty string.
     ///
     /// Accepts UUID strings (production), readable names (tests), or any other
     /// non-empty value. In debug builds, an empty string triggers a `debug_assert!`
     /// to catch accidental construction early.
+    ///
+    /// This constructor is for **trusted** call sites only — internal generation,
+    /// test fixtures, and values already validated by a prior registry/store lookup.
+    /// For a string coming from an untrusted boundary, use [`SessionId::try_new`].
     ///
     /// # Panics
     ///
@@ -425,6 +451,41 @@ impl SessionId {
         let s = s.into();
         debug_assert!(!s.is_empty(), "SessionId must not be empty");
         Self(s)
+    }
+
+    /// Create a `SessionId` from a string, rejecting values unsafe for filesystem use.
+    ///
+    /// Rejects an empty string, and any string containing `/`, `\`, a `..` segment, or
+    /// a NUL byte — the characters that could let a `SessionId` escape its intended
+    /// directory once joined by `zeph_session::session_dir`. Use this constructor
+    /// whenever the candidate string originates from an untrusted boundary (e.g. an
+    /// HTTP path parameter or another externally-supplied identifier).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionIdError::Empty`] if `s` is empty, or
+    /// [`SessionIdError::UnsafeCharacters`] if `s` contains `/`, `\`, `..`, or a NUL byte.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::{SessionId, SessionIdError};
+    ///
+    /// let id = SessionId::try_new("a1b2c3d4-e5f6-7890-abcd-ef1234567890").unwrap();
+    /// assert_eq!(id.as_str(), "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+    ///
+    /// assert_eq!(SessionId::try_new("../etc/passwd"), Err(SessionIdError::UnsafeCharacters));
+    /// assert_eq!(SessionId::try_new(""), Err(SessionIdError::Empty));
+    /// ```
+    pub fn try_new(s: impl Into<String>) -> Result<Self, SessionIdError> {
+        let s = s.into();
+        if s.is_empty() {
+            return Err(SessionIdError::Empty);
+        }
+        if s.contains('/') || s.contains('\\') || s.contains("..") || s.contains('\0') {
+            return Err(SessionIdError::UnsafeCharacters);
+        }
+        Ok(Self(s))
     }
 
     /// Generate a new session ID backed by a random UUID v4.
@@ -722,6 +783,59 @@ mod tests {
     fn session_id_from_str_parses() {
         let id: SessionId = "my-session".parse().unwrap();
         assert_eq!(id.as_str(), "my-session");
+    }
+
+    #[test]
+    fn session_id_try_new_accepts_valid_uuid() {
+        let id = SessionId::try_new(uuid::Uuid::new_v4().to_string()).unwrap();
+        assert_eq!(id.as_str().len(), 36);
+    }
+
+    #[test]
+    fn session_id_try_new_accepts_plain_string() {
+        let id = SessionId::try_new("sess-abc123").unwrap();
+        assert_eq!(id.as_str(), "sess-abc123");
+    }
+
+    #[test]
+    fn session_id_try_new_rejects_empty() {
+        assert_eq!(SessionId::try_new(""), Err(SessionIdError::Empty));
+    }
+
+    #[test]
+    fn session_id_try_new_rejects_path_traversal() {
+        assert_eq!(
+            SessionId::try_new("../../etc/passwd"),
+            Err(SessionIdError::UnsafeCharacters)
+        );
+        assert_eq!(
+            SessionId::try_new("foo/../bar"),
+            Err(SessionIdError::UnsafeCharacters)
+        );
+    }
+
+    #[test]
+    fn session_id_try_new_rejects_forward_slash() {
+        assert_eq!(
+            SessionId::try_new("foo/bar"),
+            Err(SessionIdError::UnsafeCharacters)
+        );
+    }
+
+    #[test]
+    fn session_id_try_new_rejects_backslash() {
+        assert_eq!(
+            SessionId::try_new("foo\\bar"),
+            Err(SessionIdError::UnsafeCharacters)
+        );
+    }
+
+    #[test]
+    fn session_id_try_new_rejects_nul_byte() {
+        assert_eq!(
+            SessionId::try_new("foo\0bar"),
+            Err(SessionIdError::UnsafeCharacters)
+        );
     }
 
     #[test]
