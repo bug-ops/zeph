@@ -624,6 +624,7 @@ mod run_inline_timeout {
         });
         node0.recovery = Some(zeph_orchestration::RecoveryAction {
             state_injection: Some("recovered output".to_string()),
+            route_to: None,
         });
         let mut node1 = TaskNode::new(1, "dependent task", "consume the recovered output");
         node1.depends_on = vec![zeph_orchestration::TaskId(0)];

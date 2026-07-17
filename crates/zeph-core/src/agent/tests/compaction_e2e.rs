@@ -1593,6 +1593,74 @@ async fn finalize_plan_execution_recovery_derived_task_counted_in_tasks_complete
     );
 }
 
+/// D3 (spec-075 FR-D-01): on a `Completed` graph, a terminal-`Failed` task can only be a
+/// Mode-2 rerouted source (Mode-1 relabels Failed -> Completed, Skip relabels Failed ->
+/// Skipped, Abort/retry-exhausted-without-reroute sets the graph `Failed`, not `Completed`).
+/// `finalize_plan_completed` must tally it into `tasks_failed` so it is metric-visible
+/// without touching its status semantics (grounding/aggregator must keep ignoring it --
+/// see the Completed-only filters this deliberately does not disturb).
+#[cfg(feature = "scheduler")]
+#[tokio::test]
+async fn finalize_plan_execution_completed_graph_tallies_rerouted_failed_source() {
+    use zeph_subagent::SubAgentManager;
+
+    let provider = mock_provider(vec!["synthesis".into()]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let (tx, rx) = watch::channel(MetricsSnapshot::default());
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_metrics(tx);
+    agent.services.orchestration.orchestration_config.enabled = true;
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+
+    let mut graph = TaskGraph::new("route_to finalize test");
+
+    // The rerouted source: stays terminal Failed even though the graph completes.
+    let mut source = TaskNode::new(0, "task-source", "desc");
+    source.status = TaskStatus::Failed;
+    source.result = Some(TaskResult {
+        output: "boom: connection refused".into(),
+        artifacts: vec![],
+        duration_ms: 0,
+        agent_id: None,
+        agent_def: None,
+    });
+    graph.tasks.push(source);
+
+    // The activated fallback: ran to completion.
+    let mut fallback = TaskNode::new(1, "task-fallback", "desc");
+    fallback.status = TaskStatus::Completed;
+    fallback.routed_from = Some(zeph_orchestration::TaskId(0));
+    fallback.result = Some(TaskResult {
+        output: "fallback output".into(),
+        artifacts: vec![],
+        duration_ms: 5,
+        agent_id: None,
+        agent_def: None,
+    });
+    graph.tasks.push(fallback);
+
+    graph.status = GraphStatus::Completed;
+
+    agent
+        .finalize_plan_execution(graph, GraphStatus::Completed)
+        .await
+        .unwrap();
+
+    let snapshot = rx.borrow().clone();
+    assert_eq!(
+        snapshot.orchestration.tasks_failed, 1,
+        "the rerouted source must be tallied into tasks_failed even on a Completed graph; \
+         got: {}",
+        snapshot.orchestration.tasks_failed
+    );
+    assert_eq!(
+        snapshot.orchestration.tasks_completed, 1,
+        "the activated fallback must still be tallied into tasks_completed; got: {}",
+        snapshot.orchestration.tasks_completed
+    );
+}
+
 /// Regression for #1879: mixed failure — some tasks failed, some canceled.
 /// Message must say "Plan failed. X/M tasks failed, Y canceled:" (not misleading).
 #[cfg(feature = "scheduler")]

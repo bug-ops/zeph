@@ -54,11 +54,15 @@ impl DagScheduler {
         self.max_parallel = self.topology.max_parallel;
         self.topology_dirty = false;
         if self.topology.strategy == DispatchStrategy::LevelBarrier {
+            // D4 (spec-075 FR-D-01): a Dormant route_to fallback is parked, not
+            // blocking — exclude it from the min-active-depth floor, else a Dormant
+            // node at a shallow depth pulls `current_level` back down after every
+            // `inject_tasks` and re-serializes levels the barrier already passed.
             let min_active = self
                 .graph
                 .tasks
                 .iter()
-                .filter(|t| !t.status.is_terminal())
+                .filter(|t| !t.status.is_terminal() && t.status != TaskStatus::Dormant)
                 .filter_map(|t| self.topology.depths.get(&t.id).copied())
                 .min();
             if let Some(min_depth) = min_active {
@@ -68,6 +72,17 @@ impl DagScheduler {
     }
 
     /// Advance the `LevelBarrier` level when all tasks at the current level are terminal.
+    ///
+    /// A [`TaskStatus::Dormant`] task is treated as parked/non-blocking here (D4,
+    /// spec-075 FR-D-01): `validate` forces a `route_to` target to depth 0
+    /// (`depends_on.is_empty()`), and without this the barrier would never advance past
+    /// a still-Dormant fallback sitting at level 0 while its (deeper) source is still
+    /// running — a silent livelock invisible to the deadlock detector, since the
+    /// gated-but-ready source never shows `ready_tasks()` as empty.
+    /// [`super::DagScheduler::check_graph_completion`]'s `resolve_dormant_after_terminal`
+    /// sweep is what eventually resolves a Dormant node still parked at graph
+    /// completion time — this predicate only keeps the barrier itself from stalling on
+    /// one before that sweep runs.
     pub(super) fn advance_level_barrier_if_needed(&mut self) {
         if self.topology.strategy != DispatchStrategy::LevelBarrier {
             return;
@@ -79,7 +94,9 @@ impl DagScheduler {
                 .get(&t.id)
                 .copied()
                 .unwrap_or(usize::MAX);
-            task_depth != self.current_level || t.status.is_terminal()
+            task_depth != self.current_level
+                || t.status.is_terminal()
+                || t.status == TaskStatus::Dormant
         });
         if all_current_level_terminal {
             let max_depth = self.topology.depth;
@@ -91,7 +108,9 @@ impl DagScheduler {
                         .get(&t.id)
                         .copied()
                         .unwrap_or(usize::MAX);
-                    d == self.current_level && !t.status.is_terminal()
+                    d == self.current_level
+                        && !t.status.is_terminal()
+                        && t.status != TaskStatus::Dormant
                 });
                 if has_non_terminal {
                     break;
@@ -111,6 +130,24 @@ impl DagScheduler {
             .count();
         if running_in_graph_now != 0 || !self.running.is_empty() {
             return vec![];
+        }
+
+        // Mode-2 completion-time resolution sweep (spec-075 FR-D-01): must run BEFORE
+        // the `all_terminal`/deadlock checks below. A still-Dormant route_to fallback
+        // is non-terminal and excluded from `ready_tasks()`, so without this sweep a
+        // successful plan carrying an untriggered fallback would be misreported as a
+        // scheduler deadlock. This is the quiescent-tick chokepoint: it runs whenever
+        // `check_graph_completion` is reached with no Running tasks, covering every way
+        // a route_to source can terminalize without rerouting (success, upstream-skip,
+        // cancel) in one place. NOTE: this sweep does NOT run on the Abort/retry-
+        // exhausted `graph.status = Failed` path — `tick()` returns before reaching
+        // `check_graph_completion` on that path, so a Dormant fallback can persist into
+        // a Failed graph. That is acceptable: `/plan retry` (`dag::reset_for_retry`)
+        // re-arms it if its source is reset, or this sweep resolves it once the
+        // retried graph heads to Completed.
+        if !dag::resolve_dormant_after_terminal(&mut self.graph, &self.topology.rev_adj).is_empty()
+        {
+            self.graph_dirty = true;
         }
         let all_terminal = self.graph.tasks.iter().all(|t| t.status.is_terminal());
         if all_terminal {
@@ -416,6 +453,218 @@ mod tests {
 
         scheduler.tick();
         assert_eq!(scheduler.current_level, 1);
+    }
+
+    // --- Mode-2 route_to LevelBarrier tests (D4, spec-075 FR-D-01) ---
+    //
+    // A(0, depth0) -> B(1, depth1, route_to=F(2)). F(2, depth0, fallback, depends_on=[]).
+    // `validate` forces a route_to target's `depends_on` empty, so F is always a graph
+    // root — this graph naturally classifies as `Mixed` (two roots), not `Hierarchical`.
+    // The LevelBarrier strategy and per-task depths are forced manually below (same
+    // override pattern as `current_level` elsewhere in this file) to exercise the D4
+    // barrier-parking predicates against a route_to source sitting deeper than its
+    // depth-0 fallback — the exact shape the critic confirmed hangs without the fix.
+
+    fn make_route_to_level_barrier_graph() -> crate::graph::TaskGraph {
+        let mut g = graph_from_nodes(vec![
+            make_node(0, &[]),
+            make_node(1, &[0]),
+            make_node(2, &[]),
+        ]);
+        g.tasks[1].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: None,
+            route_to: Some(crate::graph::TaskId(2)),
+        });
+        g
+    }
+
+    fn force_level_barrier_with_route_to_depths(scheduler: &mut DagScheduler) {
+        use crate::graph::TaskId;
+        use crate::topology::{DispatchStrategy, build_rev_adj};
+        scheduler.topology.strategy = DispatchStrategy::LevelBarrier;
+        scheduler.topology.depth = 1;
+        scheduler.topology.depths = [(TaskId(0), 0), (TaskId(1), 1), (TaskId(2), 0)]
+            .into_iter()
+            .collect();
+        scheduler.topology.rev_adj = build_rev_adj(&scheduler.graph.tasks);
+        scheduler.current_level = 0;
+    }
+
+    #[test]
+    fn test_level_barrier_route_to_source_succeeds_dormant_fallback_resolves_without_hang() {
+        use crate::graph::TaskId;
+
+        let graph = make_route_to_level_barrier_graph();
+        let config = zeph_config::OrchestrationConfig {
+            topology_selection: true,
+            max_parallel: 4,
+            ..make_config()
+        };
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            scheduler.graph.tasks[2].status,
+            TaskStatus::Dormant,
+            "F must start Dormant"
+        );
+
+        force_level_barrier_with_route_to_depths(&mut scheduler);
+
+        // Tick 1: only A (depth 0) dispatches. Dormant F sits at depth 0 too but must
+        // not block dispatch or the barrier's advancement predicate.
+        let actions = scheduler.tick();
+        let spawned: Vec<_> = actions
+            .iter()
+            .filter_map(|a| {
+                if let SchedulerAction::Spawn { task_id, .. } = a {
+                    Some(*task_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(spawned, vec![TaskId(0)]);
+
+        scheduler.graph.tasks[0].status = TaskStatus::Completed;
+        scheduler.running.clear();
+
+        // Tick 2: before the D4 fix, the still-Dormant F at level 0 would prevent the
+        // barrier from ever advancing, so B (depth 1) would never dispatch, never fail,
+        // and route_to would never fire -- a silent livelock invisible to the deadlock
+        // detector (ready_tasks() is non-empty: B is ready but level-gated).
+        let actions2 = scheduler.tick();
+        assert_eq!(
+            scheduler.current_level, 1,
+            "barrier must advance past level 0 despite the Dormant F sitting there"
+        );
+        let spawned2: Vec<_> = actions2
+            .iter()
+            .filter_map(|a| {
+                if let SchedulerAction::Spawn { task_id, .. } = a {
+                    Some(*task_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            spawned2,
+            vec![TaskId(1)],
+            "B must dispatch once the barrier advances"
+        );
+
+        // B completes without ever failing -> route_to never fires; F must resolve via
+        // the completion-time sweep rather than strand the graph.
+        scheduler.graph.tasks[1].status = TaskStatus::Completed;
+        scheduler.running.clear();
+
+        let actions3 = scheduler.tick();
+        assert_eq!(
+            scheduler.graph.tasks[2].status,
+            TaskStatus::Skipped,
+            "untriggered fallback must resolve Skipped via the completion sweep"
+        );
+        assert!(
+            actions3.iter().any(|a| matches!(
+                a,
+                SchedulerAction::Done {
+                    status: crate::graph::GraphStatus::Completed
+                }
+            )),
+            "graph must complete, not deadlock, once the fallback resolves: {actions3:?}"
+        );
+    }
+
+    #[test]
+    fn test_level_barrier_route_to_source_fails_fallback_activates_out_of_level() {
+        use crate::graph::TaskId;
+        use crate::scheduler::{RunningTask, TaskEvent, TaskOutcome};
+
+        let graph = make_route_to_level_barrier_graph();
+        let config = zeph_config::OrchestrationConfig {
+            topology_selection: true,
+            max_parallel: 4,
+            ..make_config()
+        };
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+            None,
+        )
+        .unwrap();
+
+        force_level_barrier_with_route_to_depths(&mut scheduler);
+
+        // Advance to level 1: A dispatches and completes, B dispatches.
+        scheduler.tick();
+        scheduler.graph.tasks[0].status = TaskStatus::Completed;
+        scheduler.running.clear();
+        scheduler.tick();
+        assert_eq!(scheduler.current_level, 1);
+        assert_eq!(scheduler.graph.tasks[1].status, TaskStatus::Running);
+
+        // B fails terminally.
+        scheduler.running.insert(
+            TaskId(1),
+            RunningTask {
+                agent_handle_id: "h1".to_string(),
+                agent_def_name: "worker".to_string(),
+                started_at: std::time::Instant::now(),
+                admission_permit: None,
+            },
+        );
+        scheduler.buffered_events.push_back(TaskEvent {
+            task_id: TaskId(1),
+            agent_handle_id: "h1".to_string(),
+            outcome: TaskOutcome::Failed {
+                error: "simulated failure".to_string(),
+            },
+        });
+
+        // Tick: try_reroute activates F (Dormant -> Ready, routed_from = Some(B)); F
+        // must dispatch on this same tick, bypassing the depth-0-vs-current_level(1+)
+        // gate rather than waiting for the barrier to wind back down to level 0.
+        let actions = scheduler.tick();
+        assert_eq!(scheduler.graph.tasks[1].status, TaskStatus::Failed);
+        assert_eq!(scheduler.graph.tasks[2].status, TaskStatus::Running);
+        assert_eq!(
+            scheduler.graph.tasks[2].routed_from,
+            Some(TaskId(1)),
+            "activated fallback must record its source"
+        );
+        assert!(
+            actions.iter().any(
+                |a| matches!(a, SchedulerAction::Spawn { task_id, .. } if *task_id == TaskId(2))
+            ),
+            "F must dispatch out-of-level on the same tick it is activated: {actions:?}"
+        );
+        assert_eq!(
+            scheduler.graph.status,
+            crate::graph::GraphStatus::Running,
+            "graph must stay Running -- the failure was absorbed by the reroute"
+        );
+
+        // F completes -> graph reaches Completed with B terminal-Failed alongside it.
+        scheduler.graph.tasks[2].status = TaskStatus::Completed;
+        scheduler.running.clear();
+        let actions2 = scheduler.tick();
+        assert!(
+            actions2.iter().any(|a| matches!(
+                a,
+                SchedulerAction::Done {
+                    status: crate::graph::GraphStatus::Completed
+                }
+            )),
+            "graph must complete once the activated fallback finishes: {actions2:?}"
+        );
     }
 
     #[test]

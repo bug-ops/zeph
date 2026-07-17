@@ -381,11 +381,11 @@ impl DagScheduler {
 
         graph.status = GraphStatus::Running;
 
-        for task in &mut graph.tasks {
-            if task.depends_on.is_empty() && task.status == TaskStatus::Pending {
-                task.status = TaskStatus::Ready;
-            }
-        }
+        // Root-activation moved to `init_common` (D1, spec-075 FR-D-01): a Mode-2
+        // `route_to` target has empty `depends_on` by validate invariant and starts
+        // `Pending`, so activating roots here — before dormancy marking runs — would
+        // flip it straight to `Ready`, firing the fallback on a fresh graph. See
+        // `init_common` for the dormancy-first ordering.
 
         // Validate cascade_routing dependency on topology_selection.
         if config.cascade_routing && !config.topology_selection {
@@ -529,18 +529,41 @@ impl DagScheduler {
 
     /// Build a fully-initialized `DagScheduler` from the supplied pre-configured state.
     ///
-    /// Called by both [`DagScheduler::new`] and [`DagScheduler::resume_from`] after they
-    /// perform their graph-state-specific setup (status transitions, root-task marking,
-    /// running-map reconstruction). Centralizes all field construction that is identical
-    /// between the two constructors.
+    /// Called by both [`DagScheduler::new`] and [`DagScheduler::resume_from`] (via
+    /// [`DagScheduler::resume_from_durable`]) after they perform their
+    /// graph-state-specific setup (status transitions, running-map reconstruction).
+    /// Centralizes all field construction that is identical between the constructors —
+    /// this is the single chokepoint every graph passes through, which is why the
+    /// Mode-2 dormancy marking and root-activation loop live here (D1, spec-075
+    /// FR-D-01) rather than duplicated per constructor.
     fn init_common(
-        graph: TaskGraph,
+        mut graph: TaskGraph,
         running: HashMap<TaskId, RunningTask>,
         config: &OrchestrationConfig,
         router: Box<dyn AgentRouter>,
         available_agents: Vec<zeph_subagent::SubAgentDef>,
         admission_gate: Option<super::admission::AdmissionGate>,
     ) -> Self {
+        // D1 (spec-075 FR-D-01): dormancy marking MUST run before root-activation.
+        // A Mode-2 `route_to` target has empty `depends_on` (validate invariant) and
+        // starts `Pending`; the root-activation loop below unconditionally flips an
+        // empty-`depends_on` `Pending` task to `Ready`. Marking dormancy first turns
+        // that target `Dormant`, so the (guard: `== Pending`) root-activation loop
+        // skips it — the fallback stays parked instead of firing on a fresh graph.
+        //
+        // This loop was moved here from `new()` verbatim: `ready_tasks()`'s `Pending`
+        // arm already treats an empty-`depends_on` `Pending` task as ready (its
+        // `all_deps_done` check is vacuously true), so eagerly materializing `Ready`
+        // here changes no dispatch decision on `resume_from`/`resume_from_durable` —
+        // and neither path ever carries a `Pending` route_to target anyway, since a
+        // `Created` graph always enters through `new()` first.
+        dag::mark_dormant_route_to_targets(&mut graph);
+        for task in &mut graph.tasks {
+            if task.depends_on.is_empty() && task.status == TaskStatus::Pending {
+                task.status = TaskStatus::Ready;
+            }
+        }
+
         let agent_provider_map: HashMap<String, String> = available_agents
             .iter()
             .filter_map(|def| {
@@ -927,6 +950,60 @@ mod tests {
         assert_eq!(scheduler.graph().tasks[1].status, TaskStatus::Ready);
         assert_eq!(scheduler.graph().tasks[2].status, TaskStatus::Pending);
         assert_eq!(scheduler.graph().status, GraphStatus::Running);
+    }
+
+    #[test]
+    fn test_new_marks_route_to_target_dormant_not_ready() {
+        // D1 (spec-075 FR-D-01): dormancy marking must run before root-activation in
+        // `init_common`. A route_to target has empty depends_on (validate invariant)
+        // and starts Pending -- without the D1 ordering fix, the root-activation loop
+        // would flip it straight to Ready on a fresh graph, firing the fallback
+        // immediately instead of parking it.
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+        graph.tasks[1].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: None,
+            route_to: Some(TaskId(0)),
+        });
+        let scheduler = make_scheduler(graph);
+        assert_eq!(
+            scheduler.graph().tasks[0].status,
+            TaskStatus::Dormant,
+            "route_to target must start Dormant, not be swept into Ready by root-activation"
+        );
+        assert_eq!(
+            scheduler.graph().tasks[1].status,
+            TaskStatus::Ready,
+            "the route_to source itself is a normal root and must still activate"
+        );
+    }
+
+    #[test]
+    fn test_resume_from_leaves_dormant_route_to_target_dormant() {
+        // Tester/reviewer-flagged gap: D1's claim that "the resume-path root-activation
+        // loop is provably inert for a Dormant target" was only argued analytically in the
+        // design handoffs, never test-enforced. This drives the real `resume_from` entry
+        // point (as a persisted-checkpoint reload would) with a graph where the route_to
+        // target F is already `Dormant` -- simulating a graph paused/persisted after `new()`
+        // already ran dormancy marking once -- and asserts `init_common`'s dormancy pass and
+        // root-activation loop leave it parked rather than re-marking it `Ready`.
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+        graph.tasks[1].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: None,
+            route_to: Some(TaskId(0)),
+        });
+        graph.tasks[0].status = TaskStatus::Dormant;
+        graph.status = GraphStatus::Failed;
+
+        let config = make_config();
+        let scheduler =
+            DagScheduler::resume_from(graph, &config, Box::new(FirstRouter), vec![], None).unwrap();
+
+        assert_eq!(
+            scheduler.graph().tasks[0].status,
+            TaskStatus::Dormant,
+            "an already-Dormant route_to target must stay parked across resume_from, not be \
+             reactivated to Ready by the root-activation loop"
+        );
     }
 
     #[test]

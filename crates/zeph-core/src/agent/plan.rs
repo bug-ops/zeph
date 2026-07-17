@@ -910,9 +910,22 @@ impl<C: crate::channel::Channel> Agent<C> {
             .iter()
             .filter(|t| t.status == zeph_orchestration::TaskStatus::Skipped)
             .count() as u64;
+        // D3 (spec-075 FR-D-01): on a Completed graph, a Failed task can only be a
+        // rerouted Mode-2 source — Mode-1 relabels Failed -> Completed, Skip relabels
+        // Failed -> Skipped, and Abort/retry-exhausted-without-reroute sets the graph
+        // Failed (not Completed), so this branch is never reached with an unrecovered
+        // Failed task. If a future recovery mechanism ever leaves a Failed task inside
+        // a Completed graph without being a rerouted source, this tally would silently
+        // misclassify it as "rerouted" — re-verify the invariant before adding one.
+        let rerouted_failed_count = completed_graph
+            .tasks
+            .iter()
+            .filter(|t| t.status == zeph_orchestration::TaskStatus::Failed)
+            .count() as u64;
         self.update_metrics(|m| {
             m.orchestration.tasks_completed += completed_count;
             m.orchestration.tasks_skipped += skipped_count;
+            m.orchestration.tasks_failed += rerouted_failed_count;
         });
 
         let aggregator_provider = self
@@ -978,6 +991,14 @@ impl<C: crate::channel::Channel> Agent<C> {
     ) -> Result<&'static str, error::AgentError> {
         use std::fmt::Write;
 
+        // M2 (spec-075 FR-D-01, cosmetic): a Mode-2 route_to fallback can persist in
+        // TaskStatus::Dormant into a Failed graph (the Abort/retry-exhausted path sets
+        // graph.status = Failed and returns before the completion sweep runs — see
+        // `check_graph_completion`'s `resolve_dormant_after_terminal` doc). A Dormant
+        // task is counted in none of the buckets below, so failed+cancelled+completed+
+        // skipped may not sum to tasks.len() on this path. Benign: `/plan retry`
+        // re-arms it if its source is reset, or the completion sweep resolves it once
+        // a retried graph heads to Completed. Not treated as an error here.
         let failed_tasks: Vec<_> = completed_graph
             .tasks
             .iter()

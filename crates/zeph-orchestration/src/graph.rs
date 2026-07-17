@@ -158,10 +158,23 @@ impl FromStr for GraphId {
 ///                           → Failed     (error; then failure strategy applies)
 ///                           → Skipped    (upstream failed with Skip strategy)
 ///                           → Canceled   (graph aborted while task was running)
+///
+/// Dormant → Ready    (on-failure activation: this node's `route_to` source failed
+///                      terminally, see `dag::try_reroute`)
+///         → Skipped   (source terminalized without rerouting, see
+///                      `dag::resolve_dormant_after_terminal`)
 /// ```
 ///
+/// `Dormant` is the Mode-2 `route_to` fallback-node marker (spec-075 FR-D-01): a task
+/// with `recovery.route_to == Some(F)` set on another node starts `Dormant` instead of
+/// `Pending` (see `dag::mark_dormant_route_to_targets`) and is excluded from
+/// [`ready_tasks`](crate::dag::ready_tasks) dispatch until explicitly activated by its
+/// source's terminal failure. It never survives to graph termination — see
+/// `dag::resolve_dormant_after_terminal`.
+///
 /// Only `Completed`, `Failed`, `Skipped`, and `Canceled` are terminal — see
-/// [`TaskStatus::is_terminal`].
+/// [`TaskStatus::is_terminal`]. `Dormant` is intentionally **not** terminal: it is a
+/// parked pre-dispatch state, not an end state.
 ///
 /// # Examples
 ///
@@ -170,6 +183,7 @@ impl FromStr for GraphId {
 ///
 /// assert!(TaskStatus::Completed.is_terminal());
 /// assert!(!TaskStatus::Running.is_terminal());
+/// assert!(!TaskStatus::Dormant.is_terminal());
 /// assert_eq!(TaskStatus::Pending.to_string(), "pending");
 /// ```
 #[non_exhaustive]
@@ -190,6 +204,12 @@ pub enum TaskStatus {
     Skipped,
     /// Task was running when the graph was aborted ([`FailureStrategy::Abort`]).
     Canceled,
+    /// Mode-2 `route_to` fallback node parked before activation. Never dispatched by
+    /// [`ready_tasks`](crate::dag::ready_tasks); only reachable via
+    /// `dag::try_reroute` (on-failure activation to `Ready`) or
+    /// `dag::resolve_dormant_after_terminal` (terminal resolution to `Skipped`). Not
+    /// terminal — see [`TaskStatus::is_terminal`].
+    Dormant,
 }
 
 impl TaskStatus {
@@ -213,6 +233,7 @@ impl fmt::Display for TaskStatus {
             TaskStatus::Failed => write!(f, "failed"),
             TaskStatus::Skipped => write!(f, "skipped"),
             TaskStatus::Canceled => write!(f, "canceled"),
+            TaskStatus::Dormant => write!(f, "dormant"),
         }
     }
 }
@@ -396,25 +417,40 @@ pub struct TimeoutPolicy {
 
 /// Declarative recovery action applied on a node's terminal failure.
 ///
-/// v1 supports Mode 1 (`state_injection`) only: on `Abort`-default or retry-exhausted
-/// `Retry` failure, the node is marked [`TaskStatus::Completed`] with the given output
-/// substituted as its [`TaskResult`], letting the graph continue past the failure. Mode 2
-/// (reroute to an alternate node) is deferred — see
-/// `specs/075-orchestration-node-control-parity/spec.md` §7.
+/// Two mutually exclusive modes (`dag::validate` rejects a node that sets both):
+///
+/// - **Mode 1** (`state_injection`): on `Abort`-default or retry-exhausted `Retry`
+///   failure, the node is marked [`TaskStatus::Completed`] with the given output
+///   substituted as its [`TaskResult`], letting the graph continue past the failure.
+/// - **Mode 2** (`route_to`): on the same failure conditions, an alternate fallback
+///   node is activated instead (`TaskStatus::Dormant → Ready`) and the failed node's
+///   output is injected into the fallback's prompt. See `dag::try_reroute`,
+///   `dag::mark_dormant_route_to_targets`, and the [`TaskStatus::Dormant`] state-machine
+///   doc for the full mechanism.
 ///
 /// # Examples
 ///
 /// ```rust
 /// use zeph_orchestration::graph::RecoveryAction;
 ///
-/// let recovery = RecoveryAction { state_injection: Some("fallback output".to_string()) };
+/// let recovery = RecoveryAction {
+///     state_injection: Some("fallback output".to_string()),
+///     route_to: None,
+/// };
 /// assert_eq!(recovery.state_injection.as_deref(), Some("fallback output"));
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecoveryAction {
     /// Substitute output injected as this node's [`TaskResult::output`] on recovery.
-    /// `None` disables recovery (equivalent to omitting the field entirely).
+    /// `None` disables Mode-1 recovery. Mutually exclusive with `route_to`.
     pub state_injection: Option<String>,
+    /// Mode-2 fallback target: on this node's terminal failure, activate the task at
+    /// this ID (`Dormant → Ready`) instead of aborting. `None` disables Mode-2
+    /// recovery. Mutually exclusive with `state_injection`. The target must have an
+    /// empty `depends_on` and must not itself set `route_to` (`dag::validate` enforces
+    /// both, v1 does not support chained reroutes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_to: Option<TaskId>,
 }
 
 /// A single node in the task DAG.
@@ -437,6 +473,7 @@ pub struct RecoveryAction {
 /// assert!(node.asset_sensitivity.is_none());
 /// assert!(node.timeout.is_none());
 /// assert!(node.recovery.is_none());
+/// assert!(node.routed_from.is_none());
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskNode {
@@ -518,11 +555,21 @@ pub struct TaskNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<TimeoutPolicy>,
 
-    /// Declarative Mode-1 recovery action applied on terminal failure. `None` = no
-    /// recovery, existing `Abort`/retry-exhausted-`Retry` behavior is unchanged. See
+    /// Declarative recovery action applied on terminal failure. `None` = no recovery,
+    /// existing `Abort`/retry-exhausted-`Retry` behavior is unchanged. See
     /// [`RecoveryAction`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<RecoveryAction>,
+
+    /// Set at Mode-2 activation time to the ID of the task whose terminal failure
+    /// activated this node (`dag::try_reroute`). `None` for every task that was never
+    /// a `route_to` fallback target, and cleared back to `None` when a fallback branch
+    /// is re-armed to `Dormant` on `/plan retry` (`dag::reset_for_retry`). Read by
+    /// `build_task_prompt` to inject the failed source's sanitized output and by the
+    /// `LevelBarrier` dispatch gate to let an activated fallback bypass the level
+    /// check. Persisted so a mid-fallback restart does not lose the injection source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed_from: Option<TaskId>,
 }
 
 impl TaskNode {
@@ -551,6 +598,7 @@ impl TaskNode {
             asset_sensitivity: None,
             timeout: None,
             recovery: None,
+            routed_from: None,
         }
     }
 }
@@ -1093,6 +1141,7 @@ mod tests {
         });
         node.recovery = Some(RecoveryAction {
             state_injection: Some("fallback".to_string()),
+            route_to: None,
         });
         let json = serde_json::to_string(&node).unwrap();
         let restored: TaskNode = serde_json::from_str(&json).unwrap();

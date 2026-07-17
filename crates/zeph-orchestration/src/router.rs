@@ -165,6 +165,7 @@ mod tests {
             asset_sensitivity: None,
             timeout: None,
             recovery: None,
+            routed_from: None,
         }
     }
 

@@ -34,6 +34,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wall-clock cap). `--init` wizard text, `config.toml` comments, and the `TimeoutPolicy`/
   `default_idle_timeout_secs` doc comments now describe the enforced semantics and warn that
   the value must be set above the longest expected single-turn duration.
+- **zeph-orchestration**: implemented Mode-2 `route_to` reroute-to-alternate-node recovery
+  (spec `075-orchestration-node-control-parity` FR-D-01, #6244), deferred from the original
+  Mode-1 (`state_injection`) recovery feature after the naive design was found unsafe
+  (N5/N1/N3). A node's `RecoveryAction.route_to: Option<TaskId>` names a fallback node that
+  starts in a new non-dispatchable `TaskStatus::Dormant` state and is activated
+  (`Dormant → Ready`) only by the source node's terminal `Abort`-default or
+  retry-exhausted-`Retry` failure, carrying a `routed_from` marker that seeds the
+  fallback's prompt with the failed source's sanitized output via a `<recovery-source>`
+  block. If the source never fails, a completion-time sweep resolves the untriggered
+  fallback (and its transitive downstream subtree) to `Skipped` instead of falsely
+  reporting a scheduler deadlock. `route_to` is mutually exclusive with `state_injection`,
+  rejects chained reroutes and N:1 shared targets, and is validated at graph construction
+  time. `DispatchStrategy::LevelBarrier` treats a `Dormant` fallback as parked (never
+  blocking barrier advancement) and lets an activated fallback dispatch out-of-level,
+  closing a silent livelock where a route_to source deeper than its depth-0 fallback would
+  never get a chance to run. `/plan retry` re-arms a previously-activated fallback branch
+  back to `Dormant` so retry semantics compose correctly with a prior reroute. A rerouted
+  source stays terminal `Failed` even inside a `Completed` graph (by design, to keep the
+  aggregator/grounding `Completed`-only filters from pulling the failure's error output
+  into synthesis) and is now tallied into `tasks_failed` on the `finalize_plan_completed`
+  path. No config/CLI/wizard surface: `route_to`, like `state_injection`, is authored
+  programmatically rather than exposed to the LLM planner schema.
 
 - `zeph-mcp`/`zeph-core`: an MCP server can now request a larger per-call truncation limit
   for a single tool result via `_meta["zeph/maxResultSizeChars"]`, bounded by a new

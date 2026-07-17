@@ -440,6 +440,7 @@ fn test_cascade_chain_threshold_preempts_recovery() {
     // output — the assertion below proves it never gets the chance to.
     scheduler.graph.tasks[2].recovery = Some(crate::graph::RecoveryAction {
         state_injection: Some("should never be applied".to_string()),
+        route_to: None,
     });
 
     for (id, handle) in [(TaskId(0), "h0"), (TaskId(1), "h1"), (TaskId(2), "h2")] {
@@ -480,9 +481,23 @@ fn test_cascade_chain_threshold_preempts_recovery() {
         "the recovery-configured node must NOT be recovered — cascade-abort preempts \
          propagate_failure() (and thus try_recover()) entirely"
     );
-    assert!(
-        scheduler.graph.tasks[2].result.is_none(),
-        "no synthetic recovery TaskResult should ever have been set"
+    assert_eq!(
+        scheduler.graph.tasks[2]
+            .result
+            .as_ref()
+            .map(|r| r.output.as_str()),
+        Some("boom"),
+        "result must hold the plain failure error, not a Mode-1 recovery substitution \
+         (agent_id/agent_def would also be set to the recovery marker if try_recover had run)"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[2]
+            .result
+            .as_ref()
+            .and_then(|r| r.agent_def.as_deref()),
+        None,
+        "no synthetic recovery TaskResult (with its recovery marker agent_def) should ever \
+         have been set"
     );
 }
 

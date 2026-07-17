@@ -139,8 +139,19 @@ impl DagScheduler {
                 break;
             }
 
-            // LevelBarrier: only dispatch tasks at the current level.
-            if self.topology.strategy == DispatchStrategy::LevelBarrier {
+            let task = &self.graph.tasks[task_id.index()];
+
+            // LevelBarrier: only dispatch tasks at the current level. Exception (D4,
+            // spec-075 FR-D-01): a just-activated Mode-2 fallback (`Ready` with
+            // `routed_from.is_some()`, set only by `dag::try_reroute`) bypasses the
+            // level gate. It must dispatch immediately regardless of `current_level` —
+            // waiting for the barrier to reach its depth-0 level again could stall
+            // indefinitely on unrelated deeper levels. This is safe because `validate`
+            // forces every route_to target to have an empty `depends_on`: it has no
+            // prerequisites, so dispatching it out-of-level can never run ahead of
+            // anything it depends on.
+            let is_activated_fallback = task.routed_from.is_some();
+            if self.topology.strategy == DispatchStrategy::LevelBarrier && !is_activated_fallback {
                 let task_depth = self
                     .topology
                     .depths
@@ -151,8 +162,6 @@ impl DagScheduler {
                     continue;
                 }
             }
-
-            let task = &self.graph.tasks[task_id.index()];
 
             // Sequential tasks: only one may run at a time within the scheduler.
             // Independent sequential tasks in separate DAG branches are still
@@ -387,6 +396,18 @@ impl DagScheduler {
         );
         self.graph_dirty = true;
         self.graph.tasks[task_id.index()].status = TaskStatus::Failed;
+        // Populate `.result` with the spawn error so Mode-2 `routed_from` prompt injection
+        // (router.rs's `build_task_prompt`) has real content to surface, and so
+        // `finalize_plan_failed`'s error-message formatting doesn't fall back to
+        // "unknown error". No agent was ever spawned, so `agent_id`/`agent_def`/`duration_ms`
+        // stay at their zero values.
+        self.graph.tasks[task_id.index()].result = Some(TaskResult {
+            output: error_excerpt,
+            artifacts: Vec::new(),
+            duration_ms: 0,
+            agent_id: None,
+            agent_def: None,
+        });
         let cancel_ids = dag::propagate_failure(&mut self.graph, task_id, &self.topology.rev_adj);
         let mut actions = Vec::new();
         for cancel_task_id in cancel_ids {
@@ -632,6 +653,18 @@ impl DagScheduler {
             "task failed"
         );
         self.graph.tasks[task_id.index()].status = TaskStatus::Failed;
+        // Populate `.result` with the failure error so Mode-2 `routed_from` prompt injection
+        // (router.rs's `build_task_prompt`) has real content to surface, and so
+        // `finalize_plan_failed`'s error-message formatting doesn't fall back to
+        // "unknown error". `agent_id`/`agent_def`/`duration_ms` are left at their zero
+        // values -- this is failure diagnostics, not a completed-task provenance record.
+        self.graph.tasks[task_id.index()].result = Some(TaskResult {
+            output: error_excerpt,
+            artifacts: Vec::new(),
+            duration_ms: 0,
+            agent_id: None,
+            agent_def: None,
+        });
 
         if let Some(ref mut detector) = self.cascade_detector {
             detector.record_outcome(task_id, false, &self.graph);
@@ -837,6 +870,10 @@ impl DagScheduler {
 
             let removed = self.running.remove(&task_id);
             self.graph.tasks[task_id.index()].status = TaskStatus::Failed;
+            // `.result` is populated below (cause-aware) so Mode-2 `routed_from` prompt
+            // injection (router.rs's `build_task_prompt`) has real content to surface, and so
+            // `finalize_plan_failed`'s error-message formatting doesn't fall back to
+            // "unknown error".
 
             let duration_ms = removed.as_ref().map_or(0, |r| {
                 u64::try_from(r.started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
