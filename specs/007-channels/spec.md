@@ -17,6 +17,7 @@ related:
   - "[[011-tui/spec]]"
   - "[[007-channels/007-1-telegram-guest-mode]]"
   - "[[007-channels/007-2-telegram-bot-to-bot]]"
+  - "[[068-session-persistence/spec]]"
 ---
 
 # Spec: Multi-Channel I/O
@@ -133,6 +134,27 @@ stream_interval_ms = 3000
 - Telegram channel must handle Telegram rate limits internally — agent loop must not see rate-limit errors as fatal
 - MCP child process stderr must be suppressed when using `TuiChannel`
 - `send_chunk` and `send` both must be implemented — streaming fallback is not acceptable for CLI
+
+---
+
+## Session Resume Banner — Channel Parity (spec-068 cross-reference)
+
+`specs/068-session-persistence/spec.md` §13 defines `INV-SP-5`: on resume of a non-empty prior conversation-session, a channel that owns its own display buffer MUST render a "Resuming session" banner and expose `/history`. This is a **conditional** invariant, not a universal one — apply the per-channel classification below.
+
+| Channel | Owns display buffer? | Resume banner (INV-SP-5) |
+|---|---|---|
+| `CliChannel` | Yes — stdout is the only transcript surface | MUST render (prints one line at startup) |
+| `TuiChannel` | Yes — `SessionSlot::messages` is the only transcript surface | MUST render (`AgentEvent::ResumeBanner`) |
+| `TelegramChannel` | No — the Telegram client renders server-side scrollback | Exempt — MUST NOT render |
+| `DiscordChannel` | No — same as Telegram | Exempt — MUST NOT render |
+| `SlackChannel` | No — same as Telegram | Exempt — MUST NOT render |
+| ACP/IDE-embedding (`zeph-acp`; not an `AnyChannel` variant) | Ambiguous — the IDE client typically owns transcript persistence | Exempt in v1 (treated like chat), an explicit decision rather than a silent omission — see `specs/068-session-persistence/spec.md` §13.8. Revisit in v2 alongside the DR-2 interrupted-detection follow-up. |
+
+`/history` (the on-demand expand command, `zeph-commands`) remains available as a manual command on every channel, including the exempt ones — only the automatic startup banner is scoped by this table. A chat channel invoking `/history all` MUST chunk its output to the channel's message-size limit (e.g. Telegram's 4096-character limit) rather than dropping or erroring — see spec-068 §13.6.
+
+### Key Invariant
+
+- Any new `Channel`/session-resume code path MUST classify itself in the table above before shipping — an unspecified channel's resume-banner behavior is not acceptable, mirroring the "no method may fall through" discipline in Channel Feature Parity below.
 
 ---
 

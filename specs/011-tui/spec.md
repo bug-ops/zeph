@@ -16,6 +16,7 @@ related:
   - "[[007-channels/spec]]"
   - "[[026-tui-subagent-management/spec]]"
   - "[[030-tui-slash-autocomplete/spec]]"
+  - "[[068-session-persistence/spec]]"
 ---
 
 # Spec: TUI Dashboard
@@ -295,6 +296,25 @@ multibyte UTF-8 input (Cyrillic, CJK characters). NEVER truncate at a byte bound
 - Key dispatch MUST check reverse-search before slash-autocomplete (C4 invariant)
 - Render truncation MUST use `floor_char_boundary()` — NEVER byte-index truncation
 - `Esc` MUST exit without side-effects — NEVER modify the composer input on dismiss
+
+---
+
+## Session Resume Banner and Bounded History Backfill (spec-068 cross-reference)
+
+`specs/068-session-persistence/spec.md` §13 defines `SessionResumeInfo` and `INV-SP-5`/`INV-SP-6` (resume visibility + non-blocking expansion). TUI-specific wiring:
+
+- **Banner rendering:** a new `AgentEvent::ResumeBanner(SessionResumeInfo)` variant (`crates/zeph-tui/src/event.rs`) is emitted once at startup when `is_resume` is true (spec-068 §13.4). It is rendered as a **persistent** line in the header/status area — not a transient `Status` spinner message — since the user must still see it after the first prompt scrolls by. Exact placement (header vs. a dedicated collapsible line above the input) is an implementation choice, not a spec constraint (spec-068 OQ-I).
+- **Bounded backfill:** `/history` (and the rebound `session:history`/`SessionBrowser` command, currently dead — see below) hydrates `SessionSlot::messages` via `App::load_history`, but ONLY with the bounded last-N slice already produced by the shared `TranscriptFormatter` (spec-068 §13.6) — never the full reconstructed history. This keeps `App::load_history`'s synchronous push (and `trim_messages`'s `MAX_TUI_MESSAGES=2000` cap) within the render loop's non-blocking contract (`CLAUDE.md` Async & Background Tasks; spec-039).
+- **`/history all` non-blocking requirement (INV-SP-6):** MUST NOT synchronously format and push the entire history on the render thread. Format off-thread under a supervised task (`TaskSupervisor`/`BackgroundSupervisor`) and deliver via `AgentEvent`, or paginate (`/history next`). An explicit "this may take a moment" notice MUST precede the operation.
+- **Input-history isolation:** the backfill path MUST NOT feed old messages into `input_history` (the readline up-arrow recall, populated at `state.rs:501-505`) — display-only hydration is a distinct code path or flag from the existing input-history-populating call sites in `App::load_history`.
+- **Dead-code reactivation:** `App::load_history` (`crates/zeph-tui/src/app/state.rs:476`) and the `SessionBrowser`/`session:history` command (dispatched at `command.rs:343`, currently swallowed by `_ => continue` in `src/tui_bridge.rs:554`) are the intended wiring targets — do not add a parallel renderer.
+
+### Key Invariants (Resume Banner / History Backfill)
+
+- The resume banner is a persistent render, not a transient spinner message — it MUST remain visible after the first prompt (unlike the Spinner Rule below, which is for in-flight operations)
+- `/history` backfill MUST bound to last-N before pushing into `SessionSlot::messages` — never push-all-then-trim
+- `/history all` MUST run off-thread or paginated — NEVER a synchronous full-history push on the render loop
+- Backfilled display messages MUST NOT be written into `input_history`
 
 ---
 

@@ -18,6 +18,8 @@ related:
   - "[[044-zeph-common]]"
   - "[[022-zeph-context]]"
   - "[[032-database-abstraction]]"
+  - "[[007-channels/spec]]"
+  - "[[011-tui/spec]]"
 issues:
   - "#2807"
   - "#3102"
@@ -559,7 +561,109 @@ The four existing ACP session handlers are thinned to delegate to `zeph-session`
 
 ---
 
-## 13. Key Invariants
+## 13. Resume UX and History Visibility
+
+### 13.1 Problem Statement
+
+On resume, prior conversation history is loaded into the agent's LLM context (`agent.with_preloaded_messages` / `Agent::load_history`, see `crates/zeph-core/src/agent/persistence/history.rs:31-70`) but is never rendered to the user's display buffer. Default flagless startup already re-attaches to `latest_conversation_id()` (`src/runner.rs:2028`), so **every** restart silently continues the newest conversation — "continuing an interrupted session" is the common path, not an edge case. `SessionSlot::messages` starts empty (`crates/zeph-tui/src/session.rs:169-193`) and is fed only by the live `AgentEvent` stream; the CLI prints nothing at startup. The agent remembers, but the screen looks like a fresh start. This section formalizes the fix as a single `zeph-core` presentation primitive rendered per-channel, per the Multi-Model/Cross-Mode-Consistency principle — no per-channel resume logic is duplicated.
+
+### 13.2 Scope — Display-Owning Channels Only
+
+This is a **conditional** invariant (INV-SP-5, §14), not a universal one, and is deliberately kept out of `specs/001-system-invariants/spec.md`. It applies only to channels that own their own display buffer:
+
+- **In scope:** `CliChannel`, `TuiChannel` — stdout / `SessionSlot::messages` are the sole transcript surface; hiding history there is a real problem.
+- **Exempt:** `TelegramChannel`, `DiscordChannel`, `SlackChannel` — these render server-side scrollback in the client itself; prior history is never hidden, so a banner (or an automatic `/history` re-dump) would be pure noise. See `specs/007-channels/spec.md` for the channel-parity table.
+- **Exempt in v1:** ACP/IDE-embedding sessions (`zeph-acp`) — see §13.8.
+
+### 13.3 `SessionResumeInfo` (Core Primitive)
+
+Computed once, in `zeph-core`, at hydration time — reusing the `ReplayEngine::fold` pass that `init_session_sink` already awaits at startup (`src/runner.rs:642+`), so this is zero additional I/O on the hydration path:
+
+```rust
+struct SessionResumeInfo {
+    session_id:          SessionId,
+    conversation_id:     Option<i64>,
+    is_resume:           bool,                    // see §13.4
+    prior_message_count: usize,
+    prior_turn_count:    usize,
+    last_active:         Option<OffsetDateTime>,   // derived from acp_sessions.updated_at — no new data
+}
+```
+
+- Does **not** carry the full message vector — expansion is pulled lazily by `/history` (§13.6), never eagerly.
+- `was_interrupted` is explicitly NOT a field in v1 — see §13.10.
+- `last_active` requires no new persisted data: it is the existing `acp_sessions.updated_at` column (§5.1).
+
+### 13.4 `is_resume` Predicate (Exact Definition)
+
+```
+is_resume = reconstructed history from ReplayEngine::fold (or, when [session] enabled = false,
+            the PersistenceService::load_history SQLite fallback) contains
+            AT LEAST ONE non-system SessionEvent / Message
+            (any UserMessage, AssistantMessage, ToolCall, or ToolResult)
+```
+
+**This MUST be evaluated against the raw reconstructed event/message stream — never against a display-filtered, visible-text-only turn count.** A session interrupted mid-tool-loop reconstructs to `[system, assistant(tool_use-only), user(tool_result)]` — no assistant text yet. The TUI's display filter skips `is_tool_use_only` assistant messages (`state.rs:492-498`); counting *display* turns would make this exact "interrupted session" case false-negative as fresh (no banner) — precisely the case the user reported. Counting raw non-system events closes this hole.
+
+A conversation containing only the system prompt (zero user/assistant/tool events) is `is_resume = false` (fresh).
+
+### 13.5 Resume Banner Rendering
+
+- **CLI** (`crates/zeph-channels/src/cli.rs`): print one neutral line at startup, e.g. `↻ Resuming session (last active 2h ago) — 34 messages, 12 turns. Type /history to view.` No interrupted/clean-exit qualifier in v1 (§13.10).
+- **TUI**: new `AgentEvent::ResumeBanner(SessionResumeInfo)` variant renders a **persistent** banner (not a transient status-spinner line) in the header/status area, since it must remain visible once the first prompt scrolls the transient status out of view. See `specs/011-tui/spec.md` for wiring detail. Exact placement (header vs. dedicated collapsible line) is an implementation choice, not a spec constraint.
+- **Chat** (Telegram/Discord/Slack): emit nothing at startup (§13.2).
+- **ACP/IDE-embedding**: emit nothing at startup in v1 (§13.8).
+- **Multi-channel-single-process (`serve`):** when more than one display-owning channel attaches to the same `conversation_id`, the banner MUST fire exactly once, not once per attaching channel — ownership of the single emission belongs to whichever display-owning channel triggers the initial hydration.
+
+### 13.6 `/history [N|all]` Command Contract
+
+Registered in `zeph-commands` (channel-agnostic, alongside `/recap`), backed by a shared `TranscriptFormatter` (a function/small struct converting an already-bounded `Vec<Message>`/`ReconstructedState` slice into role-prefixed, tool-collapsed text). `TranscriptFormatter` is the single source of truth reused by both the CLI expand path and the TUI backfill path — neither implements its own formatting.
+
+- **Default (`/history`, no arg):** bounded to the last `N` messages, config `[session.resume] expand_default_lines` (default 20). **The last-N slice MUST be taken before formatting/materialization** — never materialize the full reconstructed history and then trim (INV-SP-6, §14).
+- **`/history all`:** an explicitly heavier operation.
+  - MUST NOT synchronously format and push the full history onto a single-threaded render/input loop (violates the non-blocking render-loop contract, `CLAUDE.md` Async & Background Tasks / spec-039).
+  - Implementation MUST do one of: (a) format off-thread in a supervised task (`TaskSupervisor`/`BackgroundSupervisor`) and deliver the result via `AgentEvent`, or (b) paginate (e.g. `/history next`).
+  - MUST emit an explicit "showing full history (N messages) — this may take a moment" notice before the heavier path runs.
+- **Availability:** `/history` remains manually invokable on **every** channel, including channels exempt from the automatic banner (§13.2, §13.8) — only the startup banner is scoped by display-ownership, not the command itself.
+- **Chat channel output size:** if `/history` (in particular `/history all`) is invoked in a chat channel, the formatted output MUST chunk to the channel's message-size limit (e.g. Telegram's 4096-character limit) rather than silently truncating or erroring; alternatively cap with an explicit "truncated — use CLI/TUI for full history" note.
+
+### 13.7 TUI Specialization
+
+See `specs/011-tui/spec.md` for the full cross-reference. Summary:
+
+- `/history` backfills `SessionSlot::messages` via the existing-but-dead `App::load_history` (`crates/zeph-tui/src/app/state.rs:476`), receiving only the bounded slice already produced by `TranscriptFormatter` — never the full log.
+- The backfill path MUST be split from `input_history` (readline up-arrow recall) population — `App::load_history` currently pushes every prior user message into `input_history` (`state.rs:501-505`); a display-only variant/flag prevents old messages from flooding recall.
+- The dead `SessionBrowser`/`session:history` command (dispatched at `command.rs:343`, swallowed by `_ => continue` in `src/tui_bridge.rs:554`) is wired to the same bounded action and rebound to key `H`.
+- Backfilling also makes Ctrl+F transcript search and PageUp/Home/End scrollback work over the backfilled range, since both already operate on `SessionSlot::messages` / `app.visible_messages()`.
+
+### 13.8 ACP / IDE-Embedding Classification
+
+The ACP/IDE-embedding surface (`src/acp.rs`, which also calls `agent.load_history`) is explicitly classified rather than left silent:
+
+**Decision: exempt, like chat, for v1.** An IDE client embedding Zeph via ACP is expected to own and persist its own transcript/thread view across reconnects — the same reasoning that exempts Telegram/Discord/Slack (§13.2). The automatic resume banner (§13.5) MUST NOT fire for ACP-owned sessions in v1. `/history` remains available as a manual command over ACP if the transport surfaces slash-command dispatch (§13.6), unaffected by this exemption.
+
+This is an explicit decision, not a silent omission — it prevents the same "works in CLI, silently skipped elsewhere" ambiguity the display-owning classification exists to close. Revisit in v2 if an IDE client reports a need for a Zeph-rendered resume indicator (track alongside the DR-2 interrupted-detection follow-up, §13.10).
+
+### 13.9 Edge Cases
+
+- **Forked sessions (`ForkEngine::fork`):** a fresh fork inherits a folded history and is treated as **resume**, not fresh — the banner fires if the inherited conversation is non-empty per §13.4. `SessionResumeInfo` is computed from the post-fork reconstructed state, consistent with any other resume.
+- **"Non-empty prior conversation" definition:** see §13.4 — raw reconstructed non-system event count, not display-filtered turns.
+- **`/history all` in chat:** see §13.6 chat output size chunking.
+- **Multiple display-owning channels in one `serve` process:** see §13.5 single-emission rule. Cross-*process* concurrency for the same session is already prevented by the existing flock (`crates/zeph-session/src/log.rs:43,472`), so this edge case is intra-process only (e.g. CLI attach + TUI attach to the same live `conversation_id`).
+
+### 13.10 v1 Non-Goals — Deferred to v2
+
+**Interrupted-vs-clean-exit detection (formerly DR-2) is explicitly OUT OF SCOPE for this spec revision.** v1 ships a neutral "Resuming session" banner with no interrupted/clean qualifier — this fully resolves the reported complaint ("looks like starting from scratch, don't see history"). Reasons for deferral, recorded so the omission is not silently repeated in review:
+
+- `SessionStatus` is `Active | Idle | Archived` (`crates/zeph-session/src/store.rs:24-31`) — there is **no `Closed` variant**. Adding one requires a new enum arm, `as_str`/`from_str` updates, and a migration — not a small additive change.
+- `SessionStore::set_status` is **never called in production** today (only in `store.rs` tests). Wiring a clean-exit marker would require touching every exit path (CLI Ctrl-D, TUI quit, ACP, daemon, chat) — missing any one mislabels a clean exit as "interrupted."
+- **v2 constraint to honor when this is built:** the already-merged stale-session-lock signal (#6378) is *also* crash evidence (a stale/auto-released flock at startup). A future clean-exit marker and the lock-staleness signal are two signals for one fact — they MUST be reconciled to a single source of truth, not left free to disagree.
+
+This deferral has zero v1 impact: `SessionResumeInfo` in v1 carries no `was_interrupted` field, and the banner text carries no interrupted/clean language.
+
+---
+
+## 14. Key Invariants
 
 ### INV-SP-1 — Log-first ordering (source of truth)
 A turn's `SessionEvent`s are appended to `events.jsonl` and flushed (via the log writer actor) **before** the SQLite `messages` projection or `acp_sessions.last_seq` are updated. The projection never leads the log. A crash between the two leaves the log ahead; INV-SP-3 reconciles on next open.
@@ -581,9 +685,15 @@ No code path shall introduce a new "session" concept without updating the termin
 ### INV-D2 — Single writer per session log
 Each conversation-session's `events.jsonl` is written exclusively by its `SessionActor` task (or, for non-serve mode, by the single active agent process). No concurrent writes from multiple tasks or processes.
 
+### INV-SP-5 — Resume Visibility (display-owning channels only)
+A channel that owns its own display buffer (`CliChannel`, `TuiChannel`) MUST NOT silently hide prior conversation history when attaching to a non-empty prior conversation-session (§13.4 `is_resume`) on startup: it MUST render a resume indicator (§13.5) and MUST expose a way to view prior messages (`/history`, §13.6). Channels that render their own server-side scrollback (Telegram, Discord, Slack) and ACP/IDE-embedding sessions in v1 (§13.8) are exempt. This invariant is intentionally scoped and MUST NOT be elevated to `specs/001-system-invariants/spec.md` as a universal MUST.
+
+### INV-SP-6 — Non-Blocking History Expansion
+`/history` MUST bound its default result to the last N messages (config `expand_default_lines`) before formatting/materialization — never materialize-then-trim. `/history all` MUST NOT synchronously push the full history onto a single-threaded render/input loop; it MUST format off-thread under a supervisor or paginate, per the non-blocking render-loop contract (`CLAUDE.md` Async & Background Tasks, spec-039).
+
 ---
 
-## 14. Related Specifications
+## 15. Related Specifications
 
 | Spec | Relationship |
 |------|-------------|
@@ -593,10 +703,12 @@ Each conversation-session's `events.jsonl` is written exclusively by its `Sessio
 | `specs/039-background-task-supervisor/` | `SessionActor` tasks are spawned via `TaskSupervisor::spawn` per spec-039 invariants. No raw `tokio::spawn` for session actors. |
 | `specs/044-zeph-common/` | `SessionId` (UUID v4 newtype) already defined in `zeph-common` and reused without modification. |
 | `specs/032-database-abstraction/` | Migration 105 (SQLite + PostgreSQL) follows the dual-migration-set pattern established in spec-032. |
+| `specs/007-channels/spec.md` | Channel-parity note for INV-SP-5: display-owning channels (CLI, TUI) render the resume banner; chat channels (Telegram/Discord/Slack) are exempt. |
+| `specs/011-tui/spec.md` | TUI specialization for §13: banner placement, bounded `/history` backfill via `App::load_history`, `SessionBrowser` wiring, non-blocking `/history all` per INV-SP-6. |
 
 ---
 
-## 15. NEVER
+## 16. NEVER
 
 - **NEVER** write to a session's `events.jsonl` from outside its `SessionActor` task (or the single active agent) — this breaks INV-SP-2 and INV-D2.
 - **NEVER** call the tool executor during replay — replay reads recorded `ToolResult` outputs, never re-executes tools.
@@ -608,28 +720,35 @@ Each conversation-session's `events.jsonl` is written exclusively by its `Sessio
 - **NEVER** implement CoW fork optimization without resolving shared-prefix condensation provenance first.
 - **NEVER** store auth tokens inline in config — use vault resolution (`[serve] auth_token` is vault-only).
 - **NEVER** make `zeph-session` depend on `zeph-durable` directly (or vice versa). The two crates record different concerns at different abstraction levels. If shared journal primitives are ever extracted into a reusable library, they belong in `zeph-common`, not in either crate.
+- **NEVER** silently skip the resume banner on a display-owning channel (CLI, TUI) when resuming a non-empty prior conversation-session — INV-SP-5.
+- **NEVER** compute the `is_resume` predicate against a display-filtered/visible-text turn count — always evaluate against the raw reconstructed event/message stream (INV-SP-5, §13.4).
+- **NEVER** materialize the full reconstructed history in `/history` before bounding to last-N — bound before formatting (INV-SP-6).
+- **NEVER** push backfilled display history into `input_history` — display-only hydration is a separate code path from readline recall population (§13.7).
+- **NEVER** elevate the resume-visibility invariant (INV-SP-5) to `specs/001-system-invariants/spec.md` — it is conditional on display ownership, not universal.
 
 ---
 
-## 16. Affected Subsystems
+## 17. Affected Subsystems
 
 | Crate | Change level | What changes |
 |-------|-------------|--------------|
 | **zeph-session** (NEW) | New crate | `SessionEvent`, `SessionEventEnvelope`, `SessionEventLog`, `SessionStore`, `ReplayEngine`, `ForkEngine`, `Condenser` trait + `LlmCondenser`. Does NOT depend on `zeph-durable`. The writer-actor pattern in `zeph-session` is structurally similar to `zeph-durable`'s journal but not a code reuse of it: the two systems differ on storage engine (JSONL files vs SQLite), replay semantics (linear fold into `Vec<Message>` vs per-`StepId` idempotency arbitration), and payload format (domain-typed readable JSON vs AEAD-sealed opaque bytes). The real overlap is ~80–120 LOC of generic "append/read/actor" idiom, not shared machinery. |
-| `zeph-core` | Medium | `SessionActor` wrapper (owns `Agent`, mpsc-in/broadcast-out) for serve mode; agent emits `SessionEvent` per turn |
+| `zeph-core` | Medium | `SessionActor` wrapper (owns `Agent`, mpsc-in/broadcast-out) for serve mode; agent emits `SessionEvent` per turn; computes `SessionResumeInfo` at hydration and emits `AgentEvent::ResumeBanner` (§13.3) |
 | `zeph-common` | None (optional small addition) | `SessionId` already present (spec 044); no changes required. Optional P2 addition: ~40–60 LOC JSONL line-framing + torn-tail-truncation helper (INV-SP-2 logic), storage-agnostic, usable by any future JSONL consumer. Not a dependency of `zeph-session`'s acceptance. |
-| `zeph-config` | Small | `[session]` + `[serve]` config structs; `condense_provider` ProviderName field; migration step 106+ for `--migrate-config` |
+| `zeph-config` | Small | `[session]` + `[serve]` config structs; `condense_provider` ProviderName field; new `[session.resume]` section (`show_banner`, `auto_expand`, `expand_default_lines`, `show_recap`, §13/§18); migration step 106+ for `--migrate-config` |
 | `zeph-db` | Small | Migration 105 (SQLite + PostgreSQL) alters `acp_sessions` |
 | `zeph-context` | Small | Expose `summarize_structured`/`SummarizationDeps` for reuse by `LlmCondenser`; emit `Compaction` event hook |
 | `zeph-agent-persistence` | Small | `SessionSink` dual-write (log-first per INV-SP-1) |
-| `zeph-acp` | Medium | `do_fork/resume/load/list_session` delegate to `zeph-session` engines; behavior-preservation tests required |
-| `zeph-tui` | Small | `/conv` commands; replay/condensation spinners |
+| `zeph-acp` | Medium | `do_fork/resume/load/list_session` delegate to `zeph-session` engines; behavior-preservation tests required; ACP resume banner exempt in v1 (§13.8) |
+| `zeph-channels` | Small | `CliChannel` prints the neutral resume banner line at startup (§13.5); chat channels (`TelegramChannel`/`DiscordChannel`/`SlackChannel`) emit nothing |
+| `zeph-commands` | Small | New `/history [N|all]` command (§13.6) + shared `TranscriptFormatter`, channel-agnostic like `/recap` |
+| `zeph-tui` | Small | `/conv` commands; replay/condensation spinners; wires the dead `App::load_history`/`SessionBrowser` to bounded `/history` backfill (display-only, split from `input_history`); renders `AgentEvent::ResumeBanner` (§13.5, §13.7) |
 | `zeph-gateway` | Reuse only | Auth/rate-limit patterns reused for `serve.http`; crate not modified |
 | `src/` (binary) | Medium | Extend `SessionsCommand` (+show/fork/export/import); add `Serve(ServeArgs)` to `Command`; `LiveSessionRegistry` + serve actor wiring under `TaskSupervisor` |
 
 ---
 
-## 17. Configuration
+## 18. Configuration
 
 ```toml
 [session]
@@ -643,6 +762,12 @@ condense_provider = "fast"           # ProviderName → [[llm.providers]]; empty
 threshold         = 0.85             # fraction of context budget that triggers condensation
 keep_recent       = 20               # minimum number of recent events to preserve after condensation
 
+[session.resume]
+show_banner         = true           # display-owning channels only (CLI/TUI); no effect on chat/ACP (§13.2, §13.8)
+auto_expand         = false          # if true, always render full history on startup instead of collapsed banner
+expand_default_lines = 20            # bound for /history with no argument (§13.6)
+show_recap          = false          # opt-in: fold session.recap summary into the resume banner
+
 [serve]
 http_addr             = "127.0.0.1:7878"
 acp                   = false
@@ -655,7 +780,7 @@ max_queued_prompts    = 8            # bounded mpsc size per session; 429 on ove
 
 ---
 
-## 18. Migration Path
+## 19. Migration Path
 
 **New installs:** `[session] enabled = true` → event logs from first turn.
 
@@ -663,9 +788,11 @@ max_queued_prompts    = 8            # bounded mpsc size per session; 429 on ove
 
 **Non-ACP sessions** (CLI, TUI, Telegram) that predate migration 105 do not have `acp_sessions` rows. They receive new rows on first turn after the migration if `[session] enabled = true`.
 
+**`--migrate-config` also gains a step** seeding `[session.resume]` defaults (§13, §18) for existing configs — verify the current max `--migrate-config` step at implementation time and add this as the next free step (a prior cycle collided on step numbering; re-check rather than assume a specific number).
+
 ---
 
-## 19. Open Questions (Resolved and Deferred)
+## 20. Open Questions (Resolved and Deferred)
 
 | ID | Question | Resolution |
 |----|---------|-----------|
@@ -676,10 +803,13 @@ max_queued_prompts    = 8            # bounded mpsc size per session; 429 on ove
 | OQ-E | CoW fork for large sessions? | **Deferred to P2** — eager copy is simpler and self-contained for MVP |
 | OQ-F | Blob GC when session deleted? | **Synchronous** — delete `blobs/` dir with the session; cross-session blob sharing not supported |
 | OQ-G | `acp_sessions` rename to `conversation_sessions`? | **Deferred to post-1.0 P4** cosmetic migration |
+| OQ-H | Interrupted-vs-clean-exit detection (DR-2) for the resume banner? | **Deferred to v2** — v1 ships a neutral banner only; when built, MUST reconcile with the #6378 stale-lock signal (§13.10) |
+| OQ-I | TUI resume banner placement: header vs. dedicated collapsible line above input? | **Implementation choice, not a spec constraint** — either satisfies §13.5; low risk |
+| OQ-J | Does the resume banner fire for ACP/IDE-embedding sessions in v1? | **No** — exempt like chat in v1 (§13.8); revisit in v2 if an IDE client requests it |
 
 ---
 
-## 20. Acceptance Criteria
+## 21. Acceptance Criteria
 
 All criteria are observable and testable.
 
@@ -698,10 +828,21 @@ All criteria are observable and testable.
 | AC-11 | `zeph sessions export/import` round-trips a session | Export to file; import; compare event counts and `sessions list` output |
 | AC-12 | `serve.session_idle_ttl_secs` eviction fires and marks session `idle` | Attach then detach; wait TTL; verify `acp_sessions.status = 'idle'` |
 | AC-13 | `sessions resume` with `--print` dumps events to stdout (backward compat) | `zeph sessions resume <id> --print`; verify JSONL output, no agent started |
+| AC-14 | Resuming a non-empty prior conversation via CLI prints a neutral "Resuming session" banner with turn count and last-active | Start CLI against a DB with ≥1 prior turn; verify the banner line is printed at startup with no interrupted/clean qualifier |
+| AC-15 | Resuming a non-empty prior conversation via TUI renders a persistent `AgentEvent::ResumeBanner` | Start TUI against non-empty history; verify the banner is rendered in the header/status area within the same render frame as the first prompt |
+| AC-16 | A fresh conversation (system-prompt-only, zero user/assistant/tool events) shows NO resume banner in CLI or TUI | Start against a brand-new conversation; verify no banner is printed/rendered |
+| AC-17 | A conversation interrupted mid-tool-loop (`[system, assistant(tool_use-only), user(tool_result)]`, no assistant text) still evaluates `is_resume = true` | Construct such a log; resume; verify the banner fires (regression test for the M-REV2-2 predicate fix, §13.4) |
+| AC-18 | `/history` with no argument returns at most `expand_default_lines` most-recent messages, sliced before formatting | Invoke `/history` on a 500-turn conversation; verify only the last N messages are ever passed to `TranscriptFormatter` |
+| AC-19 | `/history all` on a large conversation does not stall the TUI render loop | Invoke `/history all` on a 2000+ message history in TUI; verify the render loop keeps processing input/frames while formatting proceeds off-thread (or paginated), and a "may take a moment" notice is shown first |
+| AC-20 | TUI `/history` backfill does not pollute `input_history`/up-arrow recall | Invoke `/history`; press up-arrow in the input composer; verify only genuinely-typed prior inputs appear, never backfilled message text |
+| AC-21 | Chat channels (Telegram/Discord/Slack) never emit the resume banner | Resume a non-empty conversation via Telegram; verify no banner-equivalent message is sent |
+| AC-22 | `/history all` invoked in a chat channel chunks output to the channel's message-size limit | Invoke `/history all` in Telegram on a large conversation; verify output arrives as multiple messages under the 4096-character limit, or as an explicit truncation notice |
+| AC-23 | A forked session (`ForkEngine::fork`) with non-empty inherited history shows the resume banner on first attach to the new session | Fork a non-empty conversation; open/attach the child; verify the banner fires |
+| AC-24 | In `serve` mode, when multiple display-owning channels attach to the same `conversation_id`, the resume banner fires exactly once | Attach CLI, then TUI, to the same live session; verify only one channel renders/prints the banner |
 
 ---
 
-## 21. Implementation Roadmap
+## 22. Implementation Roadmap
 
 See `plan.md` for the full phased plan. Summary:
 
