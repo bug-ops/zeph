@@ -143,7 +143,7 @@ pub use features::{
     IndexConfig, ProactiveExplorationConfig, RegistryBackendKind, RegistryConfig,
     ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig, SchedulerDaemonConfig,
     SchedulerSecurityConfig, SkillEvaluationConfig, SkillMiningConfig, SkillPromptMode,
-    SkillsConfig, TraceConfig, VaultBackend, VaultConfig,
+    SkillsConfig, TraceConfig, VaultBackend, VaultConfig, default_subagent_skill_token_budget,
 };
 pub use fidelity::FidelityConfig;
 pub use hooks::{FileChangedConfig, HooksConfig};

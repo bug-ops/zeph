@@ -116,6 +116,10 @@ pub struct AgentSessionConfig {
     /// Inject `<budget>` XML into the volatile system prompt section (#2267).
     pub budget_hint_enabled: bool,
 
+    /// Token budget for skill bodies injected into a sub-agent's one-shot system prompt
+    /// at spawn time (#6421). See `SkillsConfig::subagent_skill_token_budget`.
+    pub subagent_skill_token_budget: usize,
+
     /// Session recap settings (#3064).
     pub recap: zeph_config::RecapConfig,
 
@@ -204,6 +208,7 @@ impl AgentSessionConfig {
             debug_config: config.debug.clone(),
             server_compaction: config.llm.providers.iter().any(|e| e.server_compaction),
             budget_hint_enabled: config.agent.budget_hint_enabled,
+            subagent_skill_token_budget: config.skills.subagent_skill_token_budget.get(),
             secrets: config
                 .secrets
                 .custom
@@ -234,6 +239,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn from_config_maps_all_fields() {
         let config = Config::default();
         let budget = 100_000;
@@ -332,6 +338,10 @@ mod tests {
         assert_eq!(
             sc.fidelity_config.is_some(),
             config.memory.fidelity.is_some()
+        );
+        assert_eq!(
+            sc.subagent_skill_token_budget,
+            config.skills.subagent_skill_token_budget.get()
         );
     }
 }

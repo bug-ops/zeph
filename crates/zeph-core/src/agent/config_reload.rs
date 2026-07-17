@@ -31,6 +31,8 @@ impl<C: Channel> Agent<C> {
         self.services.memory.compaction.summarization_threshold =
             config.memory.summarization_threshold;
         self.services.skill.max_active_skills = config.skills.max_active_skills.get();
+        self.services.skill.subagent_skill_token_budget =
+            config.skills.subagent_skill_token_budget.get();
         self.services.skill.disambiguation_threshold = config.skills.disambiguation_threshold;
         self.services.skill.min_injection_score = config.skills.min_injection_score;
         self.services.skill.cosine_weight = config.skills.cosine_weight.clamp(0.0, 1.0);

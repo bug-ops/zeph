@@ -274,6 +274,7 @@ impl Default for Config {
                 semantic_scan_provider: crate::providers::ProviderName::default(),
                 group_structured: false,
                 support_similarity_threshold: 0.50,
+                subagent_skill_token_budget: NonZeroUsize::new(12_000).expect("12000 is non-zero"),
             },
             memory: MemoryConfig {
                 sqlite_path: default_sqlite_path_field(),

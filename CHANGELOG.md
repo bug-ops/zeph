@@ -36,6 +36,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   identity of any dispatch path. All three `ChannelMessage` construction sites in the ACP
   agent (`do_prompt`, `/clear`, `/review`) now carry that identity as `owner_key` (#6419).
 
+- Sub-agent definitions with the default (empty) `skills.include` filter inherit every skill
+  in the registry, and — unlike the main agent's per-turn skill matcher — their bodies are
+  injected once, unranked, into the sub-agent's one-shot spawn-time system prompt with no cap
+  (#6421). A large skill set could silently blow the turn-1 context budget. `filtered_skills_for`
+  now accumulates skill bodies against a new `[skills] subagent_skill_token_budget` config
+  field (default `12000` tokens) in registry order, always including at least the first skill,
+  and appends a `[skill budget: N/M skills included, ...]` marker plus a `tracing::warn!` when
+  any skills are left out, so the truncation is visible in the prompt and transcript instead of
+  silent. The cap applies only to this empty-include case — a sub-agent with an explicit,
+  hand-curated `skills.include` list is never truncated, since the operator opted into that
+  specific set on purpose.
+
 - `zeph-session`: `AdvisoryLock::acquire`'s `WOULDBLOCK` path gave operators only a bare
   "another session is already active" message with no way to tell whether the lock's holder
   was still running (#6378). The holder's PID is now written into the sibling lock file

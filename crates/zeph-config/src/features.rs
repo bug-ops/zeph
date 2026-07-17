@@ -50,6 +50,20 @@ fn default_max_active_skills() -> NonZeroUsize {
     NonZeroUsize::new(5).expect("5 is non-zero")
 }
 
+/// Default value for [`SkillsConfig::subagent_skill_token_budget`].
+///
+/// Exposed as `pub` (unlike this file's other `default_*` helpers) so `zeph-core` can source
+/// its `SkillState` construction-time default from the same constant instead of duplicating
+/// the literal, which would otherwise be free to drift from the config default over time.
+///
+/// # Panics
+///
+/// Never panics in practice — `12_000` is a non-zero literal.
+#[must_use]
+pub fn default_subagent_skill_token_budget() -> NonZeroUsize {
+    NonZeroUsize::new(12_000).expect("12000 is non-zero")
+}
+
 fn default_index_watch() -> bool {
     // Default off: watcher watches ALL files recursively and bypasses gitignore
     // filtering at the OS level. Projects with large .local/ or target/ directories
@@ -351,6 +365,7 @@ impl Default for RegistryConfig {
 /// max_active_skills = 5
 /// disambiguation_threshold = 0.20
 /// hybrid_search = true
+/// subagent_skill_token_budget = 12000
 /// ```
 #[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 #[derive(Debug, Deserialize, Serialize)]
@@ -495,6 +510,37 @@ pub struct SkillsConfig {
     /// Default: `0.50`.
     #[serde(default = "default_support_similarity_threshold")]
     pub support_similarity_threshold: f32,
+
+    /// Token budget for skill bodies injected into a sub-agent's one-shot system prompt.
+    ///
+    /// Sub-agent definitions with an empty `skills.include` filter inherit every skill in
+    /// the registry (documented, intentional — see [`crate::SkillFilter`]). Unlike the main
+    /// agent's per-turn skill matcher, a sub-agent's skill bodies are injected once, at spawn
+    /// time, with no relevance ranking and no later opportunity to trim: an unbounded include
+    /// set can silently blow the turn-1 context budget (#6421). This budget applies **only** to
+    /// that empty-`include` case — a definition with an explicit, hand-curated `include` list is
+    /// never capped, since the operator opted into that specific set on purpose. Skill bodies are
+    /// greedily packed in registry order (alphabetical by skill directory, not relevance-ranked)
+    /// up to the budget — an over-budget skill is skipped, not a hard stop, so a smaller skill
+    /// later in the order can still fit — and any skills left out are surfaced via a visible
+    /// truncation marker rather than silently dropped.
+    ///
+    /// Default: `12000` tokens.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::num::NonZeroUsize;
+    /// use zeph_config::Config;
+    ///
+    /// let config = Config::default();
+    /// assert_eq!(
+    ///     config.skills.subagent_skill_token_budget,
+    ///     NonZeroUsize::new(12_000).unwrap()
+    /// );
+    /// ```
+    #[serde(default = "default_subagent_skill_token_budget")]
+    pub subagent_skill_token_budget: NonZeroUsize,
 }
 
 fn default_generation_timeout_ms() -> u64 {

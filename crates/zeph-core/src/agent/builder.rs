@@ -2674,6 +2674,7 @@ impl<C: Channel> Agent<C> {
             debug_config: _debug_config,
             server_compaction,
             budget_hint_enabled,
+            subagent_skill_token_budget,
             secrets,
             recap,
             loop_min_interval_secs,
@@ -2745,6 +2746,7 @@ impl<C: Channel> Agent<C> {
         self.services.memory.persistence.store_config = store_config;
         self.wire_graph_persistence();
         self.runtime.config.budget_hint_enabled = budget_hint_enabled;
+        self.services.skill.subagent_skill_token_budget = subagent_skill_token_budget;
         self.runtime.config.recap_config = recap;
         self.runtime.config.loop_min_interval_secs = loop_min_interval_secs;
         self.runtime.config.mcp_media = mcp_media;

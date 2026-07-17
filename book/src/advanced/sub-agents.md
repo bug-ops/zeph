@@ -217,6 +217,8 @@ Report findings as a structured list with severity (critical/warning/info).
 
 If neither `tools.allow` nor `tools.deny` is specified, the sub-agent inherits all tools from the main agent.
 
+Matched skill bodies are capped by `[skills] subagent_skill_token_budget` (default `12000` tokens, config-wide, not per-agent) — applies only when `skills.include` is empty; an explicit, hand-curated `include` list is never capped — see [Skill Filtering](#skill-filtering) below.
+
 ### `permission_mode` Values
 
 | Value | Description |
@@ -503,6 +505,14 @@ skills:
 
 - Empty `include` = all skills pass (unless excluded)
 - `exclude` always takes precedence over `include`
+- Matched skill bodies are injected once into the sub-agent's system prompt at spawn time. When
+  `include` is **empty** (the "inherit everything" default), bodies are also capped at
+  `[skills] subagent_skill_token_budget` tokens (default `12000`): bodies are greedily packed in
+  registry order — an over-budget skill is skipped, not a hard stop, so a smaller skill later in
+  the order can still fit — and a `[skill budget: N/M skills included, ...]` marker is appended
+  so the truncation is visible in both the prompt and the transcript rather than silent (#6421).
+  When `include` is **non-empty** (an explicit, hand-curated list), the budget does not apply —
+  all matched bodies are injected uncapped, since the operator opted into that specific set.
 
 ## Security Model
 

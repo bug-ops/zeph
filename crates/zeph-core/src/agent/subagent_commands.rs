@@ -701,24 +701,86 @@ impl<C: Channel> Agent<C> {
             .await;
         Some(result)
     }
+    /// Resolve the skill bodies to inject into a freshly spawned (or resumed) sub-agent's
+    /// one-shot system prompt.
+    ///
+    /// A sub-agent definition with an empty `skills.include` filter inherits every skill in
+    /// the registry (documented, intentional — see [`zeph_config::SkillFilter`]). Unlike the
+    /// main agent's per-turn skill matcher, these bodies are injected once, at spawn time, with
+    /// no relevance ranking and no later opportunity to trim — an unbounded include set can
+    /// silently blow the turn-1 context budget (#6421).
+    ///
+    /// The `subagent_skill_token_budget` cap applies **only** to that empty-include case. A
+    /// definition with an explicit, hand-curated `skills.include` list is never capped here —
+    /// the operator opted into that specific set on purpose, and applying the same budget would
+    /// silently regress configs that were never broken; #6421 is about the *default* (empty)
+    /// case only.
+    ///
+    /// When capped, bodies are accumulated in the order [`zeph_subagent::filter_skills`] returns
+    /// them — the registry's directory-walk order, i.e. alphabetical by skill directory name,
+    /// **not** relevance-ranked. A task-critical skill whose directory happens to sort late is
+    /// systematically the first cut on every default-include spawn; operators who hit this can
+    /// curate `include` explicitly or raise the budget. Accumulation is a greedy best-fit, not a
+    /// hard prefix cut: an over-budget skill is skipped (not a stopping point), so a smaller
+    /// skill later in the order can still be packed in afterward. The first skill is always
+    /// included even if it alone exceeds the budget, so a single oversized skill never starves
+    /// the whole set. Any skills left out are surfaced via a synthetic marker entry rather than
+    /// silently dropped.
     pub(super) fn filtered_skills_for(&self, agent_name: &str) -> Option<Vec<String>> {
         let mgr = self.services.orchestration.subagent_manager.as_ref()?;
         let def = mgr.definitions().iter().find(|d| d.name == agent_name)?;
         let reg = self.services.skill.registry.read();
-        match zeph_subagent::filter_skills(&reg, &def.skills) {
-            Ok(skills) => {
-                let bodies: Vec<String> = skills.into_iter().map(|s| s.body.clone()).collect();
-                if bodies.is_empty() {
-                    None
-                } else {
-                    Some(bodies)
-                }
-            }
+        let skills = match zeph_subagent::filter_skills(&reg, &def.skills) {
+            Ok(skills) => skills,
             Err(e) => {
                 tracing::warn!(error = %e, "skill filtering failed for sub-agent");
-                None
+                return None;
             }
+        };
+        if skills.is_empty() {
+            return None;
         }
+
+        // #6421 scope: only the empty-include "inherit everything" case is capped. An explicit,
+        // hand-curated include list is trusted as-is (see doc comment above).
+        if !def.skills.include.is_empty() {
+            return Some(skills.into_iter().map(|s| s.body).collect());
+        }
+
+        let total = skills.len();
+        let budget = self.services.skill.subagent_skill_token_budget;
+        let counter = &self.runtime.metrics.token_counter;
+
+        let mut bodies: Vec<String> = Vec::with_capacity(total);
+        let mut running_tokens = 0usize;
+        let mut omitted_names: Vec<&str> = Vec::new();
+
+        for skill in &skills {
+            let skill_tokens = counter.count_tokens(&skill.body);
+            if !bodies.is_empty() && running_tokens + skill_tokens > budget {
+                omitted_names.push(skill.meta.name.as_str());
+                continue;
+            }
+            running_tokens += skill_tokens;
+            bodies.push(skill.body.clone());
+        }
+
+        if !omitted_names.is_empty() {
+            let included = bodies.len();
+            tracing::warn!(
+                agent_name,
+                included,
+                total,
+                budget_tokens = budget,
+                "sub-agent skill body budget exceeded; truncated skill set"
+            );
+            bodies.push(format!(
+                "[skill budget: {included}/{total} skills included, budget={budget} tokens — omitted: {}]",
+                omitted_names.join(", ")
+            ));
+        }
+
+        Some(bodies)
     }
     /// Build a `SpawnContext` from current agent state for sub-agent spawning.
     pub(super) fn build_spawn_context(
@@ -1633,5 +1695,226 @@ mod tests {
         // proves the wiring produces a working `Arc<dyn DebugDumpSink>`, not just `Some(_)`.
         let id = sink.dump_request("mock", &[], &[], serde_json::Value::Null);
         sink.dump_response(id, &zeph_llm::provider::ChatResponse::Text("ok".into()));
+    }
+
+    // ── filtered_skills_for token-budget cap (#6421) ─────────────────────────
+
+    /// Builds a `SkillRegistry` with `count` skills on disk, each named `skill-N` with a body
+    /// made of `words_per_skill` repeated words — enough real text that `TokenCounter` charges
+    /// a nontrivial, predictable-in-sign (if not exact) token count per skill.
+    ///
+    /// Returns the backing `TempDir` alongside the registry: skill bodies are loaded lazily
+    /// from disk on first access (`SkillRegistry::skill`/`body`), so the caller must keep the
+    /// directory alive for as long as the registry is used, not just during `load`.
+    fn registry_with_skills(
+        count: usize,
+        words_per_skill: usize,
+    ) -> (SkillRegistry, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        for i in 0..count {
+            let skill_dir = temp_dir.path().join(format!("skill-{i}"));
+            std::fs::create_dir(&skill_dir).unwrap();
+            let body = "lorem ".repeat(words_per_skill);
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: skill-{i}\ndescription: Test skill {i}\n---\n{body}"),
+            )
+            .unwrap();
+        }
+        let registry = SkillRegistry::load(&[temp_dir.path().to_path_buf()]);
+        (registry, temp_dir)
+    }
+
+    fn agent_with_skill_registry_and_def(
+        registry: SkillRegistry,
+        def: zeph_subagent::SubAgentDef,
+    ) -> Agent<MockChannel> {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let mut mgr = zeph_subagent::SubAgentManager::new(4);
+        mgr.definitions_mut().push(def);
+        agent.services.orchestration.subagent_manager = Some(mgr);
+        agent
+    }
+
+    fn agent_with_skill_registry_and_helper_def(registry: SkillRegistry) -> Agent<MockChannel> {
+        agent_with_skill_registry_and_def(registry, subagent_def("helper"))
+    }
+
+    #[test]
+    fn filtered_skills_for_under_budget_returns_all_bodies_no_marker() {
+        // Default `SkillFilter` (empty include/exclude) inherits every registry skill —
+        // the #6421 scenario — but the budget here is generous enough that nothing is cut.
+        let (registry, _temp_dir) = registry_with_skills(3, 20);
+        let mut agent = agent_with_skill_registry_and_helper_def(registry);
+        agent.services.skill.subagent_skill_token_budget = 1_000_000;
+
+        let bodies = agent
+            .filtered_skills_for("helper")
+            .expect("3 skills with a huge budget must return Some");
+
+        assert_eq!(
+            bodies.len(),
+            3,
+            "no truncation marker expected when everything fits under budget"
+        );
+        for body in &bodies {
+            assert!(
+                body.contains("lorem"),
+                "every returned entry must be a real skill body, not a marker: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn filtered_skills_for_over_budget_truncates_with_marker() {
+        // 5 skills, each with a large body; a tiny budget forces truncation well before the
+        // full set is accumulated.
+        let (registry, _temp_dir) = registry_with_skills(5, 500);
+        let mut agent = agent_with_skill_registry_and_helper_def(registry);
+        agent.services.skill.subagent_skill_token_budget = 10;
+
+        let bodies = agent
+            .filtered_skills_for("helper")
+            .expect("at least the first skill must always be included");
+
+        let marker_count = bodies
+            .iter()
+            .filter(|b| b.starts_with("[skill budget:"))
+            .count();
+        assert_eq!(
+            marker_count, 1,
+            "exactly one truncation marker entry must be appended, got bodies: {bodies:?}"
+        );
+        let marker = bodies
+            .iter()
+            .find(|b| b.starts_with("[skill budget:"))
+            .unwrap();
+        let included = bodies.len() - 1;
+        assert!(
+            included < 5,
+            "budget=10 tokens must not fit all 5 large skills, included={included}"
+        );
+        assert!(
+            included >= 1,
+            "the first skill must always be included even when it alone exceeds the budget, \
+             got included={included}"
+        );
+        assert!(
+            bodies[0].contains("lorem"),
+            "the always-included first entry must be a real skill body, not the marker: {}",
+            bodies[0]
+        );
+        assert!(
+            marker.contains(&format!("{included}/5 skills included")),
+            "marker must report the correct included/total count: {marker}"
+        );
+        assert!(
+            marker.contains("budget=10 tokens"),
+            "marker must report the configured budget: {marker}"
+        );
+    }
+
+    #[test]
+    fn filtered_skills_for_mid_budget_greedily_fills_multiple_fitting_skills() {
+        // 5 identical-body skills so each costs exactly the same token count T (computed via the
+        // same TokenCounter the fix uses). A budget of `2*T + 1` fits skill-0 and skill-1 exactly
+        // (running total 2T <= budget) but not a 3rd (3T > budget) — this exercises the greedy
+        // `running_tokens + skill_tokens > budget` accumulation for a *fitting* 2nd skill, not
+        // just the always-included first one (S2: the over-budget test alone never reaches this
+        // arithmetic since its budget is too small to fit even a 2nd skill).
+        let (registry, _temp_dir) = registry_with_skills(5, 500);
+        let single_body = "lorem ".repeat(500);
+        let per_skill_tokens = zeph_memory::TokenCounter::new().count_tokens(&single_body);
+        assert!(
+            per_skill_tokens > 1,
+            "test setup: per-skill token count must be large enough for 2*T+1 to exclude a 3rd \
+             skill, got {per_skill_tokens}"
+        );
+
+        let mut agent = agent_with_skill_registry_and_helper_def(registry);
+        agent.services.skill.subagent_skill_token_budget = 2 * per_skill_tokens + 1;
+
+        let bodies = agent
+            .filtered_skills_for("helper")
+            .expect("at least the first skill must always be included");
+
+        let marker = bodies
+            .iter()
+            .find(|b| b.starts_with("[skill budget:"))
+            .unwrap_or_else(|| panic!("expected a truncation marker, got bodies: {bodies:?}"));
+        let included = bodies.len() - 1;
+        assert_eq!(
+            included, 2,
+            "budget=2*T+1 must fit exactly 2 of the 5 identical-cost skills, got {included}"
+        );
+        assert!(
+            marker.contains("2/5 skills included"),
+            "marker must report the correct included/total count: {marker}"
+        );
+        // Registry order is alphabetical by skill directory name (skill-0..skill-4), so the
+        // 2 included skills are skill-0/skill-1 and the 3 omitted are skill-2/3/4 — assert the
+        // marker's omitted-name list matches exactly, not just the count (closes Gap 3).
+        let omitted_segment = marker
+            .split("omitted: ")
+            .nth(1)
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap_or_else(|| panic!("marker missing 'omitted: ...]' segment: {marker}"));
+        let mut omitted_names: Vec<&str> = omitted_segment.split(", ").collect();
+        omitted_names.sort_unstable();
+        assert_eq!(
+            omitted_names,
+            vec!["skill-2", "skill-3", "skill-4"],
+            "marker must name exactly the 3 truncated skills, got marker: {marker}"
+        );
+    }
+
+    #[test]
+    fn filtered_skills_for_explicit_include_is_never_capped() {
+        // S1 (scope decision): the budget cap applies only to the empty-include "inherit
+        // everything" case #6421 is about. A definition with an explicit, hand-curated
+        // `skills.include` list must be returned uncapped even when its total size would
+        // otherwise exceed the configured budget — the operator opted into that set on purpose.
+        use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use zeph_subagent::hooks::SubagentHooks;
+
+        let (registry, _temp_dir) = registry_with_skills(5, 500);
+        let def = zeph_subagent::SubAgentDef {
+            name: "curated".to_owned(),
+            description: "A curated helper".into(),
+            model: None,
+            tools: ToolPolicy::InheritAll,
+            disallowed_tools: vec![],
+            permissions: SubAgentPermissions::default(),
+            skills: SkillFilter {
+                include: vec!["skill-*".to_owned()],
+                exclude: vec![],
+            },
+            system_prompt: "You are helpful.".into(),
+            hooks: SubagentHooks::default(),
+            memory: None,
+            source: None,
+            file_path: None,
+        };
+        let mut agent = agent_with_skill_registry_and_def(registry, def);
+        // Budget far too small to fit all 5 skills — would definitely truncate the empty-include
+        // path, but must have zero effect here.
+        agent.services.skill.subagent_skill_token_budget = 10;
+
+        let bodies = agent
+            .filtered_skills_for("curated")
+            .expect("explicit include must still match all 5 skill-* skills");
+
+        assert_eq!(
+            bodies.len(),
+            5,
+            "explicit include list must never be truncated by the budget, got: {bodies:?}"
+        );
+        assert!(
+            bodies.iter().all(|b| b.contains("lorem")),
+            "every entry must be a real skill body, not a truncation marker: {bodies:?}"
+        );
     }
 }

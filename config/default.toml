@@ -184,6 +184,12 @@ embedding_model = "qwen3-embedding"
 # paths = ["/absolute/path/to/skills"]
 # Maximum number of skills to inject into context per query (embedding-based selection)
 max_active_skills = 5
+# Token budget for skill bodies injected into a sub-agent's one-shot system prompt at spawn
+# time. Sub-agents with an empty skills.include filter inherit every skill in the registry;
+# bodies are greedily packed in registry order up to this budget (an over-budget skill is
+# skipped, not a hard stop — a smaller skill later in the order can still fit), and a
+# truncation marker is appended for any skills left out (#6421).
+subagent_skill_token_budget = 12000
 # Prompt mode: "full" (inject full SKILL.md), "compact" (name+description only), "auto" (compact if budget < 8192)
 # prompt_mode = "auto"
 # Minimum score delta for skill disambiguation (0.0-1.0)

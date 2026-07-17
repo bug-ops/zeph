@@ -94,6 +94,9 @@ pub(crate) struct SkillState {
     pub(crate) trust_config: crate::config::TrustConfig,
     pub(crate) matcher: Option<SkillMatcherBackend>,
     pub(crate) max_active_skills: usize,
+    /// Token budget for skill bodies injected into a sub-agent's one-shot system prompt at
+    /// spawn time. Mirrors `SkillsConfig::subagent_skill_token_budget` (#6421).
+    pub(crate) subagent_skill_token_budget: usize,
     pub(crate) disambiguation_threshold: f32,
     pub(crate) min_injection_score: f32,
     pub(crate) embedding_model: String,
@@ -1414,6 +1417,7 @@ impl SkillState {
             trust_config: crate::config::TrustConfig::default(),
             matcher,
             max_active_skills,
+            subagent_skill_token_budget: zeph_config::default_subagent_skill_token_budget().get(),
             disambiguation_threshold: 0.20,
             min_injection_score: 0.20,
             embedding_model: String::new(),
