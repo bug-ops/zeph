@@ -1,0 +1,11 @@
+name: watcher-skill
+description: A skill with keybindings and monitors but no UI elements.
+extensions:
+  keybindings:
+    - chord: "cmd+shift+r"
+      action: "refactor-selected"
+  monitors:
+    - trigger: file_changed
+      action: reload
+    - trigger: schedule
+      action: run-nightly

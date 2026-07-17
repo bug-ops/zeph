@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Added
 
+- Coverage-guided fuzzing harnesses (cargo-fuzz) for SKILL.md frontmatter, skill extensions,
+  AST chunker, and TOML config parsing (#6365).
+
 - **MCP image passthrough — config/CLI/TUI surface** (spec-072 P3, #6241): completes the
   opt-in MCP image passthrough feature (#6331) with the remaining integration points.
   - `--init`: the MCP remote-server wizard now asks "Enable image passthrough for this

@@ -1,0 +1,107 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: skill_frontmatter
+            budget: 300
+          - target: skill_extensions
+            budget: 300
+          - target: chunk_file
+            budget: 300
+          - target: config_toml
+            budget: 120
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
+
+      - uses: taiki-e/install-action@afc483d62172accfff644fa56e82b4dab50727fc # cargo-fuzz
+        with:
+          tool: cargo-fuzz
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: fuzz -> target
+          prefix-key: fuzz-${{ matrix.target }}
+
+      - name: Fuzz ${{ matrix.target }}
+        id: fuzz
+        working-directory: fuzz
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=${{ matrix.budget }}
+
+      - name: Minimize crash and file issue
+        if: failure() && steps.fuzz.outcome == 'failure'
+        working-directory: fuzz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FUZZ_TARGET: ${{ matrix.target }}
+        run: |
+          crash="$(ls -t "artifacts/${FUZZ_TARGET}"/* 2>/dev/null | head -1)"
+          if [[ -z "$crash" ]]; then
+            echo "no crash artifact found under artifacts/${FUZZ_TARGET}/, skipping issue filing"
+            exit 0
+          fi
+          cargo +nightly fuzz tmin "$FUZZ_TARGET" "$crash" || true
+
+          title="fuzz: crash in ${FUZZ_TARGET}"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "${title} in:title" --json number,title \
+            --jq "[.[] | select(.title == \"${title}\")] | .[0].number" || true)"
+          if [[ -n "$existing" ]]; then
+            echo "open issue #$existing already tracks a crash in ${FUZZ_TARGET}, skipping duplicate"
+            exit 0
+          fi
+
+          body_file="$(mktemp)"
+          {
+            echo "## Fuzz crash"
+            echo ""
+            echo "Target: \`${FUZZ_TARGET}\`"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo ""
+            echo "The authoritative reproducer is attached to the workflow run above as the"
+            echo "\`fuzz-artifacts\` artifact, under \`${FUZZ_TARGET}/\`. A base64 copy of the"
+            echo "original (non-minimized) crash input is included below for quick inspection."
+            echo ""
+            echo '```'
+            base64 "$crash"
+            echo '```'
+          } > "$body_file"
+
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "fuzz: crash in ${FUZZ_TARGET}" \
+            --label bug --label P1 \
+            --body-file "$body_file"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: fuzz-corpus-${{ matrix.target }}
+          path: fuzz/corpus/${{ matrix.target }}/
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore

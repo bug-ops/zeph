@@ -1,4 +1,4 @@
-# Zeph
+# Zeph
 
 <div align="center">
   <img src="book/src/assets/zeph_v8_github.png" alt="Zeph" width="800">
@@ -289,7 +289,7 @@ Zeph draws on published work in parallel tool execution, temporal knowledge grap
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md). Coverage-guided fuzzing harnesses for parser-like components live in [`fuzz/`](fuzz/README.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md).
 
 ## License
 

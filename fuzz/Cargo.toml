@@ -1,0 +1,46 @@
+[package]
+name = "zeph-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+arbitrary = { version = "1.4.2", features = ["derive"] }
+libfuzzer-sys = "0.4.13"
+toml = "1.1.2"
+zeph-config = { path = "../crates/zeph-config" }
+zeph-index = { path = "../crates/zeph-index", features = ["sqlite"] }
+zeph-skills = { path = "../crates/zeph-skills" }
+
+[[bin]]
+name = "skill_frontmatter"
+path = "fuzz_targets/skill_frontmatter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "skill_extensions"
+path = "fuzz_targets/skill_extensions.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chunk_file"
+path = "fuzz_targets/chunk_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_toml"
+path = "fuzz_targets/config_toml.rs"
+test = false
+doc = false
+bench = false

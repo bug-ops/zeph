@@ -1,0 +1,13 @@
+name: my-skill
+description: A skill.
+extensions:
+  ui:
+    - type: toolbar_button
+      label: Run
+      icon: play
+  keybindings:
+    - chord: ctrl+r
+      action: run
+  monitors:
+    - trigger: file_changed
+      action: reload

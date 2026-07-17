@@ -1,0 +1,1811 @@
+[agent]
+# Agent display name
+name = "Zeph"
+# Maximum tool execution iterations per user message (doom-loop protection)
+max_tool_iterations = 10
+# Check for new Zeph releases on startup
+# auto_update_check = true
+# Automatically detect provider-specific instruction files (CLAUDE.md, AGENTS.md, etc.)
+# instruction_auto_detect = true
+# Inject a <budget> XML block into the system prompt so the LLM can self-regulate (#2267)
+# budget_hint_enabled = true
+# Additional instruction files to always inject into the system prompt
+# instruction_files = ["custom-instructions.md"]
+
+# Background task supervisor tuning (optional — defaults shown)
+# [agent.supervisor]
+# enrichment_limit = 4
+# telemetry_limit = 8
+# abort_enrichment_on_turn = false
+
+[llm]
+# Routing strategy for multi-provider configs: "none" (default), "ema", "thompson", "cascade", "task", "bandit"
+# routing = "none"
+
+# ── Cascade routing ───────────────────────────────────────────────────────────
+# Set routing = "cascade" to enable escalating provider chain.
+# Cheap provider is tried first; escalates on degenerate output.
+#
+# [llm.router.cascade]
+# quality_threshold = 0.5      # minimum score [0.0, 1.0] to accept without escalating
+# max_escalations = 2          # max quality-based escalations per request
+# classifier_mode = "heuristic" # "heuristic" (default) or "judge"
+# judge_timeout_ms = 5000      # hard timeout for judge LLM call (ms); fallback on exceeded
+# window_size = 50             # rolling quality history window per provider
+# # cost_tiers = ["cheap", "mid", "expensive"]  # explicit cost ordering
+
+# ── PILOT bandit routing ──────────────────────────────────────────────────────
+# Set routing = "bandit" to enable LinUCB contextual bandit provider selection.
+# The bandit learns which provider performs best for each query context using
+# online reward feedback. Falls back to Thompson sampling during warmup.
+#
+# [llm.router.bandit]
+# alpha = 1.0                  # exploration parameter (higher = more exploration)
+# dim = 32                     # embedding truncation dimension (NOT PCA; see docs)
+# cost_weight = 0.1            # cost penalty weight in reward signal
+# decay_factor = 1.0           # session decay (< 1.0 enables re-exploration)
+# embedding_timeout_ms = 50    # hard timeout for embed call; fallback on exceeded
+# cache_size = 512             # max cached query embeddings
+# # embedding_provider:
+# # SLM recommended: use a fast local embedding model (Ollama nomic-embed-text,
+# # Candle, or text-embedding-3-small). This is called on every bandit request.
+# # Empty string disables LinUCB (always falls back to Thompson).
+# embedding_provider = ""
+# state_path = ""              # default: ~/.config/zeph/router_bandit_state.json
+
+# Dedicated provider for tool-pair summarization and context compaction (optional).
+# Falls back to the primary provider when unset.
+# String shorthand or structured table — pick one.
+# summary_model = "ollama/qwen3:1.7b"   # ollama/<model> | claude[/<model>] | openai[/<model>] | compatible/<name>
+# [llm.summary_provider]
+# type = "claude"
+# model = "claude-haiku-4-5-20251001"
+
+# LLM response cache (SQLite-backed, blake3 key hashing)
+# response_cache_enabled = false
+# response_cache_ttl_secs = 3600
+
+# Speech-to-text: set stt_model on a [[llm.providers]] entry to enable STT.
+# Then reference that provider name in [llm.stt].
+# [[llm.providers]]
+# name = "openai-stt"
+# type = "openai"
+# stt_model = "whisper-1"
+#
+# [llm.stt]
+# provider = "openai-stt"
+# language = "auto"
+
+# Provider pool: each [[llm.providers]] entry defines one backend.
+# The first entry (or the one with default = true) is the primary chat provider.
+[[llm.providers]]
+# Provider backend type: ollama, claude, openai, gemini, compatible, candle
+type = "ollama"
+model = "qwen3:8b"
+embedding_model = "qwen3-embedding"
+# base_url = "http://localhost:11434"   # default for ollama
+# embed = true                          # mark as embedding provider (default: first with embedding_model)
+# default = true                        # mark as primary chat provider (default: first entry)
+# tool_use = false                      # enable native tool_use (llama3.1, qwen2.5, etc.)
+# vision_model = "llava:7b"             # vision model override
+# instruction_file = "llm-instructions.md"
+
+# Cloud provider (Claude)
+# [[llm.providers]]
+# type = "claude"
+# model = "claude-sonnet-5"
+# max_tokens = 4096
+# default = true
+# server_compaction = false             # Claude compact-2026-01-12 beta
+# enable_extended_context = false       # 1M token window (Claude Opus and Sonnet models, not Haiku)
+# prompt_cache_ttl = "1h"              # "1h" = extended TTL beta (writes ~2× cost); omit for default ~5 min
+# thinking = { type = "enabled", budget_tokens = 10000 }
+
+# OpenAI / Azure
+# [[llm.providers]]
+# type = "openai"
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-4o-mini"
+# max_tokens = 4096
+# embedding_model = "text-embedding-3-small"
+# reasoning_effort = "medium"           # low, medium, high (for o-series models)
+
+# Google Gemini
+# [[llm.providers]]
+# type = "gemini"
+# model = "gemini-2.0-flash"
+# max_tokens = 8192
+# embedding_model = "text-embedding-004"
+# thinking_level = "low"                # minimal, low, medium, high (Gemini 3+)
+# thinking_budget = 1024                # token budget (Gemini 2.5 models)
+
+# Compatible provider (Groq, Together, Mistral, local vLLM, etc.)
+# name is required for compatible providers; ZEPH_COMPATIBLE_<NAME>_API_KEY vault secret is used for auth.
+# [[llm.providers]]
+# name = "groq"
+# type = "compatible"
+# base_url = "https://api.groq.com/openai/v1"
+# model = "llama-3.3-70b-versatile"
+# max_tokens = 4096
+
+# GonkaGate — OpenAI-compatible decentralized inference gateway (USD billing).
+# Sign up at https://gonkagate.com/en/register, create an API key, then:
+#   zeph vault set ZEPH_COMPATIBLE_GONKAGATE_API_KEY gp-...
+# [[llm.providers]]
+# name = "gonkagate"
+# type = "compatible"
+# base_url = "https://api.gonkagate.com/v1"
+# model = "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8"
+# max_tokens = 4096
+
+# Cocoon — decentralized AI inference via local TEE sidecar (https://cocoon.org)
+# Requires the Cocoon client runner at localhost:10000 (--features cocoon).
+# Set access hash in vault: zeph vault set ZEPH_COCOON_ACCESS_HASH <hash>
+# [[llm.providers]]
+# name = "cocoon"
+# type = "cocoon"
+# model = "Qwen/Qwen3-0.6B"
+# cocoon_client_url = "http://localhost:10000"
+# cocoon_access_hash = ""   # empty = resolve from vault
+
+# Candle local inference (feature-gated: --features candle)
+# [[llm.providers]]
+# type = "candle"
+# [llm.providers.candle]
+# source = "huggingface"                # "local" or "huggingface"
+# filename = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
+# local_path = ""                       # used when source = "local"
+# chat_template = "chatml"              # llama3, chatml, mistral, phi3, raw
+# device = "cpu"                        # cpu, metal, cuda, auto
+
+# Multi-provider example:
+#
+# [[llm.providers]]
+# name = "ollama"
+# type = "ollama"
+# model = "qwen3:8b"
+# embedding_model = "qwen3-embedding"
+# embed = true
+#
+# [[llm.providers]]
+# name = "claude"
+# type = "claude"
+# model = "claude-sonnet-5"
+# max_tokens = 4096
+# default = true
+
+[skills]
+# Directories to scan for SKILL.md files
+# Defaults to the user config dir (for example ~/.config/zeph/skills on Linux,
+# ~/Library/Application Support/Zeph/skills on macOS,
+# %APPDATA%\zeph\skills on Windows).
+# paths = ["/absolute/path/to/skills"]
+# Maximum number of skills to inject into context per query (embedding-based selection)
+max_active_skills = 5
+# Prompt mode: "full" (inject full SKILL.md), "compact" (name+description only), "auto" (compact if budget < 8192)
+# prompt_mode = "auto"
+# Minimum score delta for skill disambiguation (0.0-1.0)
+# disambiguation_threshold = 0.05
+# SkillOrchestra: RL routing head for skill re-ranking
+# rl_routing_enabled = false
+# rl_learning_rate = 0.01
+# rl_weight = 0.3
+# rl_persist_interval = 10
+# rl_warmup_updates = 50
+
+[skills.learning]
+# Enable self-learning skill improvement (feature enabled by default, runtime toggle)
+enabled = false
+# Automatically activate improved versions (false = require manual approval)
+auto_activate = false
+# Minimum failures before generating improvement
+min_failures = 3
+# Success rate threshold below which improvement is triggered (0.0-1.0)
+improve_threshold = 0.7
+# Success rate below which automatic rollback occurs (0.0-1.0)
+rollback_threshold = 0.5
+# Minimum evaluations before rollback decision
+min_evaluations = 5
+# Maximum auto-generated versions per skill
+max_versions = 10
+# Cooldown between improvements for same skill (minutes)
+cooldown_minutes = 60
+# Correction detector strategy: "regex" (default), "judge" (LLM-based), or "model" (ML classifier)
+# detector_mode = "regex"
+# Named provider from [[llm.providers]] for the judge detector. Takes precedence over judge_model.
+# Empty = fall back to judge_model, then to primary provider.
+# judge_provider = ""
+# LLM model for judge detector (e.g. "claude-sonnet-5"). Empty = use primary provider.
+# judge_model = ""
+# HuggingFace repo ID for ML correction detector (requires detector_mode = "model" and classifiers feature).
+# When empty, falls back to classifiers.ner_model default.
+# detector_model = ""
+# Require cross-session validation before auto-promote/demote
+# cross_session_rollout = false
+# Minimum distinct sessions required for promotion (when cross_session_rollout = true)
+# min_sessions_before_promote = 2
+# Minimum distinct sessions before auto-demotion (when cross_session_rollout = true)
+# min_sessions_before_demote = 1
+# Maximum content sections (## headers) in auto-generated skills
+# max_auto_sections = 3
+# Domain evaluation gate before promoting auto-generated skills
+# domain_success_gate = false
+# ARISE: trace-based skill improvement from successful multi-tool turns
+# arise_enabled = false
+# arise_min_tool_calls = 2
+# arise_trace_provider = ""
+# STEM: automatic tool pattern detection and skill candidate generation
+# stem_enabled = false
+# stem_min_occurrences = 3
+# stem_min_success_rate = 0.8
+# stem_provider = ""
+# stem_retention_days = 90
+# stem_pattern_window_days = 30
+# ERL: post-task heuristic extraction and injection at skill match time
+# erl_enabled = false
+# erl_extract_provider = ""
+# erl_max_heuristics_per_skill = 3
+# erl_dedup_threshold = 0.9
+# erl_min_confidence = 0.5
+# D2Skill: step-level error correction hints injected at reflection time
+# d2skill_enabled = false
+# d2skill_max_corrections = 3
+# d2skill_provider = ""
+# A1 trace extraction: post-session SKILL.md candidate extraction from conversation messages
+# trace_extraction_enabled = false
+# trace_extraction_provider = ""           # LLM provider for candidate extraction. Empty = primary.
+# trace_extraction_embedding_provider = "" # Embed provider for dedup. Empty = primary embed provider.
+# trace_extraction_max_turns = 20
+# trace_extraction_max_sessions_queued = 10
+# trace_extraction_max_input_bytes = 32768
+
+# A6: Heuristic promotion from ERL to full skills (spec 061). Off by default.
+# heuristic_promotion_enabled = false
+# heuristic_promotion_provider = ""         # Quality provider recommended. Empty = primary.
+# heuristic_promotion_threshold = 5         # Minimum heuristic count per skill to trigger evaluation.
+# heuristic_promotion_interval_hours = 24   # Hours between promotion scans.
+
+# Provider name for `/skill create` NL skill generation. Empty = primary provider.
+# generation_provider = "quality"
+# Directory where generated skills are saved. Defaults to first entry in paths.
+# generation_output_dir = "~/.config/zeph/generated-skills"
+
+[skills.mining]
+# GitHub search queries for automated skill discovery.
+# queries = ["topic:cli-tool language:rust stars:>100", "topic:devops-tool"]
+# Maximum repos to fetch per query (capped at 100 by GitHub API). Default: 20.
+max_repos_per_query = 20
+# Cosine similarity threshold for dedup against existing skills. Default: 0.85.
+dedup_threshold = 0.85
+# Output directory for mined skills.
+# output_dir = "~/.config/zeph/mined-skills"
+# Provider name for generation during mining. Empty = primary provider.
+# generation_provider = "quality"
+# Provider name for embedding during dedup. Empty = primary provider.
+# embedding_provider = "fast"
+# Maximum GitHub search API requests per minute. Default: 25.
+rate_limit_rpm = 25
+
+[skills.trust]
+# Default trust level for newly discovered skills: trusted, verified, quarantined, blocked
+default_level = "quarantined"
+# Trust level assigned to local (built-in) skills
+local_level = "trusted"
+# Trust level after blake3 hash mismatch on hot-reload
+hash_mismatch_level = "quarantined"
+# Scan skill body content for injection patterns at load time (advisory, secure by default)
+scan_on_load = true
+# Arm the per-invocation blake3 integrity re-check when a skill is promoted to trusted/verified
+# (secure by default). `--require-check`/`--no-require-check` on `skill trust`/`/skill trust`
+# always override this default (#6087).
+require_integrity_check_on_promote = true
+
+[skills.trust.scanner]
+# Scan for injection patterns in skill body (advisory, logs warnings)
+injection_patterns = true
+# Check that loaded skills don't declare tools exceeding their trust level
+# capability_escalation_check = false
+
+# External skill/plugin registry discovery (spec-045, #5869). Off by default — no network
+# call is ever made to any registry unless explicitly opted in below. See
+# `zeph skill search --help` / `zeph plugin search --help`. Requires building with
+# `--features registry` (included in `full`); a build without it prints an actionable
+# message instead of erroring.
+# [skills.registry]
+# enabled = false
+# backend_kind = "skills-sh"
+# backend_url = "https://www.skills.sh"
+# auth_vault_key = "ZEPH_SKILL_REGISTRY_TOKEN"  # set via `zeph vault set <key> <token>`
+# registry_timeout_secs = 30
+
+[memory]
+# SQLite database path for conversation history
+# Defaults to the user data dir (for example ~/.local/share/zeph/data/zeph.db on Linux,
+# ~/Library/Application Support/Zeph/data/zeph.db on macOS,
+# %LOCALAPPDATA%\Zeph\data\zeph.db on Windows).
+# sqlite_path = "/absolute/path/to/zeph.db"
+# PostgreSQL connection URL (used when binary is compiled with --features postgres).
+# Leave empty and store the actual URL in the vault: zeph vault set ZEPH_DATABASE_URL "postgres://..."
+# database_url = ""
+# Maximum number of recent messages to load into context
+history_limit = 50
+# Qdrant vector database URL for semantic memory
+qdrant_url = "http://localhost:6334"
+# Per-call timeout applied to every Qdrant gRPC operation, in seconds. Bounds each call
+# against a hung server or a stalled network path instead of blocking indefinitely.
+qdrant_timeout_secs = 10
+# Number of messages before triggering summarization (0 = disabled)
+summarization_threshold = 50
+# Total token budget for context window (0 = auto-detect from model)
+context_budget_tokens = 0
+# Auto-detect context budget from model's context window size
+auto_budget = true
+# Soft compaction threshold (0.0-1.0): prune tool outputs + apply deferred summaries (no LLM).
+soft_compaction_threshold = 0.60
+# Hard compaction threshold (0.0-1.0): full LLM summarization when context usage exceeds this.
+hard_compaction_threshold = 0.90
+# Number of recent messages to preserve during compaction
+compaction_preserve_tail = 6
+# Turns to skip after a successful compaction (cooldown guard).
+# Prevents immediate re-compaction when the summary itself consumes many tokens.
+compaction_cooldown_turns = 2
+# Token budget protected from tool output pruning (recent context zone)
+prune_protect_tokens = 40000
+# Minimum relevance score for cross-session memory results (0.0-1.0)
+cross_session_score_threshold = 0.35
+# Vector backend: "qdrant" (external) or "sqlite" (embedded, zero-dependency)
+vector_backend = "sqlite"
+# Token safety margin multiplier for compaction budget (must be > 0)
+# token_safety_margin = 1.0
+# Redact credentials from LLM context before sending
+# redact_credentials = true
+# Auto-save assistant responses to semantic memory
+autosave_assistant = true
+# Minimum character length for autosave (shorter responses skip embedding)
+# autosave_min_length = 20
+# Store a lightweight session summary on shutdown when no hard compaction fired
+# shutdown_summary = true
+# Minimum user-turn message count to trigger shutdown summarization (trivial sessions skipped)
+# shutdown_summary_min_messages = 4
+# Maximum recent messages to include in the shutdown summary LLM prompt
+# shutdown_summary_max_messages = 20
+
+# ── Context-Adaptive Memory (CAM) fidelity scoring (#4547) ──────────────────
+# Assigns Full / Compressed / Placeholder levels to historical messages to
+# reduce token usage without hard compaction. Off by default for v0.21.
+# [memory.fidelity]
+# enabled = false
+# w_semantic = 0.3
+# w_temporal = 0.3
+# w_importance = 0.2
+# w_plan = 0.2
+# full_threshold = 0.7
+# compressed_threshold = 0.3
+# compressed_max_tokens = 50
+# regrade_threshold = 0.6
+# min_query_length = 8
+# max_scored_messages = 500
+# embed_timeout_secs = 30     # timeout for embed calls in fidelity scoring (seconds)
+# compress_timeout_secs = 30  # timeout for LLM compress calls in fidelity scoring (seconds)
+
+[memory.sessions]
+# Maximum number of sessions returned by list operations (0 = unlimited)
+max_history = 100
+# Maximum characters for auto-generated session titles
+title_max_chars = 60
+
+[memory.documents]
+# Qdrant collection for ingested documents
+collection = "zeph_documents"
+# Text chunk size in characters
+chunk_size = 1000
+# Overlap between consecutive chunks in characters
+chunk_overlap = 100
+# Number of document chunks to inject into agent context per turn
+top_k = 3
+# Enable RAG: inject relevant document chunks into agent context
+rag_enabled = false
+
+[memory.semantic]
+# Enable semantic memory with vector search
+enabled = true
+# Maximum number of semantically relevant messages to recall
+recall_limit = 5
+# Hybrid search weights (vector + FTS5 keyword). Must sum to 1.0.
+vector_weight = 0.7
+keyword_weight = 0.3
+# Temporal decay: penalize older memories by age
+temporal_decay_enabled = true
+# temporal_decay_half_life_days = 30
+# MMR re-ranking: diversify recall results
+mmr_enabled = true
+# mmr_lambda = 0.7
+# Write-time importance scoring: boost recall rank for messages with explicit markers (#2021)
+importance_enabled = true
+importance_weight = 0.15
+# Dedicated provider for embedding calls during memory write and backfill operations.
+# References a [[llm.providers]] name. Prevents embed_backfill from contending with the
+# guardrail at the API server level (rate limits, Ollama single-model lock).
+# Recommended: a cheap embedding model (e.g. text-embedding-3-small, nomic-embed-text).
+# Defaults to the main provider when unset.
+# embedding_provider = "ollama-embed"
+# Timeout for a single embedding call in the memory subsystem (seconds).
+# Increase if your embedding provider is slow or overloaded.
+# embed_timeout_secs = 5
+
+# MemMachine-inspired retrieval-stage tuning (#3340). Applies to all recall paths.
+[memory.retrieval]
+depth = 40                # ANN candidates fetched from the vector store, directly.
+                          # 0 = legacy behavior (recall_limit * 2). Set to an explicit
+                          # value >= recall_limit * 2 to enlarge the candidate pool
+                          # and improve MMR diversity / keyword merge coverage.
+                          # Typical tuned value: 40–80 (for recall_limit = 5–10).
+# search_prompt_template = ""  # Template applied to the raw query before embedding.
+#                              # Supports a single {query} placeholder. Empty = identity.
+#                              # Example for E5 models: "query: {query}"
+# context_format = "structured"  # structured: per-entry headers [Memory | source | date | relevance]
+#                                 #             ~2–3× more tokens per entry than plain;
+#                                 #             raise memory.recall_tokens proportionally.
+#                                 # plain:      legacy `- [role] content` format (pre-#3340).
+query_bias_correction = true    # MM-F3 (#3341): shift first-person queries toward the user profile centroid.
+                                # No-op when the persona table is empty. Default: true.
+# query_bias_profile_weight = 0.25  # blend weight in [0.0, 1.0]; 0.0 = no shift, 1.0 = full centroid.
+# query_bias_centroid_ttl_secs = 300  # seconds before the profile centroid cache is recomputed (5 min).
+
+[memory.hebbian]                       # HL-F1/F2 (#3344) Hebbian edge reinforcement
+enabled = false                        # opt-in master switch; no DB writes when false
+# hebbian_lr = 0.1                       # weight increment per co-activation (typical range 0.01–0.5)
+# spreading_activation = false           # HL-F5 (#3346): BFS from top-1 ANN anchor; requires enabled=true
+# spread_depth = 2                       # BFS hops for spreading activation, clamped [1, 6]
+# spread_edge_types = []                 # MAGMA edge types to traverse; empty = all types
+# step_budget_ms = 80                    # per-step circuit-breaker (anchor ANN / edges batch / vectors batch)
+
+# User persona profile: drives query-bias correction (MM-F3, #3341) and
+# first-person query reweighting toward the user's profile centroid.
+# Verified working in CI-604/CI-605 (apply_query_bias fires on first-person queries).
+[memory.persona]
+enabled = true
+# min_messages = 2       # minimum user messages before persona extraction fires
+# min_confidence = 0.5   # minimum extraction confidence threshold (0.0–1.0)
+
+# Code RAG: AST-based code indexing and hybrid retrieval
+# Requires Qdrant for semantic retrieval; tree-sitter grammars are always available
+[index]
+# Enable code indexing and retrieval (requires Qdrant)
+enabled = false
+# Watch for file changes and reindex incrementally (opt-in; default: false).
+# When enabled, all file changes under the workspace root trigger reindexing.
+# The watcher respects .gitignore, but large projects with active debug dumps or
+# build artifacts in non-gitignored paths may still generate high reindex load.
+# watch = true
+# Maximum code chunks to retrieve per query
+max_chunks = 12
+# Minimum cosine similarity score to accept
+score_threshold = 0.25
+# Fraction of code_context budget used by retriever (0.0-1.0)
+budget_ratio = 0.40
+# Token budget for repo structural map in system prompt (0 = disabled)
+repo_map_tokens = 500
+# Cache TTL for repo map in seconds (avoids regeneration on every message)
+repo_map_ttl_secs = 300
+# Dedicated provider for embedding calls during indexing.
+# References a [[llm.providers]] name. When set, the indexer uses this provider instead of the
+# main agent provider, preventing server-side rate-limit contention and Ollama model-lock with
+# the guardrail. Recommended: a cheap embedding model (e.g. text-embedding-3-small for OpenAI,
+# nomic-embed-text for Ollama). Defaults to the main provider when unset.
+# embedding_provider = "ollama-embed"
+
+# [discord]
+# token = ""                    # or set ZEPH_DISCORD_TOKEN
+# application_id = ""           # for slash command registration
+# allowed_user_ids = []         # Discord user IDs (empty = allow all)
+# allowed_role_ids = []         # Discord role IDs
+# allowed_channel_ids = []      # restrict to specific channels
+
+# [slack]
+# bot_token = ""                # or set ZEPH_SLACK_BOT_TOKEN
+# signing_secret = ""           # or set ZEPH_SLACK_SIGNING_SECRET
+# port = 3000                   # Events API webhook port
+# webhook_host = "127.0.0.1"   # bind address for Events API webhook
+# allowed_user_ids = []         # Slack user IDs (empty = allow all)
+# allowed_channel_ids = []      # restrict to specific channels
+
+[mcp]
+# Allowlist of permitted commands for /mcp add (empty = allow all)
+allowed_commands = ["npx", "uvx", "node", "python", "python3"]
+# Maximum number of dynamically added MCP servers
+max_dynamic_servers = 10
+# Enable MCP elicitation (servers can request user input mid-task).
+# Default: false — all elicitation requests are auto-declined.
+# Opt-in because it interrupts agent flow and could be abused by malicious servers.
+# elicitation_enabled = false
+# Timeout in seconds for the user to respond to an elicitation request. Default: 120.
+# elicitation_timeout = 120
+# Bounded channel capacity for elicitation events. Requests beyond this are auto-declined.
+# elicitation_queue_capacity = 16
+# When true, warn the user before prompting for sensitive-looking fields (password, token, etc.).
+# elicitation_warn_sensitive_fields = true
+# Maximum number of connection attempts per MCP server at startup (1 = no retry, default: 3).
+# Backoff: min(startup_retry_backoff_ms * 2^(k-1), 8_000) ms. Must be in 1..=10.
+# Note: dynamic /mcp add retains single-attempt behaviour; a follow-up tracks retry there.
+# max_connect_attempts = 3
+# Base delay in milliseconds for exponential backoff between startup retry attempts (default: 1000 ms).
+# Actual delay = min(startup_retry_backoff_ms * 2^(attempt-1), 8000) ms.
+# startup_retry_backoff_ms = 1000
+# Per-call timeout in seconds for MCP tool invocations after connection is established.
+# When absent (default), the per-server [[mcp.servers]].timeout governs all requests.
+# Maximum accepted value: 3600 s.
+# tool_timeout_secs = 60
+
+[mcp.media]
+# Global caps for MCP image passthrough (spec-072). Applies to every server with
+# media_passthrough = true (see [[mcp.servers]] below). Opt-in, default OFF per server.
+# Maximum encoded byte size of a single image, checked before any decode attempt.
+# max_image_bytes = 5242880   # 5 MiB
+# Maximum width or height in pixels, enforced on the decoded image.
+# max_dimension_px = 8192
+# Maximum total pixel count (width * height) — decompression-bomb defense.
+# max_pixels = 64000000       # ~64 MP
+# Maximum number of images validated/attached per single tool result.
+# max_images_per_result = 4
+# Maximum number of images attached per turn, aggregated across all tool calls in the batch.
+# max_images_per_turn = 8
+# Allowed image formats (short names).
+# allowed_formats = ["jpeg", "png", "gif", "webp"]
+
+[mcp.pruning]
+# Enable dynamic MCP tool pruning (LLM-based relevance filter before main inference)
+enabled = false
+# Maximum number of MCP tools to include after pruning
+max_tools = 15
+# Provider name from [[llm.providers]] for the pruning call (empty = default provider)
+pruning_provider = ""
+# Minimum tool count below which pruning is skipped (not worth the LLM overhead)
+min_tools_to_prune = 10
+# Tool names always included regardless of pruning result
+always_include = []
+
+[mcp.tool_discovery]
+# Tool discovery strategy: "embedding" (cosine similarity), "llm" (prune_tools), or "none" (all tools)
+strategy = "none"
+# Number of top tools to include per query (embedding strategy only)
+top_k = 10
+# Minimum cosine similarity threshold; tools below this score are excluded (embedding strategy only)
+min_similarity = 0.2
+# Provider name from [[llm.providers]] for embedding calls (empty = default provider)
+embedding_provider = ""
+# Tool names always included regardless of similarity score
+always_include = []
+# Minimum tool count below which discovery is skipped
+min_tools_to_filter = 10
+# When true, treat any embedding failure as a hard error instead of falling back to all tools
+strict = false
+
+# Stdio transport (spawn child process):
+# [[mcp.servers]]
+# id = "filesystem"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+# env = {}                      # environment variables for the child process
+# timeout = 30
+# trust_level = "untrusted"     # "trusted" (skip SSRF), "untrusted" (default), or "sandboxed"
+# tool_allowlist = []           # empty = all tools exposed; non-empty = only listed tools visible
+# media_passthrough = false     # opt-in: attach this server's returned images to vision-capable
+#                                # providers (spec-072). Hard-blocked when trust_level = "sandboxed".
+
+# HTTP transport with static auth header (Mode A — static Bearer token):
+# Store the token in the vault: `zeph vault set TODOIST_API_TOKEN <value>`
+# [[mcp.servers]]
+# id = "todoist"
+# url = "https://api.todoist.com/mcp"
+# timeout = 30
+# [mcp.servers.headers]
+# Authorization = "Bearer ${TODOIST_API_TOKEN}"   # resolved from vault at startup
+
+# HTTP transport (no auth, e.g. Docker container):
+# [[mcp.servers]]
+# id = "remote-tools"
+# url = "http://localhost:3001/mcp"
+# timeout = 30
+
+# OAuth 2.1 transport (Mode B — interactive authorization flow):
+# [[mcp.servers]]
+# id = "my-oauth-server"
+# url = "https://mcp.example.com"
+# timeout = 60
+# [mcp.servers.oauth]
+# enabled = true
+# token_storage = "vault"    # "vault" (persist across sessions) or "memory" (re-auth on restart)
+# scopes = []                # request specific OAuth scopes, or leave empty for defaults
+# callback_port = 18766      # localhost port for the OAuth redirect; 0 = auto-assign
+# client_name = "Zeph"       # client name shown in authorization consent screen
+
+# LSP code intelligence via mcpls (https://github.com/bug-ops/mcpls)
+# Install: cargo install mcpls
+# mcpls auto-detects language servers from project files (Cargo.toml → rust-analyzer, etc.)
+# [[mcp.servers]]
+# id = "mcpls"
+# command = "mcpls"
+# args = ["--workspace-root", "."]
+# timeout = 60                     # LSP servers need warmup time; 60s recommended
+
+[cost]
+# Track LLM API costs and enforce daily budget
+enabled = true
+# Maximum daily spend in cents (0 = unlimited)
+max_daily_cents = 0
+
+
+[vault]
+# Secret retrieval backend: "age" reads from an age-encrypted vault file (default,
+# recommended); "env" reads from environment variables (weaker, not recommended for
+# production — see specs/010-security/spec.md)
+backend = "age"
+
+[a2a]
+# Enable A2A server for agent-to-agent communication
+enabled = false
+# Bind address
+host = "0.0.0.0"
+# HTTP port
+port = 8080
+# Public URL advertised in AgentCard (auto-generated if empty)
+public_url = ""
+# Bearer token for authentication (from vault ZEPH_A2A_AUTH_TOKEN)
+# auth_token = ""
+# Rate limit: max requests per minute per IP (0 = unlimited)
+rate_limit = 60
+# Maximum request body size in bytes (1MB)
+max_body_size = 1048576
+
+[a2a_client]
+# Client-side security policy for `zeph --connect <URL>` (remote-TUI A2A attach).
+# Separate from [a2a] above, which governs this process's own A2A server.
+# Loopback targets (127.0.0.1, ::1, localhost) always bypass these and use plain
+# HTTP with no SSRF check, regardless of the settings below.
+# Require TLS for non-loopback --connect targets
+require_tls = true
+# Block non-loopback --connect targets that resolve to private/loopback IPs
+ssrf_protection = true
+# A2A Agent Card signature + URL-origin trust policy (A2A 1.0.0 §8.4, #5928).
+# "ignore" (default) skips verification; "prefer" warns on an unverifiable/mismatched
+# card but still accepts it; "require" rejects it. "require" needs the crate's
+# card-signing feature compiled in (see the `a2a` feature in the root Cargo.toml).
+# card_trust_policy = "ignore"  # "ignore" | "prefer" | "require"
+# Public keys trusted to verify peer AgentCard signatures, keyed by `kid`.
+# [[a2a_client.trusted_agent_keys]]
+# kid = "key-1"
+# alg = "ES256"
+# jwk_or_pem = ""
+
+[tools]
+# Enable tool execution (bash commands)
+enabled = true
+# Summarize long tool output via LLM instead of head+tail truncation
+summarize_output = true
+
+[tools.shell]
+# Command timeout in seconds
+timeout = 30
+# Additional commands to block (case-insensitive, supports wildcards)
+blocked_commands = []
+# Commands to remove from the default blocklist (e.g., ["curl", "wget"])
+allowed_commands = []
+# Restrict file access to these paths (empty = current directory only)
+allowed_paths = []
+# Allow network commands (curl, wget, nc)
+allow_network = true
+# Commands that require user confirmation before execution
+confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "drop database", "truncate "]
+# Maximum number of concurrent background shell runs (background = true parameter)
+# max_background_runs = 8
+# Timeout for background runs in seconds (30 min default)
+# background_timeout_secs = 1800
+
+# [tools.file]
+# Per-path read sandbox using glob patterns. Evaluation: deny first, then allow overrides.
+# All patterns are matched against canonicalized (absolute, symlink-resolved) paths.
+# deny_read = ["/etc/shadow", "/root/*", "/home/*/.ssh/*"]
+# allow_read = ["/etc/hostname"]
+
+# [tools.sandbox]
+# OS-level subprocess sandbox for shell commands (#3070, #3077).
+# macOS: sandbox-exec (Seatbelt); Linux: bwrap + Landlock + seccomp (requires `sandbox` feature).
+# Applies ONLY to subprocess executors (shell) — in-process tools (WebScrapeExecutor,
+# FileExecutor) are not covered.
+# enabled = false                 # set to true to wrap shell commands in the sandbox
+# profile = "workspace"           # "workspace" | "read-only" | "network-allow-all" | "off"
+# backend = "auto"                # "auto" | "seatbelt" | "landlock-bwrap" | "noop"
+# strict = true                   # fail startup if sandbox initialisation fails (fail-closed)
+# allow_read = []                 # additional read-allowed absolute paths
+# allow_write = []                # additional write-allowed absolute paths
+
+[tools.scrape]
+# HTTP request timeout in seconds
+timeout = 15
+# Maximum response body size in bytes (1MB)
+max_body_bytes = 1048576
+
+[tools.filters]
+# Enable smart output filtering for tool results
+enabled = true
+# [tools.filters.test]
+# enabled = true
+# max_failures = 10
+# truncate_stack_trace = 50
+# [tools.filters.git]
+# enabled = true
+# max_log_entries = 20
+# max_diff_lines = 500
+# [tools.filters.clippy]
+# enabled = true
+# [tools.filters.cargo_build]
+# enabled = true
+# [tools.filters.dir_listing]
+# enabled = true
+# [tools.filters.log_dedup]
+# enabled = true
+# [tools.filters.security]
+# enabled = true
+# extra_patterns = []
+
+# Per-tool permission rules (glob patterns with allow/ask/deny actions)
+# [tools.permissions]
+# shell = [{ pattern = "/tmp/*", action = "allow" }, { pattern = "/etc/*", action = "deny" }]
+
+[tools.overflow]
+# Offload large tool responses to SQLite instead of truncating in-memory.
+# Characters threshold above which output is stored in the overflow table (default: 50000)
+threshold = 50000
+# Days to retain overflow entries before age-based cleanup on next startup (default: 7)
+retention_days = 7
+# Maximum bytes per overflow entry; 0 means unlimited (default: 10485760 = 10 MiB)
+max_overflow_bytes = 10485760
+# Hard ceiling (chars) on a per-call result-size override an MCP server may request
+# via _meta["zeph/maxResultSizeChars"]; clamped to min(requested, this) and can only
+# raise the limit above `threshold`, never lower it. Set <= threshold to disable
+# (0 disables — unlike max_overflow_bytes, 0 here is NOT unlimited). (default: 131072 = 128 KiB)
+max_per_call_override = 131072
+
+[tools.audit]
+# Enable audit logging for tool executions
+enabled = true
+# Audit destination: "stdout" or file path (e.g., "./data/audit.jsonl")
+destination = "stdout"
+
+[tools.policy]
+# Enable declarative policy compiler for tool call authorization (requires policy-enforcer feature)
+enabled = false
+# Fallback effect when no rule matches: "allow" or "deny"
+default_effect = "deny"
+# Optional external policy rules file (TOML). Overrides inline rules when set.
+# policy_file = "policy.toml"
+# Provider name from [[llm.providers]] for LLM-assisted policy checks. Empty = disabled.
+# policy_provider = ""
+
+# Example policy rules:
+# [[tools.policy.rules]]
+# effect = "deny"
+# tool = "shell"
+# paths = ["/etc/*", "/root/*"]
+#
+# [[tools.policy.rules]]
+# effect = "allow"
+# tool = "shell"
+# paths = ["/tmp/*"]
+
+[tools.utility]
+# Enable utility-guided tool dispatch gating (scores gain/cost/redundancy per call)
+enabled = false
+# Minimum utility score to execute a tool call (0.0–1.0)
+threshold = 0.1
+# Consecutive low-utility calls before early-stopping the whole tool loop for the turn. 0 = disabled.
+# utility_window = 0
+# Tool ids that always receive the 0.75 "direct action" gain tier, bypassing the Retrieve
+# detour on their first call. Useful for MCP-registered tools, whose ids ("{server_id}_{name}")
+# never match the built-in default_gain table (#5659).
+# Note: the TUI command palette's "mcp:list" entry displays "server_id:name" (qualified_name),
+# but the id actually dispatched at runtime — and required here — is the sanitized
+# "server_id_name" form (colon replaced with underscore).
+# high_gain_tools = []
+
+[tools.retry]
+# Maximum retry attempts for transient errors per tool call (0 = disabled)
+max_attempts = 2
+# Base delay (ms) for exponential backoff
+base_ms = 500
+# Maximum delay cap (ms) for exponential backoff
+max_ms = 5000
+# Maximum wall-clock time (seconds) for all retries of a single tool call (0 = unlimited)
+budget_secs = 30
+# Provider name from [[llm.providers]] for LLM-based parameter reformatting
+# on InvalidParameters/TypeMismatch errors. Empty = disabled.
+# parameter_reformat_provider = "fast"
+
+[tools.anomaly]
+# Enable sliding-window anomaly detection for tool execution errors
+enabled = true
+# Number of recent tool calls to track in the window
+window_size = 10
+# Error ratio threshold for warning alerts (0.0-1.0)
+error_threshold = 0.5
+# Error ratio threshold for critical alerts (0.0-1.0)
+critical_threshold = 0.8
+
+[gateway]
+# Enable HTTP gateway for webhook ingestion (feature-gated: --features gateway)
+enabled = false
+# Bind address (127.0.0.1 = localhost only, 0.0.0.0 = all interfaces)
+bind = "127.0.0.1"
+# HTTP port
+port = 8090
+# auth_token = "secret"  # optional, from vault ZEPH_GATEWAY_TOKEN
+# Rate limit: max requests per minute per IP
+rate_limit = 120
+# Maximum request body size in bytes (1MB)
+max_body_size = 1048576
+# Seconds to wait for the agent to consume a webhook message before returning 503
+webhook_send_timeout_secs = 5
+
+[metrics]
+# Enable Prometheus metrics export on the gateway /metrics endpoint.
+# Requires [gateway] enabled = true and the `prometheus` feature flag.
+enabled = false
+# HTTP path for the metrics endpoint
+path = "/metrics"
+# How often (seconds) to sync MetricsSnapshot to the Prometheus registry (min 1)
+sync_interval_secs = 5
+
+[daemon]
+# Enable daemon supervisor
+enabled = false
+# PID file location
+pid_file = "~/.zeph/zeph.pid"
+# Health check interval in seconds
+health_interval_secs = 30
+# Maximum restart backoff in seconds
+max_restart_backoff_secs = 60
+
+[scheduler]
+# Enable cron scheduler (included in default features)
+enabled = true
+
+[scheduler.daemon]
+# Maximum seconds a task handler may run before it is forcibly cancelled.
+# Set to 0 to disable the timeout (not recommended for production).
+handler_timeout_secs = 300
+# Example task definitions:
+# [[scheduler.tasks]]
+# name = "memory_cleanup"
+# cron = "0 0 0 * * *"
+# kind = "memory_cleanup"
+# config = { max_age_days = 90 }
+#
+# [[scheduler.tasks]]
+# name = "health_check"
+# cron = "0 */5 * * * *"
+# kind = "health_check"
+
+[security]
+# Redact secrets (API keys, tokens) from LLM responses before display
+redact_secrets = true
+# Tool access level: "readonly" (observe only), "supervised" (default, with confirmations), "full" (all tools, no confirmations)
+autonomy_level = "supervised"
+
+[security.guardrail]
+# Enable the LLM-based guardrail content classifier (default: false)
+enabled = false
+# Provider for guardrail LLM calls (e.g. "ollama", "claude")
+# provider = "ollama"
+# Model to use for classification (e.g. "llama-guard-3:1b")
+# model = "llama-guard-3:1b"
+# Timeout for each guardrail LLM call in milliseconds (default: 500)
+timeout_ms = 500
+# Action on flagged content: "block" or "warn" (default: block)
+action = "block"
+# Behaviour on timeout or LLM error: "open" (allow) or "closed" (block, default)
+fail_strategy = "closed"
+# Also scan tool outputs before they enter message history (default: false)
+scan_tool_output = false
+# Maximum characters sent to the guard model (default: 4096)
+max_input_chars = 4096
+
+[security.content_isolation]
+# Enable the 4-step sanitization pipeline for untrusted content (default: true)
+enabled = true
+# Maximum byte length of untrusted content before truncation (default: 65536)
+max_content_size = 65536
+# Flag detected injection patterns in the spotlighting wrapper (default: true)
+flag_injection_patterns = true
+# Wrap untrusted content in spotlighting XML delimiters (default: true)
+spotlight_untrusted = true
+
+[security.content_isolation.quarantine]
+# Route high-risk content through an isolated LLM for fact extraction (default: false)
+enabled = false
+# Source kinds to route through quarantine (default: web_scrape, a2a_message)
+sources = ["web_scrape", "a2a_message"]
+# Provider to use for quarantine LLM calls — must be a recognized provider name
+# (e.g. "claude", "ollama", "openai", or a compatible entry name)
+model = "claude"
+
+[security.content_isolation.nli]
+# SONAR NLI entailment check: probabilistic injection detection stage, complements the
+# regex-based sanitizer above. Observe-only — flagged content is never blocked, only logged
+# and recorded as a security event (default: false)
+enabled = false
+# Provider name from [[llm.providers]] used for NLI inference. Empty string falls back to
+# the session's primary provider. Prefer a fast/cheap model — this runs on every tool output.
+provider = ""
+# Entailment score threshold above which content is flagged as injected (default: 0.75)
+threshold = 0.75
+# Maximum milliseconds to wait for the NLI provider response (default: 5000)
+timeout_ms = 5000
+# Maximum content characters sent to the NLI provider, truncated if longer (default: 2048)
+max_content_len = 2048
+
+[security.content_isolation.secret_masking]
+# PAAC secret placeholder masking: substitutes vault-resolved secrets (API keys, tokens,
+# database URLs, etc.) with opaque per-session placeholders before any outbound LLM call,
+# preventing plaintext secret disclosure to third-party providers. Placeholders are resolved
+# back to real values only at tool-execution time (shell env, HTTP headers) (default: true)
+enabled = true
+# Minimum secret byte length eligible for masking — shorter values are skipped to avoid
+# false-positive substitutions on common short strings (default: 8)
+min_secret_len = 8
+
+[security.trajectory]
+# Exponential decay factor applied to signal scores each turn (default: 0.85)
+decay_per_turn = 0.85
+# Rolling window in turns used for signal accumulation (default: 10)
+window_turns = 10
+# Score threshold for Elevated risk level (default: 2.0)
+elevated_at = 2.0
+# Score threshold for High risk level (default: 5.0)
+high_at = 5.0
+# Score threshold for Critical risk level — Allow decisions are downgraded to Deny (default: 10.0)
+critical_at = 10.0
+# Score at which a RiskAlert is emitted to the TUI/CLI (default: 4.0)
+alert_threshold = 4.0
+# Consecutive Critical turns before hard auto-reset (FR-CG-010, default: 16)
+auto_recover_after_turns = 16
+# Inheritance factor applied to parent score when spawning a subagent (default: 0.5)
+subagent_inheritance_factor = 0.5
+
+[security.capability_scopes]
+# Strictness for tool-id pattern matching: "Strict", "Permissive", or "ProvisionalForDynamicNamespaces" (default)
+# pattern_strictness = "ProvisionalForDynamicNamespaces"
+# Name of the scope to use when no task type is specified
+# default_scope = "general"
+
+# Example scope: enable all tools for the default task type
+# [security.capability_scopes.general]
+# patterns = ["*"]
+
+# ShadowSentinel Phase 2: persistent safety event stream + LLM pre-execution probe (spec 050).
+# Defence-in-depth only — PolicyGateExecutor and TrajectorySentinel remain the primary gate.
+# Disabled by default.
+# [security.shadow_sentinel]
+# enabled = false
+# provider name from [[llm.providers]]; empty = primary. Prefer a fast/cheap model.
+# probe_provider = ""
+# max_context_events = 50
+# probe_timeout_ms = 2000
+# max_probes_per_turn = 3
+# probe_patterns = ["builtin:shell", "builtin:write", "builtin:edit", "*write*", "*edit*", "*delete*", "*exec*"]
+# deny_on_timeout = false
+
+# [telegram]
+# token = "your-bot-token"
+# Allowed usernames (empty = allow all except for /start command)
+# allowed_users = ["username1", "username2"]
+
+[timeouts]
+# LLM chat completion timeout in seconds
+llm_seconds = 120
+# Per-request LLM timeout in seconds (applies at the HTTP client level; overrides llm_seconds for
+# individual requests). Increase for slow providers or very long generations.
+llm_request_timeout_secs = 600
+# Embedding generation timeout in seconds
+embedding_seconds = 30
+# A2A remote call timeout in seconds
+a2a_seconds = 30
+# Maximum number of tool calls to execute in parallel
+max_parallel_tools = 8
+# Timeout for context preparation (memory search + embedding) before each agent turn, in seconds.
+# If exceeded, the turn proceeds with whatever context was assembled so far.
+context_prep_timeout_secs = 30
+# Backoff delay in seconds when all LLM providers are unavailable before retrying.
+no_providers_backoff_secs = 2
+
+[debug]
+# Enable debug dump: write every LLM request/response pair to timestamped files.
+# CLI flag --debug-dump takes priority over this setting.
+# Use /debug-dump in TUI/CLI to toggle at runtime.
+enabled = false
+# Directory where per-session subdirectories are created
+# Defaults to the user data dir (for example ~/.local/share/zeph/debug on Linux,
+# ~/Library/Application Support/Zeph/debug on macOS,
+# %LOCALAPPDATA%\Zeph\debug on Windows).
+# output_dir = "/absolute/path/to/debug"
+# Output format for LLM request files:
+#   "json"  — internal zeph-llm representation (default)
+#   "raw"   — actual API payload (system extracted, content blocks, mirrors what is sent to the provider)
+#   "trace" — OpenTelemetry-compatible OTLP JSON spans written to trace.json at session end
+#             Use --dump-format trace on the CLI to override at runtime.
+format = "json"
+# Include full raw base64 image bytes (MessagePart::Image) in debug dumps instead of a
+# redacted "<redacted image: ...>" marker. Default false — leave disabled unless a developer
+# explicitly needs full wire-payload fidelity for image-related debugging (#6306).
+include_raw_images = false
+
+[debug.traces]
+# OTLP gRPC endpoint for trace export (only used when format = "trace" and otel feature enabled).
+# Default: "http://localhost:4317".
+otlp_endpoint = "http://localhost:4317"
+# Service name reported to the OTel collector.
+service_name = "zeph"
+# Redact secrets and sensitive paths from span attributes (recommended).
+redact = true
+
+[tui]
+# Show role prefix labels ([user], [zeph], etc.) in chat messages
+show_source_labels = false
+
+[acp]
+# Auto-start ACP server on plain `zeph` startup using the configured transport (CLI flags override)
+enabled = false
+# Agent name advertised to IDE clients
+agent_name = "zeph"
+# Transport mode: "stdio" (default, for IDE embedding), "http", or "both"
+transport = "stdio"
+# Bind address for the HTTP transport
+http_bind = "127.0.0.1:9800"
+# Maximum number of concurrent ACP sessions (LRU eviction when exceeded)
+max_sessions = 4
+# Session idle timeout in seconds before eviction
+session_idle_timeout_secs = 1800
+# Reload/config broadcast backlog per ACP session fan-out
+broadcast_capacity = 256
+# Whether to serve the /.well-known/acp.json agent discovery manifest (HTTP/both only)
+discovery_enabled = true
+# LLM models advertised to the IDE for model switching: ["claude:claude-sonnet-4-5", "ollama:llama3"]
+available_models = []
+# Allowlist of workspace directories ACP clients may reference beyond session cwd.
+# Paths with `..`, /proc, /sys, ~/.ssh, ~/.gnupg, ~/.aws are rejected at config load.
+# Empty = clients may not request any additional directories.
+additional_directories = []
+# Auth methods advertised in the ACP initialize response.
+# MVP only accepts "agent"; unknown values fail startup rather than silently being skipped.
+auth_methods = ["agent"]
+# Echo PromptRequest.message_id onto PromptResponse.user_message_id and chunk events.
+# Requires the `unstable-message-id` feature.
+message_ids_enabled = true
+
+[acp.lsp]
+# Enable LSP code intelligence extension when IDE advertises lsp capability
+enabled = true
+# Fetch diagnostics automatically when lsp/didSave notification is received
+auto_diagnostics_on_save = true
+# Maximum diagnostics to accept per file
+max_diagnostics_per_file = 20
+# Maximum files in diagnostics cache (LRU eviction)
+max_diagnostic_files = 5
+# Maximum reference locations returned
+max_references = 100
+# Maximum workspace symbol search results
+max_workspace_symbols = 50
+# Timeout in seconds for LSP extension method calls
+request_timeout_secs = 10
+
+[acp.model_config]
+# Default sampling-temperature preset advertised to IDE clients via the model_config
+# session/set_config_option category (config_id = "temperature"): "precise" (0.2),
+# "balanced" (0.7), or "creative" (1.0)
+default_temperature_preset = "balanced"
+
+[acp.subagents]
+# Enable ACP sub-agent delegation (allows `zeph acp run-agent` to spawn child ACP agents)
+enabled = false
+# Named presets for one-shot delegation (list with [[acp.subagents.presets]])
+# [[acp.subagents.presets]]
+# name = "inner"
+# command = "cargo run --quiet -- --acp"
+# handshake_timeout_secs = 30
+# prompt_timeout_secs = 600
+
+[acp.timeouts]
+# Maximum milliseconds to wait for an IDE client notification ack before returning an error (default 5000)
+notify_ack_timeout_ms = 5000
+
+[agents]
+# Enable sub-agent spawning (required for /agent commands and multi-agent workflows)
+enabled = false
+# Maximum number of sub-agents that can run concurrently
+max_concurrent = 1
+# Allow sub-agents to use bypass_permissions mode (enable only in trusted environments)
+allow_bypass_permissions = false
+# Enable writing JSONL transcripts for sub-agent sessions (required for /agent resume)
+transcript_enabled = true
+# Maximum number of transcript files to retain (0 = unlimited)
+transcript_max_files = 50
+# Maximum wall time in seconds for a single LLM call inside a sub-agent turn (default 120)
+llm_timeout_secs = 120
+
+[orchestration]
+# Enable the orchestration subsystem (/plan commands and task graph execution)
+enabled = false
+# Maximum number of tasks in a single plan graph
+max_tasks = 20
+# Maximum number of tasks that can run in parallel
+max_parallel = 4
+# Default failure strategy: "abort", "retry", "skip", or "ask"
+default_failure_strategy = "abort"
+# Default number of retries for the retry failure strategy
+default_max_retries = 3
+# Task execution timeout in seconds (0 = no timeout)
+task_timeout_secs = 300
+# Maximum tokens budget for planner LLM responses
+planner_max_tokens = 4096
+# Total character budget for cross-task dependency context injection
+dependency_context_budget = 16384
+# Show a confirmation prompt before executing a plan
+confirm_before_execute = true
+# Maximum tokens budget for aggregation LLM calls
+aggregator_max_tokens = 4096
+# Backoff in ms before retrying deferred tasks
+deferral_backoff_ms = 250
+# Enable topology-aware dispatch strategy selection (FanIn, Hierarchical, LevelBarrier, etc.)
+topology_selection = false
+# Provider name from [[llm.providers]] for verification LLM calls. Empty = primary provider.
+verify_provider = ""
+# Maximum tokens budget for verification LLM calls
+verify_max_tokens = 1024
+# Maximum number of replan cycles per graph execution (0 = disable replan)
+max_replans = 2
+# Enable post-task completeness verification (best-effort, does not gate dispatch)
+verify_completeness = false
+# Global default idle/no-progress timeout in seconds. Kills a task if it emits no progress
+# heartbeat (written once per agent-loop turn) for this long. Opt-in — unset = off. Only
+# enforced on the normal spawn dispatch path; RunInline tasks are exempt. IMPORTANT: set this
+# above the longest expected single-turn (single LLM call + its tool calls) duration, or a
+# healthy long-running task may be killed spuriously. See
+# specs/075-orchestration-node-control-parity/spec.md §4/FR-005.
+# default_idle_timeout_secs = 60
+# Timeout in seconds for aggregation LLM calls (0 rejected by validation). Default: 60.
+# aggregator_timeout_secs = 60
+# Timeout in seconds for planner LLM calls (0 rejected by validation). Default: 120.
+# planner_timeout_secs = 120
+# Timeout in seconds for verifier LLM calls (0 rejected by validation). Default: 30.
+# verifier_timeout_secs = 30
+
+# ORCH-style deterministic verifier ensemble-merge (arXiv:2602.01797), opt-in, default off.
+# See specs/073-orch-ensemble-merge/spec.md.
+[orchestration.ensemble]
+# Resolve ensemble members at bootstrap. Default: false.
+# enabled = false
+# Use the ensemble for PlanVerifier per-task verification (requires enabled = true). Default: false.
+# verify = false
+# Provider names from [[llm.providers]]. Must be odd-length and >= 3, no duplicates.
+# members = ["fast", "quality", "cheap"]
+# EMA smoothing factor for per-member agreement tracking [0.0, 1.0]. Default: 0.3.
+# ema_alpha = 0.3
+# Decay-toward-neutral-prior factor [0.0, 1.0]. Default: 0.95.
+# ema_decay = 0.95
+# Minimum observations before a member's EMA score is considered meaningful. Default: 5.
+# min_observations = 5
+# Per-member LLM call timeout in seconds; 0 = fall back to verifier_timeout_secs. Default: 0.
+# member_timeout_secs = 0
+
+[classifiers]
+# Enable ML-backed classifiers (requires the `classifiers` feature at compile time).
+# When false, all classifier code is bypassed and existing regex detection runs unchanged.
+enabled = false
+# Per-inference timeout in milliseconds. On timeout the call falls back to regex.
+timeout_ms = 5000
+# HuggingFace repo ID for the injection detection model.
+# Pre-download with: zeph classifiers download
+injection_model = "protectai/deberta-v3-small-prompt-injection-v2"
+# Minimum classifier score (0.0–1.0) to treat a result as injection. Conservative default.
+injection_threshold = 0.8
+# HuggingFace repo ID for the NER model used by CandleNerClassifier (piiranha by default).
+# Used when detector_mode = "model" and detector_model in [skills.learning] is empty.
+ner_model = "iiiorg/piiranha-v1-detect-personal-information"
+
+[experiments]
+# Enable the autonomous self-experimentation engine
+enabled = false
+# Provider name (from [[llm.providers]]) used as LLM-as-judge for experiment evaluation.
+# Empty = primary provider. Use a provider different from the one under test to avoid self-judge bias.
+eval_provider = ""
+# Maximum number of experiments to run in a single session
+max_experiments = 20
+# Maximum wall-clock time per experiment session in seconds
+max_wall_time_secs = 3600
+# Minimum relative improvement (%) required to keep an experiment result
+min_improvement = 0.5
+# Token budget for evaluation LLM calls
+eval_budget_tokens = 100000
+# Automatically apply improvements without confirmation
+auto_apply = false
+
+[experiments.schedule]
+# Enable scheduled automatic experiment runs
+enabled = false
+# Cron expression for scheduled runs (default: 3am daily)
+cron = "0 3 * * *"
+# Maximum experiments per scheduled run
+max_experiments_per_run = 20
+# Wall-time cap for a single scheduled session in seconds
+max_wall_time_secs = 1800
+
+[logging]
+# Log file path (empty string disables file logging)
+# Defaults to the user data dir (for example ~/.local/share/zeph/logs/zeph.log on Linux,
+# ~/Library/Application Support/Zeph/logs/zeph.log on macOS,
+# %LOCALAPPDATA%\Zeph\logs\zeph.log on Windows).
+# file = "/absolute/path/to/zeph.log"
+# Log level for the file sink: "trace", "debug", "info", "warn", "error"
+level = "info"
+# Rotation strategy: "daily", "hourly", or "never"
+rotation = "daily"
+# Maximum number of rotated log files to retain
+max_files = 7
+
+# Per-turn completion notifications
+# Fires a best-effort notification after each agent turn via macOS Notification Center
+# and/or an ntfy-compatible webhook. Both channels are independently configurable.
+# [notifications]
+# Master switch. All channels are disabled when false.
+# enabled = false
+# Send a macOS Notification Center banner via osascript. No-op on non-macOS platforms.
+# macos_native = false
+# ntfy-compatible webhook URL (e.g. "https://ntfy.sh"). Absent or empty = disabled.
+# webhook_url = ""
+# ntfy topic. Required when webhook_url is set; ignored otherwise.
+# webhook_topic = ""
+# Notification title shown in banners and webhook payloads.
+# title = "Zeph"
+# Minimum successful-turn wall-clock duration (ms) before firing. 0 = always notify.
+# Errors always fire regardless of this setting.
+# min_turn_duration_ms = 0
+# When true, only notify on turns that completed with an error.
+# only_on_error = false
+
+# Knowledge graph memory
+# Extracts entities and relations from conversations into a persistent graph.
+# WARNING: entity names and facts are stored verbatim without PII redaction.
+# Do not enable when processing conversations with sensitive personal data.
+# [memory.graph]
+# enabled = false
+# # LLM model used for entity/relation extraction (required when enabled).
+# # SLM recommended: prefer gpt-4o-mini or claude-haiku-4-5 for this narrow structured-output task.
+# # Do NOT use 8B local models (qwen3:8b, llama3.1:8b) without constrained decoding —
+# # they frequently produce malformed JSON and miss implicit entities (see #2192).
+# extract_model = "claude-sonnet-4-5-20250929"
+# # Named provider from [[llm.providers]] used for graph extraction.
+# # When set, bypasses the quality_gate that fires on JSON-structured tasks (#3601).
+# # Set to match the provider used by extract_model (e.g. "fast" for a gpt-4o-mini provider).
+# # Leave empty to use the primary provider (default behavior).
+# extract_provider = ""
+# # Maximum entities extracted per message
+# max_entities_per_message = 10
+# # Maximum edges (relations) extracted per message
+# max_edges_per_message = 15
+# # Messages between community detection runs
+# community_refresh_interval = 100
+# # Cosine similarity threshold for entity deduplication (0.0-1.0)
+# entity_similarity_threshold = 0.85
+# # Use embedding-based entity resolution instead of name matching
+# use_embedding_resolution = false
+# # Ambiguity threshold for embedding resolution (0.0-1.0)
+# entity_ambiguous_threshold = 0.70
+# # Timeout in seconds for extraction LLM calls
+# extraction_timeout_secs = 15
+# # Maximum graph traversal depth for recall queries
+# max_hops = 2
+# # Maximum entities to return per recall query
+# recall_limit = 10
+# # Days to retain expired edges before deletion
+# expired_edge_retention_days = 90
+# # Maximum total entities in the graph (0 = unlimited)
+# max_entities = 0
+# # Whether to include ingest-origin edges/entities in recall (default: true; set false to isolate conversation knowledge)
+# recall_include_imported = true
+#
+# # SYNAPSE spreading activation — verified working in CI-608 (activated=4 facts=15).
+# # Enable when [memory.graph] enabled = true for multi-hop graph retrieval.
+# [memory.graph.spreading_activation]
+# enabled = true
+# # decay_lambda = 0.85     # energy decay per hop; higher = steeper decay
+# # max_hops = 3            # maximum BFS depth from seed entities
+# # activation_threshold = 0.1   # minimum activation energy to visit a node
+# # inhibition_threshold = 0.8   # suppress competing activations above this value
+# # max_activated_nodes = 50     # circuit-breaker on total activated nodes per query
+# # recall_timeout_ms = 1000     # hard timeout for the full spreading activation pass
+
+# APEX-MEM append-only write path for graph edges.
+# When enabled, edge insertion uses supersession chains instead of destructive updates.
+# Preserves full history of belief revisions. Requires [memory.graph] enabled = true.
+# [memory.graph.apex_mem]
+# enabled = false
+
+# Write quality gate — scores each memory write before persistence.
+# Rejects low-quality writes (redundant, incomplete references, contradictions).
+# Evaluated after A-MAC admission control, before SQLite/Qdrant persistence.
+# [memory.quality_gate]
+# enabled = false
+# threshold = 0.55
+# recent_window = 32
+# contradiction_grace_seconds = 300
+# information_value_weight = 0.4
+# reference_completeness_weight = 0.3
+# contradiction_weight = 0.3
+# rejection_rate_alarm_ratio = 0.35
+# quality_gate_provider = ""
+# llm_timeout_ms = 500
+# llm_weight = 0.5
+# reference_check_lang_en = true
+
+# ACON failure-driven compression guidelines
+# Learns compression rules from detected context-loss events after hard compaction.
+# Requires the `compression-guidelines` feature flag to be enabled at compile time.
+# [memory.compression_guidelines]
+# enabled = false
+# # Minimum unused failure pairs before triggering a guidelines update
+# update_threshold = 5
+# # Maximum token budget for the guidelines document
+# max_guidelines_tokens = 500
+# # Maximum failure pairs consumed per update cycle
+# max_pairs_per_update = 10
+# # Number of turns after hard compaction to watch for context loss
+# detection_window_turns = 10
+# # Interval in seconds between background updater checks
+# update_interval_secs = 300
+# # Maximum unused failure pairs to retain (cleanup policy)
+# max_stored_pairs = 100
+# Context-compression feature: Focus Agent (#1850)
+# Requires the `context-compression` feature flag to be enabled at compile time.
+# [agent.focus]
+# # Enable start_focus / complete_focus native tools
+# enabled = false
+# # Minimum turns between focus completions before hinting the LLM (default: 12)
+# compression_interval = 12
+# # Minimum turns between reminder injections (default: 15)
+# reminder_interval = 15
+# # Minimum bracketed messages before complete_focus is useful (default: 8)
+# min_messages_per_focus = 8
+# # Minimum turns that must elapse between auto-consolidations; must be >= 1 (default: 4)
+# auto_consolidate_min_window = 4
+# # Maximum tokens the Knowledge block may grow to before trimming old entries (default: 4096)
+# max_knowledge_tokens = 4096
+# # Minimum messages in a low-relevance window before auto-consolidation runs (#3313)
+# auto_consolidate_min_window = 6
+
+# Context-compression feature: SideQuest LLM-driven eviction (#1885)
+# Requires the `context-compression` feature flag to be enabled at compile time.
+# [memory.sidequest]
+# # Enable SideQuest tool output eviction
+# enabled = false
+# # Run eviction every N user turns (0 = disabled)
+# interval_turns = 10
+# # Maximum fraction of tool outputs to evict per pass (0.0-1.0)
+# max_eviction_ratio = 0.5
+# # Maximum tool outputs sent to the LLM for eviction scoring
+# max_cursors = 30
+# # Minimum token size for a tool output to be eviction-eligible
+# min_cursor_tokens = 50
+
+# Context-compression feature: task-aware pruning strategy (#1851)
+# Requires the `context-compression` feature flag to be enabled at compile time.
+# [memory.compression]
+# # Pruning strategy: "reactive" (default), "task_aware", "mig"
+# pruning_strategy = "reactive"
+
+# Compaction probe: validates summary quality before committing it (#1609).
+# Generates factual questions from compacted messages, answers them from the summary,
+# and scores accuracy. HardFail blocks compaction; SoftFail logs a warning.
+# [memory.compression.probe]
+# # Enable compaction probe validation
+# enabled = false
+# # Model for probe LLM calls (empty = same as summary provider)
+# model = ""
+# # Minimum score to pass (scores in [hard_fail_threshold, threshold) = SoftFail)
+# threshold = 0.6
+# # Score below this blocks compaction (HardFail)
+# hard_fail_threshold = 0.35
+# # Maximum number of probe questions to generate
+# max_questions = 3
+# # Timeout for the entire probe (both LLM calls) in seconds
+# timeout_secs = 15
+
+[memory.tiers]
+# Enable AOI three-layer memory tier promotion (episodic -> semantic).
+enabled = false
+# Minimum distinct sessions a fact must appear in before promotion. Must be >= 2.
+promotion_min_sessions = 3
+# Cosine similarity threshold for near-duplicate clustering. Range: [0.5, 1.0].
+similarity_threshold = 0.92
+# How often the background promotion sweep runs, in seconds.
+sweep_interval_secs = 3600
+# Maximum messages evaluated per sweep cycle. Must be >= 1.
+sweep_batch_size = 100
+
+# ── Multi-Model (SLM) Configuration Guide ────────────────────────────────────
+# Each subsystem exposes a `*_provider` config field that accepts a provider
+# name from [[llm.providers]]. Pointing narrow, repetitive tasks at a fast/cheap
+# Small Language Model (SLM) reduces cost and latency without sacrificing quality.
+#
+# SLM suitability table:
+#
+#   Subsystem                 | Config field                         | Recommended SLM
+#   --------------------------|--------------------------------------|------------------
+#   Complexity triage         | [llm.complexity_routing].triage_provider | gpt-4o-mini, qwen3:8b
+#   Context compaction        | [memory.compression].compress_provider   | gpt-4o-mini, claude-haiku-4-5
+#   Compaction probe          | [memory.compression.probe].probe_provider| gpt-4o-mini, qwen3:8b
+#   Scene labeling            | [memory.semantic].scene_provider         | gpt-4o-mini, qwen3:8b
+#   Memory admission          | [memory.admission].admission_provider    | gpt-4o-mini, claude-haiku-4-5
+#   Graph consolidation       | [memory.graph.consolidation].consolidation_provider | gpt-4o-mini, claude-haiku-4-5
+#   Feedback detection        | [learning].feedback_provider             | gpt-4o-mini, qwen3:8b
+#   Response verifier         | [sanitizer.response_verification].verifier_provider | gpt-4o-mini (security trade-off: see note)
+#   Quarantine summarizer     | [security.content_isolation.quarantine].model | gpt-4o-mini, claude-haiku-4-5
+#   Orchestration planner     | [orchestration].planner_provider         | Keep on quality provider (complex reasoning)
+#   Graph entity extraction   | [memory.graph].extract_model             | gpt-4o-mini, claude-haiku-4-5 (NOT 8B local without constrained decoding)
+#   Bandit embeddings         | [llm.router.bandit].embedding_provider   | Local embed model (Ollama, Candle)
+#
+# Note on response verifier: this is a security-sensitive task. Using a smaller model
+# increases the risk of false negatives (missed prompt injections). Consider keeping it
+# on the quality provider in high-security deployments.
+#
+# Example cost-optimized multi-provider setup:
+#
+# [[llm.providers]]
+# name = "fast"
+# type = "openai"
+# model = "gpt-4o-mini"
+#
+# [[llm.providers]]
+# name = "quality"
+# type = "claude"
+# model = "claude-opus-4-8"
+# default = true
+#
+# [llm.complexity_routing]
+# triage_provider = "fast"   # SLM: narrow classification task
+#
+# [memory.compression]
+# compress_provider = "fast" # SLM: summarization
+# # Archive tool output bodies to SQLite before compaction and inject references postfix (Memex #2432)
+# archive_tool_outputs = false
+#
+# [memory.compression.probe]
+# probe_provider = "fast"    # SLM: single-number quality scoring
+#
+# # Acon: token-budget compression of tool results before they enter message history (#4021).
+# # Invariants: passthrough_threshold < summarize_threshold <= total_budget.
+# [memory.compression.acon]
+# enabled = true
+# passthrough_threshold = 2000  # results <= this pass through unchanged
+# summarize_threshold = 4000    # results above this are candidates for LLM summarization (caller's responsibility)
+# total_budget = 8000           # max total tokens across all tool results in one turn
+# summarize_provider = ""       # provider for LLM summarization; falls back to primary when empty
+#
+# # ARC: agent-initiated context compaction (#4020).
+# [memory.compression.arc]
+# allow_agent_compaction = true  # set false to disable the request_compaction tool
+#
+# [memory.semantic]
+# scene_provider = "fast"    # SLM: short label generation
+#
+# [memory.admission]
+# admission_provider = "fast" # SLM: structured scoring
+# # Admission strategy: "heuristic" (default) or "rl" (logistic regression, requires rl_min_samples)
+# admission_strategy = "heuristic"
+# # Minimum training samples before switching from heuristic to RL model
+# rl_min_samples = 500
+#
+# [memory.reasoning]
+# # ReasoningBank: distilled strategy memory — off by default (#3342)
+# enabled = false
+# extract_provider = ""    # SLM: self-judge (JSON response) — leave blank to use primary
+# distill_provider = ""    # SLM: strategy distillation — leave blank to use primary
+# top_k = 3               # strategies injected per turn
+# store_limit = 1000       # max rows in reasoning_strategies table
+# context_budget_tokens = 500
+# extraction_timeout_secs = 30
+# distill_timeout_secs = 30
+# max_messages = 6
+# min_messages = 2
+# max_message_chars = 2000
+# self_judge_window = 2    # max recent messages to self-judge evaluator (#3383)
+# min_assistant_chars = 50 # skip self-judge for short replies (#3383)
+#
+# [memory.type_aware_compose]
+# # MemGuard-inspired type-aware retrieval composition — off by default (#6086)
+# # Retrieval-only: no new Qdrant collection, no write-path or stored-data change.
+# enabled = false
+# # Functional types composed under an un-specialized retrieval need. Empty = all types.
+# # Values: "episodic" | "user_fact" | "behavioral_rule" | "reasoning_strategy"
+# #       | "cross_session_summary" | "graph_fact". Unknown strings are a hard config error.
+# default_compose_types = []
+# # Widen the active set per classified query intent (no new LLM call; reuses HeuristicRouter).
+# intent_scoped = false
+#
+# [learning]
+# feedback_provider = "fast" # SLM: three-class classification
+#
+# [orchestration]
+# planner_provider = "quality" # Keep on quality provider (planning = complex reasoning)
+
+# ── Profiling and distributed tracing ─────────────────────────────────────────
+# Requires the binary to be compiled with --features profiling.
+# All instrumentation points are zero-overhead when the feature is absent.
+# [telemetry]
+# # Enable tracing instrumentation (default: false)
+# enabled = false
+# # Backend: "local" (Chrome JSON), "otlp" (OpenTelemetry), "pyroscope"
+# backend = "local"
+# # Directory for Chrome JSON trace files (backend = "local")
+# trace_dir = ".local/traces"
+# # Include function arguments in span attributes. Keep false (default) in production
+# # to avoid logging user messages, LLM responses, or tool outputs with PII.
+# include_args = false
+# # OTLP gRPC endpoint (backend = "otlp"). Default: "http://localhost:4317".
+# otlp_endpoint = "http://localhost:4317"
+# # Vault key for OTLP auth headers (e.g. ZEPH_OTLP_HEADERS)
+# # otlp_headers_vault_key = ""
+# # Pyroscope server URL (backend = "pyroscope")
+# # pyroscope_endpoint = "http://localhost:4040"
+# # Service name reported in trace metadata
+# service_name = "zeph-agent"
+# # Fraction of traces to sample: 1.0 = all, 0.1 = 10% (otlp backend only)
+# sample_rate = 1.0
+# # Interval between system-metrics snapshots in seconds (Phase 3)
+# system_metrics_interval_secs = 5
+# # Custom key/value pairs attached as OpenTelemetry resource attributes.
+# # Appear on every exported span. Values are plaintext — do not store secrets here.
+# [telemetry.trace_metadata]
+# "deployment.environment" = "production"
+# "vcs.revision" = "abc1234"
+
+# [session] — session-scoped user experience settings
+# ── Goals ─────────────────────────────────────────────────────────────────────
+# Long-horizon goal tracking and autonomous multi-turn execution.
+[goals]
+# Enable the goal lifecycle subsystem.
+enabled = false
+# Inject <active_goal> block into the volatile system-prompt region.
+inject_into_system_prompt = true
+# Maximum characters allowed for goal text at creation time.
+max_text_chars = 2000
+# Maximum number of goals to return in /goal list.
+max_history = 50
+# Default token budget for new goals (null = unlimited).
+# default_token_budget = 100000
+
+# ── Autonomous mode ───────────────────────────────────────────────────────────
+# Enable /goal create ... --auto for multi-turn autonomous execution.
+autonomous_enabled = false
+# Maximum turns the agent may run without user input per session.
+autonomous_max_turns = 20
+# Provider name from [[llm.providers]] for supervisor verification calls.
+# Uses the main provider when absent.
+# supervisor_provider = "fast"
+# Number of turns between supervisor verification checks.
+verify_interval = 5
+# Timeout in seconds for a single supervisor LLM call.
+supervisor_timeout_secs = 30
+# Consecutive stuck-detection count before aborting the session.
+max_stuck_count = 3
+# Delay in milliseconds between autonomous turns.
+autonomous_turn_delay_ms = 500
+
+[session]
+# Persist the last-used provider per channel across restarts (#3308).
+# When true (default), the agent saves the active provider name to SQLite after each
+# /provider switch and restores it on the next session start for the same channel.
+# Set to false to always start with the configured primary provider.
+provider_persistence = true
+
+# Maintain a durable, replayable JSONL event log per conversation-session (spec-068, #5343).
+# When true (default), every channel mints a session id on first turn and appends events to
+# <data_dir>/sessions/<session_id>/events.jsonl — the source of truth for crash-safe resume
+# and fork. When false, only the SQLite `messages` projection is written (pre-#5343 behavior).
+# enabled = true
+# Directory for per-session event logs; default is a sibling of memory.sqlite_path's parent.
+# data_dir = ".zeph/sessions"
+# Opt-in AEAD encryption of session event logs (deferred to a post-MVP implementation).
+# encrypt = false
+# Event-log size (MB) that guards a rotate/condense trigger.
+# max_event_log_mb = 256
+
+# [session.recap] — session recap on resume (#3064)
+# [session.recap]
+# Show a recap of the previous session when resuming a conversation (requires a persisted digest)
+# on_resume = true
+# Maximum tokens for the recap text
+# max_tokens = 200
+# Provider name from [[llm.providers]] for recap calls; empty = primary provider
+# provider = ""
+# Maximum recent messages included for fresh-generation path (no cached digest)
+# max_input_messages = 20
+
+# [session.condense] — durable context condensation policy (spec-068 §8, #5343)
+# [session.condense]
+# Provider name from [[llm.providers]] for condensation calls; empty = primary provider
+# condense_provider = ""
+# Fraction of the context budget that triggers condensation on resume/mid-session
+# threshold = 0.85
+# Minimum recent events preserved after condensation
+# keep_recent = 20
+
+# [serve] — `zeph serve` persistent agent service (spec-068 §9, #5343)
+# [serve]
+# HTTP/SSE API bind address
+# http_addr = "127.0.0.1:8420"
+# Require a bearer token on /sessions* endpoints (/health is always unauthenticated)
+# require_auth = true
+# Zeph age-vault key name to resolve the bearer token from at startup
+# auth_token_vault_key = "ZEPH_SERVE_AUTH_TOKEN"
+# Maximum number of concurrent live sessions LiveSessionRegistry will hold
+# max_sessions = 50
+# Seconds of no attached broadcast receivers before an idle SessionActor is evicted
+# session_idle_ttl_secs = 1800
+# Bounded mpsc capacity for a SessionActor's prompt mailbox; full mailbox -> HTTP 429
+# max_queued_prompts = 8
+
+# ── Lifecycle hooks ────────────────────────────────────────────────────────────
+# Hooks fire at named lifecycle points. Each hook specifies an action (shell
+# command or MCP tool dispatch) plus timeout and fail_closed settings.
+#
+# action types:
+#   type = "command"  — run a shell command via sh -c
+#   type = "mcp_tool" — call an MCP server tool directly (no subprocess)
+#
+# Available events:
+#   [[hooks.cwd_changed]]      — agent's working directory changed
+#   [[hooks.permission_denied]] — a tool call was blocked by a RuntimeLayer check
+#   [hooks.file_changed]       — watched filesystem paths changed (see watch_paths)
+
+# Maximum number of PreToolUse hook blocks per turn before the turn is ended with a warning.
+# Counter increments once per blocked tool call. Use 0 for no cap.
+# hook_block_cap = 8
+
+# ── hooks.cwd_changed ─────────────────────────────────────────────────────────
+# Fired each time the agent changes its working directory.
+# Env vars set for command hooks: ZEPH_NEW_CWD (new path), ZEPH_OLD_CWD (previous path).
+#
+# [[hooks.cwd_changed]]
+# type = "command"
+# command = "echo 'cwd changed to $ZEPH_NEW_CWD'"
+# timeout_secs = 10
+# fail_closed = false
+#
+# MCP tool dispatch variant — call a server tool instead of a subprocess:
+# [[hooks.cwd_changed]]
+# type = "mcp_tool"
+# server = "my-server"   # must match a name in [[mcp.servers]]
+# tool = "on_cwd_changed"
+# timeout_secs = 10
+# fail_closed = false
+
+# ── hooks.permission_denied ───────────────────────────────────────────────────
+# Fired when a tool call is blocked by a RuntimeLayer::before_tool check (#3303).
+# Env vars set for command hooks:
+#   ZEPH_DENIED_TOOL  — name of the blocked tool
+#   ZEPH_DENY_REASON  — human-readable reason string from the layer
+#
+# [[hooks.permission_denied]]
+# type = "command"
+# command = "echo 'denied: $ZEPH_DENIED_TOOL ($ZEPH_DENY_REASON)'"
+# timeout_secs = 5
+# fail_closed = false
+#
+# MCP tool dispatch variant — log denials to an audit server without a subprocess:
+# [[hooks.permission_denied]]
+# type = "mcp_tool"
+# server = "policy-server"  # must match a name in [[mcp.servers]]
+# tool = "audit_denied"
+# timeout_secs = 10
+# fail_closed = false
+# # Optional static arguments passed to the tool as JSON:
+# [hooks.permission_denied.args]
+# severity = "high"
+
+# ── hooks.file_changed ────────────────────────────────────────────────────────
+# Watches paths on disk and fires hooks when changes are detected.
+# Paths are resolved relative to the working directory at startup.
+#
+# [hooks.file_changed]
+# watch_paths = ["src/", "Cargo.toml"]
+# debounce_ms = 500   # default: 500
+# [[hooks.file_changed.hooks]]
+# type = "command"
+# command = "cargo check"
+# timeout_secs = 30
+# fail_closed = false
+
+# ── hooks.turn_complete ───────────────────────────────────────────────────────
+# Fired after every agent turn completes (#3327).
+# Env vars set for command hooks:
+#   ZEPH_TURN_DURATION_MS   — wall-clock duration of the turn in milliseconds
+#   ZEPH_TURN_STATUS        — "success" or "error"
+#   ZEPH_TURN_PREVIEW       — redacted first ≤160 chars of the assistant response
+#   ZEPH_TURN_LLM_REQUESTS  — number of completed LLM round-trips this turn
+#   ZEPH_TURN_TOOL_CALLS    — number of tool calls dispatched this turn
+#
+# Note: the built-in [notifications] section is the preferred path for desktop
+# and webhook delivery. This hook is an escape hatch for custom shell integration
+# (e.g. system sounds, status-bar updates, logging pipelines).
+# When [notifications] is also configured its should_fire gate applies here too
+# (min_turn_duration_ms, only_on_error). Without [notifications], hooks fire on
+# every turn completion.
+#
+# macOS desktop notification example:
+# Note: ZEPH_TURN_PREVIEW is available as env var but should not be embedded
+# directly in the command string to avoid shell injection. Use a wrapper script instead.
+# [[hooks.turn_complete]]
+# command = "osascript -e 'display notification \"Task complete\" with title \"Zeph\"'"
+# timeout_secs = 3
+# fail_closed = false
+
+# ----------------------------------------------------------------------------
+# Durable execution layer (spec-064). Opt-in, default-off. When enabled, the
+# agent journals control flow to a dedicated durable.db so a crashed or
+# interrupted execution can resume at the point of failure instead of
+# restarting. Inspect with `zeph durable`. The AEAD key is vault-only
+# (ZEPH_DURABLE_KEY) and never written inline here.
+# ----------------------------------------------------------------------------
+[durable]
+# Master opt-in. false = current behavior, no journal opened.
+enabled = false
+# Journal backend: "local" (dedicated durable.db) | "restate" (server feature).
+backend = "local"
+# Encrypt payloads with AEAD. Disabling is a dev-only override (forbidden for
+# non-local backends and shared databases).
+encrypt_payload = true
+# Declare the durable journal database as reachable by more than one process/client
+# (a network-shared volume, or any future Postgres-backed durable deployment). Set
+# true for such deployments — the INV-8 encryption_gate forbids encrypt_payload =
+# false whenever this is true. Leave false for an ordinary single-user local setup.
+shared_db = false
+# Per-adapter opt-in (only take effect when enabled = true).
+agent_turns = true
+orchestration = true
+scheduler = true
+subagent = true
+# Group-commit interval for buffered appends (ms).
+journal_flush_interval_ms = 10
+# Acknowledged-append timeout before degrading to non-durable mode (ms).
+journal_ack_timeout_ms = 5000
+# In-execution step cap (soft fold at 90%, hard abort at 100%).
+max_steps_per_execution = 10000
+# Maximum payload size in bytes, enforced on append and read (1 MiB).
+max_payload_bytes = 1048576
+# Database fallback poll interval for parked promises (seconds).
+promise_poll_interval_secs = 2
+# Above this many parked promises, resolution falls back to pure polling.
+max_parked_promises = 1000
+
+[durable.retention]
+# Prune completed executions older than this (seconds, 7 days).
+ttl_completed_secs = 604800
+# Prune failed/aborted executions older than this (seconds, 30 days).
+ttl_failed_secs = 2592000
+# LRU cap on stored executions.
+max_executions = 10000
+# Size cap on the journal in bytes (1 GiB).
+max_journal_bytes = 1073741824
+# Rows deleted per transaction during a prune sweep.
+prune_batch_size = 500
+# Background prune poll interval (seconds).
+prune_interval_secs = 3600
+# Crash-orphan threshold (#6254): a running execution whose owner process died without
+# finalizing becomes a sweep candidate after this many seconds of inactivity, subject to an
+# advisory-lock liveness check before it is aborted. 0 disables the sweep.
+stale_running_after_secs = 3600
+
+[caveman]
+# Start every session in ultra-compressed (telegraphic) output mode.
+# Toggle at runtime with /caveman [on|off] or via the bundled caveman skill.
+default_on = false

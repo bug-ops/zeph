@@ -1,0 +1,7 @@
+name: menu-skill
+description: A skill exposing a menu item.
+extensions:
+  ui:
+    - type: menu_item
+      label: Open
+      action: open-skill

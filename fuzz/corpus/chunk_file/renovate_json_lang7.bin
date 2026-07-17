@@ -1,0 +1,133 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommits",
+    ":semanticCommitTypeAll(chore)",
+    ":semanticCommitScope(deps)",
+    "group:monorepos",
+    "group:recommended",
+    ":dependencyDashboard",
+    ":enableVulnerabilityAlertsWithLabel(security)"
+  ],
+  "timezone": "UTC",
+  "schedule": ["before 6am on monday"],
+  "prHourlyLimit": 4,
+  "prConcurrentLimit": 20,
+  "branchConcurrentLimit": 25,
+  "labels": ["dependencies"],
+  "rangeStrategy": "bump",
+  "gitAuthor": "renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+  "platformCommit": "disabled",
+  "platformAutomerge": true,
+  "rebaseWhen": "conflicted",
+  "dependencyDashboardTitle": "Renovate Dependency Dashboard",
+  "dependencyDashboardOSVVulnerabilitySummary": "all",
+  "osvVulnerabilityAlerts": true,
+  "constraintsFiltering": "strict",
+  "postUpdateOptions": ["cargoUpdateLockfile"],
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/target/**",
+    "**/.local/**",
+    "**/book/**",
+    "**/specs/**"
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"],
+    "automerge": true,
+    "commitMessageAction": "refresh",
+    "commitMessageTopic": "Cargo lock file"
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["dependencies", "security"],
+    "automerge": false,
+    "minimumReleaseAge": "0 days",
+    "schedule": ["at any time"]
+  },
+  "packageRules": [
+    {
+      "description": "Group minor+patch Rust updates into a single rolling PR",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "rust-minor-patch",
+      "automerge": true,
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Rust major updates — manual review, separate PRs",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["dependencies", "major-update"],
+      "minimumReleaseAge": "7 days"
+    },
+    {
+      "description": "Tokio ecosystem",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["tokio", "/^tokio-/"],
+      "groupName": "tokio",
+      "automerge": true
+    },
+    {
+      "description": "Serde ecosystem",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["serde", "/^serde[_-]/"],
+      "groupName": "serde",
+      "automerge": true
+    },
+    {
+      "description": "Tracing ecosystem",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["tracing", "/^tracing-/"],
+      "groupName": "tracing",
+      "automerge": true
+    },
+    {
+      "description": "OpenTelemetry — group, manual review (breaking bumps frequent)",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["/^opentelemetry/"],
+      "groupName": "opentelemetry",
+      "automerge": false
+    },
+    {
+      "description": "Axum + Tower HTTP stack",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["axum", "/^axum-/", "tower", "/^tower-/"],
+      "groupName": "axum-tower",
+      "automerge": true
+    },
+    {
+      "description": "Candle / HuggingFace ML stack — unstable, manual review for major",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["/^candle-/", "hf-hub", "tokenizers"],
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["dependencies", "ml-stack"]
+    },
+    {
+      "description": "GitHub Actions — grouped, pinned to SHAs",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "automerge": true,
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Docker base images — manual review",
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "automerge": false,
+      "minimumReleaseAge": "7 days",
+      "labels": ["dependencies", "docker"]
+    },
+    {
+      "description": "Python (telegram-e2e harness)",
+      "matchManagers": ["pip_requirements"],
+      "groupName": "python-test",
+      "automerge": true,
+      "minimumReleaseAge": "3 days"
+    }
+  ]
+}

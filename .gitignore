@@ -14,6 +14,8 @@ book/book/
 *.log
 zeph.log
 *.session
+/fuzz/target
+/fuzz/artifacts
 
 # Track per-directory agent guides despite the global AGENTS.md ignore
 !AGENTS.md
