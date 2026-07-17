@@ -1029,8 +1029,14 @@ impl<C: Channel> Agent<C> {
     /// rate limiter, and pre-execution verifiers.
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig, timeouts: TimeoutConfig) -> Self {
-        self.services.security.sanitizer =
-            zeph_sanitizer::ContentSanitizer::new(&security.content_isolation);
+        let sanitizer = zeph_sanitizer::ContentSanitizer::new(&security.content_isolation);
+        #[cfg(feature = "classifiers")]
+        let sanitizer = if let Some(ref m) = self.runtime.metrics.classifier_metrics {
+            sanitizer.with_classifier_metrics(std::sync::Arc::clone(m))
+        } else {
+            sanitizer
+        };
+        self.services.security.sanitizer = sanitizer;
         self.services.security.exfiltration_guard =
             zeph_sanitizer::exfiltration::ExfiltrationGuard::new(
                 security.exfiltration_guard.clone(),

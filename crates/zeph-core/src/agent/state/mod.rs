@@ -644,8 +644,10 @@ pub(crate) struct MetricsState {
     /// Set to `true` when Claude extended context (`enable_extended_context = true`) is active.
     /// Read from config at build time, not derived from provider internals.
     pub(crate) extended_context: bool,
-    /// Shared classifier latency ring buffer. Populated by `ContentSanitizer` (injection, PII)
-    /// and `LlmClassifier` (feedback). `None` when classifiers are not configured.
+    /// Shared classifier latency ring buffer, allocated unconditionally at agent construction
+    /// (before any builder call) so it is available regardless of builder-chain ordering.
+    /// Recorded into by `ContentSanitizer` (injection, PII) and `LlmClassifier` (feedback);
+    /// stays empty (all-`None` percentiles) when no classifier is configured.
     pub(crate) classifier_metrics: Option<Arc<zeph_llm::ClassifierMetrics>>,
     /// Rolling window of per-turn latency samples (last 10 turns).
     pub(crate) timing_window: std::collections::VecDeque<crate::metrics::TurnTimings>,
@@ -1490,7 +1492,9 @@ impl MetricsState {
             cost_tracker: None,
             token_counter,
             extended_context: false,
-            classifier_metrics: None,
+            classifier_metrics: Some(Arc::new(zeph_llm::ClassifierMetrics::new(
+                zeph_llm::classifier::metrics::DEFAULT_RING_BUFFER_SIZE,
+            ))),
             timing_window: std::collections::VecDeque::new(),
             pending_timings: crate::metrics::TurnTimings::default(),
             histogram_recorder: None,

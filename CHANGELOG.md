@@ -140,6 +140,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: the sanitizer's ML-backed injection and PII classifier calls
+  (`ContentSanitizer::classify_injection`/`detect_pii`) were never recorded in the TUI
+  metrics panel (#6382). The shared `Arc<ClassifierMetrics>` ring buffer they record into was
+  never constructed in production — `runtime.metrics.classifier_metrics` stayed `None`
+  regardless of config, so `push_classifier_metrics()` was permanently a no-op. `MetricsState::new`
+  now allocates the `Arc` unconditionally at agent construction, before any builder-chain call
+  runs, so it is available to `with_security`'s sanitizer construction (and to
+  `with_llm_classifier`'s existing feedback-classifier wiring, which was equally dead)
+  regardless of builder call order.
+- `zeph-tui`: a completed tool call that rendered as a single (non-grouped)
+  `MessageGroup::Single` entry never received the completion-flash highlight, even though
+  `App::maybe_flash_completed_group` already recorded a flash for group-size-1 runs (#6383).
+  The flash-style patch was only applied in the `MessageGroup::Grouped` render arm; the
+  `Single` arm now applies the same `patch_flash_style` check, so a lone tool completion
+  flashes identically to a grouped one.
 - `src/channel.rs`: `impl Channel for AppChannel` forwarded most `Channel` trait methods via
   `dispatch_app_channel!` but never overrode `elicit()` or `send_context_estimate()`, so both
   calls fell through to the trait's default methods instead of reaching `AnyChannel`/`TuiChannel`'s

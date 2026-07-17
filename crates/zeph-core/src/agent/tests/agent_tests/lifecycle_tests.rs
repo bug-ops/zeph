@@ -87,6 +87,123 @@ async fn agent_with_security_sets_config() {
     assert_eq!(agent.runtime.config.timeouts.llm_seconds, 60);
 }
 
+/// Quick sanity check for #6382: the sanitizer built by the real `with_security`
+/// production path must share the same `classifier_metrics` Arc that
+/// `push_classifier_metrics()`/TUI read, so a PII detector call recorded on the
+/// sanitizer is visible through `agent.runtime.metrics.classifier_metrics`.
+#[cfg(feature = "classifiers")]
+#[tokio::test]
+async fn agent_with_security_wires_classifier_metrics_into_sanitizer() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use zeph_llm::classifier::{PiiDetector, PiiResult};
+
+    struct MockPiiDetector;
+
+    impl PiiDetector for MockPiiDetector {
+        fn detect_pii<'a>(
+            &'a self,
+            _text: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<PiiResult, zeph_llm::LlmError>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                Ok(PiiResult {
+                    spans: vec![],
+                    has_pii: false,
+                })
+            })
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "mock"
+        }
+    }
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let agent = Agent::new(provider, channel, registry, None, 5, executor)
+        .with_security(SecurityConfig::default(), TimeoutConfig::default())
+        .with_pii_detector(Arc::new(MockPiiDetector), 0.75);
+
+    assert!(agent.runtime.metrics.classifier_metrics.is_some());
+
+    let _ = agent.services.security.sanitizer.detect_pii("hello").await;
+
+    let snapshot = agent
+        .runtime
+        .metrics
+        .classifier_metrics
+        .as_ref()
+        .unwrap()
+        .snapshot();
+    assert_eq!(snapshot.pii.call_count, 1);
+}
+
+/// Companion to `agent_with_security_wires_classifier_metrics_into_sanitizer`: exercises the
+/// injection-classifier path (`classify_injection`) rather than PII, through the same real
+/// `Agent::new(...).with_security(...).with_injection_classifier(...)` production chain.
+#[cfg(feature = "classifiers")]
+#[tokio::test]
+async fn agent_with_security_wires_classifier_metrics_into_injection_classifier() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use zeph_llm::classifier::{ClassificationResult, ClassifierBackend};
+
+    struct MockInjectionBackend;
+
+    impl ClassifierBackend for MockInjectionBackend {
+        fn classify<'a>(
+            &'a self,
+            _text: &'a str,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<ClassificationResult, zeph_llm::LlmError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                Ok(ClassificationResult {
+                    label: "SAFE".to_string(),
+                    score: 0.1,
+                    is_positive: false,
+                    spans: vec![],
+                })
+            })
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "mock"
+        }
+    }
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let agent = Agent::new(provider, channel, registry, None, 5, executor)
+        .with_security(SecurityConfig::default(), TimeoutConfig::default())
+        .with_injection_classifier(Arc::new(MockInjectionBackend), 5000, 0.8, 0.5);
+
+    assert!(agent.runtime.metrics.classifier_metrics.is_some());
+
+    let _ = agent
+        .services
+        .security
+        .sanitizer
+        .classify_injection("hello")
+        .await;
+
+    let snapshot = agent
+        .runtime
+        .metrics
+        .classifier_metrics
+        .as_ref()
+        .unwrap()
+        .snapshot();
+    assert_eq!(snapshot.injection.call_count, 1);
+}
+
 #[tokio::test]
 async fn agent_run_handles_empty_channel() {
     let provider = mock_provider(vec![]);

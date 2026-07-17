@@ -286,8 +286,12 @@ fn collect_message_lines_from(
 
                 let is_user = msg.role == MessageRole::User;
                 let user_bg = theme.user_message_bg;
+                let flash_active = flash_groups.contains(idx);
 
                 for mut line in msg_lines {
+                    if flash_active {
+                        patch_flash_style(&mut line, flash_style);
+                    }
                     if is_user {
                         line.spans.insert(0, Span::styled("\u{258e} ", accent));
                         for span in &mut line.spans {
@@ -353,9 +357,7 @@ fn collect_message_lines_from(
                 let flash_active = flash_groups.contains(start_idx);
                 for mut line in group_lines {
                     if flash_active {
-                        for span in &mut line.spans {
-                            span.style = span.style.patch(flash_style);
-                        }
+                        patch_flash_style(&mut line, flash_style);
                     }
                     line.spans.insert(0, Span::raw("  "));
                     lines.push(line);
@@ -364,6 +366,14 @@ fn collect_message_lines_from(
         }
     }
     (lines, all_md_links, message_line_starts)
+}
+
+/// Patch every span in `line` with `flash_style`, used to highlight a just-completed
+/// tool message/group for the duration of its flash window (see `App::maybe_flash_completed_group`).
+fn patch_flash_style(line: &mut Line<'static>, flash_style: Style) {
+    for span in &mut line.spans {
+        span.style = span.style.patch(flash_style);
+    }
 }
 
 /// Split matching substrings out of `lines` into their own [`Span`]s styled with
@@ -2329,6 +2339,73 @@ mod tests {
         let groups = group_messages(&msgs);
         assert_eq!(groups.len(), 1);
         assert_matches!(groups[0], MessageGroup::Single { .. });
+    }
+
+    /// Regression test for #6383: the `MessageGroup::Single` arm of `collect_message_lines_from`
+    /// must apply the completion flash style to a lone (non-grouped) completed tool message,
+    /// the same way the `MessageGroup::Grouped` arm already applies it to grouped tool cells.
+    /// Drives the real `collect_message_lines_from` render path (not `patch_flash_style` in
+    /// isolation) with a completed tool message whose index is in `flash_groups`, mirroring how
+    /// `App::maybe_flash_completed_group` records a flash for `group_size` == 1 runs.
+    #[test]
+    fn single_tool_message_flash_applies_style() {
+        let theme = Theme::default();
+        let messages = vec![make_tool_msg("$ echo hi\nhi")];
+        let flash_style = ratatui::style::Style::default().fg(ratatui::style::Color::Magenta);
+
+        let mut cache = crate::app::RenderCache::default();
+        let (flashed_lines, _, _) = collect_message_lines_from(
+            &messages,
+            None,
+            &mut cache,
+            80,
+            76,
+            &theme,
+            false,
+            ToolDensity::Inline,
+            false,
+            0,
+            false,
+            0,
+            &std::collections::HashSet::from([0]),
+            flash_style,
+            None,
+        );
+        let flashed_has_magenta = flashed_lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.style.fg == Some(ratatui::style::Color::Magenta));
+        assert!(
+            flashed_has_magenta,
+            "Single-arm tool message must receive flash_style when its index is in flash_groups"
+        );
+
+        let mut cache = crate::app::RenderCache::default();
+        let (unflashed_lines, _, _) = collect_message_lines_from(
+            &messages,
+            None,
+            &mut cache,
+            80,
+            76,
+            &theme,
+            false,
+            ToolDensity::Inline,
+            false,
+            0,
+            false,
+            0,
+            &std::collections::HashSet::new(),
+            flash_style,
+            None,
+        );
+        let unflashed_has_magenta = unflashed_lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.style.fg == Some(ratatui::style::Color::Magenta));
+        assert!(
+            !unflashed_has_magenta,
+            "tool message must not carry flash_style when its index is absent from flash_groups"
+        );
     }
 
     #[test]
