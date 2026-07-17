@@ -164,11 +164,15 @@ pub fn read_line(prompt: &str, history: &[String]) -> io::Result<ReadLineResult>
 /// over exclusive terminal access without racing this reader for keystrokes.
 ///
 /// This closes the *starvation* window (an in-progress keystroke stream)
-/// completely, but there remains a bounded ~50ms *acquisition* window between
-/// the concurrent caller setting `yield_requested` and this loop's current
-/// `event::poll` call returning — accepted as an intentional MVP tradeoff
-/// (the common case is a user reacting to a freshly-printed prompt, not
-/// already mid-keystroke) rather than adding a full ack/notify handshake.
+/// completely. The remaining bounded ~50ms *acquisition* window between the
+/// concurrent caller setting `yield_requested` and this loop's current
+/// `event::poll` call returning is closed one layer up: [`CliChannel`]'s
+/// `ElicitGuard::acquire()` awaits a generation-tagged ack `Notify` that the
+/// caller of this function fires (with a freshly bumped generation) once it
+/// observes a `Yielded` result (or is already parked), so the concurrent
+/// caller only proceeds once this loop has *genuinely and recently* stopped
+/// touching stdin — the generation tag is what lets `acquire()` tell a fresh
+/// park apart from a stale, already-superseded ack permit (#6404).
 ///
 /// Any input typed so far is discarded when yielding.
 ///

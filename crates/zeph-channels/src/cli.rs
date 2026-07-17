@@ -18,7 +18,8 @@
 use std::collections::VecDeque;
 use std::io::{BufReader, IsTerminal};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
 use tokio::sync::{Notify, mpsc};
 use zeph_common::path_guard::{PathRejection, classify_relative_path};
@@ -46,6 +47,22 @@ struct StdinCoordination {
     /// Notified when `elicit_active` transitions back to `false`, so the
     /// paused background reader wakes without busy-polling.
     resume: Notify,
+    /// Notified by `run_tty_reader` once it has observed `elicit_active`,
+    /// bumped [`Self::parked_generation`], and is about to park on `resume`
+    /// — i.e. it has genuinely stopped touching stdin. Paired with
+    /// `parked_generation` because a bare `Notify` permit can be stored by an
+    /// ack fired with no waiter (e.g. after `ElicitGuard::acquire()` already
+    /// gave up via [`ACK_HANDSHAKE_TIMEOUT`]) and then be wrongly consumed by
+    /// a *later* `acquire()` call that never actually waited for its own
+    /// reader parking — `acquire()` must check the generation to reject such
+    /// a stale permit (#6404).
+    ack: Notify,
+    /// Incremented by `run_tty_reader` immediately before each `ack.notify_one()`
+    /// call, i.e. once per genuine park. `ElicitGuard::acquire()` captures the
+    /// value at entry and only accepts an ack whose observed generation is
+    /// strictly greater — defeating stale permits left over from an earlier,
+    /// unrelated park (see `ack` doc above).
+    parked_generation: AtomicU64,
 }
 
 impl StdinCoordination {
@@ -53,24 +70,80 @@ impl StdinCoordination {
         Self {
             elicit_active: AtomicBool::new(false),
             resume: Notify::new(),
+            ack: Notify::new(),
+            parked_generation: AtomicU64::new(0),
         }
     }
 }
 
+/// Bound on how long [`ElicitGuard::acquire`] waits for `run_tty_reader`'s ack
+/// handshake before proceeding anyway.
+///
+/// The background reader's `event::poll` cycle is at most 50ms, so a genuine
+/// ack normally arrives well within this bound. The timeout exists only to
+/// guard against a reader that will never ack: it was never spawned (e.g.
+/// `elicit()`/`confirm()` called before the first [`Channel::recv`]), or it
+/// already exited (Ctrl-D/EOF). In either case, proceeding without the
+/// handshake — the pre-#6404 behaviour — is preferable to hanging forever.
+///
+/// [`Channel::recv`]: zeph_core::channel::Channel::recv
+const ACK_HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(200);
+
 /// RAII guard granting an `elicit()`/`confirm()` prompt exclusive terminal
 /// access for its lifetime.
 ///
-/// Acquiring sets [`StdinCoordination::elicit_active`]; dropping — on any
-/// exit path, including future cancellation — clears it and wakes the paused
-/// background reader via [`StdinCoordination::resume`].
+/// Acquiring sets [`StdinCoordination::elicit_active`], constructs the guard
+/// immediately (so `Drop` is armed even if the caller is cancelled before
+/// acquisition finishes), and then awaits the reader's ack — rejecting any
+/// stale permit left over from an earlier, unrelated park via
+/// [`StdinCoordination::parked_generation`] — bounded by
+/// [`ACK_HANDSHAKE_TIMEOUT`] so the prompt only proceeds once `run_tty_reader`
+/// has genuinely stopped touching stdin, or the bound is exceeded. Dropping —
+/// on any exit path, including cancellation of the `acquire()` future itself
+/// — clears the flag and wakes the paused background reader via
+/// [`StdinCoordination::resume`].
 struct ElicitGuard<'a> {
     coord: &'a StdinCoordination,
 }
 
 impl<'a> ElicitGuard<'a> {
-    fn acquire(coord: &'a StdinCoordination) -> Self {
+    async fn acquire(coord: &'a StdinCoordination) -> Self {
+        let start_generation = coord.parked_generation.load(Ordering::Acquire);
         coord.elicit_active.store(true, Ordering::Release);
-        Self { coord }
+        // Constructed before the ack wait so `Drop` clears `elicit_active`
+        // even if this future is dropped mid-await (#6404 S2).
+        let guard = Self { coord };
+
+        let deadline = tokio::time::Instant::now() + ACK_HANDSHAKE_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                tracing::debug!(
+                    "ack handshake timed out waiting for the background stdin reader to park; \
+                    proceeding without it (reader may not be running)"
+                );
+                break;
+            }
+            if tokio::time::timeout(remaining, coord.ack.notified())
+                .await
+                .is_err()
+            {
+                tracing::debug!(
+                    "ack handshake timed out waiting for the background stdin reader to park; \
+                    proceeding without it (reader may not be running)"
+                );
+                break;
+            }
+            // A woken `notified()` can be a stale permit from a park that
+            // predates this acquire() (#6404 S1) — only a generation strictly
+            // newer than the one observed at entry proves the reader parked
+            // *for this request*. A stale wakeup loops back and keeps
+            // waiting within the same overall deadline.
+            if coord.parked_generation.load(Ordering::Acquire) > start_generation {
+                break;
+            }
+        }
+        guard
     }
 }
 
@@ -229,6 +302,18 @@ async fn run_tty_reader(
 
     loop {
         while coord.elicit_active.load(Ordering::Acquire) {
+            // Reached only once this reader has stopped calling
+            // `event::poll`/`event::read()` for the current line (either it
+            // never started this iteration, or the prior `spawn_blocking`
+            // call already returned `Yielded`) — so acking here is exactly
+            // the "genuinely stopped touching stdin" signal `ElicitGuard::
+            // acquire()` waits for (#6404). The generation bump happens
+            // before the notify so a waiter that wakes on this ack always
+            // observes a generation newer than the one it captured at entry
+            // (#6404 S1 — defeats stale-permit consumption by a later,
+            // unrelated `acquire()` call).
+            coord.parked_generation.fetch_add(1, Ordering::Release);
+            coord.ack.notify_one();
             coord.resume.notified().await;
         }
 
@@ -570,7 +655,7 @@ impl Channel for CliChannel {
             tracing::debug!("non-interactive stdin, auto-declining confirmation");
             return Ok(false);
         }
-        let _guard = ElicitGuard::acquire(&self.stdin_coord);
+        let _guard = ElicitGuard::acquire(&self.stdin_coord).await;
         let prompt = format!("{prompt} [y/N]: ");
         // NOTE: raw spawn_blocking is intentional — interactive terminal readline; not an agent
         // task, so the task_supervisor semaphore does not apply.
@@ -623,7 +708,7 @@ impl Channel for CliChannel {
             return Ok(ElicitationResponse::Declined);
         }
 
-        let _guard = ElicitGuard::acquire(&self.stdin_coord);
+        let _guard = ElicitGuard::acquire(&self.stdin_coord).await;
 
         println!(
             "\n[MCP server '{}' is requesting input]",
@@ -751,19 +836,40 @@ mod tests {
         let _ = format!("{ch:?}");
     }
 
-    #[test]
-    fn elicit_guard_acquire_sets_flag_true() {
-        let coord = StdinCoordination::new();
+    /// Spawns a task that satisfies a freshly-started `ElicitGuard::acquire()`
+    /// call with a genuinely fresh ack (bumps the generation, then notifies),
+    /// for tests that only care about flag/resume semantics and don't want to
+    /// pay `ACK_HANDSHAKE_TIMEOUT`. Must be called immediately before
+    /// `.await`ing the `acquire()` call it's meant to satisfy — `tokio::spawn`
+    /// only enqueues the task, so it runs at `acquire()`'s first internal
+    /// suspension point (after `acquire()` has already captured its starting
+    /// generation), never before.
+    fn arm_ack_once(coord: &Arc<StdinCoordination>) {
+        let coord = Arc::clone(coord);
+        tokio::spawn(async move {
+            coord.parked_generation.fetch_add(1, Ordering::Release);
+            coord.ack.notify_one();
+        });
+    }
+
+    #[tokio::test]
+    async fn elicit_guard_acquire_sets_flag_true() {
+        let coord = Arc::new(StdinCoordination::new());
         assert!(!coord.elicit_active.load(Ordering::Acquire));
-        let _guard = ElicitGuard::acquire(&coord);
+        // No reader task is running in this test; arm a fresh ack so
+        // `acquire()` resolves immediately instead of via its timeout
+        // fallback — this test is about the flag, not the handshake.
+        arm_ack_once(&coord);
+        let _guard = ElicitGuard::acquire(&coord).await;
         assert!(coord.elicit_active.load(Ordering::Acquire));
     }
 
-    #[test]
-    fn elicit_guard_drop_clears_flag() {
-        let coord = StdinCoordination::new();
+    #[tokio::test]
+    async fn elicit_guard_drop_clears_flag() {
+        let coord = Arc::new(StdinCoordination::new());
+        arm_ack_once(&coord);
         {
-            let _guard = ElicitGuard::acquire(&coord);
+            let _guard = ElicitGuard::acquire(&coord).await;
             assert!(coord.elicit_active.load(Ordering::Acquire));
         }
         assert!(!coord.elicit_active.load(Ordering::Acquire));
@@ -772,7 +878,8 @@ mod tests {
     #[tokio::test]
     async fn elicit_guard_drop_wakes_a_notified_waiter() {
         let coord = Arc::new(StdinCoordination::new());
-        let guard = ElicitGuard::acquire(&coord);
+        arm_ack_once(&coord);
+        let guard = ElicitGuard::acquire(&coord).await;
 
         let waiter_coord = Arc::clone(&coord);
         let waiter = tokio::spawn(async move {
@@ -789,11 +896,143 @@ mod tests {
             .expect("waiter task should not panic");
     }
 
-    /// Mirrors `run_tty_reader`'s wait loop exactly, so this test exercises the
+    /// Regression test for #6404: under the old poll-based approach,
+    /// `ElicitGuard::acquire()` returned as soon as it set `elicit_active`,
+    /// with no guarantee the background reader had actually stopped touching
+    /// stdin — only a ~50ms assumption. This proves `acquire()` now blocks
+    /// until the reader's ack genuinely fires, not just until some elapsed
+    /// delay: the ack is deliberately delayed, and `acquire()` must not
+    /// return before it lands.
+    #[tokio::test]
+    async fn elicit_guard_acquire_awaits_reader_ack_handshake() {
+        let coord = Arc::new(StdinCoordination::new());
+        let ack_fired = Arc::new(AtomicBool::new(false));
+
+        let acking_coord = Arc::clone(&coord);
+        let acking_flag = Arc::clone(&ack_fired);
+        tokio::spawn(async move {
+            // Simulates `run_tty_reader` still mid-`event::poll` when the
+            // flag is set, only acking once it has genuinely parked.
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            acking_flag.store(true, Ordering::Release);
+            acking_coord
+                .parked_generation
+                .fetch_add(1, Ordering::Release);
+            acking_coord.ack.notify_one();
+        });
+
+        let guard = ElicitGuard::acquire(&coord).await;
+        assert!(
+            ack_fired.load(Ordering::Acquire),
+            "acquire() must not return before observing the reader's ack"
+        );
+        drop(guard);
+    }
+
+    /// Guards against reintroducing a hang: if `run_tty_reader` was never
+    /// spawned (e.g. `elicit()`/`confirm()` called before the first `recv()`)
+    /// or already exited, the ack `Notify` never fires. `acquire()` must fall
+    /// back to proceeding after `ACK_HANDSHAKE_TIMEOUT` rather than blocking
+    /// forever (#6404).
+    #[tokio::test]
+    async fn elicit_guard_acquire_does_not_hang_when_reader_never_acks() {
+        let coord = StdinCoordination::new();
+        let guard = tokio::time::timeout(Duration::from_secs(1), ElicitGuard::acquire(&coord))
+            .await
+            .expect("acquire() must not hang indefinitely when no reader ever acks");
+        drop(guard);
+    }
+
+    /// Regression test for #6404 S1 (impl-critic finding): a stale `ack`
+    /// permit left over from an earlier, *timed-out* `acquire()` must not
+    /// satisfy a later, unrelated `acquire()` call on the same `coord`.
+    /// `tokio::sync::Notify::notify_one()` stores a permit when fired with no
+    /// current waiter; without the `parked_generation` check, the second
+    /// `acquire()` would instantly consume that leftover permit and return
+    /// believing the reader had parked for its own request — silently
+    /// reintroducing the original ~50ms race for every prompt that
+    /// immediately follows a timed-out one.
+    #[tokio::test]
+    async fn elicit_guard_acquire_rejects_stale_permit_from_prior_timed_out_acquire() {
+        let coord = Arc::new(StdinCoordination::new());
+
+        // First acquire(): nothing acks it, so it must time out and proceed
+        // via the fallback path.
+        let guard1 = tokio::time::timeout(Duration::from_secs(1), ElicitGuard::acquire(&coord))
+            .await
+            .expect("first acquire() must not hang");
+        drop(guard1);
+
+        // Simulate the reader "catching up" after the fact: it parks and
+        // fires an ack with nobody currently waiting on it — the resulting
+        // permit must NOT satisfy the next acquire() below.
+        coord.parked_generation.fetch_add(1, Ordering::Release);
+        coord.ack.notify_one();
+
+        // Second acquire() must ignore that stale permit and wait for a
+        // genuinely fresh ack tied to its own request.
+        let acking_coord = Arc::clone(&coord);
+        let ack_fired = Arc::new(AtomicBool::new(false));
+        let acking_flag = Arc::clone(&ack_fired);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            acking_flag.store(true, Ordering::Release);
+            acking_coord
+                .parked_generation
+                .fetch_add(1, Ordering::Release);
+            acking_coord.ack.notify_one();
+        });
+
+        let guard2 = ElicitGuard::acquire(&coord).await;
+        assert!(
+            ack_fired.load(Ordering::Acquire),
+            "acquire() must not be satisfied by a stale permit left over from an earlier, \
+            unrelated park — it must wait for a fresh ack tied to its own request"
+        );
+        drop(guard2);
+    }
+
+    /// Regression test for #6404 S2 (impl-critic finding): dropping the
+    /// `acquire()` future mid-await (task cancellation, a `select!` loser, an
+    /// aborted `JoinHandle`) must still clear `elicit_active` via the guard's
+    /// `Drop`. `Drop` only runs once `Self { coord }` has actually been
+    /// constructed — regressing the order so the flag is set *before* the
+    /// guard exists would strand it `true` forever whenever `acquire()` is
+    /// cancelled during the ack wait, permanently parking `run_tty_reader`
+    /// and killing all subsequent chat stdin input.
+    #[tokio::test]
+    async fn elicit_guard_acquire_cancelled_mid_await_clears_flag() {
+        let coord = Arc::new(StdinCoordination::new());
+        assert!(!coord.elicit_active.load(Ordering::Acquire));
+
+        // Race acquire() (which nothing ever acks, so it would otherwise sit
+        // in its internal loop for up to ACK_HANDSHAKE_TIMEOUT) against an
+        // immediate `yield_now()`. `select!` polls every branch each round;
+        // `yield_now()` always resolves on its second poll, while acquire()
+        // is still pending (no ack fires and 200ms hasn't elapsed) — so the
+        // `yield_now()` branch wins deterministically and acquire()'s future
+        // is dropped mid-await.
+        tokio::select! {
+            _ = ElicitGuard::acquire(&coord) => {
+                panic!("acquire() must not resolve — nothing ever fires its ack");
+            }
+            () = tokio::task::yield_now() => {}
+        }
+
+        assert!(
+            !coord.elicit_active.load(Ordering::Acquire),
+            "dropping acquire() mid-await must still clear elicit_active via the guard's Drop"
+        );
+    }
+
+    /// Mirrors `run_tty_reader`'s wait loop exactly (including the generation
+    /// bump and ack fired just before parking), so this test exercises the
     /// actual consumer-side coordination pattern (not just `ElicitGuard` in
     /// isolation).
     async fn wait_for_resume(coord: &StdinCoordination) {
         while coord.elicit_active.load(Ordering::Acquire) {
+            coord.parked_generation.fetch_add(1, Ordering::Release);
+            coord.ack.notify_one();
             coord.resume.notified().await;
         }
     }
@@ -801,7 +1040,8 @@ mod tests {
     #[tokio::test]
     async fn stdin_coord_wait_loop_blocks_while_guard_held_then_resumes_on_drop() {
         let coord = Arc::new(StdinCoordination::new());
-        let guard = ElicitGuard::acquire(&coord);
+        arm_ack_once(&coord);
+        let guard = ElicitGuard::acquire(&coord).await;
 
         let waiter_coord = Arc::clone(&coord);
         let waiter = tokio::spawn(async move { wait_for_resume(&waiter_coord).await });

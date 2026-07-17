@@ -48,6 +48,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hand-curated `skills.include` list is never truncated, since the operator opted into that
   specific set on purpose.
 
+- `zeph-channels`: `CliChannel::elicit()`/`confirm()` could still race the background
+  `run_tty_reader` chat-input reader for a keystroke during the bounded ~50ms
+  `event::poll` window that the #6398 fix left open (#6404). `ElicitGuard::acquire()` now
+  awaits an ack `Notify` that `run_tty_reader` fires once it has genuinely stopped touching
+  stdin (observed the yield flag and is about to park), closing the acquisition window
+  instead of merely assuming it has elapsed. Bounded by a 200ms timeout so a reader that was
+  never spawned or has already exited cannot hang the caller forever.
 - `zeph-session`: `AdvisoryLock::acquire`'s `WOULDBLOCK` path gave operators only a bare
   "another session is already active" message with no way to tell whether the lock's holder
   was still running (#6378). The holder's PID is now written into the sibling lock file
