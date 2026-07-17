@@ -194,6 +194,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   as graph extraction so raw tool output and injection-flagged content never enter the tree.
   Best-effort: a single lightweight `INSERT ... RETURNING id`, no LLM/embedding call, failures
   logged and never propagated.
+- `zeph-memory`'s `SqliteStore::load_tree_leaves_unconsolidated` loaded the oldest
+  `batch_size` unconsolidated leaves every consolidation sweep; leaves that fail to cluster
+  (singletons) never get a `parent_id`, so once more than `batch_size` singletons accumulate,
+  every sweep kept re-loading and re-embedding the same stuck oldest set, permanently starving
+  newer leaves out of consideration (#6393). Pre-existing bug, unreachable before #6384 gave
+  `insert_tree_leaf` a production caller. Added a `consolidation_attempts`/`last_attempted_at`
+  pair on `memory_tree` (migration 111, both dialects) that `run_tree_consolidation_sweep` bumps
+  for every loaded node that does not end up consolidated; `load_tree_leaves_unconsolidated` and
+  `load_tree_level` now select the batch by true LRU priority
+  (`COALESCE(last_attempted_at, created_at) ASC`, `consolidation_attempts`/`id` as deterministic
+  tiebreakers) instead of strict age. A leaf that keeps losing the race has its touch time frozen
+  in the past while every competing leaf's touch time refreshes to "now" each time it's tried, so
+  the frozen leaf's priority strictly increases until it wins — a bounded-wait guarantee, within
+  a number of sweeps proportional to the existing backlog size, even under a sustained stream of
+  brand-new arrivals, not just a bias (implementation-critique follow-up: the initial
+  `consolidation_attempts ASC, created_at ASC` ordering was only a bias that a sustained new-leaf
+  stream could still defeat). Note this is not an *immediate* per-bump property: a leaf touched
+  this sweep is briefly the freshest timestamp in the table and correctly keeps winning over
+  anything created moments later, until it is left behind by a further sweep touching something
+  else (code-review follow-up: 2 regression tests originally proved this only via a same-second
+  `SQLite` timestamp tie rather than genuine precedence — now backdate explicit multi-sweep
+  timelines instead). Selection priority and presentation order are deliberately decoupled: the
+  returned batch is always re-sorted to `created_at ASC` because `cluster_by_similarity`'s greedy
+  leader algorithm requires that exact order for deterministic
+  clustering across sweeps.
 - `zeph-orchestration` / `zeph-core`: an orchestrated `/plan` task was marked `Completed` even
   when every real tool call it attempted failed, including `policy_blocked` security-gate
   denials — task completion status was decided purely by "did the sub-agent's turn finish

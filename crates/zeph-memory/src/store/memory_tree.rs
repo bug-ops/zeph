@@ -92,18 +92,39 @@ impl SqliteStore {
         // `consolidated_at`/`created_at` are `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite);
         // project both through `Dialect::select_as_text`, aliased back to their original
         // names so `#[derive(sqlx::FromRow)]` still binds them into the `String`/`Option<String>`
-        // fields below. `ORDER BY` is table-qualified so it sorts on the native timestamp.
+        // fields below.
         let consolidated_at_sel =
             <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("consolidated_at");
         let created_at_sel =
             <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        // Inner query SELECTs the batch by true LRU priority (least-recently-touched first,
+        // `COALESCE(last_attempted_at, created_at)` treats a never-attempted leaf's own creation
+        // as its initial "touch"); `consolidation_attempts`/`id` break exact-timestamp ties
+        // deterministically. This is a genuine bounded-wait guarantee, not just a bias: a leaf
+        // that keeps losing the race has its touch time frozen in the past while every
+        // competing leaf's touch time keeps refreshing to "now" each time it's tried, so the
+        // frozen leaf's relative priority strictly increases until it wins — even under a
+        // sustained stream of brand-new arrivals (#6393 follow-up, critic S1/M1).
+        //
+        // The outer query re-sorts the selected batch by `created_at ASC` because
+        // `cluster_by_similarity` requires that exact presentation order for deterministic
+        // clustering (see the INVARIANT comment on `cluster_by_similarity` in
+        // `semantic/tree_consolidation.rs`) — selection priority and presentation order are
+        // deliberately decoupled.
         let raw = format!(
             "SELECT id, level, parent_id, content, source_ids, token_count,
                     {consolidated_at_sel} AS consolidated_at, {created_at_sel} AS created_at
-             FROM memory_tree
-             WHERE level = 0 AND parent_id IS NULL
-             ORDER BY memory_tree.created_at ASC
-             LIMIT ?"
+             FROM (
+                 SELECT id, level, parent_id, content, source_ids, token_count,
+                        consolidated_at, created_at
+                 FROM memory_tree
+                 WHERE level = 0 AND parent_id IS NULL
+                 ORDER BY COALESCE(last_attempted_at, created_at) ASC,
+                          consolidation_attempts ASC,
+                          id ASC
+                 LIMIT ?
+             ) AS batch
+             ORDER BY batch.created_at ASC, batch.id ASC"
         );
         let query_sql = zeph_db::rewrite_placeholders(&raw);
         let rows: Vec<MemoryTreeRow> = query_as(sqlx::AssertSqlSafe(query_sql))
@@ -130,13 +151,23 @@ impl SqliteStore {
             <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("consolidated_at");
         let created_at_sel =
             <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        // Same true-LRU starvation guard as `load_tree_leaves_unconsolidated` (#6393), applied
+        // to higher-level consolidation too since the same stuck-singleton pattern can occur
+        // there.
         let raw = format!(
             "SELECT id, level, parent_id, content, source_ids, token_count,
                     {consolidated_at_sel} AS consolidated_at, {created_at_sel} AS created_at
-             FROM memory_tree
-             WHERE level = ? AND parent_id IS NULL
-             ORDER BY memory_tree.created_at ASC
-             LIMIT ?"
+             FROM (
+                 SELECT id, level, parent_id, content, source_ids, token_count,
+                        consolidated_at, created_at
+                 FROM memory_tree
+                 WHERE level = ? AND parent_id IS NULL
+                 ORDER BY COALESCE(last_attempted_at, created_at) ASC,
+                          consolidation_attempts ASC,
+                          id ASC
+                 LIMIT ?
+             ) AS batch
+             ORDER BY batch.created_at ASC, batch.id ASC"
         );
         let query_sql = zeph_db::rewrite_placeholders(&raw);
         let rows: Vec<MemoryTreeRow> = query_as(sqlx::AssertSqlSafe(query_sql))
@@ -231,6 +262,47 @@ impl SqliteStore {
             query(sqlx::AssertSqlSafe(query_sql.as_str()))
                 .bind(parent_id)
                 .bind(child_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Record a failed consolidation attempt for a batch of nodes (#6393).
+    ///
+    /// Increments `consolidation_attempts` and refreshes `last_attempted_at` for every id in
+    /// `node_ids`. Called after a sweep loads nodes but they do not end up consolidated (no
+    /// cluster formed, or the cluster's merge/persist failed). `last_attempted_at` is read by
+    /// `load_tree_leaves_unconsolidated`/`load_tree_level` as the primary LRU ordering key
+    /// (`COALESCE(last_attempted_at, created_at) ASC`): resetting it to "now" pushes a
+    /// just-failed node to the back of the priority queue, which is what guarantees every node
+    /// is re-considered within a bounded number of sweeps regardless of how many new nodes keep
+    /// arriving — a node that never wins the race has its touch time frozen further and further
+    /// in the past relative to fresh arrivals, so its priority strictly increases until it wins.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn bump_consolidation_attempts(&self, node_ids: &[i64]) -> Result<(), MemoryError> {
+        if node_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.pool().begin().await?;
+
+        let now = <ActiveDialect as zeph_db::dialect::Dialect>::NOW;
+        let raw = format!(
+            "UPDATE memory_tree
+             SET consolidation_attempts = consolidation_attempts + 1,
+                 last_attempted_at = {now}
+             WHERE id = ?"
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        for &node_id in node_ids {
+            query(sqlx::AssertSqlSafe(query_sql.as_str()))
+                .bind(node_id)
                 .execute(&mut *tx)
                 .await?;
         }
@@ -437,5 +509,205 @@ mod tests {
         let store = make_store().await;
         // Should not fail on empty slice.
         store.mark_nodes_consolidated(&[], 999).await.expect("noop");
+    }
+
+    #[tokio::test]
+    async fn load_tree_leaves_unconsolidated_empty_tree_is_empty() {
+        let store = make_store().await;
+        let leaves = store
+            .load_tree_leaves_unconsolidated(10)
+            .await
+            .expect("load");
+        assert!(leaves.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bump_consolidation_attempts_empty_slice_is_noop() {
+        let store = make_store().await;
+        store.bump_consolidation_attempts(&[]).await.expect("noop");
+    }
+
+    /// Backdates `last_attempted_at` for `ids` to an exact, controlled value — used to build
+    /// deterministic multi-sweep timelines in tests without depending on real wall-clock gaps.
+    async fn backdate_last_attempted(store: &SqliteStore, ids: &[i64], timestamp: &str) {
+        for &id in ids {
+            zeph_db::query(zeph_db::sql!(
+                "UPDATE memory_tree SET last_attempted_at = ? WHERE id = ?"
+            ))
+            .bind(timestamp)
+            .bind(id)
+            .execute(store.pool())
+            .await
+            .expect("backdate last_attempted_at");
+        }
+    }
+
+    /// Backdates `created_at` for `ids` — see [`backdate_last_attempted`].
+    async fn backdate_created_at(store: &SqliteStore, ids: &[i64], timestamp: &str) {
+        for &id in ids {
+            zeph_db::query(zeph_db::sql!(
+                "UPDATE memory_tree SET created_at = ? WHERE id = ?"
+            ))
+            .bind(timestamp)
+            .bind(id)
+            .execute(store.pool())
+            .await
+            .expect("backdate created_at");
+        }
+    }
+
+    async fn load_ids(store: &SqliteStore, limit: usize) -> std::collections::HashSet<i64> {
+        store
+            .load_tree_leaves_unconsolidated(limit)
+            .await
+            .expect("load")
+            .into_iter()
+            .map(|r| r.id)
+            .collect()
+    }
+
+    /// #6393 regression, hardened per code review (2026-07-17T18-50-48-review.md Critical #1):
+    /// the original version of this test relied on a real bump landing in the same `SQLite`
+    /// second as the following load/insert to pass — a same-second timestamp tie, not genuine
+    /// LRU precedence, and empirically false once a real time gap exists (a just-bumped leaf's
+    /// touch time is "now," which is *older* than anything created strictly afterward, so it
+    /// correctly keeps winning until it is left behind by a *later* sweep touching something
+    /// else). This version backdates every timestamp explicitly, so the assertions hold
+    /// regardless of how fast the test executes, and it demonstrates the real, bounded (not
+    /// immediate) starvation-prevention property across two sweep cycles: a bump does not lose
+    /// to a leaf created around the same moment, but a leaf that predates every touch in the
+    /// table eventually wins once the actively-cycling leaves are touched again without it.
+    #[tokio::test]
+    async fn bump_consolidation_attempts_prevents_permanent_starvation() {
+        let store = make_store().await;
+
+        let stuck_a = store.insert_tree_leaf("stuck a", 1).await.expect("stuck_a");
+        let stuck_b = store.insert_tree_leaf("stuck b", 1).await.expect("stuck_b");
+
+        // Sweep 1 touches (bumps) stuck_a/stuck_b — exercises the real method, then pins its
+        // effect to a controlled, known value (T=1) so the rest of this test is deterministic.
+        store
+            .bump_consolidation_attempts(&[stuck_a, stuck_b])
+            .await
+            .expect("bump 1");
+        backdate_last_attempted(&store, &[stuck_a, stuck_b], "2000-01-01 00:00:01").await;
+
+        // `waiting` is created strictly *after* that touch (T=2). It does NOT win the very next
+        // load — a just-touched leaf's timestamp is still older (smaller) than anything created
+        // after it, so stuck_a/stuck_b correctly keep winning for now. This is the real,
+        // "not immediate" property: a bump does not instantly lose to a leaf created around the
+        // same moment.
+        let waiting = store
+            .insert_tree_leaf("waiting, created after sweep 1's touch", 1)
+            .await
+            .expect("waiting");
+        backdate_created_at(&store, &[waiting], "2000-01-01 00:00:02").await;
+
+        let batch1 = load_ids(&store, 1).await;
+        assert!(
+            batch1 == std::collections::HashSet::from([stuck_a])
+                || batch1 == std::collections::HashSet::from([stuck_b]),
+            "a just-touched stuck leaf must still outrank a leaf created immediately \
+             afterward, got {batch1:?}"
+        );
+
+        // Sweep 2 touches stuck_a/stuck_b *again* (T=3), still without `waiting` ever being
+        // touched. `waiting`'s frozen T=2 is now the oldest timestamp in the table and must
+        // finally win: the bounded, real multi-sweep starvation guard, not a false single-bump
+        // immediacy claim.
+        store
+            .bump_consolidation_attempts(&[stuck_a, stuck_b])
+            .await
+            .expect("bump 2");
+        backdate_last_attempted(&store, &[stuck_a, stuck_b], "2000-01-01 00:00:03").await;
+
+        let batch2 = load_ids(&store, 1).await;
+        assert_eq!(
+            batch2,
+            std::collections::HashSet::from([waiting]),
+            "a leaf that predates the actively-cycling leaves' most recent touch must win once \
+             they are touched again without it ever being touched itself"
+        );
+    }
+
+    /// #6393 follow-up (critic S1): the ordering must be a genuine bounded-wait guarantee, not
+    /// just a bias that a sustained stream of brand-new leaves can defeat. A leaf whose last
+    /// (failed) attempt was long ago must outrank leaves created moments ago, no matter how many
+    /// of them arrive — because `COALESCE(last_attempted_at, created_at)` for the frozen leaf is
+    /// far in the past, while every fresh arrival's virtual touch time is "now".
+    #[tokio::test]
+    async fn load_tree_leaves_unconsolidated_prioritizes_stale_touch_over_sustained_new_arrivals() {
+        let store = make_store().await;
+
+        let stuck = store
+            .insert_tree_leaf("stuck singleton", 1)
+            .await
+            .expect("stuck");
+        // Simulate a leaf that was tried once, long ago, and has been losing the race ever
+        // since — its `last_attempted_at` never got refreshed because it never won a batch slot.
+        zeph_db::query(zeph_db::sql!(
+            "UPDATE memory_tree
+             SET consolidation_attempts = 5, last_attempted_at = '2000-01-01 00:00:00'
+             WHERE id = ?"
+        ))
+        .bind(stuck)
+        .execute(store.pool())
+        .await
+        .expect("backdate stuck leaf");
+
+        // A burst of brand-new leaves "arriving now" — the adversarial scenario where a naive
+        // attempts-only ordering would let fresh arrivals monopolize every batch forever.
+        for i in 0..5 {
+            store
+                .insert_tree_leaf(&format!("fresh leaf {i}"), 1)
+                .await
+                .expect("fresh");
+        }
+
+        let batch = store
+            .load_tree_leaves_unconsolidated(1)
+            .await
+            .expect("load");
+        assert_eq!(batch.len(), 1);
+        assert_eq!(
+            batch[0].id, stuck,
+            "a leaf neglected since 2000 must outrank leaves created moments ago"
+        );
+    }
+
+    /// #6393 follow-up: selection priority (LRU) and presentation order (`created_at ASC`) are
+    /// deliberately decoupled — `cluster_by_similarity`'s greedy leader algorithm requires the
+    /// returned `Vec` to stay in `created_at ASC` order for deterministic clustering, regardless
+    /// of which rows the LRU ordering picked or in what priority.
+    #[tokio::test]
+    async fn load_tree_leaves_unconsolidated_returns_created_at_order_even_when_priority_differs() {
+        let store = make_store().await;
+
+        let older = store
+            .insert_tree_leaf("older, but recently retried", 1)
+            .await
+            .expect("older");
+        let newer = store
+            .insert_tree_leaf("newer, never attempted", 1)
+            .await
+            .expect("newer");
+
+        // Give `older` the lowest selection priority (touched "now") even though it has the
+        // earlier `created_at` — both still fit in a batch_size=2 load.
+        store
+            .bump_consolidation_attempts(&[older])
+            .await
+            .expect("bump older");
+
+        let batch = store
+            .load_tree_leaves_unconsolidated(2)
+            .await
+            .expect("load");
+        let ids: Vec<i64> = batch.iter().map(|r| r.id).collect();
+        assert_eq!(
+            ids,
+            [older, newer],
+            "returned rows must stay in created_at ASC order regardless of selection priority"
+        );
     }
 }

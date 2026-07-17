@@ -11,6 +11,7 @@
 //! Each cluster merge runs in its own transaction via `mark_nodes_consolidated`.
 //! The full sweep never holds a write lock across multiple clusters.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -141,6 +142,8 @@ pub async fn run_tree_consolidation_sweep(
             continue;
         }
 
+        let candidate_ids: Vec<i64> = candidates.iter().map(|row| row.id).collect();
+
         let embedded = embed_candidates(
             provider,
             &candidates,
@@ -148,6 +151,11 @@ pub async fn run_tree_consolidation_sweep(
         )
         .await;
         if embedded.len() < config.min_cluster_size {
+            // Bumps every loaded candidate, including ones that embedded fine but were left
+            // without enough surviving peers to reach `min_cluster_size` — a peer's transient
+            // embed failure costs them one attempt too. Harmless one-step bias in practice
+            // (`min_cluster_size` is small, so this only fires when nearly all embeds fail).
+            bump_stuck_attempts(store, &candidate_ids, level).await;
             continue;
         }
 
@@ -157,64 +165,17 @@ pub async fn run_tree_consolidation_sweep(
             config.min_cluster_size,
         );
 
-        for cluster in clusters {
-            if cluster.len() < config.min_cluster_size {
-                continue;
-            }
+        let consolidated_ids =
+            merge_clusters(store, provider, clusters, level, config, &mut result).await;
 
-            let child_ids: Vec<i64> = cluster.iter().map(|(id, _, _)| *id).collect();
-            let contents: Vec<&str> = cluster
-                .iter()
-                .map(|(_, content, _)| content.as_str())
-                .collect();
-
-            let summary = match merge_via_llm(provider, &contents).await {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        level,
-                        child_count = cluster.len(),
-                        "tree consolidation: LLM merge failed, skipping cluster"
-                    );
-                    continue;
-                }
-            };
-
-            if summary.is_empty() {
-                continue;
-            }
-
-            let token_count = i64::try_from(summary.split_whitespace().count()).unwrap_or(i64::MAX);
-            let source_ids_json =
-                serde_json::to_string(&child_ids).unwrap_or_else(|_| "[]".to_string());
-
-            // Atomic cluster consolidation: INSERT parent + UPDATE children in one transaction.
-            match store
-                .consolidate_cluster(
-                    i64::from(level + 1),
-                    &summary,
-                    &source_ids_json,
-                    token_count,
-                    &child_ids,
-                )
-                .await
-            {
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        level,
-                        child_count = cluster.len(),
-                        "tree consolidation: cluster persist failed, skipping"
-                    );
-                    continue;
-                }
-            }
-
-            result.clusters_merged += 1;
-            result.nodes_created += 1;
-        }
+        // Nodes that end up consolidated this sweep drop out of the load query naturally
+        // (`parent_id` gets set); everything else keeps failing to cluster and must have its
+        // attempt count bumped so the next sweep's load query deprioritizes it (#6393).
+        let stuck_ids: Vec<i64> = candidate_ids
+            .into_iter()
+            .filter(|id| !consolidated_ids.contains(id))
+            .collect();
+        bump_stuck_attempts(store, &stuck_ids, level).await;
     }
 
     if result.nodes_created > 0 {
@@ -222,6 +183,102 @@ pub async fn run_tree_consolidation_sweep(
     }
 
     Ok(result)
+}
+
+/// Merge every cluster of at least `config.min_cluster_size` nodes into a parent node via LLM
+/// summarization, updating `result` in place. Returns the set of child node ids that were
+/// actually consolidated (persisted successfully) — everything else in the level's candidate
+/// set is left for the caller to mark as a failed attempt (#6393).
+async fn merge_clusters(
+    store: &SqliteStore,
+    provider: &AnyProvider,
+    clusters: Vec<Vec<(i64, String, Vec<f32>)>>,
+    level: u32,
+    config: &TreeConsolidationConfig,
+    result: &mut TreeConsolidationResult,
+) -> HashSet<i64> {
+    let mut consolidated_ids: HashSet<i64> = HashSet::new();
+
+    for cluster in clusters {
+        if cluster.len() < config.min_cluster_size {
+            continue;
+        }
+
+        let child_ids: Vec<i64> = cluster.iter().map(|(id, _, _)| *id).collect();
+        let contents: Vec<&str> = cluster
+            .iter()
+            .map(|(_, content, _)| content.as_str())
+            .collect();
+
+        let summary = match merge_via_llm(provider, &contents).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    level,
+                    child_count = cluster.len(),
+                    "tree consolidation: LLM merge failed, skipping cluster"
+                );
+                continue;
+            }
+        };
+
+        if summary.is_empty() {
+            continue;
+        }
+
+        let token_count = i64::try_from(summary.split_whitespace().count()).unwrap_or(i64::MAX);
+        let source_ids_json =
+            serde_json::to_string(&child_ids).unwrap_or_else(|_| "[]".to_string());
+
+        // Atomic cluster consolidation: INSERT parent + UPDATE children in one transaction.
+        match store
+            .consolidate_cluster(
+                i64::from(level + 1),
+                &summary,
+                &source_ids_json,
+                token_count,
+                &child_ids,
+            )
+            .await
+        {
+            Ok(_) => {
+                consolidated_ids.extend(&child_ids);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    level,
+                    child_count = cluster.len(),
+                    "tree consolidation: cluster persist failed, skipping"
+                );
+                continue;
+            }
+        }
+
+        result.clusters_merged += 1;
+        result.nodes_created += 1;
+    }
+
+    consolidated_ids
+}
+
+/// Bump the consolidation-attempt counter for nodes that were loaded this sweep but did not
+/// end up consolidated, so the next sweep's load query deprioritizes them (#6393). Best-effort:
+/// a failure here does not fail the sweep, it only means those nodes stay at their current
+/// attempt count and may be reloaded sooner than intended on the next sweep.
+async fn bump_stuck_attempts(store: &SqliteStore, node_ids: &[i64], level: u32) {
+    if node_ids.is_empty() {
+        return;
+    }
+    if let Err(e) = store.bump_consolidation_attempts(node_ids).await {
+        tracing::warn!(
+            error = %e,
+            level,
+            count = node_ids.len(),
+            "tree consolidation: failed to bump consolidation attempts"
+        );
+    }
 }
 
 /// Concurrency cap for embed calls — matches `embed_concurrency` default (#2677).
@@ -429,5 +486,173 @@ mod tests {
         let total_items: usize = clusters.iter().map(Vec::len).sum();
         // All items across all clusters are unique (no double-assignment).
         assert_eq!(total_items, 3);
+    }
+
+    async fn make_store() -> SqliteStore {
+        SqliteStore::with_pool_size(":memory:", 1)
+            .await
+            .expect("in-memory store")
+    }
+
+    fn test_config() -> TreeConsolidationConfig {
+        TreeConsolidationConfig {
+            enabled: true,
+            sweep_interval_secs: 3600,
+            batch_size: 2,
+            similarity_threshold: 0.9,
+            max_level: 1,
+            min_cluster_size: 2,
+            embed_timeout_secs: 5,
+        }
+    }
+
+    /// Backdates `last_attempted_at` for `ids` to an exact, controlled value — used to build
+    /// deterministic multi-sweep timelines in tests without depending on real wall-clock gaps.
+    async fn backdate_last_attempted(store: &SqliteStore, ids: &[i64], timestamp: &str) {
+        for &id in ids {
+            zeph_db::query(zeph_db::sql!(
+                "UPDATE memory_tree SET last_attempted_at = ? WHERE id = ?"
+            ))
+            .bind(timestamp)
+            .bind(id)
+            .execute(store.pool())
+            .await
+            .expect("backdate last_attempted_at");
+        }
+    }
+
+    /// Backdates `created_at` for `ids` — see [`backdate_last_attempted`].
+    async fn backdate_created_at(store: &SqliteStore, ids: &[i64], timestamp: &str) {
+        for &id in ids {
+            zeph_db::query(zeph_db::sql!(
+                "UPDATE memory_tree SET created_at = ? WHERE id = ?"
+            ))
+            .bind(timestamp)
+            .bind(id)
+            .execute(store.pool())
+            .await
+            .expect("backdate created_at");
+        }
+    }
+
+    /// #6393 regression, hardened per code review (2026-07-17T18-50-48-review.md Critical #1):
+    /// verifies `run_tree_consolidation_sweep` (the real production code path) wires
+    /// `bump_stuck_attempts` correctly when a cluster stays below `min_cluster_size`, and that
+    /// the resulting deprioritization is not permanent. The original version of this test
+    /// asserted a fresh leaf wins the very next load immediately after one bump — false under
+    /// real timing (a just-bumped leaf's touch is the freshest in the table and correctly keeps
+    /// winning until it is left behind by a later sweep); this version backdates the sweep's
+    /// own bump explicitly, so the assertion holds regardless of how fast the test executes.
+    #[tokio::test]
+    async fn sweep_bumps_attempts_and_stale_stuck_batch_does_not_starve_new_leaf() {
+        let store = make_store().await;
+        let config = test_config();
+
+        let leaf1 = store.insert_tree_leaf("stuck one", 5).await.expect("l1");
+        let leaf2 = store.insert_tree_leaf("stuck two", 5).await.expect("l2");
+
+        // One of the two embed calls fails, so `embedded.len() == 1 < min_cluster_size == 2`:
+        // both loaded candidates end up unconsolidated ("stuck") this sweep.
+        let provider = AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::default()
+                .with_embedding(vec![1.0, 0.0])
+                .with_errors(vec![zeph_llm::error::LlmError::Timeout]),
+        );
+
+        run_tree_consolidation_sweep(&store, &provider, &config)
+            .await
+            .expect("sweep");
+
+        // Both stuck leaves must still be present and unconsolidated (no cluster formed) —
+        // proves the sweep ran the expected embed-failure path and called `bump_stuck_attempts`.
+        let stuck_ids: std::collections::HashSet<i64> = store
+            .load_tree_leaves_unconsolidated(10)
+            .await
+            .expect("load")
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert!(stuck_ids.contains(&leaf1));
+        assert!(stuck_ids.contains(&leaf2));
+
+        // The sweep's own `bump_stuck_attempts` call (the production wiring verified above)
+        // already set `last_attempted_at` to real "now". Pin it to a controlled, known value
+        // (T=1) so the rest of this test is fully deterministic regardless of how fast it runs.
+        backdate_last_attempted(&store, &[leaf1, leaf2], "2000-01-01 00:00:01").await;
+
+        // A new leaf created strictly *after* that touch (T=2) does not win the very next
+        // load — a just-touched leaf's timestamp is still older (smaller) than anything created
+        // right after it, so leaf1/leaf2 correctly keep winning for now. This is the real,
+        // "not immediate" property: a bump does not instantly lose to a leaf created around the
+        // same moment (code review #6393 Critical #1 — the original version of this test
+        // asserted the opposite and only passed via a same-second timestamp tie).
+        let fresh = store.insert_tree_leaf("fresh leaf", 5).await.expect("l3");
+        backdate_created_at(&store, &[fresh], "2000-01-01 00:00:02").await;
+
+        let immediate: std::collections::HashSet<i64> = store
+            .load_tree_leaves_unconsolidated(1)
+            .await
+            .expect("load immediate")
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert!(
+            immediate == std::collections::HashSet::from([leaf1])
+                || immediate == std::collections::HashSet::from([leaf2]),
+            "a just-touched stuck leaf must still outrank a leaf created immediately \
+             afterward, got {immediate:?}"
+        );
+
+        // A second sweep-equivalent touch of leaf1/leaf2 (T=3), still without `fresh` ever
+        // being touched, pushes their timestamp past `fresh`'s frozen T=2 — `fresh` must then
+        // win: the bounded, real multi-sweep starvation guard, not a false single-bump
+        // immediacy claim.
+        backdate_last_attempted(&store, &[leaf1, leaf2], "2000-01-01 00:00:03").await;
+        let next_batch = store
+            .load_tree_leaves_unconsolidated(1)
+            .await
+            .expect("load next batch");
+        assert_eq!(
+            next_batch.len(),
+            1,
+            "batch_size limit of 1 must be respected"
+        );
+        assert_eq!(
+            next_batch[0].id, fresh,
+            "a leaf that predates the stuck batch's most recent touch must win once it is \
+             touched again without the fresh leaf ever being touched itself"
+        );
+    }
+
+    /// #6393: normal clustering (leaves that DO cluster successfully) must behave exactly as
+    /// before — the new attempts tracking must not interfere when a cluster actually forms.
+    #[tokio::test]
+    async fn sweep_still_merges_a_successfully_clustered_batch() {
+        let store = make_store().await;
+        let config = test_config();
+
+        store.insert_tree_leaf("alpha", 5).await.expect("l1");
+        store.insert_tree_leaf("beta", 5).await.expect("l2");
+
+        // Both leaves embed to the same vector, so they merge into one cluster of size 2.
+        let provider = AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::default().with_embedding(vec![1.0, 0.0]),
+        );
+
+        let result = run_tree_consolidation_sweep(&store, &provider, &config)
+            .await
+            .expect("sweep");
+
+        assert_eq!(result.clusters_merged, 1);
+        assert_eq!(result.nodes_created, 1);
+
+        let leaves = store
+            .load_tree_leaves_unconsolidated(10)
+            .await
+            .expect("load");
+        assert!(
+            leaves.is_empty(),
+            "successfully clustered leaves must be consolidated, not left as candidates"
+        );
     }
 }
