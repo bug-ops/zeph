@@ -7,6 +7,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- `zeph-orchestration`: `PlanVerifier::verify_plan()` (whole-plan grounding, spec 009) shared
+  the same `orchestration.verifier_timeout_secs` budget as per-task `verify()`, and consistently
+  exhausted it against slower local Ollama models even when per-task verification on the same
+  run/provider returned promptly — silently fail-opening whole-plan verification on essentially
+  every attempt (#6379). Added `orchestration.whole_plan_verifier_timeout_secs` (`0` = fall back
+  to `verifier_timeout_secs`, mirrors `[orchestration.ensemble].member_timeout_secs`) so an
+  operator can give `verify_plan()` a separate, longer budget. **Default behavior is unchanged**:
+  the default is `0`, which resolves to the same `verifier_timeout_secs` (120s) that is already
+  failing, so out-of-the-box #6379's live symptom is not resolved by this change alone — a
+  non-zero value must be set explicitly. Also added `tracing::debug!` prompt-size/tool-trace
+  diagnostics in both `verify()` and `verify_plan()`, needed because it is not yet confirmed
+  whether a longer budget actually fixes the symptom or whether the whole-plan LLM call is
+  genuinely non-terminating for its prompt shape regardless of timeout — live root-cause
+  confirmation is still pending (#6379 remains open).
+
 - `zeph-session`: `AdvisoryLock::acquire`'s `WOULDBLOCK` path gave operators only a bare
   "another session is already active" message with no way to tell whether the lock's holder
   was still running (#6378). The holder's PID is now written into the sibling lock file

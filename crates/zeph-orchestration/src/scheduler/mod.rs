@@ -941,6 +941,7 @@ mod tests {
             aggregator_timeout_secs: 60,
             planner_timeout_secs: 120,
             verifier_timeout_secs: 30,
+            whole_plan_verifier_timeout_secs: 0,
             ensemble: Default::default(),
             default_idle_timeout_secs: None,
             command: Default::default(),

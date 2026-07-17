@@ -26,8 +26,9 @@ pub use features::{
     migrate_knowledge_config, migrate_magic_docs_config, migrate_microcompact_config,
     migrate_orchestration_asset_sensitivity, migrate_orchestration_command_config,
     migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
-    migrate_orchestration_persistence, migrate_skill_trust_require_check, migrate_skills_registry,
-    migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
+    migrate_orchestration_persistence, migrate_orchestration_whole_plan_verifier_timeout,
+    migrate_skill_trust_require_check, migrate_skills_registry, migrate_tui_delights,
+    migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
 };
 pub use infra::*;
 /// Advisory `GonkaGate` migration is crate-internal (registered via the [`MIGRATIONS`] registry).
@@ -616,22 +617,23 @@ use steps::{
     MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig, MigrateMemoryTypeAwareCompose,
     MigrateMicrocompactConfig, MigrateNliConfig, MigrateOrchestrationAssetSensitivity,
     MigrateOrchestrationCommandConfig, MigrateOrchestrationEnsemble,
-    MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence, MigrateOrchestratorProvider,
-    MigrateOtelFilter, MigrateOverflowMaxPerCallOverride, MigratePiiFilterNames,
-    MigratePlannerModelToProvider, MigratePolicyProviderAndUtilityWindow,
-    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQdrantTimeoutSecs,
-    MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
-    MigrateSecretMaskingConfig, MigrateServeConfig, MigrateSessionPersistProviderOverrides,
-    MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
-    MigrateShadowSentinelConfig, MigrateShellCheckpointsConfig, MigrateShellTransactional,
-    MigrateSkillTrustRequireCheck, MigrateSkillsRegistry, MigrateSttToProvider,
-    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
-    MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig,
-    MigrateTuiThemeDefaults, MigrateUtilityHighGainTools, MigrateVigilConfig,
-    MigrateWorktreeConfig, MigrateWorktreeGitTimeout, MigrateWorktreeQuotaFields,
+    MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence,
+    MigrateOrchestrationWholePlanVerifierTimeout, MigrateOrchestratorProvider, MigrateOtelFilter,
+    MigrateOverflowMaxPerCallOverride, MigratePiiFilterNames, MigratePlannerModelToProvider,
+    MigratePolicyProviderAndUtilityWindow, MigrateProviderMaxConcurrent, MigrateQdrantApiKey,
+    MigrateQdrantTimeoutSecs, MigrateQualityConfig, MigrateSandboxConfig,
+    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSecretMaskingConfig,
+    MigrateServeConfig, MigrateSessionPersistProviderOverrides, MigrateSessionPersistenceConfig,
+    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShadowSentinelConfig,
+    MigrateShellCheckpointsConfig, MigrateShellTransactional, MigrateSkillTrustRequireCheck,
+    MigrateSkillsRegistry, MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
+    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
+    MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateUtilityHighGainTools,
+    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
+    MigrateWorktreeQuotaFields,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–92).
+/// Ordered registry of all sequential migration steps (steps 1–93).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -811,6 +813,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 92 — add [memory.store] advisory block for the generic cross-thread
             // key-value store (spec-080, #6363)
             Box::new(MigrateMemoryStoreConfig),
+            // Step 93 — add whole_plan_verifier_timeout_secs advisory comment under
+            // [orchestration] (#6379)
+            Box::new(MigrateOrchestrationWholePlanVerifierTimeout),
         ]
     });
 

@@ -968,6 +968,60 @@ pub fn migrate_orchestration_command_config(
     })
 }
 
+/// Step 93 — add a `whole_plan_verifier_timeout_secs` advisory comment under `[orchestration]`,
+/// if absent (#6379).
+///
+/// `OrchestrationConfig::whole_plan_verifier_timeout_secs` has `#[serde(default)]` (`0` = fall
+/// back to `verifier_timeout_secs`) so existing configs parse without changes even without this
+/// step — this exists purely for discoverability on config upgrade, mirroring
+/// [`migrate_orchestration_idle_timeout`].
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if `toml_src` fails to parse as TOML.
+pub fn migrate_orchestration_whole_plan_verifier_timeout(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("whole_plan_verifier_timeout_secs") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    if !section_header_present(toml_src, "orchestration") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Timeout in seconds for the whole-plan verify_plan() LLM call; 0 = fall \
+        back to verifier_timeout_secs. Default: 0 (#6379)\n\
+        # whole_plan_verifier_timeout_secs = 0\n";
+    let output = insert_after_section(toml_src, "orchestration", comment);
+    // Defensive: the guards above already guarantee `[orchestration]` is present and
+    // `insert_after_section` always inserts non-empty content when reached, so this is
+    // currently unreachable — kept for the same reason as `migrate_orchestration_idle_timeout`
+    // (#5945: a future change to either guard must not silently regress into reporting a
+    // change that didn't happen).
+    if output == toml_src {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["orchestration.whole_plan_verifier_timeout_secs".to_owned()],
+    })
+}
+
 /// Step 78 — add a commented-out `[skills.registry]` section with defaults if absent
 /// (spec-045, #5869).
 ///

@@ -64,7 +64,8 @@
 //! `[tools.overflow]` (#3079);
 //! step 91 adds a commented `[orchestration.command]` advisory block for Command-style
 //! dynamic task handoff (spec-080, #6363); step 92 adds a commented `[memory.store]`
-//! advisory block for the generic cross-thread key-value store (spec-080, #6363).
+//! advisory block for the generic cross-thread key-value store (spec-080, #6363); step 93
+//! adds a `whole_plan_verifier_timeout_secs` advisory comment under `[orchestration]` (#6379).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -93,7 +94,8 @@ use super::{
     migrate_orchestration_asset_sensitivity, migrate_orchestration_command_config,
     migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
     migrate_orchestration_orchestrator_provider, migrate_orchestration_persistence,
-    migrate_otel_filter, migrate_overflow_max_per_call_override, migrate_pii_filter_names,
+    migrate_orchestration_whole_plan_verifier_timeout, migrate_otel_filter,
+    migrate_overflow_max_per_call_override, migrate_pii_filter_names,
     migrate_planner_model_to_provider, migrate_policy_provider_and_utility_window,
     migrate_provider_max_concurrent, migrate_qdrant_api_key, migrate_qdrant_timeout_secs,
     migrate_quality_config, migrate_sandbox_config, migrate_sandbox_egress_filter,
@@ -1163,5 +1165,18 @@ impl Migration for MigrateMemoryStoreConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_memory_store_config(toml_src)
+    }
+}
+
+/// Step 93 — adds a `whole_plan_verifier_timeout_secs` advisory comment under
+/// `[orchestration]` (#6379).
+pub(super) struct MigrateOrchestrationWholePlanVerifierTimeout;
+impl Migration for MigrateOrchestrationWholePlanVerifierTimeout {
+    fn name(&self) -> &'static str {
+        "migrate_orchestration_whole_plan_verifier_timeout"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_orchestration_whole_plan_verifier_timeout(toml_src)
     }
 }

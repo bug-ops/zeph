@@ -1191,6 +1191,9 @@ verify_completeness = false
 # timeout here causes fail-open on essentially every verification and silently skips the
 # tool-call grounding safety net (spec 009, #6278/#6287) — see #6366.
 # verifier_timeout_secs = 120
+# Timeout in seconds for the whole-plan verify_plan() LLM call; 0 = fall back to
+# verifier_timeout_secs. Default: 0. See #6379.
+# whole_plan_verifier_timeout_secs = 0
 
 # ORCH-style deterministic verifier ensemble-merge (arXiv:2602.01797), opt-in, default off.
 # See specs/073-orch-ensemble-merge/spec.md.

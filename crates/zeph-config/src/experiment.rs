@@ -567,6 +567,15 @@ pub struct OrchestrationConfig {
     #[serde(default = "default_verifier_timeout_secs")]
     pub verifier_timeout_secs: u64,
 
+    /// Timeout in seconds for the whole-plan `verify_plan()` LLM call. `0` = fall back to
+    /// `verifier_timeout_secs`. Default: `0`.
+    ///
+    /// `verify_plan()` runs once per plan (after all tasks complete) whereas per-task
+    /// `verify()` runs many times per plan — a shared timeout budget forces both to the same
+    /// value even though they are invoked at structurally different points. See #6379.
+    #[serde(default)]
+    pub whole_plan_verifier_timeout_secs: u64,
+
     /// ORCH-style deterministic verifier ensemble-merge configuration. Default: disabled.
     /// See `specs/073-orch-ensemble-merge/spec.md`.
     #[serde(default)]
@@ -633,6 +642,7 @@ impl Default for OrchestrationConfig {
             aggregator_timeout_secs: default_aggregator_timeout_secs(),
             planner_timeout_secs: default_planner_timeout_secs(),
             verifier_timeout_secs: default_verifier_timeout_secs(),
+            whole_plan_verifier_timeout_secs: 0,
             ensemble: EnsembleConfig::default(),
             default_idle_timeout_secs: None,
             command: CommandConfig::default(),
@@ -1013,5 +1023,24 @@ mod tests {
         // #6366: the previous 30s default reliably timed out PlanVerifier::verify() against
         // 20B+ local Ollama models, causing fail-open to silently skip ground().
         assert_eq!(OrchestrationConfig::default().verifier_timeout_secs, 120);
+    }
+
+    #[test]
+    fn orchestration_config_default_whole_plan_verifier_timeout_secs_is_0() {
+        // #6379: 0 = fall back to verifier_timeout_secs, mirrors EnsembleConfig::member_timeout_secs.
+        assert_eq!(
+            OrchestrationConfig::default().whole_plan_verifier_timeout_secs,
+            0
+        );
+    }
+
+    #[test]
+    fn orchestration_config_whole_plan_verifier_timeout_secs_toml_roundtrip() {
+        let toml_in = "enabled = true\nwhole_plan_verifier_timeout_secs = 300\n";
+        let cfg: OrchestrationConfig = toml::from_str(toml_in).expect("deserialize");
+        assert_eq!(cfg.whole_plan_verifier_timeout_secs, 300);
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        let cfg2: OrchestrationConfig = toml::from_str(&serialized).expect("re-deserialize");
+        assert_eq!(cfg2.whole_plan_verifier_timeout_secs, 300);
     }
 }

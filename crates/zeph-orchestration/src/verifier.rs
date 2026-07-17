@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 use zeph_config::OrchestrationConfig;
 
 use zeph_common::OutputSanitizer;
@@ -176,8 +176,13 @@ pub struct PlanVerifier<P: LlmProvider> {
     /// Constructed with `spotlight_untrusted = false` so delimiters do not confuse
     /// the verification LLM (RISK-5): truncation and injection detection still apply.
     sanitizer: Arc<dyn OutputSanitizer>,
-    /// Maximum time to wait for each verifier LLM call before returning fail-open.
+    /// Maximum time to wait for each per-task verifier LLM call before returning fail-open.
     timeout: Duration,
+    /// Maximum time to wait for the whole-plan `verify_plan()` LLM call before returning
+    /// fail-open. Independently configurable from `timeout` (see
+    /// `OrchestrationConfig::whole_plan_verifier_timeout_secs`, #6379) since `verify_plan()`
+    /// runs once per plan rather than many times, and may warrant a different budget.
+    whole_plan_timeout: Duration,
     /// Total times grounding overrode an LLM `complete: true` verdict to `false` (spec 009 §
     /// Verifier Tool-Call Grounding, Observability — "Override metric + log").
     grounding_overrides_total: u64,
@@ -190,18 +195,27 @@ pub struct PlanVerifier<P: LlmProvider> {
 impl<P: LlmProvider> PlanVerifier<P> {
     /// Create a new `PlanVerifier` from a provider, sanitizer, and orchestration config.
     ///
-    /// The timeout is taken from `config.verifier_timeout_secs`.
+    /// The per-task timeout is taken from `config.verifier_timeout_secs`. The whole-plan
+    /// timeout is taken from `config.whole_plan_verifier_timeout_secs` when non-zero,
+    /// otherwise it falls back to `config.verifier_timeout_secs` (mirrors
+    /// `EnsembleConfig::member_timeout_secs`'s `0 = fallback` convention).
     #[must_use]
     pub fn new(
         provider: P,
         sanitizer: Arc<dyn OutputSanitizer>,
         config: &OrchestrationConfig,
     ) -> Self {
+        let whole_plan_secs = if config.whole_plan_verifier_timeout_secs > 0 {
+            config.whole_plan_verifier_timeout_secs
+        } else {
+            config.verifier_timeout_secs
+        };
         Self {
             provider,
             consecutive_failures: 0,
             sanitizer,
             timeout: Duration::from_secs(config.verifier_timeout_secs),
+            whole_plan_timeout: Duration::from_secs(whole_plan_secs),
             grounding_overrides_total: 0,
             grounding_narrative_empty_claims_total: 0,
         }
@@ -247,6 +261,14 @@ impl<P: LlmProvider> PlanVerifier<P> {
         tool_trace: Option<&[ToolCallSummary]>,
     ) -> VerificationResult {
         let messages = build_verify_prompt(task, output, tool_trace, &self.sanitizer);
+
+        debug!(
+            task_id = %task.id,
+            prompt_chars = messages.iter().map(|m| m.to_llm_content().len()).sum::<usize>(),
+            tool_trace_entries = tool_trace.map_or(0, <[_]>::len),
+            timeout_secs = self.timeout.as_secs(),
+            "PlanVerifier: per-task verify prompt built"
+        );
 
         let result = tokio::time::timeout(
             self.timeout,
@@ -483,8 +505,18 @@ impl<P: LlmProvider> PlanVerifier<P> {
         let messages =
             build_verify_plan_prompt(goal, aggregated_output, tool_trace, &self.sanitizer);
 
+        debug!(
+            prompt_chars = messages
+                .iter()
+                .map(|m| m.to_llm_content().len())
+                .sum::<usize>(),
+            tool_trace_entries = tool_trace.map_or(0, <[_]>::len),
+            timeout_secs = self.whole_plan_timeout.as_secs(),
+            "PlanVerifier: whole-plan verify prompt built"
+        );
+
         let result = tokio::time::timeout(
-            self.timeout,
+            self.whole_plan_timeout,
             self.provider.chat_typed::<VerifyResponse>(&messages),
         )
         .await;
@@ -517,13 +549,13 @@ impl<P: LlmProvider> PlanVerifier<P> {
                 if self.consecutive_failures >= 3 {
                     error!(
                         consecutive_failures = self.consecutive_failures,
-                        timeout_secs = self.timeout.as_secs(),
+                        timeout_secs = self.whole_plan_timeout.as_secs(),
                         "PlanVerifier: 3+ consecutive LLM failures in whole-plan verify — \
                          check verify_provider configuration; plan treated as complete (fail-open)"
                     );
                 } else {
                     warn!(
-                        timeout_secs = self.timeout.as_secs(),
+                        timeout_secs = self.whole_plan_timeout.as_secs(),
                         "PlanVerifier: whole-plan LLM call timed out, treating plan as complete \
                          (fail-open)"
                     );
@@ -1527,8 +1559,9 @@ mod tests {
     fn slow_verifier() -> PlanVerifier<SlowMockProvider> {
         let config = OrchestrationConfig::default();
         let mut v = PlanVerifier::new(SlowMockProvider, test_sanitizer(), &config);
-        // Override timeout to 50ms so tests complete quickly.
+        // Override both timeouts to 50ms so tests complete quickly.
         v.timeout = Duration::from_millis(50);
+        v.whole_plan_timeout = Duration::from_millis(50);
         v
     }
 
@@ -1633,6 +1666,90 @@ mod tests {
             3,
             "three consecutive verify_plan() timeouts must accumulate to 3 — the threshold \
              the error! escalation arm checks"
+        );
+    }
+
+    #[test]
+    fn whole_plan_timeout_falls_back_to_verifier_timeout_when_zero() {
+        let config = OrchestrationConfig {
+            verifier_timeout_secs: 77,
+            whole_plan_verifier_timeout_secs: 0,
+            ..Default::default()
+        };
+        let verifier = PlanVerifier::new(SlowMockProvider, test_sanitizer(), &config);
+        assert_eq!(verifier.timeout, Duration::from_secs(77));
+        assert_eq!(
+            verifier.whole_plan_timeout,
+            Duration::from_secs(77),
+            "0 must fall back to verifier_timeout_secs"
+        );
+    }
+
+    #[test]
+    fn whole_plan_timeout_independent_when_nonzero() {
+        let config = OrchestrationConfig {
+            verifier_timeout_secs: 200,
+            whole_plan_verifier_timeout_secs: 5,
+            ..Default::default()
+        };
+        let verifier = PlanVerifier::new(SlowMockProvider, test_sanitizer(), &config);
+        assert_eq!(verifier.timeout, Duration::from_secs(200));
+        assert_eq!(
+            verifier.whole_plan_timeout,
+            Duration::from_secs(5),
+            "non-zero whole_plan_verifier_timeout_secs must not be overridden by \
+             verifier_timeout_secs"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_plan_honors_whole_plan_timeout_independently_of_verifier_timeout() {
+        // verifier_timeout_secs is large (would never trip within the test's lifetime);
+        // whole_plan_verifier_timeout_secs is short, so verify_plan() must still fail-open
+        // promptly rather than waiting on the per-task budget.
+        let config = OrchestrationConfig {
+            verifier_timeout_secs: 3600,
+            whole_plan_verifier_timeout_secs: 1,
+            ..Default::default()
+        };
+        let mut verifier = PlanVerifier::new(SlowMockProvider, test_sanitizer(), &config);
+
+        let start = std::time::Instant::now();
+        let result = verifier.verify_plan("goal", "output", None).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.complete, "timeout must be fail-open (complete=true)");
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "verify_plan() must respect the short whole_plan_verifier_timeout_secs budget \
+             instead of the much longer verifier_timeout_secs, elapsed={elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_honors_verifier_timeout_independently_of_whole_plan_timeout() {
+        // Mirror of verify_plan_honors_whole_plan_timeout_independently_of_verifier_timeout,
+        // with the budgets swapped: verify() must use self.timeout, not self.whole_plan_timeout.
+        // whole_plan_verifier_timeout_secs is large (would never trip within the test's
+        // lifetime); verifier_timeout_secs is short, so verify() must still fail-open promptly
+        // rather than waiting on the whole-plan budget.
+        let config = OrchestrationConfig {
+            verifier_timeout_secs: 1,
+            whole_plan_verifier_timeout_secs: 3600,
+            ..Default::default()
+        };
+        let mut verifier = PlanVerifier::new(SlowMockProvider, test_sanitizer(), &config);
+        let task = TaskNode::new(0, "t", "d");
+
+        let start = std::time::Instant::now();
+        let result = verifier.verify(&task, "output", None).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.complete, "timeout must be fail-open (complete=true)");
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "verify() must respect the short verifier_timeout_secs budget instead of the much \
+             longer whole_plan_verifier_timeout_secs, elapsed={elapsed:?}"
         );
     }
 

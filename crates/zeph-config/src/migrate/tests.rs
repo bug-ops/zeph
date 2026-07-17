@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        92,
-        "MIGRATIONS registry must contain all 92 sequential steps"
+        93,
+        "MIGRATIONS registry must contain all 93 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1183,6 +1183,49 @@ fn step_88_idempotent_on_commented_output() {
     assert_eq!(second.output, first.output);
 }
 
+// ── Step 93 — migrate_orchestration_whole_plan_verifier_timeout (#6379) ──
+
+#[test]
+fn step_93_injects_whole_plan_verifier_timeout_when_orchestration_present() {
+    let src = "[orchestration]\nenabled = true\n";
+    let result = migrate_orchestration_whole_plan_verifier_timeout(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result.output.contains("whole_plan_verifier_timeout_secs"),
+        "advisory comment must be injected"
+    );
+    assert_eq!(
+        result.sections_changed,
+        vec!["orchestration.whole_plan_verifier_timeout_secs"]
+    );
+}
+
+#[test]
+fn step_93_noop_when_no_orchestration_section() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_orchestration_whole_plan_verifier_timeout(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_93_noop_when_key_already_present() {
+    let src = "[orchestration]\nwhole_plan_verifier_timeout_secs = 300\n";
+    let result = migrate_orchestration_whole_plan_verifier_timeout(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_93_idempotent_on_commented_output() {
+    let base = "[orchestration]\nenabled = true\n";
+    let first = migrate_orchestration_whole_plan_verifier_timeout(base).unwrap();
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_orchestration_whole_plan_verifier_timeout(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0, "second run must not double-append");
+    assert_eq!(second.output, first.output);
+}
+
 // ── Step 90 — migrate_overflow_max_per_call_override (#3079) ──────────────
 
 #[test]
@@ -1970,7 +2013,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 92);
+    assert_eq!(MIGRATIONS.len(), 93);
 }
 
 #[test]
@@ -2102,6 +2145,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_overflow_max_per_call_override",
         "migrate_orchestration_command_config",
         "migrate_memory_store_config",
+        "migrate_orchestration_whole_plan_verifier_timeout",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
