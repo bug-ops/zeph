@@ -16,7 +16,8 @@ use zeph_common::TaskSupervisor;
 use crate::execution_mode::ExecutionMode;
 #[cfg(feature = "tui")]
 use zeph_core::channel::{
-    Channel, ChannelError, ChannelMessage, StopHint, ToolOutputEvent, ToolStartEvent,
+    Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse, StopHint,
+    ToolOutputEvent, ToolStartEvent,
 };
 use zeph_core::config::Config;
 use zeph_core::json_event_sink::JsonEventSink;
@@ -62,6 +63,12 @@ impl Channel for AppChannel {
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         dispatch_app_channel!(self, confirm, prompt)
     }
+    async fn elicit(
+        &mut self,
+        request: ElicitationRequest,
+    ) -> Result<ElicitationResponse, ChannelError> {
+        dispatch_app_channel!(self, elicit, request)
+    }
     fn try_recv(&mut self) -> Option<ChannelMessage> {
         match self {
             Self::Standard(c) => c.try_recv(),
@@ -87,6 +94,9 @@ impl Channel for AppChannel {
     }
     async fn send_queue_count(&mut self, count: usize) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_queue_count, count)
+    }
+    async fn send_context_estimate(&mut self, tokens: usize) -> Result<(), ChannelError> {
+        dispatch_app_channel!(self, send_context_estimate, tokens)
     }
     async fn send_diff(
         &mut self,
@@ -408,6 +418,80 @@ mod tests {
         ch.notify_foreground_subagent_completed("sa-id", "planner", true)
             .await
             .unwrap();
+        // 19. send_context_estimate
+        ch.send_context_estimate(4096).await.unwrap();
+        // 20. elicit — skipped (CliChannel auto-declines on non-tty stdin regardless
+        // of forwarding correctness; real dispatch is verified separately below via
+        // TuiChannel, whose response only arrives if AppChannel forwards the call).
+    }
+
+    /// Regression test for #6388: `AppChannel::elicit` must forward to the
+    /// wrapped channel's real implementation, not fall through to
+    /// `Channel::elicit`'s default (auto-decline) method. `TuiChannel::elicit`
+    /// only resolves once a response is sent down its `oneshot` channel, so if
+    /// forwarding were missing this test would hang or observe `Declined`
+    /// without ever receiving the `ElicitationRequest` event.
+    #[tokio::test]
+    async fn app_channel_forwards_elicit_to_real_implementation() {
+        use zeph_core::channel::{ElicitationRequest, ElicitationResponse};
+        use zeph_tui::{AgentEvent, TuiChannel};
+
+        let (_user_tx, user_rx) = tokio::sync::mpsc::channel(1);
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel(1);
+        let mut ch = AppChannel::Tui(TuiChannel::new(user_rx, agent_tx));
+
+        let request = ElicitationRequest {
+            server_name: "test-server".to_owned(),
+            message: "provide input".to_owned(),
+            fields: vec![],
+        };
+        let elicit_task = tokio::spawn(async move { ch.elicit(request).await });
+
+        let event = agent_rx
+            .recv()
+            .await
+            .expect("elicit() must forward an AgentEvent instead of auto-declining");
+        let response_tx = match event {
+            AgentEvent::ElicitationRequest { response_tx, .. } => response_tx,
+            other => panic!("expected AgentEvent::ElicitationRequest, got {other:?}"),
+        };
+        response_tx
+            .send(ElicitationResponse::Accepted(
+                serde_json::json!({"ok": true}),
+            ))
+            .unwrap();
+
+        let result = elicit_task.await.unwrap().unwrap();
+        assert!(
+            matches!(result, ElicitationResponse::Accepted(_)),
+            "expected Accepted, got {result:?}"
+        );
+    }
+
+    /// Regression test for #6388 follow-up gap: `AppChannel::send_context_estimate`
+    /// must forward to `TuiChannel`'s real implementation (which emits an
+    /// `AgentEvent::ContextEstimate`), not silently no-op via the trait default.
+    #[tokio::test]
+    async fn app_channel_forwards_send_context_estimate_to_real_implementation() {
+        use zeph_tui::{AgentEvent, TuiChannel};
+
+        let (_user_tx, user_rx) = tokio::sync::mpsc::channel(1);
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel(4);
+        let mut ch = AppChannel::Tui(TuiChannel::new(user_rx, agent_tx));
+
+        ch.send_context_estimate(4096).await.unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), agent_rx.recv())
+            .await
+            .expect(
+                "send_context_estimate() must forward an AgentEvent instead of no-op'ing \
+                 (timed out waiting for it)",
+            )
+            .expect("agent_tx channel closed unexpectedly");
+        match event {
+            AgentEvent::ContextEstimate(tokens) => assert_eq!(tokens, 4096),
+            other => panic!("expected AgentEvent::ContextEstimate, got {other:?}"),
+        }
     }
 }
 

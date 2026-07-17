@@ -140,6 +140,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `src/channel.rs`: `impl Channel for AppChannel` forwarded most `Channel` trait methods via
+  `dispatch_app_channel!` but never overrode `elicit()` or `send_context_estimate()`, so both
+  calls fell through to the trait's default methods instead of reaching `AnyChannel`/`TuiChannel`'s
+  real implementations. `elicit()`'s default unconditionally returns `Declined`, so every MCP
+  elicitation request was auto-declined regardless of channel — the CLI's real per-field
+  readline prompting (`crates/zeph-channels/src/cli.rs`) and the TUI's modal dialog
+  (`crates/zeph-tui/src/widgets/elicitation.rs`) were unreachable through the actual `zeph`
+  binary (#6388). `send_context_estimate()`'s default silently no-ops, so the TUI's real-time
+  context-usage estimate (`AgentEvent::ContextEstimate`) never reached the input block title.
+  Added both missing overrides to `impl Channel for AppChannel`, following the existing
+  `dispatch_app_channel!` pattern used by the other 19 forwarded methods.
 - `zeph-memory`: `SemanticMemory::run_quality_gate` hardcoded `recent_embeddings` to `&[]` on
   its only production call site, so `QualityGate::evaluate`'s `Redundant`-rejection path —
   already unit-tested and working — could never fire on a real conversation (#6387). Added
