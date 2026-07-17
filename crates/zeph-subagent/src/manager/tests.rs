@@ -3851,6 +3851,82 @@ async fn fleet_mark_terminal_cancelled_on_cancel() {
     );
 }
 
+// ── is_task_finished / collect() join-handle backstop (#6408) ──────────
+
+#[tokio::test]
+async fn is_task_finished_false_for_unknown_id_and_handle_without_join_handle() {
+    let mut mgr = make_manager();
+    assert!(!mgr.is_task_finished("no-such-task"));
+
+    let handle = SubAgentHandle::for_test("idle", sample_def());
+    mgr.insert_handle_for_test("idle".to_string(), handle);
+    assert!(
+        !mgr.is_task_finished("idle"),
+        "a handle with no join_handle (e.g. test-constructed) must never report finished"
+    );
+}
+
+/// Regression test for issue #6408: a background task that panics without ever publishing a
+/// terminal status must still be detected as finished via `is_task_finished`, and `collect()`
+/// must still finalize the fleet registry as `Failed` rather than losing that step to the
+/// panic — before this fix, `collect()` returned early on the join error, skipping
+/// `mark_terminal` and the final `TranscriptMeta` write.
+#[tokio::test]
+async fn collect_marks_fleet_terminal_failed_when_task_panics_without_status_update() {
+    let registry = MockFleetRegistry::new();
+    let mut mgr = make_manager_with_fleet(Arc::clone(&registry) as SharedFleetRegistry);
+    let def = sample_def();
+    mgr.definitions.push(def.clone());
+
+    let supervisor = TaskSupervisor::new(CancellationToken::new());
+    let join_handle: zeph_common::task_supervisor::BlockingHandle<Result<String, SubAgentError>> =
+        supervisor.spawn_oneshot_classified(
+            Arc::from("panic-test"),
+            || async { panic!("simulated run_agent_loop panic before status publish") },
+            Result::is_ok,
+        );
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    while !join_handle.is_finished() && tokio::time::Instant::now() < deadline {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        join_handle.is_finished(),
+        "precondition: the panicking background task must have finished"
+    );
+
+    let task_id = "panicked".to_string();
+    let mut handle = SubAgentHandle::for_test(task_id.clone(), def);
+    handle.join_handle = Some(join_handle);
+    mgr.insert_handle_for_test(task_id.clone(), handle);
+
+    assert!(
+        mgr.is_task_finished(&task_id),
+        "join_handle already panicked and finished — must be reported as finished even though \
+         status_rx is still stuck on the initial Working value"
+    );
+
+    let result = mgr.collect(&task_id).await;
+    assert!(
+        result.is_err(),
+        "collect must surface the panic as an error"
+    );
+
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(2),
+        registry.terminal_notify.notified(),
+    )
+    .await
+    .expect("mark_terminal must still be called even though the join panicked");
+
+    let terminated = registry.terminated.lock().unwrap();
+    assert!(
+        terminated
+            .iter()
+            .any(|(id, s)| id == &task_id && *s == FleetSessionStatus::Failed),
+        "a panicked task must be marked Failed in the fleet registry, not left dangling: {terminated:?}"
+    );
+}
+
 // ── spawn_hook_task cap enforcement (#4422) ────────────────────────────
 
 #[tokio::test]

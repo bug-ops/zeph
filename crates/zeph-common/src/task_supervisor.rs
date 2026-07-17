@@ -225,6 +225,18 @@ impl<R> BlockingHandle<R> {
     pub fn abort(&self) {
         self.abort.abort();
     }
+
+    /// Non-blocking, non-consuming check for whether the task has finished.
+    ///
+    /// Unlike [`try_join`][Self::try_join], this does not consume `self` or retrieve the
+    /// result — it only reports completion, including a panicked or aborted task. Useful
+    /// for reap sweeps that must detect a task exit even when the task's own
+    /// application-level status channel never got a chance to publish a terminal value
+    /// before exiting (e.g. a panic partway through the task body).
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.abort.is_finished()
+    }
 }
 
 /// Point-in-time state of a supervised task.

@@ -1525,6 +1525,15 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// Reap sub-agent handles that have reached a terminal state, writing their final
     /// `TranscriptMeta` sidecar and removing them from [`zeph_subagent::SubAgentManager`].
     ///
+    /// A handle is reapable when either its `status_rx` reports a terminal
+    /// [`zeph_subagent::SubAgentState`], or its background task has finished at the runtime
+    /// level per [`zeph_subagent::SubAgentManager::is_task_finished`] even though
+    /// `status_rx` is still stuck on a non-terminal value. The latter check is a
+    /// defense-in-depth backstop: a code path that exits the sub-agent's task without
+    /// publishing a terminal status first — most notably a panic inside `run_agent_loop` —
+    /// would otherwise leave the handle permanently in its last observed state (typically
+    /// `Working`), producing a permanent zombie entry in the TUI sidebar (issue #6408).
+    ///
     /// Safe to call at any point in the tick loop: [`Self::build_tool_trace_for_task`] no longer
     /// depends on handle residency, so ordering relative to `SchedulerAction::Verify` is not
     /// load-bearing here (spec 009 § Verifier Tool-Call Grounding, issue #6288). Errors are
@@ -1534,19 +1543,18 @@ impl<C: crate::channel::Channel> Agent<C> {
         let Some(mgr) = &mut self.services.orchestration.subagent_manager else {
             return;
         };
-        let finished: Vec<String> = mgr
-            .statuses()
-            .into_iter()
-            .filter_map(|(id, status)| {
-                matches!(
-                    status.state,
-                    zeph_subagent::SubAgentState::Completed
-                        | zeph_subagent::SubAgentState::Failed
-                        | zeph_subagent::SubAgentState::Canceled
-                )
-                .then_some(id)
-            })
-            .collect();
+        let mut finished = Vec::new();
+        for (id, status) in mgr.statuses() {
+            let terminal_status = matches!(
+                status.state,
+                zeph_subagent::SubAgentState::Completed
+                    | zeph_subagent::SubAgentState::Failed
+                    | zeph_subagent::SubAgentState::Canceled
+            );
+            if terminal_status || mgr.is_task_finished(&id) {
+                finished.push(id);
+            }
+        }
         for task_id in finished {
             if let Err(e) = mgr.collect(&task_id).await {
                 tracing::warn!(task_id, error = %e, "failed to collect finished orchestration sub-agent");
@@ -2580,6 +2588,130 @@ mod tests {
                 .statuses()
                 .is_empty(),
             "canceled sub-agent handle must be reaped, not leaked"
+        );
+    }
+
+    /// Regression test for issue #6408: a sub-agent whose background task exits (e.g. via a
+    /// panic inside `run_agent_loop`) without ever publishing a terminal `SubAgentState` on
+    /// `status_rx` must still be reaped by `collect_finished_subagents()`. This is detected via
+    /// `SubAgentManager::is_task_finished`, a defense-in-depth backstop independent of the
+    /// `status_rx`-based check exercised by the two tests above — before this fix, such a
+    /// handle stayed `Working` forever, producing a permanent zombie entry in the TUI sidebar.
+    #[tokio::test]
+    async fn collect_finished_subagents_reaps_handle_whose_task_finished_without_terminal_status() {
+        use crate::agent::agent_tests::*;
+        use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use zeph_subagent::hooks::SubagentHooks;
+        use zeph_subagent::{
+            PermissionGrants, SubAgentDef, SubAgentHandle, SubAgentManager, SubAgentState,
+            SubAgentStatus,
+        };
+
+        let provider = mock_provider(vec!["unused".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let def = SubAgentDef {
+            name: "worker".into(),
+            description: "A worker bot".into(),
+            model: None,
+            tools: ToolPolicy::InheritAll,
+            disallowed_tools: vec![],
+            permissions: SubAgentPermissions::default(),
+            skills: SkillFilter::default(),
+            system_prompt: "You are a worker.".into(),
+            hooks: SubagentHooks::default(),
+            memory: None,
+            source: None,
+            file_path: None,
+        };
+
+        // Simulate the background task panicking: spawn a task under a real `TaskSupervisor`
+        // that panics, and wait for the panic to actually happen so `is_finished()` observes
+        // it — mirrors what `SubAgentManager::spawn` wires up internally for a real agent loop.
+        let supervisor =
+            zeph_common::TaskSupervisor::new(tokio_util::sync::CancellationToken::new());
+        let join_handle: zeph_common::task_supervisor::BlockingHandle<
+            Result<String, zeph_subagent::SubAgentError>,
+        > = supervisor.spawn_oneshot_classified(
+            std::sync::Arc::from("panic-test-agent"),
+            || async { panic!("simulated run_agent_loop panic before status publish") },
+            Result::is_ok,
+        );
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !join_handle.is_finished() && tokio::time::Instant::now() < deadline {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            join_handle.is_finished(),
+            "precondition: the panicking background task must have finished"
+        );
+
+        // `status_tx` is dropped without ever sending a terminal state, so `status_rx` stays
+        // stuck on the initial `Working` value forever — exactly what a real panic leaves
+        // behind (the sender lives inside the panicked task's stack).
+        let (status_tx, status_rx) = tokio::sync::watch::channel(SubAgentStatus {
+            state: SubAgentState::Working,
+            last_message: None,
+            turns_used: 0,
+            started_at: std::time::Instant::now(),
+        });
+        drop(status_tx);
+        let (_pending_secret_tx, pending_secret_rx) = tokio::sync::mpsc::channel(1);
+        let (secret_tx, _secret_rx) = tokio::sync::mpsc::channel(1);
+
+        let task_id = "panicked-agent".to_string();
+        let sa_handle = SubAgentHandle {
+            id: task_id.clone(),
+            def: def.clone(),
+            task_id: task_id.clone(),
+            state: SubAgentState::Working,
+            join_handle: Some(join_handle),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            status_rx,
+            grants: PermissionGrants::default(),
+            pending_secret_rx,
+            secret_tx,
+            started_at_str: String::new(),
+            transcript_dir: None,
+            mcp_tool_names: Vec::new(),
+        };
+
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(def);
+        mgr.insert_handle_for_test(task_id.clone(), sa_handle);
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        assert_eq!(
+            agent
+                .services
+                .orchestration
+                .subagent_manager
+                .as_ref()
+                .unwrap()
+                .statuses()
+                .iter()
+                .find(|(id, _)| id == &task_id)
+                .map(|(_, s)| s.state),
+            Some(SubAgentState::Working),
+            "precondition: status_rx never left Working, as would happen after a real panic"
+        );
+
+        agent.collect_finished_subagents().await;
+
+        assert!(
+            agent
+                .services
+                .orchestration
+                .subagent_manager
+                .as_ref()
+                .unwrap()
+                .statuses()
+                .is_empty(),
+            "handle whose background task finished (e.g. panicked) must be reaped even though \
+             status_rx never reported a terminal state"
         );
     }
 

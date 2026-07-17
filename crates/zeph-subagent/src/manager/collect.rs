@@ -43,10 +43,16 @@ impl SubAgentManager {
 
         handle.grants.revoke_all();
 
-        let result = if let Some(jh) = handle.join_handle.take() {
-            jh.join()
-                .await
-                .map_err(|e| SubAgentError::Spawn(e.to_string()))?
+        // Flatten the outer `BlockingError` (panic/abort of the supervised task itself)
+        // into `result` rather than propagating it with `?`: an early return here would
+        // skip the fleet `mark_terminal` call and final `TranscriptMeta` write below,
+        // leaving both stuck showing the agent as still active even though it has just
+        // been removed from `self.agents` (issue #6408).
+        let result: Result<String, SubAgentError> = if let Some(jh) = handle.join_handle.take() {
+            match jh.join().await {
+                Ok(inner) => inner,
+                Err(e) => Err(SubAgentError::Spawn(e.to_string())),
+            }
         } else {
             Ok(String::new())
         };
@@ -148,6 +154,25 @@ impl SubAgentManager {
                 (h.task_id.clone(), status)
             })
             .collect()
+    }
+
+    /// Returns whether the background task backing `task_id` has finished at the runtime
+    /// level, independent of whether its `status_rx` channel ever published a terminal
+    /// [`SubAgentState`].
+    ///
+    /// A code path that exits `run_agent_loop` without sending a terminal status first —
+    /// most notably a panic — leaves `status_rx` stuck on the last observed state (typically
+    /// `Working`) forever. Callers such as `collect_finished_subagents` in `zeph-core` use
+    /// this as a defense-in-depth reap signal for that case (issue #6408).
+    ///
+    /// Returns `false` for an unknown `task_id` or a handle with no `join_handle` (already
+    /// collected, or a test-constructed handle).
+    #[must_use]
+    pub fn is_task_finished(&self, task_id: &str) -> bool {
+        self.agents
+            .get(task_id)
+            .and_then(|h| h.join_handle.as_ref())
+            .is_some_and(zeph_common::task_supervisor::BlockingHandle::is_finished)
     }
 
     /// Return the definition for a specific agent by `task_id`.
