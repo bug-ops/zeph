@@ -2715,6 +2715,115 @@ mod tests {
         );
     }
 
+    /// Regression test for issue #6408: a sub-agent handle that is genuinely still running —
+    /// `status_rx` still reports `Working` AND the backstop `join_handle.is_finished()` check
+    /// is `false` — must survive `collect_finished_subagents()`. This is the negative side of
+    /// the OR-condition the fix introduced: the previous test proves the backstop reaps a
+    /// finished-but-status-stuck handle, this one proves it does not also reap a handle that
+    /// has neither signal set, which would turn the backstop into an over-eager reaper.
+    #[tokio::test]
+    async fn collect_finished_subagents_keeps_still_running_handle() {
+        use crate::agent::agent_tests::*;
+        use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
+        use zeph_subagent::hooks::SubagentHooks;
+        use zeph_subagent::{
+            PermissionGrants, SubAgentDef, SubAgentHandle, SubAgentManager, SubAgentState,
+            SubAgentStatus,
+        };
+
+        let provider = mock_provider(vec!["unused".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let def = SubAgentDef {
+            name: "worker".into(),
+            description: "A worker bot".into(),
+            model: None,
+            tools: ToolPolicy::InheritAll,
+            disallowed_tools: vec![],
+            permissions: SubAgentPermissions::default(),
+            skills: SkillFilter::default(),
+            system_prompt: "You are a worker.".into(),
+            hooks: SubagentHooks::default(),
+            memory: None,
+            source: None,
+            file_path: None,
+        };
+
+        // Simulate a background task that is genuinely still in progress: it awaits a
+        // never-resolving future, so `join_handle.is_finished()` stays `false` for the
+        // lifetime of the test — unlike the panic test above, where the task exits.
+        let supervisor =
+            zeph_common::TaskSupervisor::new(tokio_util::sync::CancellationToken::new());
+        let join_handle: zeph_common::task_supervisor::BlockingHandle<
+            Result<String, zeph_subagent::SubAgentError>,
+        > = supervisor.spawn_oneshot_classified(
+            std::sync::Arc::from("still-running-test-agent"),
+            || std::future::pending(),
+            Result::is_ok,
+        );
+        assert!(
+            !join_handle.is_finished(),
+            "precondition: the still-running background task must not have finished"
+        );
+
+        let (status_tx, status_rx) = tokio::sync::watch::channel(SubAgentStatus {
+            state: SubAgentState::Working,
+            last_message: None,
+            turns_used: 0,
+            started_at: std::time::Instant::now(),
+        });
+
+        let (_pending_secret_tx, pending_secret_rx) = tokio::sync::mpsc::channel(1);
+        let (secret_tx, _secret_rx) = tokio::sync::mpsc::channel(1);
+
+        let task_id = "still-running-agent".to_string();
+        let sa_handle = SubAgentHandle {
+            id: task_id.clone(),
+            def: def.clone(),
+            task_id: task_id.clone(),
+            state: SubAgentState::Working,
+            join_handle: Some(join_handle),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            status_rx,
+            grants: PermissionGrants::default(),
+            pending_secret_rx,
+            secret_tx,
+            started_at_str: String::new(),
+            transcript_dir: None,
+            mcp_tool_names: Vec::new(),
+        };
+
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(def);
+        mgr.insert_handle_for_test(task_id.clone(), sa_handle);
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        agent.collect_finished_subagents().await;
+
+        assert_eq!(
+            agent
+                .services
+                .orchestration
+                .subagent_manager
+                .as_ref()
+                .unwrap()
+                .statuses()
+                .iter()
+                .find(|(id, _)| id == &task_id)
+                .map(|(_, s)| s.state),
+            Some(SubAgentState::Working),
+            "a handle whose task is still running (status_rx == Working and \
+             join_handle.is_finished() == false) must not be reaped"
+        );
+
+        // Keep `status_tx` alive for the duration of the assertions above so `status_rx`
+        // cannot spuriously observe a closed-channel state.
+        drop(status_tx);
+    }
+
     // ── #6380: spawn-path total tool-call failure must not leave a task Completed ──────
 
     /// Regression test for issue #6380 (the actual reported repro path): a `/plan`-orchestrated
