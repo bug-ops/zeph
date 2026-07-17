@@ -27,7 +27,7 @@
 
 use base64::Engine as _;
 use k256::ecdsa::signature::hazmat::PrehashSigner as _;
-use k256::elliptic_curve::sec1::ToEncodedPoint as _;
+use k256::elliptic_curve::sec1::ToSec1Point as _;
 use ripemd::Digest as _;
 use zeroize::Zeroizing;
 
@@ -149,7 +149,7 @@ impl RequestSigner {
 fn derive_address(pubkey: &k256::PublicKey, chain_prefix: &str) -> String {
     use bech32::{Bech32, Hrp};
 
-    let compressed = pubkey.to_encoded_point(true);
+    let compressed = pubkey.to_sec1_point(true);
     let sha_hash = sha2::Sha256::digest(compressed.as_bytes());
     let sha_bytes: &[u8] = &sha_hash[..];
     let ripe_hash = ripemd::Ripemd160::digest(sha_bytes);
