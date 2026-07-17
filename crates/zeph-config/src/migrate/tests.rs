@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        90,
-        "MIGRATIONS registry must contain all 90 sequential steps"
+        92,
+        "MIGRATIONS registry must contain all 92 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1110,6 +1110,36 @@ fn migrate_memory_type_aware_compose_config_noop_when_active_section_present() {
     assert_eq!(result.output, base);
 }
 
+// ── Step 92 — migrate_memory_store_config (spec-080, #6363) ──────────────
+
+#[test]
+fn migrate_memory_store_config_idempotent_on_commented_output() {
+    let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
+    let first = migrate_memory_store_config(base).unwrap();
+    assert_eq!(first.changed_count, 1);
+    assert!(first.output.contains("# [memory.store]"));
+    assert!(first.output.contains("# enabled = false"));
+    let second = migrate_memory_store_config(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0, "second run must not double-append");
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_memory_store_config_noop_when_memory_section_absent() {
+    let base = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_memory_store_config(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
+#[test]
+fn migrate_memory_store_config_noop_when_active_section_present() {
+    let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n\n[memory.store]\nenabled = true\n";
+    let result = migrate_memory_store_config(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
 // ── Step 88 — migrate_orchestration_idle_timeout (spec-075-orchestration-node-control-parity, #6021) ──
 
 #[test]
@@ -1231,6 +1261,42 @@ fn migrate_orchestration_ensemble_sections_changed_reports_key() {
     let base = "[orchestration]\nenabled = true\n";
     let result = migrate_orchestration_ensemble(base).unwrap();
     assert_eq!(result.sections_changed, vec!["orchestration.ensemble"]);
+}
+
+#[test]
+fn migrate_orchestration_command_config_idempotent_on_commented_output() {
+    let base = "[orchestration]\nenabled = true\n";
+    let first = migrate_orchestration_command_config(base).unwrap();
+    assert_eq!(first.changed_count, 1);
+    assert!(first.output.contains("# [orchestration.command]"));
+    assert!(first.output.contains("# enabled = false"));
+    assert!(first.output.contains("# max_handoffs = 16"));
+    let second = migrate_orchestration_command_config(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0, "second run must not double-append");
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_orchestration_command_config_noop_when_orchestration_section_absent() {
+    let base = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_orchestration_command_config(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
+#[test]
+fn migrate_orchestration_command_config_noop_when_active_section_present() {
+    let base = "[orchestration]\nenabled = true\n\n[orchestration.command]\nenabled = true\n";
+    let result = migrate_orchestration_command_config(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
+#[test]
+fn migrate_orchestration_command_config_sections_changed_reports_key() {
+    let base = "[orchestration]\nenabled = true\n";
+    let result = migrate_orchestration_command_config(base).unwrap();
+    assert_eq!(result.sections_changed, vec!["orchestration.command"]);
 }
 
 #[test]
@@ -1904,7 +1970,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 90);
+    assert_eq!(MIGRATIONS.len(), 92);
 }
 
 #[test]
@@ -2034,6 +2100,8 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_orchestration_idle_timeout",
         "migrate_mcp_media_config",
         "migrate_overflow_max_per_call_override",
+        "migrate_orchestration_command_config",
+        "migrate_memory_store_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

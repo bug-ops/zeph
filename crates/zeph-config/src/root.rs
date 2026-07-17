@@ -344,6 +344,7 @@ impl Default for Config {
                 shadow_memory: crate::memory::TrajectoryRiskAccumulatorConfig::default(),
                 five_signal: crate::memory::FiveSignalConfig::default(),
                 fidelity: None,
+                store: crate::memory::CrossThreadStoreConfig::default(),
             },
             telegram: None,
             discord: None,

@@ -128,4 +128,23 @@ pub enum OrchestrationError {
         /// Full lineage chain at the time of abort; earliest entry first.
         chain: Vec<LineageEntry>,
     },
+
+    /// A `Command.goto` target failed validation (spec-080, GitHub #6363): out of range,
+    /// an ambiguous or absent `ByTitle` match, already `Completed` (forward-only), holding
+    /// a live `route_to` reservation from a non-terminal source, or having unsatisfied
+    /// `depends_on`.
+    #[error("invalid handoff target: {0}")]
+    InvalidHandoffTarget(String),
+
+    /// The per-graph `[orchestration.command].max_handoffs` budget (spec-080) was
+    /// exhausted — the livelock backstop for forward fan-out `Command.goto` chains.
+    #[error(
+        "handoff budget exhausted: {handoff_count} handoffs performed, limit is {max_handoffs}"
+    )]
+    HandoffBudgetExhausted {
+        /// Number of handoffs already performed on this graph.
+        handoff_count: u32,
+        /// Configured per-graph budget (`[orchestration.command].max_handoffs`).
+        max_handoffs: u32,
+    },
 }

@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::{DagScheduler, RunningTask, SchedulerAction, TaskEvent, TaskOutcome};
+use crate::command::TaskRef;
 use crate::dag;
 use crate::graph::{ExecutionMode, GraphStatus, TaskId, TaskResult, TaskStatus};
 use crate::lineage::{ErrorLineage, LineageEntry, LineageKind, classify_error, now_ms};
@@ -544,6 +545,14 @@ impl DagScheduler {
                 },
             ),
             TaskOutcome::Failed { error } => self.handle_failed_outcome(task_id, &error),
+            TaskOutcome::Handoff { output, goto } => self.handle_handoff_outcome(
+                task_id,
+                agent_handle_id,
+                agent_def_name,
+                duration_ms,
+                output,
+                &goto,
+            ),
         }
     }
 
@@ -763,6 +772,111 @@ impl DagScheduler {
         }
         self.graph_dirty = true;
         true
+    }
+
+    /// Apply the Handoff outcome branch (spec-080, GitHub #6363): mark the emitting node
+    /// terminal `Completed`, then attempt the routed handoff via pure `dag::try_handoff`.
+    ///
+    /// Marking `task_id` `Completed` **before** calling `try_handoff` is the terminal-node
+    /// invariant (spec-080 §6 Always / design-review F4): it is what makes the forward-only
+    /// check inside `try_handoff` a sound livelock guard, since every `Command` hop then
+    /// consumes exactly one not-yet-terminal node. This call site is the chosen enforcement
+    /// point — see this crate's handoff notes for the alternative considered
+    /// (`zeph-core` marking terminal before emitting the event) and why this site was
+    /// preferred.
+    ///
+    /// A `try_handoff` rejection (invalid target, unsatisfied deps, exhausted budget, live
+    /// `route_to` reservation) does not change `task_id`'s own outcome — it stays
+    /// `Completed` with its real output preserved; only the requested extra routing never
+    /// activates. No store I/O occurs here — `update` was already sanitized and persisted
+    /// by the zeph-core produce-side seam before this event was sent (write-before-send,
+    /// NFR-PERF-03); this function only ever sees `goto`.
+    ///
+    /// # Loud rejection (critic finding C1)
+    ///
+    /// A rejection is recorded on `task_id.handoff_rejected` (graph-visible, persisted)
+    /// and logged at `error!`, not just `warn!` — the consume side must be exactly as
+    /// loud about a dropped routing intent as the produce side is about a malformed
+    /// Command block (FR-B-009's "never silently" posture applies on both sides of the
+    /// seam). This does **not** roll back the already-persisted `update` write: by the
+    /// time this function runs, that write completed and its `TaskEvent` was already
+    /// sent (write-before-send is unconditional, independent of what `try_handoff` later
+    /// decides). Rolling it back would require zeph-orchestration to trigger a
+    /// zeph-memory store operation, which the binding layering invariant (spec-080 §6
+    /// Always/Never — this crate never depends on `zeph-memory`) forbids. The dangling
+    /// `orch/{graph_id}` entry is therefore an accepted, documented tradeoff: its content
+    /// remains readable by any node that later reads `<shared-state>` in this graph, it
+    /// is simply not the entry that was supposed to signal a completed handoff step.
+    ///
+    /// # Known gap: no completeness verification (M2, review finding)
+    ///
+    /// Unlike [`Self::handle_completed_outcome`], this method never emits
+    /// `SchedulerAction::Verify` — a Command-handoff node's "I'm done" claim skips the
+    /// completeness-check/replan pass an ordinary `Completed` node gets. Identified during
+    /// code review as a real, non-blocking design gap (the feature is opt-in and
+    /// default-off) and deliberately deferred rather than expanding this PR's scope
+    /// further: fixing it needs `TaskOutcome::Handoff` to carry `tool_trace` first (it
+    /// doesn't today, unlike `Completed`), plus a decision on whether `Verify`'s
+    /// replan/`inject_tasks` side effects are sound for a node that already named its own
+    /// next hop. Tracked as GitHub #6394.
+    fn handle_handoff_outcome(
+        &mut self,
+        task_id: TaskId,
+        agent_handle_id: String,
+        agent_def_name: Option<String>,
+        duration_ms: u64,
+        output: String,
+        goto: &TaskRef,
+    ) -> Vec<SchedulerAction> {
+        self.graph_dirty = true;
+        self.graph.tasks[task_id.index()].status = TaskStatus::Completed;
+        self.graph.tasks[task_id.index()].result = Some(TaskResult {
+            output,
+            artifacts: Vec::new(),
+            duration_ms,
+            agent_id: Some(agent_handle_id),
+            agent_def: agent_def_name,
+        });
+
+        self.lineage_chains.remove(&task_id);
+
+        if let Some(ref mut detector) = self.cascade_detector {
+            detector.record_outcome(task_id, true, &self.graph);
+        }
+
+        match dag::try_handoff(&mut self.graph, task_id, goto, self.max_handoffs) {
+            Ok(target) => {
+                tracing::info!(
+                    task_id = %task_id,
+                    target = %target,
+                    "orchestration.scheduler.handoff: Command handoff routed"
+                );
+            }
+            Err(error) => {
+                // Loud, not silent (critic C1): error-level log + a graph-visible,
+                // persisted field. See this method's doc comment for why the
+                // already-written store `update` is not rolled back.
+                self.graph.tasks[task_id.index()].handoff_rejected = Some(error.to_string());
+                tracing::error!(
+                    task_id = %task_id,
+                    %error,
+                    "orchestration.scheduler.handoff: Command handoff rejected — routing \
+                     intent dropped, node stays Completed"
+                );
+            }
+        }
+
+        // Mark newly unblocked tasks as Ready — mirrors handle_completed_outcome. Covers
+        // both the activated handoff target's own dependents (if any) and any unrelated
+        // dependent of task_id that does not participate in the handoff at all.
+        let newly_ready = dag::ready_tasks(&self.graph);
+        for ready_id in newly_ready {
+            if self.graph.tasks[ready_id.index()].status == TaskStatus::Pending {
+                self.graph.tasks[ready_id.index()].status = TaskStatus::Ready;
+            }
+        }
+
+        Vec::new()
     }
 
     /// Apply the Failed outcome branch: build lineage, evaluate cascade abort, propagate failure.

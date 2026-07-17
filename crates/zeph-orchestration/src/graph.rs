@@ -474,6 +474,8 @@ pub struct RecoveryAction {
 /// assert!(node.timeout.is_none());
 /// assert!(node.recovery.is_none());
 /// assert!(node.routed_from.is_none());
+/// assert!(node.commanded_from.is_none());
+/// assert!(node.handoff_rejected.is_none());
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskNode {
@@ -570,6 +572,38 @@ pub struct TaskNode {
     /// check. Persisted so a mid-fallback restart does not lose the injection source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routed_from: Option<TaskId>,
+
+    /// Set at Command-handoff activation time (`dag::try_handoff`) to the ID of the task
+    /// whose successful completion routed execution here (spec-080, GitHub #6363). `None`
+    /// for every task that was never a `Command.goto` target. Distinct from `routed_from`
+    /// (Mode-2 `route_to` on-failure activation) — a node can in principle carry both if it
+    /// was first activated via `route_to` and later separately targeted by an unrelated
+    /// `goto` (spec-080 §7 edge case table); the two fields are independent markers, not
+    /// mutually exclusive. Purely a provenance marker for diagnostics/audit — unlike
+    /// `routed_from`, no output is injected via this field; the handoff's state channel is
+    /// the cross-thread store's `<shared-state>` prompt block (spec-080 FR-B-011), assembled
+    /// by zeph-core.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commanded_from: Option<TaskId>,
+
+    /// Set when this task emitted a `Command`-style handoff (spec-080) whose `goto` was
+    /// rejected by `dag::try_handoff` (invalid/ambiguous target, forward-only violation,
+    /// unsatisfied `depends_on`, exhausted budget, or a live `route_to` reservation) —
+    /// holds the rejection reason. `None` means either no handoff was ever attempted, or
+    /// the most recent attempt succeeded.
+    ///
+    /// This is the graph-visible signal that makes a consume-side rejection loud rather
+    /// than a log-only event (critic finding C1): the task itself still ends
+    /// `Completed` with its real output preserved (the requested extra routing simply
+    /// never activates), but this field records that the routing intent was dropped, so
+    /// the persisted graph and any future aggregation/status step can surface it. As of
+    /// v1 the field is set and queryable but has no dedicated display surface yet (no
+    /// `/plan status` or TUI wiring) — tracked as a follow-up, see GitHub #6390. Note the
+    /// produce-side `update` write (spec-080 NFR-PERF-03, write-before-send) already
+    /// completed before this rejection is known — see `handle_handoff_outcome`'s doc
+    /// comment for why that write is not rolled back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_rejected: Option<String>,
 }
 
 impl TaskNode {
@@ -599,6 +633,8 @@ impl TaskNode {
             timeout: None,
             recovery: None,
             routed_from: None,
+            commanded_from: None,
+            handoff_rejected: None,
         }
     }
 }
@@ -650,6 +686,15 @@ pub struct TaskGraph {
     /// [`ExecutionId`]: zeph_durable::ExecutionId
     #[serde(default)]
     pub durable_save_generation: u32,
+
+    /// Number of `Command.goto` handoffs (spec-080, GitHub #6363) performed on this graph
+    /// so far. Incremented once per successful `dag::try_handoff` call; checked against
+    /// `[orchestration.command].max_handoffs` before each attempt. This is the true
+    /// livelock backstop (the forward-only invariant makes A/B ping-pong structurally
+    /// impossible, so this budget only bounds forward fan-out chains — spec-080 §6 Always).
+    /// Persisted inside the graph blob so a resumed graph does not reset its budget.
+    #[serde(default)]
+    pub handoff_count: u32,
 }
 
 impl TaskGraph {
@@ -666,6 +711,7 @@ impl TaskGraph {
             created_at: chrono_now(),
             finished_at: None,
             durable_save_generation: 0,
+            handoff_count: 0,
         }
     }
 }
@@ -1216,6 +1262,108 @@ mod tests {
             restored.asset_sensitivity,
             Some(zeph_config::AssetSensitivity::Confidential)
         );
+    }
+
+    #[test]
+    fn test_task_node_commanded_from_defaults_to_none_on_old_json() {
+        // Old SQLite-stored JSON blobs predating spec-080 lack commanded_from.
+        // #[serde(default)] must make them deserialize to None without error.
+        let json = r#"{
+            "id": 0,
+            "title": "t",
+            "description": "d",
+            "agent_hint": null,
+            "status": "pending",
+            "depends_on": [],
+            "result": null,
+            "assigned_agent": null,
+            "retry_count": 0,
+            "failure_strategy": null,
+            "max_retries": null
+        }"#;
+        let node: TaskNode = serde_json::from_str(json).expect("should deserialize old JSON");
+        assert!(node.commanded_from.is_none());
+    }
+
+    #[test]
+    fn test_task_node_commanded_from_roundtrip() {
+        let mut node = TaskNode::new(1, "t", "d");
+        node.commanded_from = Some(TaskId(0));
+        let json = serde_json::to_string(&node).unwrap();
+        let restored: TaskNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.commanded_from, Some(TaskId(0)));
+    }
+
+    #[test]
+    fn test_task_node_skip_serializing_if_none_commanded_from() {
+        let node = TaskNode::new(0, "t", "d");
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(!json.contains("commanded_from"), "none should be omitted");
+    }
+
+    #[test]
+    fn test_task_node_handoff_rejected_defaults_to_none_on_old_json() {
+        // Old SQLite-stored JSON blobs predating the C1 fix lack handoff_rejected.
+        // #[serde(default)] must make them deserialize to None without error.
+        let json = r#"{
+            "id": 0,
+            "title": "t",
+            "description": "d",
+            "agent_hint": null,
+            "status": "pending",
+            "depends_on": [],
+            "result": null,
+            "assigned_agent": null,
+            "retry_count": 0,
+            "failure_strategy": null,
+            "max_retries": null
+        }"#;
+        let node: TaskNode = serde_json::from_str(json).expect("should deserialize old JSON");
+        assert!(node.handoff_rejected.is_none());
+    }
+
+    #[test]
+    fn test_task_node_handoff_rejected_roundtrip() {
+        let mut node = TaskNode::new(1, "t", "d");
+        node.handoff_rejected = Some("goto target already completed".to_string());
+        let json = serde_json::to_string(&node).unwrap();
+        let restored: TaskNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            restored.handoff_rejected,
+            Some("goto target already completed".to_string())
+        );
+    }
+
+    #[test]
+    fn test_task_node_skip_serializing_if_none_handoff_rejected() {
+        let node = TaskNode::new(0, "t", "d");
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(!json.contains("handoff_rejected"), "none should be omitted");
+    }
+
+    #[test]
+    fn test_task_graph_handoff_count_defaults_to_zero_on_old_json() {
+        // Old graph blobs predating spec-080 lack handoff_count. #[serde(default)] must
+        // make them deserialize to 0 without error.
+        let mut graph = TaskGraph::new("test goal");
+        graph.tasks.push(TaskNode::new(0, "task 0", "do something"));
+        let mut value: serde_json::Value = serde_json::to_value(&graph).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("handoff_count")
+            .expect("test setup: field must be present before removal");
+        let restored: TaskGraph = serde_json::from_value(value).expect("should deserialize");
+        assert_eq!(restored.handoff_count, 0);
+    }
+
+    #[test]
+    fn test_task_graph_handoff_count_roundtrip() {
+        let mut graph = TaskGraph::new("test goal");
+        graph.handoff_count = 3;
+        let json = serde_json::to_string(&graph).unwrap();
+        let restored: TaskGraph = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.handoff_count, 3);
     }
 
     #[test]

@@ -917,6 +917,57 @@ pub fn migrate_orchestration_ensemble(toml_src: &str) -> Result<MigrationResult,
     })
 }
 
+/// Step 91 — add a commented-out `[orchestration.command]` advisory block for Command-style
+/// dynamic task handoff, if absent (spec-080, GitHub #6363).
+///
+/// All `CommandConfig` fields have `#[serde(default)]` so existing configs parse without
+/// changes even without this step — this exists purely for discoverability on config
+/// upgrade, mirroring [`migrate_orchestration_ensemble`].
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if `toml_src` fails to parse as TOML.
+pub fn migrate_orchestration_command_config(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if section_header_present(toml_src, "orchestration.command")
+        || toml_src.contains("[orchestration.command]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("orchestration") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Command-style dynamic task handoff — lets a node's agent route \
+         execution to a\n\
+         # named already-planned node at runtime and write into the cross-thread store's \
+         shared\n\
+         # state channel. Off by default (spec-080, #6363).\n\
+         # [orchestration.command]\n\
+         # enabled = false\n\
+         # max_handoffs = 16           # per-graph livelock budget, must be > 0\n";
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["orchestration.command".to_owned()],
+    })
+}
+
 /// Step 78 — add a commented-out `[skills.registry]` section with defaults if absent
 /// (spec-045, #5869).
 ///

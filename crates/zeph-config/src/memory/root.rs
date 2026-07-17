@@ -13,10 +13,10 @@ use zeph_common::secret::Secret;
 
 use super::{
     AdmissionConfig, AutoDreamConfig, CategoryConfig, CompressionConfig,
-    CompressionGuidelinesConfig, ConsolidationConfig, ContextStrategy, DigestConfig,
-    DocumentConfig, EmGraphConfig, EpisodicConsolidationConfig, EvictionConfig, FiveSignalConfig,
-    ForgettingConfig, GraphConfig, HebbianConfig, MemCotConfig, MicrocompactConfig,
-    OpticalForgettingConfig, PersonaConfig, ReasoningConfig, RetrievalConfig,
+    CompressionGuidelinesConfig, ConsolidationConfig, ContextStrategy, CrossThreadStoreConfig,
+    DigestConfig, DocumentConfig, EmGraphConfig, EpisodicConsolidationConfig, EvictionConfig,
+    FiveSignalConfig, ForgettingConfig, GraphConfig, HebbianConfig, MemCotConfig,
+    MicrocompactConfig, OpticalForgettingConfig, PersonaConfig, ReasoningConfig, RetrievalConfig,
     RetrievalFailuresConfig, SemanticConfig, SessionsConfig, SidequestConfig, StoreRoutingConfig,
     TierConfig, TieredRetrievalConfig, TrajectoryConfig, TrajectoryRiskAccumulatorConfig,
     TreeConfig, TypeAwareComposeConfig, WriteQualityGateConfig,
@@ -530,6 +530,14 @@ pub struct MemoryConfig {
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fidelity: Option<crate::fidelity::FidelityConfig>,
+    /// Generic namespaced cross-thread key-value store (spec-080, #6363).
+    ///
+    /// When `store.enabled = true`, `zeph store {get,put,list,delete}` (CLI/slash command)
+    /// and `zeph-orchestration`'s `Command.update` handoff (via `zeph-core`) can read and
+    /// write rows addressed by `(owner_key, namespace, key)`. Default: disabled — zero
+    /// behavior change (FR-A-001).
+    #[serde(default)]
+    pub store: CrossThreadStoreConfig,
 }
 
 fn default_crossover_turn_threshold() -> u32 {

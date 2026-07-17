@@ -57,6 +57,7 @@ use crate::commands::schedule::handle_schedule_command;
 #[cfg(any(feature = "acp", feature = "session"))]
 use crate::commands::sessions::handle_sessions_command;
 use crate::commands::skill::handle_skill_command;
+use crate::commands::store::handle_store_command;
 use crate::commands::vault::handle_vault_command;
 #[cfg(feature = "a2a")]
 use crate::daemon::run_daemon;
@@ -887,6 +888,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         }
         Some(Command::Memory { command: mem_cmd }) => {
             return handle_memory_command(mem_cmd, cli.config.as_deref()).await;
+        }
+        Some(Command::Store { command: store_cmd }) => {
+            return handle_store_command(store_cmd, cli.config.as_deref()).await;
         }
         Some(Command::Router {
             command: router_cmd,

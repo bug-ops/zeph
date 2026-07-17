@@ -211,6 +211,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         feature_gate: None,
     },
     CommandInfo {
+        name: "/store",
+        args: "get <ns> <key> | put <ns> <key> <value...> | list <ns_prefix> [limit] | delete <ns> <key>",
+        description: "Read/write the cross-thread key-value store (opt-in, [memory.store])",
+        category: SlashCategory::Memory,
+        feature_gate: None,
+    },
+    CommandInfo {
         name: "/guidelines",
         args: "",
         description: "Show current compression guidelines",

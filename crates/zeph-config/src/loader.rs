@@ -439,6 +439,71 @@ impl Config {
                     .into(),
             ));
         }
+        self.validate_command_handoff()?;
+        Ok(())
+    }
+
+    /// Validate `[orchestration.command]` (spec-080, GitHub #6363): `max_handoffs` bounds
+    /// and, when the feature is enabled, its cross-crate prerequisites.
+    fn validate_command_handoff(&self) -> Result<(), ConfigError> {
+        if self.orchestration.command.max_handoffs == 0 {
+            return Err(ConfigError::Validation(
+                "orchestration.command.max_handoffs must be > 0; set \
+                 orchestration.command.enabled = false to disable Command handoff instead"
+                    .into(),
+            ));
+        }
+        // SEC-2: an operator-set max_handoffs with no upper sanity bound defeats the
+        // livelock counter's purpose as a footgun guard (topology + forward-only still
+        // terminate a graph regardless, so this is not itself an exploitable hole — see
+        // the security audit handoff — but an unbounded value is never a deliberate,
+        // reasonable config).
+        if self.orchestration.command.max_handoffs > 10_000 {
+            return Err(ConfigError::Validation(format!(
+                "orchestration.command.max_handoffs must be <= 10000, got {}",
+                self.orchestration.command.max_handoffs
+            )));
+        }
+        // Deviation #4 / SEC-1: reject at config-validation time rather than discovering
+        // the misconfiguration per-task at runtime write-attempt time (spec-080 §7 edge
+        // case table; critic P2 confirmed the runtime-only check wastes real LLM-call
+        // work on non-handoff tasks in the same misconfigured graph before the first
+        // handoff attempt fails). Command handoff's produce-side seam
+        // (`determine_task_outcome`, zeph-core) has nowhere to persist `update` without
+        // the store, and its FR-B-003 sanitizer scan becomes a silent no-op without
+        // content isolation (`ContentSanitizer::sanitize` early-returns with empty
+        // `injection_flags` when `enabled = false`, and `flag_injection_patterns = false`
+        // has the same effect) — both are genuine security/correctness prerequisites of
+        // this feature, not merely convenient defaults.
+        if !self.orchestration.command.enabled {
+            return Ok(());
+        }
+        if !self.memory.store.enabled {
+            return Err(ConfigError::Validation(
+                "orchestration.command.enabled = true requires memory.store.enabled = \
+                 true — Command handoff has nowhere to persist its `update` payload \
+                 without the cross-thread store"
+                    .into(),
+            ));
+        }
+        if !self.security.content_isolation.enabled {
+            return Err(ConfigError::Validation(
+                "orchestration.command.enabled = true requires \
+                 security.content_isolation.enabled = true — the FR-B-003 sanitizer \
+                 scan that gates a Command handoff before it drives routing or a \
+                 store write becomes a silent no-op otherwise"
+                    .into(),
+            ));
+        }
+        if !self.security.content_isolation.flag_injection_patterns {
+            return Err(ConfigError::Validation(
+                "orchestration.command.enabled = true requires \
+                 security.content_isolation.flag_injection_patterns = true — the \
+                 FR-B-003 sanitizer scan never flags anything otherwise, silently \
+                 bypassing the reject gate"
+                    .into(),
+            ));
+        }
         Ok(())
     }
 
@@ -1204,6 +1269,105 @@ weight = 0.3
     fn validate_default_idle_timeout_positive_accepted() {
         let mut cfg = Config::default();
         cfg.orchestration.default_idle_timeout_secs = Some(60);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_command_max_handoffs_zero_rejected() {
+        let mut cfg = Config::default();
+        cfg.orchestration.command.max_handoffs = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("max_handoffs"),
+            "expected max_handoffs in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_command_max_handoffs_default_accepted() {
+        let cfg = Config::default();
+        assert_eq!(cfg.orchestration.command.max_handoffs, 16);
+        assert!(!cfg.orchestration.command.enabled);
+        assert!(cfg.validate().is_ok());
+    }
+
+    // --- SEC-2: max_handoffs upper sanity bound ---
+
+    #[test]
+    fn validate_command_max_handoffs_over_10000_rejected() {
+        let mut cfg = Config::default();
+        cfg.orchestration.command.max_handoffs = 10_001;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("max_handoffs") && err.contains("<= 10000"),
+            "expected max_handoffs upper-bound error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_command_max_handoffs_exactly_10000_accepted() {
+        let mut cfg = Config::default();
+        cfg.orchestration.command.max_handoffs = 10_000;
+        assert!(cfg.validate().is_ok());
+    }
+
+    // --- Deviation #4 / SEC-1: command.enabled requires store.enabled + content_isolation ---
+
+    fn config_with_command_enabled() -> Config {
+        let mut cfg = Config::default();
+        cfg.orchestration.command.enabled = true;
+        cfg.memory.store.enabled = true;
+        cfg.security.content_isolation.enabled = true;
+        cfg.security.content_isolation.flag_injection_patterns = true;
+        cfg
+    }
+
+    #[test]
+    fn validate_command_enabled_with_all_prerequisites_accepted() {
+        assert!(config_with_command_enabled().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_command_enabled_without_store_enabled_rejected() {
+        let mut cfg = config_with_command_enabled();
+        cfg.memory.store.enabled = false;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("memory.store.enabled"),
+            "expected store-prerequisite error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_command_enabled_without_content_isolation_enabled_rejected() {
+        let mut cfg = config_with_command_enabled();
+        cfg.security.content_isolation.enabled = false;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("content_isolation.enabled"),
+            "expected content_isolation-prerequisite error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_command_enabled_without_flag_injection_patterns_rejected() {
+        let mut cfg = config_with_command_enabled();
+        cfg.security.content_isolation.flag_injection_patterns = false;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("flag_injection_patterns"),
+            "expected flag_injection_patterns-prerequisite error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_command_disabled_ignores_store_and_content_isolation_state() {
+        // command.enabled = false (default): misconfigured store/content_isolation must
+        // not block startup — the prerequisites only apply once the feature is opted in.
+        let mut cfg = Config::default();
+        cfg.memory.store.enabled = false;
+        cfg.security.content_isolation.enabled = false;
+        cfg.security.content_isolation.flag_injection_patterns = false;
         assert!(cfg.validate().is_ok());
     }
 

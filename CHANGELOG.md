@@ -18,7 +18,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   uploaded as a workflow artifact. Gives visibility into whether corpus-gated code paths (e.g.
   the `skill_frontmatter`/`skill_extensions` structural gates) are actually reached — does not
   change pass/fail semantics of the existing crash-finding job.
-
+- **Cross-thread key-value store + Command-style dynamic task handoff** (spec-080, #6363):
+  LangGraph `Store`/`Command(update, goto)` parity, both opt-in and default-off.
+  - **Cross-thread store** (`[memory.store]`, default `enabled = false`): a generic
+    `(owner_key, namespace, key)`-addressable KV store in `zeph-memory`
+    (`cross_thread_store` table, migration 110, both SQLite and Postgres dialects), with
+    `put`/`get`/`delete`/`list`/`search` methods, optimistic-concurrency writes via
+    `expected_version`, and a configurable `max_value_bytes` cap. Exposed via a new
+    `zeph store {get,put,list,delete}` CLI subcommand and a `/store` slash command
+    (both v1-default to `owner_key = "local"`, matching every non-ACP dispatch path).
+  - **Command-style dynamic task handoff** (`[orchestration.command]`, default
+    `enabled = false`, `max_handoffs = 16`): a DAG node's agent can end its output with a
+    trailing ` ```zeph-command ` block naming a `goto` target and an `update` payload; the
+    target — forward-only, dependency-satisfied, not a live `route_to` reservation —
+    activates at runtime and the `update` is persisted into the cross-thread store under
+    `orch/{graph_id}` before the routed-to node's prompt is built. The parsed command is
+    always scanned through the existing sanitizer/`ExfiltrationGuard` path before it can
+    drive routing or a store write; a malformed or rejected block fails the task loudly
+    (`TaskOutcome::Failed`), never silently degrading to `Completed`. Every dispatched node
+    in a Command-enabled graph gets a `<shared-state>` prompt block (wrapped as
+    untrusted/spotlighted content) built from the store's contents for that graph.
+  - `--migrate-config` adds both new sections to existing configs; `--init` prompts for
+    both, defaulting to No.
+  - `zeph-orchestration` gained no new production dependency on `zeph-memory` — all store
+    I/O lives in `zeph-core`, per the spec's binding layering invariant.
+  - Known limitations tracked as follow-ups: gateway/A2A dispatch paths do not yet thread a
+    real per-caller `owner_key` into the store (#6389); a rejected Command handoff's
+    `TaskNode.handoff_rejected` marker is persisted and logged but has no dedicated
+    TUI/CLI display surface yet (#6390); a Command-handoff outcome skips the
+    `SchedulerAction::Verify` completeness check ordinary `Completed` outcomes get (#6394).
 - **MCP image passthrough — config/CLI/TUI surface** (spec-072 P3, #6241): completes the
   opt-in MCP image passthrough feature (#6331) with the remaining integration points.
   - `--init`: the MCP remote-server wizard now asks "Enable image passthrough for this

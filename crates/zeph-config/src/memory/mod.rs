@@ -16,6 +16,7 @@
 //! - `session` — session, document, and semantic-memory config
 //! - `persona` — persona inference and trajectory risk accumulation
 //! - `reasoning` — memory-augmented reasoning, probes, and `MemCoT`
+//! - `store` — cross-thread key-value store (spec-080, #6363)
 
 mod consolidation;
 mod fidelity;
@@ -26,6 +27,7 @@ mod reasoning;
 mod retrieval;
 mod root;
 mod session;
+mod store;
 #[cfg(test)]
 mod tests;
 
@@ -38,6 +40,7 @@ pub use reasoning::*;
 pub use retrieval::*;
 pub use root::*;
 pub use session::*;
+pub use store::*;
 
 pub(crate) fn default_embed_timeout_secs() -> u64 {
     5

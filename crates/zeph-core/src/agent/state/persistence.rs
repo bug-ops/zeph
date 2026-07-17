@@ -14,6 +14,20 @@ use zeph_config::memory::{TieredRetrievalConfig, TypeAwareComposeConfig};
 use zeph_llm::any::AnyProvider;
 use zeph_memory::semantic::SemanticMemory;
 
+/// Cross-thread store owner key used for every dispatch path (spec-080 §10 OQ-1,
+/// GitHub #6363): the produce-side Command-handoff seam (`scheduler_loop.rs`, feature
+/// `scheduler`-gated) and the always-available `/store` slash command
+/// (`agent_access_impl.rs`) both need this constant, so it lives here rather than in
+/// either feature-specific caller.
+///
+/// CLI/Telegram/gateway/A2A callers all collapse to this single bucket in v1 — correct
+/// for CLI/TUI (genuinely single-user) but a documented, deferred tenancy blind spot for
+/// gateway/A2A (multiple callers sharing one bearer token would land in the same
+/// bucket). Not a bug: the schema and every store method already take `owner_key`
+/// everywhere, so threading a real per-caller key through later is additive, not a
+/// breaking migration. Tracked as a follow-up per spec-080 §10 OQ-1 — see GitHub #6389.
+pub(crate) const DEFAULT_OWNER_KEY: &str = "local";
+
 /// `SQLite` connection, conversation tracking, history limits, recall budget, and autosave policy.
 ///
 /// All fields in this struct relate to the *persistence* concern: how messages are stored
@@ -71,6 +85,17 @@ pub(crate) struct MemoryPersistenceState {
     /// tree. Set by `with_type_aware_compose_config`. No LLM providers are involved (v1 has
     /// no LLM classifier — see spec 004-16 §5).
     pub(crate) type_aware_compose_config: TypeAwareComposeConfig,
+
+    // ── Cross-thread store (spec-080, GitHub #6363) ─────────────────────────────────
+    /// Cross-thread store configuration snapshot (`[memory.store]`).
+    ///
+    /// Stored here so `scheduler_loop.rs`'s Command-handoff produce-side seam can read
+    /// `enabled`/`max_value_bytes` without accessing the full config tree, mirroring
+    /// `tiered_retrieval_config`/`type_aware_compose_config` above. Set via
+    /// `AgentSessionConfig`/`apply_session_config`. The actual store I/O goes through
+    /// `memory` (above) via `SemanticMemory::sqlite()`'s cross-thread-store methods —
+    /// this field only gates and bounds those calls.
+    pub(crate) store_config: zeph_config::CrossThreadStoreConfig,
 }
 
 impl Default for MemoryPersistenceState {
@@ -91,6 +116,7 @@ impl Default for MemoryPersistenceState {
             tiered_retrieval_classifier: None,
             tiered_retrieval_validator: None,
             type_aware_compose_config: TypeAwareComposeConfig::default(),
+            store_config: zeph_config::CrossThreadStoreConfig::default(),
         }
     }
 }

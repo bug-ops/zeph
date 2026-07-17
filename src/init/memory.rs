@@ -180,6 +180,22 @@ pub(super) fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         .default(false)
         .interact()?;
 
+    state.store_enabled = Confirm::new()
+        .with_prompt(
+            "Enable the cross-thread key-value store? (opt-in; lets orchestration graph nodes \
+             persist and share state across tasks via `zeph store` / `/store`, LangGraph \
+             `Store` parity, spec-080, #6363)",
+        )
+        .default(false)
+        .interact()?;
+
+    if state.store_enabled {
+        state.store_max_value_bytes = Input::new()
+            .with_prompt("Maximum value size in bytes for a single store entry")
+            .default(65536usize)
+            .interact_text()?;
+    }
+
     let strategy_options = ["full_history", "adaptive", "memory_first"];
     let strategy_idx = Select::new()
         .with_prompt(

@@ -30,5 +30,6 @@ pub(crate) mod scheduler_daemon;
 #[cfg(any(feature = "acp", feature = "session"))]
 pub(crate) mod sessions;
 pub(crate) mod skill;
+pub(crate) mod store;
 pub(crate) mod vault;
 pub(crate) mod worktree;

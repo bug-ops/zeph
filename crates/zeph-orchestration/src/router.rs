@@ -166,6 +166,8 @@ mod tests {
             timeout: None,
             recovery: None,
             routed_from: None,
+            commanded_from: None,
+            handoff_rejected: None,
         }
     }
 

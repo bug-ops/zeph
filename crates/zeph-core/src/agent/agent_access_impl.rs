@@ -839,6 +839,108 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         )
     }
 
+    // ----- /store -----
+
+    fn store_command<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(
+            async move {
+                const USAGE: &str = "Usage: /store {get <ns> <key> | put <ns> <key> <value...> \
+                                      | list <ns_prefix> [limit] | delete <ns> <key>}";
+
+                let store_config = self.services.memory.persistence.store_config.clone();
+                if !store_config.enabled {
+                    return Ok(
+                        "Cross-thread store is disabled ([memory.store].enabled = false)."
+                            .to_owned(),
+                    );
+                }
+                let Some(memory) = self.services.memory.persistence.memory.clone() else {
+                    return Ok("Memory not configured.".to_owned());
+                };
+
+                let owner_key = super::state::persistence::DEFAULT_OWNER_KEY;
+                let mut parts = args.split_whitespace();
+                let Some(sub) = parts.next() else {
+                    return Ok(USAGE.to_owned());
+                };
+
+                let result = match sub {
+                    "get" => {
+                        let (Some(ns), Some(key)) = (parts.next(), parts.next()) else {
+                            return Ok("Usage: /store get <namespace> <key>".to_owned());
+                        };
+                        match memory.sqlite().store_get(owner_key, ns, key).await {
+                            Ok(Some(item)) => item.value,
+                            Ok(None) => format!("No value found for {ns}/{key}."),
+                            Err(e) => return Err(CommandError::new(e.to_string())),
+                        }
+                    }
+                    "put" => {
+                        let (Some(ns), Some(key)) = (parts.next(), parts.next()) else {
+                            return Ok("Usage: /store put <namespace> <key> <value...>".to_owned());
+                        };
+                        let value = parts.collect::<Vec<_>>().join(" ");
+                        if value.is_empty() {
+                            return Ok("Usage: /store put <namespace> <key> <value...>".to_owned());
+                        }
+                        match memory
+                            .sqlite()
+                            .store_put(
+                                owner_key,
+                                ns,
+                                key,
+                                &value,
+                                store_config.max_value_bytes,
+                                None,
+                            )
+                            .await
+                        {
+                            Ok(item) => format!("Stored {ns}/{key} (version {}).", item.version),
+                            Err(e) => return Err(CommandError::new(e.to_string())),
+                        }
+                    }
+                    "list" => {
+                        let prefix = parts.next().unwrap_or("");
+                        let limit = parts
+                            .next()
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        match memory.sqlite().store_list(owner_key, prefix, limit).await {
+                            Ok(items) if items.is_empty() => "No rows found.".to_owned(),
+                            Ok(items) => items
+                                .iter()
+                                .map(|i| {
+                                    format!(
+                                        "{}/{} = {} (v{})",
+                                        i.namespace, i.key, i.value, i.version
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            Err(e) => return Err(CommandError::new(e.to_string())),
+                        }
+                    }
+                    "delete" => {
+                        let (Some(ns), Some(key)) = (parts.next(), parts.next()) else {
+                            return Ok("Usage: /store delete <namespace> <key>".to_owned());
+                        };
+                        match memory.sqlite().store_delete(owner_key, ns, key).await {
+                            Ok(true) => format!("Deleted {ns}/{key}."),
+                            Ok(false) => format!("No value found for {ns}/{key}."),
+                            Err(e) => return Err(CommandError::new(e.to_string())),
+                        }
+                    }
+                    _ => USAGE.to_owned(),
+                };
+                Ok(result)
+            }
+            .instrument(tracing::info_span!("core.agent_access.store_command")),
+        )
+    }
+
     // ----- /guidelines -----
 
     fn guidelines<'a>(

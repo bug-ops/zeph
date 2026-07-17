@@ -393,6 +393,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: MemoryCommand,
     },
+    /// Manage the cross-thread key-value store (spec-080, #6363)
+    Store {
+        #[command(subcommand)]
+        command: StoreCommand,
+    },
     /// Ingest a document into semantic memory
     Ingest {
         /// Path to document or directory to ingest
@@ -888,6 +893,58 @@ pub(crate) enum MemoryCommand {
     Trajectory,
     /// Show memory tree statistics (node count by level)
     Tree,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum StoreCommand {
+    /// Get a value by namespace and key
+    Get {
+        /// Namespace (e.g. `orch/graph-1`)
+        namespace: String,
+        /// Key within the namespace
+        key: String,
+        /// Owner scope to read from (v1 default: `local`, matching CLI/Telegram/gateway
+        /// dispatch — see spec-080 §10 OQ-1)
+        #[arg(long, default_value = "local")]
+        owner_key: String,
+    },
+    /// Insert or update a value under a namespace and key
+    Put {
+        /// Namespace (e.g. `orch/graph-1`)
+        namespace: String,
+        /// Key within the namespace
+        key: String,
+        /// Value to store (opaque; typically JSON, but stored as-is)
+        value: String,
+        /// Owner scope to write to (v1 default: `local`)
+        #[arg(long, default_value = "local")]
+        owner_key: String,
+        /// Require this exact current version for the write to succeed (optimistic
+        /// concurrency); omit for a plain upsert
+        #[arg(long)]
+        expected_version: Option<i64>,
+    },
+    /// List values under a namespace prefix
+    List {
+        /// Namespace prefix (e.g. `orch/` matches every namespace starting with it)
+        namespace_prefix: String,
+        /// Owner scope to list from (v1 default: `local`)
+        #[arg(long, default_value = "local")]
+        owner_key: String,
+        /// Maximum rows to return (0 = unlimited)
+        #[arg(long, default_value = "0")]
+        limit: usize,
+    },
+    /// Delete a value by namespace and key
+    Delete {
+        /// Namespace (e.g. `orch/graph-1`)
+        namespace: String,
+        /// Key within the namespace
+        key: String,
+        /// Owner scope to delete from (v1 default: `local`)
+        #[arg(long, default_value = "local")]
+        owner_key: String,
+    },
 }
 
 #[derive(Subcommand)]

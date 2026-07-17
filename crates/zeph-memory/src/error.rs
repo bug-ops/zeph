@@ -98,6 +98,24 @@ pub enum MemoryError {
     /// so the document is counted separately from hard failures.
     #[error("validation rejected: {0}")]
     ValidationRejected(String),
+
+    /// Optimistic-concurrency conflict on [`crate::store::cross_thread`]'s `store_put`
+    /// (spec-080, #6363, FR-A-003).
+    ///
+    /// Returned when a caller-supplied `expected_version` does not match the row's current
+    /// version — including when no row exists at all under `(owner_key, namespace, key)`,
+    /// since there is then no row at the expected version either. Callers must surface this
+    /// as a failure rather than silently retrying and clobbering the newer write.
+    #[error(
+        "version conflict: owner_key={owner_key:?} namespace={namespace:?} key={key:?} \
+         expected_version={expected}"
+    )]
+    VersionConflict {
+        owner_key: String,
+        namespace: String,
+        key: String,
+        expected: i64,
+    },
 }
 
 impl MemoryError {

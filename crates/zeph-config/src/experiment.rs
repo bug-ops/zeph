@@ -326,6 +326,41 @@ impl Default for EnsembleConfig {
     }
 }
 
+/// Configuration for Command-style dynamic task handoff
+/// (`[orchestration.command]` TOML section, spec `080-cross-thread-store-dynamic-handoff`,
+/// GitHub #6363).
+///
+/// Opt-in and default-`OFF`: when `enabled = false` (the default), a node's trailing
+/// ` ```zeph-command ` output block is left as ordinary output text and
+/// `TaskOutcome::Handoff` is never produced — zero behavior change (FR-B-001).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CommandConfig {
+    /// Enable node-agent-driven dynamic task handoff via a trailing ` ```zeph-command `
+    /// output block. Default: `false`.
+    pub enabled: bool,
+    /// Per-graph livelock budget: maximum number of `Command.goto` handoffs allowed across
+    /// a single graph run (`dag::try_handoff`'s budget check). Validated `> 0` at config
+    /// load time (FR-B-013) — `0` would make every handoff attempt fail immediately, which
+    /// is indistinguishable from `enabled = false` but without the honest signal. Default:
+    /// `16`.
+    #[serde(default = "default_command_max_handoffs")]
+    pub max_handoffs: u32,
+}
+
+impl Default for CommandConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_handoffs: default_command_max_handoffs(),
+        }
+    }
+}
+
+fn default_command_max_handoffs() -> u32 {
+    16
+}
+
 /// Configuration for the task orchestration subsystem (`[orchestration]` TOML section).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -550,6 +585,11 @@ pub struct OrchestrationConfig {
     /// `specs/075-orchestration-node-control-parity/spec.md` §4/FR-005.
     #[serde(default)]
     pub default_idle_timeout_secs: Option<u64>,
+
+    /// Command-style dynamic task handoff configuration (spec-080, GitHub #6363). Default:
+    /// disabled. See `specs/080-cross-thread-store-dynamic-handoff/spec.md`.
+    #[serde(default)]
+    pub command: CommandConfig,
 }
 
 impl Default for OrchestrationConfig {
@@ -595,6 +635,7 @@ impl Default for OrchestrationConfig {
             verifier_timeout_secs: default_verifier_timeout_secs(),
             ensemble: EnsembleConfig::default(),
             default_idle_timeout_secs: None,
+            command: CommandConfig::default(),
         }
     }
 }

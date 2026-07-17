@@ -468,6 +468,14 @@ enabled = true
 # min_messages = 2       # minimum user messages before persona extraction fires
 # min_confidence = 0.5   # minimum extraction confidence threshold (0.0–1.0)
 
+# Generic namespaced cross-thread key-value store (spec-080, #6363). LangGraph `Store`
+# parity: addressable by (owner_key, namespace, key). Powers `zeph store` / `/store` and
+# zeph-orchestration's Command.update handoff. Disabled by default — zero behavior change.
+[memory.store]
+enabled = false
+# max_value_bytes = 65536    # reject store_put writes larger than this instead of truncating
+# search_provider = "fast"   # reserved for a future semantic-search extension; unused in v1
+
 # Code RAG: AST-based code indexing and hybrid retrieval
 # Requires Qdrant for semantic retrieval; tree-sitter grammars are always available
 [index]
@@ -1199,6 +1207,13 @@ verify_completeness = false
 # min_observations = 5
 # Per-member LLM call timeout in seconds; 0 = fall back to verifier_timeout_secs. Default: 0.
 # member_timeout_secs = 0
+
+# Command-style dynamic task handoff — lets a node's agent route execution to a named
+# already-planned node at runtime and write into the cross-thread store's shared state
+# channel. Off by default (spec-080, #6363).
+# [orchestration.command]
+# enabled = false
+# max_handoffs = 16           # per-graph livelock budget, must be > 0
 
 [classifiers]
 # Enable ML-backed classifiers (requires the `classifiers` feature at compile time).

@@ -124,6 +124,9 @@ pub(crate) struct WizardState {
     // Ensemble-verified plan verification (spec 073-orch-ensemble-merge, opt-in)
     pub(crate) ensemble_enabled: bool,
     pub(crate) ensemble_members: Vec<String>,
+    // Command-style dynamic task handoff (spec-080, #6363, opt-in)
+    pub(crate) command_enabled: bool,
+    pub(crate) command_max_handoffs: u32,
     // Debug settings
     pub(crate) debug_dump_enabled: bool,
     pub(crate) debug_dump_format: zeph_core::debug_dump::DumpFormat,
@@ -219,6 +222,9 @@ pub(crate) struct WizardState {
     pub(crate) retry_parameter_reformat_provider: String,
     // Session digest (#2289)
     pub(crate) digest_enabled: bool,
+    // Cross-thread key-value store (spec-080, #6363, opt-in)
+    pub(crate) store_enabled: bool,
+    pub(crate) store_max_value_bytes: usize,
     // Session recap on resume (#3064)
     pub(crate) recap_on_resume: bool,
     // Provider override persistence (#4654)
@@ -418,6 +424,8 @@ impl Default for WizardState {
             orchestration_default_idle_timeout_secs: None,
             ensemble_enabled: false,
             ensemble_members: Vec::new(),
+            command_enabled: false,
+            command_max_handoffs: 16,
             debug_dump_enabled: false,
             debug_dump_format: zeph_core::debug_dump::DumpFormat::Json,
             graph_memory_enabled: false,
@@ -492,6 +500,8 @@ impl Default for WizardState {
             retry_max_attempts: 2,
             retry_parameter_reformat_provider: String::new(),
             digest_enabled: false,
+            store_enabled: false,
+            store_max_value_bytes: 65536,
             recap_on_resume: true,
             persist_provider_overrides: true,
             mcp_elicitation_enabled: false,
@@ -935,6 +945,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     }
     config.memory.shutdown_summary = state.shutdown_summary;
     config.memory.digest.enabled = state.digest_enabled;
+    config.memory.store.enabled = state.store_enabled;
+    config.memory.store.max_value_bytes = state.store_max_value_bytes;
     config.session.recap.on_resume = state.recap_on_resume;
     config.session.persist_provider_overrides = state.persist_provider_overrides;
     config.session.enabled = state.session_persistence_enabled;
@@ -1128,6 +1140,10 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             verify: state.ensemble_enabled,
             members: state.ensemble_members.clone(),
             ..zeph_config::EnsembleConfig::default()
+        },
+        command: zeph_config::CommandConfig {
+            enabled: state.command_enabled,
+            max_handoffs: state.command_max_handoffs,
         },
         ..OrchestrationConfig::default()
     };
@@ -2397,6 +2413,48 @@ mod tests {
         let config = build_config(&state);
         assert!(!config.memory.type_aware_compose.enabled);
         assert!(!config.memory.type_aware_compose.intent_scoped);
+    }
+
+    #[test]
+    fn build_config_store_disabled_by_default() {
+        let state = single_provider_state();
+        let config = build_config(&state);
+        assert!(!config.memory.store.enabled);
+    }
+
+    #[test]
+    fn build_config_store_enabled_wires_max_value_bytes() {
+        // spec-080 (#6363) FR-A-010: the --init wizard's [memory.store] prompts must reach
+        // the assembled Config unchanged.
+        let state = WizardState {
+            store_enabled: true,
+            store_max_value_bytes: 131_072,
+            ..single_provider_state()
+        };
+        let config = build_config(&state);
+        assert!(config.memory.store.enabled);
+        assert_eq!(config.memory.store.max_value_bytes, 131_072);
+    }
+
+    #[test]
+    fn build_config_command_handoff_disabled_by_default() {
+        let state = single_provider_state();
+        let config = build_config(&state);
+        assert!(!config.orchestration.command.enabled);
+    }
+
+    #[test]
+    fn build_config_command_handoff_enabled_wires_max_handoffs() {
+        // spec-080 (#6363) FR-B-014: the --init wizard's [orchestration.command] prompts
+        // must reach the assembled Config unchanged.
+        let state = WizardState {
+            command_enabled: true,
+            command_max_handoffs: 32,
+            ..single_provider_state()
+        };
+        let config = build_config(&state);
+        assert!(config.orchestration.command.enabled);
+        assert_eq!(config.orchestration.command.max_handoffs, 32);
     }
 
     #[test]

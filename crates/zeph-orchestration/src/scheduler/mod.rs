@@ -187,6 +187,21 @@ pub enum TaskOutcome {
         /// Human-readable error description.
         error: String,
     },
+    /// Agent emitted a Command-style dynamic handoff directive (spec-080, GitHub #6363).
+    ///
+    /// The `update` key-value pairs parsed alongside `goto` have already been sanitizer-
+    /// scanned and persisted into the cross-thread store by the zeph-core produce-side seam
+    /// **before** this event is sent (write-before-send, NFR-PERF-03) — this variant
+    /// intentionally carries no `update` payload; zeph-orchestration never touches the
+    /// store.
+    Handoff {
+        /// Raw text output preceding the trailing `zeph-command` block. Recorded as the
+        /// emitting node's `TaskResult::output`, same as `Completed`.
+        output: String,
+        /// Routing target, already resolved from the parsed `HandoffCommand` and
+        /// sanitizer-scanned by zeph-core.
+        goto: super::command::TaskRef,
+    },
 }
 
 /// Tracks a running task's spawn time and definition name for timeout detection.
@@ -345,6 +360,10 @@ pub struct DagScheduler {
     /// spawn-failure cascades, cancellations). Consumed by [`DagScheduler::take_graph_dirty`]
     /// to drive persistence checkpoints without the scheduler holding a persistence reference.
     pub(super) graph_dirty: bool,
+    /// Per-graph `Command.goto` handoff budget (`[orchestration.command].max_handoffs`,
+    /// spec-080). Passed to `dag::try_handoff` on every `TaskOutcome::Handoff`; the live
+    /// counter lives on `graph.handoff_count` (persisted), not here.
+    pub(super) max_handoffs: u32,
 }
 
 impl std::fmt::Debug for DagScheduler {
@@ -672,6 +691,7 @@ impl DagScheduler {
             pending_permits: HashMap::new(),
             agent_provider_map,
             graph_dirty: false,
+            max_handoffs: config.command.max_handoffs,
         }
     }
 
@@ -908,6 +928,7 @@ mod tests {
             verifier_timeout_secs: 30,
             ensemble: Default::default(),
             default_idle_timeout_secs: None,
+            command: Default::default(),
         }
     }
 

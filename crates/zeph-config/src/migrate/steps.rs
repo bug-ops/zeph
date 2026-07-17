@@ -61,7 +61,10 @@
 //! step 89 adds `media_passthrough = false` to existing `[[mcp.servers]]` entries and a
 //! commented `[mcp.media]` advisory block (spec-072, #6241);
 //! step 90 adds a commented `max_per_call_override = 131072` advisory under
-//! `[tools.overflow]` (#3079).
+//! `[tools.overflow]` (#3079);
+//! step 91 adds a commented `[orchestration.command]` advisory block for Command-style
+//! dynamic task handoff (spec-080, #6363); step 92 adds a commented `[memory.store]`
+//! advisory block for the generic cross-thread key-value store (spec-080, #6363).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -85,8 +88,9 @@ use super::{
     migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
     migrate_memory_persona_config, migrate_memory_reasoning_config,
     migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
-    migrate_memory_retrieval_query_bias, migrate_memory_type_aware_compose_config,
-    migrate_microcompact_config, migrate_nli_config, migrate_orchestration_asset_sensitivity,
+    migrate_memory_retrieval_query_bias, migrate_memory_store_config,
+    migrate_memory_type_aware_compose_config, migrate_microcompact_config, migrate_nli_config,
+    migrate_orchestration_asset_sensitivity, migrate_orchestration_command_config,
     migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
     migrate_orchestration_orchestrator_provider, migrate_orchestration_persistence,
     migrate_otel_filter, migrate_overflow_max_per_call_override, migrate_pii_filter_names,
@@ -1133,5 +1137,31 @@ impl Migration for MigrateOverflowMaxPerCallOverride {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_overflow_max_per_call_override(toml_src)
+    }
+}
+
+/// Step 91 — adds a commented `[orchestration.command]` advisory block for Command-style
+/// dynamic task handoff (spec-080, #6363).
+pub(super) struct MigrateOrchestrationCommandConfig;
+impl Migration for MigrateOrchestrationCommandConfig {
+    fn name(&self) -> &'static str {
+        "migrate_orchestration_command_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_orchestration_command_config(toml_src)
+    }
+}
+
+/// Step 92 — adds a commented `[memory.store]` advisory block for the generic
+/// cross-thread key-value store (spec-080, #6363).
+pub(super) struct MigrateMemoryStoreConfig;
+impl Migration for MigrateMemoryStoreConfig {
+    fn name(&self) -> &'static str {
+        "migrate_memory_store_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_memory_store_config(toml_src)
     }
 }

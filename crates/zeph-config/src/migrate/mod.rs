@@ -24,10 +24,10 @@ pub use features::{
     migrate_autodream_config, migrate_caveman_config, migrate_compression_predictor_config,
     migrate_deep_link_config, migrate_five_signal_config, migrate_goals_config,
     migrate_knowledge_config, migrate_magic_docs_config, migrate_microcompact_config,
-    migrate_orchestration_asset_sensitivity, migrate_orchestration_ensemble,
-    migrate_orchestration_idle_timeout, migrate_orchestration_persistence,
-    migrate_skill_trust_require_check, migrate_skills_registry, migrate_tui_delights,
-    migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
+    migrate_orchestration_asset_sensitivity, migrate_orchestration_command_config,
+    migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
+    migrate_orchestration_persistence, migrate_skill_trust_require_check, migrate_skills_registry,
+    migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
 };
 pub use infra::*;
 /// Advisory `GonkaGate` migration is crate-internal (registered via the [`MIGRATIONS`] registry).
@@ -613,8 +613,9 @@ use steps::{
     MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
     MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
     MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
-    MigrateMemoryRetrievalQueryBias, MigrateMemoryTypeAwareCompose, MigrateMicrocompactConfig,
-    MigrateNliConfig, MigrateOrchestrationAssetSensitivity, MigrateOrchestrationEnsemble,
+    MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig, MigrateMemoryTypeAwareCompose,
+    MigrateMicrocompactConfig, MigrateNliConfig, MigrateOrchestrationAssetSensitivity,
+    MigrateOrchestrationCommandConfig, MigrateOrchestrationEnsemble,
     MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence, MigrateOrchestratorProvider,
     MigrateOtelFilter, MigrateOverflowMaxPerCallOverride, MigratePiiFilterNames,
     MigratePlannerModelToProvider, MigratePolicyProviderAndUtilityWindow,
@@ -630,7 +631,7 @@ use steps::{
     MigrateWorktreeConfig, MigrateWorktreeGitTimeout, MigrateWorktreeQuotaFields,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–90).
+/// Ordered registry of all sequential migration steps (steps 1–92).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -804,6 +805,12 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 90 — add max_per_call_override advisory comment under [tools.overflow]
             // (#3079)
             Box::new(MigrateOverflowMaxPerCallOverride),
+            // Step 91 — add [orchestration.command] advisory block for Command-style
+            // dynamic task handoff (spec-080, #6363)
+            Box::new(MigrateOrchestrationCommandConfig),
+            // Step 92 — add [memory.store] advisory block for the generic cross-thread
+            // key-value store (spec-080, #6363)
+            Box::new(MigrateMemoryStoreConfig),
         ]
     });
 

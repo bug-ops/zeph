@@ -849,3 +849,50 @@ pub fn migrate_memory_type_aware_compose_config(
         sections_changed: vec!["memory.type_aware_compose".to_owned()],
     })
 }
+
+/// Add a commented-out `[memory.store]` section if absent (spec-080, #6363).
+///
+/// Generic namespaced cross-thread key-value store (`LangGraph` `Store` parity). All
+/// `CrossThreadStoreConfig` fields have `#[serde(default)]` so existing configs parse
+/// unchanged; this migration surfaces the new section for users upgrading from older
+/// configs. Disabled by default — zero behavior change (FR-A-001).
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_memory_store_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if section_header_present(toml_src, "memory.store") || toml_src.contains("# [memory.store]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("memory") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Generic namespaced cross-thread key-value store (spec-080, #6363).\n\
+         # LangGraph Store parity: addressable by (owner_key, namespace, key). Powers\n\
+         # `zeph store` / `/store` and zeph-orchestration's Command.update handoff.\n\
+         # Disabled by default — zero behavior change.\n\
+         # [memory.store]\n\
+         # enabled = false\n\
+         # max_value_bytes = 65536    # reject store_put writes larger than this instead of truncating\n\
+         # search_provider = \"fast\"   # reserved for a future semantic-search extension; unused in v1\n";
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.store".to_owned()],
+    })
+}

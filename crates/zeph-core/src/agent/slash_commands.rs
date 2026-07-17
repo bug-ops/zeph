@@ -734,7 +734,10 @@ pub(crate) fn build_agent_command_registry<'ctx>()
         loop_cmd::LoopCommand,
         lsp::LspCommand,
         mcp::McpCommand,
-        memory::{GraphCommand, GuidelinesCommand, KnowledgeSlashCommand, MemoryCommand},
+        memory::{
+            GraphCommand, GuidelinesCommand, KnowledgeSlashCommand, MemoryCommand,
+            StoreSlashCommand,
+        },
         misc::{CacheStatsCommand, ImageCommand, NotifyTestCommand},
         model::{ModelCommand, ProviderCommand},
         plan::PlanCommand,
@@ -753,6 +756,7 @@ pub(crate) fn build_agent_command_registry<'ctx>()
     agent_reg.register(CavemanCommand);
     agent_reg.register(CdCommand);
     agent_reg.register(MemoryCommand);
+    agent_reg.register(StoreSlashCommand);
     agent_reg.register(GraphCommand);
     agent_reg.register(KnowledgeSlashCommand);
     agent_reg.register(GuidelinesCommand);

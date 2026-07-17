@@ -148,6 +148,24 @@ pub trait AgentAccess: Send {
         batch_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
 
+    // ----- /store -----
+
+    /// Handle `/store {get,put,list,delete}` against the cross-thread key-value store
+    /// (spec-080, #6363, FR-A-011).
+    ///
+    /// `args` is the raw text after `/store`, e.g. `"get orch/graph-1 finding"`. Returns a
+    /// disabled/usage message (not an `Err`) when the store is disabled, no memory handle is
+    /// configured, or the subcommand/arguments are malformed — only a real database failure
+    /// is surfaced as `Err`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the underlying database query fails.
+    fn store_command<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
     // ----- /guidelines -----
 
     /// Return the current compression guidelines.
@@ -742,6 +760,13 @@ impl AgentAccess for NullAgent {
     fn knowledge_rollback<'a>(
         &'a mut self,
         _batch_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn store_command<'a>(
+        &'a mut self,
+        _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async { Ok(String::new()) })
     }

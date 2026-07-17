@@ -103,8 +103,8 @@ pub mod verify_predicate;
 
 pub use admission::AdmissionGate;
 pub use cascade::{AbortDecision, CascadeConfig, CascadeDetector, RegionHealth};
-pub use command::PlanCommand;
-pub use dag::lookahead_tools;
+pub use command::{HandoffCommand, PlanCommand, TaskRef, has_handoff_fence, parse_handoff_command};
+pub use dag::{lookahead_tools, validate_handoff_target};
 pub use error::OrchestrationError;
 pub use graph::{
     ExecutionMode, FailureStrategy, GraphId, GraphPersistence, GraphStatus, NetworkScope, PlanSlug,

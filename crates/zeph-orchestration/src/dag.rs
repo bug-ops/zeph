@@ -14,6 +14,7 @@ use std::collections::VecDeque;
 
 use zeph_common::fidelity::PlannedToolHint;
 
+use super::command::TaskRef;
 use super::error::OrchestrationError;
 use super::graph::PredicateOutcome;
 use super::graph::{
@@ -469,6 +470,200 @@ fn try_reroute(graph: &mut TaskGraph, failed_id: TaskId) -> bool {
         "orchestration.dag.try_reroute: Mode-2 reroute activated"
     );
     true
+}
+
+/// Resolve a [`TaskRef`] against `graph`.
+///
+/// `ById` is a direct range check. `ByTitle` requires an exact, case-sensitive, single
+/// match — an absent or ambiguous (duplicate-title) match is rejected rather than guessed
+/// (spec-080 §6 Ask First).
+fn resolve_task_ref(graph: &TaskGraph, goto: &TaskRef) -> Result<TaskId, OrchestrationError> {
+    match goto {
+        TaskRef::ById(id) => {
+            if id.index() >= graph.tasks.len() {
+                return Err(OrchestrationError::InvalidHandoffTarget(format!(
+                    "goto references non-existent task {id}"
+                )));
+            }
+            Ok(*id)
+        }
+        TaskRef::ByTitle(title) => {
+            let mut matches = graph.tasks.iter().filter(|t| &t.title == title);
+            let Some(first) = matches.next() else {
+                return Err(OrchestrationError::InvalidHandoffTarget(format!(
+                    "goto title {title:?} does not match any task"
+                )));
+            };
+            if matches.next().is_some() {
+                return Err(OrchestrationError::InvalidHandoffTarget(format!(
+                    "goto title {title:?} matches more than one task — ambiguous"
+                )));
+            }
+            Ok(first.id)
+        }
+    }
+}
+
+/// Attempt a Command-style dynamic task handoff (spec-080, GitHub #6363): route execution
+/// from `source` to the task referenced by `goto`.
+///
+/// Pure routing — no store I/O. Resolves `goto` against `graph` and validates it against
+/// the same forward-only / dependency-satisfaction / route_to-reservation invariants
+/// `validate_route_to` enforces at plan time (FR-B-007, FR-B-010, mirroring the design
+/// review's F6 non-terminal-source scoping), then on success activates the target
+/// (`Dormant`/`Pending → Ready`), records `commanded_from = Some(source)`, and consumes one
+/// unit of the per-graph `max_handoffs` budget (`graph.handoff_count`).
+///
+/// **Does NOT mark `source` terminal.** The caller (`DagScheduler::handle_completed_outcome`)
+/// marks the emitting node `Completed` *before* calling this function — that ordering is
+/// what makes the forward-only check a sound livelock guard (spec-080 §6 Always: each
+/// `Command` hop consumes exactly one not-yet-terminal node, so A/B ping-pong is
+/// structurally impossible). Calling `try_handoff` with a still-non-terminal `source` would
+/// silently defeat that guarantee.
+///
+/// A target found to already be `Ready`/`Running` (e.g. previously activated by an
+/// unrelated `route_to` fallback) is not re-mutated — validation still passes, budget is
+/// still consumed, and `commanded_from` is still set, but the target is not re-dispatched
+/// or duplicated (spec-080 §7 edge case table).
+///
+/// # Errors
+///
+/// Returns [`OrchestrationError::HandoffBudgetExhausted`] when `graph.handoff_count >=
+/// max_handoffs`. Returns [`OrchestrationError::InvalidHandoffTarget`] when `goto` cannot
+/// be resolved to a unique task, targets an already-`Completed` node (forward-only),
+/// targets a node with unsatisfied `depends_on` (FR-B-010), or targets a node holding a
+/// live `route_to` reservation from a non-terminal source (F6).
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::{TaskGraph, TaskNode, TaskId, TaskRef, TaskStatus};
+/// use zeph_orchestration::dag::try_handoff;
+///
+/// let mut graph = TaskGraph::new("example");
+/// graph.tasks.push(TaskNode::new(0, "investigate", "find the root cause"));
+/// graph.tasks.push(TaskNode::new(1, "fix", "apply the fix"));
+/// // The caller (handle_completed_outcome) marks the emitting node terminal before
+/// // calling try_handoff — that ordering is what makes forward-only a sound livelock
+/// // guard (see this function's doc comment above).
+/// graph.tasks[0].status = TaskStatus::Completed;
+///
+/// let target = try_handoff(&mut graph, TaskId(0), &TaskRef::ById(TaskId(1)), 16).unwrap();
+/// assert_eq!(target, TaskId(1));
+/// assert_eq!(graph.tasks[1].status, TaskStatus::Ready);
+/// assert_eq!(graph.tasks[1].commanded_from, Some(TaskId(0)));
+/// assert_eq!(graph.handoff_count, 1);
+/// ```
+pub fn try_handoff(
+    graph: &mut TaskGraph,
+    source: TaskId,
+    goto: &TaskRef,
+    max_handoffs: u32,
+) -> Result<TaskId, OrchestrationError> {
+    if graph.handoff_count >= max_handoffs {
+        return Err(OrchestrationError::HandoffBudgetExhausted {
+            handoff_count: graph.handoff_count,
+            max_handoffs,
+        });
+    }
+
+    let target = validate_handoff_target(graph, source, goto)?;
+
+    let node = &mut graph.tasks[target.index()];
+    if matches!(node.status, TaskStatus::Dormant | TaskStatus::Pending) {
+        node.status = TaskStatus::Ready;
+    }
+    node.commanded_from = Some(source);
+    graph.handoff_count += 1;
+
+    tracing::info!(
+        task_id = %source,
+        target = %target,
+        handoff_count = graph.handoff_count,
+        "orchestration.dag.try_handoff: Command handoff activated"
+    );
+
+    Ok(target)
+}
+
+/// Read-only pre-validation of a Command-handoff `goto` target against `graph`
+/// (spec-080, GitHub #6363, critic finding C1): resolves `goto`, then checks the same
+/// forward-only, dependency-satisfaction, and route_to-reservation invariants
+/// [`try_handoff`] enforces at consume time. Deliberately does **not** check the
+/// `max_handoffs` budget and does **not** mutate `graph` — [`try_handoff`] calls this
+/// function internally and layers the budget check plus activation on top.
+///
+/// # Why this exists as a separate, callable function
+///
+/// zeph-core's produce-side seam (`determine_task_outcome`, `scheduler_loop.rs`) calls
+/// this *before* persisting a Command's `update` payload to the cross-thread store, so a
+/// target that is already, unambiguously invalid never produces a dangling write (the
+/// consume-side twin of FR-B-009's "never silent" produce-side posture). This is
+/// deliberately **not** a substitute for [`try_handoff`]'s own full validation at consume
+/// time against the *live* graph, which remains the authoritative gate — it still
+/// re-checks everything (including budget) when the `TaskOutcome::Handoff` event is
+/// actually processed. On the spawn dispatch path, zeph-core can only pass a graph
+/// snapshot taken at dispatch time (no live graph handle is reachable from the detached
+/// completion task across a potentially long-running sub-agent turn); that snapshot can
+/// go stale by write time. This function therefore reduces the *frequency* of the C1
+/// dangling-write case (catching definite invalidity as of the snapshot) rather than
+/// eliminating it outright — [`try_handoff`]'s consume-side rejection stays loud (a
+/// graph-visible `handoff_rejected` field plus an `error!` log, see
+/// `handle_handoff_outcome`) for whatever this pre-check cannot catch due to staleness.
+///
+/// # Errors
+///
+/// Returns [`OrchestrationError::InvalidHandoffTarget`] when `goto` cannot be resolved to
+/// a unique task, targets an already-`Completed` node (forward-only), targets a node with
+/// unsatisfied `depends_on` (FR-B-010), or targets a node holding a live `route_to`
+/// reservation from a non-terminal source (F6).
+pub fn validate_handoff_target(
+    graph: &TaskGraph,
+    source: TaskId,
+    goto: &TaskRef,
+) -> Result<TaskId, OrchestrationError> {
+    let target = resolve_task_ref(graph, goto)?;
+    let target_task = &graph.tasks[target.index()];
+
+    if target_task.status == TaskStatus::Completed {
+        return Err(OrchestrationError::InvalidHandoffTarget(format!(
+            "task {target} is already completed — Command.goto is forward-only"
+        )));
+    }
+
+    if !target_task
+        .depends_on
+        .iter()
+        .all(|dep| graph.tasks[dep.index()].status == TaskStatus::Completed)
+    {
+        return Err(OrchestrationError::InvalidHandoffTarget(format!(
+            "task {target} has unsatisfied depends_on — a Command.goto target must have \
+             empty or fully-completed dependencies"
+        )));
+    }
+
+    if target_task.status == TaskStatus::Dormant {
+        let reservation_source = graph
+            .tasks
+            .iter()
+            .find(|t| t.recovery.as_ref().and_then(|r| r.route_to) == Some(target));
+        if let Some(reservation_source) = reservation_source
+            && !reservation_source.status.is_terminal()
+        {
+            return Err(OrchestrationError::InvalidHandoffTarget(format!(
+                "task {target} holds a live route_to reservation from non-terminal source {src}",
+                src = reservation_source.id
+            )));
+        }
+    }
+
+    tracing::debug!(
+        task_id = %source,
+        target = %target,
+        "orchestration.dag.validate_handoff_target: target passed read-only validation"
+    );
+
+    Ok(target)
 }
 
 /// Mark `seed` and all its transitive non-terminal dependents [`TaskStatus::Skipped`].
@@ -1273,6 +1468,294 @@ mod tests {
         let tasks = make_route_to_pair();
         let err = validate(&tasks, 20, FailureStrategy::Skip).unwrap_err();
         assert_matches!(err, OrchestrationError::InvalidGraph(_));
+    }
+
+    // --- try_handoff tests (spec-080, GitHub #6363) ---
+
+    #[test]
+    fn test_try_handoff_activates_pending_target() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[1].status = TaskStatus::Pending;
+
+        let target = try_handoff(&mut graph, TaskId(0), &TaskRef::ById(TaskId(1)), 16).unwrap();
+
+        assert_eq!(target, TaskId(1));
+        assert_eq!(graph.tasks[1].status, TaskStatus::Ready);
+        assert_eq!(graph.tasks[1].commanded_from, Some(TaskId(0)));
+        assert_eq!(graph.handoff_count, 1);
+    }
+
+    #[test]
+    fn test_try_handoff_activates_dormant_target() {
+        // Dormant target with a dead (already-terminal) route_to reservation.
+        let mut tasks = vec![make_node(0, &[]), make_node(1, &[]), make_node(2, &[])];
+        tasks[1].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: None,
+            route_to: Some(TaskId(2)),
+        });
+        let mut graph = graph_from_nodes(tasks);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[1].status = TaskStatus::Completed; // reservation source terminal — dead
+        graph.tasks[2].status = TaskStatus::Dormant;
+
+        let target = try_handoff(&mut graph, TaskId(0), &TaskRef::ById(TaskId(2)), 16).unwrap();
+
+        assert_eq!(target, TaskId(2));
+        assert_eq!(graph.tasks[2].status, TaskStatus::Ready);
+        assert_eq!(graph.tasks[2].commanded_from, Some(TaskId(0)));
+    }
+
+    #[test]
+    fn test_try_handoff_by_title_resolves() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+
+        let target = try_handoff(
+            &mut graph,
+            TaskId(0),
+            &TaskRef::ByTitle("task-1".to_string()),
+            16,
+        )
+        .unwrap();
+
+        assert_eq!(target, TaskId(1));
+        assert_eq!(graph.tasks[1].status, TaskStatus::Ready);
+    }
+
+    #[test]
+    fn test_try_handoff_by_title_ambiguous_rejected() {
+        let mut tasks = vec![make_node(0, &[]), make_node(1, &[]), make_node(2, &[])];
+        tasks[2].title = "task-1".to_string(); // duplicate title with task 1
+        let mut graph = graph_from_nodes(tasks);
+        graph.tasks[0].status = TaskStatus::Completed;
+
+        let err = try_handoff(
+            &mut graph,
+            TaskId(0),
+            &TaskRef::ByTitle("task-1".to_string()),
+            16,
+        )
+        .unwrap_err();
+
+        assert_matches!(err, OrchestrationError::InvalidHandoffTarget(_));
+        assert_eq!(
+            graph.handoff_count, 0,
+            "a rejected handoff must not consume budget"
+        );
+    }
+
+    #[test]
+    fn test_try_handoff_by_title_no_match_rejected() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+
+        let err = try_handoff(
+            &mut graph,
+            TaskId(0),
+            &TaskRef::ByTitle("does-not-exist".to_string()),
+            16,
+        )
+        .unwrap_err();
+
+        assert_matches!(err, OrchestrationError::InvalidHandoffTarget(_));
+    }
+
+    #[test]
+    fn test_try_handoff_by_id_out_of_range_rejected() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+
+        let err = try_handoff(&mut graph, TaskId(0), &TaskRef::ById(TaskId(99)), 16).unwrap_err();
+
+        assert_matches!(err, OrchestrationError::InvalidHandoffTarget(_));
+    }
+
+    #[test]
+    fn test_try_handoff_rejects_completed_target_forward_only() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[1].status = TaskStatus::Completed;
+
+        let err = try_handoff(&mut graph, TaskId(0), &TaskRef::ById(TaskId(1)), 16).unwrap_err();
+
+        assert_matches!(err, OrchestrationError::InvalidHandoffTarget(_));
+        assert_eq!(graph.handoff_count, 0);
+    }
+
+    #[test]
+    fn test_try_handoff_rejects_unsatisfied_depends_on() {
+        // FR-B-010 / N1: target 2 depends on 1, which has not completed.
+        let mut graph = graph_from_nodes(vec![
+            make_node(0, &[]),
+            make_node(1, &[]),
+            make_node(2, &[1]),
+        ]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[1].status = TaskStatus::Pending;
+        graph.tasks[2].status = TaskStatus::Pending;
+
+        let err = try_handoff(&mut graph, TaskId(0), &TaskRef::ById(TaskId(2)), 16).unwrap_err();
+
+        assert_matches!(err, OrchestrationError::InvalidHandoffTarget(_));
+        assert_eq!(
+            graph.tasks[2].status,
+            TaskStatus::Pending,
+            "target must not be force-activated with unsatisfied deps"
+        );
+    }
+
+    #[test]
+    fn test_try_handoff_allows_fully_satisfied_depends_on() {
+        let mut graph = graph_from_nodes(vec![
+            make_node(0, &[]),
+            make_node(1, &[]),
+            make_node(2, &[1]),
+        ]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[1].status = TaskStatus::Completed;
+        graph.tasks[2].status = TaskStatus::Pending;
+
+        let target = try_handoff(&mut graph, TaskId(0), &TaskRef::ById(TaskId(2)), 16).unwrap();
+
+        assert_eq!(target, TaskId(2));
+        assert_eq!(graph.tasks[2].status, TaskStatus::Ready);
+    }
+
+    #[test]
+    fn test_try_handoff_rejects_live_route_to_reservation_from_non_terminal_source() {
+        // F6 mirror: target 2 is Dormant, reserved by non-terminal (Running) source 1.
+        let mut tasks = vec![make_node(0, &[]), make_node(1, &[]), make_node(2, &[])];
+        tasks[1].recovery = Some(crate::graph::RecoveryAction {
+            state_injection: None,
+            route_to: Some(TaskId(2)),
+        });
+        let mut graph = graph_from_nodes(tasks);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[1].status = TaskStatus::Running; // non-terminal reservation source
+        graph.tasks[2].status = TaskStatus::Dormant;
+
+        let err = try_handoff(&mut graph, TaskId(0), &TaskRef::ById(TaskId(2)), 16).unwrap_err();
+
+        assert_matches!(err, OrchestrationError::InvalidHandoffTarget(_));
+        assert_eq!(
+            graph.tasks[2].status,
+            TaskStatus::Dormant,
+            "target must remain parked while its route_to reservation is live"
+        );
+    }
+
+    #[test]
+    fn test_try_handoff_budget_exhausted() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.handoff_count = 16;
+
+        let err = try_handoff(&mut graph, TaskId(0), &TaskRef::ById(TaskId(1)), 16).unwrap_err();
+
+        assert_matches!(
+            err,
+            OrchestrationError::HandoffBudgetExhausted {
+                handoff_count: 16,
+                max_handoffs: 16,
+            }
+        );
+        assert_eq!(
+            graph.tasks[1].status,
+            TaskStatus::Pending,
+            "exhausted-budget rejection must not activate the target"
+        );
+    }
+
+    // ── validate_handoff_target (critic finding C1, produce-side pre-check) ─────────
+
+    #[test]
+    fn test_validate_handoff_target_does_not_mutate_graph() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[1].status = TaskStatus::Pending;
+
+        let target = validate_handoff_target(&graph, TaskId(0), &TaskRef::ById(TaskId(1))).unwrap();
+
+        assert_eq!(target, TaskId(1));
+        assert_eq!(
+            graph.tasks[1].status,
+            TaskStatus::Pending,
+            "read-only pre-check must not activate the target"
+        );
+        assert_eq!(
+            graph.tasks[1].commanded_from, None,
+            "read-only pre-check must not set commanded_from"
+        );
+        assert_eq!(
+            graph.handoff_count, 0,
+            "read-only pre-check must not consume budget"
+        );
+    }
+
+    #[test]
+    fn test_validate_handoff_target_ignores_exhausted_budget() {
+        // validate_handoff_target has no max_handoffs parameter at all — budget
+        // exhaustion is an apply-time-only concern layered on top by try_handoff.
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.handoff_count = 16;
+
+        let target = validate_handoff_target(&graph, TaskId(0), &TaskRef::ById(TaskId(1))).unwrap();
+        assert_eq!(target, TaskId(1));
+    }
+
+    #[test]
+    fn test_validate_handoff_target_rejects_same_reasons_as_try_handoff() {
+        // Spot-check the shared rejection logic through the read-only entry point too
+        // (try_handoff's own tests already cover this exhaustively via the shared impl).
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[1].status = TaskStatus::Completed; // forward-only violation
+
+        let err =
+            validate_handoff_target(&graph, TaskId(0), &TaskRef::ById(TaskId(1))).unwrap_err();
+        assert_matches!(err, OrchestrationError::InvalidHandoffTarget(_));
+    }
+
+    #[test]
+    fn test_try_handoff_redundant_activation_on_already_ready_target_is_accepted() {
+        // spec-080 §7 edge case: a node already Ready via an unrelated route_to fallback
+        // can still be legally targeted by a later Command.goto — validation passes, budget
+        // is consumed, commanded_from is set, but the node is not re-mutated/duplicated.
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[1].status = TaskStatus::Ready;
+        graph.tasks[1].routed_from = Some(TaskId(99));
+
+        let target = try_handoff(&mut graph, TaskId(0), &TaskRef::ById(TaskId(1)), 16).unwrap();
+
+        assert_eq!(target, TaskId(1));
+        assert_eq!(graph.tasks[1].status, TaskStatus::Ready);
+        assert_eq!(graph.tasks[1].commanded_from, Some(TaskId(0)));
+        assert_eq!(
+            graph.tasks[1].routed_from,
+            Some(TaskId(99)),
+            "an unrelated earlier routed_from marker must be preserved, not clobbered"
+        );
+        assert_eq!(graph.handoff_count, 1);
+    }
+
+    #[test]
+    fn test_try_handoff_multiple_hops_increment_budget() {
+        let mut graph = graph_from_nodes(vec![
+            make_node(0, &[]),
+            make_node(1, &[]),
+            make_node(2, &[]),
+        ]);
+        graph.tasks[0].status = TaskStatus::Completed;
+
+        try_handoff(&mut graph, TaskId(0), &TaskRef::ById(TaskId(1)), 16).unwrap();
+        assert_eq!(graph.handoff_count, 1);
+
+        graph.tasks[1].status = TaskStatus::Completed;
+        try_handoff(&mut graph, TaskId(1), &TaskRef::ById(TaskId(2)), 16).unwrap();
+        assert_eq!(graph.handoff_count, 2);
     }
 
     // --- mark_dormant_route_to_targets tests ---

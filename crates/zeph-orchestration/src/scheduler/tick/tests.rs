@@ -114,6 +114,117 @@ fn test_completion_event_marks_deps_ready() {
     );
 }
 
+#[test]
+fn test_handoff_event_marks_source_completed_and_activates_target() {
+    // spec-080 (#6363) integration coverage: dag.rs's try_handoff tests exercise the pure
+    // routing function directly, and scheduler_loop.rs's determine_task_outcome tests
+    // exercise the zeph-core produce-side seam directly, but neither drives a real
+    // TaskOutcome::Handoff through the tick()/process_event loop that connects them
+    // (handle_handoff_outcome). This closes that gap: verifies the emitting node becomes
+    // terminal Completed, the goto target activates with commanded_from set, the per-graph
+    // handoff budget increments, and the target is dispatched/marked Ready in the same tick
+    // (mirrors test_completion_event_marks_deps_ready above for the ordinary Completed path).
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "handle-0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+            last_progress_at: None,
+        },
+    );
+
+    scheduler.buffered_events.push_back(TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "handle-0".to_string(),
+        outcome: TaskOutcome::Handoff {
+            output: "handing off".to_string(),
+            goto: TaskRef::ById(TaskId(1)),
+        },
+    });
+
+    let actions = scheduler.tick();
+
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Completed);
+    assert_eq!(
+        scheduler.graph.tasks[0]
+            .result
+            .as_ref()
+            .map(|r| r.output.as_str()),
+        Some("handing off"),
+        "the source node's own output must be preserved on the Handoff outcome"
+    );
+    assert_eq!(scheduler.graph.tasks[1].commanded_from, Some(TaskId(0)));
+    assert_eq!(scheduler.graph.handoff_count, 1);
+    assert!(
+        scheduler.graph.tasks[0].handoff_rejected.is_none(),
+        "a successful handoff must not set the rejection signal"
+    );
+    let has_spawn_1 = actions
+        .iter()
+        .any(|a| matches!(a, SchedulerAction::Spawn { task_id, .. } if *task_id == TaskId(1)));
+    assert!(
+        has_spawn_1 || scheduler.graph.tasks[1].status == TaskStatus::Ready,
+        "handoff target should be spawned or marked Ready in the same tick"
+    );
+}
+
+#[test]
+fn test_handoff_event_rejection_leaves_source_completed_not_failed() {
+    // spec-080 FR-B-006: a try_handoff rejection (forward-only violation, unsatisfied
+    // deps, live route_to reservation, exhausted budget) must not escalate the emitting
+    // node's own outcome to Failed -- it stays Completed with its real output preserved,
+    // only the extra routing fails to activate. Exercised here via the full tick loop
+    // (not dag::try_handoff in isolation) so the actual event-handling call site is
+    // proven to honor this, not just the pure function.
+    let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+    graph.tasks[1].status = TaskStatus::Completed; // forward-only rejection target
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "handle-0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+            last_progress_at: None,
+        },
+    );
+
+    scheduler.buffered_events.push_back(TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "handle-0".to_string(),
+        outcome: TaskOutcome::Handoff {
+            output: "handing off".to_string(),
+            goto: TaskRef::ById(TaskId(1)),
+        },
+    });
+
+    scheduler.tick();
+
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Completed,
+        "a rejected handoff must not escalate the source node to Failed"
+    );
+    assert_eq!(
+        scheduler.graph.handoff_count, 0,
+        "a rejected handoff must not consume the budget"
+    );
+    assert!(
+        scheduler.graph.tasks[0].handoff_rejected.is_some(),
+        "critic finding C1: a rejected handoff must be recorded as a graph-visible, \
+         persisted signal, not just a log line"
+    );
+}
+
 #[cfg(feature = "llm-planning")]
 #[test]
 fn test_plan_with_verify_criteria_and_predicate_disabled_reaches_completed() {

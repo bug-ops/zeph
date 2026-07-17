@@ -96,9 +96,40 @@ pub(super) fn step_orchestration(state: &mut WizardState) -> anyhow::Result<()> 
             parse_optional_nonzero(&idle_timeout_raw).map_err(|e| anyhow::anyhow!(e))?;
 
         step_ensemble_verify(state)?;
+        step_command_handoff(state)?;
     }
 
     println!();
+    Ok(())
+}
+
+/// Prompt for Command-style dynamic task handoff (spec-080, #6363), opt-in and nested under
+/// orchestration. `LangGraph` `Command(update, goto)` parity: lets a node's agent route
+/// execution to another already-planned node at runtime, using the cross-thread store
+/// (`[memory.store]`) as the shared-state channel.
+fn step_command_handoff(state: &mut WizardState) -> anyhow::Result<()> {
+    state.command_enabled = Confirm::new()
+        .with_prompt(
+            "Enable Command-style dynamic task handoff? (opt-in; lets a completing node's \
+             agent route execution to another already-planned node at runtime via a trailing \
+             `zeph-command` output block — requires the cross-thread store enabled too, see \
+             the Memory step)",
+        )
+        .default(false)
+        .interact()?;
+
+    if state.command_enabled {
+        state.command_max_handoffs = Input::new()
+            .with_prompt(
+                "Maximum Command handoffs per graph run (livelock budget backstop; each hop \
+                 also structurally consumes one not-yet-terminal node, so this is a backstop, \
+                 not the primary bound)",
+            )
+            .default(16u32)
+            .validate_with(|v: &u32| if *v > 0 { Ok(()) } else { Err("must be > 0") })
+            .interact_text()?;
+    }
+
     Ok(())
 }
 

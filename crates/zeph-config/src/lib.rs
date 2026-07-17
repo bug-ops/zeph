@@ -135,8 +135,8 @@ pub use dump_format::DumpFormat;
 pub use durable::{DurableBackend, DurableConfig, RetentionPolicy};
 pub use execution::{EnvironmentConfig, ExecutionConfig};
 pub use experiment::{
-    AdaptOrchConfig, AssetSensitivity, EnsembleConfig, ExperimentConfig, ExperimentSchedule,
-    FailureStrategy, OrchestrationConfig, PlanCacheConfig,
+    AdaptOrchConfig, AssetSensitivity, CommandConfig, EnsembleConfig, ExperimentConfig,
+    ExperimentSchedule, FailureStrategy, OrchestrationConfig, PlanCacheConfig,
 };
 pub use features::{
     CavemanConfig, CompressionSpectrumConfig, CostConfig, DaemonConfig, DebugConfig, GatewayConfig,
@@ -155,14 +155,15 @@ pub use memory::{
     AconConfig, AdmissionConfig, AdmissionStrategy, AdmissionWeights, ArcCompactionConfig,
     AutoDreamConfig, BeliefRevisionConfig, CategoryConfig, CompressionConfig, CompressionStrategy,
     ConflictResolutionStrategy, ConsolidationDaemonConfig, ContextFormat, ContextStrategy,
-    DigestConfig, DocumentConfig, EmGraphConfig, FiveSignalConfig, FiveSignalConsolidationConfig,
-    ForgettingConfig, GraphConfig, HebbianConfig, ImplicitConflictConfig, MagicDocsConfig,
-    MemCotConfig, MemoryConfig, MicrocompactConfig, NoteLinkingConfig, OpticalForgettingConfig,
-    PersonaConfig, PruningStrategy, ReasoningConfig, RecallViewConfig, RetrievalConfig,
-    RetrievalFailuresConfig, RpeConfig, SemanticConfig, SessionsConfig, SidequestConfig,
-    SimilarityMethod, StoreRoutingConfig, StoreRoutingStrategy, TierConfig, TieredRetrievalConfig,
-    TrajectoryConfig, TrajectoryRiskAccumulatorConfig, TrajectorySeverityMultipliers,
-    TrajectorySignalWeights, TreeConfig, TypedPagesConfig, TypedPagesEnforcement, VectorBackend,
+    CrossThreadStoreConfig, DigestConfig, DocumentConfig, EmGraphConfig, FiveSignalConfig,
+    FiveSignalConsolidationConfig, ForgettingConfig, GraphConfig, HebbianConfig,
+    ImplicitConflictConfig, MagicDocsConfig, MemCotConfig, MemoryConfig, MicrocompactConfig,
+    NoteLinkingConfig, OpticalForgettingConfig, PersonaConfig, PruningStrategy, ReasoningConfig,
+    RecallViewConfig, RetrievalConfig, RetrievalFailuresConfig, RpeConfig, SemanticConfig,
+    SessionsConfig, SidequestConfig, SimilarityMethod, StoreRoutingConfig, StoreRoutingStrategy,
+    TierConfig, TieredRetrievalConfig, TrajectoryConfig, TrajectoryRiskAccumulatorConfig,
+    TrajectorySeverityMultipliers, TrajectorySignalWeights, TreeConfig, TypedPagesConfig,
+    TypedPagesEnforcement, VectorBackend,
 };
 pub use metrics::MetricsConfig;
 pub use notifications::NotificationsConfig;

@@ -2651,6 +2651,7 @@ impl<C: Channel> Agent<C> {
             result_cache_config,
             mut utility_config,
             orchestration_config,
+            store_config,
             // Not applied here: caller clones this before `apply_session_config` and applies
             // it per-session (e.g. `spawn_acp_agent` passes it to `with_debug_config`).
             debug_config: _debug_config,
@@ -2724,6 +2725,7 @@ impl<C: Channel> Agent<C> {
         self.services.memory.subsystems.acon_config = acon_config;
         self.services.memory.subsystems.arc_config = arc_config;
         self.services.orchestration.orchestration_config = orchestration_config;
+        self.services.memory.persistence.store_config = store_config;
         self.wire_graph_persistence();
         self.runtime.config.budget_hint_enabled = budget_hint_enabled;
         self.runtime.config.recap_config = recap;

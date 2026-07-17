@@ -105,6 +105,11 @@ pub struct AgentSessionConfig {
     pub result_cache_config: zeph_tools::ResultCacheConfig,
     pub utility_config: zeph_tools::UtilityScoringConfig,
     pub orchestration_config: OrchestrationConfig,
+    /// Cross-thread store config (spec-080, `[memory.store]`, GitHub #6363). Read by
+    /// `scheduler_loop.rs`'s Command-handoff produce-side seam to gate the feature and
+    /// bound written-value size — `orchestration_config.command` carries the sibling
+    /// `[orchestration.command]` section and is already threaded above.
+    pub store_config: zeph_config::CrossThreadStoreConfig,
     pub debug_config: DebugConfig,
     pub server_compaction: bool,
 
@@ -195,6 +200,7 @@ impl AgentSessionConfig {
             result_cache_config: config.tools.result_cache.clone(),
             utility_config: config.tools.utility.clone(),
             orchestration_config: config.orchestration.clone(),
+            store_config: config.memory.store.clone(),
             debug_config: config.debug.clone(),
             server_compaction: config.llm.providers.iter().any(|e| e.server_compaction),
             budget_hint_enabled: config.agent.budget_hint_enabled,
@@ -283,6 +289,11 @@ mod tests {
         assert_eq!(
             sc.orchestration_config.max_tasks,
             config.orchestration.max_tasks
+        );
+        assert_eq!(sc.store_config.enabled, config.memory.store.enabled);
+        assert_eq!(
+            sc.store_config.max_value_bytes,
+            config.memory.store.max_value_bytes
         );
         assert_eq!(sc.anomaly_config.enabled, config.tools.anomaly.enabled);
         assert_eq!(

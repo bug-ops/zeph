@@ -222,6 +222,51 @@ impl CommandHandler<CommandContext<'_>> for KnowledgeSlashCommand {
     }
 }
 
+/// Read/write the cross-thread key-value store (spec-080, #6363).
+///
+/// Subcommands: `get <ns> <key>`; `put <ns> <key> <value...>`; `list <ns_prefix> [limit]`;
+/// `delete <ns> <key>`. Disabled (`[memory.store].enabled = false`, the default) returns an
+/// informational message, not an error.
+pub struct StoreSlashCommand;
+
+impl CommandHandler<CommandContext<'_>> for StoreSlashCommand {
+    fn name(&self) -> &'static str {
+        "/store"
+    }
+
+    fn description(&self) -> &'static str {
+        "Read/write the cross-thread key-value store"
+    }
+
+    fn args_hint(&self) -> &'static str {
+        "get <ns> <key> | put <ns> <key> <value...> | list <ns_prefix> [limit] | delete <ns> <key>"
+    }
+
+    fn category(&self) -> SlashCategory {
+        SlashCategory::Memory
+    }
+
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
+    fn handle<'a>(
+        &'a self,
+        ctx: &'a mut CommandContext<'_>,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.store.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.store_command(args).await?;
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
+    }
+}
+
 fn parse_backfill_limit(args: &str) -> Option<usize> {
     let pos = args.find("--limit")?;
     args[pos + "--limit".len()..]
@@ -345,6 +390,39 @@ mod tests {
         reg.register(KnowledgeSlashCommand);
 
         let result = reg.dispatch(&mut ctx, "/knowledge status", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
+    }
+
+    #[tokio::test]
+    async fn store_dispatch_allowed_when_trusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(StoreSlashCommand);
+
+        let result = reg.dispatch(&mut ctx, "/store list orch/", true).await;
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn store_dispatch_rejected_when_untrusted() {
+        let mut sink = NullSink;
+        let mut debug = MockDebug;
+        let mut messages = MockMessages;
+        let session = MockSession;
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let mut reg: CommandRegistry<CommandContext<'_>> = CommandRegistry::new();
+        reg.register(StoreSlashCommand);
+
+        let result = reg.dispatch(&mut ctx, "/store list orch/", false).await;
         let err = result.unwrap().unwrap_err();
         assert!(err.0.contains("trusted"));
     }
