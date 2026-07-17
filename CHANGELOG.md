@@ -111,6 +111,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   call fail dependency resolution (`hf-hub` does not have that feature`), breaking clippy,
   nextest archiving, rustdoc, and bundle-check CI jobs regardless of whether the `candle`
   feature was actually enabled for a given job.
+- `zeph-config`: `orchestration.verifier_timeout_secs` default raised from 30s to 120s
+  (#6366). `PlanVerifier::verify()`'s LLM call to a local Ollama `verify_provider` in the
+  20B+ parameter range (e.g. `gemma4:26b` — the same model class the #6278/#6287 grounding
+  fix's own playbook recommends for reproduction) commonly needs 60-120s, so the previous
+  30s default reliably timed out, hit the existing fail-open path, and marked the task
+  `Completed` without ever calling `ground()` — silently skipping the entire tool-call
+  grounding safety net in exactly the deployment shape it was built for. `config/default.toml`
+  and the field's doc comment now document the 20B+ local-model timeout requirement.
 - `.github/workflows/ci.yml`: the `ci-status` gate job did not depend on `detect-changes`
   and never checked its `result`. GitHub Actions marks every job with
   `needs: detect-changes` as `skipped` (not `failure`) when `detect-changes` itself fails,

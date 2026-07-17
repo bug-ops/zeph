@@ -181,7 +181,7 @@ fn default_planner_timeout_secs() -> u64 {
 }
 
 fn default_verifier_timeout_secs() -> u64 {
-    30
+    120
 }
 
 fn default_ensemble_ema_alpha() -> f64 {
@@ -520,10 +520,14 @@ pub struct OrchestrationConfig {
     #[serde(default = "default_planner_timeout_secs")]
     pub planner_timeout_secs: u64,
 
-    /// Timeout in seconds for verifier LLM calls (per-task and whole-plan). Default: 30.
+    /// Timeout in seconds for verifier LLM calls (per-task and whole-plan). Default: 120.
     ///
-    /// On timeout the verifier returns a fail-open result (`complete = true`, no gaps).
-    /// Matches the existing `predicate_timeout_secs` default.
+    /// On timeout the verifier returns a fail-open result (`complete = true`, no gaps) and
+    /// `ground()` is never called, so the entire tool-call grounding safety net (spec 009,
+    /// #6278/#6287) silently never runs for that verification. Local Ollama models in the
+    /// 20B+ parameter range (e.g. `gemma4:26b`) commonly take 60-120s to respond, so a low
+    /// timeout here causes fail-open to trigger on essentially every verification when
+    /// `verify_provider` targets such a model — see #6366.
     /// Set to `0` is rejected by `Config::validate()`.
     #[serde(default = "default_verifier_timeout_secs")]
     pub verifier_timeout_secs: u64,
@@ -961,5 +965,12 @@ mod tests {
         let toml_in = "enabled = true\n";
         let cfg: OrchestrationConfig = toml::from_str(toml_in).expect("deserialize");
         assert_eq!(cfg.default_idle_timeout_secs, None);
+    }
+
+    #[test]
+    fn orchestration_config_default_verifier_timeout_secs_is_120() {
+        // #6366: the previous 30s default reliably timed out PlanVerifier::verify() against
+        // 20B+ local Ollama models, causing fail-open to silently skip ground().
+        assert_eq!(OrchestrationConfig::default().verifier_timeout_secs, 120);
     }
 }

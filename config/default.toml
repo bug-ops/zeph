@@ -1176,8 +1176,11 @@ verify_completeness = false
 # aggregator_timeout_secs = 60
 # Timeout in seconds for planner LLM calls (0 rejected by validation). Default: 120.
 # planner_timeout_secs = 120
-# Timeout in seconds for verifier LLM calls (0 rejected by validation). Default: 30.
-# verifier_timeout_secs = 30
+# Timeout in seconds for verifier LLM calls (0 rejected by validation). Default: 120.
+# Local Ollama models in the 20B+ range (e.g. gemma4:26b) commonly need 60-120s; a low
+# timeout here causes fail-open on essentially every verification and silently skips the
+# tool-call grounding safety net (spec 009, #6278/#6287) — see #6366.
+# verifier_timeout_secs = 120
 
 # ORCH-style deterministic verifier ensemble-merge (arXiv:2602.01797), opt-in, default off.
 # See specs/073-orch-ensemble-merge/spec.md.
