@@ -650,9 +650,26 @@ impl<C: Channel> Agent<C> {
         let skills = self.filtered_skills_for(&def_name);
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
+        // Built before borrowing `subagent_manager` mutably below (build_spawn_context takes
+        // `&self`). Previously this call site passed `None`, which meant resumed sub-agents
+        // never got a `debug_dump_sink` — their LLM calls went uncaptured by `--debug-dump`
+        // even though fresh spawns correctly wired it (#6391). `resume()` only reads
+        // `max_trust_level`/`inherited_tool_allowlist`/`network_denied`/`debug_dump_sink` off
+        // `spawn_context` (see `manager/spawn.rs::resume`) — the first three are already at
+        // `build_spawn_context`'s top-level defaults (`None`/`None`/`false`, identical to what
+        // `None` produced here), so this only changes `debug_dump_sink` for this call site.
+        let spawn_ctx = self.build_spawn_context(&cfg);
         let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         let (task_id, _) = match mgr
-            .resume(id, prompt, provider, tool_executor, skills, &cfg, None)
+            .resume(
+                id,
+                prompt,
+                provider,
+                tool_executor,
+                skills,
+                &cfg,
+                Some(&spawn_ctx),
+            )
             .await
         {
             Ok(pair) => pair,
@@ -731,6 +748,15 @@ impl<C: Channel> Agent<C> {
             orchestrator_name: Some("zeph".to_owned()),
             orchestrator_role: Some("orchestrator".to_owned()),
             session_mcp_servers: Vec::new(),
+            // Threaded down so sub-agent LLM calls are captured through the same
+            // `--debug-dump` pipeline as the top-level agent loop (#6391). `None` when
+            // debug dumps are disabled, mirroring the top-level `debug_dumper: None` case.
+            debug_dump_sink: self
+                .runtime
+                .debug
+                .debug_dumper
+                .clone()
+                .map(|d| Arc::new(d) as Arc<dyn zeph_llm::debug_dump::DebugDumpSink>),
             // Constraint propagation (#3993): populated by orchestration layer when spawning
             // with explicit trust/tool restrictions. Top-level agent sessions leave these None.
             ..Default::default()
@@ -1549,5 +1575,59 @@ mod tests {
             1,
             "exactly one real spawn must occur on the still-pending fallback path"
         );
+    }
+
+    // ── build_spawn_context: debug_dump_sink wiring (#6391) ─────────────────
+
+    #[test]
+    fn build_spawn_context_leaves_debug_dump_sink_none_without_dumper() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let agent = Agent::new(
+            provider,
+            channel,
+            registry,
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+
+        let ctx = agent.build_spawn_context(&zeph_config::SubAgentConfig::default());
+        assert!(
+            ctx.debug_dump_sink.is_none(),
+            "no DebugDumper configured, so SpawnContext must carry no sink"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_spawn_context_wires_debug_dump_sink_when_dumper_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let dumper =
+            crate::debug_dump::DebugDumper::new(dir.path(), crate::debug_dump::DumpFormat::Raw)
+                .unwrap();
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            registry,
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.runtime.debug.debug_dumper = Some(dumper);
+
+        let ctx = agent.build_spawn_context(&zeph_config::SubAgentConfig::default());
+        let sink = ctx
+            .debug_dump_sink
+            .expect("a configured DebugDumper must be threaded into SpawnContext");
+
+        // Exercise the sink through the trait, same as `zeph-subagent`'s agent loop would —
+        // proves the wiring produces a working `Arc<dyn DebugDumpSink>`, not just `Some(_)`.
+        let id = sink.dump_request("mock", &[], &[], serde_json::Value::Null);
+        sink.dump_response(id, &zeph_llm::provider::ChatResponse::Text("ok".into()));
     }
 }

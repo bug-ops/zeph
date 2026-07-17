@@ -1733,6 +1733,74 @@ fn resume_with_spawn_context_applies_trust_cap_to_executor() {
 }
 
 #[test]
+fn resume_with_spawn_context_wires_debug_dump_sink_to_resumed_loop() {
+    // Regression test for #6391 (S1 follow-up): the production `/agent resume` call site
+    // (`crates/zeph-core/src/agent/subagent_commands.rs::handle_agent_resume`) used to pass
+    // `None` for `spawn_context`, so `debug_dump_sink` never reached the resumed loop even
+    // when the parent session had a real dumper configured — resumed sub-agents' LLM calls
+    // went uncaptured by `--debug-dump`. This proves `resume()`'s own plumbing (SpawnContext
+    // -> AgentLoopArgs -> call_provider_with_status) delivers the sink through to a real
+    // executed turn when `Some(ctx)` is passed, mirroring
+    // `run_agent_loop_dumps_llm_request_and_response_via_sink`'s coverage for the plain
+    // `run_agent_loop`/`spawn()` path.
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let agent_id = "d3bd0000-0000-0000-0000-000000000000";
+    write_completed_meta(tmp.path(), agent_id, "bot");
+
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+    let cfg = make_cfg_with_dir(tmp.path());
+
+    let sink = Arc::new(RecordingDumpSink::default());
+    let ctx = SpawnContext {
+        debug_dump_sink: Some(Arc::clone(&sink) as Arc<dyn zeph_llm::debug_dump::DebugDumpSink>),
+        ..SpawnContext::default()
+    };
+
+    let (new_id, _) = rt
+        .block_on(mgr.resume(
+            "d3bd0000",
+            "continue",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            Some(&ctx),
+        ))
+        .unwrap();
+
+    // Poll until the resumed background task reaches a terminal status.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let _guard = rt.enter();
+    rt.block_on(async {
+        loop {
+            let state = mgr.agents.get(&new_id).map(|h| h.status_rx.borrow().state);
+            if !matches!(
+                state,
+                Some(SubAgentState::Working | SubAgentState::Submitted)
+            ) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "resumed agent never reached a terminal state"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    });
+
+    assert!(
+        !sink.requests.lock().unwrap().is_empty(),
+        "the resumed loop's LLM call(s) must go through the debug_dump_sink threaded via \
+         SpawnContext, not be silently dropped as they were before the S1 fix"
+    );
+
+    rt.block_on(mgr.collect(&new_id)).unwrap();
+}
+
+#[test]
 fn def_name_for_resume_returns_def_name() {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -2223,6 +2291,7 @@ fn make_agent_loop_args(
         max_history_messages: 200,
         llm_timeout: std::time::Duration::from_mins(2),
         progress_at: None,
+        debug_dump_sink: None,
     }
 }
 
@@ -2332,6 +2401,80 @@ async fn run_agent_loop_passes_tools_to_provider() {
     );
 }
 
+// ── LLM-call timeout status publish (#6381) ──────────────────────────────
+
+#[tokio::test]
+async fn run_agent_loop_publishes_failed_status_on_llm_call_timeout() {
+    // Regression test for #6381: an LLM-call timeout inside `call_provider_with_status`
+    // must publish a terminal `Failed` status before returning — otherwise `status_rx`
+    // stays frozen at `Working` forever (from `init_loop_state`'s first send), the TUI
+    // sidebar shows a zombie WORKING entry with an ever-climbing elapsed counter, and
+    // `collect_finished_subagents()` never reaps the handle. Same defect class as
+    // #6257's setup-phase fix, but for the per-turn LLM-call path instead of spawn setup.
+    let provider = AnyProvider::Mock(MockProvider::default().with_delay(500));
+    let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
+
+    let (status_tx, status_rx) = tokio::sync::watch::channel(SubAgentStatus {
+        state: SubAgentState::Working,
+        last_message: None,
+        turns_used: 0,
+        started_at: std::time::Instant::now(),
+    });
+    let (secret_request_tx, _secret_request_rx) = tokio::sync::mpsc::channel(1);
+    let (_secret_approved_tx, secret_rx) =
+        tokio::sync::mpsc::channel::<Option<crate::grants::GrantedSecret>>(1);
+
+    let args = AgentLoopArgs {
+        provider,
+        executor,
+        system_prompt: "You are a bot".into(),
+        task_prompt: "Do something".into(),
+        skills: None,
+        max_turns: 3,
+        cancel: tokio_util::sync::CancellationToken::new(),
+        status_tx,
+        started_at: std::time::Instant::now(),
+        secret_request_tx,
+        secret_rx,
+        background: false,
+        hooks: super::super::hooks::SubagentHooks::default(),
+        task_id: "test-task".into(),
+        agent_name: "test-bot".into(),
+        initial_messages: vec![],
+        transcript_writer: None,
+        spawn_depth: 0,
+        mcp_tool_names: Vec::new(),
+        content_isolation: ContentIsolationConfig::default(),
+        max_history_messages: 200,
+        // Much shorter than the mock provider's 500ms delay so the timeout branch fires
+        // deterministically instead of racing the real response.
+        llm_timeout: std::time::Duration::from_millis(30),
+        progress_at: None,
+        debug_dump_sink: None,
+    };
+
+    let result = run_agent_loop(args).await;
+    assert!(
+        result.is_err(),
+        "expected the LLM-call timeout to propagate as an error"
+    );
+
+    let status = status_rx.borrow().clone();
+    assert_eq!(
+        status.state,
+        SubAgentState::Failed,
+        "status_tx must be updated to Failed on LLM-call timeout, not left stuck at Working"
+    );
+    assert!(
+        status
+            .last_message
+            .as_deref()
+            .is_some_and(|m| m.contains("timed out")),
+        "Failed status message should mention the timeout: {:?}",
+        status.last_message
+    );
+}
+
 // ── idle-timeout progress heartbeat (#6245) ──────────────────────────────
 
 #[tokio::test]
@@ -2378,6 +2521,106 @@ async fn run_agent_loop_none_progress_handle_is_unaffected() {
     let provider = mock_provider(vec!["done"]);
     let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
     let args = make_agent_loop_args(provider, executor, 1); // progress_at: None by default
+
+    let result = run_agent_loop(args).await;
+    assert!(result.is_ok(), "loop failed: {result:?}");
+}
+
+// ── debug-dump sink wiring (#6391) ────────────────────────────────────────
+
+/// Records every `dump_request`/`dump_response` call it receives, so tests can assert
+/// sub-agent LLM calls are captured through `zeph_llm::debug_dump::DebugDumpSink` the same
+/// way the top-level agent loop's `DebugDumper` would capture them.
+#[derive(Default)]
+struct RecordingDumpSink {
+    requests: std::sync::Mutex<Vec<(String, usize, usize)>>,
+    responses: std::sync::Mutex<Vec<(u32, String)>>,
+    next_id: std::sync::atomic::AtomicU32,
+}
+
+impl zeph_llm::debug_dump::DebugDumpSink for RecordingDumpSink {
+    fn is_trace_format(&self) -> bool {
+        false
+    }
+
+    fn dump_request(
+        &self,
+        model_name: &str,
+        messages: &[zeph_llm::provider::Message],
+        tools: &[zeph_llm::provider::ToolDefinition],
+        _provider_request: serde_json::Value,
+    ) -> u32 {
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.requests
+            .lock()
+            .unwrap()
+            .push((model_name.to_owned(), messages.len(), tools.len()));
+        id
+    }
+
+    fn dump_response(&self, id: u32, response: &ChatResponse) {
+        let text = match response {
+            ChatResponse::Text(t) => t.clone(),
+            ChatResponse::ToolUse { text, .. } => text.clone().unwrap_or_default(),
+            _ => String::new(),
+        };
+        self.responses.lock().unwrap().push((id, text));
+    }
+}
+
+#[tokio::test]
+async fn run_agent_loop_dumps_llm_request_and_response_via_sink() {
+    // Regression test for #6391: sub-agent LLM calls must go through the same
+    // `DebugDumpSink` pipeline as the top-level agent loop's `--debug-dump` output, so
+    // `zeph-core` can capture sub-agent/orchestration LLM payloads via `SpawnContext`.
+    let provider = mock_provider(vec!["done"]);
+    let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
+    let sink = Arc::new(RecordingDumpSink::default());
+
+    let args = AgentLoopArgs {
+        debug_dump_sink: Some(Arc::clone(&sink) as Arc<dyn zeph_llm::debug_dump::DebugDumpSink>),
+        ..make_agent_loop_args(provider, executor, 1)
+    };
+
+    let result = run_agent_loop(args).await;
+    assert!(result.is_ok(), "loop failed: {result:?}");
+
+    let requests = sink.requests.lock().unwrap();
+    assert_eq!(
+        requests.len(),
+        1,
+        "exactly one LLM call was made, so exactly one dump_request was expected"
+    );
+    assert_eq!(
+        requests[0].0, "mock",
+        "MockProvider's default name() is \"mock\""
+    );
+    assert!(
+        requests[0].1 > 0,
+        "dumped request must include the (non-empty) message history"
+    );
+
+    let responses = sink.responses.lock().unwrap();
+    assert_eq!(responses.len(), 1, "expected exactly one dump_response");
+    assert_eq!(
+        responses[0].0, 0,
+        "response id must correlate with the request id"
+    );
+    assert_eq!(
+        responses[0].1, "done",
+        "dumped response text must match the LLM's reply"
+    );
+}
+
+#[tokio::test]
+async fn run_agent_loop_skips_dump_when_sink_is_none() {
+    // Regression guard: with no sink configured (debug dumps disabled), the loop must run
+    // to completion without attempting to call through a `None` sink.
+    let provider = mock_provider(vec!["done"]);
+    let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
+    let args = make_agent_loop_args(provider, executor, 1); // debug_dump_sink: None by default
 
     let result = run_agent_loop(args).await;
     assert!(result.is_ok(), "loop failed: {result:?}");

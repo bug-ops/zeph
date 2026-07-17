@@ -171,6 +171,20 @@ pub struct SpawnContext {
     /// `None` (the default) for spawns not tracked by a `DagScheduler` — e.g. the standalone
     /// `/agent run` command — which are never idle-tracked.
     pub progress_at: Option<Arc<std::sync::atomic::AtomicU64>>,
+
+    /// Cross-crate debug-dump sink, threaded down so sub-agent LLM calls are captured
+    /// through the same pipeline as the top-level agent loop's `--debug-dump` output (#6391).
+    ///
+    /// Set by `zeph-core`'s `build_spawn_context` from `DebugState::debug_dumper`. `None`
+    /// when debug dumps are disabled — no sub-agent dump is written in that case, mirroring
+    /// the top-level `debug_dumper: None` behavior.
+    ///
+    /// # Caller responsibility for nested spawns
+    ///
+    /// Like [`max_trust_level`][Self::max_trust_level], this does **not** propagate
+    /// automatically — a sub-agent that spawns its own children must copy this field from
+    /// its received `SpawnContext` into the child's, or grandchild LLM calls go undumped.
+    pub debug_dump_sink: Option<Arc<dyn zeph_llm::debug_dump::DebugDumpSink>>,
 }
 
 /// Live status snapshot of a running sub-agent.

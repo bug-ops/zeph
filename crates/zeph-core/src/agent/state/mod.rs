@@ -1163,19 +1163,7 @@ impl DebugState {
         let Some((d, id)) = self.debug_dumper.as_ref().zip(dump_id) else {
             return;
         };
-        let raw = match result {
-            zeph_llm::provider::ChatResponse::Text(t) => t.clone(),
-            zeph_llm::provider::ChatResponse::ToolUse {
-                text, tool_calls, ..
-            } => {
-                let calls = serde_json::to_string_pretty(tool_calls).unwrap_or_default();
-                format!(
-                    "{}\n\n---TOOL_CALLS---\n{calls}",
-                    text.as_deref().unwrap_or("")
-                )
-            }
-            _ => String::new(),
-        };
+        let raw = crate::debug_dump::DebugDumper::chat_response_dump_text(result);
         let text = if pii_filter.is_enabled() {
             pii_filter.scrub(&raw).into_owned()
         } else {

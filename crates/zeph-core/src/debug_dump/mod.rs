@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use base64::Engine as _;
-use zeph_llm::provider::{Message, MessagePart, Role, ToolDefinition};
+use zeph_llm::provider::{ChatResponse, Message, MessagePart, Role, ToolDefinition};
 
 use crate::redact::{redact_binary_blobs, scrub_content};
 
@@ -168,6 +168,28 @@ impl DebugDumper {
         let redacted = scrub_content(response);
         let redacted = redact_binary_blobs(&redacted);
         self.write(&format!("{id:04}-response.txt"), redacted.as_bytes());
+    }
+
+    /// Response text extracted from a `ChatResponse`, mirroring
+    /// [`DebugState::write_chat_debug_dump`](crate::agent::state::DebugState) — kept as a free
+    /// function so [`DebugDumpSink::dump_response`] can reuse it without a PII-filter dependency
+    /// (sub-agent dumps rely on the baseline `scrub_content`/`redact_binary_blobs` pass already
+    /// inside [`DebugDumper::dump_response`], skipping the optional extra `PiiFilter` layer that
+    /// top-level dumps get — see #6391).
+    pub(crate) fn chat_response_dump_text(response: &ChatResponse) -> String {
+        match response {
+            ChatResponse::Text(t) => t.clone(),
+            ChatResponse::ToolUse {
+                text, tool_calls, ..
+            } => {
+                let calls = serde_json::to_string_pretty(tool_calls).unwrap_or_default();
+                format!(
+                    "{}\n\n---TOOL_CALLS---\n{calls}",
+                    text.as_deref().unwrap_or("")
+                )
+            }
+            _ => String::new(),
+        }
     }
 
     /// Dump raw tool output before any truncation or summarization.
@@ -422,6 +444,41 @@ impl DebugDumper {
                 tracing::warn!("dump_tool_error: failed to serialize error payload: {e}");
             }
         }
+    }
+}
+
+/// Lets `zeph-subagent`'s agent loop write sub-agent LLM request/response pairs through the
+/// same [`DebugDumper`] the top-level agent loop uses, without `zeph-subagent` depending on
+/// `zeph-core` (#6391). See [`zeph_llm::debug_dump::DebugDumpSink`] for the contract.
+impl zeph_llm::debug_dump::DebugDumpSink for DebugDumper {
+    fn is_trace_format(&self) -> bool {
+        self.is_trace_format()
+    }
+
+    fn dump_request(
+        &self,
+        model_name: &str,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        provider_request: serde_json::Value,
+    ) -> u32 {
+        DebugDumper::dump_request(
+            self,
+            &RequestDebugDump {
+                model_name,
+                messages,
+                tools,
+                provider_request,
+                // Sub-agents have no `MemCoT` accumulator of their own (that state lives on
+                // the top-level `Agent`'s `services.memory.extraction`), so there is nothing
+                // to attach here.
+                memcot_state: None,
+            },
+        )
+    }
+
+    fn dump_response(&self, id: u32, response: &ChatResponse) {
+        DebugDumper::dump_response(self, id, &DebugDumper::chat_response_dump_text(response));
     }
 }
 

@@ -80,6 +80,9 @@ pub(super) struct AgentLoopArgs {
     /// turn boundary. `None` for spawns not tracked by an orchestration scheduler (the
     /// standalone `/agent run`/`resume` commands), which are never idle-tracked.
     pub(super) progress_at: Option<Arc<AtomicU64>>,
+    /// Cross-crate debug-dump sink, threaded down from `SpawnContext::debug_dump_sink`
+    /// (issue #6391). `None` when debug dumps are disabled.
+    pub(super) debug_dump_sink: Option<Arc<dyn zeph_llm::debug_dump::DebugDumpSink>>,
 }
 
 /// Record a progress heartbeat, if this loop has a live handle. No-op for `None` (untracked
@@ -157,6 +160,7 @@ fn build_effective_system_prompt(
 }
 
 #[tracing::instrument(name = "subagent.agent_loop.call_provider", skip_all, err)]
+#[allow(clippy::too_many_arguments)]
 async fn call_provider_with_status(
     provider: &AnyProvider,
     messages: &[Message],
@@ -165,7 +169,20 @@ async fn call_provider_with_status(
     turns: u32,
     started_at: Instant,
     llm_timeout: std::time::Duration,
+    debug_dump_sink: Option<&dyn zeph_llm::debug_dump::DebugDumpSink>,
 ) -> Result<ChatResponse, super::error::SubAgentError> {
+    // Mirrors `zeph-core`'s `prepare_chat_debug_dump`/`write_chat_debug_dump` pair so
+    // sub-agent LLM calls are captured through the same `--debug-dump` pipeline as the
+    // top-level agent loop (#6391). `None` when debug dumps are disabled.
+    let dump_id = debug_dump_sink.map(|sink| {
+        let provider_request = if sink.is_trace_format() {
+            serde_json::Value::Null
+        } else {
+            provider.debug_request_json(messages, tool_defs, false) // lgtm[rust/cleartext-logging]
+        };
+        sink.dump_request(provider.name(), messages, tool_defs, provider_request)
+    });
+
     let llm_result =
         tokio::time::timeout(llm_timeout, provider.chat_with_tools(messages, tool_defs))
             .await
@@ -174,10 +191,26 @@ async fn call_provider_with_status(
                     timeout_secs = llm_timeout.as_secs(),
                     "sub-agent LLM call timed out"
                 );
-                super::error::SubAgentError::Llm("LLM call timed out".to_owned())
+                let timeout_err = super::error::SubAgentError::Llm("LLM call timed out".to_owned());
+                // Without this, status_tx stays frozen at its last `Working` value forever —
+                // the TUI sidebar and `collect_finished_subagents()` never see a terminal
+                // state, so the handle is never reaped (#6381, same defect class as #6257's
+                // setup-phase fix).
+                let _ = status_tx.send(SubAgentStatus {
+                    state: SubAgentState::Failed,
+                    last_message: Some(timeout_err.to_string()),
+                    turns_used: turns,
+                    started_at,
+                });
+                timeout_err
             })?;
     match llm_result {
-        Ok(r) => Ok(r),
+        Ok(r) => {
+            if let (Some(sink), Some(id)) = (debug_dump_sink, dump_id) {
+                sink.dump_response(id, &r);
+            }
+            Ok(r)
+        }
         Err(e) => {
             tracing::error!(error = %e, "sub-agent LLM call failed");
             let _ = status_tx.send(SubAgentStatus {
@@ -429,6 +462,7 @@ async fn run_turn(
     granted_secrets: &mut HashMap<String, GrantedSecret>,
     sanitizer: &ContentSanitizer,
     llm_timeout: std::time::Duration,
+    debug_dump_sink: Option<&dyn zeph_llm::debug_dump::DebugDumpSink>,
 ) -> Result<TurnOutcome, super::error::SubAgentError> {
     let response = call_provider_with_status(
         provider,
@@ -438,6 +472,7 @@ async fn run_turn(
         *turns,
         started_at,
         llm_timeout,
+        debug_dump_sink,
     )
     .await?;
 
@@ -752,7 +787,9 @@ pub(super) async fn run_agent_loop(
         content_isolation,
         llm_timeout,
         progress_at,
+        debug_dump_sink,
     } = args;
+    let debug_dump_sink = debug_dump_sink.as_deref();
 
     let sanitizer = ContentSanitizer::new(&content_isolation);
 
@@ -813,6 +850,7 @@ pub(super) async fn run_agent_loop(
             &mut granted_secrets,
             &sanitizer,
             llm_timeout,
+            debug_dump_sink,
         )
         .await?
         {

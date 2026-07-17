@@ -738,6 +738,7 @@ impl SubAgentManager {
             content_isolation: ctx.content_isolation,
             llm_timeout: std::time::Duration::from_secs(config.llm_timeout_secs),
             progress_at: ctx.progress_at,
+            debug_dump_sink: ctx.debug_dump_sink,
         };
 
         let join_handle = self.spawn_agent_task(Arc::from(task_id.as_str()), move || async move {
@@ -1143,6 +1144,10 @@ impl SubAgentManager {
         let new_task_id_for_loop = new_task_id.clone();
         let resumed_mcp_tool_names_for_handle = resumed_mcp_tool_names.clone();
         let llm_timeout = std::time::Duration::from_secs(config.llm_timeout_secs);
+        // Cloned out of the `&SpawnContext` reference before the `move` closure below —
+        // `spawn_context` itself is borrowed for this method call only and cannot be
+        // captured by the `'static` task closure.
+        let debug_dump_sink_for_loop = spawn_context.and_then(|ctx| ctx.debug_dump_sink.clone());
         let join_handle = self.spawn_agent_task(Arc::from(new_task_id.as_str()), move || {
             run_agent_loop(AgentLoopArgs {
                 provider,
@@ -1170,6 +1175,7 @@ impl SubAgentManager {
                 // `resume()` is the standalone `/agent resume` command path, never tracked
                 // by a `DagScheduler` — no progress handle to reattach to.
                 progress_at: None,
+                debug_dump_sink: debug_dump_sink_for_loop,
             })
         });
 

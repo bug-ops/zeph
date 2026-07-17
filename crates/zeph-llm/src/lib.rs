@@ -81,6 +81,7 @@ pub mod claude;
 #[cfg(feature = "cocoon")]
 pub mod cocoon;
 pub mod compatible;
+pub mod debug_dump;
 #[cfg(feature = "candle")]
 pub(crate) mod device;
 pub mod ema;

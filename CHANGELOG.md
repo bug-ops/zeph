@@ -155,6 +155,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The flash-style patch was only applied in the `MessageGroup::Grouped` render arm; the
   `Single` arm now applies the same `patch_flash_style` check, so a lone tool completion
   flashes identically to a grouped one.
+- `zeph-subagent`: a sub-agent LLM-call timeout inside `call_provider_with_status`
+  (`agent_loop.rs`) early-returned without publishing a terminal status, unlike the sibling
+  provider-error arm — `status_tx`/`status_rx` stayed frozen at the last `Working` value
+  forever, so `collect_finished_subagents()` never reaped the handle and the TUI agents
+  sidebar showed a zombie WORKING entry with an ever-climbing elapsed counter (#6381). Same
+  defect class as #6257's setup-phase fix, now closed for the per-turn LLM-call path too: the
+  timeout arm now sends `SubAgentStatus { state: Failed, .. }` before returning.
+- `zeph-subagent`: sub-agent-executed task turns (including orchestration-dispatched ones)
+  wrote no `--debug-dump` files, since `zeph-subagent`'s LLM-call path had no equivalent of
+  the top-level agent loop's request/response dump interceptor (#6391). Added
+  `zeph_llm::debug_dump::DebugDumpSink`, a cross-crate trait implemented by `zeph-core`'s
+  `DebugDumper` and threaded down via `SpawnContext`/`AgentLoopArgs` (same plumbing shape as
+  the existing `progress_at` idle-timeout heartbeat), so sub-agent LLM calls are now captured
+  through the same dump pipeline as top-level calls. Covers both the standalone `/agent`
+  spawn path and `/agent resume`, which previously dropped the sink by passing `None` for
+  `spawn_context`.
 - `src/channel.rs`: `impl Channel for AppChannel` forwarded most `Channel` trait methods via
   `dispatch_app_channel!` but never overrode `elicit()` or `send_context_estimate()`, so both
   calls fell through to the trait's default methods instead of reaching `AnyChannel`/`TuiChannel`'s
