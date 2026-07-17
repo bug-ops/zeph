@@ -101,6 +101,7 @@ pub(super) fn tool_trace_from_messages(
                     tool: name.clone(),
                     args_summary: tool_execution::summarize_tool_input(input),
                     ok: result_ok.get(id.as_str()).copied().unwrap_or(true),
+                    is_read_only: zeph_common::tool_classification::is_readonly_tool(name),
                 });
             }
         }
@@ -952,19 +953,33 @@ impl<C: crate::channel::Channel> Agent<C> {
                         task_id,
                         tool_trace,
                     } => {
-                        // #6380: deterministic, always-on check (never gated on
-                        // verify_completeness) — a task whose every real tool call failed
-                        // (including policy_blocked denials) must not remain Completed.
-                        // Same trace-resolution contract as SchedulerAction::Verify below.
+                        // #6380/#6397: deterministic, always-on check (never gated on
+                        // verify_completeness) — a task whose every real (or every
+                        // write-type) tool call failed, including policy_blocked denials,
+                        // must not remain Completed. Same trace-resolution contract as
+                        // SchedulerAction::Verify below.
                         let task = scheduler.graph().tasks.get(task_id.index()).cloned();
                         if let Some(task) = task {
                             let resolved_tool_trace: Option<
                                 Vec<zeph_orchestration::ToolCallSummary>,
                             > = tool_trace.or_else(|| self.build_tool_trace_for_task(&task));
-                            scheduler.correct_completed_to_failed_if_all_tool_calls_failed(
-                                task_id,
-                                resolved_tool_trace.as_deref(),
-                            );
+                            let corrected = scheduler
+                                .correct_completed_to_failed_if_all_tool_calls_failed(
+                                    task_id,
+                                    resolved_tool_trace.as_deref(),
+                                );
+                            // #6396: propagate the correction to dependents/graph status —
+                            // parity with the RunInline path's handle_failed_outcome.
+                            if corrected {
+                                let propagation_actions =
+                                    scheduler.propagate_corrected_task_failure(task_id);
+                                if let Some(s) =
+                                    self.cancel_agents_from_actions(propagation_actions)
+                                {
+                                    done_status = Some(s);
+                                    break 'actions;
+                                }
+                            }
                         }
                     }
                     SchedulerAction::Verify {
@@ -1441,6 +1456,9 @@ impl<C: crate::channel::Channel> Agent<C> {
                             tool: tc.name.to_string(),
                             args_summary: tool_execution::summarize_tool_input(&tc.input),
                             ok: !is_error,
+                            is_read_only: zeph_common::tool_classification::is_readonly_tool(
+                                tc.name.as_str(),
+                            ),
                         });
                         result_parts.push(MessagePart::ToolResult {
                             tool_use_id: tc.id.clone(),
@@ -2112,6 +2130,40 @@ mod tests {
         assert_eq!(trace[0].tool, "bash");
         assert_eq!(trace[0].args_summary.as_deref(), Some("cargo test"));
         assert!(trace[0].ok);
+        assert!(
+            !trace[0].is_read_only,
+            "bash is not in zeph_common::tool_classification::READONLY_TOOLS"
+        );
+    }
+
+    /// Companion case: a read-only tool (`read`) must be classified as such in the
+    /// reconstructed trace (#6397 wiring).
+    #[test]
+    fn tool_trace_from_messages_classifies_readonly_tool() {
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        let messages = vec![
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "call-1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({ "path": "in.txt" }),
+                }],
+            ),
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: "call-1".into(),
+                    content: "contents".into(),
+                    is_error: false,
+                }],
+            ),
+        ];
+
+        let trace = tool_trace_from_messages(&messages);
+        assert_eq!(trace.len(), 1);
+        assert!(trace[0].is_read_only);
     }
 
     /// Spawns a real "worker" sub-agent through [`crate::agent::Agent`]'s
@@ -2613,16 +2665,217 @@ mod tests {
              corrected to Failed by SchedulerAction::CheckToolOutcome, not remain Completed \
              -- this is the actual issue #6380 repro path (PlanView reads per-task status)"
         );
-        // Known, deliberate scope limit (critic finding S1, .local/handoff/*-critic.md):
-        // the spawn-path correction is status-only and does not re-run graph completion, so
-        // a single-task plan's overall GraphStatus stays Completed even though its only task
-        // was just corrected to Failed. Pinning this down so a future change to propagate the
-        // correction is a conscious decision, not an accidental behavior change caught here.
+        // #6396: the spawn-path correction now propagates via
+        // `DagScheduler::propagate_corrected_task_failure`, giving parity with the
+        // RunInline path's `handle_failed_outcome` — a single-task plan's overall
+        // GraphStatus must reflect its only task having been corrected to Failed, not stay
+        // Completed (the previously-documented S1 limitation this issue closes).
         assert_eq!(
             status,
-            GraphStatus::Completed,
-            "documents the current accepted tradeoff: post-hoc task correction does not \
-             recompute graph-level status (see critic finding S1)"
+            GraphStatus::Failed,
+            "GraphStatus must be recomputed to Failed once the spawn-path correction lands \
+             (issue #6396)"
+        );
+    }
+
+    /// Regression test for issue #6397: a mixed trace (a successful read call followed by a
+    /// policy-blocked write call, in the *same* sub-agent turn) is the common real-world
+    /// shape of #6380 under the `quarantined` trust floor — read-type tools pass through
+    /// while write-type tools are policy-blocked. Unlike the single-call #6380 repro above,
+    /// the trace here contains at least one `ok == true` entry, so this exercises the
+    /// read/write classification added to `ToolCallSummary`, end-to-end through the real
+    /// spawn dispatch, transcript reconstruction, and `CheckToolOutcome` handler arm.
+    #[tokio::test]
+    async fn run_scheduler_loop_corrects_spawn_task_to_failed_on_mixed_trace() {
+        use crate::agent::agent_tests::*;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        use zeph_orchestration::{
+            DagScheduler, GraphStatus, RuleBasedRouter, TaskGraph, TaskNode, TaskStatus,
+        };
+        use zeph_subagent::{SubAgentDef, SubAgentManager};
+        use zeph_tools::executor::ToolError;
+
+        let mut graph = TaskGraph::new("goal");
+        graph.tasks.push(TaskNode::new(0, "t", "do a task"));
+
+        let def =
+            SubAgentDef::parse("---\nname: worker\ndescription: A worker\n---\n\nDo things.\n")
+                .unwrap();
+
+        let config = zeph_config::OrchestrationConfig::default();
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(RuleBasedRouter),
+            vec![def.clone()],
+            None,
+        )
+        .unwrap();
+
+        // Both tool calls narrated in the same turn: the read succeeds, the write is
+        // policy-blocked by the executor below.
+        let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![
+                    ToolUseRequest {
+                        id: "call-1".into(),
+                        name: "read".into(),
+                        input: serde_json::json!({ "path": "in.txt" }),
+                    },
+                    ToolUseRequest {
+                        id: "call-2".into(),
+                        name: "write".into(),
+                        input: serde_json::json!({ "path": "out.txt" }),
+                    },
+                ],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("done".into()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::new(vec![
+            Ok(Some(zeph_tools::executor::ToolOutput {
+                tool_name: "read".into(),
+                summary: "file contents".into(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+                ..Default::default()
+            })),
+            Err(ToolError::Blocked {
+                command: "write".into(),
+            }),
+        ]);
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.orchestration.orchestration_config = config;
+
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(def);
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            agent.run_scheduler_loop(&mut scheduler, 1, token),
+        )
+        .await
+        .expect("run_scheduler_loop must not hang")
+        .unwrap();
+
+        assert_eq!(
+            scheduler.graph().tasks[0].status,
+            TaskStatus::Failed,
+            "a mixed trace where the only write-type call was policy-blocked must be \
+             corrected to Failed, even though the read-type call succeeded (#6397)"
+        );
+        assert_eq!(
+            status,
+            GraphStatus::Failed,
+            "GraphStatus must also reflect the correction (#6396)"
+        );
+    }
+
+    /// RunInline-path sibling of the previous test: the `is_read_only` classification wiring
+    /// inside `run_inline_tool_loop` (the second of the two production call sites for
+    /// `zeph_common::tool_classification::is_readonly_tool`) had no dedicated end-to-end
+    /// coverage -- every other mixed-trace test in this file and in
+    /// `zeph-orchestration`'s `scheduler/tick/tests.rs` constructs `ToolCallSummary` values by
+    /// hand, bypassing this call site entirely. Empty `available_agents` makes
+    /// `RuleBasedRouter::route` return `None`, which makes the scheduler emit
+    /// `SchedulerAction::RunInline` instead of `Spawn`.
+    #[tokio::test]
+    async fn run_scheduler_loop_corrects_run_inline_task_to_failed_on_mixed_trace() {
+        use crate::agent::agent_tests::*;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        use zeph_orchestration::{
+            DagScheduler, GraphStatus, RuleBasedRouter, TaskGraph, TaskNode, TaskStatus,
+        };
+        use zeph_tools::executor::ToolError;
+
+        let mut graph = TaskGraph::new("goal");
+        graph.tasks.push(TaskNode::new(0, "t", "do a task"));
+
+        let config = zeph_config::OrchestrationConfig::default();
+        // No SubAgentDef available: RuleBasedRouter::route returns None, forcing RunInline.
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(RuleBasedRouter), vec![], None).unwrap();
+
+        let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![
+                    ToolUseRequest {
+                        id: "call-1".into(),
+                        name: "read".into(),
+                        input: serde_json::json!({ "path": "in.txt" }),
+                    },
+                    ToolUseRequest {
+                        id: "call-2".into(),
+                        name: "write".into(),
+                        input: serde_json::json!({ "path": "out.txt" }),
+                    },
+                ],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("done".into()),
+        ]);
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::new(vec![
+            Ok(Some(zeph_tools::executor::ToolOutput {
+                tool_name: "read".into(),
+                summary: "file contents".into(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+                ..Default::default()
+            })),
+            Err(ToolError::Blocked {
+                command: "write".into(),
+            }),
+        ]);
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.orchestration.orchestration_config = config;
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            agent.run_scheduler_loop(&mut scheduler, 1, token),
+        )
+        .await
+        .expect("run_scheduler_loop must not hang")
+        .unwrap();
+
+        assert_eq!(
+            scheduler.graph().tasks[0].status,
+            TaskStatus::Failed,
+            "a RunInline task whose only write-type call was policy-blocked must be corrected \
+             to Failed even though its read-type call succeeded -- exercises the \
+             `run_inline_tool_loop` classification call site directly, not just the spawn \
+             path's transcript-reconstruction one (#6397)"
+        );
+        assert_eq!(
+            status,
+            GraphStatus::Failed,
+            "GraphStatus must reflect the correction on the RunInline path too (#6396)"
         );
     }
 

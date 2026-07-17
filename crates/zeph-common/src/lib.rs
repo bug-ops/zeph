@@ -39,6 +39,7 @@ pub mod spawner;
 pub mod task_supervisor;
 pub mod text;
 pub mod timestamp;
+pub mod tool_classification;
 pub mod trust_level;
 pub mod types;
 

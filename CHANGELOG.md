@@ -241,6 +241,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (red color, error marker) — no TUI changes were needed. Scoped to total task failure (100%
   of tool calls failed); partial-failure / write-type-specific detection is out of scope
   (`ToolCallSummary` has no read/write classification field).
+- `zeph-orchestration` / `zeph-core`: the #6380 all-failed heuristic above did not catch the
+  common real-world shape of the defect — a mixed trace where read-type tool calls succeed
+  (they pass through the `quarantined` trust floor) but every mutating call is policy-blocked
+  (#6397). `ToolCallSummary` now carries an `is_read_only` classification field, populated at
+  both production call sites (`scheduler_loop::tool_trace_from_messages` and
+  `run_inline_tool_loop`) via the new shared `zeph_common::tool_classification::is_readonly_tool`
+  (moved from `zeph-tools`' `permissions::READONLY_TOOLS`, now re-exported there to keep it a
+  single source of truth). `DagScheduler`'s failure heuristic no longer relies on
+  `is_read_only` alone: `READONLY_TOOLS` and `QUARANTINE_DENIED` are **not** complementary —
+  `web_scrape`, `fetch`, `load_skill`, and `invoke_skill` are in both, so a naive
+  `!is_read_only` filter would miss a blocked `fetch`/`invoke_skill` sitting alongside a
+  successful plain `read`. A call now counts toward the heuristic if it mutates state
+  (`!is_read_only`) *or* is itself quarantine-denied (new
+  `zeph_common::quarantine::is_quarantine_denied`, moved from `zeph-tools`'
+  `trust_gate::is_quarantine_denied` for the same single-source-of-truth reason). A task is
+  corrected `Completed` -> `Failed` when every counting call failed, regardless of any
+  successful non-counting (purely read-only, non-quarantine-denied) call; a trace with no
+  counting calls falls back to the original "every call failed" rule, preserving #6380's
+  full-failure case exactly. Known, accepted imprecision (documented on
+  `counts_toward_completion_heuristic`): `is_quarantine_denied` is list-membership only, not
+  actual quarantine trust-floor state, so a *non-quarantined* task whose sole `fetch`/skill
+  call genuinely errored (not policy-blocked) now also counts toward this heuristic — a narrow,
+  deliberately-accepted widening beyond the quarantine-only scope this fix targets.
+- `zeph-orchestration` / `zeph-core`: the spawn-path `Completed` -> `Failed` correction
+  (`DagScheduler::correct_completed_to_failed_if_all_tool_calls_failed`) was status-only —
+  it never canceled already-unblocked dependents or recomputed `GraphStatus`, unlike the
+  `RunInline` path's `handle_failed_outcome`, which calls `dag::propagate_failure` for both
+  (#6396). A new `DagScheduler::propagate_corrected_task_failure`, called by
+  `scheduler_loop.rs` immediately after a successful correction, now calls
+  `dag::propagate_failure` for `Skip`-configured tasks (and `Abort`-configured tasks with no
+  `recovery.state_injection`) to cancel already-`Running` dependents and update `GraphStatus`
+  — safe without double-recording `CascadeDetector::RegionHealth` because `propagate_failure`
+  never touches cascade bookkeeping (that lives exclusively in
+  `handle_completed_outcome`/`handle_failed_outcome`, neither of which this new method calls).
+  For `Retry`/`Ask`-configured tasks, and for `Abort`-configured tasks with
+  `recovery.state_injection` set, generic `propagate_failure` is unsafe here: `Retry` would
+  resurrect the already-`Completed` (cascade-recorded) corrected task back to `Ready` for a
+  redundant redispatch that re-triggers `record_outcome` on its second completion — an actual
+  `RegionHealth` double-count; `Ask` would pause the whole plan post-hoc for a task whose
+  consequences already landed; and `Abort`'s own `try_recover` call (Mode-1 recovery) would
+  flip the just-corrected task straight back to `Completed` with injected output that no
+  already-unblocked dependent would ever see, silently undoing the correction (the same hazard
+  class as `Retry`/`Ask`, just reached via a different code path — found by a delta re-review
+  after the initial `Retry`/`Ask`-only fix). A new `dag::propagate_failure_forced_terminal`
+  bypasses `FailureStrategy` dispatch entirely for all three cases, always applying terminal
+  Abort-style behavior (cancel + fail the graph, no resurrection, no pause, no recovery).
+  `Skip` never needs this — its arm never calls `try_recover`/`try_reroute` — and an
+  `Abort`-configured task with `recovery.route_to` (Mode-2, mutually exclusive with
+  `state_injection`) is also unaffected: `try_reroute` never touches the source task's own
+  status. Dependents that already reached a terminal status (most commonly `Completed`, having
+  consumed the now-invalidated output) before the correction landed are still not
+  retroactively unwound — documented as a deliberate remaining limitation shared with the
+  `RunInline` path.
 - `zeph-llm` (`ollama`): `convert_message_structured` dropped `MessagePart::Image` siblings
   on messages carrying a `ToolResult` part — the function early-returned
   `ChatMessage::tool(content)` built only from concatenated tool-result text, discarding any

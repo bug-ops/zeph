@@ -17,18 +17,13 @@ use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use crate::permissions::{AutonomyLevel, PermissionAction, PermissionPolicy};
 use crate::registry::ToolDef;
 
-/// Tools denied when a Quarantined skill is active.
+/// Tools denied when a Quarantined skill is active, and the matching predicate.
 ///
-/// Re-exported from `zeph_common::quarantine::QUARANTINE_DENIED` — the canonical definition
-/// lives there so both `zeph-skills` and `zeph-tools` can reference it without a dependency
-/// cycle.
+/// Re-exported from `zeph_common::quarantine` — the canonical definitions live there so
+/// `zeph-skills`, `zeph-tools`, and `zeph-orchestration` can all reference them without a
+/// dependency cycle.
 pub use zeph_common::quarantine::QUARANTINE_DENIED;
-
-pub(crate) fn is_quarantine_denied(tool_id: &str) -> bool {
-    QUARANTINE_DENIED
-        .iter()
-        .any(|denied| tool_id == *denied || tool_id.ends_with(&format!("_{denied}")))
-}
+pub(crate) use zeph_common::quarantine::is_quarantine_denied;
 
 /// Builds the denial message for a Quarantined-trust block.
 ///

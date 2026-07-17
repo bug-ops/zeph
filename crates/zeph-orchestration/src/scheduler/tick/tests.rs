@@ -2368,11 +2368,13 @@ fn handle_completed_outcome_all_tools_failed_marks_task_failed() {
                 tool: "create_directory".to_string(),
                 args_summary: None,
                 ok: false,
+                is_read_only: false,
             },
             ToolCallSummary {
                 tool: "write".to_string(),
                 args_summary: None,
                 ok: false,
+                is_read_only: false,
             },
         ]),
     ));
@@ -2387,9 +2389,11 @@ fn handle_completed_outcome_all_tools_failed_marks_task_failed() {
 }
 
 #[test]
-fn handle_completed_outcome_mixed_tool_trace_preserves_completed() {
-    // Partial failure is explicitly out of scope (issue #6380, Part D) — a task with at
-    // least one successful tool call must still complete normally.
+fn handle_completed_outcome_mixed_trace_write_failed_marks_task_failed() {
+    // Issue #6397: a mixed trace (successful read + failed/policy-blocked write) is the
+    // common real-world shape of #6380 under the `quarantined` trust floor — read-type
+    // tools pass through while write-type tools are policy-blocked. The task must be
+    // corrected to Failed even though the read call succeeded.
     let graph = graph_from_nodes(vec![make_node(0, &[])]);
     let mut scheduler = make_scheduler(graph);
     make_running_task(&mut scheduler, TaskId(0), "h0");
@@ -2402,11 +2406,51 @@ fn handle_completed_outcome_mixed_tool_trace_preserves_completed() {
                 tool: "write".to_string(),
                 args_summary: None,
                 ok: false,
+                is_read_only: false,
             },
             ToolCallSummary {
                 tool: "read".to_string(),
                 args_summary: None,
                 ok: true,
+                is_read_only: true,
+            },
+        ]),
+    ));
+
+    scheduler.tick();
+
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Failed,
+        "a mixed trace where every write-type call failed must be corrected to Failed, \
+         regardless of a successful read-type call"
+    );
+}
+
+#[test]
+fn handle_completed_outcome_mixed_trace_write_succeeded_preserves_completed() {
+    // The inverse of #6397's mixed-trace correction: when the write-type call actually
+    // succeeded, a failed read-type call must not drag the task down to Failed — read
+    // failures carry no weight in the heuristic once real (write-type) work succeeded.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    make_running_task(&mut scheduler, TaskId(0), "h0");
+
+    scheduler.buffered_events.push_back(completed_event(
+        TaskId(0),
+        "h0",
+        Some(vec![
+            ToolCallSummary {
+                tool: "write".to_string(),
+                args_summary: None,
+                ok: true,
+                is_read_only: false,
+            },
+            ToolCallSummary {
+                tool: "read".to_string(),
+                args_summary: None,
+                ok: false,
+                is_read_only: true,
             },
         ]),
     ));
@@ -2416,7 +2460,8 @@ fn handle_completed_outcome_mixed_tool_trace_preserves_completed() {
     assert_eq!(
         scheduler.graph.tasks[0].status,
         TaskStatus::Completed,
-        "a mixed trace (at least one successful tool call) must preserve Completed"
+        "a mixed trace where the write-type call succeeded must preserve Completed even if \
+         a read-type call failed"
     );
 }
 
@@ -2489,6 +2534,7 @@ fn handle_completed_outcome_all_tools_failed_does_not_double_count_cascade() {
             tool: "write".to_string(),
             args_summary: None,
             ok: false,
+            is_read_only: false,
         }]),
     ));
 
@@ -2550,6 +2596,7 @@ fn correct_completed_to_failed_noop_on_all_ok_trace() {
         tool: "read".to_string(),
         args_summary: None,
         ok: true,
+        is_read_only: true,
     }];
     let corrected =
         scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, Some(&trace));
@@ -2559,6 +2606,259 @@ fn correct_completed_to_failed_noop_on_all_ok_trace() {
         TaskStatus::Completed
     );
     assert!(!scheduler.take_graph_dirty());
+}
+
+#[test]
+fn correct_completed_to_failed_all_read_only_calls_failed_still_corrects() {
+    // The fallback rule (#6380's pre-existing full-failure case) must still fire on a trace
+    // with zero write-type calls: every entry is read-type, and every one of them failed.
+    let (mut scheduler, task_id) = scheduler_with_completed_task();
+    let trace = vec![ToolCallSummary {
+        tool: "read".to_string(),
+        args_summary: None,
+        ok: false,
+        is_read_only: true,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, Some(&trace));
+    assert!(
+        corrected,
+        "a trace with no write-type calls must fall back to the 'every call failed' rule"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[task_id.index()].status,
+        TaskStatus::Failed
+    );
+}
+
+#[test]
+fn correct_completed_to_failed_mixed_trace_write_failed_corrects() {
+    // Issue #6397: a mixed trace with a successful read and a failed write must still
+    // correct to Failed — the direct regression test for the scheduler-level heuristic.
+    let (mut scheduler, task_id) = scheduler_with_completed_task();
+    let trace = vec![
+        ToolCallSummary {
+            tool: "read".to_string(),
+            args_summary: None,
+            ok: true,
+            is_read_only: true,
+        },
+        ToolCallSummary {
+            tool: "write".to_string(),
+            args_summary: None,
+            ok: false,
+            is_read_only: false,
+        },
+    ];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, Some(&trace));
+    assert!(
+        corrected,
+        "a mixed trace where the only write-type call failed must correct to Failed"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[task_id.index()].status,
+        TaskStatus::Failed
+    );
+}
+
+#[test]
+fn correct_completed_to_failed_mixed_trace_write_succeeded_preserves_completed() {
+    // Inverse of #6397: a successful write-type call must not be dragged down by a failed
+    // read-type call.
+    let (mut scheduler, task_id) = scheduler_with_completed_task();
+    let trace = vec![
+        ToolCallSummary {
+            tool: "read".to_string(),
+            args_summary: None,
+            ok: false,
+            is_read_only: true,
+        },
+        ToolCallSummary {
+            tool: "write".to_string(),
+            args_summary: None,
+            ok: true,
+            is_read_only: false,
+        },
+    ];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, Some(&trace));
+    assert!(
+        !corrected,
+        "a successful write-type call must preserve Completed even with a failed read"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[task_id.index()].status,
+        TaskStatus::Completed
+    );
+}
+
+#[test]
+fn correct_completed_to_failed_partial_write_success_preserves_completed() {
+    // Real-world shape not covered by the single-write-call tests above: two write-type
+    // calls, one succeeded and one failed, interleaved with a successful read. Partial
+    // write success is genuine progress -- `all_tool_calls_failed` requires *every*
+    // write-type call to have failed, so this must not be corrected.
+    let (mut scheduler, task_id) = scheduler_with_completed_task();
+    let trace = vec![
+        ToolCallSummary {
+            tool: "read".to_string(),
+            args_summary: None,
+            ok: true,
+            is_read_only: true,
+        },
+        ToolCallSummary {
+            tool: "write".to_string(),
+            args_summary: None,
+            ok: true,
+            is_read_only: false,
+        },
+        ToolCallSummary {
+            tool: "write".to_string(),
+            args_summary: None,
+            ok: false,
+            is_read_only: false,
+        },
+    ];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, Some(&trace));
+    assert!(
+        !corrected,
+        "partial write success (one write ok, one write failed) must preserve Completed"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[task_id.index()].status,
+        TaskStatus::Completed
+    );
+}
+
+#[test]
+fn correct_completed_to_failed_blocked_fetch_alongside_successful_read_corrects() {
+    // Critic finding S2 (2026-07-17): `READONLY_TOOLS` and `QUARANTINE_DENIED` are not
+    // complementary -- `fetch`, `web_scrape`, `load_skill`, and `invoke_skill` are in BOTH
+    // lists (read-only for autonomy-gating purposes, yet denied under quarantine). A naive
+    // `!is_read_only` classification would blind-spot a blocked `fetch` here since
+    // `fetch.is_read_only == true`. The fix (`counts_toward_completion_heuristic`) must
+    // still flag this trace: `read` succeeded but the only quarantine-denied call
+    // (`fetch`) was blocked -- exactly the exfiltration/side-channel class quarantine
+    // exists to stop, and it must not be masked by an unrelated successful plain read.
+    let (mut scheduler, task_id) = scheduler_with_completed_task();
+    let trace = vec![
+        ToolCallSummary {
+            tool: "read".to_string(),
+            args_summary: None,
+            ok: true,
+            is_read_only: true,
+        },
+        ToolCallSummary {
+            tool: "fetch".to_string(),
+            args_summary: None,
+            ok: false,
+            is_read_only: true,
+        },
+    ];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, Some(&trace));
+    assert!(
+        corrected,
+        "a blocked fetch (quarantine-denied despite is_read_only == true) alongside a \
+         successful plain read must still correct to Failed"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[task_id.index()].status,
+        TaskStatus::Failed
+    );
+}
+
+#[test]
+fn correct_completed_to_failed_blocked_invoke_skill_alongside_successful_read_corrects() {
+    // Same S2 blind spot as the `fetch` test above, for `invoke_skill` -- also in both
+    // `READONLY_TOOLS` and `QUARANTINE_DENIED` (a skill body can perform arbitrary writes,
+    // critic finding M2).
+    let (mut scheduler, task_id) = scheduler_with_completed_task();
+    let trace = vec![
+        ToolCallSummary {
+            tool: "list_directory".to_string(),
+            args_summary: None,
+            ok: true,
+            is_read_only: true,
+        },
+        ToolCallSummary {
+            tool: "invoke_skill".to_string(),
+            args_summary: None,
+            ok: false,
+            is_read_only: true,
+        },
+    ];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, Some(&trace));
+    assert!(
+        corrected,
+        "a blocked invoke_skill alongside a successful list_directory must correct to Failed"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[task_id.index()].status,
+        TaskStatus::Failed
+    );
+}
+
+#[test]
+fn correct_completed_to_failed_successful_fetch_alongside_failed_read_preserves_completed() {
+    // Inverse of the S2 regression tests above: when the quarantine-denied-but-read-only
+    // call actually succeeded, a failed plain read must not drag the task down -- mirrors
+    // the existing mixed-trace inverse tests for plain write/read.
+    let (mut scheduler, task_id) = scheduler_with_completed_task();
+    let trace = vec![
+        ToolCallSummary {
+            tool: "read".to_string(),
+            args_summary: None,
+            ok: false,
+            is_read_only: true,
+        },
+        ToolCallSummary {
+            tool: "fetch".to_string(),
+            args_summary: None,
+            ok: true,
+            is_read_only: true,
+        },
+    ];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, Some(&trace));
+    assert!(
+        !corrected,
+        "a successful fetch (quarantine-denied-class call) must preserve Completed even with \
+         a failed plain read"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[task_id.index()].status,
+        TaskStatus::Completed
+    );
+}
+
+#[test]
+fn correct_completed_to_failed_plain_read_only_trace_all_failed_still_corrects() {
+    // Fallback-rule regression, refined for the S2 fix: a trace with no counting calls at
+    // all (every entry both is_read_only == true and NOT quarantine-denied) must still fall
+    // back to the "every call failed" rule when every entry failed -- `list_directory` is
+    // read-only and not in QUARANTINE_DENIED, unlike `fetch`/`invoke_skill` above.
+    let (mut scheduler, task_id) = scheduler_with_completed_task();
+    let trace = vec![ToolCallSummary {
+        tool: "list_directory".to_string(),
+        args_summary: None,
+        ok: false,
+        is_read_only: true,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, Some(&trace));
+    assert!(
+        corrected,
+        "a trace with zero counting calls (plain, non-denied reads only) must fall back to \
+         the 'every call failed' rule"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[task_id.index()].status,
+        TaskStatus::Failed
+    );
 }
 
 #[test]
@@ -2583,6 +2883,7 @@ fn correct_completed_to_failed_noop_when_task_not_completed() {
         tool: "write".to_string(),
         args_summary: None,
         ok: false,
+        is_read_only: false,
     }];
     let corrected =
         scheduler.correct_completed_to_failed_if_all_tool_calls_failed(task_id, Some(&trace));
@@ -2604,11 +2905,13 @@ fn correct_completed_to_failed_success_flips_status_and_marks_output() {
             tool: "write".to_string(),
             args_summary: None,
             ok: false,
+            is_read_only: false,
         },
         ToolCallSummary {
             tool: "bash".to_string(),
             args_summary: None,
             ok: false,
+            is_read_only: false,
         },
     ];
     let corrected =
@@ -2634,5 +2937,562 @@ fn correct_completed_to_failed_success_flips_status_and_marks_output() {
     assert!(
         scheduler.take_graph_dirty(),
         "a genuine status correction must set graph_dirty"
+    );
+}
+
+// ── DagScheduler::propagate_corrected_task_failure (#6396) ────────────────────
+
+#[test]
+fn propagate_corrected_task_failure_cancels_running_dependent_and_fails_graph() {
+    // Two-task graph: task 1 depends on task 0. Task 0 was already corrected
+    // Completed -> Failed (mirroring the spawn-path CheckToolOutcome flow); task 1 had
+    // already been unblocked and dispatched (Running) before the correction landed. The
+    // default failure strategy (Abort, see `make_config`) must cancel task 1 and fail the
+    // graph — parity with the RunInline path's `handle_failed_outcome`.
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Completed;
+    scheduler.graph.tasks[0].result = Some(TaskResult {
+        output: "original output".to_string(),
+        artifacts: vec![],
+        duration_ms: 10,
+        agent_id: Some("agent-0".to_string()),
+        agent_def: Some("worker".to_string()),
+    });
+    make_running_task(&mut scheduler, TaskId(1), "h1");
+    let _ = scheduler.take_graph_dirty();
+
+    let trace = vec![ToolCallSummary {
+        tool: "write".to_string(),
+        args_summary: None,
+        ok: false,
+        is_read_only: false,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(TaskId(0), Some(&trace));
+    assert!(corrected, "test precondition: task 0 must be corrected");
+
+    let actions = scheduler.propagate_corrected_task_failure(TaskId(0));
+
+    assert!(
+        actions.iter().any(
+            |a| matches!(a, SchedulerAction::Cancel { agent_handle_id } if agent_handle_id == "h1")
+        ),
+        "the already-Running dependent must be canceled: {actions:?}"
+    );
+    assert!(
+        actions.iter().any(
+            |a| matches!(a, SchedulerAction::Done { status } if *status == GraphStatus::Failed)
+        ),
+        "GraphStatus leaving Running must emit a Done action: {actions:?}"
+    );
+    assert_eq!(scheduler.graph.status, GraphStatus::Failed);
+    assert!(scheduler.graph.finished_at.is_some());
+    assert!(
+        !scheduler.running.contains_key(&TaskId(1)),
+        "the canceled dependent must be removed from the running map"
+    );
+}
+
+#[test]
+fn propagate_corrected_task_failure_does_not_double_count_cascade() {
+    // #6396's design note: `dag::propagate_failure` never touches `cascade_detector` —
+    // calling it from `propagate_corrected_task_failure` must not change RegionHealth,
+    // which was already recorded (as a success) by `handle_completed_outcome` before the
+    // correction landed.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let config = zeph_config::OrchestrationConfig {
+        cascade_routing: true,
+        topology_selection: true,
+        ..make_config()
+    };
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+    assert!(
+        scheduler.cascade_detector.is_some(),
+        "test precondition: cascade_detector must be enabled"
+    );
+    make_running_task(&mut scheduler, TaskId(0), "h0");
+
+    // Simulate the spawn dispatch path: tool_trace is None at completion time, so
+    // handle_completed_outcome's #6380 RunInline branch does not fire and the task
+    // completes normally, recording a cascade success.
+    scheduler
+        .buffered_events
+        .push_back(completed_event(TaskId(0), "h0", None));
+    scheduler.tick();
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Completed);
+
+    let region_health_before = scheduler
+        .cascade_detector
+        .as_ref()
+        .unwrap()
+        .region_health()
+        .get(&TaskId(0))
+        .expect("region health must be recorded")
+        .clone();
+    assert_eq!(region_health_before.total_tasks, 1);
+    assert_eq!(region_health_before.failed_tasks, 0);
+
+    // Post-hoc correction, as CheckToolOutcome would trigger.
+    let trace = vec![
+        ToolCallSummary {
+            tool: "read".to_string(),
+            args_summary: None,
+            ok: true,
+            is_read_only: true,
+        },
+        ToolCallSummary {
+            tool: "write".to_string(),
+            args_summary: None,
+            ok: false,
+            is_read_only: false,
+        },
+    ];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(TaskId(0), Some(&trace));
+    assert!(corrected);
+    let _ = scheduler.propagate_corrected_task_failure(TaskId(0));
+
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Failed);
+    let region_health_after = scheduler
+        .cascade_detector
+        .as_ref()
+        .unwrap()
+        .region_health()
+        .get(&TaskId(0))
+        .expect("region health must still be present")
+        .clone();
+    assert_eq!(
+        region_health_after.total_tasks, region_health_before.total_tasks,
+        "propagate_corrected_task_failure must not change RegionHealth: {region_health_after:?}"
+    );
+    assert_eq!(
+        region_health_after.failed_tasks, region_health_before.failed_tasks,
+        "propagate_corrected_task_failure must not re-record this task as a failure: \
+         {region_health_after:?}"
+    );
+}
+
+#[test]
+fn propagate_corrected_task_failure_noop_when_no_dependents_and_graph_stays_running() {
+    // Skip strategy on a task with no dependents: propagate_failure marks the task
+    // Skipped-subtree (a no-op here since there are no dependents) and does not touch
+    // GraphStatus, since other tasks in the graph are still non-terminal.
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    scheduler.graph.tasks[0].failure_strategy = Some(zeph_config::FailureStrategy::Skip);
+    scheduler.graph.tasks[0].status = TaskStatus::Completed;
+    scheduler.graph.tasks[0].result = Some(TaskResult {
+        output: "original output".to_string(),
+        artifacts: vec![],
+        duration_ms: 10,
+        agent_id: Some("agent-0".to_string()),
+        agent_def: Some("worker".to_string()),
+    });
+
+    let trace = vec![ToolCallSummary {
+        tool: "write".to_string(),
+        args_summary: None,
+        ok: false,
+        is_read_only: false,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(TaskId(0), Some(&trace));
+    assert!(corrected);
+
+    let actions = scheduler.propagate_corrected_task_failure(TaskId(0));
+    assert!(
+        actions.is_empty(),
+        "Skip strategy with no running dependents and a still-Running graph must emit no \
+         actions: {actions:?}"
+    );
+    assert_eq!(
+        scheduler.graph.status,
+        GraphStatus::Running,
+        "GraphStatus must remain Running while task 1 is still non-terminal"
+    );
+}
+
+#[test]
+fn propagate_corrected_task_failure_retry_strategy_forces_terminal_failure() {
+    // Critic finding S1 (2026-07-17): under `FailureStrategy::Retry`, generic
+    // `dag::propagate_failure` would resurrect the *same* corrected task back to `Ready` for
+    // another attempt -- but this task was already `Completed` (cascade accounting already
+    // ran, dependents already unblocked) before the correction landed, so a resurrection
+    // would trigger a redundant redispatch and double-count RegionHealth on its second
+    // completion. `propagate_corrected_task_failure` must instead force terminal Abort-style
+    // behavior for Retry, via `dag::propagate_failure_forced_terminal`: the task stays
+    // `Failed` (never resurrected), `retry_count` is untouched, and the graph fails.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    scheduler.graph.tasks[0].failure_strategy = Some(zeph_config::FailureStrategy::Retry);
+    scheduler.graph.tasks[0].status = TaskStatus::Completed;
+    scheduler.graph.tasks[0].result = Some(TaskResult {
+        output: "original output".to_string(),
+        artifacts: vec![],
+        duration_ms: 10,
+        agent_id: Some("agent-0".to_string()),
+        agent_def: Some("worker".to_string()),
+    });
+    assert_eq!(scheduler.graph.tasks[0].retry_count, 0);
+
+    let trace = vec![ToolCallSummary {
+        tool: "write".to_string(),
+        args_summary: None,
+        ok: false,
+        is_read_only: false,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(TaskId(0), Some(&trace));
+    assert!(corrected, "test precondition: task 0 must be corrected");
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Failed);
+
+    let actions = scheduler.propagate_corrected_task_failure(TaskId(0));
+
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Failed,
+        "Retry must NOT resurrect an already-completed corrected task to Ready -- that would \
+         trigger a redundant redispatch and double-count RegionHealth (critic finding S1)"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[0].retry_count, 0,
+        "no retry attempt was made, so retry_count must not increment"
+    );
+    assert_eq!(
+        scheduler.graph.status,
+        GraphStatus::Failed,
+        "Retry is forced to terminal Abort-style behavior for a post-hoc correction"
+    );
+    assert!(
+        actions.iter().any(
+            |a| matches!(a, SchedulerAction::Done { status } if *status == GraphStatus::Failed)
+        ),
+        "GraphStatus leaving Running must emit a Done action: {actions:?}"
+    );
+}
+
+#[test]
+fn propagate_corrected_task_failure_retry_then_tick_emits_no_spawn() {
+    // Follow-up to the forced-terminal test above: since the task is never resurrected under
+    // Retry, driving an actual `tick()` after the correction must emit zero Spawn actions for
+    // it -- the graph is already terminal (Failed), so tick() returns Done immediately.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    scheduler.graph.tasks[0].failure_strategy = Some(zeph_config::FailureStrategy::Retry);
+    scheduler.graph.tasks[0].status = TaskStatus::Completed;
+    scheduler.graph.tasks[0].result = Some(TaskResult {
+        output: "original output".to_string(),
+        artifacts: vec![],
+        duration_ms: 10,
+        agent_id: Some("agent-0".to_string()),
+        agent_def: Some("worker".to_string()),
+    });
+
+    let trace = vec![ToolCallSummary {
+        tool: "write".to_string(),
+        args_summary: None,
+        ok: false,
+        is_read_only: false,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(TaskId(0), Some(&trace));
+    assert!(corrected);
+    let _ = scheduler.propagate_corrected_task_failure(TaskId(0));
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Failed);
+    assert_eq!(scheduler.graph.status, GraphStatus::Failed);
+
+    let actions = scheduler.tick();
+    let spawn_count = actions
+        .iter()
+        .filter(|a| matches!(a, SchedulerAction::Spawn { task_id, .. } if *task_id == TaskId(0)))
+        .count();
+    assert_eq!(
+        spawn_count, 0,
+        "a task forced to terminal Failed under Retry must never be redispatched: {actions:?}"
+    );
+    assert!(
+        actions.iter().any(
+            |a| matches!(a, SchedulerAction::Done { status } if *status == GraphStatus::Failed)
+        ),
+        "tick() on an already-terminal graph must return Done: {actions:?}"
+    );
+}
+
+#[test]
+fn propagate_corrected_task_failure_ask_strategy_forces_terminal_failure_instead_of_pause() {
+    // Companion to the Retry test: `FailureStrategy::Ask` would normally pause the whole
+    // graph (`GraphStatus::Paused`) via generic `dag::propagate_failure` -- but pausing an
+    // already-completed-then-corrected task's plan post-hoc is equally unsafe/meaningless
+    // here (critic finding S1's `Ask` variant), so it must also force terminal Failed.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    scheduler.graph.tasks[0].failure_strategy = Some(zeph_config::FailureStrategy::Ask);
+    scheduler.graph.tasks[0].status = TaskStatus::Completed;
+    scheduler.graph.tasks[0].result = Some(TaskResult {
+        output: "original output".to_string(),
+        artifacts: vec![],
+        duration_ms: 10,
+        agent_id: Some("agent-0".to_string()),
+        agent_def: Some("worker".to_string()),
+    });
+
+    let trace = vec![ToolCallSummary {
+        tool: "write".to_string(),
+        args_summary: None,
+        ok: false,
+        is_read_only: false,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(TaskId(0), Some(&trace));
+    assert!(corrected);
+
+    let actions = scheduler.propagate_corrected_task_failure(TaskId(0));
+
+    assert_eq!(
+        scheduler.graph.status,
+        GraphStatus::Failed,
+        "Ask must not pause the graph for a post-hoc correction -- it is forced to terminal \
+         Failed instead (critic finding S1)"
+    );
+    assert!(
+        actions.iter().any(
+            |a| matches!(a, SchedulerAction::Done { status } if *status == GraphStatus::Failed)
+        ),
+        "GraphStatus leaving Running must emit a Done action: {actions:?}"
+    );
+}
+
+#[test]
+fn propagate_corrected_task_failure_retry_with_state_injection_does_not_recover() {
+    // Regression for the developer's own design note on `propagate_failure_forced_terminal`
+    // (dag.rs): "Considered and rejected including Mode-1 recovery ... `try_recover` would
+    // silently flip the just-corrected `Failed` status back to `Completed`". That claim was
+    // true by code inspection (the forced-terminal function never calls `try_recover`) but
+    // had no test locking it in -- the *generic* `dag::propagate_failure`'s retry-exhausted
+    // arm DOES invoke Mode-1 recovery when `recovery.state_injection` is configured (see
+    // `test_propagate_failure_retry_exhausted_recovers_with_state_injection` in dag.rs), so
+    // this is a real divergence a future refactor could silently reintroduce by routing the
+    // forced-terminal case back through the generic function. Configure the task with a
+    // `state_injection` fallback that *would* flip it back to Completed under the generic
+    // path, and confirm the forced-terminal path leaves it Failed instead.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    scheduler.graph.tasks[0].failure_strategy = Some(zeph_config::FailureStrategy::Retry);
+    scheduler.graph.tasks[0].max_retries = Some(3);
+    scheduler.graph.tasks[0].retry_count = 3; // at max -- would be "exhausted" under the generic path
+    scheduler.graph.tasks[0].recovery = Some(crate::graph::RecoveryAction {
+        state_injection: Some("fallback output".to_string()),
+        route_to: None,
+    });
+    scheduler.graph.tasks[0].status = TaskStatus::Completed;
+    scheduler.graph.tasks[0].result = Some(TaskResult {
+        output: "original output".to_string(),
+        artifacts: vec![],
+        duration_ms: 10,
+        agent_id: Some("agent-0".to_string()),
+        agent_def: Some("worker".to_string()),
+    });
+
+    let trace = vec![ToolCallSummary {
+        tool: "write".to_string(),
+        args_summary: None,
+        ok: false,
+        is_read_only: false,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(TaskId(0), Some(&trace));
+    assert!(corrected);
+
+    let _ = scheduler.propagate_corrected_task_failure(TaskId(0));
+
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Failed,
+        "the forced-terminal path must NOT invoke Mode-1 recovery -- a configured \
+         state_injection fallback must not silently flip the just-corrected Failed status \
+         back to Completed, which no already-unblocked dependent would ever see"
+    );
+    assert_ne!(
+        scheduler.graph.tasks[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .agent_def
+            .as_deref(),
+        Some("__recovery__"),
+        "the recovery marker must never appear -- confirms try_recover was not invoked"
+    );
+    assert_eq!(scheduler.graph.status, GraphStatus::Failed);
+}
+
+#[test]
+fn propagate_corrected_task_failure_abort_with_state_injection_does_not_recover() {
+    // Critic finding S1-residual (2026-07-17): the default `Abort` strategy's arm in
+    // `dag::propagate_failure` calls `try_recover` *before* terminal-failing the graph. When
+    // `recovery.state_injection` is configured, that would flip this just-corrected task
+    // straight back to `Completed` with injected output -- silently undoing the correction
+    // exactly like the `Retry`/`Ask` hazard the sibling test above locks in. This is the
+    // default-strategy companion to `..._retry_with_state_injection_does_not_recover`: no
+    // explicit `failure_strategy` override, relying on `make_config`'s `default_failure_strategy
+    // = Abort`.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    assert_eq!(
+        scheduler.graph.default_failure_strategy,
+        zeph_config::FailureStrategy::Abort,
+        "test precondition: default strategy must be Abort (unconfigured failure_strategy)"
+    );
+    scheduler.graph.tasks[0].recovery = Some(crate::graph::RecoveryAction {
+        state_injection: Some("fallback output".to_string()),
+        route_to: None,
+    });
+    scheduler.graph.tasks[0].status = TaskStatus::Completed;
+    scheduler.graph.tasks[0].result = Some(TaskResult {
+        output: "original output".to_string(),
+        artifacts: vec![],
+        duration_ms: 10,
+        agent_id: Some("agent-0".to_string()),
+        agent_def: Some("worker".to_string()),
+    });
+
+    let trace = vec![ToolCallSummary {
+        tool: "write".to_string(),
+        args_summary: None,
+        ok: false,
+        is_read_only: false,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(TaskId(0), Some(&trace));
+    assert!(corrected);
+
+    let actions = scheduler.propagate_corrected_task_failure(TaskId(0));
+
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Failed,
+        "default Abort strategy + state_injection must NOT invoke Mode-1 recovery on a \
+         post-hoc correction -- the injected fallback would never be seen by dependents that \
+         already consumed the original (now-invalidated) output"
+    );
+    assert_ne!(
+        scheduler.graph.tasks[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .agent_def
+            .as_deref(),
+        Some("__recovery__"),
+        "the recovery marker must never appear -- confirms try_recover was not invoked"
+    );
+    assert_eq!(scheduler.graph.status, GraphStatus::Failed);
+    assert!(
+        actions.iter().any(
+            |a| matches!(a, SchedulerAction::Done { status } if *status == GraphStatus::Failed)
+        ),
+        "GraphStatus leaving Running must emit a Done action: {actions:?}"
+    );
+}
+
+#[test]
+fn propagate_corrected_task_failure_skip_with_state_injection_still_uses_generic_propagate() {
+    // Companion negative test: `Skip`'s arm in `dag::propagate_failure` never calls
+    // `try_recover` (it goes straight to `skip_subtree`), so a `Skip`-configured task with
+    // `state_injection` configured is safe via the *unmodified* generic `propagate_failure`
+    // path -- it must NOT be routed through `propagate_failure_forced_terminal`. Distinguishing
+    // signal: `Skip`'s arm flips the failed task's own status to `Skipped` (not left `Failed`,
+    // unlike the forced-terminal path), which only the generic path does.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    scheduler.graph.tasks[0].failure_strategy = Some(zeph_config::FailureStrategy::Skip);
+    scheduler.graph.tasks[0].recovery = Some(crate::graph::RecoveryAction {
+        state_injection: Some("fallback output".to_string()),
+        route_to: None,
+    });
+    scheduler.graph.tasks[0].status = TaskStatus::Completed;
+    scheduler.graph.tasks[0].result = Some(TaskResult {
+        output: "original output".to_string(),
+        artifacts: vec![],
+        duration_ms: 10,
+        agent_id: Some("agent-0".to_string()),
+        agent_def: Some("worker".to_string()),
+    });
+
+    let trace = vec![ToolCallSummary {
+        tool: "write".to_string(),
+        args_summary: None,
+        ok: false,
+        is_read_only: false,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(TaskId(0), Some(&trace));
+    assert!(corrected);
+
+    let _ = scheduler.propagate_corrected_task_failure(TaskId(0));
+
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Skipped,
+        "Skip's arm must run unmodified (flips to Skipped, not left Failed) even with \
+         state_injection configured -- Skip never calls try_recover, so it needs no \
+         forced-terminal special-case"
+    );
+}
+
+#[test]
+fn propagate_corrected_task_failure_leaves_already_completed_dependent_untouched() {
+    // Documented remaining limitation on `propagate_corrected_task_failure`: a dependent
+    // that already reached a terminal status (typically Completed, having consumed the
+    // now-invalidated output) before the correction landed is not retroactively unwound --
+    // `dag::propagate_failure`'s cancellation/skip/retry logic only affects dependents
+    // still Pending/Ready/Running. This locks in that documented behavior as a regression
+    // test rather than leaving it purely as a doc comment.
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Completed;
+    scheduler.graph.tasks[0].result = Some(TaskResult {
+        output: "original output".to_string(),
+        artifacts: vec![],
+        duration_ms: 10,
+        agent_id: Some("agent-0".to_string()),
+        agent_def: Some("worker".to_string()),
+    });
+    scheduler.graph.tasks[1].status = TaskStatus::Completed;
+    scheduler.graph.tasks[1].result = Some(TaskResult {
+        output: "dependent already finished using task 0's now-invalidated output".to_string(),
+        artifacts: vec![],
+        duration_ms: 5,
+        agent_id: Some("agent-1".to_string()),
+        agent_def: Some("worker".to_string()),
+    });
+
+    let trace = vec![ToolCallSummary {
+        tool: "write".to_string(),
+        args_summary: None,
+        ok: false,
+        is_read_only: false,
+    }];
+    let corrected =
+        scheduler.correct_completed_to_failed_if_all_tool_calls_failed(TaskId(0), Some(&trace));
+    assert!(corrected);
+
+    let actions = scheduler.propagate_corrected_task_failure(TaskId(0));
+
+    assert_eq!(
+        scheduler.graph.tasks[1].status,
+        TaskStatus::Completed,
+        "a dependent that already completed before the correction landed is not \
+         retroactively unwound (documented limitation)"
+    );
+    assert!(
+        actions.iter().any(
+            |a| matches!(a, SchedulerAction::Done { status } if *status == GraphStatus::Failed)
+        ),
+        "the graph must still terminalize as Failed even though the dependent stayed \
+         Completed -- task 0 itself is Failed and no non-terminal task remains: {actions:?}"
     );
 }

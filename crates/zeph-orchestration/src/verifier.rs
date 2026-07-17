@@ -60,6 +60,23 @@ pub struct ToolCallSummary {
     /// grounding checks claim *existence*, not claim *outcome* (a deliberate, documented
     /// scope limitation; see spec's "Scope" subsection).
     pub ok: bool,
+    /// Whether `tool` is a read-only tool (no durable state mutation), per
+    /// `zeph_common::tool_classification::is_readonly_tool` — the same allowlist
+    /// `zeph-tools` uses to gate `ReadOnly` autonomy mode. `false` covers both explicit
+    /// write/execute/network-type tools and any unclassified tool (the conservative
+    /// default: an unrecognized tool is treated as capable of producing durable side
+    /// effects).
+    ///
+    /// This field alone answers only the autonomy-gating question ("is this tool in the
+    /// `ReadOnly`-mode allowlist"), which is a **different** policy axis than "did this call
+    /// count as real work" — `READONLY_TOOLS` and `zeph_common::quarantine::QUARANTINE_DENIED`
+    /// are not complementary (`web_scrape`, `fetch`, `load_skill`, `invoke_skill` are in
+    /// both). The scheduler's mixed-trace failure heuristic (#6397,
+    /// `scheduler::tick::counts_toward_completion_heuristic`) therefore does **not** use
+    /// `!is_read_only` alone; it also treats a quarantine-denied call as counting even when
+    /// `is_read_only == true`, so a blocked `fetch`/`invoke_skill` is never masked by an
+    /// unrelated successful plain `read`.
+    pub is_read_only: bool,
 }
 
 /// Severity of a detected gap in task output.
@@ -1626,6 +1643,7 @@ mod tests {
             tool: tool.to_string(),
             args_summary: args.map(str::to_string),
             ok,
+            is_read_only: zeph_common::tool_classification::is_readonly_tool(tool),
         }
     }
 

@@ -849,6 +849,55 @@ pub fn propagate_failure(
     }
 }
 
+/// Forced terminal-failure propagation, bypassing [`FailureStrategy`] dispatch entirely: no
+/// Mode-1 recovery, no Mode-2 reroute, no `Retry` resurrection, no `Ask` pause — just
+/// `graph.status = GraphStatus::Failed` and the list of currently-`Running` tasks to cancel.
+///
+/// Used by `DagScheduler::propagate_corrected_task_failure` (issue #6396) for a task whose
+/// `Completed -> Failed` status was corrected *post-hoc* (issues #6380/#6397), whenever
+/// routing through [`propagate_failure`] unmodified would risk resurrecting or otherwise
+/// undoing that correction:
+///
+/// - Effective `FailureStrategy::Retry` or `FailureStrategy::Ask`. Both branches in
+///   [`propagate_failure`] assume the failing task never produced output — `Retry` resurrects
+///   it to `Ready` for redispatch, `Ask` pauses the whole graph — which is unsafe here: this
+///   task was already `Completed` (cascade accounting already ran via `record_outcome(true)`,
+///   dependents already unblocked) *before* the correction landed. Resurrecting it to `Ready`
+///   would trigger a second, redundant sub-agent dispatch whose eventual completion
+///   re-invokes `record_outcome`, double-counting `CascadeDetector::RegionHealth` — and the
+///   retry cannot repair the plan regardless, since already-unblocked dependents are not
+///   rolled back (see the "Remaining limitation" note on `propagate_corrected_task_failure`).
+/// - Effective `FailureStrategy::Abort` *with* `recovery.state_injection` configured on the
+///   task (critic finding S1-residual, 2026-07-17). `propagate_failure`'s `Abort` arm calls
+///   [`try_recover`] before terminal-failing the graph, which — when `state_injection` is
+///   set — flips the just-corrected task straight back to `TaskStatus::Completed` with
+///   injected output, silently undoing the correction just like the `Retry`/`Ask` case above.
+///
+/// `Skip` configurations never need this: `Skip`'s arm in `propagate_failure` never calls
+/// `try_recover`/`try_reroute`, so it never resurrects the failed task regardless of any
+/// `recovery` configuration, and continues to call [`propagate_failure`] directly. Likewise
+/// an `Abort`-configured task with `recovery.route_to` (Mode-2, no `state_injection` — the two
+/// are mutually exclusive) is unaffected: `try_reroute` never touches the source task's own
+/// status, only activates a Dormant fallback, so it does not defeat the correction.
+///
+/// No-op (returns empty) unless `graph.tasks[failed_id]`'s current status is already
+/// `Failed` — mirrors [`propagate_failure`]'s own guard.
+pub(crate) fn propagate_failure_forced_terminal(
+    graph: &mut TaskGraph,
+    failed_id: TaskId,
+) -> Vec<TaskId> {
+    if graph.tasks[failed_id.index()].status != TaskStatus::Failed {
+        return Vec::new();
+    }
+    graph.status = GraphStatus::Failed;
+    graph
+        .tasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::Running)
+        .map(|t| t.id)
+        .collect()
+}
+
 /// Reset a graph for retry after it has entered `Failed` or `Paused` status.
 ///
 /// - Resets all `Failed` tasks to `Ready` (and clears `retry_count`).

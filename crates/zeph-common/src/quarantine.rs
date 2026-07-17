@@ -9,9 +9,9 @@
 /// Tools denied when a Quarantined skill is active.
 ///
 /// Uses the actual tool IDs registered by `FileExecutor` and other executors.
-/// MCP tools use a server-prefixed ID (e.g. `filesystem_write_file`). The
-/// `is_quarantine_denied` predicate in `zeph-tools` checks both exact matches and
-/// `_{entry}` suffix matches to cover MCP-wrapped versions of these native tool IDs.
+/// MCP tools use a server-prefixed ID (e.g. `filesystem_write_file`). [`is_quarantine_denied`]
+/// below checks both exact matches and `_{entry}` suffix matches to cover MCP-wrapped
+/// versions of these native tool IDs.
 ///
 /// Public so that `zeph-skills::scanner::check_capability_escalation` can use
 /// this as the single source of truth for quarantine-denied tools.
@@ -39,3 +39,21 @@ pub const QUARANTINE_DENIED: &[&str] = &[
     "load_skill",
     "invoke_skill",
 ];
+
+/// Returns `true` if `tool_id` matches an entry in [`QUARANTINE_DENIED`], either exactly or
+/// as an MCP-wrapped suffix (e.g. `filesystem_write` matches `write`, but
+/// `filesystem_write_file` does not — suffix matching requires a `_` boundary immediately
+/// before the denied entry).
+///
+/// Canonical predicate for `QUARANTINE_DENIED` membership — shared by `zeph-tools`
+/// (`trust_gate::is_quarantine_denied`, re-exported from here) and `zeph-orchestration`,
+/// which uses it alongside `tool_classification::is_readonly_tool` to close the blind spot
+/// where a tool is read-only for autonomy-gating purposes (`READONLY_TOOLS`) yet still
+/// denied under quarantine (`web_scrape`, `fetch`, `load_skill`, `invoke_skill` are in both
+/// lists — see #6397).
+#[must_use]
+pub fn is_quarantine_denied(tool_id: &str) -> bool {
+    QUARANTINE_DENIED
+        .iter()
+        .any(|denied| tool_id == *denied || tool_id.ends_with(&format!("_{denied}")))
+}

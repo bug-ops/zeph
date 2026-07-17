@@ -23,25 +23,77 @@ struct CompletedTaskData {
     tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
 }
 
-/// `true` when `trace` is non-empty and every call in it failed (`ok == false`) — including
-/// `policy_blocked` denials. Issue #6380: a task can finish its sub-agent loop without
-/// throwing an exception while every real tool call it attempted was rejected, producing
-/// zero actual work. An empty trace is deliberately *not* treated as total failure (a task
-/// that made no tool calls at all — e.g. pure reasoning/narration — is not this defect).
+/// `true` when a call counts toward the "did this task do work that matters" judgment used
+/// by `all_tool_calls_failed` — i.e. it is *not* a call the heuristic should silently
+/// ignore even if it succeeded.
 ///
-/// # Known limitation: mixed traces are not caught
+/// This is deliberately **not** just `!is_read_only`. `zeph_common::tool_classification`'s
+/// `READONLY_TOOLS` and `zeph_common::quarantine::QUARANTINE_DENIED` are not complementary:
+/// `web_scrape`, `fetch`, `load_skill`, and `invoke_skill` are in *both* lists — read-only
+/// for autonomy-gating purposes (#5575), yet still denied under the `quarantined` trust
+/// floor. A tool call counts here if it either mutates state (`!is_read_only`) *or* is
+/// itself a quarantine-denied call — a blocked `fetch`/`invoke_skill` is exactly the
+/// exfiltration/side-channel class quarantine exists to stop, so a successful plain `read`
+/// alongside it must not mask the denial (#6397, critic finding S2). An unclassified tool
+/// (not in `READONLY_TOOLS`) already counts via `!is_read_only` — the fail-closed default is
+/// unaffected by this OR.
 ///
-/// A trace with even one successful call (any `ok == true` entry) is *not* flagged by this
-/// heuristic, even if every write-type call in it failed. This is plausibly the common
-/// real-world shape of #6380: read-type tools (`read`, `grep`, `list_directory`, ...) are not
-/// present in `zeph_common::quarantine::QUARANTINE_DENIED`, so a quarantined sub-agent that
-/// successfully reads context before every write call is policy-blocked produces exactly this
-/// uncaught mixed trace — it still ends up `Completed` despite having produced zero durable
-/// work. Catching that shape needs a read/write classification field on `ToolCallSummary`,
-/// which is out of scope for this fix (see `ToolCallSummary::ok`'s own doc comment and the
-/// #6380 fix's scope note); tracked as a follow-up.
+/// # Known imprecision: list membership, not actual quarantine state (critic finding M1)
+///
+/// `zeph_common::quarantine::is_quarantine_denied` is pure list-membership, independent of
+/// whether this task actually ran under the `quarantined` trust floor — `ToolCallSummary`
+/// carries no such field, and no "policy-blocked vs. transient error" distinction either. So
+/// a **non-quarantined** task whose only network/skill call genuinely errored (e.g. `fetch`
+/// timed out) alongside a successful plain `read` is now also flagged by this heuristic, where
+/// before #6397 it stayed `Completed` (a `!is_read_only`-only check would have excluded
+/// `fetch`). This is a deliberate, accepted widening beyond the quarantine-only scope this fix
+/// targets: the shape is narrow (requires *every* counting call to fail with only reads
+/// succeeding), and such a task plausibly did fail to make progress regardless of *why* the
+/// network/skill call failed. Threading real quarantine trust-floor state through
+/// `ToolCallSummary` and into this heuristic would remove the imprecision but is a materially
+/// larger change (new field, new production call-site plumbing from the sub-agent's trust
+/// context) than this fix's scope — left as a conscious tradeoff, not silently accepted.
+fn counts_toward_completion_heuristic(call: &crate::verifier::ToolCallSummary) -> bool {
+    !call.is_read_only || zeph_common::quarantine::is_quarantine_denied(&call.tool)
+}
+
+/// `true` when `trace` is non-empty and the task produced zero durable work — either every
+/// call in it failed (`ok == false`, including `policy_blocked` denials, issue #6380), or —
+/// the mixed-trace case, issue #6397 — every call that `counts_toward_completion_heuristic`
+/// flags failed while some or all of the remaining (read-only, non-quarantine-denied) calls
+/// succeeded.
+///
+/// An empty trace is deliberately *not* treated as total failure (a task that made no tool
+/// calls at all — e.g. pure reasoning/narration — is not this defect).
+///
+/// # Mixed-trace handling (#6397)
+///
+/// A trace containing at least one call that counts (see
+/// `counts_toward_completion_heuristic`) is judged solely on those calls: if all of them
+/// failed, the task is flagged regardless of whether any purely-read-only,
+/// non-quarantine-denied call (`read`, `grep`, `list_directory`, ...) succeeded. This is the
+/// common real-world shape of the underlying defect: under the `quarantined` trust floor, a
+/// quarantined sub-agent that successfully reads context before every mutating or
+/// quarantine-denied call is blocked previously produced an uncaught mixed trace —
+/// `Completed` despite zero durable/permitted work.
+///
+/// A trace containing *no* counting calls (pure, non-denied reads) falls back to the
+/// original "every call failed" rule, so a task that never attempted a mutating or
+/// quarantine-denied call is never flagged off a single blocked read — and the pre-existing
+/// full-failure case (#6380) is preserved exactly.
 fn all_tool_calls_failed(trace: &[crate::verifier::ToolCallSummary]) -> bool {
-    !trace.is_empty() && trace.iter().all(|c| !c.ok)
+    if trace.is_empty() {
+        return false;
+    }
+    let mut counting_calls = trace
+        .iter()
+        .filter(|c| counts_toward_completion_heuristic(c))
+        .peekable();
+    if counting_calls.peek().is_some() {
+        counting_calls.all(|c| !c.ok)
+    } else {
+        trace.iter().all(|c| !c.ok)
+    }
 }
 
 impl DagScheduler {
@@ -612,15 +664,17 @@ impl DagScheduler {
             tool_trace,
         } = completed;
 
-        // #6380: when the real tool-call trace is already known synchronously (RunInline
+        // #6380/#6397: when the real tool-call trace is already known synchronously (RunInline
         // dispatch path — always `Some`, per `TaskOutcome::Completed`'s doc comment) and
-        // every call in it failed, route through the existing failure machinery instead of
-        // marking the task Completed. This branches out before any Completed-side-effect
-        // runs (cascade record_outcome, downstream unblocking), so there is no double-count
-        // risk here — unlike the spawn dispatch path, whose tool_trace is always `None` at
-        // this call site and is corrected post-hoc via the `CheckToolOutcome` action emitted
-        // below instead (see `DagScheduler::correct_completed_to_failed_if_all_tool_calls_failed`
-        // for why that correction is deliberately lighter-weight than a full re-route here).
+        // `all_tool_calls_failed` flags it, route through the existing failure machinery
+        // instead of marking the task Completed. This branches out before any
+        // Completed-side-effect runs (cascade record_outcome, downstream unblocking), so
+        // there is no double-count risk here — unlike the spawn dispatch path, whose
+        // tool_trace is always `None` at this call site and is corrected post-hoc via the
+        // `CheckToolOutcome` action emitted below instead (see
+        // `DagScheduler::correct_completed_to_failed_if_all_tool_calls_failed` and
+        // `DagScheduler::propagate_corrected_task_failure`, #6396, for why that two-step
+        // correction is safe without double-recording this task's own cascade outcome).
         if let Some(trace) = tool_trace.as_ref()
             && all_tool_calls_failed(trace)
         {
@@ -700,11 +754,20 @@ impl DagScheduler {
         actions
     }
 
-    /// Post-hoc correction for a `Completed` task whose real tool-call trace shows every
-    /// call failed, including `policy_blocked` denials (issue #6380). No-op (returns
-    /// `false`) when `tool_trace` is `None`, empty, or contains at least one successful
-    /// call, and when the task is no longer `Completed` (already corrected, or moved on to
-    /// some other status by a later transition — never clobber that).
+    /// Post-hoc correction for a `Completed` task whose real tool-call trace shows zero
+    /// durable/permitted work was done — every call failed (including `policy_blocked`
+    /// denials, issue #6380), or every call that counts toward the heuristic (mutating, or
+    /// quarantine-denied even if classified read-only — see `counts_toward_completion_heuristic`)
+    /// failed while some purely-read-only, non-quarantine-denied calls succeeded (the
+    /// mixed-trace case, issue #6397). No-op (returns `false`) when `tool_trace` is `None`,
+    /// empty, does not meet that condition, or when
+    /// the task is no longer `Completed` (already corrected, or moved on to some other
+    /// status by a later transition — never clobber that).
+    ///
+    /// Callers that get `true` back should follow up with
+    /// [`Self::propagate_corrected_task_failure`] to cancel already-unblocked dependents and
+    /// recompute `GraphStatus` (issue #6396) — this method itself only flips `TaskStatus` and
+    /// annotates `TaskResult::output`.
     ///
     /// # Design note: why this is not a `handle_failed_outcome` reuse
     ///
@@ -721,23 +784,14 @@ impl DagScheduler {
     /// whole-plan verify (#6379) rely on for accuracy, for a comparatively rare correction
     /// path. So this method deliberately only flips `TaskStatus` and annotates
     /// `TaskResult::output`; it does not touch `cascade_detector`, `lineage_chains`, or any
-    /// retry/abort machinery.
+    /// retry/abort machinery. Downstream propagation is a separate, deliberate step — see
+    /// [`Self::propagate_corrected_task_failure`]'s doc comment for why calling
+    /// `dag::propagate_failure` there carries no double-counting risk.
     ///
     /// (The synchronously-available `RunInline` case does not go through this method at all —
     /// `handle_completed_outcome` detects total tool-call failure *before* running any
     /// `Completed` side effect and routes straight to `handle_failed_outcome`, so no
     /// double-counting question arises there.)
-    ///
-    /// # Consequence: downstream is not retroactively unwound
-    ///
-    /// Because the correction is status-only, dependents of this task that were already
-    /// unblocked to `Ready` (or already dispatched/`Running`) before this method runs are
-    /// **not** retroactively canceled — they proceed as if the task had genuinely completed.
-    /// Likewise, `GraphStatus` can remain `Completed` for the whole plan even though this one
-    /// constituent task ends up `TaskStatus::Failed`: nothing here re-evaluates the graph's
-    /// overall terminal status. A caller inspecting only `GraphStatus` will not learn that a
-    /// task silently failed after the fact; per-task status (e.g. via `TaskGraphSnapshot`,
-    /// which the TUI `PlanView` already renders) is the only reliable signal for this case.
     pub fn correct_completed_to_failed_if_all_tool_calls_failed(
         &mut self,
         task_id: TaskId,
@@ -760,7 +814,7 @@ impl DagScheduler {
             task_id = %task_id,
             tool_call_count = trace.len(),
             "correcting task status Completed -> Failed: all tool calls failed or were \
-             policy-blocked (#6380)"
+             policy-blocked (#6380/#6397)"
         );
         task.status = TaskStatus::Failed;
         if let Some(result) = task.result.as_mut() {
@@ -877,6 +931,127 @@ impl DagScheduler {
         }
 
         Vec::new()
+    }
+
+    /// Propagate a just-applied
+    /// [`Self::correct_completed_to_failed_if_all_tool_calls_failed`] correction to the rest
+    /// of the graph (issue #6396): cancels dependents that were already unblocked to
+    /// `Running` before the correction landed, and recomputes `GraphStatus`.
+    ///
+    /// Callers must invoke this only immediately after
+    /// `correct_completed_to_failed_if_all_tool_calls_failed` returned `true` for the same
+    /// `task_id` in the same tick — both `dag::propagate_failure` and
+    /// `dag::propagate_failure_forced_terminal` no-op unless the task's status is already
+    /// `Failed`.
+    ///
+    /// # `Retry`/`Ask` and `Abort`-with-recovery are special-cased to forced propagation
+    ///
+    /// `Skip` configurations always call [`dag::propagate_failure`] directly — the same
+    /// function `handle_failed_outcome` uses for the `RunInline` path, giving the spawn path
+    /// parity with it. `Skip`'s arm never calls `try_recover`/`try_reroute` (it goes straight
+    /// to `skip_subtree`), so it never resurrects the failed task and is safe to apply here
+    /// unmodified regardless of any `recovery` configuration.
+    ///
+    /// `Retry` and `Ask` *always* call `dag::propagate_failure_forced_terminal` instead — see
+    /// critic finding S1 (2026-07-17): `propagate_failure`'s `Retry` branch resurrects the
+    /// task to `Ready` for redispatch, and `Ask` pauses the whole graph, both of which assume
+    /// the task never produced output. That assumption is false here: this task was already
+    /// `Completed` (`cascade_detector.record_outcome(true)` already ran, dependents already
+    /// unblocked) *before* the correction landed. A `Retry` redispatch would trigger a second,
+    /// redundant sub-agent run whose eventual completion re-invokes `record_outcome`,
+    /// double-counting `RegionHealth` — and cannot repair the plan anyway, since
+    /// already-unblocked dependents are not rolled back (see "Remaining limitation" below).
+    /// `Ask` would pause the entire plan post-hoc for a task whose consequences already
+    /// landed.
+    ///
+    /// `Abort` (the default strategy) is safe to route through `propagate_failure` unmodified
+    /// **only when the task has no `recovery.state_injection` configured**. `propagate_failure`'s
+    /// `Abort` arm calls `try_recover` *before* terminal-failing the graph — see critic finding
+    /// S1-residual (2026-07-17): when `state_injection` is set, `try_recover` flips this
+    /// just-corrected task straight back to `Completed` (with injected output that no
+    /// already-unblocked dependent will ever see), silently undoing the correction exactly like
+    /// the `Retry`/`Ask` hazard above. So an `Abort`-configured task with `state_injection` also
+    /// routes through `dag::propagate_failure_forced_terminal`, which skips `try_recover`
+    /// entirely. `try_reroute` (Mode-2 `route_to`) is *not* part of this hazard — unlike
+    /// `try_recover` it never touches the source task's own status, so a plain `Abort` +
+    /// `route_to` (no `state_injection`; the two are mutually exclusive per `RecoveryAction`'s
+    /// doc) still goes through unmodified `propagate_failure` and may activate a Mode-2
+    /// fallback off this correction, which is an accepted, deliberate tradeoff ("on failure,
+    /// run the fallback"), not a defeat of the correction.
+    ///
+    /// See `dag::propagate_failure_forced_terminal`'s doc comment for the full rationale on
+    /// why it is safe to skip recovery/reroute/resurrection entirely.
+    ///
+    /// # Why this is safe (no `RegionHealth` double-counting)
+    ///
+    /// Neither `dag::propagate_failure` nor `dag::propagate_failure_forced_terminal` touches
+    /// `cascade_detector`/`RegionHealth` — that bookkeeping lives exclusively in
+    /// `handle_completed_outcome` and `handle_failed_outcome`, neither of which this method
+    /// calls. This task was already recorded as a success by `handle_completed_outcome`
+    /// before the correction; this method only cancels/skips dependents and updates
+    /// `GraphStatus`, exactly the consequences the original #6380 fix deferred to avoid
+    /// double-recording this task itself. The special-cases above are what make this claim
+    /// actually hold for every `FailureStrategy` (and every `recovery` configuration) —
+    /// routing `Retry`/`Ask`, or `Abort`-with-`state_injection`, through unmodified
+    /// `propagate_failure` would have made the claim false (a redispatch re-invokes
+    /// `record_outcome`; `try_recover` un-fails the task entirely), which is exactly what the
+    /// special-cases prevent.
+    ///
+    /// # Remaining limitation
+    ///
+    /// Dependents that already reached a terminal status (most commonly `Completed`, having
+    /// already consumed this task's now-invalidated output) before this correction landed
+    /// are **not** retroactively unwound — neither propagation function's cancellation/skip
+    /// logic affects dependents already past `Pending`/`Ready`/`Running`. This mirrors the
+    /// `RunInline` path's own limitation (a `Completed` dependent is never revisited there
+    /// either) and is intentionally out of scope here — fully unwinding already-finished
+    /// downstream work would require re-running or invalidating those tasks, a materially
+    /// larger change than restoring propagation parity.
+    pub fn propagate_corrected_task_failure(&mut self, task_id: TaskId) -> Vec<SchedulerAction> {
+        let task = &self.graph.tasks[task_id.index()];
+        let effective_strategy = task
+            .failure_strategy
+            .unwrap_or(self.graph.default_failure_strategy);
+        let has_state_injection = task
+            .recovery
+            .as_ref()
+            .and_then(|r| r.state_injection.as_ref())
+            .is_some();
+        // #6396/S1-residual (critic, 2026-07-17): `Retry`/`Ask` always need the forced-terminal
+        // path (see doc comment above). `Abort`'s own arm in `dag::propagate_failure` also
+        // calls `try_recover` *before* terminal-failing the graph — when `state_injection` is
+        // configured, that would flip this just-corrected task straight back to `Completed`,
+        // silently undoing the correction exactly like the Retry/Ask hazard this method already
+        // guards against. `Skip` never calls `try_recover` (its arm goes straight to
+        // `skip_subtree`), so it is excluded regardless of `state_injection`.
+        let needs_forced_terminal =
+            matches!(
+                effective_strategy,
+                zeph_config::FailureStrategy::Retry | zeph_config::FailureStrategy::Ask
+            ) || (effective_strategy == zeph_config::FailureStrategy::Abort && has_state_injection);
+        let cancel_ids = if needs_forced_terminal {
+            dag::propagate_failure_forced_terminal(&mut self.graph, task_id)
+        } else {
+            dag::propagate_failure(&mut self.graph, task_id, &self.topology.rev_adj)
+        };
+        let mut actions = Vec::new();
+
+        for cancel_task_id in cancel_ids {
+            if let Some(running) = self.running.remove(&cancel_task_id) {
+                actions.push(SchedulerAction::Cancel {
+                    agent_handle_id: running.agent_handle_id,
+                });
+            }
+        }
+
+        if self.graph.status != GraphStatus::Running {
+            self.graph.finished_at = Some(crate::graph::chrono_now());
+            actions.push(SchedulerAction::Done {
+                status: self.graph.status,
+            });
+        }
+
+        actions
     }
 
     /// Apply the Failed outcome branch: build lineage, evaluate cascade abort, propagate failure.

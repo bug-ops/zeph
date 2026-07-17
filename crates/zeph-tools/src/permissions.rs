@@ -9,32 +9,14 @@ pub(crate) use zeph_config::tools::{
     AutonomyLevel, PermissionAction, PermissionRule, PermissionsConfig,
 };
 
-/// Read-only tool allowlist (available in `ReadOnly` autonomy mode).
+/// Read-only tool allowlist and its `is_readonly_tool` predicate.
 ///
-/// Also used, via [`is_readonly_tool`], to bypass the `Supervised`-mode confirmation
-/// default for unconfigured tools — see #5575. A tool added here is trusted to run
-/// without confirmation in *both* modes; do not add anything that mutates state or
-/// executes code.
-const READONLY_TOOLS: &[&str] = &[
-    "read",
-    "find_path",
-    "grep",
-    "list_directory",
-    "web_scrape",
-    "fetch",
-    "load_skill",
-    "invoke_skill",
-];
-
-/// Returns `true` if `tool_id` is a native read-only tool.
-///
-/// Reuses the same [`READONLY_TOOLS`] allowlist that gates `ReadOnly` autonomy mode, so
-/// `Supervised` mode's unconfigured-tool bypass (`TrustGateExecutor::check_trust`) cannot
-/// silently diverge from it — see #5575.
-#[must_use]
-pub(crate) fn is_readonly_tool(tool_id: &str) -> bool {
-    READONLY_TOOLS.contains(&tool_id)
-}
+/// Canonical definition lives in `zeph_common::tool_classification` — shared with
+/// `zeph-orchestration`, which uses it to classify tool calls in a task's real execution
+/// trace as read vs. write-type (#6397). Re-exported here under the historical names so
+/// existing call sites in this crate (`permissions::READONLY_TOOLS`,
+/// `permissions::is_readonly_tool`) keep working unchanged.
+pub(crate) use zeph_common::tool_classification::{READONLY_TOOLS, is_readonly_tool};
 
 /// Tool permission policy: maps `tool_id` → ordered list of rules.
 /// First matching rule wins; default is `Ask`.

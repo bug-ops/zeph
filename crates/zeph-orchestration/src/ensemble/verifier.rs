@@ -554,6 +554,7 @@ mod tests {
             tool: "bash".to_string(),
             args_summary: Some("ls -la".to_string()),
             ok: true,
+            is_read_only: false,
         }];
         match verifier
             .verify(&task, "output", Some(&trace), &test_sanitizer())
@@ -604,6 +605,7 @@ mod tests {
             tool: "bash".to_string(),
             args_summary: Some("cargo test --all-features".to_string()),
             ok: true,
+            is_read_only: false,
         }];
         match verifier
             .verify(&task, "output", Some(&trace), &test_sanitizer())

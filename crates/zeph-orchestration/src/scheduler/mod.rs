@@ -139,7 +139,10 @@ pub enum SchedulerAction {
     /// `RunInline` tasks (already known at emission time), `None` for the spawn dispatch
     /// path — reconstruct it from the sub-agent transcript, then call
     /// [`DagScheduler::correct_completed_to_failed_if_all_tool_calls_failed`] with the
-    /// resolved trace.
+    /// resolved trace. When that returns `true`, the caller must follow up with
+    /// [`DagScheduler::propagate_corrected_task_failure`] (issue #6396) to cancel
+    /// already-unblocked dependents and recompute `GraphStatus`, giving the spawn path
+    /// parity with the `RunInline` path's `handle_failed_outcome`.
     CheckToolOutcome {
         /// Task whose tool trace should be inspected.
         task_id: TaskId,
