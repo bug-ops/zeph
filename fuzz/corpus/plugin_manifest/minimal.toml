@@ -1,0 +1,3 @@
+[plugin]
+name = "git-workflows"
+version = "0.1.0"

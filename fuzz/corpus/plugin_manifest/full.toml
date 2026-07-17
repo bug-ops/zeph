@@ -1,0 +1,20 @@
+[plugin]
+name = "git-workflows"
+version = "0.1.0"
+description = "Git workflow skills and MCP git server"
+auto_update = false
+dependencies = ["core-utils"]
+
+[[skills]]
+path = "skills/git-commit"
+
+[[skills]]
+path = "skills/git-rebase"
+
+[[mcp.servers]]
+id = "git"
+command = "mcp-git"
+args = ["--repo", "."]
+
+[config.tools]
+blocked_commands = ["git push --force"]

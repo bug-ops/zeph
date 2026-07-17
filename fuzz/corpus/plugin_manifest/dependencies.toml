@@ -1,0 +1,6 @@
+[plugin]
+name = "dependent-plugin"
+version = "0.2.0"
+description = "depends on another plugin"
+auto_update = true
+dependencies = ["base-plugin", "shared-utils"]

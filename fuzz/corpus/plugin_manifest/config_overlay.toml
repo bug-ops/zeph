@@ -1,0 +1,10 @@
+[plugin]
+name = "safe-overlay"
+version = "0.1.0"
+description = "test"
+
+[config.skills]
+disambiguation_threshold = 0.05
+
+[config.tools]
+blocked_commands = ["rm -rf"]

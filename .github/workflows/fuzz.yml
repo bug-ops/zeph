@@ -5,9 +5,7 @@ on:
     - cron: "0 0 * * 1"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  issues: write
+permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,6 +15,9 @@ jobs:
     name: Fuzz (${{ matrix.target }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
     strategy:
       fail-fast: false
       matrix:
@@ -29,6 +30,8 @@ jobs:
             budget: 300
           - target: config_toml
             budget: 120
+          - target: plugin_manifest
+            budget: 300
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
@@ -104,4 +107,83 @@ jobs:
         with:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
+
+  coverage:
+    name: Coverage (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - skill_frontmatter
+          - skill_extensions
+          - chunk_file
+          - config_toml
+          - plugin_manifest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
+        with:
+          components: llvm-tools-preview
+
+      - uses: taiki-e/install-action@afc483d62172accfff644fa56e82b4dab50727fc # cargo-fuzz, cargo-binutils
+        with:
+          tool: cargo-fuzz, cargo-binutils
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: fuzz -> target
+          prefix-key: fuzz-coverage-${{ matrix.target }}
+
+      # Visibility only: replays the committed seed corpus (no libFuzzer mutation) through an
+      # instrumented binary to report which lines/branches the corpus reaches. Does not run
+      # crash-finding — that's the `fuzz` job above — and continue-on-error here means a
+      # tooling failure in this step must never fail the crash-finding `fuzz` job.
+      - name: Generate coverage profile
+        id: coverage
+        continue-on-error: true
+        working-directory: fuzz
+        run: cargo +nightly fuzz coverage ${{ matrix.target }}
+
+      # Uses `rust-cov` (the cargo-binutils-installed llvm-cov wrapper) directly rather than
+      # the `cargo cov --` subcommand: cargo-binutils 0.4.0's `cargo cov`/`cargo profdata`
+      # subcommand parsing panics unconditionally on a clap `ArgAction` incompatibility
+      # (`arg 'no-default-features's 'ArgAction' should be one of 'SetTrue', 'SetFalse'`),
+      # confirmed even on bare `cargo cov -- --help`. `rust-cov` itself is unaffected.
+      - name: Text coverage report
+        if: steps.coverage.outcome == 'success'
+        continue-on-error: true
+        working-directory: fuzz
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          bin="target/${triple}/coverage/${triple}/release/${{ matrix.target }}"
+          rust-cov report \
+            --instr-profile="coverage/${{ matrix.target }}/coverage.profdata" \
+            "$bin" \
+            | tee "coverage-${{ matrix.target }}.txt"
+
+      - name: HTML coverage report
+        if: steps.coverage.outcome == 'success'
+        continue-on-error: true
+        working-directory: fuzz
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          bin="target/${triple}/coverage/${triple}/release/${{ matrix.target }}"
+          rust-cov show \
+            --instr-profile="coverage/${{ matrix.target }}/coverage.profdata" \
+            "$bin" \
+            --format=html --output-dir="coverage-html-${{ matrix.target }}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: fuzz-coverage-${{ matrix.target }}
+          path: |
+            fuzz/coverage-${{ matrix.target }}.txt
+            fuzz/coverage-html-${{ matrix.target }}/
           if-no-files-found: ignore

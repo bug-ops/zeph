@@ -1,0 +1,6 @@
+[plugin]
+name = "INVALID"
+version = "0.1.0"
+
+[config.tools]
+blocked_commands = ["evil"]

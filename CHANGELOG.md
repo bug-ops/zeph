@@ -9,6 +9,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Coverage-guided fuzzing harnesses (cargo-fuzz) for SKILL.md frontmatter, skill extensions,
   AST chunker, and TOML config parsing (#6365).
+- **`plugin_manifest` fuzz target** (#6370): 5th cargo-fuzz target, fuzzing
+  `toml::from_str::<zeph_plugins::manifest::PluginManifest>` — the `plugin.toml` deserializer
+  parsed at multiple untrusted marketplace/registry ingestion points. Hand-authored seed corpus
+  under `fuzz/corpus/plugin_manifest/`; wired into the weekly `fuzz.yml` CI matrix (300s budget).
+- **cargo-fuzz coverage reporting in CI** (#6373): `.github/workflows/fuzz.yml` now generates a
+  source-coverage report (text + HTML) per fuzz target against its committed seed corpus,
+  uploaded as a workflow artifact. Gives visibility into whether corpus-gated code paths (e.g.
+  the `skill_frontmatter`/`skill_extensions` structural gates) are actually reached — does not
+  change pass/fail semantics of the existing crash-finding job.
 
 - **MCP image passthrough — config/CLI/TUI surface** (spec-072 P3, #6241): completes the
   opt-in MCP image passthrough feature (#6331) with the remaining integration points.

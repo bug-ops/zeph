@@ -15,6 +15,7 @@ libfuzzer-sys = "0.4.13"
 toml = "1.1.2"
 zeph-config = { path = "../crates/zeph-config" }
 zeph-index = { path = "../crates/zeph-index", features = ["sqlite"] }
+zeph-plugins = { path = "../crates/zeph-plugins", features = ["sqlite"] }
 zeph-skills = { path = "../crates/zeph-skills" }
 
 [[bin]]
@@ -41,6 +42,13 @@ bench = false
 [[bin]]
 name = "config_toml"
 path = "fuzz_targets/config_toml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plugin_manifest"
+path = "fuzz_targets/plugin_manifest.rs"
 test = false
 doc = false
 bench = false

@@ -16,6 +16,9 @@ zeph.log
 *.session
 /fuzz/target
 /fuzz/artifacts
+/fuzz/coverage
+/fuzz/coverage-*.txt
+/fuzz/coverage-html-*/
 
 # Track per-directory agent guides despite the global AGENTS.md ignore
 !AGENTS.md

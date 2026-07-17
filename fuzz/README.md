@@ -28,6 +28,11 @@ rustup toolchain install nightly
 | `skill_extensions` | `zeph_skills::extensions::parse_extensions` — the `serde_norway` YAML sub-block deserializer | raw `&str` |
 | `chunk_file` | `zeph_index::chunker::chunk_file` across all 9 `Lang` variants (tree-sitter parse + chunk boundary logic) | structured `Input { lang_selector: u8, source: String }` |
 | `config_toml` | `toml::from_str::<zeph_config::Config>` — Zeph's config deserialization graph (defaults, validation), not the TOML tokenizer itself (already OSS-Fuzzed upstream) | raw `&str` |
+| `plugin_manifest` | `toml::from_str::<zeph_plugins::manifest::PluginManifest>` — the `plugin.toml` deserialization graph, parsed at multiple untrusted marketplace/registry ingestion points (`manager/registry.rs`, `store.rs`, `install.rs`, `security.rs`) | raw `&str` |
+
+`PluginSource` (`manager/registry.rs:561`) is a separate, also-untrusted TOML parse point — an
+attacker-bundled `.plugin-source.toml` inside a plugin archive — intentionally left unfuzzed by
+`plugin_manifest`'s scope; a candidate for a future 6th target.
 
 ## Running a target locally
 
@@ -42,6 +47,22 @@ run (as CI does), pass `-max_total_time=<seconds>`:
 ```bash
 cargo +nightly fuzz run skill_frontmatter -- -max_total_time=300
 ```
+
+**Corpus pollution warning**: by default, `cargo fuzz run <target>` uses `fuzz/corpus/<target>/`
+as libFuzzer's live corpus directory — any input that increases coverage is written back into
+it automatically, even for a short exploratory run. That directory is git-tracked (it's the
+committed seed corpus), so an unqualified local run followed by `git add` can stage thousands of
+hash-named junk files alongside the intended seeds. For any local run that isn't specifically
+about growing the committed corpus on purpose, point libFuzzer at a scratch directory instead by
+passing it as a positional `CORPUS` argument:
+
+```bash
+mkdir -p /tmp/fuzz-scratch && cargo +nightly fuzz run skill_frontmatter /tmp/fuzz-scratch -- -max_total_time=20
+```
+
+After any run against the real corpus directory (intentional or not), run
+`git status fuzz/corpus/<target>/` before staging anything, and remove files that aren't
+deliberately-added seeds.
 
 ## Reproducing a crash
 
@@ -75,6 +96,12 @@ useful.
 - **`chunk_file`**: generated from real source files in this repo — see byte layout below.
 - **`config_toml`**: copied from `crates/zeph-config/config/default.toml` and
   `crates/zeph-config/tests/fixtures/acp_pr4_v0_19.toml`.
+- **`plugin_manifest`**: hand-authored `plugin.toml`-style manifests (no in-repo fixture files
+  existed) covering the `[plugin]` table, `[[skills]]`, `[[mcp.servers]]`, `[config.*]` overlay,
+  and `dependencies`, modeled on `PluginManifest`'s field structure and the inline manifest
+  strings used by `crates/zeph-plugins/src/manager/tests.rs` and `overlay.rs`.
+  `PluginManifest` requires a `[plugin]` table with `name` and `version` — seeds give the fuzzer
+  a valid envelope to mutate from.
 
 ### `chunk_file` seed byte layout
 
@@ -123,26 +150,81 @@ rather than a seed). Re-run it after adding new representative sample files:
 4. Seed `fuzz/corpus/<name>/` — check whether the target function has an early structural gate
    (a required prefix, a required key, a magic byte) that raw mutation is unlikely to satisfy; if
    so, seeding is mandatory, not optional.
-5. Add the target to the matrix in `.github/workflows/fuzz.yml` with an appropriate
-   `-max_total_time` budget.
+5. Add the target to the `fuzz` job's matrix in `.github/workflows/fuzz.yml` with an appropriate
+   `-max_total_time` budget, and to the `coverage` job's target list (see below).
 
-## Follow-up: `plugin_manifest` target (not implemented here)
+## Coverage reports
 
-A strong candidate for a 5th target: `zeph_plugins::manifest::PluginManifest` (pub, `Deserialize`,
-`crates/zeph-plugins/src/manifest.rs:37`), parsed via `toml::from_str::<PluginManifest>` at
-`crates/zeph-plugins/src/manager/registry.rs:432,531,561` (also `PluginSource` at line 561),
-`store.rs:49`, `install.rs:44`, and `security.rs:147`. Unlike `config_toml` (a trusted, user-owned
-file), plugin manifests originate from **untrusted marketplace/registry sources** — the same
-threat model as `skill_frontmatter` — making this a higher-value target than `config_toml`. Left
-out of this PR to keep scope tight; tracked as a follow-up issue.
+The `fuzz` job above only hunts for crashes; it doesn't tell you what fraction of a target's
+code the seed corpus actually exercises. A separate `coverage` job in `.github/workflows/fuzz.yml`
+runs on the same schedule (weekly + manual `workflow_dispatch`) and generates a source-coverage
+report per target by replaying its committed seed corpus — no libFuzzer mutation — through an
+instrumented binary. This is **visibility only**: `coverage` is a separate job from `fuzz`, and
+`continue-on-error: true` on every coverage-*generation* step means a tooling failure there never
+fails the crash-finding `fuzz` job. (An infra failure — checkout, toolchain setup, tool install,
+cache restore — is not wrapped in `continue-on-error` and would still redden the `coverage` job
+itself, but it can never touch `fuzz`.) No coverage threshold is enforced.
+
+This matters most for `skill_frontmatter` and `skill_extensions`, whose target functions have an
+early structural gate (`split_frontmatter`'s `---`-delimited envelope check;
+`parse_extensions`'s `extensions:` key check) — a coverage report is the only automated way to
+confirm the committed seeds actually get past the gate and reach the code being fuzzed.
+
+### Running coverage locally
+
+Requires the `llvm-tools-preview` rustup component (provides `llvm-profdata`/`llvm-cov`) and
+`cargo-binutils` (installs the `rust-cov`/`rust-profdata` binaries used below — **not** the
+`cargo cov`/`cargo profdata` subcommand wrappers: cargo-binutils 0.4.0's subcommand argument
+parsing panics unconditionally on a clap `ArgAction` incompatibility, confirmed even on a bare
+`cargo cov -- --help`; `rust-cov` itself is unaffected and is what CI uses):
+
+```bash
+rustup component add llvm-tools-preview --toolchain nightly
+cargo install cargo-binutils --locked
+```
+
+Generate the coverage profile for a target (replays its `fuzz/corpus/<target>/` seeds):
+
+```bash
+cd fuzz
+cargo +nightly fuzz coverage <target>
+```
+
+This writes `fuzz/coverage/<target>/coverage.profdata` and builds an instrumented binary under
+`fuzz/target/<triple>/coverage/<triple>/release/<target>` (`<triple>` is your host triple, e.g.
+`x86_64-unknown-linux-gnu` in CI or `aarch64-apple-darwin` on Apple Silicon — check with
+`rustc -vV | grep host`).
+
+View a text summary:
+
+```bash
+rust-cov report \
+  --instr-profile=coverage/<target>/coverage.profdata \
+  target/<triple>/coverage/<triple>/release/<target>
+```
+
+Or a richer, browsable HTML report:
+
+```bash
+rust-cov show \
+  --instr-profile=coverage/<target>/coverage.profdata \
+  target/<triple>/coverage/<triple>/release/<target> \
+  --format=html --output-dir=coverage-html-<target>
+# open coverage-html-<target>/index.html
+```
+
+In CI, both the text report and the HTML directory are uploaded as the `fuzz-coverage-<target>`
+workflow artifact on every scheduled/dispatched run.
 
 ## Build-time note
 
 The detached `fuzz/` workspace has its own `Cargo.lock` and pulls `zeph-index` (features =
 `["sqlite"]`), which transitively compiles `sqlx`, `zeph-llm`, `zeph-memory`,
 `zeph-db`, `zeph-tools`, and 5 tree-sitter grammars — all ASan-instrumented (cargo-fuzz's
-default). A cold build of this graph is the dominant cost of a CI run, not the fuzzing itself;
-`.github/workflows/fuzz.yml` uses `Swatinem/rust-cache` keyed on `fuzz/Cargo.lock` to amortize
-this across scheduled runs. If build time becomes a recurring problem, a slimmer `zeph-index`
-feature that excludes the DB/LLM stack is a possible future optimization (tracked as a
-conditional follow-up issue, not implemented here).
+default). `zeph-plugins` (features = `["sqlite"]`) shares most of that graph via `zeph-tools`/
+`zeph-skills` and adds `reqwest`, `tar`, `flate2`, and `sha2` on top — no meaningfully new build
+cost beyond what `zeph-index` already pulls in. A cold build of this graph is the dominant cost
+of a CI run, not the fuzzing itself; `.github/workflows/fuzz.yml` uses `Swatinem/rust-cache`
+keyed on `fuzz/Cargo.lock` to amortize this across scheduled runs. If build time becomes a
+recurring problem, a slimmer `zeph-index` feature that excludes the DB/LLM stack is a possible
+future optimization (tracked as a conditional follow-up issue, not implemented here).

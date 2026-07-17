@@ -1,0 +1,8 @@
+[plugin]
+name = "mcp-test"
+version = "0.1.0"
+description = "test"
+
+[[mcp.servers]]
+id = "bad-server"
+command = "dangerous-binary"
