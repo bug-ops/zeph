@@ -1214,12 +1214,23 @@ mod tests {
     }
 
     #[test]
-    fn any_ollama_supports_vision() {
+    fn any_ollama_supports_vision_false_by_default() {
+        // #6377: a freshly constructed Ollama provider has no confirmed vision capability
+        // and no explicit vision_model — AnyProvider delegation must not assume vision support.
         let provider = AnyProvider::Ollama(OllamaProvider::new(
             "http://localhost:11434",
             "test".into(),
             "embed".into(),
         ));
+        assert!(!provider.supports_vision());
+    }
+
+    #[test]
+    fn any_ollama_supports_vision_true_with_vision_model() {
+        let provider = AnyProvider::Ollama(
+            OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into())
+                .with_vision_model("llava:13b".into()),
+        );
         assert!(provider.supports_vision());
     }
 

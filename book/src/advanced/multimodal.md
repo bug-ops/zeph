@@ -115,18 +115,28 @@ Pipeline: Image attachment → MessagePart::Image → LLM provider (base64) → 
 |----------|--------|-------|
 | Claude | Yes | Anthropic image content block |
 | OpenAI | Yes | image_url data-URI |
-| Ollama | Yes | Optional `vision_model` routing |
+| Ollama | Conditional | Only when `vision_model` is configured, or the main model is confirmed vision-capable |
 | Candle | No | Text-only |
 
 ### Ollama Vision Model
 
-Route image requests to a dedicated model while keeping a smaller text model for regular queries:
+Ollama models vary widely in vision support — a text-only model (e.g. `qwen3:8b`) cannot
+process images, so Zeph never assumes vision support for Ollama: it checks the configured
+model's capabilities via `/api/show` at startup, and drops incoming images (with a warning)
+for any model that isn't confirmed vision-capable.
+
+Route image requests to a dedicated vision model while keeping a smaller text model for
+regular queries:
 
 ```toml
 [llm]
 model = "mistral:7b"
 vision_model = "llava:13b"
 ```
+
+Alternatively, set `model` directly to a vision-capable model (e.g. `llava:13b`,
+`qwen2.5vl`, `llama3.2-vision`) and Zeph detects the capability automatically — no
+`vision_model` override needed.
 
 ### Sending Images
 

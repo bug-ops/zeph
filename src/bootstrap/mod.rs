@@ -369,12 +369,27 @@ impl AppBuilder {
 
         health_check(&provider).await;
 
-        if let AnyProvider::Ollama(ref mut ollama) = provider
-            && let Ok(info) = ollama.fetch_model_info().await
-            && let Some(ctx) = info.context_length
-        {
-            ollama.set_context_window(ctx);
-            tracing::info!(context_window = ctx, "detected Ollama model context window");
+        if let AnyProvider::Ollama(ref mut ollama) = provider {
+            match ollama.fetch_model_info().await {
+                Ok(info) => {
+                    if let Some(ctx) = info.context_length {
+                        ollama.set_context_window(ctx);
+                        tracing::info!(
+                            context_window = ctx,
+                            "detected Ollama model context window"
+                        );
+                    }
+                    let vision_capable = info.supports_vision();
+                    ollama.set_vision_capable(vision_capable);
+                    tracing::info!(vision_capable, "detected Ollama model vision capability");
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "failed to fetch Ollama model info; vision support assumed unavailable"
+                    );
+                }
+            }
         }
 
         if let Some(ctx) = provider.context_window()

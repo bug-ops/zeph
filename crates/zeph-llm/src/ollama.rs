@@ -71,6 +71,18 @@ fn ollama_reqwest_client() -> reqwest012::Client {
 pub struct ModelInfo {
     /// Context window size in tokens, if reported by the server.
     pub context_length: Option<usize>,
+    /// Capability tags reported by the server (e.g. `"completion"`, `"vision"`, `"tools"`).
+    ///
+    /// Empty when the server predates the `capabilities` field or the request failed.
+    pub capabilities: Vec<String>,
+}
+
+impl ModelInfo {
+    /// Whether the server-reported capabilities include `"vision"`.
+    #[must_use]
+    pub fn supports_vision(&self) -> bool {
+        self.capabilities.iter().any(|c| c == "vision")
+    }
 }
 
 /// [`LlmProvider`] backend backed by a local Ollama server.
@@ -89,6 +101,12 @@ pub struct OllamaProvider {
     embedding_model: String,
     context_window_size: Option<usize>,
     vision_model: Option<String>,
+    /// Whether the configured chat `model` itself has been confirmed vision-capable via
+    /// `/api/show` (see [`set_vision_capable`](Self::set_vision_capable)). Defaults to `false`
+    /// — vision support is never assumed, only confirmed, so an unqueried or unreachable
+    /// server fails safe to "no vision" rather than silently attaching images the model
+    /// cannot process (#6377).
+    vision_capable: bool,
     generation_overrides: Option<GenerationOverrides>,
     usage: UsageTracker,
     /// Name reported by [`LlmProvider::name`]. Defaults to `"ollama"`; set the TOML-configured
@@ -139,6 +157,7 @@ impl OllamaProvider {
             embedding_model,
             context_window_size: None,
             vision_model: None,
+            vision_capable: false,
             generation_overrides: None,
             usage: UsageTracker::default(),
             provider_name: "ollama".to_owned(),
@@ -183,6 +202,13 @@ impl OllamaProvider {
         self.context_window_size = Some(size);
     }
 
+    /// Record whether the configured chat `model` was confirmed vision-capable
+    /// (typically from the `capabilities` field of an `/api/show` response, see
+    /// [`fetch_model_info`](Self::fetch_model_info) and [`ModelInfo::supports_vision`]).
+    pub fn set_vision_capable(&mut self, capable: bool) {
+        self.vision_capable = capable;
+    }
+
     /// Query Ollama /api/show for model metadata.
     ///
     /// # Errors
@@ -211,6 +237,7 @@ impl OllamaProvider {
 
         Ok(ModelInfo {
             context_length: ctx,
+            capabilities: info.capabilities,
         })
     }
 
@@ -282,8 +309,16 @@ impl LlmProvider for OllamaProvider {
         self.context_window_size
     }
 
+    /// Ollama models vary widely in vision support (e.g. `llava`/`qwen2.5vl` vs. text-only
+    /// `qwen3:8b`) — unlike Claude/OpenAI/Gemini, there is no single API-wide guarantee.
+    /// Reports `true` only when an explicit [`vision_model`](Self::with_vision_model) is
+    /// configured (images route to that model, trusted by the operator to support them), or
+    /// when the main chat `model` was confirmed vision-capable via
+    /// [`fetch_model_info`](Self::fetch_model_info) + [`set_vision_capable`](Self::set_vision_capable).
+    /// Fails safe to `false` — an unqueried or unreachable server never assumes vision support
+    /// (#6377).
     fn supports_vision(&self) -> bool {
-        true
+        self.vision_model.is_some() || self.vision_capable
     }
 
     fn supports_tool_use(&self) -> bool {
@@ -1261,6 +1296,71 @@ mod tests {
         let provider = OllamaProvider::new("http://localhost:11434", "main".into(), "embed".into());
         let selected = provider.vision_model.as_deref().unwrap_or(&provider.model);
         assert_eq!(selected, "main");
+    }
+
+    // --- #6377: supports_vision must not be hardcoded true ---
+
+    #[test]
+    fn supports_vision_false_by_default() {
+        // A freshly constructed provider has neither an explicit vision_model nor a
+        // confirmed-capable main model — must fail safe to false, not assume vision support.
+        let provider =
+            OllamaProvider::new("http://localhost:11434", "qwen3:8b".into(), "embed".into());
+        assert!(!provider.supports_vision());
+    }
+
+    #[test]
+    fn supports_vision_true_with_explicit_vision_model() {
+        // An operator-configured vision_model is a trusted opt-in: images route to that
+        // model, so supports_vision must report true regardless of main model capability.
+        let provider =
+            OllamaProvider::new("http://localhost:11434", "qwen3:8b".into(), "embed".into())
+                .with_vision_model("llava:13b".into());
+        assert!(provider.supports_vision());
+    }
+
+    #[test]
+    fn supports_vision_true_after_set_vision_capable() {
+        let mut provider =
+            OllamaProvider::new("http://localhost:11434", "llava:13b".into(), "embed".into());
+        assert!(!provider.supports_vision());
+        provider.set_vision_capable(true);
+        assert!(provider.supports_vision());
+    }
+
+    #[test]
+    fn set_vision_capable_false_keeps_supports_vision_false() {
+        let mut provider =
+            OllamaProvider::new("http://localhost:11434", "qwen3:8b".into(), "embed".into());
+        provider.set_vision_capable(false);
+        assert!(!provider.supports_vision());
+    }
+
+    #[test]
+    fn model_info_supports_vision_true_when_capability_present() {
+        let info = ModelInfo {
+            context_length: Some(4096),
+            capabilities: vec!["completion".into(), "vision".into(), "tools".into()],
+        };
+        assert!(info.supports_vision());
+    }
+
+    #[test]
+    fn model_info_supports_vision_false_when_capability_absent() {
+        let info = ModelInfo {
+            context_length: Some(4096),
+            capabilities: vec!["completion".into(), "tools".into()],
+        };
+        assert!(!info.supports_vision());
+    }
+
+    #[test]
+    fn model_info_supports_vision_false_when_capabilities_empty() {
+        let info = ModelInfo {
+            context_length: None,
+            capabilities: vec![],
+        };
+        assert!(!info.supports_vision());
     }
 
     #[test]

@@ -152,6 +152,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   embedding_model` global fallback defaults to `"nomic-embed-text"`; the actual fallback,
   `default_embedding_model()`, returns `"qwen3-embedding"` (#6385). Doc-only fix, no behavior
   change.
+- `zeph-llm`: `OllamaProvider::supports_vision()` unconditionally returned `true` regardless of
+  the configured model's actual capability (#6377). Since #6374 wired MCP-passthrough images
+  onto Ollama tool-role messages, this caused images to be attached and sent to text-only models
+  (e.g. `qwen3:8b`), typically failing the request server-side. `supports_vision()` now reports
+  `true` only when an explicit `vision_model` override is configured (images route to that model)
+  or when the main chat model has been confirmed vision-capable via `/api/show`'s `capabilities`
+  array — `Bootstrap::build_provider` now probes and caches this alongside its existing
+  context-window auto-detection. Fails safe to `false` (no vision) if the model info fetch fails
+  or the server predates the `capabilities` field, matching the trait's documented default.
 - `zeph-core`: the sanitizer's ML-backed injection and PII classifier calls
   (`ContentSanitizer::classify_injection`/`detect_pii`) were never recorded in the TUI
   metrics panel (#6382). The shared `Arc<ClassifierMetrics>` ring buffer they record into was

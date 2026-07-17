@@ -198,6 +198,86 @@ async fn health_check_ollama_unreachable() {
     health_check(&provider).await;
 }
 
+/// #6377: `build_provider` is the actual wiring point that probes `/api/show` and calls
+/// `set_vision_capable` — the per-field unit tests on `OllamaProvider::supports_vision()`
+/// and `ModelInfo::supports_vision()` never exercise this glue, only the pieces it calls.
+#[tokio::test]
+async fn build_provider_ollama_sets_vision_capable_from_api_show() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use zeph_llm::provider::LlmProvider as _;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "capabilities": ["completion", "vision"],
+        })))
+        .mount(&server)
+        .await;
+
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.llm.providers = vec![ProviderEntry {
+        provider_type: ProviderKind::Ollama,
+        base_url: Some(server.uri()),
+        model: Some("qwen2.5vl".into()),
+        ..ProviderEntry::default()
+    }];
+    let builder = AppBuilder {
+        config,
+        config_path: PathBuf::from("/nonexistent/config.toml"),
+        vault: Box::new(EnvVaultProvider),
+        age_vault: None,
+        qdrant_ops: None,
+        resolved_overlay: zeph_plugins::ResolvedOverlay::default(),
+        secret_registry: None,
+    };
+
+    let (provider, _tx, _rx) = builder
+        .build_provider()
+        .await
+        .expect("build_provider must succeed against the mock server");
+    assert!(
+        provider.supports_vision(),
+        "a model whose /api/show capabilities include \"vision\" must be wired through to \
+         supports_vision() == true"
+    );
+}
+
+/// #6377 fail-safe path: when `/api/show` cannot be reached at all, `vision_capable` must
+/// stay at its safe default (`false`) rather than the request failure leaving the field
+/// unset in some ambiguous state.
+#[tokio::test]
+async fn build_provider_ollama_vision_capable_false_when_api_show_unreachable() {
+    use zeph_llm::provider::LlmProvider as _;
+
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.llm.providers = vec![ProviderEntry {
+        provider_type: ProviderKind::Ollama,
+        base_url: Some("http://127.0.0.1:1".into()),
+        model: Some("qwen3:8b".into()),
+        ..ProviderEntry::default()
+    }];
+    let builder = AppBuilder {
+        config,
+        config_path: PathBuf::from("/nonexistent/config.toml"),
+        vault: Box::new(EnvVaultProvider),
+        age_vault: None,
+        qdrant_ops: None,
+        resolved_overlay: zeph_plugins::ResolvedOverlay::default(),
+        secret_registry: None,
+    };
+
+    let (provider, _tx, _rx) = builder
+        .build_provider()
+        .await
+        .expect("build_provider must not fail just because /api/show is unreachable");
+    assert!(
+        !provider.supports_vision(),
+        "an unreachable /api/show must leave vision_capable at its safe default (false)"
+    );
+}
+
 #[tokio::test]
 async fn health_check_claude_noop() {
     let provider = AnyProvider::Claude(ClaudeProvider::new("key".into(), "model".into(), 1024));
