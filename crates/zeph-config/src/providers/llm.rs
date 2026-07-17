@@ -369,7 +369,7 @@ impl LlmConfig {
     /// Resolution order:
     /// 1. `embedding_model` from the `[[llm.providers]]` entry marked `embed = true`
     /// 2. `embedding_model` from the first entry in `[[llm.providers]]`
-    /// 3. `[llm] embedding_model` global fallback (defaults to `"nomic-embed-text"`)
+    /// 3. `[llm] embedding_model` global fallback (defaults to `"qwen3-embedding"`)
     ///
     /// # Examples
     ///

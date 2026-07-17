@@ -321,3 +321,24 @@ fn compression_state_construction() {
     assert!(state.current_task_goal.is_none());
     assert!(state.task_goal_user_msg_hash.is_none());
 }
+
+// ------------------------------------------------------------------
+// ToolState — tools_enabled gate (#6386)
+// ------------------------------------------------------------------
+
+/// `ToolState` previously derived `Default`, which sets `bool` fields to `false`. Adding
+/// `tools_enabled: bool` without a manual `Default` impl would have silently defaulted every
+/// construction path that skips `Agent::with_tools_enabled(true)` to "no tools ever sent" —
+/// the opposite of `ToolsConfig::enabled`'s documented default of `true`. This test pins the
+/// manual `impl Default for ToolState` (`crates/zeph-core/src/agent/state/mod.rs`) so a future
+/// refactor back to `#[derive(Default)]` fails loudly instead of shipping a silent regression.
+#[test]
+fn tool_state_default_enables_tools() {
+    use crate::agent::state::ToolState;
+    let state = ToolState::default();
+    assert!(
+        state.tools_enabled,
+        "ToolState::default().tools_enabled must be true to match ToolsConfig::enabled's \
+         documented default (#6386)"
+    );
+}

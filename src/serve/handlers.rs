@@ -578,6 +578,7 @@ mod tests {
             quality_pipeline: None,
             safe_mode: false,
             allowed_paths: vec![],
+            tools_enabled: true,
         };
         AppState {
             registry: Arc::new(LiveSessionRegistry::new()),

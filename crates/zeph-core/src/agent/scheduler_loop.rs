@@ -1362,12 +1362,18 @@ impl<C: crate::channel::Channel> Agent<C> {
         use zeph_orchestration::ToolCallSummary;
         use zeph_tools::executor::ToolCall;
 
-        let tool_defs: Vec<ToolDefinition> = self
-            .tool_executor
-            .tool_definitions_erased()
-            .iter()
-            .map(tool_execution::tool_def_to_definition)
-            .collect();
+        // `[tools] enabled = false` (#6386): omit tool definitions here too, matching
+        // `process_response_native_tools` — this is a second, independent path that sends
+        // tool defs to the LLM (scheduler `RunInline` branch).
+        let tool_defs: Vec<ToolDefinition> = if self.services.tool_state.tools_enabled {
+            self.tool_executor
+                .tool_definitions_erased()
+                .iter()
+                .map(tool_execution::tool_def_to_definition)
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         tracing::debug!(
             prompt_len = prompt.len(),
@@ -2948,5 +2954,101 @@ mod tests {
             "a genuinely successful tool call must not be corrected away from Completed"
         );
         assert_eq!(status, GraphStatus::Completed);
+    }
+
+    // ---------------------------------------------------------------------------
+    // #6386: `run_inline_tool_loop` (the `RunInline` scheduler branch) is a second,
+    // independent path that builds tool definitions and sends them to the LLM — separate from
+    // `process_response_native_tools`. It must honor the same `[tools] enabled` gate. Drives
+    // `run_inline_tool_loop` directly (the real production entry point for `RunInline` tasks)
+    // via a tool-recording `MockProvider`.
+    // ---------------------------------------------------------------------------
+
+    fn inline_loop_test_tool_def() -> zeph_tools::registry::ToolDef {
+        use zeph_tools::registry::{InvocationHint, ToolDef};
+        ToolDef {
+            id: "test_tool".into(),
+            description: "a test tool".into(),
+            schema: schemars::Schema::default(),
+            invocation: InvocationHint::ToolCall,
+            output_schema: None,
+            server_id: None,
+        }
+    }
+
+    /// With `tools_enabled = false`, `run_inline_tool_loop` must send zero tool definitions to
+    /// the LLM, even though the underlying `tool_executor` has real tool definitions available.
+    #[tokio::test]
+    async fn run_inline_tool_loop_disabled_sends_no_tool_definitions() {
+        use crate::agent::agent_tests::*;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let (mock, recorded_tools) =
+            MockProvider::with_responses(vec!["done".into()]).with_tool_recording();
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor =
+            MockToolExecutor::no_tools().with_definitions(vec![inline_loop_test_tool_def()]);
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
+            .with_tools_enabled(false);
+
+        let outcome = agent
+            .run_inline_tool_loop("do something", 3)
+            .await
+            .expect("inline loop must succeed on a plain-text response");
+        assert_eq!(outcome.text, "done");
+
+        let calls = recorded_tools.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            1,
+            "provider must be called exactly once for a plain-text terminal response"
+        );
+        assert!(
+            calls[0].is_empty(),
+            "RunInline path must send zero tool definitions when tools_enabled=false (#6386), \
+             even though the tool_executor has definitions available; got: {:?}",
+            calls[0].iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// Companion baseline: with the default `tools_enabled = true`, `run_inline_tool_loop`
+    /// must still forward the `tool_executor`'s definitions — proving the gate isn't inverted.
+    #[tokio::test]
+    async fn run_inline_tool_loop_enabled_sends_tool_definitions() {
+        use crate::agent::agent_tests::*;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let (mock, recorded_tools) =
+            MockProvider::with_responses(vec!["done".into()]).with_tool_recording();
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor =
+            MockToolExecutor::no_tools().with_definitions(vec![inline_loop_test_tool_def()]);
+        // No `.with_tools_enabled(...)` call — exercises the builder's own default (true).
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+        let outcome = agent
+            .run_inline_tool_loop("do something", 3)
+            .await
+            .expect("inline loop must succeed on a plain-text response");
+        assert_eq!(outcome.text, "done");
+
+        let calls = recorded_tools.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            1,
+            "provider must be called exactly once for a plain-text terminal response"
+        );
+        assert!(
+            calls[0].iter().any(|t| t.name.as_str() == "test_tool"),
+            "with the default tools_enabled=true, the tool_executor's definitions must reach \
+             the LLM; got: {:?}",
+            calls[0].iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
     }
 }

@@ -516,6 +516,10 @@ pub(crate) struct SharedAgentDeps {
     /// via `Agent::with_allowed_paths` so `/cd` is validated against the same sandbox
     /// boundary `FileExecutor`/`DiagnosticsExecutor`/`SetCwdExecutor` already enforce.
     cwd_allowed_paths: Vec<std::path::PathBuf>,
+    /// `config.tools.enabled` (#6386), wired into every session's `Agent` via
+    /// `Agent::with_tools_enabled` so `[tools] enabled = false` actually suppresses tool
+    /// definitions, matching `runner.rs`/`daemon.rs`.
+    tools_enabled: bool,
 
     // ACP-specific fields (transport-level; not agent-level)
     acp_agent_name: String,
@@ -1210,6 +1214,7 @@ async fn build_acp_deps(
             .iter()
             .map(std::path::PathBuf::from)
             .collect(),
+        tools_enabled: config.tools.enabled,
         session_config,
         session_persistence_config: config.session.clone(),
         resume_condenser: resume_condenser_built,
@@ -1413,6 +1418,7 @@ where
     channel_persist_provider_overrides: bool,
     safe_mode: bool,
     cwd_allowed_paths: Vec<PathBuf>,
+    tools_enabled: bool,
     tool_filter_config: zeph_core::config::ToolFilterConfig,
 }
 
@@ -1499,6 +1505,7 @@ where
     )
     .with_safe_mode(deps.safe_mode)
     .with_allowed_paths(deps.cwd_allowed_paths)
+    .with_tools_enabled(deps.tools_enabled)
     .maybe_init_tool_schema_filter(deps.tool_filter_config, deps.provider)
     .await
 }
@@ -1598,6 +1605,7 @@ async fn spawn_acp_agent(
     let hooks_config = d.hooks_config.clone();
     let safe_mode = d.safe_mode;
     let cwd_allowed_paths = d.cwd_allowed_paths.clone();
+    let tools_enabled = d.tools_enabled;
     let tool_filter_config = d.tool_filter_config.clone();
 
     // Cloned before `acp_ctx` is destructured into individual per-session executors below
@@ -2004,6 +2012,7 @@ async fn spawn_acp_agent(
         channel_persist_provider_overrides,
         safe_mode,
         cwd_allowed_paths,
+        tools_enabled,
         tool_filter_config,
     };
     let mut agent = Box::pin(build_acp_agent(build_params, channel)).await;
@@ -5075,6 +5084,7 @@ mod tests {
             channel_persist_provider_overrides: false,
             safe_mode: false,
             cwd_allowed_paths: Vec::new(),
+            tools_enabled: true,
             tool_filter_config: zeph_core::config::ToolFilterConfig::default(),
         };
 

@@ -152,6 +152,7 @@ impl ServeTestHarness {
             quality_pipeline: None,
             safe_mode: false,
             allowed_paths: vec![],
+            tools_enabled: true,
         };
 
         let state = AppState {

@@ -884,6 +884,17 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set whether tool definitions are built and sent to the LLM (`config.tools.enabled`, #6386).
+    ///
+    /// When `false`, `process_response_native_tools` sends no tool definitions at all, so the
+    /// model has no tools to call. Defaults to `true` (matching `ToolsConfig::enabled`'s default)
+    /// when this builder method is never called.
+    #[must_use]
+    pub fn with_tools_enabled(mut self, enabled: bool) -> Self {
+        self.services.tool_state.tools_enabled = enabled;
+        self
+    }
+
     /// Configure channel identity for per-channel UX preference persistence (#3308, #4654).
     ///
     /// `channel_type` must match the active I/O channel name (`"cli"`, `"tui"`, `"telegram"`,

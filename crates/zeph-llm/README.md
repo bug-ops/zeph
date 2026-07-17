@@ -176,7 +176,7 @@ For cost-sensitive or resource-constrained deployments, the following Small Lang
 
 | Task | Recommended SLM | Notes |
 |------|----------------|-------|
-| Embeddings | `nomic-embed-text` (Ollama) | Default embedding model |
+| Embeddings | `qwen3-embedding` (Ollama) | Default embedding model |
 | Simple queries / routing | `qwen3:8b` (Ollama) | Fast, low memory footprint |
 | Summarization / compaction | `qwen3:8b` or `phi-4-mini` | Good quality at 8B scale |
 | Graph extraction | `qwen3:8b` | Structured output via JSON Schema |

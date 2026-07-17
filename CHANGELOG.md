@@ -140,6 +140,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-config`/`zeph-core`: `[tools] enabled = false` was dead config — deserialized onto
+  `ToolsConfig::enabled` but never read anywhere, so tool definitions were still built and sent
+  to the LLM regardless of the setting (#6386). `ToolsConfig::enabled` is now mirrored into
+  `Agent`'s `ToolState` (via a new `Agent::with_tools_enabled` builder method, wired at every
+  agent-construction site — `src/runner.rs`, `src/daemon.rs`, `src/acp.rs`, `src/serve/`) and
+  gates `process_response_native_tools`'s tool-definition construction: when `false`, no tool
+  definitions (including focus/compress_context/request_compaction) are built or sent, so the
+  model has no tools to call at all.
+- `zeph-config`: `LlmConfig::effective_embedding_model()`'s doc comment claimed the `[llm]
+  embedding_model` global fallback defaults to `"nomic-embed-text"`; the actual fallback,
+  `default_embedding_model()`, returns `"qwen3-embedding"` (#6385). Doc-only fix, no behavior
+  change.
 - `zeph-core`: the sanitizer's ML-backed injection and PII classifier calls
   (`ContentSanitizer::classify_injection`/`detect_pii`) were never recorded in the TUI
   metrics panel (#6382). The shared `Arc<ClassifierMetrics>` ring buffer they record into was

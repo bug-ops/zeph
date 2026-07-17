@@ -1654,3 +1654,106 @@ async fn magic_doc_registered_when_tool_result_is_final_message_of_max_iteration
         agent.services.memory.subsystems.magic_docs.registered
     );
 }
+
+// ---------------------------------------------------------------------------
+// #6386: `[tools] enabled = false` must suppress every tool definition sent to the LLM.
+// Drives the real `process_response()` -> `process_response_native_tools()` path (not the
+// tool_defs construction block directly) via a tool-recording `MockProvider`, so these tests
+// only pass if the production gate in `process_response_native_tools` actually short-circuits
+// tool-definition construction end to end.
+// ---------------------------------------------------------------------------
+
+/// #6386: with `Agent::with_tools_enabled(false)`, zero tool definitions must reach the LLM —
+/// not even the always-on `compress_context` tool, which is otherwise pushed unconditionally
+/// whenever the gate is open.
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn tools_disabled_gate_sends_no_tool_definitions_to_llm() {
+    use crate::agent::agent_tests::{MockChannel, MockToolExecutor, create_test_registry};
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::{Message, MessageMetadata, Role};
+
+    let (mock, recorded_tools) =
+        MockProvider::with_responses(vec!["No tools available.".into()]).with_tool_recording();
+    let provider = AnyProvider::Mock(mock);
+
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
+        .with_tools_enabled(false);
+
+    agent.msg.messages.push(Message {
+        role: Role::User,
+        content: "list files using a tool".into(),
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    });
+
+    agent.process_response().await.unwrap();
+
+    let calls = recorded_tools.lock().unwrap();
+    assert_eq!(
+        calls.len(),
+        1,
+        "provider must be called exactly once for a plain-text terminal response"
+    );
+    assert!(
+        calls[0].is_empty(),
+        "with tools_enabled=false, zero tool definitions (not even compress_context) may be \
+         sent to the LLM; got: {:?}",
+        calls[0].iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
+}
+
+/// #6386 companion baseline: the default (`tools_enabled = true`, matching
+/// `ToolsConfig::enabled`'s documented default) path must still send tool definitions —
+/// proving the gate condition isn't inverted and doesn't regress the always-on
+/// `compress_context` tool for the common case.
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn tools_enabled_baseline_sends_tool_definitions_to_llm() {
+    use crate::agent::agent_tests::{MockChannel, MockToolExecutor, create_test_registry};
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::{Message, MessageMetadata, Role};
+
+    let (mock, recorded_tools) =
+        MockProvider::with_responses(vec!["Sure, calling a tool.".into()]).with_tool_recording();
+    let provider = AnyProvider::Mock(mock);
+
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    // No `.with_tools_enabled(...)` call — exercises the builder's own default (true).
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+    agent.msg.messages.push(Message {
+        role: Role::User,
+        content: "list files using a tool".into(),
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    });
+
+    agent.process_response().await.unwrap();
+
+    let calls = recorded_tools.lock().unwrap();
+    assert_eq!(
+        calls.len(),
+        1,
+        "provider must be called exactly once for a plain-text terminal response"
+    );
+    assert!(
+        !calls[0].is_empty(),
+        "with the default tools_enabled=true, at least the always-on compress_context tool \
+         definition must be sent; got an empty tool list"
+    );
+    assert!(
+        calls[0]
+            .iter()
+            .any(|t| t.name.as_str() == "compress_context"),
+        "the always-on compress_context tool must be present when tools are enabled; got: {:?}",
+        calls[0].iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
+}

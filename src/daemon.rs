@@ -457,6 +457,7 @@ where
             .map(PathBuf::from)
             .collect(),
     )
+    .with_tools_enabled(config.tools.enabled)
     .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), deps.embedding_provider)
     .await
 }

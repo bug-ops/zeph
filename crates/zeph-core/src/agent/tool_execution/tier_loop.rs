@@ -2955,30 +2955,36 @@ impl<C: Channel> Agent<C> {
 
         // `mut` required when context-compression is enabled to inject focus tool definitions.
         let tafc = &self.tool_orchestrator.tafc;
-        let mut tool_defs: Vec<ToolDefinition> = self
-            .tool_executor
-            .tool_definitions_erased()
-            .iter()
-            .map(|def| super::tool_def_to_definition_with_tafc(def, tafc))
-            .collect();
+        let mut tool_defs: Vec<ToolDefinition> = Vec::new();
 
-        // Inject focus tool definitions when the feature is enabled and configured (#1850).
-        if self.services.focus.config.enabled {
-            tool_defs.extend(crate::agent::focus::focus_tool_definitions());
-        }
+        // `[tools] enabled = false` (#6386): omit every tool definition so the LLM request
+        // carries no tools at all and the model cannot attempt a tool call.
+        if self.services.tool_state.tools_enabled {
+            tool_defs = self
+                .tool_executor
+                .tool_definitions_erased()
+                .iter()
+                .map(|def| super::tool_def_to_definition_with_tafc(def, tafc))
+                .collect();
 
-        // Inject compress_context tool — always available when context-compression is enabled (#2218).
-        tool_defs.push(crate::agent::focus::compress_context_tool_definition());
+            // Inject focus tool definitions when the feature is enabled and configured (#1850).
+            if self.services.focus.config.enabled {
+                tool_defs.extend(crate::agent::focus::focus_tool_definitions());
+            }
 
-        // Inject request_compaction tool when ARC agent-initiated compaction is enabled (#4020).
-        if self
-            .services
-            .memory
-            .subsystems
-            .arc_config
-            .allow_agent_compaction
-        {
-            tool_defs.push(crate::agent::focus::request_compaction_tool_definition());
+            // Inject compress_context tool — always available when context-compression is enabled (#2218).
+            tool_defs.push(crate::agent::focus::compress_context_tool_definition());
+
+            // Inject request_compaction tool when ARC agent-initiated compaction is enabled (#4020).
+            if self
+                .services
+                .memory
+                .subsystems
+                .arc_config
+                .allow_agent_compaction
+            {
+                tool_defs.push(crate::agent::focus::request_compaction_tool_definition());
+            }
         }
 
         // Pre-compute the full tool set for iterations 1+ before filtering.

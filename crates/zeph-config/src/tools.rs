@@ -1403,7 +1403,8 @@ impl Default for ToolCompressionConfig {
 /// importing runtime types into this leaf crate.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ToolsConfig {
-    /// Enable all tools. Default: `true`.
+    /// Enable all tools. When `false`, no tool definitions are sent to the LLM and the model
+    /// cannot attempt any tool call. Default: `true`.
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Summarize long tool output before injection into context. Default: `true`.

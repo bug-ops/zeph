@@ -174,6 +174,10 @@ pub(crate) struct ServeAgentDeps {
     /// via `Agent::with_allowed_paths` so `/cd` is validated against the same sandbox
     /// boundary `FileExecutor`/`DiagnosticsExecutor`/`SetCwdExecutor` already enforce.
     pub(crate) allowed_paths: Vec<PathBuf>,
+    /// `config.tools.enabled` (#6386), wired into every session's `Agent` via
+    /// `Agent::with_tools_enabled` so `[tools] enabled = false` actually suppresses tool
+    /// definitions for `/sessions`-built agents, matching `runner.rs`/`daemon.rs`/`acp.rs`.
+    pub(crate) tools_enabled: bool,
 }
 
 /// Assemble [`ServeAgentDeps`] once at `zeph serve-sessions` startup, plus the resolved bearer
@@ -505,6 +509,7 @@ pub(crate) async fn assemble_serve_deps(
             .iter()
             .map(PathBuf::from)
             .collect(),
+        tools_enabled: config.tools.enabled,
     })
 }
 

@@ -40,6 +40,9 @@ pub struct MockProvider {
     errors: Arc<Mutex<VecDeque<crate::LlmError>>>,
     /// When set, every `chat()` call appends a clone of the messages slice here.
     recorded: Option<Arc<Mutex<Vec<Vec<Message>>>>>,
+    /// When set, every `chat_with_tools()` call appends a clone of the `tools` slice here.
+    /// Set via [`MockProvider::with_tool_recording`].
+    recorded_tools: Option<Arc<Mutex<Vec<Vec<ToolDefinition>>>>>,
     /// Pre-configured `ChatResponse` sequence returned from `chat_with_tools()`.
     /// When exhausted, falls back to `ChatResponse::Text` via `chat()`.
     tool_responses: Arc<Mutex<VecDeque<ChatResponse>>>,
@@ -102,6 +105,7 @@ impl Default for MockProvider {
             delay_ms: 0,
             errors: Arc::new(Mutex::new(VecDeque::new())),
             recorded: None,
+            recorded_tools: None,
             tool_responses: Arc::new(Mutex::new(VecDeque::new())),
             tool_call_count: Arc::new(Mutex::new(0)),
             models: vec![],
@@ -233,6 +237,17 @@ impl MockProvider {
     pub fn with_recording(mut self) -> (Self, Arc<Mutex<Vec<Vec<Message>>>>) {
         let buf = Arc::new(Mutex::new(Vec::new()));
         self.recorded = Some(Arc::clone(&buf));
+        (self, buf)
+    }
+
+    /// Enable tool-definition recording. Returns the shared buffer. Each
+    /// `chat_with_tools()` call appends a clone of the `tools` slice it received, so tests
+    /// can assert on exactly what tool definitions reached the "LLM" (e.g. verifying
+    /// `[tools] enabled = false` results in zero tool definitions ever being sent, #6386).
+    #[must_use]
+    pub fn with_tool_recording(mut self) -> (Self, Arc<Mutex<Vec<Vec<ToolDefinition>>>>) {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        self.recorded_tools = Some(Arc::clone(&buf));
         (self, buf)
     }
 
@@ -550,9 +565,14 @@ impl LlmProvider for MockProvider {
     async fn chat_with_tools(
         &self,
         messages: &[Message],
-        _tools: &[ToolDefinition],
+        tools: &[ToolDefinition],
     ) -> Result<ChatResponse, crate::LlmError> {
         *self.tool_call_count.lock().unwrap() += 1;
+        if let Some(buf) = &self.recorded_tools
+            && let Ok(mut guard) = buf.lock()
+        {
+            guard.push(tools.to_vec());
+        }
         if self.tool_chat_invalid_input {
             return Err(crate::LlmError::InvalidInput {
                 provider: self.name().to_owned(),

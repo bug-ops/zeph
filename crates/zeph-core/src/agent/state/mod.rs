@@ -829,8 +829,11 @@ pub(crate) struct CompressionState {
 }
 
 /// Groups runtime tool filtering, dependency tracking, and iteration bookkeeping.
-#[derive(Default)]
 pub(crate) struct ToolState {
+    /// `config.tools.enabled`, mirrored here so `process_response_native_tools` can gate
+    /// tool-definition construction without threading a live `Config` through `Agent<C>`.
+    /// When `false`, no tool definitions are built or sent to the LLM (#6386).
+    pub(crate) tools_enabled: bool,
     /// Dynamic tool schema filter: pre-computed tool embeddings for per-turn filtering (#2020).
     pub(crate) tool_schema_filter: Option<zeph_tools::ToolSchemaFilter>,
     /// Cached filtered tool IDs for the current user turn.
@@ -860,6 +863,24 @@ pub(crate) struct ToolState {
     /// callers treat empty the same way `FileExecutor::new` does (default to `[cwd]`), not as
     /// "allow every path".
     pub(crate) allowed_paths: Vec<std::path::PathBuf>,
+}
+
+impl Default for ToolState {
+    fn default() -> Self {
+        Self {
+            tools_enabled: true,
+            tool_schema_filter: None,
+            cached_filtered_tool_ids: None,
+            dependency_graph: None,
+            dependency_always_on: HashSet::new(),
+            completed_tool_ids: HashSet::new(),
+            current_tool_iteration: 0,
+            pattern_store: None,
+            tool_to_skill: HashMap::new(),
+            last_tool_per_skill: HashMap::new(),
+            allowed_paths: Vec::new(),
+        }
+    }
 }
 
 /// Groups per-session I/O and policy state.

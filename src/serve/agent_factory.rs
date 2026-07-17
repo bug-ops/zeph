@@ -251,7 +251,10 @@ pub(crate) async fn build_agent_factory(
         .with_safe_mode(deps.safe_mode)
         // #6032 SEC-2: sandbox `/cd` to the same allowed_paths as the file/shell/diagnostics
         // executors, matching src/runner.rs/src/acp.rs/src/daemon.rs.
-        .with_allowed_paths(deps.allowed_paths);
+        .with_allowed_paths(deps.allowed_paths)
+        // #6386: propagate `[tools] enabled` onto this session's Agent so a `false` value
+        // actually suppresses tool definitions, matching src/runner.rs/src/acp.rs/src/daemon.rs.
+        .with_tools_enabled(deps.tools_enabled);
         if !preloaded_messages.is_empty() {
             agent = agent.with_preloaded_messages(preloaded_messages);
         }
@@ -855,6 +858,7 @@ mod tests {
             quality_pipeline: None,
             safe_mode: false,
             allowed_paths: vec![],
+            tools_enabled: true,
         };
 
         let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
@@ -948,6 +952,7 @@ mod tests {
             quality_pipeline: None,
             safe_mode: false,
             allowed_paths: vec![],
+            tools_enabled: true,
         };
 
         let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
@@ -1060,6 +1065,7 @@ mod tests {
             quality_pipeline: None,
             safe_mode: false,
             allowed_paths: vec![],
+            tools_enabled: true,
         };
 
         let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
@@ -1161,6 +1167,7 @@ mod tests {
             quality_pipeline: None,
             safe_mode: false,
             allowed_paths: vec![],
+            tools_enabled: true,
         };
 
         let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
@@ -1261,6 +1268,7 @@ mod tests {
             quality_pipeline: None,
             safe_mode: false,
             allowed_paths: vec![],
+            tools_enabled: true,
         };
 
         let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
@@ -1358,6 +1366,7 @@ mod tests {
             quality_pipeline: None,
             safe_mode: false,
             allowed_paths: vec![],
+            tools_enabled: true,
         };
 
         let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
@@ -1438,6 +1447,7 @@ mod tests {
             quality_pipeline: None,
             safe_mode: false,
             allowed_paths: vec![],
+            tools_enabled: true,
         }
     }
 
