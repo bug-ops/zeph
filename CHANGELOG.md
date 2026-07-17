@@ -104,6 +104,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   which Renovate had bumped past the version `ollama-rs` actually depends on, breaking the
   `rustls-tls` feature name in the process.
 
+- **zeph-llm**: fixed a `full`/`postgres`-only build breakage from the same `rust-minor-patch`
+  bundle (#6324) that the fix above missed — the `gonka` feature (pulled in only by the
+  `full`/`bench` bundles and the postgres workspace check, not the default CI feature set) was
+  never exercised locally before that PR merged. `k256`'s `elliptic-curve` bump to 0.14
+  deprecated `ToEncodedPoint` in favor of `ToSec1Point`, and `build.warnings` denies the
+  resulting deprecation warning; `crates/zeph-llm/src/gonka/signer.rs` now imports and calls
+  `ToSec1Point`/`to_sec1_point` instead.
+
 ### Testing
 
 - **zeph-orchestration** / **zeph-subagent**: closed three coverage gaps in the idle-timeout
