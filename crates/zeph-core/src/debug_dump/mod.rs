@@ -483,7 +483,7 @@ impl zeph_llm::debug_dump::DebugDumpSink for DebugDumper {
 
 /// Wraps a [`DebugDumper`] with a [`zeph_sanitizer::pii::PiiFilter`] so sub-agent-executed LLM
 /// calls get the same optional PII-redaction layer top-level dumps receive via
-/// [`DebugState::write_chat_debug_dump`](crate::agent::state::DebugState::write_chat_debug_dump)
+/// `DebugState::write_chat_debug_dump`
 /// — the baseline `scrub_content`/`redact_binary_blobs` pass inside [`DebugDumper::dump_response`]
 /// always applies, but the extra `PiiFilter.scrub()` layer is opt-in per config and was
 /// previously only wired into the top-level path (#6407).
