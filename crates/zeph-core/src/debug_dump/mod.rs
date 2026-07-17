@@ -1919,6 +1919,7 @@ mod tests {
             reasoning_effort: None,
             context_window: None,
             completion_tokens_param: None,
+            vision: None,
         });
         let gemini = zeph_llm::gemini::GeminiProvider::new(
             "test-key".to_owned(),

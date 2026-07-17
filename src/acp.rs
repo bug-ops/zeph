@@ -2420,6 +2420,7 @@ fn build_acp_provider_factory(
                             reasoning_effort: reasoning_effort.clone(),
                             context_window: None,
                             completion_tokens_param: None,
+                            vision: None,
                         }),
                     )));
                 }
@@ -2440,6 +2441,7 @@ fn build_acp_provider_factory(
                                 max_tokens: *max_tokens,
                                 embedding_model: embed.clone(),
                                 completion_tokens_param: None,
+                                vision: None,
                             },
                         ),
                     )));

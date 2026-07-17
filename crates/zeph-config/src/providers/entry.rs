@@ -138,6 +138,16 @@ pub struct ProviderEntry {
     // --- Vision ---
     #[serde(default)]
     pub vision_model: Option<String>,
+    /// Explicit vision-capability override for `type = "openai"` / `type = "compatible"`
+    /// providers.
+    ///
+    /// `None` (default) auto-detects via the built-in `OpenAI` model-name prefix table
+    /// (e.g. `gpt-4o` → capable, `gpt-3.5-turbo` → not capable), which fails safe to `false`
+    /// for any unrecognised model name — the common case for arbitrary `compatible` endpoints.
+    /// Set explicitly to override the auto-detected value in either direction. Ignored by
+    /// other provider types.
+    #[serde(default)]
+    pub vision: Option<bool>,
 
     // --- Gonka-specific ---
     /// Gonka network node pool. Required (non-empty) when `type = "gonka"`.
@@ -222,6 +232,7 @@ impl Default for ProviderEntry {
             api_key: None,
             candle: None,
             vision_model: None,
+            vision: None,
             gonka_nodes: Vec::new(),
             gonka_chain_prefix: None,
             cocoon_client_url: None,
@@ -258,6 +269,7 @@ impl std::fmt::Debug for ProviderEntry {
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("candle", &self.candle)
             .field("vision_model", &self.vision_model)
+            .field("vision", &self.vision)
             .field("gonka_nodes", &self.gonka_nodes)
             .field("gonka_chain_prefix", &self.gonka_chain_prefix)
             .field("cocoon_client_url", &self.cocoon_client_url)

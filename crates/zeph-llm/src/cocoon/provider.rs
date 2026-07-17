@@ -181,6 +181,7 @@ impl CocoonProvider {
             reasoning_effort: None,
             context_window: None,
             completion_tokens_param: None,
+            vision: None,
         });
         Self {
             inner,

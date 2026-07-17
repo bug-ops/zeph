@@ -216,6 +216,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   CLI or TUI display surface (#6390). `/plan status` now lists any rejected handoffs by task
   id/title/reason, and the TUI plan view's task row shows a `[handoff rejected: ...]` title
   suffix, mirroring the existing failed-task error suffix.
+- `zeph-llm`: `OpenAiProvider::supports_vision()` (and `CompatibleProvider`, which delegates to
+  it) unconditionally returned `true` regardless of the configured model's actual capability
+  (#6411, same defect class as #6377/#6410). This caused images to be attached and sent to
+  text-only models such as `gpt-3.5-turbo` (`type = "openai"`) or arbitrary text-only
+  `type = "compatible"` endpoints. Unlike Ollama, there is no standardized capability-discovery
+  endpoint for arbitrary `OpenAI`-compatible servers, so `supports_vision()` now resolves via an
+  explicit `vision` override (new `OpenAiConfig`/`CompatibleConfig` field and
+  `OpenAiProvider::with_vision`/`CompatibleProvider::with_vision` builder, also exposed as a new
+  `vision` field on `[[llm.providers]]` entries) falling back to a built-in model-name prefix
+  table for well-known `OpenAI` vision families (`gpt-4o`, `gpt-4-turbo`, `gpt-4.1`, `gpt-5`,
+  vision-capable `o`+digit reasoning models, explicitly excluding text-only reasoning variants
+  like `o1-mini`/`o1-preview`/`o3-mini`). Fails safe to `false` for any unrecognised model name —
+  the prefix table cannot identify arbitrary `compatible` endpoint model names at all, so an
+  explicit `vision = true` override is the documented way to enable images for those.
 - `zeph-core`: the sanitizer's ML-backed injection and PII classifier calls
   (`ContentSanitizer::classify_injection`/`detect_pii`) were never recorded in the TUI
   metrics panel (#6382). The shared `Arc<ClassifierMetrics>` ring buffer they record into was

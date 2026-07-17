@@ -33,6 +33,7 @@ fn test_provider() -> OpenAiProvider {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     })
 }
 
@@ -47,6 +48,7 @@ fn context_window_gpt4o() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.context_window(), Some(128_000));
 }
@@ -67,6 +69,7 @@ fn context_window_unknown_falls_back_to_128k() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.context_window(), Some(128_000));
 }
@@ -82,6 +85,7 @@ fn context_window_override_takes_precedence() {
         reasoning_effort: None,
         context_window: Some(256_000),
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.context_window(), Some(256_000));
 }
@@ -97,9 +101,211 @@ fn context_window_override_via_builder() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     })
     .with_context_window(200_000);
     assert_eq!(p.context_window(), Some(200_000));
+}
+
+// --- #6411: supports_vision must not be hardcoded true ---
+
+#[test]
+fn supports_vision_true_for_known_vision_model() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-4o".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: None,
+    });
+    assert!(p.supports_vision());
+}
+
+#[test]
+fn supports_vision_false_for_gpt35() {
+    // The exact repro case from #6411: a text-only model must not be treated as vision-capable.
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-3.5-turbo".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: None,
+    });
+    assert!(!p.supports_vision());
+}
+
+#[test]
+fn supports_vision_false_for_unknown_model() {
+    // Fail-safe default: an unrecognised model name (e.g. an arbitrary `compatible` endpoint
+    // model) must not be assumed vision-capable.
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "custom-model".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: None,
+    });
+    assert!(!p.supports_vision());
+}
+
+#[test]
+fn supports_vision_false_for_o1_mini() {
+    // Regression: o1-mini is text-only, but naively reusing starts_with_o_digit (correct for
+    // the completion-tokens axis) would misreport it as vision-capable, reintroducing #6411.
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o1-mini".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: None,
+    });
+    assert!(!p.supports_vision());
+}
+
+#[test]
+fn supports_vision_false_for_o1_preview() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o1-preview".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: None,
+    });
+    assert!(!p.supports_vision());
+}
+
+#[test]
+fn supports_vision_false_for_o3_mini() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o3-mini".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: None,
+    });
+    assert!(!p.supports_vision());
+}
+
+#[test]
+fn supports_vision_true_for_o1() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o1".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: None,
+    });
+    assert!(p.supports_vision());
+}
+
+#[test]
+fn supports_vision_true_for_o3() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o3".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: None,
+    });
+    assert!(p.supports_vision());
+}
+
+#[test]
+fn supports_vision_true_for_o4_mini() {
+    // o4-mini is a multimodal reasoning model, unlike o1-mini/o3-mini which are text-only.
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o4-mini".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: None,
+    });
+    assert!(p.supports_vision());
+}
+
+#[test]
+fn supports_vision_true_with_explicit_override_on_text_model() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-3.5-turbo".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: Some(true),
+    });
+    assert!(p.supports_vision());
+}
+
+#[test]
+fn supports_vision_false_with_explicit_override_on_vision_model() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-4o".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: Some(false),
+    });
+    assert!(!p.supports_vision());
+}
+
+#[test]
+fn supports_vision_override_via_builder() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-3.5-turbo".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+        vision: None,
+    })
+    .with_vision(true);
+    assert!(p.supports_vision());
 }
 
 fn test_provider_no_embed() -> OpenAiProvider {
@@ -112,6 +318,7 @@ fn test_provider_no_embed() -> OpenAiProvider {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     })
 }
 
@@ -137,6 +344,7 @@ fn new_with_reasoning_effort() {
         reasoning_effort: Some("high".into()),
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.reasoning_effort.as_deref(), Some("high"));
 }
@@ -284,6 +492,7 @@ fn debug_request_json_plain_includes_flat_reasoning_effort() {
         reasoning_effort: Some("medium".into()),
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let messages = vec![Message::from_legacy(Role::User, "hi")];
     let json = p.debug_request_json(&messages, &[], false).to_string();
@@ -302,6 +511,7 @@ fn debug_request_json_tools_includes_flat_reasoning_effort() {
         reasoning_effort: Some("high".into()),
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let messages = vec![Message::from_legacy(Role::User, "hi")];
     let tools = vec![ToolDefinition {
@@ -330,6 +540,7 @@ fn debug_request_json_vision_includes_flat_reasoning_effort() {
         reasoning_effort: Some("low".into()),
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let messages = vec![Message::from_parts(
         Role::User,
@@ -508,6 +719,7 @@ async fn chat_unreachable_endpoint_errors() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -529,6 +741,7 @@ async fn stream_unreachable_endpoint_errors() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -550,6 +763,7 @@ async fn embed_unreachable_endpoint_errors() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert!(p.embed("test").await.is_err());
 }
@@ -578,6 +792,7 @@ fn base_url_strips_trailing_slash() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.base_url, "https://api.openai.com/v1");
 }
@@ -626,6 +841,7 @@ async fn integration_openai_chat() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
 
     let messages = vec![Message {
@@ -652,6 +868,7 @@ async fn integration_openai_chat_stream() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
 
     let messages = vec![Message {
@@ -685,6 +902,7 @@ fn context_window_o1() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.context_window(), Some(200_000));
 }
@@ -700,6 +918,7 @@ fn context_window_o1_mini() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.context_window(), Some(200_000));
 }
@@ -715,6 +934,7 @@ fn context_window_o3() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.context_window(), Some(200_000));
 }
@@ -730,6 +950,7 @@ fn context_window_o3_mini() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.context_window(), Some(200_000));
 }
@@ -745,6 +966,7 @@ fn context_window_o4_mini() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.context_window(), Some(200_000));
 }
@@ -760,6 +982,7 @@ fn context_window_gpt35() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.context_window(), Some(16_385));
 }
@@ -775,6 +998,7 @@ fn context_window_gpt4_turbo() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.context_window(), Some(128_000));
 }
@@ -792,6 +1016,7 @@ async fn integration_openai_embed() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
 
     let embedding = provider.embed("Hello world").await.unwrap();
@@ -1204,6 +1429,7 @@ fn cache_slug_openai() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.cache_slug(), "api_openai_com");
 }
@@ -1219,6 +1445,7 @@ fn cache_slug_custom_host() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.cache_slug(), "my_llm_example_com");
 }
@@ -1234,6 +1461,7 @@ fn cache_slug_localhost_with_port() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert_eq!(p.cache_slug(), "localhost");
 }
@@ -1338,6 +1566,7 @@ async fn list_models_remote_http_error_propagates() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let result = p.list_models_remote().await;
     assert!(result.is_err());
@@ -1371,6 +1600,7 @@ async fn chat_happy_path_wiremock() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -1418,6 +1648,7 @@ async fn chat_with_tools_handles_null_assistant_content() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -1479,6 +1710,7 @@ async fn chat_with_tools_reasoning_effort_400_enriches_message() {
         reasoning_effort: Some("high".into()),
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -1542,6 +1774,7 @@ async fn chat_with_tools_reasoning_effort_none_400_passes_through_raw_message() 
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -1599,6 +1832,7 @@ async fn chat_429_rate_limit_propagates() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -1633,6 +1867,7 @@ async fn chat_401_auth_error_propagates() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -1667,6 +1902,7 @@ async fn chat_500_server_error_propagates() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -1748,6 +1984,7 @@ async fn chat_with_tools_retries_on_429_then_succeeds() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -1788,6 +2025,7 @@ fn with_generation_overrides_stores_overrides() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert!(provider.generation_overrides.is_none());
     let overrides = GenerationOverrides {
@@ -1954,6 +2192,7 @@ async fn embed_batch_empty_returns_empty_without_network() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let result = p.embed_batch(&[]).await.unwrap();
     assert!(result.is_empty());
@@ -2129,6 +2368,7 @@ fn completion_tokens_override_forces_max_completion_tokens_for_legacy_model() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: Some(CompletionTokensParam::MaxCompletionTokens),
+        vision: None,
     });
     let json = serde_json::to_string(&p.completion_tokens()).unwrap();
     assert!(json.contains("\"max_completion_tokens\":1024"));
@@ -2147,6 +2387,7 @@ fn completion_tokens_override_forces_max_tokens_for_o_series_model() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: Some(CompletionTokensParam::MaxTokens),
+        vision: None,
     });
     let json = serde_json::to_string(&p.completion_tokens()).unwrap();
     assert!(json.contains("\"max_tokens\":512"));
@@ -2165,6 +2406,7 @@ fn completion_tokens_override_none_falls_back_to_prefix_table() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let json = serde_json::to_string(&p_legacy.completion_tokens()).unwrap();
     assert!(json.contains("\"max_tokens\":256"));
@@ -2178,6 +2420,7 @@ fn completion_tokens_override_none_falls_back_to_prefix_table() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let json = serde_json::to_string(&p_o.completion_tokens()).unwrap();
     assert!(json.contains("\"max_completion_tokens\":256"));
@@ -2194,6 +2437,7 @@ fn with_completion_tokens_param_builder_sets_override() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     })
     .with_completion_tokens_param(CompletionTokensParam::MaxCompletionTokens);
     let json = serde_json::to_string(&p.completion_tokens()).unwrap();
@@ -2213,6 +2457,7 @@ fn set_reasoning_effort_applies_value() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     assert!(p.reasoning_effort.is_none(), "starts without effort");
     p.set_reasoning_effort(Some("high".into()));
@@ -2230,6 +2475,7 @@ fn set_reasoning_effort_clears_value() {
         reasoning_effort: Some("medium".into()),
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     p.set_reasoning_effort(None);
     assert!(p.reasoning_effort.is_none());
@@ -2247,6 +2493,7 @@ fn any_provider_set_reasoning_effort_delegates_to_openai() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     let mut any = AnyProvider::OpenAi(inner);
     any.set_reasoning_effort(Some("high".into()));
@@ -2280,6 +2527,7 @@ fn set_reasoning_effort_rejects_invalid_value() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     });
     p.set_reasoning_effort(Some("ultra".into()));
     assert!(
@@ -2299,6 +2547,7 @@ fn openai_config_debug_redacts_api_key() {
         reasoning_effort: None,
         context_window: None,
         completion_tokens_param: None,
+        vision: None,
     };
     let dbg = format!("{cfg:?}");
     assert!(!dbg.contains("sk-SUPERSECRET"));

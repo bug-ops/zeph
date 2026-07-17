@@ -124,6 +124,7 @@ mod compatible_live {
             max_tokens: 16,
             embedding_model: None,
             completion_tokens_param: None,
+            vision: None,
         });
 
         let messages = vec![Message::from_legacy(

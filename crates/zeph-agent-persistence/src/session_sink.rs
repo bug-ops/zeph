@@ -390,6 +390,7 @@ mod tests {
             reasoning_effort: None,
             context_window: None,
             completion_tokens_param: None,
+            vision: None,
         });
         let request = provider.debug_request_json(&messages, &tools, false);
 

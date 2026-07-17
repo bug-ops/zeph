@@ -114,7 +114,8 @@ Pipeline: Image attachment → MessagePart::Image → LLM provider (base64) → 
 | Provider | Vision | Notes |
 |----------|--------|-------|
 | Claude | Yes | Anthropic image content block |
-| OpenAI | Yes | image_url data-URI |
+| OpenAI | Conditional | Auto-detected from the model name, or set explicitly via `vision` |
+| Compatible | Conditional | Model-name auto-detection rarely applies (third-party names); set `vision` explicitly |
 | Ollama | Conditional | Only when `vision_model` is configured, or the main model is confirmed vision-capable |
 | Candle | No | Text-only |
 
@@ -137,6 +138,35 @@ vision_model = "llava:13b"
 Alternatively, set `model` directly to a vision-capable model (e.g. `llava:13b`,
 `qwen2.5vl`, `llama3.2-vision`) and Zeph detects the capability automatically — no
 `vision_model` override needed.
+
+### OpenAI / Compatible Vision Override
+
+`type = "openai"` and `type = "compatible"` providers auto-detect vision support from a
+built-in model-name prefix table (`gpt-4o`, `gpt-4-turbo`, `gpt-4.1`, `gpt-5`, `o`+digit
+reasoning models — all match; `gpt-3.5*` and anything unrecognised do not). Unlike Ollama,
+there is no standardized capability-discovery endpoint for arbitrary `OpenAI`-compatible
+servers, so this table is the only automatic signal available, and it fails safe to `false`
+for any model name it cannot identify — which is the common case for third-party
+`compatible` endpoints (Together AI, local vLLM, etc.), since their model names carry no
+`OpenAI` naming convention.
+
+Set `vision` explicitly to override the auto-detected value in either direction:
+
+```toml
+[[llm.providers]]
+name = "local-vlm"
+type = "compatible"
+base_url = "http://localhost:8000/v1"
+model = "llava-onevision"
+vision = true   # the prefix table cannot recognise this model name
+```
+
+```toml
+[[llm.providers]]
+type = "openai"
+model = "gpt-4o"
+vision = false  # force images off even for a recognised vision model
+```
 
 ### Sending Images
 

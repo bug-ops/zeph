@@ -199,6 +199,7 @@ impl GonkaProvider {
             reasoning_effort: None,
             context_window: None,
             completion_tokens_param: None,
+            vision: None,
         });
         // HTTP client timeout is generous to avoid double-timeout with tokio::time::timeout.
         let client = crate::http::llm_client(cfg.timeout.as_secs().saturating_add(30));

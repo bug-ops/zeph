@@ -109,6 +109,7 @@ embedding_model = "qwen3-embedding"
 # max_tokens = 4096
 # embedding_model = "text-embedding-3-small"
 # reasoning_effort = "medium"           # low, medium, high (for o-series models)
+# vision = true                         # override auto-detected vision capability (default: auto-detect via model-name prefix)
 
 # Google Gemini
 # [[llm.providers]]
@@ -127,6 +128,7 @@ embedding_model = "qwen3-embedding"
 # base_url = "https://api.groq.com/openai/v1"
 # model = "llama-3.3-70b-versatile"
 # max_tokens = 4096
+# vision = false                        # override auto-detected vision capability; unrecognised model names default to false
 
 # GonkaGate — OpenAI-compatible decentralized inference gateway (USD billing).
 # Sign up at https://gonkagate.com/en/register, create an API key, then:

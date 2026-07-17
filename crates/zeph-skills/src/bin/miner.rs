@@ -226,6 +226,7 @@ fn build_provider(config: &zeph_config::Config, name: &str) -> anyhow::Result<An
                 reasoning_effort: None,
                 context_window: None,
                 completion_tokens_param: None,
+                vision: None,
             }))
         }
         zeph_config::ProviderKind::Ollama => {

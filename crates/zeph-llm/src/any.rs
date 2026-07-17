@@ -1072,6 +1072,7 @@ mod tests {
                 reasoning_effort: None,
                 context_window: None,
                 completion_tokens_param: None,
+                vision: None,
             },
         ));
         assert_eq!(provider.name(), "openai");
@@ -1089,6 +1090,7 @@ mod tests {
                 reasoning_effort: None,
                 context_window: None,
                 completion_tokens_param: None,
+                vision: None,
             },
         ));
         assert!(provider.supports_streaming());
@@ -1106,6 +1108,7 @@ mod tests {
                 reasoning_effort: None,
                 context_window: None,
                 completion_tokens_param: None,
+                vision: None,
             },
         ));
         assert!(with_embed.supports_embeddings());
@@ -1120,6 +1123,7 @@ mod tests {
                 reasoning_effort: None,
                 context_window: None,
                 completion_tokens_param: None,
+                vision: None,
             },
         ));
         assert!(!without_embed.supports_embeddings());
@@ -1137,6 +1141,7 @@ mod tests {
                 reasoning_effort: None,
                 context_window: None,
                 completion_tokens_param: None,
+                vision: None,
             },
         ));
         let debug = format!("{provider:?}");
@@ -1175,6 +1180,7 @@ mod tests {
                 reasoning_effort: None,
                 context_window: None,
                 completion_tokens_param: None,
+                vision: None,
             },
         ));
         assert!(provider.supports_structured_output());
@@ -1197,7 +1203,7 @@ mod tests {
     }
 
     #[test]
-    fn any_openai_supports_vision() {
+    fn any_openai_supports_vision_true_for_vision_model() {
         let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
             crate::openai::OpenAiConfig {
                 api_key: "key".into(),
@@ -1208,9 +1214,29 @@ mod tests {
                 reasoning_effort: None,
                 context_window: None,
                 completion_tokens_param: None,
+                vision: None,
             },
         ));
         assert!(provider.supports_vision());
+    }
+
+    #[test]
+    fn any_openai_supports_vision_false_for_gpt35() {
+        // #6411: a text-only model must not be reported as vision-capable.
+        let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
+            crate::openai::OpenAiConfig {
+                api_key: "key".into(),
+                base_url: "https://api.openai.com/v1".into(),
+                model: "gpt-3.5-turbo".into(),
+                max_tokens: 1024,
+                embedding_model: None,
+                reasoning_effort: None,
+                context_window: None,
+                completion_tokens_param: None,
+                vision: None,
+            },
+        ));
+        assert!(!provider.supports_vision());
     }
 
     #[test]
@@ -1370,6 +1396,7 @@ mod tests {
             reasoning_effort: None,
             context_window: None,
             completion_tokens_param: None,
+            vision: None,
         })
     }
 
@@ -1382,6 +1409,7 @@ mod tests {
             max_tokens: 1024,
             embedding_model: None,
             completion_tokens_param: None,
+            vision: None,
         })
     }
 

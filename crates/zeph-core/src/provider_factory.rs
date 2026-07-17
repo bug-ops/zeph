@@ -349,6 +349,7 @@ fn build_openai_provider(
             reasoning_effort: entry.reasoning_effort.clone(),
             context_window: None,
             completion_tokens_param: None,
+            vision: entry.vision,
         })
         .with_provider_name(entry.effective_name())
         .with_client(llm_client(config.timeouts.llm_request_timeout_secs))
@@ -437,6 +438,7 @@ fn build_compatible_provider(
         max_tokens,
         embedding_model: entry.embedding_model.clone(),
         completion_tokens_param: None,
+        vision: entry.vision,
     })
     .with_output_schema_forwarding(
         config.mcp.forward_output_schema,

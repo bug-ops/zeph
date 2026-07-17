@@ -58,6 +58,7 @@ use serde::{Deserialize, Serialize};
 ///     reasoning_effort: None,
 ///     context_window: None,
 ///     completion_tokens_param: Some(CompletionTokensParam::MaxCompletionTokens),
+///     vision: None,
 /// };
 /// let provider = OpenAiProvider::new(cfg);
 /// ```
@@ -88,6 +89,7 @@ pub enum CompletionTokensParam {
 ///     reasoning_effort: None,
 ///     context_window: None,
 ///     completion_tokens_param: None,
+///     vision: None,
 /// };
 /// let provider = OpenAiProvider::new(cfg);
 /// ```
@@ -119,6 +121,13 @@ pub struct OpenAiConfig {
     /// prefix table. Set explicitly for models the table does not recognise (e.g. fine-tuned
     /// reasoning models whose names do not start with `o` + digit).
     pub completion_tokens_param: Option<CompletionTokensParam>,
+    /// Explicit vision-capability override.
+    ///
+    /// When set, this value is returned by [`LlmProvider::supports_vision`] instead of the
+    /// built-in prefix-match table. Use this for models the table does not recognise (e.g.
+    /// arbitrary `type = "compatible"` endpoints, whose model names carry no `OpenAI` naming
+    /// convention) or to force a known table entry off.
+    pub vision: Option<bool>,
 }
 
 impl fmt::Debug for OpenAiConfig {
@@ -132,6 +141,7 @@ impl fmt::Debug for OpenAiConfig {
             .field("reasoning_effort", &self.reasoning_effort)
             .field("context_window", &self.context_window)
             .field("completion_tokens_param", &self.completion_tokens_param)
+            .field("vision", &self.vision)
             .finish()
     }
 }
@@ -155,6 +165,7 @@ const MAX_RETRIES: u32 = 3;
 /// - [`with_generation_overrides`](Self::with_generation_overrides)
 /// - [`with_status_tx`](Self::with_status_tx)
 /// - [`with_context_window`](Self::with_context_window)
+/// - [`with_vision`](Self::with_vision)
 pub struct OpenAiProvider {
     client: reqwest::Client,
     api_key: String,
@@ -179,6 +190,9 @@ pub struct OpenAiProvider {
     /// Override which token-limit field to use. `None` means infer from the model name prefix
     /// table via [`CompletionTokens::for_model`].
     completion_tokens_override: Option<CompletionTokensParam>,
+    /// Explicit vision-capability override set via [`OpenAiConfig::vision`] or
+    /// [`OpenAiProvider::with_vision`]. Takes precedence over the prefix-match table.
+    vision_override: Option<bool>,
     /// Name reported by [`LlmProvider::name`]. Defaults to `"openai"`; set the TOML-configured
     /// `name` via [`with_provider_name`](Self::with_provider_name) so that router reputation
     /// tracking and provider selection can distinguish between multiple configured `OpenAI`
@@ -210,6 +224,7 @@ impl fmt::Debug for OpenAiProvider {
                 "completion_tokens_override",
                 &self.completion_tokens_override,
             )
+            .field("vision_override", &self.vision_override)
             .field("provider_name", &self.provider_name)
             .finish()
     }
@@ -233,6 +248,7 @@ impl Clone for OpenAiProvider {
             max_tool_description_bytes: self.max_tool_description_bytes,
             context_window_override: self.context_window_override,
             completion_tokens_override: self.completion_tokens_override,
+            vision_override: self.vision_override,
             provider_name: self.provider_name.clone(),
         }
     }
@@ -262,6 +278,7 @@ impl OpenAiProvider {
             max_tool_description_bytes: usize::MAX,
             context_window_override: cfg.context_window.map(|v| v as usize),
             completion_tokens_override: cfg.completion_tokens_param,
+            vision_override: cfg.vision,
             provider_name: "openai".to_owned(),
         }
     }
@@ -336,6 +353,7 @@ impl OpenAiProvider {
     ///     reasoning_effort: None,
     ///     context_window: None,
     ///     completion_tokens_param: None,
+    ///     vision: None,
     /// })
     /// .with_context_window(200_000);
     /// assert_eq!(provider.context_window(), Some(200_000));
@@ -366,12 +384,47 @@ impl OpenAiProvider {
     ///     reasoning_effort: None,
     ///     context_window: None,
     ///     completion_tokens_param: None,
+    ///     vision: None,
     /// })
     /// .with_completion_tokens_param(CompletionTokensParam::MaxCompletionTokens);
     /// ```
     #[must_use]
     pub fn with_completion_tokens_param(mut self, param: CompletionTokensParam) -> Self {
         self.completion_tokens_override = Some(param);
+        self
+    }
+
+    /// Override the vision-capability value reported by [`LlmProvider::supports_vision`].
+    ///
+    /// Use this for models the built-in prefix table does not recognise — most commonly
+    /// arbitrary `type = "compatible"` endpoints, whose model names carry no `OpenAI` naming
+    /// convention and therefore fail safe to `false`. Also usable to force a known table
+    /// entry off. Mirrors the config-level [`OpenAiConfig::vision`] field but can also be
+    /// set after construction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::openai::{OpenAiConfig, OpenAiProvider};
+    /// use zeph_llm::provider::LlmProvider;
+    ///
+    /// let provider = OpenAiProvider::new(OpenAiConfig {
+    ///     api_key: "k".into(),
+    ///     base_url: "http://localhost:8000/v1".into(),
+    ///     model: "my-local-vision-model".into(),
+    ///     max_tokens: 4096,
+    ///     embedding_model: None,
+    ///     reasoning_effort: None,
+    ///     context_window: None,
+    ///     completion_tokens_param: None,
+    ///     vision: None,
+    /// })
+    /// .with_vision(true);
+    /// assert!(provider.supports_vision());
+    /// ```
+    #[must_use]
+    pub fn with_vision(mut self, supported: bool) -> Self {
+        self.vision_override = Some(supported);
         self
     }
 
@@ -395,6 +448,7 @@ impl OpenAiProvider {
     ///     reasoning_effort: None,
     ///     context_window: None,
     ///     completion_tokens_param: None,
+    ///     vision: None,
     /// });
     /// provider.set_reasoning_effort(Some("high".into()));
     /// ```
@@ -1007,8 +1061,21 @@ impl LlmProvider for OpenAiProvider {
         serde_json::from_str::<T>(content).map_err(|e| LlmError::StructuredParse(e.to_string()))
     }
 
+    /// Returns whether the configured model accepts image input.
+    ///
+    /// Resolution order:
+    /// 1. Explicit override set via [`OpenAiConfig::vision`] or [`Self::with_vision`].
+    /// 2. Built-in prefix table for well-known vision-capable `OpenAI` model families.
+    /// 3. `false` for any unrecognised model — unlike [`Self::context_window`], there is no
+    ///    default-guess fallback here. An arbitrary `type = "compatible"` endpoint (Together AI,
+    ///    local vLLM, etc.) has a model name with no `OpenAI` naming convention to match against,
+    ///    so assuming vision support would risk silently sending an image the model cannot
+    ///    process (same fail-safe philosophy as `OllamaProvider::supports_vision`, #6377/#6411).
     fn supports_vision(&self) -> bool {
-        true
+        if let Some(supported) = self.vision_override {
+            return supported;
+        }
+        model_supports_vision(&self.model)
     }
 
     fn supports_tool_use(&self) -> bool {
@@ -1659,6 +1726,38 @@ impl CompletionTokens {
 fn starts_with_o_digit(model: &str) -> bool {
     let mut chars = model.chars();
     chars.next() == Some('o') && chars.next().is_some_and(|c| c.is_ascii_digit())
+}
+
+/// Built-in prefix table of `OpenAI` model families known to accept image input.
+///
+/// Not exhaustive by design (#6411): fine-tunes and newly-released variants may be missed,
+/// in which case [`OpenAiConfig::vision`] / [`OpenAiProvider::with_vision`] is the documented
+/// escape hatch. `gpt-3.5*` deliberately does not match — it is text-only.
+///
+/// Unlike [`CompletionTokens::for_model`], vision support is not uniform across the whole
+/// `o`+digit reasoning family: `o1-mini`, `o1-preview`, and `o3-mini` are text-only, while
+/// `o1`, `o3`, and `o4-mini` accept images. Reusing [`starts_with_o_digit`] wholesale here
+/// would reintroduce the #6411 bug for those three text-only variants, so they are excluded
+/// explicitly before falling back to the shared prefix check.
+fn model_supports_vision(model: &str) -> bool {
+    if model.starts_with("gpt-4o")
+        || model.starts_with("gpt-4-turbo")
+        || model.starts_with("gpt-4-vision")
+        || model.starts_with("gpt-4.1")
+        || model.starts_with("gpt-5")
+    {
+        return true;
+    }
+    if is_text_only_o_series(model) {
+        return false;
+    }
+    starts_with_o_digit(model)
+}
+
+/// `o`+digit reasoning models confirmed text-only (no image input), unlike the rest of the
+/// `o`-series family. See [`model_supports_vision`] for why this exclusion exists.
+fn is_text_only_o_series(model: &str) -> bool {
+    model.starts_with("o1-mini") || model.starts_with("o1-preview") || model.starts_with("o3-mini")
 }
 
 #[derive(Serialize)]

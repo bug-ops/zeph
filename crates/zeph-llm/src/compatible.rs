@@ -47,6 +47,7 @@ use crate::provider::{
 ///     max_tokens: 4096,
 ///     embedding_model: None,
 ///     completion_tokens_param: None,
+///     vision: None,
 /// };
 /// let provider = CompatibleProvider::new(cfg);
 /// ```
@@ -70,6 +71,13 @@ pub struct CompatibleConfig {
     /// prefix table. Set explicitly for models the table does not recognise (e.g. fine-tuned
     /// reasoning models whose names do not start with `o` + digit).
     pub completion_tokens_param: Option<CompletionTokensParam>,
+    /// Explicit vision-capability override.
+    ///
+    /// `OpenAiProvider`'s built-in model-name prefix table cannot recognise arbitrary
+    /// `compatible` endpoint model names (Together AI, local vLLM, etc.), so it fails safe
+    /// to `false` for all of them. Set this when the endpoint's configured model actually
+    /// accepts image input.
+    pub vision: Option<bool>,
 }
 
 impl fmt::Debug for CompatibleConfig {
@@ -82,6 +90,7 @@ impl fmt::Debug for CompatibleConfig {
             .field("max_tokens", &self.max_tokens)
             .field("embedding_model", &self.embedding_model)
             .field("completion_tokens_param", &self.completion_tokens_param)
+            .field("vision", &self.vision)
             .finish()
     }
 }
@@ -110,6 +119,7 @@ impl CompatibleProvider {
             reasoning_effort: None,
             context_window: None,
             completion_tokens_param: cfg.completion_tokens_param,
+            vision: cfg.vision,
         });
         Self {
             inner,
@@ -181,12 +191,45 @@ impl CompatibleProvider {
     ///     max_tokens: 4096,
     ///     embedding_model: None,
     ///     completion_tokens_param: None,
+    ///     vision: None,
     /// })
     /// .with_completion_tokens_param(CompletionTokensParam::MaxCompletionTokens);
     /// ```
     #[must_use]
     pub fn with_completion_tokens_param(mut self, param: CompletionTokensParam) -> Self {
         self.inner = self.inner.with_completion_tokens_param(param);
+        self
+    }
+
+    /// Override the vision-capability value reported by [`LlmProvider::supports_vision`].
+    ///
+    /// Delegates to the inner [`OpenAiProvider`]. Use this for `compatible` endpoints whose
+    /// model name is not covered by `OpenAiProvider`'s built-in prefix table — which is the
+    /// common case, since third-party model names carry no `OpenAI` naming convention and the
+    /// table therefore fails safe to `false` for them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::compatible::{CompatibleConfig, CompatibleProvider};
+    /// use zeph_llm::provider::LlmProvider;
+    ///
+    /// let provider = CompatibleProvider::new(CompatibleConfig {
+    ///     provider_name: "local-vlm".into(),
+    ///     api_key: "key".into(),
+    ///     base_url: "http://localhost:8000/v1".into(),
+    ///     model: "llava-onevision".into(),
+    ///     max_tokens: 4096,
+    ///     embedding_model: None,
+    ///     completion_tokens_param: None,
+    ///     vision: None,
+    /// })
+    /// .with_vision(true);
+    /// assert!(provider.supports_vision());
+    /// ```
+    #[must_use]
+    pub fn with_vision(mut self, supported: bool) -> Self {
+        self.inner = self.inner.with_vision(supported);
         self
     }
 
@@ -361,6 +404,7 @@ mod tests {
             max_tokens: 4096,
             embedding_model: None,
             completion_tokens_param: None,
+            vision: None,
         })
     }
 
@@ -381,6 +425,7 @@ mod tests {
             max_tokens: 4096,
             embedding_model: None,
             completion_tokens_param: None,
+            vision: None,
         });
         assert_eq!(p.context_window(), Some(128_000));
     }
@@ -396,6 +441,7 @@ mod tests {
             max_tokens: 4096,
             embedding_model: None,
             completion_tokens_param: None,
+            vision: None,
         });
         // OpenAiProvider returns Some(128_000) as fallback for unrecognised models.
         assert!(p.context_window().is_some());
@@ -421,6 +467,7 @@ mod tests {
             max_tokens: 100,
             embedding_model: Some("embed-model".into()),
             completion_tokens_param: None,
+            vision: None,
         });
         assert!(p.supports_embeddings());
     }
@@ -449,6 +496,7 @@ mod tests {
             max_tokens: 100,
             embedding_model: None,
             completion_tokens_param: None,
+            vision: None,
         });
         let msgs = vec![Message::from_legacy(crate::provider::Role::User, "hello")];
         assert!(p.chat(&msgs).await.is_err());
@@ -499,8 +547,49 @@ mod tests {
 
     #[test]
     fn supports_vision_delegates_to_inner() {
-        // OpenAiProvider always returns true for supports_vision.
-        assert!(test_provider().supports_vision());
+        // #6411: test_provider() uses model "llama-3.3-70b", which matches no OpenAI
+        // vision prefix — OpenAiProvider's fail-safe default must be false, not true.
+        assert!(!test_provider().supports_vision());
+    }
+
+    #[test]
+    fn supports_vision_with_vision_override_delegates_to_inner() {
+        // with_vision(true) must override the prefix-table default even for a model
+        // name the table cannot recognise.
+        let p = test_provider().with_vision(true);
+        assert!(p.supports_vision());
+    }
+
+    #[test]
+    fn supports_vision_config_field_true_forwards_to_inner() {
+        // Distinct code path from with_vision(): CompatibleConfig::vision must be forwarded
+        // into the inner OpenAiConfig by CompatibleProvider::new, not just by the builder.
+        let p = CompatibleProvider::new(CompatibleConfig {
+            provider_name: "test".into(),
+            api_key: "key".into(),
+            base_url: "http://localhost".into(),
+            model: "llama-3.3-70b".into(),
+            max_tokens: 100,
+            embedding_model: None,
+            completion_tokens_param: None,
+            vision: Some(true),
+        });
+        assert!(p.supports_vision());
+    }
+
+    #[test]
+    fn supports_vision_config_field_false_forwards_to_inner() {
+        let p = CompatibleProvider::new(CompatibleConfig {
+            provider_name: "test".into(),
+            api_key: "key".into(),
+            base_url: "http://localhost".into(),
+            model: "llama-3.3-70b".into(),
+            max_tokens: 100,
+            embedding_model: None,
+            completion_tokens_param: None,
+            vision: Some(false),
+        });
+        assert!(!p.supports_vision());
     }
 
     #[test]
@@ -524,6 +613,7 @@ mod tests {
             max_tokens: 4096,
             embedding_model: None,
             completion_tokens_param: None,
+            vision: None,
         };
         let dbg = format!("{cfg:?}");
         assert!(!dbg.contains("sk-SUPERSECRET"));
