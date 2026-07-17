@@ -327,7 +327,7 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, Llm
 
     let params = SincInterpolationParameters {
         sinc_len: 256,
-        f_cutoff: 0.95,
+        f_cutoff: Some(0.95),
         interpolation: SincInterpolationType::Linear,
         oversampling_factor: 256,
         window: WindowFunction::BlackmanHarris2,
@@ -342,7 +342,7 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, Llm
         .map_err(|e| LlmError::TranscriptionFailed(format!("input buffer: {e}")))?;
 
     let output = resampler
-        .process(&input_adapter, 0, None)
+        .process(&input_adapter, None)
         .map_err(|e| LlmError::TranscriptionFailed(format!("resample: {e}")))?;
 
     Ok(output.take_data())

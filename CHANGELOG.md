@@ -153,6 +153,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   resulting deprecation warning; `crates/zeph-llm/src/gonka/signer.rs` now imports and calls
   `ToSec1Point`/`to_sec1_point` instead.
 
+- **zeph-llm**: fixed a `full`/`ml`-only build breakage from the `rubato` 3.0.0 → 4.0.0
+  Renovate major bump (#6354). Rubato 4.0 requires `audioadapter` 4.0, but the workspace
+  still pinned `audioadapter-buffers = "3.0"`, so two incompatible versions of
+  `audioadapter-buffers` coexisted in the dependency graph and
+  `InterleavedSlice<&[f32]>` no longer satisfied the `Adapter<f32>` bound that
+  `resample()` relied on; bumped `audioadapter-buffers` to `"4.0"` to match. Rubato 4.0
+  also changed `SincInterpolationParameters::f_cutoff` from `f32` to `Option<f32>` and
+  dropped the middle `frames_offset` argument from `Resampler::process`;
+  `crates/zeph-llm/src/candle_whisper.rs` updated accordingly.
+
 ### Testing
 
 - **zeph-orchestration** / **zeph-subagent**: closed three coverage gaps in the idle-timeout
