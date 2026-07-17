@@ -918,14 +918,18 @@ pub(crate) struct SessionState {
     pub(crate) is_guest_context: bool,
     /// Cross-thread store owner key for the current turn (spec-080 §10 OQ-1, GitHub #6389).
     ///
-    /// Set from `ChannelMessage::owner_key` when a `LoopEvent::Message` is dispatched
-    /// (falls back to [`persistence::DEFAULT_OWNER_KEY`] when the originating channel
-    /// leaves it unset — CLI/TUI/Telegram) and reset to the default at [`Agent::end_turn`],
-    /// same as `is_guest_context` above — including that reset's same pre-existing gap: a
-    /// fast-path dispatch that exits before reaching `end_turn` can leave a stale value for
-    /// whatever runs next. Read by `/store` (`agent_access_impl.rs`) and the Command-handoff
-    /// store writes/reads (`scheduler_loop.rs`).
+    /// Set from `ChannelMessage::owner_key` when a `LoopEvent::Message` is dispatched (falls back
+    /// to [`persistence::DEFAULT_OWNER_KEY`] when the originating channel leaves it unset —
+    /// CLI/TUI/Telegram). Reset to the default unconditionally at the top of every iteration of
+    /// [`Agent::run`]'s main loop (#6418), and again at [`Agent::end_turn`] as defense-in-depth
+    /// for the normal end-of-turn path — same as `is_guest_context` above. The loop-top reset is
+    /// what guarantees no stale value survives into a `LoopEvent` triggered by a different
+    /// sender/channel or a non-`Message` event (scheduled task, autonomous tick, ...), even when a
+    /// fast-path slash-command dispatch `continue`s/`break`s before ever reaching `end_turn`. Read
+    /// by `/store` (`agent_access_impl.rs`) and the Command-handoff store writes/reads
+    /// (`scheduler_loop.rs`).
     ///
+    /// [`Agent::run`]: crate::agent::Agent::run
     /// [`Agent::end_turn`]: crate::agent::Agent::end_turn
     pub(crate) owner_key: String,
     /// Active durable execution context for the P1 agent-loop adapter (spec-064 §P1, #5452).

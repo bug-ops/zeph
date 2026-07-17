@@ -2120,6 +2120,64 @@ mod tests {
         assert!(out.contains("root cause identified"));
     }
 
+    #[tokio::test]
+    async fn cross_thread_store_scoped_by_owner_key_not_shared_across_owners() {
+        // #6418 acceptance criterion: prove `CommandHandoffContext::owner_key` is
+        // load-bearing on `persist_handoff_update`/`append_shared_state_block` — a write
+        // made under one owner_key must not be visible to a different owner_key's read,
+        // and must be visible to a read under the SAME owner_key. This is the isolation
+        // #6389 added to the cross-thread store; #6418 guarantees the session-level
+        // owner_key that feeds this context can never leak stale across a fast-path
+        // dispatch (loop-top reset in `Agent::run`).
+        let memory = std::sync::Arc::new(test_memory().await);
+        let sanitizer = test_sanitizer();
+        let store_config = zeph_config::CrossThreadStoreConfig {
+            enabled: true,
+            max_value_bytes: 65536,
+            search_provider: None,
+        };
+        let ctx_alice = CommandHandoffContext {
+            command_enabled: true,
+            store_config: store_config.clone(),
+            memory: Some(memory.clone()),
+            sanitizer: sanitizer.clone(),
+            owner_key: "gateway:alice".to_owned(),
+        };
+        let ctx_local = CommandHandoffContext {
+            command_enabled: true,
+            store_config,
+            memory: Some(memory.clone()),
+            sanitizer,
+            owner_key: crate::agent::state::persistence::DEFAULT_OWNER_KEY.to_owned(),
+        };
+
+        let graph_id = zeph_orchestration::GraphId::new();
+        let namespace = format!("orch/{graph_id}");
+        memory
+            .sqlite()
+            .store_put(
+                ctx_alice.owner_key.as_str(),
+                &namespace,
+                "finding",
+                "alice-only secret",
+                65536,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let prompt = "task".to_string();
+        let out_local =
+            append_shared_state_block(prompt.clone(), &ctx_local, graph_id.clone()).await;
+        assert_eq!(
+            out_local, prompt,
+            "a different owner_key must not observe another owner's store write"
+        );
+
+        let out_alice = append_shared_state_block(prompt.clone(), &ctx_alice, graph_id).await;
+        assert!(out_alice.contains("alice-only secret"));
+    }
+
     // ── AC-8 spawn/inline trace parity + S1 fail-closed-on-partial-read regression
     //    (spec 009 § Verifier Tool-Call Grounding) ──────────────────────────────
 

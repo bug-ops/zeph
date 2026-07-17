@@ -14,6 +14,7 @@ mod lifecycle_tests;
 mod metrics_summary_tests;
 mod model_help_status_exit_tests;
 mod orchestration_persistence_tests;
+mod owner_key_tests;
 mod skill_fallback_tests;
 mod skill_prompt_bloat_tests;
 mod subagent_command_tests;

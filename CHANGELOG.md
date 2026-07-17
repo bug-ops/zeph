@@ -22,6 +22,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   genuinely non-terminating for its prompt shape regardless of timeout — live root-cause
   confirmation is still pending (#6379 remains open).
 
+- `zeph-core`/`zeph-acp`: two follow-ups from the cross-thread store `owner_key` work
+  (spec-080, #6389/PR #6416). `session.owner_key`/`is_guest_context` were set only in the
+  `LoopEvent::Message` arm and reset only at `Agent::end_turn`, so a fast-path
+  slash-command dispatch that exits the loop iteration via `DispatchFlow::Continue`/`Break`
+  before reaching `end_turn` could leave a stale value (e.g. a previous sender's derived
+  `owner_key`) in place for the next `LoopEvent` — a scheduled task, autonomous tick, or a
+  different sender's fast-path message. Both scalars are now reset unconditionally at the
+  top of every `Agent::run` loop iteration, closing the gap for all dispatch paths (#6418).
+  Separately, ACP dispatch never threaded its already-authenticated per-connection identity
+  into the cross-thread store, collapsing every ACP session to the shared `"local"` bucket
+  like the single-user CLI/TUI/Telegram paths — despite ACP having the strongest per-caller
+  identity of any dispatch path. All three `ChannelMessage` construction sites in the ACP
+  agent (`do_prompt`, `/clear`, `/review`) now carry that identity as `owner_key` (#6419).
+
 - `zeph-session`: `AdvisoryLock::acquire`'s `WOULDBLOCK` path gave operators only a bare
   "another session is already active" message with no way to tell whether the lock's holder
   was still running (#6378). The holder's PID is now written into the sibling lock file

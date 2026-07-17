@@ -425,6 +425,17 @@ impl<C: Channel> Agent<C> {
         self.maybe_start_heuristic_promotion();
 
         loop {
+            // #6418: reset per-turn cross-thread identity state unconditionally at the top of
+            // every iteration, rather than relying solely on `Agent::end_turn` (which only runs
+            // after `process_user_message` completes). A fast-path slash-command dispatch, or any
+            // non-`Message` `LoopEvent`, can `continue`/`break` out of this loop before ever
+            // reaching `end_turn` — without this reset that would leave the previous iteration's
+            // `owner_key`/`is_guest_context` stale for whatever runs next (a different sender's
+            // message, a scheduled task, an autonomous tick, ...). The `LoopEvent::Message` arm
+            // below overwrites both with the real per-message values for this iteration only.
+            self.services.session.is_guest_context = false;
+            state::persistence::DEFAULT_OWNER_KEY.clone_into(&mut self.services.session.owner_key);
+
             self.apply_provider_override();
             self.check_tool_refresh().await;
             self.process_pending_elicitations().await;
@@ -1105,11 +1116,12 @@ impl<C: Channel> Agent<C> {
         self.services.session.current_turn_intent = None;
         // Clear guest context flag: each turn is independently classified.
         self.services.session.is_guest_context = false;
-        // Reset the cross-thread store owner key (#6389) at turn end, same as
-        // is_guest_context above. Like is_guest_context, this reset can be skipped on a
-        // fast-path dispatch (e.g. a slash command) that exits before reaching end_turn,
-        // leaving a stale value for whatever runs next — a pre-existing gap shared with
-        // is_guest_context, not new to this field.
+        // Reset the cross-thread store owner key (#6389) at turn end, same as is_guest_context
+        // above. Both resets are redundant with the unconditional per-iteration reset at the top
+        // of the `run()` loop (#6418) — that loop-top reset is what actually closes the
+        // fast-path-dispatch staleness gap (a slash command or non-Message LoopEvent can
+        // `continue`/`break` before ever reaching end_turn); these two lines are kept as
+        // defense-in-depth for the normal end-of-turn path.
         state::persistence::DEFAULT_OWNER_KEY.clone_into(&mut self.services.session.owner_key);
         // Cancel all in-flight speculative handles at turn boundary.
         if let Some(ref engine) = self.services.speculation_engine {

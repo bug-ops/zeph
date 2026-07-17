@@ -1616,7 +1616,10 @@ impl ZephAcpAgentState {
                 attachments,
                 is_guest_context: false,
                 is_from_bot: false,
-                owner_key: None,
+                // #6419: thread the connection's authenticated identity (#5868) into the
+                // cross-thread store owner key (#6389), instead of falling back to the
+                // shared DEFAULT_OWNER_KEY="local" bucket used by CLI/TUI/Telegram.
+                owner_key: Some(self.owner_key.clone()),
             })
             .await
             .map_err(|_| acp::Error::internal_error().data("agent channel closed"))?;
@@ -2571,7 +2574,8 @@ impl ZephAcpAgentState {
                         attachments: vec![],
                         is_guest_context: false,
                         is_from_bot: false,
-                        owner_key: None,
+                        // #6419: see do_prompt above.
+                        owner_key: Some(self.owner_key.clone()),
                     });
                 }
                 "Session history cleared.".to_owned()
@@ -2636,7 +2640,8 @@ impl ZephAcpAgentState {
                 attachments: vec![],
                 is_guest_context: false,
                 is_from_bot: false,
-                owner_key: None,
+                // #6419: see do_prompt above.
+                owner_key: Some(self.owner_key.clone()),
             })
             .is_err()
         {
@@ -4324,6 +4329,96 @@ mod slash_command_wiring_tests {
         assert_eq!(
             reply, "Fetched 2 models.",
             "must report the live list_models_remote() count from the resolved active provider"
+        );
+    }
+}
+
+/// Regression tests for #6419: ACP already derives a real per-connection identity
+/// (`ZephAcpAgentState::owner_key`, #5868) used to scope persisted ACP session
+/// list/load/resume access. Before this fix, that identity was never threaded into the
+/// `ChannelMessage.owner_key` sent to the agent loop, so every ACP turn silently fell back to
+/// the shared `DEFAULT_OWNER_KEY = "local"` cross-thread-store bucket (#6389) — the same bucket
+/// CLI/TUI/Telegram use — even though ACP already has a stronger per-caller identity available.
+#[cfg(test)]
+mod owner_key_threading_tests {
+    use std::sync::Arc;
+
+    use parking_lot::RwLock;
+    use zeph_core::channel::{Channel as _, LoopbackChannel};
+    use zeph_llm::any::AnyProvider;
+
+    use super::*;
+
+    /// Builds an agent with the given connection `owner_key` and one registered session,
+    /// returning the `LoopbackChannel` half so the test can `recv()` whatever `ChannelMessage`
+    /// the handler under test forwards to `input_tx`.
+    fn make_agent_with_owner_key(
+        owner_key: &str,
+    ) -> (ZephAcpAgent, acp::schema::v1::SessionId, LoopbackChannel) {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        let agent = ZephAcpAgent::new(spawner, 4, 1800, None).with_owner_key(owner_key);
+        let session_id = acp::schema::v1::SessionId::new("owner-key-test".to_owned());
+
+        let (channel, handle) = LoopbackChannel::pair(4);
+        let provider_override = Arc::new(RwLock::new(None::<AnyProvider>));
+        let (notify_tx, notify_rx) = mpsc::channel(4);
+        let entry = ZephAcpAgent::make_session_entry(
+            handle,
+            "test-model".to_owned(),
+            std::path::PathBuf::from("."),
+            None,
+            provider_override,
+            SessionConfigSeed {
+                thinking_enabled: false,
+                auto_approve_level: "suggest".to_owned(),
+                temperature_preset: zeph_config::AcpTemperaturePreset::default(),
+            },
+            notify_tx,
+            notify_rx,
+        );
+        agent.sessions.lock().insert(session_id.clone(), entry);
+        (agent, session_id, channel)
+    }
+
+    #[tokio::test]
+    async fn review_command_threads_connection_owner_key_into_channel_message() {
+        let (agent, session_id, mut channel) = make_agent_with_owner_key("acp:alice");
+
+        agent
+            .handle_review_command(&session_id, "")
+            .expect("/review must succeed");
+
+        let msg = channel
+            .recv()
+            .await
+            .expect("recv must not error")
+            .expect("handle_review_command must forward a ChannelMessage");
+        assert_eq!(
+            msg.owner_key.as_deref(),
+            Some("acp:alice"),
+            "/review must carry the connection's owner_key, not fall back to None/local"
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_command_threads_connection_owner_key_into_channel_message() {
+        let (agent, session_id, mut channel) = make_agent_with_owner_key("acp:bob");
+
+        agent
+            .handle_slash_command(&session_id, "/clear")
+            .await
+            .expect("/clear must succeed");
+
+        let msg = channel
+            .recv()
+            .await
+            .expect("recv must not error")
+            .expect("/clear must forward a sentinel ChannelMessage");
+        assert_eq!(msg.text, "/clear");
+        assert_eq!(
+            msg.owner_key.as_deref(),
+            Some("acp:bob"),
+            "/clear sentinel must carry the connection's owner_key, not fall back to None/local"
         );
     }
 }
