@@ -3,25 +3,31 @@
 
 //! Minimal terminal line editor used by [`CliChannel`].
 //!
-//! This module provides two reading functions that cover the two stdin modes:
+//! This module provides reading functions that cover the CLI's stdin modes:
 //!
 //! * [`read_line`] — for interactive TTY sessions.  Uses crossterm raw mode to
 //!   implement cursor movement, history navigation, and `Ctrl-C`/`Ctrl-D`
 //!   handling without relying on any external readline library.
+//! * [`read_line_yieldable`] — same as `read_line`, but polls for events
+//!   instead of blocking, so it can voluntarily relinquish exclusive terminal
+//!   access to a concurrent elicitation/confirmation prompt (see
+//!   [`ReadLineResult::Yielded`]).
 //! * [`read_line_piped`] — for non-TTY (piped) stdin.  Reads one line at a
 //!   time from a [`BufRead`] source with a 1 MiB safety limit.
 //!
-//! Both functions return [`ReadLineResult`] so the caller can handle EOF,
+//! All functions return [`ReadLineResult`] so the caller can handle EOF,
 //! interruption, and normal input in a single `match`.
 //!
 //! [`CliChannel`]: crate::CliChannel
 //! [`BufRead`]: std::io::BufRead
 
 use std::io::{self, BufRead, Read, Write, stdout};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     terminal::{self, ClearType},
 };
 
@@ -38,6 +44,11 @@ pub enum ReadLineResult {
     Interrupted,
     /// End-of-file was reached (`Ctrl-D` on empty input, or the pipe closed).
     Eof,
+    /// The read was voluntarily abandoned because another caller (an active
+    /// elicitation/confirmation prompt) needs exclusive terminal access.
+    ///
+    /// Only ever returned by [`read_line_yieldable`].
+    Yielded,
 }
 
 struct RawModeGuard;
@@ -122,82 +133,173 @@ pub fn read_line(prompt: &str, history: &[String]) -> io::Result<ReadLineResult>
             continue;
         }
 
-        match (key.modifiers, key.code) {
-            (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
-                write!(stdout(), "\r\n")?;
-                stdout().flush()?;
-                return Ok(ReadLineResult::Interrupted);
-            }
-            (KeyModifiers::CONTROL, KeyCode::Char('d')) if input.is_empty() => {
-                write!(stdout(), "\r\n")?;
-                stdout().flush()?;
-                return Ok(ReadLineResult::Eof);
-            }
-            (_, KeyCode::Enter) => {
-                write!(stdout(), "\r\n")?;
-                stdout().flush()?;
-                return Ok(ReadLineResult::Line(input));
-            }
-            (KeyModifiers::CONTROL, KeyCode::Char('a')) | (_, KeyCode::Home) => {
-                cursor_pos = 0;
-            }
-            (KeyModifiers::CONTROL, KeyCode::Char('e')) | (_, KeyCode::End) => {
-                cursor_pos = char_count(&input);
-            }
-            (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-                input.clear();
-                cursor_pos = 0;
-            }
-            (KeyModifiers::ALT, KeyCode::Backspace) => {
-                let boundary = prev_word_boundary(&input, cursor_pos);
-                let start = byte_offset(&input, boundary);
-                let end = byte_offset(&input, cursor_pos);
-                input.drain(start..end);
-                cursor_pos = boundary;
-            }
-            (_, KeyCode::Backspace) if cursor_pos > 0 => {
-                let off = byte_offset(&input, cursor_pos - 1);
-                input.remove(off);
-                cursor_pos -= 1;
-            }
-            (_, KeyCode::Delete) if cursor_pos < char_count(&input) => {
-                let off = byte_offset(&input, cursor_pos);
-                input.remove(off);
-            }
-            (_, KeyCode::Left) => {
-                cursor_pos = cursor_pos.saturating_sub(1);
-            }
-            (_, KeyCode::Right) if cursor_pos < char_count(&input) => {
-                cursor_pos += 1;
-            }
-            (_, KeyCode::Up) => {
-                navigate_history_up(
-                    history,
-                    &mut input,
-                    &mut cursor_pos,
-                    &mut history_index,
-                    &mut draft,
-                );
-            }
-            (_, KeyCode::Down) => {
-                navigate_history_down(
-                    history,
-                    &mut input,
-                    &mut cursor_pos,
-                    &mut history_index,
-                    &mut draft,
-                );
-            }
-            (_, KeyCode::Char(c)) => {
-                let off = byte_offset(&input, cursor_pos);
-                input.insert(off, c);
-                cursor_pos += 1;
-            }
-            _ => {}
+        if let Some(result) = handle_key_event(
+            key,
+            &mut input,
+            &mut cursor_pos,
+            history,
+            &mut history_index,
+            &mut draft,
+        )? {
+            return Ok(result);
         }
 
         render(prompt, &input, cursor_pos)?;
     }
+}
+
+/// Read a single line from the terminal, yielding back to the caller when
+/// `yield_requested` becomes `true` instead of blocking indefinitely inside
+/// `crossterm::event::read()`.
+///
+/// Behaves exactly like [`read_line`] except that it checks `yield_requested`
+/// at the top of every loop iteration and polls for the next event with a
+/// short timeout (50ms) instead of blocking on it directly. Checking the flag
+/// before `event::poll` (rather than only inside the poll-timeout branch) is
+/// required so a set flag preempts even under continuous sub-50ms-gap
+/// keystroke arrivals, where `poll` would otherwise always return `true` and
+/// the timeout branch would never run. When the flag is set, the call returns
+/// [`ReadLineResult::Yielded`] instead of continuing to wait — this lets a
+/// concurrent caller (e.g. an active elicitation/confirmation prompt) take
+/// over exclusive terminal access without racing this reader for keystrokes.
+///
+/// This closes the *starvation* window (an in-progress keystroke stream)
+/// completely, but there remains a bounded ~50ms *acquisition* window between
+/// the concurrent caller setting `yield_requested` and this loop's current
+/// `event::poll` call returning — accepted as an intentional MVP tradeoff
+/// (the common case is a user reacting to a freshly-printed prompt, not
+/// already mid-keystroke) rather than adding a full ack/notify handshake.
+///
+/// Any input typed so far is discarded when yielding.
+///
+/// # Errors
+///
+/// Returns `io::Error` if enabling raw mode, polling/reading an event, or
+/// writing to stdout fails.
+pub fn read_line_yieldable(
+    prompt: &str,
+    history: &[String],
+    yield_requested: &AtomicBool,
+) -> io::Result<ReadLineResult> {
+    let _guard = RawModeGuard::enter()?;
+
+    let mut input = String::new();
+    let mut cursor_pos: usize = 0;
+    let mut history_index: Option<usize> = None;
+    let mut draft = String::new();
+
+    render(prompt, &input, cursor_pos)?;
+
+    loop {
+        // Checked before polling (not just on timeout) so a continuous
+        // sub-50ms keystroke stream cannot starve this check indefinitely.
+        if yield_requested.load(Ordering::Acquire) {
+            return Ok(ReadLineResult::Yielded);
+        }
+
+        if !event::poll(Duration::from_millis(50))? {
+            continue;
+        }
+
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != event::KeyEventKind::Press {
+            continue;
+        }
+
+        if let Some(result) = handle_key_event(
+            key,
+            &mut input,
+            &mut cursor_pos,
+            history,
+            &mut history_index,
+            &mut draft,
+        )? {
+            return Ok(result);
+        }
+
+        render(prompt, &input, cursor_pos)?;
+    }
+}
+
+/// Apply a single key event to the in-progress input line.
+///
+/// Returns `Ok(Some(result))` when the line is complete (Enter, `Ctrl-C`, or
+/// `Ctrl-D` on empty input) and the caller should stop reading; `Ok(None)` to
+/// keep looping. Shared between [`read_line`] and [`read_line_yieldable`] so
+/// the two entry points stay behaviorally identical.
+fn handle_key_event(
+    key: KeyEvent,
+    input: &mut String,
+    cursor_pos: &mut usize,
+    history: &[String],
+    history_index: &mut Option<usize>,
+    draft: &mut String,
+) -> io::Result<Option<ReadLineResult>> {
+    match (key.modifiers, key.code) {
+        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+            write!(stdout(), "\r\n")?;
+            stdout().flush()?;
+            return Ok(Some(ReadLineResult::Interrupted));
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('d')) if input.is_empty() => {
+            write!(stdout(), "\r\n")?;
+            stdout().flush()?;
+            return Ok(Some(ReadLineResult::Eof));
+        }
+        (_, KeyCode::Enter) => {
+            write!(stdout(), "\r\n")?;
+            stdout().flush()?;
+            return Ok(Some(ReadLineResult::Line(std::mem::take(input))));
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('a')) | (_, KeyCode::Home) => {
+            *cursor_pos = 0;
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('e')) | (_, KeyCode::End) => {
+            *cursor_pos = char_count(input);
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+            input.clear();
+            *cursor_pos = 0;
+        }
+        (KeyModifiers::ALT, KeyCode::Backspace) => {
+            let boundary = prev_word_boundary(input, *cursor_pos);
+            let start = byte_offset(input, boundary);
+            let end = byte_offset(input, *cursor_pos);
+            input.drain(start..end);
+            *cursor_pos = boundary;
+        }
+        (_, KeyCode::Backspace) if *cursor_pos > 0 => {
+            let off = byte_offset(input, *cursor_pos - 1);
+            input.remove(off);
+            *cursor_pos -= 1;
+        }
+        (_, KeyCode::Delete) if *cursor_pos < char_count(input) => {
+            let off = byte_offset(input, *cursor_pos);
+            input.remove(off);
+        }
+        (_, KeyCode::Left) => {
+            *cursor_pos = cursor_pos.saturating_sub(1);
+        }
+        (_, KeyCode::Right) if *cursor_pos < char_count(input) => {
+            *cursor_pos += 1;
+        }
+        (_, KeyCode::Up) => {
+            navigate_history_up(history, input, cursor_pos, history_index, draft);
+        }
+        (_, KeyCode::Down) => {
+            navigate_history_down(history, input, cursor_pos, history_index, draft);
+        }
+        (_, KeyCode::Char(c)) => {
+            let off = byte_offset(input, *cursor_pos);
+            input.insert(off, c);
+            *cursor_pos += 1;
+        }
+        _ => {}
+    }
+
+    Ok(None)
 }
 
 fn navigate_history_up(

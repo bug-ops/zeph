@@ -166,6 +166,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   context-usage estimate (`AgentEvent::ContextEstimate`) never reached the input block title.
   Added both missing overrides to `impl Channel for AppChannel`, following the existing
   `dispatch_app_channel!` pattern used by the other 19 forwarded methods.
+- `zeph-channels`: `CliChannel::elicit()` and `CliChannel::confirm()` each raced the persistent
+  background chat-input reader (`run_tty_reader`) for terminal keystrokes: both sides
+  independently called into crossterm's process-wide `event::read()`, which has no concept of
+  "which caller should receive this event," so a keystroke typed during an MCP elicitation
+  prompt (now reachable end-to-end since #6388) or a `y/N` confirmation could be silently stolen
+  by the background reader instead (#6398). Fixed by making the background reader's read loop
+  interruptible (`line_editor::read_line_yieldable`, polling with a 50ms timeout instead of
+  blocking indefinitely) and gating exclusive terminal access with a shared
+  `StdinCoordination` (`AtomicBool` + `tokio::sync::Notify`) that `elicit()`/`confirm()` acquire
+  via an RAII `ElicitGuard` for the duration of the prompt — the background reader waits on
+  `Notify` (no polling) until the guard drops, at which point it resumes. Any partially-typed
+  chat input is discarded when the background reader yields.
 - `zeph-memory`: `SemanticMemory::run_quality_gate` hardcoded `recent_embeddings` to `&[]` on
   its only production call site, so `QualityGate::evaluate`'s `Redundant`-rejection path —
   already unit-tested and working — could never fire on a real conversation (#6387). Added

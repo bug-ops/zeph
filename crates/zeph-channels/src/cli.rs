@@ -17,8 +17,10 @@
 
 use std::collections::VecDeque;
 use std::io::{BufReader, IsTerminal};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use zeph_common::path_guard::{PathRejection, classify_relative_path};
 use zeph_core::channel::{
     Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, ElicitationField,
@@ -26,6 +28,58 @@ use zeph_core::channel::{
 };
 
 use crate::line_editor::{self, ReadLineResult};
+
+/// Coordinates exclusive terminal access between the persistent background
+/// chat-input reader ([`run_tty_reader`]) and one-shot `elicit()`/`confirm()`
+/// prompts.
+///
+/// Both readers ultimately call into crossterm's process-wide
+/// `event::read()`, which has no concept of "which caller should receive
+/// this event" — without this coordination, keystrokes typed during an
+/// elicitation/confirmation prompt can be stolen by the background
+/// chat-input reader instead (#6398).
+#[derive(Debug)]
+struct StdinCoordination {
+    /// Set while an `elicit()`/`confirm()` prompt owns the terminal. Polled by
+    /// `run_tty_reader`'s interruptible read loop.
+    elicit_active: AtomicBool,
+    /// Notified when `elicit_active` transitions back to `false`, so the
+    /// paused background reader wakes without busy-polling.
+    resume: Notify,
+}
+
+impl StdinCoordination {
+    fn new() -> Self {
+        Self {
+            elicit_active: AtomicBool::new(false),
+            resume: Notify::new(),
+        }
+    }
+}
+
+/// RAII guard granting an `elicit()`/`confirm()` prompt exclusive terminal
+/// access for its lifetime.
+///
+/// Acquiring sets [`StdinCoordination::elicit_active`]; dropping — on any
+/// exit path, including future cancellation — clears it and wakes the paused
+/// background reader via [`StdinCoordination::resume`].
+struct ElicitGuard<'a> {
+    coord: &'a StdinCoordination,
+}
+
+impl<'a> ElicitGuard<'a> {
+    fn acquire(coord: &'a StdinCoordination) -> Self {
+        coord.elicit_active.store(true, Ordering::Release);
+        Self { coord }
+    }
+}
+
+impl Drop for ElicitGuard<'_> {
+    fn drop(&mut self) {
+        self.coord.elicit_active.store(false, Ordering::Release);
+        self.coord.resume.notify_one();
+    }
+}
 
 const STDIN_CHANNEL_CAPACITY: usize = 32;
 
@@ -160,12 +214,23 @@ async fn process_line(
 
 /// Background stdin reader for TTY mode.
 ///
-/// Spawns a `tokio::task::spawn_blocking` per line (using `line_editor::read_line`
-/// which manages crossterm raw mode internally).
-async fn run_tty_reader(mut history: Option<InputHistory>, tx: mpsc::Sender<ChannelMessage>) {
+/// Spawns a `tokio::task::spawn_blocking` per line (using
+/// `line_editor::read_line_yieldable`, which manages crossterm raw mode
+/// internally). Before each read attempt, waits for `coord.elicit_active` to
+/// clear so that an active `elicit()`/`confirm()` prompt has exclusive
+/// terminal access — see [`StdinCoordination`].
+async fn run_tty_reader(
+    mut history: Option<InputHistory>,
+    tx: mpsc::Sender<ChannelMessage>,
+    coord: Arc<StdinCoordination>,
+) {
     let mut pending_attachments: Vec<Attachment> = Vec::new();
 
     loop {
+        while coord.elicit_active.load(Ordering::Acquire) {
+            coord.resume.notified().await;
+        }
+
         let entries: Vec<String> = history
             .as_ref()
             .map(|h| h.entries().iter().cloned().collect())
@@ -175,14 +240,19 @@ async fn run_tty_reader(mut history: Option<InputHistory>, tx: mpsc::Sender<Chan
         // NOTE: raw spawn_blocking is correct here — this is interactive terminal I/O (crossterm
         // raw mode), not a CPU-bound agent task. Routing through task_supervisor's semaphore
         // would starve the UI when 8 agent tasks are in-flight.
-        let Ok(Ok(result)) =
-            tokio::task::spawn_blocking(move || line_editor::read_line("You: ", &entries)).await
+        let coord_for_blocking = Arc::clone(&coord);
+        let Ok(Ok(result)) = tokio::task::spawn_blocking(move || {
+            line_editor::read_line_yieldable("You: ", &entries, &coord_for_blocking.elicit_active)
+        })
+        .await
         else {
             break;
         };
         crate::terminal_title::clear_action_required("zeph");
 
         let line = match result {
+            // The wait-loop above will now block until elicit()/confirm() releases the terminal.
+            ReadLineResult::Yielded => continue,
             ReadLineResult::Interrupted | ReadLineResult::Eof => break,
             ReadLineResult::Line(l) => l,
         };
@@ -231,6 +301,10 @@ async fn run_piped_reader(mut history: Option<InputHistory>, tx: mpsc::Sender<Ch
         let line = match result {
             ReadLineResult::Interrupted | ReadLineResult::Eof => break,
             ReadLineResult::Line(l) => l,
+            // `read_line_piped` never yields; the reader loop above only calls it. Handled
+            // gracefully (not `unreachable!()`) so a future refactor accidentally routing this
+            // path through the yieldable variant degrades instead of panicking.
+            ReadLineResult::Yielded => continue,
         };
 
         match process_line(line, false, &mut history, &mut pending_attachments).await {
@@ -262,10 +336,11 @@ fn spawn_stdin_reader(
     is_tty: bool,
     history: Option<InputHistory>,
     tx: mpsc::Sender<ChannelMessage>,
+    coord: Arc<StdinCoordination>,
 ) {
     tokio::spawn(async move {
         if is_tty {
-            run_tty_reader(history, tx).await;
+            run_tty_reader(history, tx, coord).await;
         } else {
             run_piped_reader(history, tx).await;
         }
@@ -326,6 +401,9 @@ pub struct CliChannel {
     input_rx: Option<mpsc::Receiver<ChannelMessage>>,
     /// Pending configuration consumed when the background task is first spawned.
     pending: Option<PendingReader>,
+    /// Shared terminal-access coordination between the background chat-input
+    /// reader and `elicit()`/`confirm()` prompts. See [`StdinCoordination`].
+    stdin_coord: Arc<StdinCoordination>,
 }
 
 impl CliChannel {
@@ -345,6 +423,7 @@ impl CliChannel {
                 history: None,
                 is_tty,
             }),
+            stdin_coord: Arc::new(StdinCoordination::new()),
         }
     }
 
@@ -379,6 +458,7 @@ impl CliChannel {
                 history: Some(history),
                 is_tty,
             }),
+            stdin_coord: Arc::new(StdinCoordination::new()),
         }
     }
 
@@ -391,7 +471,12 @@ impl CliChannel {
                 .take()
                 .expect("PendingReader consumed before input_rx was set");
             let (tx, rx) = mpsc::channel(STDIN_CHANNEL_CAPACITY);
-            spawn_stdin_reader(pending.is_tty, pending.history, tx);
+            spawn_stdin_reader(
+                pending.is_tty,
+                pending.history,
+                tx,
+                Arc::clone(&self.stdin_coord),
+            );
             self.input_rx = Some(rx);
         }
         self.input_rx.as_mut().expect("input_rx set above")
@@ -484,6 +569,7 @@ impl Channel for CliChannel {
             tracing::debug!("non-interactive stdin, auto-declining confirmation");
             return Ok(false);
         }
+        let _guard = ElicitGuard::acquire(&self.stdin_coord);
         let prompt = format!("{prompt} [y/N]: ");
         // NOTE: raw spawn_blocking is intentional — interactive terminal readline; not an agent
         // task, so the task_supervisor semaphore does not apply.
@@ -494,7 +580,13 @@ impl Channel for CliChannel {
 
         match result {
             ReadLineResult::Line(line) => Ok(line.trim().eq_ignore_ascii_case("y")),
-            ReadLineResult::Interrupted | ReadLineResult::Eof => Ok(false),
+            // `read_line` (non-yieldable) never actually returns `Yielded`; folded in here
+            // (rather than a separate `unreachable!()` arm) so a future refactor routing this
+            // call through the yieldable variant degrades to a declined confirmation instead of
+            // panicking.
+            ReadLineResult::Interrupted | ReadLineResult::Eof | ReadLineResult::Yielded => {
+                Ok(false)
+            }
         }
     }
 
@@ -530,6 +622,8 @@ impl Channel for CliChannel {
             return Ok(ElicitationResponse::Declined);
         }
 
+        let _guard = ElicitGuard::acquire(&self.stdin_coord);
+
         println!(
             "\n[MCP server '{}' is requesting input]",
             request.server_name
@@ -560,7 +654,11 @@ impl Channel for CliChannel {
                         return Ok(ElicitationResponse::Declined);
                     }
                 }
-                ReadLineResult::Interrupted | ReadLineResult::Eof => {
+                // `read_line` (non-yieldable) never actually returns `Yielded`; folded in here
+                // (rather than a separate `unreachable!()` arm) so a future refactor routing
+                // this call through the yieldable variant degrades to a cancelled elicitation
+                // instead of panicking.
+                ReadLineResult::Interrupted | ReadLineResult::Eof | ReadLineResult::Yielded => {
                     return Ok(ElicitationResponse::Cancelled);
                 }
             }
@@ -650,6 +748,105 @@ mod tests {
     fn cli_channel_default() {
         let ch = CliChannel::default();
         let _ = format!("{ch:?}");
+    }
+
+    #[test]
+    fn elicit_guard_acquire_sets_flag_true() {
+        let coord = StdinCoordination::new();
+        assert!(!coord.elicit_active.load(Ordering::Acquire));
+        let _guard = ElicitGuard::acquire(&coord);
+        assert!(coord.elicit_active.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn elicit_guard_drop_clears_flag() {
+        let coord = StdinCoordination::new();
+        {
+            let _guard = ElicitGuard::acquire(&coord);
+            assert!(coord.elicit_active.load(Ordering::Acquire));
+        }
+        assert!(!coord.elicit_active.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn elicit_guard_drop_wakes_a_notified_waiter() {
+        let coord = Arc::new(StdinCoordination::new());
+        let guard = ElicitGuard::acquire(&coord);
+
+        let waiter_coord = Arc::clone(&coord);
+        let waiter = tokio::spawn(async move {
+            waiter_coord.resume.notified().await;
+        });
+
+        // Give the waiter a chance to register before the guard drops.
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("waiter should wake within timeout")
+            .expect("waiter task should not panic");
+    }
+
+    /// Mirrors `run_tty_reader`'s wait loop exactly, so this test exercises the
+    /// actual consumer-side coordination pattern (not just `ElicitGuard` in
+    /// isolation).
+    async fn wait_for_resume(coord: &StdinCoordination) {
+        while coord.elicit_active.load(Ordering::Acquire) {
+            coord.resume.notified().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn stdin_coord_wait_loop_blocks_while_guard_held_then_resumes_on_drop() {
+        let coord = Arc::new(StdinCoordination::new());
+        let guard = ElicitGuard::acquire(&coord);
+
+        let waiter_coord = Arc::clone(&coord);
+        let waiter = tokio::spawn(async move { wait_for_resume(&waiter_coord).await });
+
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(
+            !waiter.is_finished(),
+            "wait loop must stay blocked while the guard is held"
+        );
+
+        drop(guard);
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("wait loop should exit within timeout after guard drop")
+            .expect("waiter task should not panic");
+    }
+
+    #[tokio::test]
+    async fn stdin_coord_wait_loop_ignores_spurious_notify_while_flag_still_true() {
+        let coord = Arc::new(StdinCoordination::new());
+        coord.elicit_active.store(true, Ordering::Release);
+
+        let waiter_coord = Arc::clone(&coord);
+        let waiter = tokio::spawn(async move { wait_for_resume(&waiter_coord).await });
+
+        tokio::task::yield_now().await;
+
+        // A notify while the flag is still true must not let the waiter exit —
+        // the `while` (not `if`) re-checks the flag after waking. Regressing this
+        // to `if` would let the background reader race elicit()/confirm() again.
+        coord.resume.notify_one();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(
+            !waiter.is_finished(),
+            "waiter must not exit while elicit_active remains true"
+        );
+
+        coord.elicit_active.store(false, Ordering::Release);
+        coord.resume.notify_one();
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("wait loop should exit within timeout")
+            .expect("waiter task should not panic");
     }
 
     #[tokio::test]
@@ -795,6 +992,7 @@ mod tests {
             accumulated: String::new(),
             input_rx: Some(rx),
             pending: None,
+            stdin_coord: Arc::new(StdinCoordination::new()),
         };
 
         // Pre-fill the channel with a message (simulates background reader
