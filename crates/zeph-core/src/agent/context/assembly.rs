@@ -466,6 +466,32 @@ impl<C: Channel> Agent<C> {
         // journaling turns for the resumed/forked one.
         self.reset_durable_ctx_for_conversation_switch().await;
 
+        // Resume banner for the live in-session swap path (spec-068 §13.5, AC-23): `/conv
+        // resume`/`/conv fork` reach this function directly, bypassing the process-startup
+        // banner computed in `src/runner.rs`. Gated on `[session.resume] show_banner` and a
+        // best-effort proxy for "display-owning channel" (`requires_input_sanitization()` is
+        // `false` for CLI/TUI, `true` for Telegram/Discord/Slack — see its doc comment); chat
+        // channels already have their own scrollback (§13.2) so this intentionally skips them.
+        // `last_active` is looked up from the just-hydrated session's own metadata row — a
+        // single cheap read alongside the several I/O calls `hydrate_and_condense` already made.
+        if self.runtime.config.resume_config.show_banner
+            && !self.channel.requires_input_sanitization()
+        {
+            let last_active = store
+                .get(session_id.as_str())
+                .await
+                .ok()
+                .flatten()
+                .map(|meta| meta.updated_at);
+            let resume_info = crate::session_resume::SessionResumeInfo::from_messages(
+                &hydrated.messages,
+                last_active.as_deref(),
+            );
+            if let Some(banner) = resume_info.banner_text() {
+                let _ = self.channel.send_resume_banner(&banner).await;
+            }
+        }
+
         // --- Apply the replayed history (same shape as `with_preloaded_messages`, D-6) ---
         let mut messages = hydrated.messages;
         self.msg.messages.append(&mut messages);

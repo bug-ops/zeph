@@ -123,6 +123,9 @@ pub struct AgentSessionConfig {
     /// Session recap settings (#3064).
     pub recap: zeph_config::RecapConfig,
 
+    /// Resume-visibility banner and `/history` bound settings (spec-068 §13, §18, #6420).
+    pub resume: zeph_config::ResumeConfig,
+
     /// Minimum allowed `/loop` tick interval in seconds. From `[cli.loop] min_interval_secs`.
     pub loop_min_interval_secs: u64,
 
@@ -217,6 +220,7 @@ impl AgentSessionConfig {
                 .collect::<Vec<_>>()
                 .into(),
             recap: config.session.recap.clone(),
+            resume: config.session.resume.clone(),
             loop_min_interval_secs: config.cli.loop_.min_interval_secs,
             goal_config: config.goals.clone(),
             fidelity_config: {

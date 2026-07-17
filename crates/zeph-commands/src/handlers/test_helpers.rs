@@ -77,6 +77,24 @@ impl MessageAccess for MockMessages {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
+
+    fn transcript_len(&self) -> usize {
+        0
+    }
+
+    fn transcript_page(
+        &self,
+        _start: usize,
+        _count: usize,
+    ) -> Vec<crate::transcript::TranscriptEntry> {
+        Vec::new()
+    }
+
+    fn history_cursor(&self) -> usize {
+        0
+    }
+
+    fn set_history_cursor(&mut self, _pos: usize) {}
 }
 
 /// No-op stub for [`SessionAccess`] used in handler unit tests.
@@ -88,6 +106,10 @@ pub struct MockSession;
 impl SessionAccess for MockSession {
     fn supports_exit(&self) -> bool {
         false
+    }
+
+    fn history_expand_default_lines(&self) -> usize {
+        20
     }
 }
 

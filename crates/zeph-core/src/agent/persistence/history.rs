@@ -89,6 +89,26 @@ impl<C: Channel> Agent<C> {
                 .inspect_err(|e| {
                     tracing::warn!(error = %e, "failed to increment tier session counts");
                 });
+
+            // Resume banner for the `[session] enabled = false` `SQLite`-fallback path
+            // (spec-068 §13.4, S1): the durable-log hydration path (`with_preloaded_messages`)
+            // already short-circuits this whole function via the `history_preloaded` guard
+            // above, so this can only run when that path was skipped — either the event-log
+            // feature is disabled, or a legacy pre-#5343 conversation had no session row yet.
+            // Spec §13.4 explicitly names this `PersistenceService::load_history` fallback as
+            // an `is_resume` input; without this, resuming with `[session] enabled = false`
+            // silently showed no banner despite genuinely resuming prior history.
+            if self.runtime.config.resume_config.show_banner
+                && !self.channel.requires_input_sanitization()
+            {
+                let resume_info = crate::session_resume::SessionResumeInfo::from_messages(
+                    &self.msg.messages,
+                    None,
+                );
+                if let Some(banner) = resume_info.banner_text() {
+                    let _ = self.channel.send_resume_banner(&banner).await;
+                }
+            }
         }
 
         // Set absolute SQLite message count and semantic fact count (not deltas).

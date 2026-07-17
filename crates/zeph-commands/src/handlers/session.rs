@@ -210,6 +210,137 @@ impl CommandHandler<CommandContext<'_>> for ClearQueueCommand {
     }
 }
 
+/// Show conversation history (spec-068 §13.6).
+///
+/// `/history` (no argument): the last `[session.resume] expand_default_lines` messages,
+/// sliced before formatting (INV-SP-6). `/history N`: the last `N` messages. `/history all`:
+/// pages through the full history in `expand_default_lines`-sized chunks — never
+/// materializes the full history before formatting — with an explicit "may take a moment"
+/// notice before the first page. `/history next`: continues from the pagination cursor left
+/// by a prior `/history all` or `/history next`.
+///
+/// Output is sent via [`crate::sink::ChannelSink::send_transcript`], not the `handle`
+/// return value, so channels with a structured display buffer (TUI) can backfill per-entry
+/// instead of flattening to one string.
+pub struct HistoryCommand;
+
+enum HistoryArgs {
+    Bounded(usize),
+    All,
+    Next,
+}
+
+fn parse_history_args(args: &str, default_lines: usize) -> HistoryArgs {
+    match args.trim() {
+        "" => HistoryArgs::Bounded(default_lines),
+        "all" => HistoryArgs::All,
+        "next" => HistoryArgs::Next,
+        n => n
+            .parse::<usize>()
+            .map_or(HistoryArgs::Bounded(default_lines), HistoryArgs::Bounded),
+    }
+}
+
+impl CommandHandler<CommandContext<'_>> for HistoryCommand {
+    fn name(&self) -> &'static str {
+        "/history"
+    }
+
+    fn description(&self) -> &'static str {
+        "Show conversation history (N most recent messages, or 'all' to page through)"
+    }
+
+    fn args_hint(&self) -> &'static str {
+        "[N|all|next]"
+    }
+
+    fn category(&self) -> SlashCategory {
+        SlashCategory::Session
+    }
+
+    fn requires_auth(&self) -> bool {
+        false
+    }
+
+    fn handle<'a>(
+        &'a self,
+        ctx: &'a mut CommandContext<'_>,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.history.handle");
+        Box::pin(
+            async move {
+                let default_lines = ctx.session.history_expand_default_lines().max(1);
+                let total = ctx.messages.transcript_len();
+                if total == 0 {
+                    ctx.sink.send("No conversation history yet.").await?;
+                    return Ok(CommandOutput::Silent);
+                }
+
+                match parse_history_args(args, default_lines) {
+                    HistoryArgs::Bounded(n) => {
+                        let n = n.min(total);
+                        let start = total.saturating_sub(n);
+                        let entries = ctx.messages.transcript_page(start, n);
+                        ctx.messages.set_history_cursor(0);
+                        ctx.sink.send_transcript(&entries).await?;
+                    }
+                    HistoryArgs::All => {
+                        ctx.sink
+                            .send(&format!(
+                                "Showing full history ({total} messages) — this may take a moment."
+                            ))
+                            .await?;
+                        let count = default_lines.min(total);
+                        let entries = ctx.messages.transcript_page(0, count);
+                        ctx.messages.set_history_cursor(count);
+                        ctx.sink.send_transcript(&entries).await?;
+                        if count < total {
+                            let total_pages = total.div_ceil(default_lines);
+                            ctx.sink
+                                .send(&format!(
+                                    "Page 1/{total_pages} — use /history next to continue."
+                                ))
+                                .await?;
+                        }
+                    }
+                    HistoryArgs::Next => {
+                        let cursor = ctx.messages.history_cursor();
+                        if cursor == 0 || cursor >= total {
+                            ctx.sink
+                                .send(
+                                    "No more history to page through. Use /history all to start over.",
+                                )
+                                .await?;
+                            return Ok(CommandOutput::Silent);
+                        }
+                        let count = default_lines.min(total - cursor);
+                        let entries = ctx.messages.transcript_page(cursor, count);
+                        let new_cursor = cursor + count;
+                        ctx.messages.set_history_cursor(new_cursor);
+                        ctx.sink.send_transcript(&entries).await?;
+                        if new_cursor < total {
+                            // `page` is already 1-based (cursor=20, default_lines=20 -> page 2)
+                            // — do not add another `+ 1` (M2: previously printed "Page 3/3" for
+                            // what was actually page 2 of 3).
+                            let page = cursor / default_lines + 1;
+                            let total_pages = total.div_ceil(default_lines);
+                            ctx.sink
+                                .send(&format!(
+                                    "Page {page}/{total_pages} — use /history next to continue."
+                                ))
+                                .await?;
+                        }
+                    }
+                }
+                Ok(CommandOutput::Silent)
+            }
+            .instrument(span),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +390,8 @@ mod tests {
     struct MockMessages {
         pub cleared: bool,
         pub queue: usize,
+        pub transcript: Vec<crate::transcript::TranscriptEntry>,
+        pub cursor: usize,
     }
 
     impl MessageAccess for MockMessages {
@@ -282,15 +415,45 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
             Box::pin(async {})
         }
+
+        fn transcript_len(&self) -> usize {
+            self.transcript.len()
+        }
+
+        fn transcript_page(
+            &self,
+            start: usize,
+            count: usize,
+        ) -> Vec<crate::transcript::TranscriptEntry> {
+            self.transcript
+                .iter()
+                .skip(start)
+                .take(count)
+                .cloned()
+                .collect()
+        }
+
+        fn history_cursor(&self) -> usize {
+            self.cursor
+        }
+
+        fn set_history_cursor(&mut self, pos: usize) {
+            self.cursor = pos;
+        }
     }
 
     struct MockSession {
         supports_exit: bool,
+        expand_default_lines: usize,
     }
 
     impl SessionAccess for MockSession {
         fn supports_exit(&self) -> bool {
             self.supports_exit
+        }
+
+        fn history_expand_default_lines(&self) -> usize {
+            self.expand_default_lines
         }
     }
 
@@ -319,9 +482,12 @@ mod tests {
         let mut messages = MockMessages {
             cleared: false,
             queue: 0,
+            transcript: Vec::new(),
+            cursor: 0,
         };
         let session = MockSession {
             supports_exit: true,
+            expand_default_lines: 20,
         };
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
@@ -336,9 +502,12 @@ mod tests {
         let mut messages = MockMessages {
             cleared: false,
             queue: 0,
+            transcript: Vec::new(),
+            cursor: 0,
         };
         let session = MockSession {
             supports_exit: false,
+            expand_default_lines: 20,
         };
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
@@ -354,9 +523,12 @@ mod tests {
         let mut messages = MockMessages {
             cleared: false,
             queue: 0,
+            transcript: Vec::new(),
+            cursor: 0,
         };
         let session = MockSession {
             supports_exit: false,
+            expand_default_lines: 20,
         };
         let out = {
             let mut agent = crate::NullAgent;
@@ -374,9 +546,12 @@ mod tests {
         let mut messages = MockMessages {
             cleared: false,
             queue: 0,
+            transcript: Vec::new(),
+            cursor: 0,
         };
         let session = MockSession {
             supports_exit: false,
+            expand_default_lines: 20,
         };
         let out = {
             let mut agent = crate::NullAgent;
@@ -397,9 +572,12 @@ mod tests {
         let mut messages = MockMessages {
             cleared: false,
             queue: 3,
+            transcript: Vec::new(),
+            cursor: 0,
         };
         let session = MockSession {
             supports_exit: false,
+            expand_default_lines: 20,
         };
         let out = {
             let mut agent = crate::NullAgent;
@@ -446,9 +624,12 @@ mod tests {
         let mut messages = MockMessages {
             cleared: false,
             queue: 0,
+            transcript: Vec::new(),
+            cursor: 0,
         };
         let session = MockSession {
             supports_exit: false,
+            expand_default_lines: 20,
         };
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
@@ -467,9 +648,12 @@ mod tests {
         let mut messages = MockMessages {
             cleared: false,
             queue: 0,
+            transcript: Vec::new(),
+            cursor: 0,
         };
         let session = MockSession {
             supports_exit: false,
+            expand_default_lines: 20,
         };
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
@@ -489,9 +673,12 @@ mod tests {
         let mut messages = MockMessages {
             cleared: false,
             queue: 0,
+            transcript: Vec::new(),
+            cursor: 0,
         };
         let session = MockSession {
             supports_exit: false,
+            expand_default_lines: 20,
         };
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
@@ -510,9 +697,12 @@ mod tests {
         let mut messages = MockMessages {
             cleared: false,
             queue: 0,
+            transcript: Vec::new(),
+            cursor: 0,
         };
         let session = MockSession {
             supports_exit: false,
+            expand_default_lines: 20,
         };
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
@@ -532,9 +722,12 @@ mod tests {
         let mut messages = MockMessages {
             cleared: false,
             queue: 0,
+            transcript: Vec::new(),
+            cursor: 0,
         };
         let session = MockSession {
             supports_exit: false,
+            expand_default_lines: 20,
         };
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
@@ -553,9 +746,12 @@ mod tests {
         let mut messages = MockMessages {
             cleared: false,
             queue: 0,
+            transcript: Vec::new(),
+            cursor: 0,
         };
         let session = MockSession {
             supports_exit: false,
+            expand_default_lines: 20,
         };
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
@@ -566,5 +762,171 @@ mod tests {
         let result = reg.dispatch(&mut ctx, "/clear-queue", false).await;
         let err = result.unwrap().unwrap_err();
         assert!(err.0.contains("trusted"));
+    }
+
+    // --- /history ---
+
+    fn make_transcript(n: usize) -> Vec<crate::transcript::TranscriptEntry> {
+        (0..n)
+            .map(|i| crate::transcript::TranscriptEntry {
+                role: crate::transcript::TranscriptRole::User,
+                content: format!("message {i}"),
+                tool_name: None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn history_no_history_yet() {
+        let mut sink = MockSink { sent: vec![] };
+        let mut debug = MockDebug;
+        let mut messages = MockMessages {
+            cleared: false,
+            queue: 0,
+            transcript: Vec::new(),
+            cursor: 0,
+        };
+        let session = MockSession {
+            supports_exit: false,
+            expand_default_lines: 20,
+        };
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        let out = HistoryCommand.handle(&mut ctx, "").await.unwrap();
+        assert_matches!(out, CommandOutput::Silent);
+        assert!(sink.sent[0].contains("No conversation history"));
+    }
+
+    #[tokio::test]
+    async fn history_default_bounds_to_expand_default_lines() {
+        let mut sink = MockSink { sent: vec![] };
+        let mut debug = MockDebug;
+        let mut messages = MockMessages {
+            cleared: false,
+            queue: 0,
+            transcript: make_transcript(500),
+            cursor: 0,
+        };
+        let session = MockSession {
+            supports_exit: false,
+            expand_default_lines: 20,
+        };
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        HistoryCommand.handle(&mut ctx, "").await.unwrap();
+        // Only the last 20 of 500 messages must ever reach the sink — never the full set
+        // materialized then trimmed (INV-SP-6).
+        assert_eq!(sink.sent.len(), 1);
+        assert!(sink.sent[0].contains("message 480"));
+        assert!(sink.sent[0].contains("message 499"));
+        assert!(!sink.sent[0].contains("message 479"));
+    }
+
+    #[tokio::test]
+    async fn history_numeric_argument_bounds_explicitly() {
+        let mut sink = MockSink { sent: vec![] };
+        let mut debug = MockDebug;
+        let mut messages = MockMessages {
+            cleared: false,
+            queue: 0,
+            transcript: make_transcript(10),
+            cursor: 0,
+        };
+        let session = MockSession {
+            supports_exit: false,
+            expand_default_lines: 20,
+        };
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        HistoryCommand.handle(&mut ctx, "3").await.unwrap();
+        assert_eq!(sink.sent.len(), 1);
+        assert!(sink.sent[0].contains("message 7"));
+        assert!(sink.sent[0].contains("message 9"));
+        assert!(!sink.sent[0].contains("message 6"));
+    }
+
+    #[tokio::test]
+    async fn history_all_shows_notice_then_paginates() {
+        let mut sink = MockSink { sent: vec![] };
+        let mut debug = MockDebug;
+        let mut messages = MockMessages {
+            cleared: false,
+            queue: 0,
+            transcript: make_transcript(50),
+            cursor: 0,
+        };
+        let session = MockSession {
+            supports_exit: false,
+            expand_default_lines: 20,
+        };
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        HistoryCommand.handle(&mut ctx, "all").await.unwrap();
+        assert!(sink.sent[0].contains("may take a moment"));
+        assert!(sink.sent[1].contains("message 0"));
+        assert!(!sink.sent[1].contains("message 20"));
+        assert!(sink.sent[2].contains("Page 1/3"));
+        assert_eq!(messages.history_cursor(), 20);
+    }
+
+    #[tokio::test]
+    async fn history_next_continues_from_cursor() {
+        let mut sink = MockSink { sent: vec![] };
+        let mut debug = MockDebug;
+        let mut messages = MockMessages {
+            cleared: false,
+            queue: 0,
+            transcript: make_transcript(50),
+            cursor: 20,
+        };
+        let session = MockSession {
+            supports_exit: false,
+            expand_default_lines: 20,
+        };
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        HistoryCommand.handle(&mut ctx, "next").await.unwrap();
+        assert!(sink.sent[0].contains("message 20"));
+        assert!(sink.sent[0].contains("message 39"));
+        assert!(!sink.sent[0].contains("message 40"));
+        assert_eq!(messages.history_cursor(), 40);
+        // M2 regression: cursor 20 -> 40 of 50 total is page 2 of 3, not "Page 3/3" (the
+        // pre-fix off-by-one, which also contradicted its own "use /history next to continue"
+        // text by claiming the last page still had more to show).
+        assert_eq!(
+            sink.sent[1], "Page 2/3 — use /history next to continue.",
+            "page label must be 1-based without a stray extra +1"
+        );
+    }
+
+    #[tokio::test]
+    async fn history_next_without_prior_all_reports_nothing_to_page() {
+        let mut sink = MockSink { sent: vec![] };
+        let mut debug = MockDebug;
+        let mut messages = MockMessages {
+            cleared: false,
+            queue: 0,
+            transcript: make_transcript(50),
+            cursor: 0,
+        };
+        let session = MockSession {
+            supports_exit: false,
+            expand_default_lines: 20,
+        };
+        let mut agent = crate::NullAgent;
+        let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
+
+        HistoryCommand.handle(&mut ctx, "next").await.unwrap();
+        assert!(sink.sent[0].contains("No more history"));
+    }
+
+    #[test]
+    fn history_requires_auth_false() {
+        assert!(!HistoryCommand.requires_auth());
     }
 }

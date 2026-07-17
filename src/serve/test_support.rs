@@ -214,6 +214,7 @@ impl ServeTestHarness {
                 tx_out: tx_out.clone(),
                 last_active: std::time::Instant::now(),
                 cancel: tokio_util::sync::CancellationToken::new(),
+                resume_banner_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );
         (rx, tx_out)

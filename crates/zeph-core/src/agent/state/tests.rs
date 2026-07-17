@@ -56,6 +56,7 @@ fn make_message_state() -> MessageState {
         deferred_db_hide_ids: Vec::new(),
         deferred_db_summaries: Vec::new(),
         history_preloaded: false,
+        history_cursor: 0,
     }
 }
 
@@ -112,6 +113,7 @@ fn make_runtime_config() -> RuntimeConfig {
         layers: Vec::new(),
         supervisor_config: crate::config::TaskSupervisorConfig::default(),
         recap_config: zeph_config::RecapConfig::default(),
+        resume_config: zeph_config::ResumeConfig::default(),
         acp_config: zeph_config::AcpConfig::default(),
         auto_recap_shown: false,
         msg_count_at_resume: 0,

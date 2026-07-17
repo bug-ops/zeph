@@ -170,11 +170,24 @@ impl App {
             ctx_badge,
         );
 
-        let line = Line::from(vec![
+        let mut spans = vec![
             Span::styled("≈ ", theme.user_message),
             Span::styled("zeph", brand_style),
             Span::styled(meta, meta_style),
-        ]);
+        ];
+
+        // Persistent resume banner (spec-068 §13.5): appended to the same single-row header
+        // line rather than a dedicated row, keeping `AppLayout`'s header height at 1 (OQ-I —
+        // placement is an implementation choice, not a spec constraint). Stays visible after
+        // the first prompt, unlike the transient status/spinner line.
+        if let Some(banner) = &self.resume_banner {
+            spans.push(Span::styled(
+                format!("   {banner}"),
+                theme.system_message.add_modifier(Modifier::ITALIC),
+            ));
+        }
+
+        let line = Line::from(spans);
 
         // Transparent background: no .style() wrapper that would paint the row.
         frame.render_widget(Paragraph::new(line), area);

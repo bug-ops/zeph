@@ -158,6 +158,14 @@ impl Channel for JsonCliChannel {
         Ok(())
     }
 
+    /// No-op: `--json` output is a machine-readable JSONL contract downstream consumers parse
+    /// programmatically. The resume banner (spec-068 §13.5) is a human-facing presentation
+    /// nicety and must not leak into it as an unsolicited `ResponseChunk`, same as it is
+    /// excluded from the process-startup path via `is_cli` in `src/runner.rs`.
+    async fn send_resume_banner(&mut self, _text: &str) -> Result<(), ChannelError> {
+        Ok(())
+    }
+
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::ResponseChunk { text: chunk });
         self.pending_chunks = true;
@@ -324,6 +332,27 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(event_field(&lines[0], "event"), "response_chunk");
         assert_eq!(event_field(&lines[1], "event"), "response_end");
+    }
+
+    // Regression test for review finding M-N1 (spec-068 §13.2, #6420): the resume banner is a
+    // human-facing presentation nicety and must not leak into the machine-readable JSONL
+    // stream as an unsolicited `response_chunk`, the same way the process-startup path already
+    // excludes JsonCli via `is_cli` (`src/runner.rs`). Both the S1
+    // (`Agent::load_history`) and AC-23 (`Agent::load_and_resume_conversation`) banner call
+    // sites reach the channel through `Channel::send_resume_banner`, so this exercises the
+    // override directly rather than one specific caller.
+    #[tokio::test]
+    async fn send_resume_banner_is_noop_for_json_cli() {
+        let (sink, read) = make_test_sink();
+        let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
+        ch.send_resume_banner("\u{21bb} Resuming session — 34 messages, 12 turns.")
+            .await
+            .unwrap();
+        ch.flush_chunks().await.unwrap();
+        assert!(
+            read().is_empty(),
+            "send_resume_banner must not emit any JSONL event for --json output"
+        );
     }
 
     #[tokio::test]

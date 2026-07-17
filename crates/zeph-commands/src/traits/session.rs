@@ -17,4 +17,8 @@ pub trait SessionAccess: Send + Sync {
     ///
     /// When `false`, `/exit` and `/quit` report an error to the user instead of exiting.
     fn supports_exit(&self) -> bool;
+
+    /// Bound applied to `/history` with no argument — `[session.resume] expand_default_lines`
+    /// (spec-068 §13.6, §18). Sliced before formatting (INV-SP-6).
+    fn history_expand_default_lines(&self) -> usize;
 }

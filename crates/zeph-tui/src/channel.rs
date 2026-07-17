@@ -246,6 +246,37 @@ impl Channel for TuiChannel {
 
     #[cfg_attr(
         feature = "profiling",
+        tracing::instrument(name = "tui.channel.send_transcript_backfill", skip_all)
+    )]
+    async fn send_transcript_backfill(
+        &mut self,
+        entries: &[zeph_commands::TranscriptEntry],
+    ) -> Result<(), ChannelError> {
+        // Structured backfill into SessionSlot::messages via App::backfill_history_display_only
+        // — split from input_history/up-arrow recall (spec-068 §13.7, AC-20). Overrides the
+        // default `Channel::send_transcript_backfill`, which would otherwise flatten to one
+        // string via TranscriptFormatter and lose per-message role/tool rendering.
+        let _ = self
+            .agent_event_tx
+            .try_send(AgentEvent::HistoryBackfill(entries.to_vec()));
+        Ok(())
+    }
+
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.send_resume_banner", skip_all)
+    )]
+    async fn send_resume_banner(&mut self, text: &str) -> Result<(), ChannelError> {
+        // Persistent header banner (spec-068 §13.5), same as the startup path — covers
+        // live mid-session swaps too (`/conv resume`, `/conv fork`, AC-23).
+        let _ = self
+            .agent_event_tx
+            .try_send(AgentEvent::ResumeBanner(text.to_owned()));
+        Ok(())
+    }
+
+    #[cfg_attr(
+        feature = "profiling",
         tracing::instrument(name = "tui.channel.send_diff", skip_all)
     )]
     async fn send_diff(

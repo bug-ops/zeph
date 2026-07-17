@@ -31,4 +31,25 @@ pub trait MessageAccess: Send {
         &'a mut self,
         count: usize,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
+
+    /// Total number of transcript-eligible (non-system) messages currently in history
+    /// (spec-068 §13.6).
+    fn transcript_len(&self) -> usize;
+
+    /// Return a page of transcript entries, oldest-first.
+    ///
+    /// `start` is the 0-based index of the first entry to include; `count` bounds how many
+    /// entries are returned. Slicing happens before formatting (INV-SP-6) — callers must never
+    /// materialize the full history and then trim.
+    fn transcript_page(
+        &self,
+        start: usize,
+        count: usize,
+    ) -> Vec<crate::transcript::TranscriptEntry>;
+
+    /// Current `/history all` pagination cursor (0 = not yet started/reset).
+    fn history_cursor(&self) -> usize;
+
+    /// Set the `/history all` pagination cursor after a page is shown.
+    fn set_history_cursor(&mut self, pos: usize);
 }

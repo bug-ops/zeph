@@ -695,7 +695,7 @@ pub(crate) fn build_session_debug_registry<'ctx>()
     use zeph_commands::handlers::debug::{DebugDumpCommand, DumpFormatCommand, LogCommand};
     use zeph_commands::handlers::help::HelpCommand;
     use zeph_commands::handlers::session::{
-        ClearCommand, ClearQueueCommand, ExitCommand, QuitCommand, ResetCommand,
+        ClearCommand, ClearQueueCommand, ExitCommand, HistoryCommand, QuitCommand, ResetCommand,
     };
 
     let mut reg = CommandRegistry::new();
@@ -704,6 +704,7 @@ pub(crate) fn build_session_debug_registry<'ctx>()
     reg.register(ClearCommand);
     reg.register(ResetCommand);
     reg.register(ClearQueueCommand);
+    reg.register(HistoryCommand);
     reg.register(LogCommand);
     reg.register(DebugDumpCommand);
     reg.register(DumpFormatCommand);

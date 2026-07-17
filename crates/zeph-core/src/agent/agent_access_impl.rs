@@ -3583,6 +3583,81 @@ path = "skill-second"
         );
     }
 
+    // Regression test for AC-23 (spec-068 §13.5/§13.9): `/conv fork` is a live in-session swap
+    // reached via `load_and_resume_conversation`, entirely bypassing the process-startup banner
+    // computed in `src/runner.rs`. Forks a session with real (non-`SessionStarted`-only) prior
+    // history and asserts the resume banner is sent through the channel for this path too.
+    #[tokio::test]
+    async fn handle_conv_fork_sends_resume_banner_for_non_empty_history() {
+        let memory = memory_without_qdrant().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        store.create("s1").await.unwrap();
+        let src_dir = zeph_session::session_dir(&data_dir, "s1");
+        let log = zeph_session::SessionEventLog::open(&src_dir).await.unwrap();
+        log.append(
+            None,
+            None,
+            zeph_session::SessionEvent::SessionStarted {
+                session_id: "s1".to_owned(),
+                cwd: "/repo".to_owned(),
+                provider_name: "claude".to_owned(),
+                model: "opus".to_owned(),
+                forked_from: None,
+            },
+        )
+        .await
+        .unwrap();
+        log.append(
+            None,
+            None,
+            zeph_session::SessionEvent::UserMessage {
+                text: "hello".to_owned(),
+                image_refs: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        store
+            .update_seq("s1", log.last_seq().unwrap(), 2)
+            .await
+            .unwrap();
+        drop(log);
+
+        let session_config = zeph_config::SessionConfig {
+            enabled: true,
+            data_dir: data_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_session_persistence_config(Some(session_config));
+
+        let result = agent.handle_conv("fork s1").await.unwrap();
+        assert!(
+            result.starts_with("Forked session s1 ->"),
+            "expected fork confirmation message, got: {result}"
+        );
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|m| m.contains("Resuming session")),
+            "forking a session with non-empty prior history must send the resume banner \
+             through the channel, got sent messages: {sent:?}"
+        );
+    }
+
     // `AgentAccess::load_image` had zero direct coverage — only
     // `Agent::handle_image_as_string` (slash_commands.rs) and `cli.rs`'s inline check
     // were tested. These exercise the real `Agent<C>` impl via the trait.

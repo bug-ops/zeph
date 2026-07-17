@@ -2677,6 +2677,7 @@ impl<C: Channel> Agent<C> {
             subagent_skill_token_budget,
             secrets,
             recap,
+            resume,
             loop_min_interval_secs,
             goal_config,
             fidelity_config,
@@ -2748,6 +2749,7 @@ impl<C: Channel> Agent<C> {
         self.runtime.config.budget_hint_enabled = budget_hint_enabled;
         self.services.skill.subagent_skill_token_budget = subagent_skill_token_budget;
         self.runtime.config.recap_config = recap;
+        self.runtime.config.resume_config = resume;
         self.runtime.config.loop_min_interval_secs = loop_min_interval_secs;
         self.runtime.config.mcp_media = mcp_media;
         self.runtime.config.media_passthrough_note_enabled = media_passthrough_note_enabled;

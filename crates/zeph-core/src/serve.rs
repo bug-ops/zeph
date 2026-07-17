@@ -226,6 +226,7 @@ impl SessionActor {
                 tx_out,
                 last_active: Instant::now(),
                 cancel: session_cancel,
+                resume_banner_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
             blocking_handle,
         )
@@ -393,6 +394,31 @@ pub struct SessionActorHandle {
     /// `serve.evict` idle eviction (spec §9.3) calls to target one session without affecting any
     /// other live actor. Distinct from the process-wide `TaskSupervisor` cancellation token.
     pub cancel: CancellationToken,
+    /// Resume-banner single-emission guard (spec-068 §13.5, AC-24): when more than one
+    /// display-owning channel attaches to the same live session, exactly one attach must
+    /// render the banner. `Arc`-shared across every `Clone` of this handle so all attach
+    /// paths observe the same flag. Use [`Self::claim_resume_banner`] rather than reading
+    /// this directly.
+    pub resume_banner_sent: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl SessionActorHandle {
+    /// Atomically claim the right to render the resume banner for this session.
+    ///
+    /// Returns `true` for exactly one caller across all attach paths sharing this handle
+    /// (via `Clone`) — that caller renders the banner; every other caller (this attach or
+    /// any subsequent one) gets `false` and must render nothing (spec-068 §13.5, AC-24).
+    #[must_use]
+    pub fn claim_resume_banner(&self) -> bool {
+        self.resume_banner_sent
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+    }
 }
 
 /// Registry of live [`SessionActor`]s for `zeph serve` (spec §9.3).
@@ -559,7 +585,30 @@ mod tests {
             tx_out,
             last_active: Instant::now(),
             cancel: CancellationToken::new(),
+            resume_banner_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Regression test for AC-24 (spec-068 §13.5): when multiple display-owning channels
+    /// attach to the same live session, exactly one attach must win the resume banner claim.
+    #[test]
+    fn claim_resume_banner_wins_exactly_once_across_clones() {
+        let handle = make_handle();
+        let attach_a = handle.clone();
+        let attach_b = handle.clone();
+
+        assert!(
+            attach_a.claim_resume_banner(),
+            "first attach must win the claim"
+        );
+        assert!(
+            !attach_b.claim_resume_banner(),
+            "second attach (sharing the same underlying flag via Clone) must not win"
+        );
+        assert!(
+            !handle.claim_resume_banner(),
+            "a third read via the original handle must also see the claim as already taken"
+        );
     }
 
     #[test]

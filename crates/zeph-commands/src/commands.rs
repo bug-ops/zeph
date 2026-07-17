@@ -139,6 +139,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         feature_gate: None,
     },
     CommandInfo {
+        name: "/history",
+        args: "[N|all|next]",
+        description: "Show conversation history (N most recent messages, or 'all' to page through)",
+        category: SlashCategory::Session,
+        feature_gate: None,
+    },
+    CommandInfo {
         name: "/conv",
         args: "[list | show <id> | resume <id> | fork <id>]",
         description: "List, inspect, resume, or fork durable conversation-sessions",

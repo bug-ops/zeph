@@ -261,6 +261,20 @@ pub enum AgentEvent {
     FleetSnapshot(crate::widgets::fleet::FleetSnapshot),
     /// Updated durable execution snapshot from the background poll task (spec-064, #4949).
     DurableSnapshot(crate::widgets::durable::DurableSnapshot),
+    /// A non-empty prior conversation was resumed at startup (spec-068 §13.5).
+    ///
+    /// Renders as a **persistent** banner in the header/status area — unlike
+    /// [`AgentEvent::Status`], it must remain visible once the first prompt scrolls the
+    /// transient status line out of view. Never sent for a fresh (system-prompt-only)
+    /// conversation (§13.4, AC-16).
+    ResumeBanner(String),
+    /// Bounded `/history` transcript slice to backfill into the display buffer (spec-068
+    /// §13.6-§13.7).
+    ///
+    /// Pushed as distinct chat messages via `App::backfill_history_display_only`, split from
+    /// `input_history`/up-arrow recall (INV-SP-6, AC-20) — never routed through
+    /// `App::load_history`, which also feeds `input_history`.
+    HistoryBackfill(Vec<zeph_commands::TranscriptEntry>),
 }
 
 /// Blocking event pump that forwards terminal events to the async [`AppEvent`] channel.

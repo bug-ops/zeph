@@ -278,6 +278,14 @@ pub trait Channel: Send {
     /// Sanitization is applied downstream of all command dispatch (`Agent::run`'s registries and
     /// `dispatch_slash_command`), not at `recv`/`try_recv`, so recognized commands still dispatch
     /// on raw text — only the text that actually reaches the LLM is wrapped.
+    ///
+    /// Also reused as an "is this channel display-owning" proxy by the resume-banner call sites
+    /// in `Agent::load_history` and `Agent::load_and_resume_conversation` (spec-068 §13.2,
+    /// #6420): `false` gates the banner in; `true` excludes chat channels from it. `JsonCli`
+    /// does not override this (correctly local/operator-trusted for sanitization purposes), so
+    /// it instead overrides `Channel::send_resume_banner` directly to stay excluded from the
+    /// banner without being excluded from sanitization semantics — the two concerns are related
+    /// but not identical; check both when adding a new banner-adjacent call site.
     fn requires_input_sanitization(&self) -> bool {
         false
     }
@@ -322,6 +330,45 @@ pub trait Channel: Send {
         _text: &str,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
+    }
+
+    /// Send a bounded transcript slice for `/history` backfill (spec-068 §13.6-§13.7).
+    ///
+    /// Default: renders `entries` into one flat string via
+    /// [`zeph_commands::TranscriptFormatter::render_flat`] and forwards through
+    /// [`Channel::send`] — correct for every channel with no structured display buffer of
+    /// its own (CLI, Telegram, Discord, Slack). `TuiChannel` overrides this to backfill
+    /// per-entry into its own display buffer instead of flattening, keeping the backfill
+    /// path split from `input_history`/up-arrow recall (INV-SP-6, §13.7, AC-20).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_transcript_backfill(
+        &mut self,
+        entries: &[zeph_commands::TranscriptEntry],
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        let text = zeph_commands::TranscriptFormatter::render_flat(entries);
+        async move { self.send(&text).await }
+    }
+
+    /// Send a resume banner (spec-068 §13.5) from a live mid-session conversation swap
+    /// (`/conv resume`, `/conv fork` — see `Agent::load_and_resume_conversation`), not just the
+    /// process-startup path.
+    ///
+    /// Default: forwards through [`Channel::send`] like any other message — correct for CLI
+    /// (prints the line) and any channel with no persistent-banner concept. `TuiChannel`
+    /// overrides this to emit `AgentEvent::ResumeBanner` into its persistent header instead of
+    /// a scrolling chat line.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_resume_banner(
+        &mut self,
+        text: &str,
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        async move { self.send(text).await }
     }
 
     /// Best-effort variant of [`send_status`](Channel::send_status) for the many call sites
@@ -831,6 +878,20 @@ impl<C: Channel> zeph_commands::ChannelSink for ChannelSinkAdapter<'_, C> {
 
     fn supports_exit(&self) -> bool {
         self.0.supports_exit()
+    }
+
+    fn send_transcript<'a>(
+        &'a mut self,
+        entries: &'a [zeph_commands::TranscriptEntry],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), zeph_commands::CommandError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.0
+                .send_transcript_backfill(entries)
+                .await
+                .map_err(zeph_commands::CommandError::new)
+        })
     }
 }
 

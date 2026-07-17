@@ -71,6 +71,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Resume UX and history visibility** (spec-068 §13, #6420): resuming a non-empty prior
+  conversation no longer looks like starting from scratch on display-owning channels.
+  - CLI prints a neutral `↻ Resuming session (last active …) — N messages, M turns.` banner at
+    startup; TUI renders the same info as a persistent header line (not a transient status
+    line). Neither fires for a fresh (system-prompt-only) conversation, nor for chat channels
+    (Telegram/Discord/Slack) or ACP/IDE-embedding sessions, which are exempt in v1.
+  - `is_resume` is evaluated against the raw reconstructed event/message stream, not a
+    display-filtered turn count — a session interrupted mid-tool-loop (no visible assistant
+    text yet) now correctly shows the banner instead of looking fresh.
+  - New channel-agnostic `/history [N|all|next]` command (`zeph-commands`) backed by a shared
+    `TranscriptFormatter`: bounds to the last N messages (default 20, configurable) sliced
+    before formatting, or pages through the full history without blocking the TUI render loop.
+  - TUI's previously-dead `App::load_history`/`SessionBrowser` (key `H`) path now backfills
+    the transcript via `/history`, through a display-only code path kept separate from
+    `input_history`/up-arrow recall.
+  - New `[session.resume]` config section (`show_banner`, `auto_expand`,
+    `expand_default_lines`, `show_recap`), `--init` wizard prompt, and `--migrate-config` step
+    93. `auto_expand` and `show_recap` are accepted but not yet consumed by any runtime path in
+    v1 — both are labeled `Reserved; unused in v1` in the config docs, matching the existing
+    `[session] encrypt` placeholder pattern.
+  - The banner and `/history` also fire on the live in-session `/conv resume`/`/conv fork` swap
+    (not just process-startup resume) and on the `[session] enabled = false` `SQLite`-fallback
+    history path. The `zeph serve` HTTP fork endpoint (`POST /sessions/:id/fork`) does not yet
+    compute a banner — tracked as a follow-up (#6425), same root cause as the `zeph serve`
+    single-emission dedup primitive (`SessionActorHandle::claim_resume_banner`), which is
+    implemented and unit-tested but has no production call site yet (tracked as #6426).
+  - `/history` intentionally does not require the elevated trust level `/clear`/`/reset` do,
+    since AC-22 requires it to work on chat channels — any channel-allowed user can read the
+    full shared transcript via `/history all`. Documented as the intended v1 trust posture in
+    spec-068 §13.6, not a gap.
+  - `--json` output never emits the resume banner: `JsonCliChannel` overrides
+    `Channel::send_resume_banner` as a no-op, keeping the machine-readable JSONL stream free of
+    unsolicited `response_chunk` events on the two new banner call sites (live `/conv`
+    resume/fork swap and the `SQLite`-fallback path).
 - Coverage-guided fuzzing harnesses (cargo-fuzz) for SKILL.md frontmatter, skill extensions,
   AST chunker, and TOML config parsing (#6365).
 - **`plugin_manifest` fuzz target** (#6370): 5th cargo-fuzz target, fuzzing

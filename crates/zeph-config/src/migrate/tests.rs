@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        93,
-        "MIGRATIONS registry must contain all 93 sequential steps"
+        94,
+        "MIGRATIONS registry must contain all 94 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1140,6 +1140,35 @@ fn migrate_memory_store_config_noop_when_active_section_present() {
     assert_eq!(result.output, base);
 }
 
+// ── Step 94 — migrate_session_resume_config (spec-068 §13, §18, #6420) ──────────────
+
+#[test]
+fn migrate_session_resume_config_appends_advisory_block() {
+    let base = "[session]\nenabled = true\n";
+    let result = migrate_session_resume_config(base).unwrap();
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# [session.resume]"));
+    assert!(result.output.contains("# show_banner = true"));
+    assert!(result.output.contains("# expand_default_lines = 20"));
+}
+
+#[test]
+fn migrate_session_resume_config_idempotent_on_commented_output() {
+    let base = "[session]\nenabled = true\n";
+    let first = migrate_session_resume_config(base).unwrap();
+    let second = migrate_session_resume_config(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0, "second run must not double-append");
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_session_resume_config_noop_when_active_section_present() {
+    let base = "[session]\nenabled = true\n\n[session.resume]\nshow_banner = false\n";
+    let result = migrate_session_resume_config(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
 // ── Step 88 — migrate_orchestration_idle_timeout (spec-075-orchestration-node-control-parity, #6021) ──
 
 #[test]
@@ -2013,7 +2042,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 93);
+    assert_eq!(MIGRATIONS.len(), 94);
 }
 
 #[test]
@@ -2051,7 +2080,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–90).
+    // Names must follow the documented step order (steps 1–94).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -2146,6 +2175,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_orchestration_command_config",
         "migrate_memory_store_config",
         "migrate_orchestration_whole_plan_verifier_timeout",
+        "migrate_session_resume_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

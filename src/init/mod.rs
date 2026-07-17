@@ -227,6 +227,8 @@ pub(crate) struct WizardState {
     pub(crate) store_max_value_bytes: usize,
     // Session recap on resume (#3064)
     pub(crate) recap_on_resume: bool,
+    // Resume-visibility banner on CLI/TUI startup (spec-068 §13, #6420)
+    pub(crate) resume_show_banner: bool,
     // Provider override persistence (#4654)
     pub(crate) persist_provider_overrides: bool,
     // MCP elicitation (#3141)
@@ -503,6 +505,7 @@ impl Default for WizardState {
             store_enabled: false,
             store_max_value_bytes: 65536,
             recap_on_resume: true,
+            resume_show_banner: true,
             persist_provider_overrides: true,
             mcp_elicitation_enabled: false,
             mcp_elicitation_warn_sensitive: true,
@@ -948,6 +951,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.store.enabled = state.store_enabled;
     config.memory.store.max_value_bytes = state.store_max_value_bytes;
     config.session.recap.on_resume = state.recap_on_resume;
+    config.session.resume.show_banner = state.resume_show_banner;
     config.session.persist_provider_overrides = state.persist_provider_overrides;
     config.session.enabled = state.session_persistence_enabled;
     config.session.data_dir.clone_from(&state.session_data_dir);
@@ -1876,6 +1880,13 @@ fn step_session_recap(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Session Recap & MCP Elicitation ==\n");
     state.recap_on_resume = Confirm::new()
         .with_prompt("Show a recap when resuming a conversation? [Y/n]")
+        .default(true)
+        .interact()?;
+
+    state.resume_show_banner = Confirm::new()
+        .with_prompt(
+            "Show a \"Resuming session\" banner on CLI/TUI startup when history exists? [Y/n]",
+        )
         .default(true)
         .interact()?;
 

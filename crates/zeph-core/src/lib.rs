@@ -92,6 +92,7 @@ pub mod provider_factory;
 pub mod quality;
 pub mod redact;
 pub mod serve;
+pub mod session_resume;
 #[cfg(feature = "sysinfo")]
 pub mod system_metrics;
 

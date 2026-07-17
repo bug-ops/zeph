@@ -282,6 +282,8 @@ pub(crate) struct RuntimeConfig {
     pub(crate) supervisor_config: crate::config::TaskSupervisorConfig,
     /// Session recap config (#3064).
     pub(crate) recap_config: zeph_config::RecapConfig,
+    /// Resume-visibility banner and `/history` bound config (spec-068 §13, §18, #6420).
+    pub(crate) resume_config: zeph_config::ResumeConfig,
     /// ACP server configuration snapshot for `/acp` slash-command display.
     pub(crate) acp_config: zeph_config::AcpConfig,
     /// Set to `true` after the auto-recap is emitted at session resume (#3144).
@@ -1061,6 +1063,9 @@ pub(crate) struct MessageState {
     /// normal flow (the system prompt is always present), so a plain emptiness check cannot
     /// distinguish "already hydrated from the log" from "not yet loaded."
     pub(crate) history_preloaded: bool,
+    /// `/history all`/`/history next` pagination cursor (spec-068 §13.6). `0` = not yet
+    /// started or reset by a subsequent bounded `/history [N]` call.
+    pub(crate) history_cursor: usize,
 }
 
 impl McpState {
@@ -1352,6 +1357,7 @@ impl Default for RuntimeConfig {
             layers: Vec::new(),
             supervisor_config: crate::config::TaskSupervisorConfig::default(),
             recap_config: zeph_config::RecapConfig::default(),
+            resume_config: zeph_config::ResumeConfig::default(),
             acp_config: zeph_config::AcpConfig::default(),
             auto_recap_shown: false,
             msg_count_at_resume: 0,

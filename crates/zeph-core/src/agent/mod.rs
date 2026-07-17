@@ -367,6 +367,7 @@ impl<C: Channel> Agent<C> {
                 deferred_db_hide_ids: Vec::new(),
                 deferred_db_summaries: Vec::new(),
                 history_preloaded: false,
+                history_cursor: 0,
             },
             context_manager: context_manager::ContextManager::new(),
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
@@ -579,6 +580,11 @@ impl<C: Channel> Agent<C> {
             let trusted = self.channel.supports_exit();
             let session_impl = command_context_impls::SessionAccessImpl {
                 supports_exit: trusted,
+                history_expand_default_lines: self
+                    .runtime
+                    .config
+                    .resume_config
+                    .expand_default_lines,
             };
             let mut messages_impl = command_context_impls::MessageAccessImpl {
                 msg: &mut self.msg,

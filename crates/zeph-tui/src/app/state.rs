@@ -90,6 +90,7 @@ impl App {
             pending_theme: None,
             pending_theme_name: None,
             subagent_sidebar: SubAgentSidebarState::new(),
+            resume_banner: None,
             task_supervisor: None,
             show_task_panel: false,
             cached_task_snapshots: Vec::new(),
@@ -515,6 +516,40 @@ impl App {
         }
     }
 
+    /// Backfill the message buffer from a bounded `/history` transcript slice
+    /// (spec-068 §13.6-§13.7).
+    ///
+    /// Unlike [`App::load_history`], this never pushes into `input_history` — display
+    /// backfill and readline/up-arrow recall are deliberately separate code paths (INV-SP-6,
+    /// AC-20). Entries arrive already role-classified by
+    /// `zeph_commands::transcript::TranscriptFormatter`'s upstream producer
+    /// (`MessageAccess::transcript_page`), so no sentinel/tool-output re-parsing is needed
+    /// here (contrast with `load_history`, which still receives raw `(role_str, content)`
+    /// pairs from the legacy `SQLite` projection).
+    pub fn backfill_history_display_only(&mut self, entries: &[zeph_commands::TranscriptEntry]) {
+        use zeph_commands::transcript::TranscriptRole;
+
+        for entry in entries {
+            let role = match entry.role {
+                TranscriptRole::User => MessageRole::User,
+                TranscriptRole::Tool => MessageRole::Tool,
+                // `TranscriptRole` is `#[non_exhaustive]`; fall back to Assistant for
+                // `Assistant` itself and any future variant, rather than failing to compile
+                // against a semver-compatible zeph-commands upgrade.
+                TranscriptRole::Assistant | _ => MessageRole::Assistant,
+            };
+            let mut msg = ChatMessage::new(role, entry.content.clone());
+            if let Some(tool_name) = &entry.tool_name {
+                msg = msg.with_tool(tool_name.clone().into());
+            }
+            self.sessions.current_mut().messages.push(msg);
+        }
+        self.trim_messages();
+        if !self.sessions.current().messages.is_empty() {
+            self.sessions.current_mut().show_splash = false;
+        }
+    }
+
     /// Attach a cancel signal that Ctrl-C in the TUI will trigger.
     ///
     /// # Examples
@@ -903,6 +938,14 @@ impl App {
     #[must_use]
     pub fn status_label(&self) -> Option<&str> {
         self.sessions.current().status_label.as_deref()
+    }
+
+    /// Return the persistent "Resuming session" banner text, if a non-empty prior
+    /// conversation was resumed at startup (spec-068 §13.5). `None` for a fresh
+    /// conversation — render nothing in that case (AC-16).
+    #[must_use]
+    pub fn resume_banner(&self) -> Option<&str> {
+        self.resume_banner.as_deref()
     }
 
     /// Return the number of messages queued or pending for the agent.
@@ -1771,5 +1814,44 @@ mod tests {
                 "{panel:?} must not set show_task_panel"
             );
         }
+    }
+
+    // ── #6420 backfill_history_display_only never pollutes input_history (AC-20) ─
+
+    #[test]
+    fn backfill_history_display_only_populates_messages_not_input_history() {
+        use zeph_commands::transcript::{TranscriptEntry, TranscriptRole};
+
+        let mut app = make_app();
+        let entries = vec![
+            TranscriptEntry {
+                role: TranscriptRole::User,
+                content: "hello".to_owned(),
+                tool_name: None,
+            },
+            TranscriptEntry {
+                role: TranscriptRole::Assistant,
+                content: "hi there".to_owned(),
+                tool_name: None,
+            },
+            TranscriptEntry {
+                role: TranscriptRole::Tool,
+                content: "file.txt".to_owned(),
+                tool_name: Some("bash".to_owned()),
+            },
+        ];
+
+        app.backfill_history_display_only(&entries);
+
+        assert_eq!(
+            app.sessions.current().messages.len(),
+            3,
+            "every backfilled entry must appear as its own chat message"
+        );
+        assert!(
+            app.sessions.current().input_history.is_empty(),
+            "backfill must never push into input_history — that would pollute up-arrow \
+             recall with transcript text instead of genuinely-typed prior input (AC-20)"
+        );
     }
 }

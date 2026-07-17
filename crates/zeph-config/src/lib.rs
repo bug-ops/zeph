@@ -189,7 +189,7 @@ pub use security::{
     ShadowSentinelConfig, TimeoutConfig, TrajectorySentinelConfig, TrustConfig,
 };
 pub use serve::ServeConfig;
-pub use session::{RecapConfig, SessionConfig};
+pub use session::{RecapConfig, ResumeConfig, SessionConfig};
 pub use subagent::{
     HookAction, HookDef, HookMatcher, MemoryScope, PermissionMode, SkillFilter, SubagentHooks,
     ToolPolicy,

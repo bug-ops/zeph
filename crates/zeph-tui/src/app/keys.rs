@@ -184,13 +184,12 @@ impl App {
                 self.push_system_message(format!("Motion set to: {label}"));
             }
             TuiCommand::SessionBrowser => {
-                if let Some(ref tx) = self.command_tx {
-                    let _ = tx.try_send(cmd);
-                } else {
-                    self.push_system_message(
-                        "Session browser not available (no command channel).".to_owned(),
-                    );
-                }
+                // Dispatched as a normal user-input command (like AgentList/AgentStatus below)
+                // rather than routed through `command_tx` — `/history` needs real access to
+                // `ctx.messages` (the agent's own message state), which only the session/debug
+                // command registry provides; `forward_tui_commands` (`command_tx` path) only
+                // handles TUI-local, agent-state-free commands (spec-068 §13.7).
+                let _ = self.user_input_tx.try_send("/history".to_owned());
             }
             TuiCommand::AgentList => {
                 let _ = self.user_input_tx.try_send("/agent list".to_owned());
@@ -1374,6 +1373,18 @@ mod tests {
 
         let msg = &app.sessions.current().messages.last().unwrap().content;
         assert!(msg.contains("not available"));
+    }
+
+    // ── #6420 SessionBrowser dispatches /history as user input ──────────────────
+
+    #[test]
+    fn execute_command_session_browser_dispatches_history_as_user_input() {
+        let (mut app, mut user_rx, _agent_tx) = make_app();
+
+        app.execute_command(TuiCommand::SessionBrowser);
+
+        let forwarded = user_rx.try_recv().expect("must forward as user input");
+        assert_eq!(forwarded, "/history");
     }
 
     // ── Ctrl+F / Ctrl+R key-decode routing (issue #6023) ────────────────────────

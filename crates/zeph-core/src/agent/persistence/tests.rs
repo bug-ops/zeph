@@ -70,6 +70,85 @@ async fn load_history_with_messages_injects_into_agent() {
     assert_eq!(agent.msg.messages.len(), messages_before + 2);
 }
 
+// Regression test for S1 (spec-068 §13.4): `[session] enabled = false` still resumes prior
+// history via this `SQLite` fallback path, and must therefore still send the resume banner —
+// previously only the durable-log hydration path (`with_preloaded_messages`, `history_preloaded
+// = true`) computed it, silently skipping this one.
+#[tokio::test]
+async fn load_history_sends_resume_banner_for_sqlite_fallback_path() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+
+    memory
+        .sqlite()
+        .save_message(cid, "user", "hello from history")
+        .await
+        .unwrap();
+    memory
+        .sqlite()
+        .save_message(cid, "assistant", "hi back")
+        .await
+        .unwrap();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+        std::sync::Arc::new(memory),
+        cid,
+        50,
+        5,
+        100,
+    );
+    // `history_preloaded` defaults to `false` (no `with_preloaded_messages` call) — matches the
+    // `[session] enabled = false` scenario, where the durable-log hydration path never runs.
+    assert!(!agent.msg.history_preloaded);
+
+    agent.load_history().await.unwrap();
+
+    let sent = agent.channel.sent_messages();
+    assert!(
+        sent.iter().any(|m| m.contains("Resuming session")),
+        "SQLite-fallback history load must send the resume banner, got sent messages: {sent:?}"
+    );
+}
+
+// Companion negative case: a channel that requires input sanitization (Telegram/Discord/Slack
+// proxy, §13.2) must not receive the automatic banner even on the SQLite-fallback path.
+#[tokio::test]
+async fn load_history_sqlite_fallback_skips_banner_for_chat_channel() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]).with_input_sanitization_required();
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+    memory
+        .sqlite()
+        .save_message(cid, "user", "hello from history")
+        .await
+        .unwrap();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+        std::sync::Arc::new(memory),
+        cid,
+        50,
+        5,
+        100,
+    );
+
+    agent.load_history().await.unwrap();
+
+    let sent = agent.channel.sent_messages();
+    assert!(
+        !sent.iter().any(|m| m.contains("Resuming session")),
+        "chat channels must not receive the automatic resume banner, got: {sent:?}"
+    );
+}
+
 #[tokio::test]
 async fn load_history_skips_empty_messages() {
     let provider = mock_provider(vec![]);

@@ -432,6 +432,11 @@ pub struct App {
     pending_theme_name: Option<String>,
     /// Interactive selection state for the subagent sidebar (stays global per arch v2 E5).
     pub subagent_sidebar: SubAgentSidebarState,
+    /// Persistent "Resuming session" banner text, set once at startup by
+    /// `AgentEvent::ResumeBanner` (spec-068 §13.5). `None` for a fresh conversation — never
+    /// rendered in that case (AC-16). Unlike a transient status line, this stays visible
+    /// after the first prompt.
+    pub(crate) resume_banner: Option<String>,
     /// Optional handle to the `TaskSupervisor` for the task registry panel.
     task_supervisor: Option<TaskSupervisor>,
     /// Whether the task registry panel is currently visible (toggled by `/tasks`).

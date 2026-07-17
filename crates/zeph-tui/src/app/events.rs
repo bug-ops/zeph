@@ -275,6 +275,12 @@ impl App {
             AgentEvent::DurableSnapshot(snapshot) => {
                 self.durable_snapshot = snapshot;
             }
+            AgentEvent::ResumeBanner(text) => {
+                self.resume_banner = Some(text);
+            }
+            AgentEvent::HistoryBackfill(entries) => {
+                self.backfill_history_display_only(&entries);
+            }
         }
     }
 

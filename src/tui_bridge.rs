@@ -42,6 +42,10 @@ pub(crate) struct TuiRunParams<'a> {
     /// 1 s of launch per spec §9 (TASK-8).
     #[cfg(feature = "deep-link")]
     pub(crate) deep_link_uri: Option<String>,
+    /// Pre-formatted "Resuming session" banner text (spec-068 §13.5), sent as
+    /// `AgentEvent::ResumeBanner` once the TUI's `agent_tx` is available. `None` for a fresh
+    /// conversation — no banner is sent in that case (AC-16).
+    pub(crate) resume_banner: Option<String>,
 }
 
 /// Phase-1 TUI handle: TUI is rendering but the agent hasn't started yet.
@@ -365,6 +369,10 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
         );
         (done_rx, handle_agent_tx)
     };
+
+    if let Some(banner) = params.resume_banner.take() {
+        let _ = agent_tx.try_send(zeph_tui::AgentEvent::ResumeBanner(banner));
+    }
 
     // Track all forwarding tasks so we can abort them when the agent exits,
     // ensuring the agent_event channel closes and the TUI thread quits.

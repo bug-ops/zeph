@@ -29,6 +29,7 @@ pub mod context;
 pub mod handlers;
 pub mod sink;
 pub mod traits;
+pub mod transcript;
 
 pub use commands::{COMMANDS, is_recognized_command};
 pub use handlers::help::render_help_text;
@@ -36,6 +37,7 @@ pub use handlers::help::render_help_text;
 pub use context::CommandContext;
 pub use sink::{ChannelSink, NullSink};
 pub use traits::agent::{AgentAccess, NullAgent};
+pub use transcript::{TranscriptEntry, TranscriptFormatter, TranscriptRole};
 
 /// Status of a long-horizon goal.
 ///

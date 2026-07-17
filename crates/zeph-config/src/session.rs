@@ -51,6 +51,8 @@ pub struct SessionConfig {
     pub max_event_log_mb: u64,
     /// Durable context condensation settings (spec-068 §8).
     pub condense: CondenseConfig,
+    /// Resume-visibility settings: banner and `/history` bounds (spec-068 §13, §18).
+    pub resume: ResumeConfig,
 }
 
 impl Default for SessionConfig {
@@ -64,6 +66,50 @@ impl Default for SessionConfig {
             encrypt: false,
             max_event_log_mb: 256,
             condense: CondenseConfig::default(),
+            resume: ResumeConfig::default(),
+        }
+    }
+}
+
+/// `[session.resume]` — resume-visibility settings (spec-068 §13, §18).
+///
+/// Controls the neutral "Resuming session" banner shown by display-owning channels
+/// (CLI, TUI) on startup and the bound applied to the `/history` command with no
+/// argument. Has no effect on chat channels (Telegram/Discord/Slack) or ACP/IDE
+/// sessions, which are exempt from the automatic banner in v1 (spec-068 §13.2, §13.8).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
+pub struct ResumeConfig {
+    /// Show the neutral resume banner on display-owning channels (CLI/TUI) when
+    /// resuming a non-empty prior conversation. Default: `true`.
+    pub show_banner: bool,
+    /// Intended to always render full history on startup instead of the collapsed banner.
+    ///
+    /// Not consumed in v1 — no code path currently dispatches an `/history`-equivalent
+    /// expansion when this is set; enabling it changes nothing observable. Reserved for a
+    /// future PR (would need the same `/history all` pagination path this PR already built,
+    /// triggered automatically at startup instead of on user request). Default: `false`.
+    pub auto_expand: bool,
+    /// Bound applied to `/history` with no argument — the last N messages, sliced
+    /// before formatting (INV-SP-6). Default: `20`.
+    pub expand_default_lines: usize,
+    /// Opt-in: fold the cached `session.recap` summary into the resume banner.
+    ///
+    /// Not consumed in v1 — wiring this would require invoking the `/recap` LLM
+    /// path at startup, which is explicitly out of scope for spec-068 §13 (resume
+    /// visibility is a presentation-only feature over already-persisted data).
+    /// Reserved for a future PR. Default: `false`.
+    pub show_recap: bool,
+}
+
+impl Default for ResumeConfig {
+    fn default() -> Self {
+        Self {
+            show_banner: true,
+            auto_expand: false,
+            expand_default_lines: 20,
+            show_recap: false,
         }
     }
 }
@@ -175,5 +221,33 @@ mod tests {
     fn condense_config_explicit_provider_roundtrip() {
         let cfg: CondenseConfig = toml::from_str(r#"condense_provider = "fast""#).unwrap();
         assert_eq!(cfg.condense_provider, "fast");
+    }
+
+    #[test]
+    fn resume_config_defaults() {
+        let cfg = ResumeConfig::default();
+        assert!(cfg.show_banner);
+        assert!(!cfg.auto_expand);
+        assert_eq!(cfg.expand_default_lines, 20);
+        assert!(!cfg.show_recap);
+    }
+
+    #[test]
+    fn resume_config_empty_section_uses_defaults() {
+        let cfg: ResumeConfig = toml::from_str("").unwrap();
+        assert!(cfg.show_banner);
+        assert_eq!(cfg.expand_default_lines, 20);
+    }
+
+    #[test]
+    fn resume_config_explicit_overrides_roundtrip() {
+        let cfg: ResumeConfig = toml::from_str(
+            "show_banner = false\nauto_expand = true\nexpand_default_lines = 50\nshow_recap = true",
+        )
+        .unwrap();
+        assert!(!cfg.show_banner);
+        assert!(cfg.auto_expand);
+        assert_eq!(cfg.expand_default_lines, 50);
+        assert!(cfg.show_recap);
     }
 }

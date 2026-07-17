@@ -65,7 +65,9 @@
 //! step 91 adds a commented `[orchestration.command]` advisory block for Command-style
 //! dynamic task handoff (spec-080, #6363); step 92 adds a commented `[memory.store]`
 //! advisory block for the generic cross-thread key-value store (spec-080, #6363); step 93
-//! adds a `whole_plan_verifier_timeout_secs` advisory comment under `[orchestration]` (#6379).
+//! adds a `whole_plan_verifier_timeout_secs` advisory comment under `[orchestration]` (#6379);
+//! step 94 adds a commented `[session.resume]` advisory block for the resume-visibility
+//! banner and `/history` bound (spec-068 §13, §18, #6420).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -102,7 +104,8 @@ use super::{
     migrate_scheduler_daemon_config, migrate_secret_masking_config, migrate_serve_config,
     migrate_session_persist_provider_overrides, migrate_session_persistence_config,
     migrate_session_provider_persistence, migrate_session_recap_config,
-    migrate_shadow_sentinel_config, migrate_shell_checkpoints_config, migrate_shell_transactional,
+    migrate_session_resume_config, migrate_shadow_sentinel_config,
+    migrate_shell_checkpoints_config, migrate_shell_transactional,
     migrate_skill_trust_require_check, migrate_skills_registry, migrate_stt_to_provider,
     migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
     migrate_trace_metadata, migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config,
@@ -1178,5 +1181,18 @@ impl Migration for MigrateOrchestrationWholePlanVerifierTimeout {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_orchestration_whole_plan_verifier_timeout(toml_src)
+    }
+}
+
+/// Step 94 — adds a commented `[session.resume]` advisory block for the resume-visibility
+/// banner and `/history` bound (spec-068 §13, §18, #6420).
+pub(super) struct MigrateSessionResumeConfig;
+impl Migration for MigrateSessionResumeConfig {
+    fn name(&self) -> &'static str {
+        "migrate_session_resume_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_session_resume_config(toml_src)
     }
 }

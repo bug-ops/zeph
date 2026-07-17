@@ -341,3 +341,38 @@ pub fn migrate_session_persistence_config(toml_src: &str) -> Result<MigrationRes
         sections_changed: vec!["session".to_owned(), "session.condense".to_owned()],
     })
 }
+
+/// Add a commented-out `[session.resume]` advisory block for the resume-visibility banner
+/// and `/history` bound (spec-068 §13, §18, #6420).
+///
+/// `ResumeConfig` uses `#[serde(default)]` so existing configs without this section parse
+/// fine (the banner defaults to on). This step is discoverability-only, mirroring the
+/// sibling `[session.condense]` block added by [`migrate_session_persistence_config`].
+///
+/// # Errors
+///
+/// Infallible in practice; `Result` matches the migration convention.
+pub fn migrate_session_resume_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if section_header_present(toml_src, "session.resume") || toml_src.contains("# [session.resume]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [session.resume] — resume-visibility banner and /history bound (spec-068 §13, #6420).\n\
+         # [session.resume]\n\
+         # show_banner = true          # show a neutral \"Resuming session\" banner on CLI/TUI startup\n\
+         # auto_expand = false         # always render full history instead of the banner (reserved, unused in v1)\n\
+         # expand_default_lines = 20   # bound for /history with no argument\n\
+         # show_recap = false          # fold the session.recap summary into the banner (reserved, unused in v1)\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["session.resume".to_owned()],
+    })
+}

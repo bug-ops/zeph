@@ -112,6 +112,40 @@ summarizing "this session had N prior messages before durable logging existed," 
 normally — every turn after that point is logged in full detail. A session bootstrapped this way
 can be forked and replayed from that import boundary onward, just not from before it.
 
+## Resume Visibility
+
+Every restart with no linked history, and every `/conv resume`/`sessions resume` with prior
+turns, is a resume — the agent's context always carries the prior conversation, but until now
+the screen looked no different from a fresh start. Display-owning channels (CLI, TUI) now
+render a neutral banner instead of hiding this:
+
+```text
+↻ Resuming session (last active 2h ago) — 34 messages, 12 turns. Type /history to view.
+```
+
+- **CLI** prints the banner once at startup.
+- **TUI** renders it as a persistent line in the header — unlike the transient status/spinner
+  line, it stays visible after the first prompt.
+- **Chat channels** (Telegram, Discord, Slack) and **ACP/IDE-embedding sessions** never show it:
+  those clients already own their own scrollback (or, for ACP, their own transcript view), so a
+  banner would be redundant. `/history` still works there as a manual command.
+- A **fresh** conversation (nothing but the system prompt) shows no banner.
+- A conversation interrupted mid-tool-call (no assistant text yet, just a pending tool result)
+  still counts as a resume — the check looks at the raw reconstructed event stream, not just the
+  visible turns.
+
+Use `/history` to expand what the banner is summarizing:
+
+```text
+/history            # last N messages (N = [session.resume] expand_default_lines, default 20)
+/history 50          # last 50 messages
+/history all          # pages through the full history, chunk by chunk
+/history next         # continue paging after /history all
+```
+
+`/history` bounds its output *before* formatting — it never loads the whole conversation into
+memory just to trim it down, and `/history all` pages rather than blocking on one huge render.
+
 ## Configuration
 
 ```toml
@@ -125,6 +159,12 @@ max_event_log_mb = 256        # size guard that triggers condensation
 condense_provider = ""        # provider name from [[llm.providers]]; empty = primary provider
 threshold = 0.85               # fraction of context budget that triggers condensation
 keep_recent = 20               # minimum recent events preserved after condensation
+
+[session.resume]
+show_banner = true            # show the resume banner on CLI/TUI startup
+auto_expand = false            # reserved: always show full history instead of the banner (not yet wired)
+expand_default_lines = 20      # bound for /history with no argument
+show_recap = false              # reserved: fold session.recap into the banner (not yet wired)
 ```
 
 When `[session] enabled = false`, only the `SQLite` `messages` projection is written — the

@@ -13,6 +13,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::CommandError;
+use crate::transcript::{TranscriptEntry, TranscriptFormatter};
 
 /// Async I/O interface required by slash command handlers.
 ///
@@ -43,6 +44,21 @@ pub trait ChannelSink: Send {
 
     /// Returns `true` if the channel supports a hard exit (e.g., CLI).
     fn supports_exit(&self) -> bool;
+
+    /// Send a bounded transcript slice for `/history` (spec-068 §13.6-§13.7).
+    ///
+    /// Default: joins `entries` into one flat string via [`TranscriptFormatter::render_flat`]
+    /// and forwards through [`ChannelSink::send`] — correct for every channel with no
+    /// structured display buffer of its own (CLI, Telegram, Discord, Slack). Channels with a
+    /// structured buffer (TUI) override this to backfill per-entry instead of flattening,
+    /// keeping the backfill path split from readline/up-arrow recall (§13.7, AC-20).
+    fn send_transcript<'a>(
+        &'a mut self,
+        entries: &'a [TranscriptEntry],
+    ) -> Pin<Box<dyn Future<Output = Result<(), CommandError>> + Send + 'a>> {
+        let text = TranscriptFormatter::render_flat(entries);
+        Box::pin(async move { self.send(&text).await })
+    }
 }
 
 /// A [`ChannelSink`] that discards all output.

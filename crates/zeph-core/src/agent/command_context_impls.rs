@@ -16,6 +16,8 @@ use zeph_commands::CommandError;
 use zeph_commands::traits::debug::DebugAccess;
 use zeph_commands::traits::messages::MessageAccess;
 use zeph_commands::traits::session::SessionAccess;
+use zeph_commands::transcript::{TranscriptEntry, TranscriptRole};
+use zeph_llm::provider::{Message, MessagePart, Role};
 
 use super::log_commands;
 use super::state::{DebugState, MetricsState, ProviderState, SecurityState, ToolState};
@@ -157,6 +159,85 @@ impl MessageAccess for MessageAccessImpl<'_> {
         // The /clear-queue handler calls ctx.sink.send_queue_count(0) directly.
         Box::pin(async {})
     }
+
+    fn transcript_len(&self) -> usize {
+        self.msg
+            .messages
+            .iter()
+            .filter(|m| m.role != Role::System)
+            .count()
+    }
+
+    fn transcript_page(&self, start: usize, count: usize) -> Vec<TranscriptEntry> {
+        self.msg
+            .messages
+            .iter()
+            .filter(|m| m.role != Role::System)
+            .skip(start)
+            .take(count)
+            .map(message_to_transcript_entry)
+            .collect()
+    }
+
+    fn history_cursor(&self) -> usize {
+        self.msg.history_cursor
+    }
+
+    fn set_history_cursor(&mut self, pos: usize) {
+        self.msg.history_cursor = pos;
+    }
+}
+
+/// Convert one non-system [`Message`] into a display [`TranscriptEntry`] for `/history`
+/// (spec-068 §13.6).
+///
+/// Tool-bearing messages (a `User` message carrying a `ToolResult` part, or an `Assistant`
+/// message that is tool-use-only with no visible text) are collapsed to a single
+/// [`TranscriptRole::Tool`] line, mirroring the TUI's existing tool-output collapsing
+/// convention (`is_tool_use_only`, `crates/zeph-tui/src/app/state.rs`).
+fn message_to_transcript_entry(m: &Message) -> TranscriptEntry {
+    // `Role` is `#[non_exhaustive]`; System is filtered out by the caller before this
+    // function ever sees a message, so `Assistant` is the only remaining non-`User` case.
+    if m.role == Role::User {
+        if let Some(content) = m.parts.iter().find_map(|p| match p {
+            MessagePart::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        }) {
+            return TranscriptEntry {
+                role: TranscriptRole::Tool,
+                content,
+                tool_name: None,
+            };
+        }
+        return TranscriptEntry {
+            role: TranscriptRole::User,
+            content: m.content.clone(),
+            tool_name: None,
+        };
+    }
+
+    if !m.content.trim().is_empty() {
+        return TranscriptEntry {
+            role: TranscriptRole::Assistant,
+            content: m.content.clone(),
+            tool_name: None,
+        };
+    }
+    if let Some((name, input)) = m.parts.iter().find_map(|p| match p {
+        MessagePart::ToolUse { name, input, .. } => Some((name.clone(), input.clone())),
+        _ => None,
+    }) {
+        return TranscriptEntry {
+            role: TranscriptRole::Tool,
+            content: format!("called with {input}"),
+            tool_name: Some(name),
+        };
+    }
+    TranscriptEntry {
+        role: TranscriptRole::Assistant,
+        content: String::new(),
+        tool_name: None,
+    }
 }
 
 // --- SessionAccess ---
@@ -170,11 +251,16 @@ impl MessageAccess for MessageAccessImpl<'_> {
 /// in the context, which would conflict with `ctx.sink` holding `&mut C`.
 pub(super) struct SessionAccessImpl {
     pub supports_exit: bool,
+    pub history_expand_default_lines: usize,
 }
 
 impl SessionAccess for SessionAccessImpl {
     fn supports_exit(&self) -> bool {
         self.supports_exit
+    }
+
+    fn history_expand_default_lines(&self) -> usize {
+        self.history_expand_default_lines
     }
 }
 
@@ -240,6 +326,20 @@ impl zeph_commands::traits::messages::MessageAccess for NullMessageAccess {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
+
+    fn transcript_len(&self) -> usize {
+        0
+    }
+
+    fn transcript_page(&self, _start: usize, _count: usize) -> Vec<TranscriptEntry> {
+        Vec::new()
+    }
+
+    fn history_cursor(&self) -> usize {
+        0
+    }
+
+    fn set_history_cursor(&mut self, _pos: usize) {}
 }
 
 /// No-op [`SessionAccess`] for the agent-command dispatch block.
@@ -248,5 +348,9 @@ pub(super) struct NullSessionAccess;
 impl SessionAccess for NullSessionAccess {
     fn supports_exit(&self) -> bool {
         false
+    }
+
+    fn history_expand_default_lines(&self) -> usize {
+        20
     }
 }

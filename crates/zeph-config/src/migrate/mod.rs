@@ -624,16 +624,16 @@ use steps::{
     MigrateQdrantTimeoutSecs, MigrateQualityConfig, MigrateSandboxConfig,
     MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSecretMaskingConfig,
     MigrateServeConfig, MigrateSessionPersistProviderOverrides, MigrateSessionPersistenceConfig,
-    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShadowSentinelConfig,
-    MigrateShellCheckpointsConfig, MigrateShellTransactional, MigrateSkillTrustRequireCheck,
-    MigrateSkillsRegistry, MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
-    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
-    MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateUtilityHighGainTools,
-    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
-    MigrateWorktreeQuotaFields,
+    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateSessionResumeConfig,
+    MigrateShadowSentinelConfig, MigrateShellCheckpointsConfig, MigrateShellTransactional,
+    MigrateSkillTrustRequireCheck, MigrateSkillsRegistry, MigrateSttToProvider,
+    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
+    MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig,
+    MigrateTuiThemeDefaults, MigrateUtilityHighGainTools, MigrateVigilConfig,
+    MigrateWorktreeConfig, MigrateWorktreeGitTimeout, MigrateWorktreeQuotaFields,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–93).
+/// Ordered registry of all sequential migration steps (steps 1–94).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -816,6 +816,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 93 — add whole_plan_verifier_timeout_secs advisory comment under
             // [orchestration] (#6379)
             Box::new(MigrateOrchestrationWholePlanVerifierTimeout),
+            // Step 94 — add [session.resume] advisory block for the resume-visibility
+            // banner and /history bound (spec-068 §13, §18, #6420)
+            Box::new(MigrateSessionResumeConfig),
         ]
     });
 

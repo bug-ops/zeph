@@ -648,10 +648,11 @@ async fn init_session_sink(
 ) -> anyhow::Result<(
     Option<std::sync::Arc<zeph_agent_persistence::SessionSink>>,
     Vec<zeph_llm::provider::Message>,
+    Option<String>,
 )> {
     let session_config = &config.session;
     if !session_config.enabled {
-        return Ok((None, Vec::new()));
+        return Ok((None, Vec::new(), None));
     }
 
     let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
@@ -663,7 +664,7 @@ async fn init_session_sink(
             // link_conversation write against the real link, and open a bare orphan log instead
             // of hydrating the actual session. Defer session linkage entirely instead.
             tracing::warn!(error = %e, "failed to query session store for conversation link; session persistence disabled for this run");
-            return Ok((None, Vec::new()));
+            return Ok((None, Vec::new(), None));
         }
     };
 
@@ -671,7 +672,7 @@ async fn init_session_sink(
         let id = SessionId::generate();
         if let Err(e) = store.create(id.as_str()).await {
             tracing::warn!(error = %e, "failed to create session-store row; session persistence disabled for this run");
-            return Ok((None, Vec::new()));
+            return Ok((None, Vec::new(), None));
         }
         if let Err(e) = store
             .link_conversation(id.as_str(), conversation_id.0)
@@ -694,6 +695,7 @@ async fn init_session_sink(
                         ),
                     )),
                     Vec::new(),
+                    None,
                 ))
             }
             Err(e @ zeph_session::SessionError::AlreadyLocked { .. }) => Err(anyhow::anyhow!(
@@ -701,7 +703,7 @@ async fn init_session_sink(
             )),
             Err(e) => {
                 tracing::warn!(error = %e, "failed to open session event log; session persistence disabled for this run");
-                Ok((None, Vec::new()))
+                Ok((None, Vec::new(), None))
             }
         };
     };
@@ -711,6 +713,9 @@ async fn init_session_sink(
     // open, exactly like the explicit `sessions resume <id>` path above, so a crash landing
     // between durable append and SQLite projection write (INV-SP-3's gap) is reconciled on the
     // ordinary "just restart zeph" flow too, not only on an explicit resume.
+    // Captured before `session_id` moves `meta.session_id` out — used for the resume banner's
+    // "last active" display (spec-068 §13.3).
+    let last_active = Some(meta.updated_at.clone());
     let session_id = meta.session_id;
     let data_dir = std::path::PathBuf::from(&session_config.data_dir);
     let session_path = zeph_session::session_dir(&data_dir, &session_id);
@@ -735,7 +740,7 @@ async fn init_session_sink(
                 store,
                 SessionId::new(session_id),
             ));
-            Ok((Some(sink), hydrated.messages))
+            Ok((Some(sink), hydrated.messages, last_active))
         }
         Err(zeph_agent_persistence::PersistenceError::Session(
             e @ zeph_session::SessionError::AlreadyLocked { .. },
@@ -744,7 +749,7 @@ async fn init_session_sink(
         )),
         Err(e) => {
             tracing::warn!(error = %e, "session hydration failed for default continuation; session persistence disabled for this run");
-            Ok((None, Vec::new()))
+            Ok((None, Vec::new(), None))
         }
     }
 }
@@ -1941,6 +1946,10 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let mut resumed_messages: Vec<zeph_llm::provider::Message> = Vec::new();
     let mut resumed_session_sink: Option<std::sync::Arc<zeph_agent_persistence::SessionSink>> =
         None;
+    // Last-active timestamp for the resume banner (spec-068 §13.3, §13.5), set whenever
+    // hydration found a linked session — either via explicit `--resume` or the default
+    // continuation path below.
+    let mut resume_last_active: Option<String> = None;
     let conversation_id = if let Some(resume_id) = cli.resume_session_id.clone() {
         let session_store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
         let meta = session_store
@@ -1990,6 +1999,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             {
                 Ok(hydrated) => {
                     resumed_messages = hydrated.messages;
+                    resume_last_active = Some(meta.updated_at.clone());
                     resumed_session_sink = Some(std::sync::Arc::new(
                         zeph_agent_persistence::SessionSink::new(
                             hydrated.log,
@@ -2043,13 +2053,37 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let session_sink = if let Some(sink) = resumed_session_sink {
         Some(sink)
     } else {
-        let (sink, hydrated_messages) =
+        let (sink, hydrated_messages, last_active) =
             init_session_sink(&memory, conversation_id, config, &provider, budget_tokens).await?;
         if !hydrated_messages.is_empty() {
             resumed_messages = hydrated_messages;
+            resume_last_active = last_active;
         }
         sink
     };
+
+    // Resume-visibility presentation primitive (spec-068 §13.3), computed from the
+    // already-reconstructed message stream above — zero additional I/O. `None` when
+    // `[session.resume] show_banner = false` or the config gate disables it entirely.
+    let session_resume_info = config.session.resume.show_banner.then(|| {
+        zeph_core::session_resume::SessionResumeInfo::from_messages(
+            &resumed_messages,
+            resume_last_active.as_deref(),
+        )
+    });
+
+    // CLI resume banner (spec-068 §13.5, AC-14): display-owning channel, printed once at
+    // startup. TUI's equivalent is threaded through `TuiRunParams::resume_banner` below
+    // (feature-gated) since the TUI's `AgentEvent` channel isn't available yet at this
+    // point. Chat channels (Telegram/Discord/Slack) and `JsonCli` intentionally get nothing
+    // (§13.2) — only `is_cli` is checked here.
+    if is_cli
+        && let Some(banner) = session_resume_info
+            .as_ref()
+            .and_then(zeph_core::session_resume::SessionResumeInfo::banner_text)
+    {
+        println!("{banner}");
+    }
 
     let (shutdown_tx, shutdown_rx) = AppBuilder::build_shutdown();
     let config = app.config();
@@ -3794,6 +3828,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 fleet_session_id: fleet_session_id.clone(),
                 #[cfg(feature = "deep-link")]
                 deep_link_uri: cli.deep_link_uri.take(),
+                resume_banner: session_resume_info
+                    .as_ref()
+                    .and_then(zeph_core::session_resume::SessionResumeInfo::banner_text),
             },
         ))
         .await;
@@ -5440,7 +5477,7 @@ mod tests {
         let config = runner_test_session_config(dir.path());
         let provider = LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default());
 
-        let (sink, messages) = init_session_sink(&memory, cid, &config, &provider, 0)
+        let (sink, messages, _last_active) = init_session_sink(&memory, cid, &config, &provider, 0)
             .await
             .unwrap();
         assert!(
@@ -5473,9 +5510,10 @@ mod tests {
         let provider = LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default());
 
         // First launch: mints the session, nothing to replay yet.
-        let (sink, initial_messages) = init_session_sink(&memory, cid, &config, &provider, 0)
-            .await
-            .unwrap();
+        let (sink, initial_messages, _last_active) =
+            init_session_sink(&memory, cid, &config, &provider, 0)
+                .await
+                .unwrap();
         let sink = sink.expect("session persistence enabled must produce a SessionSink");
         assert!(initial_messages.is_empty());
         sink.record_message(zeph_llm::provider::Role::User, "hello", &[])
@@ -5485,7 +5523,7 @@ mod tests {
 
         // Second launch (plain `zeph`, no --resume): must hydrate the message recorded above
         // from the durable event log, not silently return an empty history.
-        let (sink, messages) = init_session_sink(&memory, cid, &config, &provider, 0)
+        let (sink, messages, _last_active) = init_session_sink(&memory, cid, &config, &provider, 0)
             .await
             .unwrap();
         assert!(sink.is_some());
@@ -5524,7 +5562,7 @@ mod tests {
             .await
             .expect("sqlite must support DROP COLUMN to set up this test's failure mode");
 
-        let (sink, messages) = init_session_sink(&memory, cid, &config, &provider, 0)
+        let (sink, messages, _last_active) = init_session_sink(&memory, cid, &config, &provider, 0)
             .await
             .unwrap();
         assert!(
@@ -5607,7 +5645,7 @@ mod tests {
         let provider = LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default());
 
         // First call mints and links the session, then releases its lock.
-        let (sink, _) = init_session_sink(&memory, cid, &config, &provider, 0)
+        let (sink, _, _last_active) = init_session_sink(&memory, cid, &config, &provider, 0)
             .await
             .unwrap();
         let sink = sink.expect("session persistence enabled must produce a SessionSink");

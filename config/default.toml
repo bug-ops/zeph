@@ -1668,6 +1668,19 @@ provider_persistence = true
 # Minimum recent events preserved after condensation
 # keep_recent = 20
 
+# [session.resume] — resume-visibility banner and /history bound (spec-068 §13, #6420)
+# [session.resume]
+# Show a neutral "Resuming session" banner on CLI/TUI startup when resuming a
+# non-empty prior conversation. No effect on chat channels or ACP sessions.
+# show_banner = true
+# Intended to always render full history on startup instead of the collapsed banner.
+# Reserved; unused in v1 (no code path consumes it yet).
+# auto_expand = false
+# Bound applied to /history with no argument (last N messages, sliced before formatting).
+# expand_default_lines = 20
+# Fold the cached session.recap summary into the banner. Reserved; unused in v1.
+# show_recap = false
+
 # [serve] — `zeph serve` persistent agent service (spec-068 §9, #5343)
 # [serve]
 # HTTP/SSE API bind address
