@@ -10,10 +10,11 @@ use zeph_skills::ScoredMatch;
 use zeph_skills::group::{GroupResult, group_skills};
 use zeph_skills::loader::SkillMeta;
 use zeph_skills::prompt::{
-    format_grouped_skills_prompt, format_skills_catalog, format_skills_prompt_compact,
+    format_grouped_skills_prompt, format_skills_catalog, format_skills_prompt,
+    format_skills_prompt_compact,
 };
 
-use super::super::{Agent, Skill, format_skills_prompt};
+use super::super::{Agent, Skill};
 use crate::channel::Channel;
 use crate::context::build_system_prompt_with_instructions;
 use tracing::Instrument as _;

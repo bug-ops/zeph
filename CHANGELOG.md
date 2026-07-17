@@ -167,6 +167,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: the initial system prompt built at agent construction
+  (`Agent::new_with_registry_arc`) and every skill hot-reload (`reload_skills()`) force-loaded
+  every registered skill's *full* `SKILL.md` body via `format_skills_prompt`, bypassing the
+  matcher/`disambiguation_threshold`/`max_active_skills` cap entirely — the misleading symptom
+  was the TUI/`/status` startup token gauge showing the entire skill registry's size (e.g.
+  ~100k tokens for 157 skills) before a single turn ran (#6413). Both call sites now build a
+  catalog-only listing (name + description, via `format_skills_catalog`) straight from
+  `SkillMeta` — no per-skill disk read — deferring full-body injection to the first per-turn
+  `rebuild_system_prompt(query)` call, which already applies the cap correctly. `reload_skills()`
+  also now recomputes `cached_prompt_tokens` after mutating `messages[0]`, so the gauge never
+  goes stale between a reload and the next turn. `specs/005-skills/spec.md` and
+  `specs/001-system-invariants/spec.md` §7 gained an explicit construction-time/reload-time
+  contract closing the spec gap that allowed this.
 - `zeph-config`/`zeph-core`: `[tools] enabled = false` was dead config — deserialized onto
   `ToolsConfig::enabled` but never read anywhere, so tool definitions were still built and sent
   to the LLM regardless of the setting (#6386). `ToolsConfig::enabled` is now mirrored into

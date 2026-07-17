@@ -135,8 +135,14 @@ The `Channel` trait (`crates/zeph-core/src/channel.rs`) is the only I/O boundary
 - Matching priority: BM25 + embedding hybrid (if enabled) → pure embedding → keyword fallback
 - `disambiguation_threshold` float gate: if top skill score < threshold, no skill is injected
 - Hot-reload via `notify` crate with 500ms debounce — file change must not block the agent loop
+- The matcher/threshold/`max_active_skills` cap applies to every system prompt build, including
+  the initial prompt at agent construction and any hot-reload rebuild that runs before the first
+  per-turn query is available — see `specs/005-skills/spec.md` § Construction-Time / Reload-Time
+  Skill Prompt Contract for the catalog-only fallback used when no query exists yet (#6413)
 
-**NEVER**: inject more than `max_active_skills` into a single turn; do not block on skill file I/O in the agent loop.
+**NEVER**: inject more than `max_active_skills` into a single turn; inject full skill bodies into
+a system prompt built without a per-turn query (construction, hot-reload); do not block on skill
+file I/O in the agent loop.
 
 ## 8. Configuration Contract
 

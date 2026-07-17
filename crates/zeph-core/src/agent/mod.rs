@@ -70,7 +70,7 @@ mod utils;
 pub(crate) mod vigil;
 mod worktree_commands;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -84,7 +84,7 @@ use zeph_memory::TokenCounter;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::loader::Skill;
 use zeph_skills::matcher::SkillMatcherBackend;
-use zeph_skills::prompt::format_skills_prompt;
+use zeph_skills::prompt::format_skills_catalog;
 use zeph_skills::registry::SkillRegistry;
 use zeph_tools::executor::{ErasedToolExecutor, ToolExecutor};
 
@@ -291,16 +291,22 @@ impl<C: Channel> Agent<C> {
         };
 
         debug_assert!(max_active_skills > 0, "max_active_skills must be > 0");
-        let all_skills: Vec<Skill> = {
+        // Catalog-only listing (name + description) — full skill bodies are injected
+        // exclusively by the per-turn `rebuild_system_prompt(query)` matcher on turn 1.
+        // Building the initial prompt from metadata alone avoids a synchronous full-body
+        // disk read of every SKILL.md at construction time (#6413).
+        let catalog_skills: Vec<Skill> = {
             let reg = registry.read();
             reg.all_meta()
-                .iter()
-                .filter_map(|m| reg.skill(&m.name).ok())
+                .into_iter()
+                .map(|m| Skill {
+                    meta: m.clone(),
+                    body: String::new(),
+                    resources: zeph_skills::resource::SkillResources::default(),
+                })
                 .collect()
         };
-        let empty_trust = HashMap::new();
-        let empty_health: HashMap<String, (f64, u32)> = HashMap::new();
-        let skills_prompt = format_skills_prompt(&all_skills, &empty_trust, &empty_health);
+        let skills_prompt = format_skills_catalog(&catalog_skills);
         let system_prompt = build_system_prompt(&skills_prompt, None);
         tracing::debug!(len = system_prompt.len(), "initial system prompt built");
         tracing::trace!(prompt = %system_prompt, "full system prompt");

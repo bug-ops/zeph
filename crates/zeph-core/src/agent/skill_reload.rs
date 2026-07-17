@@ -7,10 +7,7 @@
 //! per-skill trust scores, and reloads `instructions`/`AGENTS.md` overlays when the
 //! filesystem watcher signals a change.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use super::{Agent, state};
+use super::Agent;
 use crate::channel::Channel;
 use crate::context::build_system_prompt;
 use zeph_llm::provider::LlmProvider;
@@ -243,27 +240,28 @@ impl<C: Channel> Agent<C> {
         let all_meta_refs = all_meta.iter().collect::<Vec<_>>();
         self.rebuild_skill_matcher(&all_meta_refs).await;
 
-        // `reg.skill()` loads each skill's body (and resources) from disk on first access —
-        // synchronous fs I/O that must not run inline on the agent's async task.
-        let registry_arc = Arc::clone(&self.services.skill.registry);
-        let span = tracing::info_span!("skills.registry.load_bodies_blocking");
-        let all_skills: Vec<Skill> = tokio::task::spawn_blocking(move || {
-            let _enter = span.enter();
-            let reg = registry_arc.read();
-            reg.all_meta()
-                .iter()
-                .filter_map(|m| reg.skill(&m.name).ok())
-                .collect()
-        })
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("reload_skills: spawn_blocking for skill bodies panicked: {e}");
-            Vec::new()
-        });
+        // Catalog-only listing (name + description) — full skill bodies are injected
+        // exclusively by the per-turn `rebuild_system_prompt(query)` matcher, so a reload
+        // must not force-load every skill's body from disk (#6413). Building `Skill` stubs
+        // straight from metadata (already loaded in `all_meta` above) needs no further I/O.
+        // Blocked skills are excluded, mirroring `apply_skill_trust_and_gating`'s per-turn
+        // catalog filter.
         let trust_map = self.build_skill_trust_map().await;
-        let empty_health: HashMap<String, (f64, u32)> = HashMap::new();
-        let skills_prompt =
-            state::SkillState::rebuild_prompt(&all_skills, &trust_map, &empty_health);
+        let catalog_skills: Vec<Skill> = all_meta
+            .iter()
+            .filter(|m| {
+                !matches!(
+                    trust_map.get(&m.name),
+                    Some(snap) if snap.trust_level == zeph_common::SkillTrustLevel::Blocked
+                )
+            })
+            .map(|m| Skill {
+                meta: m.clone(),
+                body: String::new(),
+                resources: zeph_skills::resource::SkillResources::default(),
+            })
+            .collect();
+        let skills_prompt = zeph_skills::prompt::format_skills_catalog(&catalog_skills);
         self.services
             .skill
             .last_skills_prompt
@@ -272,6 +270,10 @@ impl<C: Channel> Agent<C> {
         if let Some(msg) = self.msg.messages.first_mut() {
             msg.content = system_prompt;
         }
+        // The mutation above bypasses `push_message`'s incremental token accounting, so the
+        // cached prompt-token count must be recomputed explicitly or it goes stale until the
+        // next turn's `rebuild_system_prompt` overwrites it (#6413).
+        self.recompute_prompt_tokens();
 
         self.channel.send_status_best_effort("").await;
         tracing::info!(

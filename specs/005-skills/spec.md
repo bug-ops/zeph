@@ -83,6 +83,32 @@ Active skills are injected into Block 3 of the system prompt (volatile section):
 - Tool definitions from skills are merged into the main tool catalog for the turn
 - Skills can define `env` variables that are passed to the tool executor via `set_skill_env()`
 
+## Construction-Time / Reload-Time Skill Prompt Contract (#6413)
+
+Full-body skill injection (previous section) requires a per-turn `query` to run the matcher and
+apply `disambiguation_threshold` / `min_injection_score` / `max_active_skills`. Two call sites
+build (or rebuild) the system prompt *before* a query exists: agent construction
+(`Agent::new_with_registry_arc`) and skill hot-reload (`reload_skills()`). Neither has a query to
+match against, so neither may fall back to injecting every registered skill's full body — that
+would silently bypass the `max_active_skills` cap (a hard invariant everywhere else) and force a
+synchronous full-body disk read of every `SKILL.md`, both forbidden by `specs/001-system-invariants/spec.md`
+§7.
+
+Contract for both call sites:
+- Build the skill listing from **metadata only** (`SkillMeta`: name + description) — never call
+  into the registry's lazy full-body loader (`SkillRegistry::skill()`)
+- Format with the catalog formatter (name + description only, no `<instructions>` body), the same
+  formatter used for the *unmatched* remainder of skills in the per-turn path
+- `last_skills_prompt` (token-accounting cache, never itself injected into the LLM-bound prompt —
+  see `crates/zeph-core/src/agent/state/mod.rs`) is seeded/updated with this same catalog-only
+  text, not the full unfiltered registry blob
+- Full skill bodies are injected exclusively by the next `rebuild_system_prompt(query)` call, once
+  a real per-turn query exists to run the matcher against
+- Any code path that mutates `messages[0]` outside `push_message`'s incremental accounting (e.g.
+  `reload_skills()`) MUST recompute the cached prompt-token count from the mutated message
+  afterward — a stale count is a state-consistency bug even though it self-corrects on the next
+  turn's `rebuild_system_prompt`
+
 ## Self-Learning Integration
 
 `FeedbackDetector` monitors responses for implicit quality signals:
@@ -118,6 +144,9 @@ On-demand tool that fetches the full SKILL.md body for a named skill — allows 
 - `disambiguation_threshold` check runs before any skill injection; default is 0.20
 - `min_injection_score` check is a secondary gate applied after disambiguation — both thresholds must be cleared for injection; default is 0.20
 - NEVER inject a skill that fails the `min_injection_score` gate even if it clears `disambiguation_threshold`
+- The system prompt built at agent construction or by `reload_skills()` (no per-turn query
+  available) is catalog-only (name + description); NEVER force-load or inject full skill bodies
+  at these call sites — see § Construction-Time / Reload-Time Skill Prompt Contract (#6413)
 
 ---
 
