@@ -72,6 +72,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **build(docker): bump `docker/Dockerfile.dev` builder base image from `rust:1.96-slim`
+  to `rust:1.97.1-slim`**, re-pinned to the resolved digest for the new tag. Consistent
+  with the workspace's declared `rust-version = "1.97"` MSRV in `Cargo.toml`; the
+  production `docker/Dockerfile` is unaffected since it copies a prebuilt binary onto
+  `distroless/static-debian12` rather than building from a `rust:*` image.
+
 - `zeph-experiments`: `ParameterKind::as_str`, `ParameterKind::is_integer`,
   `ConfigSnapshot::get`, and `ConfigSnapshot::set` are now exhaustive matches over
   every current variant instead of relying on a wildcard arm (`_ => "unknown"` /
