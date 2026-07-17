@@ -489,6 +489,147 @@ async fn unsummarized_count_not_incremented_without_memory() {
     assert_eq!(agent.services.memory.persistence.unsummarized_count, 0);
 }
 
+// #6384 regression: unit tests for insert_tree_leaf guard conditions.
+mod tree_leaf_insertion_guards {
+    use super::*;
+
+    async fn agent_with_tree(provider: &AnyProvider, tree_enabled: bool) -> Agent<MockChannel> {
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
+        agent.services.memory.subsystems.tree_config.enabled = tree_enabled;
+        agent
+    }
+
+    #[tokio::test]
+    async fn disabled_config_guard_skips_insert() {
+        // tree.enabled=false → no row must ever reach memory_tree.
+        let provider = mock_provider(vec![]);
+        let agent = agent_with_tree(&provider, false).await;
+        let memory = agent.services.memory.persistence.memory.as_ref().unwrap();
+
+        agent.insert_tree_leaf("I use Rust", false, false).await;
+
+        assert_eq!(
+            memory.sqlite().count_tree_nodes().await.unwrap(),
+            0,
+            "tree.enabled=false must prevent insert_tree_leaf from writing a row"
+        );
+    }
+
+    #[tokio::test]
+    async fn injection_flag_guard_skips_insert() {
+        let provider = mock_provider(vec![]);
+        let agent = agent_with_tree(&provider, true).await;
+        let memory = agent.services.memory.persistence.memory.as_ref().unwrap();
+
+        agent.insert_tree_leaf("I use Rust", true, false).await;
+
+        assert_eq!(
+            memory.sqlite().count_tree_nodes().await.unwrap(),
+            0,
+            "injection flag must prevent tree leaf insertion"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_result_parts_guard_skips_insert() {
+        // Mirrors the graph-extraction FIX-1 guard: tool output is raw structured data, not
+        // conversational content, and must not seed the memory tree.
+        let provider = mock_provider(vec![]);
+        let agent = agent_with_tree(&provider, true).await;
+        let memory = agent.services.memory.persistence.memory.as_ref().unwrap();
+
+        agent
+            .insert_tree_leaf(
+                "[tool_result: abc123]\nprovider_type = \"claude\"",
+                false,
+                true, // has_tool_result_parts
+            )
+            .await;
+
+        assert_eq!(
+            memory.sqlite().count_tree_nodes().await.unwrap(),
+            0,
+            "tool result content must not be inserted into the memory tree"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_content_guard_skips_insert() {
+        let provider = mock_provider(vec![]);
+        let agent = agent_with_tree(&provider, true).await;
+        let memory = agent.services.memory.persistence.memory.as_ref().unwrap();
+
+        agent.insert_tree_leaf("   ", false, false).await;
+
+        assert_eq!(
+            memory.sqlite().count_tree_nodes().await.unwrap(),
+            0,
+            "whitespace-only content must not be inserted into the memory tree"
+        );
+    }
+
+    #[tokio::test]
+    async fn happy_path_inserts_leaf() {
+        // Core #6384 regression: with tree.enabled=true and no guards tripped, a real row
+        // must land in memory_tree — before this fix, insert_tree_leaf had zero call sites
+        // and the consolidation loop always found zero unconsolidated leaves.
+        let provider = mock_provider(vec![]);
+        let agent = agent_with_tree(&provider, true).await;
+        let memory = agent.services.memory.persistence.memory.as_ref().unwrap();
+
+        agent
+            .insert_tree_leaf("I use Rust for systems programming", false, false)
+            .await;
+
+        assert_eq!(
+            memory.sqlite().count_tree_nodes().await.unwrap(),
+            1,
+            "happy-path call must insert exactly one leaf row"
+        );
+
+        let leaves = memory
+            .sqlite()
+            .load_tree_leaves_unconsolidated(10)
+            .await
+            .unwrap();
+        assert_eq!(leaves.len(), 1);
+        assert_eq!(leaves[0].content, "I use Rust for systems programming");
+    }
+
+    #[tokio::test]
+    async fn persist_message_end_to_end_inserts_tree_leaf() {
+        // #6384 regression, the actual defect: the other 5 tests in this module call
+        // `Agent::insert_tree_leaf` directly, so they would stay green even if the `store.rs`
+        // call site were dropped again (confirmed by tester: reverting only that call site
+        // left all 5 passing). This test goes through the real production entry point,
+        // `persist_message`, mirroring how the #6387 regression test goes through `remember()`.
+        let provider = mock_provider(vec![]);
+        let mut agent = agent_with_tree(&provider, true).await;
+
+        agent
+            .persist_message(Role::User, "I use Rust for systems programming", &[], false)
+            .await;
+
+        let memory = agent.services.memory.persistence.memory.as_ref().unwrap();
+        assert_eq!(
+            memory.sqlite().count_tree_nodes().await.unwrap(),
+            1,
+            "persist_message must reach insert_tree_leaf and write a memory_tree row \
+             when tree.enabled=true"
+        );
+    }
+}
+
 // R-CRIT-01: unit tests for enqueue_graph_extraction_task guard conditions.
 mod graph_extraction_guards {
     use super::*;

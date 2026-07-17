@@ -933,6 +933,114 @@ async fn remember_categorized_skips_quality_gate() {
     );
 }
 
+/// #6387 regression: `run_quality_gate` used to hardcode `recent_embeddings` to `&[]`, making
+/// `QualityRejectionReason::Redundant` permanently unreachable via `remember()` in production.
+/// Attaches a real (SQLite-backed) vector store — the mock provider returns the same fixed
+/// embedding for every call, so the second `remember()` must find the first message's embedding
+/// via `fetch_recent_embeddings` and be rejected as redundant.
+#[tokio::test]
+async fn remember_quality_gate_rejects_redundant_using_real_recent_embeddings() {
+    let mut mock = MockProvider::default();
+    mock.supports_embeddings = true;
+    let provider = AnyProvider::Mock(mock.with_embedding(vec![0.1_f32; 384]));
+
+    let sqlite = SqliteStore::new(":memory:").await.unwrap();
+    let pool = sqlite.pool().clone();
+    let qdrant = Some(Arc::new(
+        crate::embedding_store::EmbeddingStore::new_sqlite(pool),
+    ));
+
+    let gate_config = crate::quality_gate::QualityGateConfig {
+        enabled: true,
+        threshold: 0.5,
+        information_value_weight: 0.9,
+        reference_completeness_weight: 0.05,
+        contradiction_weight: 0.05,
+        recent_window: 32,
+        ..crate::quality_gate::QualityGateConfig::default()
+    };
+
+    let memory = SemanticMemory {
+        sqlite,
+        qdrant,
+        provider,
+        embed_provider: None,
+        embedding_model: "test-model".into(),
+        vector_weight: 0.7,
+        keyword_weight: 0.3,
+        temporal_decay: super::super::TemporalDecay::Disabled,
+        temporal_decay_half_life_days: 30,
+        mmr_reranking: super::super::MmrReranking::Disabled,
+        mmr_lambda: 0.7,
+        importance_scoring: super::super::ImportanceScoring::Disabled,
+        importance_weight: 0.15,
+        token_counter: Arc::new(TokenCounter::new()),
+        graph_store: None,
+        experience: None,
+        community_detection_failures: Arc::new(AtomicU64::new(0)),
+        graph_extraction_count: Arc::new(AtomicU64::new(0)),
+        graph_extraction_failures: Arc::new(AtomicU64::new(0)),
+        last_qdrant_warn: Arc::new(AtomicU64::new(0)),
+        tier_boost_semantic: 1.3,
+        admission_control: Some(Arc::new(make_always_admit_admission())),
+        quality_gate: Some(Arc::new(crate::quality_gate::QualityGate::new(gate_config))),
+        key_facts_dedup_threshold: 0.95,
+        embed_tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+        retrieval_depth: 0,
+        search_prompt_template: String::new(),
+        depth_below_limit_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        missing_placeholder_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        reasoning: None,
+        query_bias_correction: super::super::QueryBiasCorrection::Disabled,
+        query_bias_profile_weight: 0.25,
+        profile_centroid: tokio::sync::RwLock::new(None),
+        profile_centroid_ttl_secs: 300,
+        hebbian_reinforcement: super::super::HebbianReinforcement::Disabled,
+        hebbian_lr: 0.1,
+        hebbian_spread: crate::HelaSpreadRuntime::default(),
+        retrieval_failure_logger: None,
+        summarization_llm_timeout_secs: 60,
+        query_sensitive_cost: false,
+        five_signal: None,
+        embed_timeout: std::time::Duration::from_secs(5),
+        graph_cancel: std::sync::Mutex::new(Vec::new()),
+    };
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+
+    let first = memory
+        .remember(
+            cid,
+            "user",
+            "The Rust compiler enforces memory safety through the borrow checker.",
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        first.is_some(),
+        "first message has no recent embeddings yet, must be admitted"
+    );
+
+    // Let the background embed task (spawned by `remember`) finish writing the vector.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let second = memory
+        .remember(
+            cid,
+            "user",
+            "The Rust compiler enforces memory safety through the borrow checker.",
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        second.is_none(),
+        "second identical message must be rejected as Redundant once fetch_recent_embeddings \
+         wires the first message's real embedding into the quality gate"
+    );
+}
+
 #[tokio::test]
 async fn no_admission_control_configured_proceeds_without_recording_sample() {
     // test_semantic_memory() leaves admission_control = None, so run_admission_gate must

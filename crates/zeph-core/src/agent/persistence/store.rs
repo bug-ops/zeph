@@ -143,6 +143,10 @@ impl<C: Channel> Agent<C> {
         self.enqueue_graph_extraction_task(content, has_injection_flags, has_tool_result_parts)
             .await;
 
+        // TiMem tree leaf insertion: feeds the mem-tree-consolidation background loop (#6384).
+        self.insert_tree_leaf(content, has_injection_flags, has_tool_result_parts)
+            .await;
+
         // Persona extraction: run only for user messages that are not tool results and not injected.
         if role == Role::User && !has_tool_result_parts && !has_injection_flags {
             self.enqueue_persona_extraction_task();

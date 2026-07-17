@@ -112,6 +112,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-memory`: `SemanticMemory::run_quality_gate` hardcoded `recent_embeddings` to `&[]` on
+  its only production call site, so `QualityGate::evaluate`'s `Redundant`-rejection path —
+  already unit-tested and working — could never fire on a real conversation (#6387). Added
+  `SemanticMemory::fetch_recent_embeddings`, which loads the last `recent_window` messages for
+  the conversation via `SqliteStore::load_history` and resolves their vectors through
+  `EmbeddingStore::get_vectors` (the same pair the MMR re-ranking path already uses), and wired
+  it into `run_quality_gate` in place of the empty slice. Fails open (empty vec) when no vector
+  store is attached or any lookup step errors, matching the gate's existing fail-open contract.
+- `zeph-memory`'s `SqliteStore::insert_tree_leaf` — the only writer of the `memory_tree`
+  table — had zero production call sites, so the `mem-tree-consolidation` background loop
+  (`config.memory.tree.enabled`) always found zero unconsolidated leaves and ran forever as a
+  no-op (#6384). `zeph-core`'s `Agent::persist_message` now calls a new `Agent::insert_tree_leaf`
+  helper right after a message is persisted, reusing the same tool-result/injection skip guards
+  as graph extraction so raw tool output and injection-flagged content never enter the tree.
+  Best-effort: a single lightweight `INSERT ... RETURNING id`, no LLM/embedding call, failures
+  logged and never propagated.
 - `zeph-llm` (`ollama`): `convert_message_structured` dropped `MessagePart::Image` siblings
   on messages carrying a `ToolResult` part — the function early-returned
   `ChatMessage::tool(content)` built only from concatenated tool-result text, discarding any

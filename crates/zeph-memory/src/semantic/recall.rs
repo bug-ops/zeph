@@ -474,8 +474,11 @@ impl SemanticMemory {
         let Some(gate) = &self.quality_gate else {
             return false;
         };
+        let recent_embeddings = self
+            .fetch_recent_embeddings(conversation_id, gate.config().recent_window)
+            .await;
         if gate
-            .evaluate(content, self.effective_embed_provider(), &[])
+            .evaluate(content, self.effective_embed_provider(), &recent_embeddings)
             .await
             .is_none()
         {
@@ -486,6 +489,51 @@ impl SemanticMemory {
                 .await;
         }
         true
+    }
+
+    /// Fetch embeddings for the most recent `limit` messages in `conversation_id`, for use as
+    /// the `recent_embeddings` window in [`crate::quality_gate::QualityGate::evaluate`] (#6387).
+    ///
+    /// Reuses the same `SqliteStore::load_history` + `EmbeddingStore::get_vectors` pair the MMR
+    /// re-ranking path uses (see [`Self::recall_merge_and_rank`]) rather than a bespoke query.
+    /// Called before the candidate message is persisted, so the returned window never includes it.
+    ///
+    /// Fails open: returns an empty vec (which makes `information_value` score as novel) when no
+    /// vector store is attached, `limit == 0`, or any lookup step errors.
+    async fn fetch_recent_embeddings(
+        &self,
+        conversation_id: ConversationId,
+        limit: usize,
+    ) -> Vec<Vec<f32>> {
+        let Some(qdrant) = &self.qdrant else {
+            return Vec::new();
+        };
+        if limit == 0 {
+            return Vec::new();
+        }
+        let limit_u32 = u32::try_from(limit).unwrap_or(u32::MAX);
+        let recent_messages = match self.sqlite.load_history(conversation_id, limit_u32).await {
+            Ok(messages) => messages,
+            Err(e) => {
+                tracing::warn!("quality_gate: failed to load recent history: {e:#}");
+                return Vec::new();
+            }
+        };
+        let ids: Vec<MessageId> = recent_messages
+            .iter()
+            .filter_map(|m| m.metadata.db_id)
+            .map(MessageId)
+            .collect();
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        match qdrant.get_vectors(&ids).await {
+            Ok(vec_map) => vec_map.into_values().collect(),
+            Err(e) => {
+                tracing::warn!("quality_gate: failed to fetch recent embeddings: {e:#}");
+                Vec::new()
+            }
+        }
     }
 
     /// Record the admission training sample for a message that passed every gate, when an

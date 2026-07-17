@@ -14,6 +14,38 @@ use zeph_agent_persistence::graph::{build_graph_extraction_config, collect_conte
 use zeph_llm::provider::{LlmProvider as _, MessagePart, Role};
 
 impl<C: Channel> Agent<C> {
+    /// Insert a leaf node into the `TiMem` memory tree (#6384).
+    ///
+    /// `SqliteStore::insert_tree_leaf` is the only writer of the `memory_tree` table; without
+    /// this call the `mem-tree-consolidation` background loop always finds zero unconsolidated
+    /// leaves and runs forever as a no-op. Runs inline — a single `INSERT ... RETURNING id`,
+    /// no LLM/embedding call — right after the message is persisted, reusing the same
+    /// tool-result/injection skip guards as [`Self::enqueue_graph_extraction_task`] so raw tool
+    /// output and injection-flagged content never enter the tree.
+    ///
+    /// Best-effort: failures are logged and never propagated, mirroring the other post-persist
+    /// enrichment steps in this module.
+    pub(super) async fn insert_tree_leaf(
+        &self,
+        content: &str,
+        has_injection_flags: bool,
+        has_tool_result_parts: bool,
+    ) {
+        if !self.services.memory.subsystems.tree_config.enabled {
+            return;
+        }
+        if has_tool_result_parts || has_injection_flags || content.trim().is_empty() {
+            return;
+        }
+        let Some(memory) = &self.services.memory.persistence.memory else {
+            return;
+        };
+        let token_count = i64::try_from(content.split_whitespace().count()).unwrap_or(i64::MAX);
+        if let Err(e) = memory.sqlite().insert_tree_leaf(content, token_count).await {
+            tracing::warn!(error = %e, "TiMem: failed to insert tree leaf");
+        }
+    }
+
     /// Prepare graph extraction guards in foreground, then enqueue heavy work via supervisor.
     ///
     /// Guards (enabled check, injection/tool-result skip) stay on the foreground path.
