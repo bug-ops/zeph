@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+
+- `zeph-session`: `AdvisoryLock::acquire`'s `WOULDBLOCK` path gave operators only a bare
+  "another session is already active" message with no way to tell whether the lock's holder
+  was still running (#6378). The holder's PID is now written into the sibling lock file
+  (`events.jsonl.lock`) on acquire, and a contending `acquire` reads it back plus a liveness
+  check (`kill(pid, 0)` via the newly-promoted `zeph_common::pidfile::is_process_alive`,
+  formerly duplicated in `zeph-scheduler`), surfaced through a widened
+  `SessionError::AlreadyLocked { path, pid, pid_alive }` struct variant. A recorded-not-running
+  holder is reported as a hedged "may be stale, or may have just been re-acquired" — not
+  asserted as definitely dead, since the lock file is a permanent sentinel (never atomically
+  replaced) and a contender can observe a torn read of the *previous* holder's PID during the
+  brief window between a new holder's `flock` and its PID write. Diagnostic-only: no
+  auto-recovery or auto-unlink was introduced, since breaking a live `flock` without the
+  holder's cooperation is unsafe.
+
 ### Added
 
 - Coverage-guided fuzzing harnesses (cargo-fuzz) for SKILL.md frontmatter, skill extensions,

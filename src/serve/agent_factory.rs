@@ -529,10 +529,11 @@ async fn hydrate_session_sink(
                 return (Some(sink), hydrated.messages);
             }
             Err(zeph_agent_persistence::PersistenceError::Session(
-                zeph_session::SessionError::AlreadyLocked(lock_path),
+                zeph_session::SessionError::AlreadyLocked { path, pid, .. },
             )) if attempt < REACTIVATION_LOCK_RETRY_ATTEMPTS => {
                 tracing::debug!(
-                    lock_path,
+                    lock_path = %path,
+                    pid,
                     attempt,
                     "serve-sessions: event log still locked by a draining prior actor; retrying reactivation"
                 );
@@ -546,7 +547,7 @@ async fn hydrate_session_sink(
                 if matches!(
                     e,
                     zeph_agent_persistence::PersistenceError::Session(
-                        zeph_session::SessionError::AlreadyLocked(_)
+                        zeph_session::SessionError::AlreadyLocked { .. }
                     )
                 ) {
                     metrics::counter!("serve.session.reactivation_lock_exhausted_total")

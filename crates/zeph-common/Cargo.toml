@@ -58,9 +58,10 @@ uuid = { workspace = true, features = ["v4"] }
 zeroize = { workspace = true, features = ["alloc", "derive", "serde"] }
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
-# Advisory `flock(2)` locking for the shared pid-file guard (`pidfile::PidLockGuard`); Unix only.
+# Advisory `flock(2)` locking and liveness checks (`kill(pid, 0)`) for the shared pid-file
+# guard (`pidfile::PidLockGuard`, `pidfile::is_process_alive`); Unix only.
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["fs", "std"] }
+rustix = { workspace = true, features = ["fs", "process", "std"] }
 
 [dev-dependencies]
 metrics-util = { workspace = true, features = ["debugging"] }

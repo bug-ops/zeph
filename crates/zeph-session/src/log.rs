@@ -461,10 +461,15 @@ pub(crate) async fn set_permissions(path: &Path, mode: u32) -> Result<(), Sessio
 ///
 /// Backed by `flock(2)` on a sibling lock file (`events.jsonl.lock`) rather than
 /// `events.jsonl` itself, so the lock is independent of the append-mode file handle already
-/// held for writing. Mirrors `zeph-scheduler`'s `PidFile`, but — unlike a pid file — the lock
-/// file is never unlinked on drop: it is a permanent sentinel, not ephemeral process identity,
-/// and unlinking it would reopen an unlink/re-create race between the releasing and the next
-/// acquiring process.
+/// held for writing. Mirrors `zeph-scheduler`'s `PidFile`: the holder's PID is written into the
+/// file once the lock is acquired, so a contending `acquire` can read it back to tell an
+/// operator (or [`SessionError::AlreadyLocked`]'s caller) which process to check — unlike a pid
+/// file, though, the lock file is never unlinked on drop: it is a permanent sentinel, not
+/// ephemeral process identity, and unlinking it would reopen an unlink/re-create race between
+/// the releasing and the next acquiring process.
+///
+/// **Invariant**: `session_dir` MUST reside on a local filesystem. NFS/network mounts do not
+/// guarantee reliable exclusive locking with `flock(2)` (#6378).
 #[cfg(unix)]
 struct AdvisoryLock(#[allow(dead_code)] rustix::fd::OwnedFd);
 
@@ -483,11 +488,32 @@ impl AdvisoryLock {
 
         rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive).map_err(|e| {
             if e == rustix::io::Errno::WOULDBLOCK {
-                SessionError::AlreadyLocked(lock_path.display().to_string())
+                // The lock file is a permanent sentinel (never unlinked, never cleared on
+                // `Drop`), so between a new holder's successful `flock` above and its
+                // `ftruncate`+write below, this read can still observe the *previous* holder's
+                // PID — a dead PID here is a snapshot, not proof the current holder is gone
+                // (#6378, see `describe_already_locked`'s hedged wording).
+                let pid = zeph_common::pidfile::read_pid_lenient(&lock_path);
+                let pid_alive = pid.map(zeph_common::pidfile::is_process_alive);
+                SessionError::AlreadyLocked {
+                    path: lock_path.display().to_string(),
+                    pid,
+                    pid_alive,
+                }
             } else {
                 SessionError::Io(e.into())
             }
         })?;
+
+        // We hold the lock — record our own PID so a future contending `acquire` can diagnose
+        // us (#6378: previously the lock file was permanently empty, giving an operator nothing
+        // to verify a contended lock against). Mirrors `PidLockGuard::acquire`.
+        rustix::fs::ftruncate(&fd, 0).map_err(std::io::Error::from)?;
+        // A `u32` PID renders to at most 10 bytes — a single `write(2)` to a local regular file
+        // for a buffer this small does not return a short count in practice, so no `write_all`
+        // retry loop is needed here.
+        rustix::io::write(&fd, std::process::id().to_string().as_bytes())
+            .map_err(std::io::Error::from)?;
 
         Ok(Self(fd))
     }
@@ -753,13 +779,37 @@ mod tests {
         );
     }
 
+    /// Regression test for #6378: `AdvisoryLock::acquire` must record the holder's own PID
+    /// into the lock file's contents so a contending `acquire` can diagnose who holds it.
+    /// Before the fix the lock file was permanently empty.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_open_exclusive_writes_own_pid_into_lock_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let _log = SessionEventLog::open_exclusive(dir.path()).await.unwrap();
+
+        let lock_path = dir.path().join(LOCK_FILE_NAME);
+        let contents = tokio::fs::read_to_string(&lock_path).await.unwrap();
+        let pid: u32 = contents.trim().parse().unwrap_or_else(|e| {
+            panic!("lock file contents {contents:?} did not parse as a PID: {e}")
+        });
+        assert_eq!(pid, std::process::id());
+    }
+
+    /// Regression test for #6378: on contention, `SessionError::AlreadyLocked` must carry the
+    /// holder's PID (read back from the lock file) and a liveness verdict, not just the lock
+    /// path. This is a same-process test, so both the holder and the contender are the current
+    /// process — a genuinely alive PID is exactly what `pid_alive` must report.
     #[cfg(unix)]
     #[tokio::test]
     async fn test_open_exclusive_rejects_second_writer() {
         let dir = tempfile::tempdir().unwrap();
         let _first = SessionEventLog::open_exclusive(dir.path()).await.unwrap();
         match SessionEventLog::open_exclusive(dir.path()).await {
-            Err(SessionError::AlreadyLocked(_)) => {}
+            Err(SessionError::AlreadyLocked { pid, pid_alive, .. }) => {
+                assert_eq!(pid, Some(std::process::id()));
+                assert_eq!(pid_alive, Some(true));
+            }
             Err(e) => panic!("expected AlreadyLocked, got different error: {e}"),
             Ok(_) => panic!("expected AlreadyLocked, but second open_exclusive succeeded"),
         }

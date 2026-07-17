@@ -696,8 +696,8 @@ async fn init_session_sink(
                     Vec::new(),
                 ))
             }
-            Err(zeph_session::SessionError::AlreadyLocked(lock_path)) => Err(anyhow::anyhow!(
-                "another zeph session is already active for this conversation; lock: {lock_path}"
+            Err(e @ zeph_session::SessionError::AlreadyLocked { .. }) => Err(anyhow::anyhow!(
+                "another zeph session is already active for this conversation: {e}"
             )),
             Err(e) => {
                 tracing::warn!(error = %e, "failed to open session event log; session persistence disabled for this run");
@@ -738,9 +738,9 @@ async fn init_session_sink(
             Ok((Some(sink), hydrated.messages))
         }
         Err(zeph_agent_persistence::PersistenceError::Session(
-            zeph_session::SessionError::AlreadyLocked(lock_path),
+            e @ zeph_session::SessionError::AlreadyLocked { .. },
         )) => Err(anyhow::anyhow!(
-            "another zeph session is already active for this conversation; lock: {lock_path}"
+            "another zeph session is already active for this conversation: {e}"
         )),
         Err(e) => {
             tracing::warn!(error = %e, "session hydration failed for default continuation; session persistence disabled for this run");
@@ -779,8 +779,8 @@ async fn resume_session_sink_fallback(
                 ),
             )))
         }
-        Err(zeph_session::SessionError::AlreadyLocked(lock_path)) => Err(anyhow::anyhow!(
-            "another zeph session is already active for session '{resume_id}'; lock: {lock_path}"
+        Err(e @ zeph_session::SessionError::AlreadyLocked { .. }) => Err(anyhow::anyhow!(
+            "another zeph session is already active for session '{resume_id}': {e}"
         )),
         Err(open_err) => {
             tracing::warn!(error = %open_err, "bare session event log fallback also failed; continuing with SQLite-only history");
@@ -2003,10 +2003,10 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 // fallback below, which would just hit the same lock and fail identically, or
                 // (with a lockless open) silently race the other process's writes.
                 Err(zeph_agent_persistence::PersistenceError::Session(
-                    zeph_session::SessionError::AlreadyLocked(lock_path),
+                    e @ zeph_session::SessionError::AlreadyLocked { .. },
                 )) => {
                     anyhow::bail!(
-                        "another zeph session is already active for session '{resume_id}'; lock: {lock_path}"
+                        "another zeph session is already active for session '{resume_id}': {e}"
                     );
                 }
                 Err(e) => {

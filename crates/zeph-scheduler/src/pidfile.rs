@@ -15,6 +15,10 @@ use std::path::Path;
 
 use zeph_common::pidfile::{PidLockError, PidLockGuard, read_pid_lenient};
 
+/// Re-exported so existing `crate::pidfile::is_process_alive` call sites keep working after
+/// promotion to `zeph_common::pidfile` (shared with `zeph-session`'s `AdvisoryLock`).
+pub use zeph_common::pidfile::is_process_alive;
+
 use crate::error::SchedulerError;
 
 /// Advisory PID file backed by an `flock(2)` exclusive lock.
@@ -75,35 +79,6 @@ impl PidFile {
         } else {
             None
         }
-    }
-}
-
-/// Check whether a process with the given PID is currently alive.
-///
-/// Uses `kill(pid, 0)` which sends no signal but returns an error if the
-/// process does not exist or is a zombie that cannot be signalled.
-///
-/// # SIGNIFICANT-7 liveness guarantee
-///
-/// This check is combined with a flock attempt in [`PidFile::read_alive`] to
-/// confirm that the daemon actually holds the lock (not just that a PID file
-/// exists with a recycled PID). However, for the MVP `read_alive` only checks
-/// `kill(pid, 0)` and trusts the pidfile content.
-#[must_use]
-pub fn is_process_alive(pid: u32) -> bool {
-    // kill(pid, 0) returns Ok if the process exists and we have permission to signal it,
-    // Err(EPERM) if it exists but we lack permission, Err(ESRCH) if it does not exist.
-    // Both Ok and EPERM mean the process is alive.
-    let Some(rustix_pid) = rustix::process::Pid::from_raw(pid.cast_signed()) else {
-        return false;
-    };
-    // test_kill_process is kill(pid, 0): succeeds if process exists and we can signal it.
-    // EPERM means process exists but we lack permission — still alive.
-    // ESRCH means no such process.
-    match rustix::process::test_kill_process(rustix_pid) {
-        Ok(()) => true,
-        Err(e) if e == rustix::io::Errno::PERM => true,
-        Err(_) => false,
     }
 }
 

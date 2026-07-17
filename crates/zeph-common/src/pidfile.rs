@@ -146,6 +146,36 @@ pub fn read_pid_lenient(path: &Path) -> Option<u32> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
+/// Check whether a process with the given PID is currently alive.
+///
+/// Uses `kill(pid, 0)`, which sends no signal but returns an error if the process does not
+/// exist or is a zombie that cannot be signalled. Promoted here (from `zeph-scheduler`'s
+/// former private copy) so any crate diagnosing a contended [`PidLockGuard`]-style lock can
+/// check the recorded holder's liveness without depending on `zeph-scheduler`.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::pidfile::is_process_alive;
+///
+/// assert!(is_process_alive(std::process::id()));
+/// assert!(!is_process_alive(0));
+/// ```
+#[must_use]
+pub fn is_process_alive(pid: u32) -> bool {
+    // kill(pid, 0) returns Ok if the process exists and we have permission to signal it,
+    // Err(EPERM) if it exists but we lack permission, Err(ESRCH) if it does not exist.
+    // Both Ok and EPERM mean the process is alive.
+    let Some(rustix_pid) = rustix::process::Pid::from_raw(pid.cast_signed()) else {
+        return false;
+    };
+    match rustix::process::test_kill_process(rustix_pid) {
+        Ok(()) => true,
+        Err(e) if e == rustix::io::Errno::PERM => true,
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};

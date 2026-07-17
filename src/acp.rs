@@ -1329,9 +1329,10 @@ async fn open_session_log_or_notify_locked(
 ) -> Option<std::sync::Arc<zeph_session::SessionEventLog>> {
     match zeph_session::SessionEventLog::open_exclusive(session_path).await {
         Ok(log) => Some(std::sync::Arc::new(log)),
-        Err(zeph_session::SessionError::AlreadyLocked(lock_path)) => {
+        Err(zeph_session::SessionError::AlreadyLocked { path, pid, .. }) => {
             tracing::error!(
-                lock_path,
+                lock_path = %path,
+                pid,
                 "failed to open session event log for ACP session: another process \
                  already holds this session's write lock; session persistence disabled \
                  for this session"
@@ -1930,10 +1931,11 @@ async fn spawn_acp_agent(
                 // continuing here would let this ACP session race the other process's writes
                 // exactly like the reported bug.
                 Err(zeph_agent_persistence::PersistenceError::Session(
-                    zeph_session::SessionError::AlreadyLocked(lock_path),
+                    zeph_session::SessionError::AlreadyLocked { path, pid, .. },
                 )) => {
                     tracing::error!(
-                        lock_path,
+                        lock_path = %path,
+                        pid,
                         "session hydration failed: another process already holds this session's \
                          write lock; session persistence disabled for this session"
                     );
