@@ -158,11 +158,32 @@ impl XChaCha20Poly1305Cipher {
     /// assert!(XChaCha20Poly1305Cipher::from_vault_b64("not base64!").is_err());
     /// ```
     pub fn from_vault_b64(b64_key: &str) -> Result<Self, CipherKeyError> {
-        use base64::Engine as _;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(b64_key.trim())
-            .map_err(|_| CipherKeyError::MalformedEncoding)?;
-        Self::from_vault_bytes(DURABLE_KEY_ID, &bytes)
+        Self::from_vault_b64_with_id(DURABLE_KEY_ID, b64_key)
+    }
+
+    /// Construct the current cipher from a base64-encoded vault value with an explicit `key_id`.
+    ///
+    /// Like [`from_vault_b64`](Self::from_vault_b64) but for an operator-controlled `key_id`
+    /// (`[durable].key_id`, `zeph durable rotate-key`, #6447) rather than the hardcoded
+    /// [`DURABLE_KEY_ID`] default — the current cipher's decode path used by
+    /// `load_durable_cipher` once a rotation has bumped the config's `key_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CipherKeyError::MalformedEncoding`] when `b64_key` is not valid base64, or
+    /// [`CipherKeyError::InvalidKeyLength`] when the decoded key is not exactly 32 bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_core::durable::{XChaCha20Poly1305Cipher, generate_durable_key_b64};
+    ///
+    /// let key = generate_durable_key_b64();
+    /// assert!(XChaCha20Poly1305Cipher::from_vault_b64_with_id(1, &key).is_ok());
+    /// ```
+    pub fn from_vault_b64_with_id(key_id: u8, b64_key: &str) -> Result<Self, CipherKeyError> {
+        let bytes = decode_vault_key_bytes(b64_key)?;
+        Ok(Self::new(key_id, bytes))
     }
 
     /// Register a previous key for the rotation window.
@@ -247,6 +268,41 @@ pub fn generate_durable_key_b64() -> String {
     use base64::Engine as _;
     let key = Key::generate();
     base64::engine::general_purpose::STANDARD.encode(key.as_slice())
+}
+
+/// Decode a base64-encoded 32-byte vault key value into raw key bytes.
+///
+/// Shared by [`XChaCha20Poly1305Cipher::from_vault_b64_with_id`] and callers that need to
+/// register a previous key for [`XChaCha20Poly1305Cipher::with_previous`] directly — e.g. `zeph
+/// durable rotate-key`'s `load_durable_cipher` chokepoint decoding `ZEPH_DURABLE_KEY_PREVIOUS`
+/// (#6447) — so the base64 decode path is not duplicated outside this module.
+///
+/// # Errors
+///
+/// Returns [`CipherKeyError::MalformedEncoding`] when `b64_key` is not valid base64, or
+/// [`CipherKeyError::InvalidKeyLength`] when the decoded key is not exactly 32 bytes.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_core::durable::{decode_vault_key_bytes, generate_durable_key_b64};
+///
+/// let key = generate_durable_key_b64();
+/// assert_eq!(decode_vault_key_bytes(&key).unwrap().len(), 32);
+/// assert!(decode_vault_key_bytes("not base64!").is_err());
+/// ```
+pub fn decode_vault_key_bytes(b64_key: &str) -> Result<[u8; KEY_LEN], CipherKeyError> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64_key.trim())
+        .map_err(|_| CipherKeyError::MalformedEncoding)?;
+    bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| CipherKeyError::InvalidKeyLength {
+            expected: KEY_LEN,
+            actual: bytes.len(),
+        })
 }
 
 impl PayloadCipher for XChaCha20Poly1305Cipher {

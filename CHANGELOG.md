@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+
+- `zeph-config`/`zeph-core`/`zeph`: added `zeph durable rotate-key`, a windowed rotation
+  command for the durable execution layer's AEAD payload key (`ZEPH_DURABLE_KEY`) — the
+  `XChaCha20Poly1305Cipher::with_previous` rotation window existed but was never operationally
+  wired to a CLI (#6447). `[durable]` gains `key_id: u8` (operator-controlled current-key
+  selector, default `0`) and `previous_key_id: Option<u8>` (rotation-window state, default
+  `None`); `load_durable_cipher` — the single chokepoint shared by the agent write path, the
+  scheduler-daemon write path, and the CLI/`--reveal` read path — now builds the cipher from
+  both fields, so a rotation is picked up uniformly everywhere. `rotate-key` generates a fresh
+  key, stashes the old one under a new `ZEPH_DURABLE_KEY_PREVIOUS` vault secret, and writes
+  `[durable] key_id`/`previous_key_id` back to the config file in place (via `toml_edit`,
+  preserving comments/formatting) — **config first, then vault**, so a crash between the two
+  writes fires `load_durable_cipher`'s existing fail-closed branch (loud startup error) instead
+  of silently mis-decrypting every pre-rotation payload. A partial-state detector refuses to
+  proceed if `previous_key_id` and the vault secret ever disagree, printing manual-recovery
+  guidance rather than guessing. Only one rotation window is open at a time (the cipher has a
+  single previous-key slot): opening a second window while one is open is refused, pointing at
+  `--drop-previous`. `--drop-previous` closes the window — by default it first scans
+  `durable_journal`/`durable_promises` for any payload still sealed under the previous key
+  (dialect-specific predicate: SQLite blob-compare, Postgres `get_byte`) and refuses if any
+  remain (`--force` skips the scan; scoped to this path only — it never bypasses the
+  open-window or shared-database refusals); a call with no window open is a clean no-op. On a
+  declared/detected shared database, `rotate-key` refuses unless `--ack-shared-db-drain` is
+  passed, since rotating also re-derives the control-entry HMAC key, which has no rotation
+  window of its own. `--dry-run` prints intended changes (including the shared-DB warning)
+  without writing anything. The cipher is built once at process startup (no hot-reload), so a
+  restart is required after rotating. A stale in-memory cipher hitting a rotated blob's
+  key-id now surfaces an actionable "restart to pick up the rotated key" message instead of
+  the raw `UnknownKeyId`/decode error. `zeph --init`'s existing key-replacement wizard step is
+  unchanged in behavior but now explicitly labels itself a destructive reset (no rotation
+  window, discards sealed payloads immediately) and points to `zeph durable rotate-key` for
+  the safe alternative. Added `MigrateDurableKeyRotation` (`--migrate-config` step 97) to
+  insert `key_id = 0` into an existing `[durable]` table lacking it.
+
 ### Fixed
 
 - `zeph-experiments`: `engine::tests::engine_persists_results_to_sqlite` `.unwrap()`ed

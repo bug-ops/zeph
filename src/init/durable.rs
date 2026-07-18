@@ -7,9 +7,12 @@
 //! generates a fresh AEAD `ZEPH_DURABLE_KEY`. The key is stored in the age vault during the review
 //! step ([`store_durable_key`]), never written inline in the config TOML (vault contract spec-038).
 //!
-//! A pre-existing `ZEPH_DURABLE_KEY` is reused by default: rotating it renders every payload
-//! already sealed in `durable_journal` unrecoverable, since the AEAD key is required to
-//! authenticate them on replay. Rotation requires typing an explicit confirmation phrase (#5874).
+//! A pre-existing `ZEPH_DURABLE_KEY` is reused by default: replacing it here is a **destructive
+//! reset** — it renders every payload already sealed in `durable_journal` unrecoverable, since
+//! the AEAD key is required to authenticate them on replay, and opens no rotation window.
+//! Confirming requires typing an explicit phrase (#5874). For a safe rotation that keeps
+//! previously-sealed payloads readable during a drain window, use `zeph durable rotate-key`
+//! (#6447) instead of this wizard step.
 
 use dialoguer::{Confirm, Input, Select};
 use zeph_core::config::DurableBackend;
@@ -95,13 +98,16 @@ pub(super) fn step_durable(state: &mut WizardState) -> anyhow::Result<()> {
     {
         println!(
             "A ZEPH_DURABLE_KEY already exists in the age vault. Reusing it by default — \
-             rotating it will PERMANENTLY and IRRECOVERABLY orphan every durable payload already \
-             sealed under the old key."
+             replacing it here is a DESTRUCTIVE RESET (discards existing sealed payloads, no \
+             rotation window): it PERMANENTLY and IRRECOVERABLY orphans every durable payload \
+             already sealed under the old key. For a safe rotation that keeps old payloads \
+             readable during a drain window, run `zeph durable rotate-key` instead of this \
+             wizard step."
         );
         let confirmation: String = Input::new()
             .with_prompt(format!(
-                "Type \"{ROTATE_CONFIRMATION_PHRASE}\" to rotate the key and discard all \
-                 existing sealed payloads, or leave blank to keep the existing key"
+                "Type \"{ROTATE_CONFIRMATION_PHRASE}\" to perform the destructive reset and \
+                 discard all existing sealed payloads, or leave blank to keep the existing key"
             ))
             .allow_empty(true)
             .interact_text()?;
@@ -109,7 +115,10 @@ pub(super) fn step_durable(state: &mut WizardState) -> anyhow::Result<()> {
             println!("Keeping the existing ZEPH_DURABLE_KEY.\n");
             return Ok(());
         }
-        println!("Rotating ZEPH_DURABLE_KEY — previously sealed durable payloads will be lost.");
+        println!(
+            "Performing destructive reset of ZEPH_DURABLE_KEY — previously sealed durable \
+             payloads will be lost."
+        );
     }
 
     state.durable_key_b64 = Some(zeph_core::durable::generate_durable_key_b64());

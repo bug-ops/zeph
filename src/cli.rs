@@ -817,6 +817,27 @@ pub(crate) enum DurableCommand {
         /// Execution id (UUID)
         id: String,
     },
+    /// Rotate the AEAD payload key (`ZEPH_DURABLE_KEY`), opening a windowed rotation that keeps
+    /// the previous key readable until sealed payloads are pruned, or close an open window
+    RotateKey {
+        /// Print what would change without writing to the config file or vault
+        #[arg(long)]
+        dry_run: bool,
+        /// Close an open rotation window: drop `ZEPH_DURABLE_KEY_PREVIOUS` from the vault and
+        /// clear `previous_key_id`, after verifying no sealed payload still uses the old key
+        #[arg(long)]
+        drop_previous: bool,
+        /// Skip the `--drop-previous` safety scan for sealed payloads still using the old key.
+        /// Applies only to `--drop-previous`; never bypasses the open-window or shared-database
+        /// refusals
+        #[arg(long)]
+        force: bool,
+        /// Acknowledge that this durable journal is a shared database: rotating will re-derive
+        /// the control-entry HMAC key, which has no rotation window, breaking verification for
+        /// every in-flight execution until it drains
+        #[arg(long)]
+        ack_shared_db_drain: bool,
+    },
 }
 
 /// Typed session status filter for the `agents fleet` sub-command.

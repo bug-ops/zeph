@@ -846,6 +846,69 @@ pub fn migrate_durable_stale_running_after_secs(
     })
 }
 
+/// Inserts an active `key_id = 0` into an existing `[durable]` table that lacks it (#6447).
+///
+/// `key_id` is the AEAD key-id selector `zeph durable rotate-key` bumps on rotation; `0` is the
+/// runtime `#[serde(default)]` value and matches every payload sealed before this field existed,
+/// so this step is a self-documentation convenience, not a correctness requirement — a config
+/// that never runs it still loads with the correct default.
+///
+/// Deliberately does **not** add `previous_key_id`: its absence means "no rotation window open",
+/// which is the correct default and must never be injected by a migration.
+///
+/// No-op when `[durable]` is absent (covered by [`migrate_durable_config`] instead) or `key_id`
+/// (active or commented) is already present.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the source is not valid TOML.
+pub fn migrate_durable_key_rotation(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    static DURABLE_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?m)^[ \t]*\[durable\][ \t]*(?:#[^\r\n]*)?\r?\n").expect("static pattern")
+    });
+
+    if !section_header_present(toml_src, "durable") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Exact-key match (not a prefix scan) so a hypothetical future `key_id_foo` key would not
+    // suppress this insertion.
+    let already_present = toml_src.lines().any(|l| {
+        let body = l.trim().trim_start_matches('#').trim();
+        body.split('=').next().unwrap_or("").trim() == "key_id"
+    });
+    if already_present || !DURABLE_HEADER_RE.is_match(toml_src) {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let insert = "key_id = 0\n";
+    let output = DURABLE_HEADER_RE
+        .replacen(toml_src, 1, |caps: &regex::Captures| {
+            format!("{}{insert}", &caps[0])
+        })
+        .into_owned();
+
+    let changed = output != toml_src;
+    let changed_count = usize::from(changed);
+    Ok(MigrationResult {
+        output,
+        changed_count,
+        sections_changed: if changed {
+            vec!["durable.key_id".to_owned()]
+        } else {
+            Vec::new()
+        },
+    })
+}
+
 /// Adds a commented-out `[security.content_isolation.nli]` section to configs that predate the
 /// SONAR NLI entailment check stage (#5438). Idempotent: no-op when the real or commented
 /// `[security.content_isolation.nli]` header is already present, so running `--migrate-config`

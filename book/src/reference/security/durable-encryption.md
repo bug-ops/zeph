@@ -103,16 +103,52 @@ than silently trusting it as an ordinary unverified field.
 
 ## Key rotation
 
-The `key_id` byte makes rotation possible without rewriting the journal:
+The `key_id` byte makes rotation possible without rewriting the journal.
+`zeph durable rotate-key` drives the whole procedure:
 
-1. Generate a new key and assign it the next `key_id`.
-2. Run with the new key as **current** and the old key registered as the
-   **previous** key. New entries seal under the new key; in-flight entries sealed
-   under the old key still decrypt during this window.
-3. Once all executions that used the old key have reached a terminal status
-   (drain), remove the old key.
+```bash
+# Open a window: generates a fresh ZEPH_DURABLE_KEY, stashes the old key under
+# ZEPH_DURABLE_KEY_PREVIOUS, and bumps [durable] key_id / previous_key_id in the config.
+zeph durable rotate-key
 
-If you prefer not to run a rotation window, the simpler drain-based policy is to
-**quiesce** the durable layer — let all running executions reach a terminal
-status — before swapping `ZEPH_DURABLE_KEY`. After a clean drain there are no
-entries sealed under the old key, so no previous-key window is needed.
+# Preview what would change without writing anything.
+zeph durable rotate-key --dry-run
+```
+
+New payloads seal under the new key; payloads sealed before the rotation still
+decrypt through the registered previous key. Only **one** rotation window is
+open at a time — running `rotate-key` again while a window is already open is
+refused (the cipher has a single previous-key slot; a second rotation would
+silently orphan the first previous key), so close the current window first.
+
+The cipher is built once at process startup and does not hot-reload, so **a
+restart is required** after rotating for every consumer (agent process,
+scheduler daemon, `--reveal`, the TUI durable panel) to pick up the new key.
+
+Once every execution that used the old key has reached a terminal status and
+been pruned — the default retention window is roughly 30 days; see
+`[durable.retention]` — close the window:
+
+```bash
+zeph durable rotate-key --drop-previous
+```
+
+This removes `ZEPH_DURABLE_KEY_PREVIOUS` from the vault and clears
+`previous_key_id`. By default it first scans the journal for any payload still
+sealed under the old key and refuses the drop if any remain; pass `--force` to
+skip that scan once you have independently confirmed pruning is complete.
+Payloads still sealed under the dropped key become permanently unreadable
+afterward. A call with no window open is a clean no-op.
+
+On a **shared database** (`[durable].shared_db = true`, or a `postgres://`
+journal URL), rotating also changes the derived control-entry HMAC key, which
+has no rotation window of its own — every in-flight execution's control entries
+fail closed with `ControlIntegrity` until they drain. `rotate-key` refuses on a
+shared database unless you pass `--ack-shared-db-drain`, after draining
+(finalizing/pruning) all in-flight executions first.
+
+`zeph --init`'s wizard step can also replace `ZEPH_DURABLE_KEY`, but that path
+is a **destructive reset**: it discards the old key immediately with no
+rotation window, orphaning every existing sealed payload right away. Prefer
+`zeph durable rotate-key` unless you specifically want to discard every
+existing payload and start over.

@@ -80,9 +80,9 @@ use super::{
     migrate_agent_time_reminder, migrate_autodream_config, migrate_caveman_config,
     migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
     migrate_compression_predictor_config, migrate_database_url, migrate_deep_link_config,
-    migrate_durable_config, migrate_durable_shared_db, migrate_durable_stale_running_after_secs,
-    migrate_egress_config, migrate_embed_provider_rename, migrate_eval_model_to_provider,
-    migrate_fidelity_timeout_defaults, migrate_five_signal_config,
+    migrate_durable_config, migrate_durable_key_rotation, migrate_durable_shared_db,
+    migrate_durable_stale_running_after_secs, migrate_egress_config, migrate_embed_provider_rename,
+    migrate_eval_model_to_provider, migrate_fidelity_timeout_defaults, migrate_five_signal_config,
     migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_config,
     migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
     migrate_knowledge_config, migrate_llm_stream_limits, migrate_magic_docs_config,
@@ -1217,5 +1217,18 @@ impl Migration for MigrateSessionResumeConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_session_resume_config(toml_src)
+    }
+}
+
+/// Step 97 — inserts an active `key_id = 0` into an existing `[durable]` table that lacks it
+/// (AEAD payload-key rotation, #6447).
+pub(super) struct MigrateDurableKeyRotation;
+impl Migration for MigrateDurableKeyRotation {
+    fn name(&self) -> &'static str {
+        "migrate_durable_key_rotation"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_durable_key_rotation(toml_src)
     }
 }

@@ -603,15 +603,15 @@ use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
     MigrateAgentTimeReminder, MigrateAutodreamConfig, MigrateCavemanConfig,
     MigrateCocoonProviderNotice, MigrateCocoonShowBalance, MigrateCompressionPredictorConfig,
-    MigrateDatabaseUrl, MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableSharedDb,
-    MigrateDurableStaleRunningAfterSecs, MigrateEgressConfig, MigrateEmbedProviderRename,
-    MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig,
-    MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
-    MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
-    MigrateKnowledgeConfig, MigrateLlmStreamLimits, MigrateMagicDocsConfig,
-    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig,
-    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryGraph,
-    MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
+    MigrateDatabaseUrl, MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableKeyRotation,
+    MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs, MigrateEgressConfig,
+    MigrateEmbedProviderRename, MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults,
+    MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
+    MigrateGoalsConfig, MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig,
+    MigrateHooksTurnComplete, MigrateKnowledgeConfig, MigrateLlmStreamLimits,
+    MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
+    MigrateMcpMediaConfig, MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels,
+    MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
     MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
     MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
     MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig, MigrateMemoryTypeAwareCompose,
@@ -826,6 +826,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 96 — add [tools.search] advisory block for the native query-based
             // web_search tool (spec 006-1-web-search, #6358)
             Box::new(MigrateSearchConfig),
+            // Step 97 — insert active key_id = 0 into an existing [durable] table lacking it
+            // (AEAD payload-key rotation, #6447)
+            Box::new(MigrateDurableKeyRotation),
         ]
     });
 

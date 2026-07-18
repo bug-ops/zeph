@@ -456,6 +456,75 @@ impl LocalBackend {
         Ok(count)
     }
 
+    /// Count sealed-payload rows across `durable_journal` and `durable_promises` whose leading
+    /// on-disk byte — the AEAD key-id selector (`zeph_core::durable::XChaCha20Poly1305Cipher`'s
+    /// `key_id(1) || nonce(24) || ciphertext || tag(16)` layout) — equals `key_id`.
+    ///
+    /// Read-only; backs `zeph durable rotate-key --drop-previous`'s default-on safety scan
+    /// (#6447): a nonzero count means payloads still sealed under the previous key would become
+    /// permanently unreadable (`UnknownKeyId`) if that key were dropped now. Filters `payload IS
+    /// NOT NULL` on both tables — control entries (`EffectIntent`) carry no payload and are
+    /// irrelevant to this scan.
+    ///
+    /// The predicate is dialect-specific because `SQLite`'s `substr` on a `BLOB` returns a 1-byte
+    /// `BLOB` (compared here against a bound single-byte blob) while `PostgreSQL`'s `bytea`
+    /// cannot be compared against an integer at all (`get_byte(payload, 0)` extracts it as an
+    /// `INTEGER` instead).
+    ///
+    /// May over-count in a mixed-mode deployment where some rows were written while
+    /// `encrypt_payload = false` (plaintext, no key-id prefix): a plaintext row's leading byte is
+    /// arbitrary content that can coincidentally equal `key_id`. This is intentionally fail-safe
+    /// — it can only cause an unnecessary refusal (resolved with `--force`), never a missed match
+    /// that would let a genuinely-sealed row be dropped silently.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if either query fails.
+    pub async fn count_sealed_under_key_id(&self, key_id: u8) -> Result<u64, DurableError> {
+        #[cfg(feature = "postgres")]
+        {
+            let key_id_param = i32::from(key_id);
+            let (journal_count,): (i64,) = zeph_db::query_as(sql!(
+                "SELECT COUNT(*) FROM durable_journal
+                 WHERE payload IS NOT NULL AND get_byte(payload, 0) = ?"
+            ))
+            .bind(key_id_param)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("count_sealed_under_key_id", e))?;
+            let (promises_count,): (i64,) = zeph_db::query_as(sql!(
+                "SELECT COUNT(*) FROM durable_promises
+                 WHERE payload IS NOT NULL AND get_byte(payload, 0) = ?"
+            ))
+            .bind(key_id_param)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("count_sealed_under_key_id", e))?;
+            Ok((journal_count.max(0) + promises_count.max(0)).cast_unsigned())
+        }
+        #[cfg(not(feature = "postgres"))]
+        {
+            let key_byte = vec![key_id];
+            let (journal_count,): (i64,) = zeph_db::query_as(sql!(
+                "SELECT COUNT(*) FROM durable_journal
+                 WHERE payload IS NOT NULL AND substr(payload, 1, 1) = ?"
+            ))
+            .bind(key_byte.clone())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("count_sealed_under_key_id", e))?;
+            let (promises_count,): (i64,) = zeph_db::query_as(sql!(
+                "SELECT COUNT(*) FROM durable_promises
+                 WHERE payload IS NOT NULL AND substr(payload, 1, 1) = ?"
+            ))
+            .bind(key_byte)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("count_sealed_under_key_id", e))?;
+            Ok((journal_count.max(0) + promises_count.max(0)).cast_unsigned())
+        }
+    }
+
     /// Ensure a `durable_executions` row exists for `id`, returning whether this is a resume.
     ///
     /// Inserts a fresh `running` row for a new execution (returning `false`) or detects an existing
@@ -2255,6 +2324,65 @@ mod tests {
             },
             created_at_ms: 100,
         }
+    }
+
+    /// Regression for #6447: `count_sealed_under_key_id` scans `durable_journal.payload` by its
+    /// leading byte, ignores control entries (`payload IS NULL`), and never matches an unrelated
+    /// key-id. No cipher is attached, so `seal_payload` stores the plaintext verbatim (local.rs
+    /// `seal_payload`'s `None => Ok(plaintext.to_vec())` branch) — the first byte of the crafted
+    /// payload lands on disk unchanged, letting the test control it directly without depending on
+    /// the real AEAD cipher (out of scope for `zeph-durable`, INV-1).
+    #[tokio::test]
+    async fn count_sealed_under_key_id_counts_matching_journal_rows_and_excludes_control_entries() {
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+
+        backend
+            .append(step_result(exec, 0, &[5, 0, 0]))
+            .await
+            .unwrap();
+        backend
+            .append(step_result(exec, 1, &[6, 0, 0]))
+            .await
+            .unwrap();
+        // A control entry carries no payload and must never be counted, regardless of key_id.
+        backend.append(effect_intent(exec, 2)).await.unwrap();
+
+        assert_eq!(backend.count_sealed_under_key_id(5).await.unwrap(), 1);
+        assert_eq!(backend.count_sealed_under_key_id(6).await.unwrap(), 1);
+        assert_eq!(backend.count_sealed_under_key_id(7).await.unwrap(), 0);
+    }
+
+    /// Regression for #6447: the scan also covers `durable_promises.payload`, not just the
+    /// journal — a promise resolved under the previous key must count too, or `--drop-previous`
+    /// could silently orphan it.
+    #[tokio::test]
+    async fn count_sealed_under_key_id_counts_matching_promise_rows() {
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        let promise_id = PromiseId::new();
+        backend
+            .insert_promise(promise_id, exec, [0u8; 32], 100)
+            .await
+            .unwrap();
+        // Unresolved promise row: payload is still NULL, must not be counted.
+        assert_eq!(backend.count_sealed_under_key_id(9).await.unwrap(), 0);
+
+        backend
+            .resolve_promise(promise_id, exec, &[9, 1, 2, 3], 200)
+            .await
+            .unwrap();
+
+        assert_eq!(backend.count_sealed_under_key_id(9).await.unwrap(), 1);
+        assert_eq!(backend.count_sealed_under_key_id(10).await.unwrap(), 0);
     }
 
     #[tokio::test]

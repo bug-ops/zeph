@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::channel::create_channel;
-use crate::cli::{Cli, Command, VaultCommand};
+use crate::cli::{Cli, Command, DurableCommand, VaultCommand};
 use clap::Parser;
 use std::path::{Path, PathBuf};
 use zeph_channels::{AnyChannel, CliChannel};
@@ -752,5 +752,90 @@ fn cli_parse_vault_rm() {
             command: VaultCommand::Rm { key },
         }) => assert_eq!(key, "MY_KEY"),
         _ => panic!("expected VaultCommand::Rm"),
+    }
+}
+
+// DurableCommand::RotateKey CLI parsing (#6447)
+#[test]
+fn cli_parse_durable_rotate_key_defaults() {
+    let cli = Cli::try_parse_from(["zeph", "durable", "rotate-key"]).unwrap();
+    match cli.command {
+        Some(Command::Durable {
+            command:
+                DurableCommand::RotateKey {
+                    dry_run,
+                    drop_previous,
+                    force,
+                    ack_shared_db_drain,
+                },
+        }) => {
+            assert!(!dry_run, "dry_run must default to false");
+            assert!(!drop_previous, "drop_previous must default to false");
+            assert!(!force, "force must default to false");
+            assert!(
+                !ack_shared_db_drain,
+                "ack_shared_db_drain must default to false"
+            );
+        }
+        _ => panic!("expected DurableCommand::RotateKey"),
+    }
+}
+
+#[test]
+fn cli_parse_durable_rotate_key_dry_run() {
+    let cli = Cli::try_parse_from(["zeph", "durable", "rotate-key", "--dry-run"]).unwrap();
+    match cli.command {
+        Some(Command::Durable {
+            command: DurableCommand::RotateKey { dry_run, .. },
+        }) => assert!(dry_run, "--dry-run must set dry_run = true"),
+        _ => panic!("expected DurableCommand::RotateKey"),
+    }
+}
+
+#[test]
+fn cli_parse_durable_rotate_key_drop_previous_with_force() {
+    let cli = Cli::try_parse_from([
+        "zeph",
+        "durable",
+        "rotate-key",
+        "--drop-previous",
+        "--force",
+    ])
+    .unwrap();
+    match cli.command {
+        Some(Command::Durable {
+            command:
+                DurableCommand::RotateKey {
+                    drop_previous,
+                    force,
+                    ..
+                },
+        }) => {
+            assert!(
+                drop_previous,
+                "--drop-previous must set drop_previous = true"
+            );
+            assert!(force, "--force must set force = true");
+        }
+        _ => panic!("expected DurableCommand::RotateKey"),
+    }
+}
+
+#[test]
+fn cli_parse_durable_rotate_key_ack_shared_db_drain() {
+    let cli =
+        Cli::try_parse_from(["zeph", "durable", "rotate-key", "--ack-shared-db-drain"]).unwrap();
+    match cli.command {
+        Some(Command::Durable {
+            command:
+                DurableCommand::RotateKey {
+                    ack_shared_db_drain,
+                    ..
+                },
+        }) => assert!(
+            ack_shared_db_drain,
+            "--ack-shared-db-drain must set ack_shared_db_drain = true"
+        ),
+        _ => panic!("expected DurableCommand::RotateKey"),
     }
 }

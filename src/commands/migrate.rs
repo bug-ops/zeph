@@ -159,7 +159,10 @@ fn print_diff(old: &str, new: &str) {
 
 /// Write `content` to `path` atomically using a temporary file in the same directory,
 /// preserving the original file's permissions before renaming into place.
-fn atomic_write(path: &Path, content: &str) -> anyhow::Result<()> {
+///
+/// Shared with `zeph durable rotate-key`, which performs a surgical `toml_edit` field mutation
+/// rather than a full-document rewrite but needs the same atomic-write safety.
+pub(crate) fn atomic_write(path: &Path, content: &str) -> anyhow::Result<()> {
     use std::io::Write;
 
     let original_perms = if path.exists() {

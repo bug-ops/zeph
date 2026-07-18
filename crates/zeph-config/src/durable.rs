@@ -97,6 +97,17 @@ pub struct DurableConfig {
     pub max_parked_promises: u32,
     /// Journal retention and compaction policy (`[durable.retention]`).
     pub retention: RetentionPolicy,
+    /// The AEAD key-id byte stamped on every payload sealed with the current
+    /// `ZEPH_DURABLE_KEY`. Bumped by `zeph durable rotate-key`; an operator-controlled
+    /// selector so rotation needs no recompile. Default `0` matches every payload sealed
+    /// before this field existed.
+    pub key_id: u8,
+    /// When set, the previous AEAD key (vault secret `ZEPH_DURABLE_KEY_PREVIOUS`) is
+    /// registered as the cipher's rotation-window read slot. `None` means no rotation
+    /// window is open. Set and cleared by `zeph durable rotate-key` / `--drop-previous` —
+    /// not intended for manual editing outside of documented crash recovery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_key_id: Option<u8>,
 }
 
 impl Default for DurableConfig {
@@ -117,6 +128,8 @@ impl Default for DurableConfig {
             promise_poll_interval_secs: 2,
             max_parked_promises: 1000,
             retention: RetentionPolicy::default(),
+            key_id: 0,
+            previous_key_id: None,
         }
     }
 }
@@ -190,6 +203,32 @@ mod tests {
         assert_eq!(cfg.max_payload_bytes, 1_048_576);
         assert_eq!(cfg.promise_poll_interval_secs, 2);
         assert_eq!(cfg.max_parked_promises, 1000);
+        assert_eq!(cfg.key_id, 0);
+        assert_eq!(cfg.previous_key_id, None);
+    }
+
+    /// Round-trips the rotation-window pair a `zeph durable rotate-key` write produces, so the
+    /// config layer correctly deserializes both fields together (#6447).
+    #[test]
+    fn key_rotation_fields_round_trip_together() {
+        let cfg: DurableConfig = toml::from_str(
+            r"
+            key_id = 1
+            previous_key_id = 0
+            ",
+        )
+        .unwrap();
+        assert_eq!(cfg.key_id, 1);
+        assert_eq!(cfg.previous_key_id, Some(0));
+    }
+
+    /// `previous_key_id` is skipped when `None` (INV-5 style: no window means no field), so a
+    /// freshly-migrated config that never rotated stays visually unchanged (#6447).
+    #[test]
+    fn previous_key_id_is_omitted_from_serialization_when_none() {
+        let cfg = DurableConfig::default();
+        let toml = toml::to_string(&cfg).unwrap();
+        assert!(!toml.contains("previous_key_id"));
     }
 
     #[test]
