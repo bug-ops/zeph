@@ -105,7 +105,7 @@ pub enum EvalError {
         radius: f64,
     },
 
-    /// An experiment result could not be persisted to SQLite.
+    /// An experiment result could not be persisted to `SQLite`.
     #[error("experiment storage error: {0}")]
     Storage(String),
 

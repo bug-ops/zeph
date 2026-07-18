@@ -20,7 +20,7 @@
 //!
 //! [`ExperimentEngine`] ties all three together: it evaluates a baseline, iterates over
 //! variations produced by the generator, accepts improvements (greedy hill-climbing), and
-//! optionally persists results to SQLite.
+//! optionally persists results to `SQLite`.
 //!
 //! # Quick Start
 //!

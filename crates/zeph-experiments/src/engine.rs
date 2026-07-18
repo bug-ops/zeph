@@ -4,7 +4,7 @@
 //! Experiment engine — core async loop for autonomous parameter tuning.
 //!
 //! [`ExperimentEngine`] orchestrates baseline evaluation, variation generation,
-//! candidate scoring, acceptance decisions, and optional SQLite persistence.
+//! candidate scoring, acceptance decisions, and optional `SQLite` persistence.
 //! Cancellation is supported via [`tokio_util::sync::CancellationToken`].
 //!
 //! # Loop Summary
@@ -14,7 +14,7 @@
 //! 3. Clone the subject provider with generation overrides from the candidate snapshot.
 //! 4. Evaluate the candidate; accept if `delta >= config.min_improvement`.
 //! 5. On acceptance, update the progressive baseline (greedy hill-climbing).
-//! 6. Optionally persist the result to SQLite.
+//! 6. Optionally persist the result to `SQLite`.
 //! 7. Repeat until: max experiments, wall-time limit, search exhaustion, or cancellation.
 //!
 //! [`VariationGenerator`]: crate::VariationGenerator

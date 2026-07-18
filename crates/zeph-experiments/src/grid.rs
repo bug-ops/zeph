@@ -138,7 +138,7 @@ mod tests {
 
     fn single_param_space(min: f64, max: f64, step: f64) -> SearchSpace {
         // default = midpoint so it satisfies min <= default <= max
-        let default = (min + max) / 2.0;
+        let default = f64::midpoint(min, max);
         SearchSpace {
             parameters: vec![
                 ParameterRange::new(ParameterKind::Temperature, min, max, Some(step), default)

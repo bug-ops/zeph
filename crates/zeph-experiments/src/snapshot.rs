@@ -61,7 +61,7 @@ pub struct ConfigSnapshot {
     pub similarity_threshold: f64,
     /// Half-life in days for temporal memory decay.
     pub temporal_decay: f64,
-    /// GoSkills group-structured injection toggle (0.0 = disabled, 1.0 = enabled).
+    /// `GoSkills` group-structured injection toggle (0.0 = disabled, 1.0 = enabled).
     pub group_structured: f64,
 }
 

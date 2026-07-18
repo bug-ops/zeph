@@ -247,6 +247,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with `ALL` (but does not by itself detect a variant missing from `ALL`). No behavior
   change for any of the 9 existing variants.
 
+- `zeph-experiments`: added `[lints] workspace = true` to `Cargo.toml` — it was the only
+  crate in the workspace missing it, silently excluding the crate from every lint declared
+  in `[workspace.lints.clippy]` (root `Cargo.toml`), not just `clippy::await_holding_lock`
+  added in #6355 (#6371). Fixed the ~11 `clippy::pedantic` violations this surfaced:
+  wrapped `SQLite`/`GoSkills`/`snake_case` identifiers in backticks across doc comments
+  (`doc_markdown`), replaced a manual `(min + max) / 2.0` midpoint with `f64::midpoint`
+  in a test helper (`manual_midpoint`), and split `Evaluator::evaluate` (126/100 lines) into
+  `collect_subject_responses` (Phase 1: subject model calls) and `score_subject_responses`
+  (Phase 2: judge scoring) private helper methods (`too_many_lines`). No behavior change.
+
 ### Fixed
 
 - `zeph-core`: the initial system prompt built at agent construction

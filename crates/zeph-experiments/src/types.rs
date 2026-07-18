@@ -72,7 +72,7 @@ pub enum ParameterKind {
     SimilarityThreshold,
     /// Half-life in days for temporal memory decay (float).
     TemporalDecay,
-    /// GoSkills group-structured skill injection toggle (boolean: 0.0 = off, 1.0 = on).
+    /// `GoSkills` group-structured skill injection toggle (boolean: 0.0 = off, 1.0 = on).
     ///
     /// When active, this parameter overrides `skills.group_structured` in config,
     /// bidirectionally (experiment can both enable and disable the feature).
@@ -127,7 +127,7 @@ impl ParameterKind {
     /// Forces [`Self::_all_variants_exhaustive`] to be checked at compile time.
     const _ASSERT_ALL_VARIANTS_HANDLED: () = Self::_all_variants_exhaustive(Self::Temperature);
 
-    /// Return the canonical snake_case name of this parameter.
+    /// Return the canonical `snake_case` name of this parameter.
     ///
     /// The returned string matches the key used in config files and experiment
     /// storage. It is identical to the `#[serde(rename_all = "snake_case")]`
@@ -265,14 +265,14 @@ impl std::fmt::Display for VariationValue {
 /// Persisted record of a single variation trial.
 ///
 /// Each time [`ExperimentEngine`] evaluates a candidate variation, it produces an
-/// `ExperimentResult` that is stored in SQLite (when memory is configured) and
+/// `ExperimentResult` that is stored in `SQLite` (when memory is configured) and
 /// included in the [`ExperimentSessionReport`].
 ///
 /// [`ExperimentEngine`]: crate::ExperimentEngine
 /// [`ExperimentSessionReport`]: crate::engine::ExperimentSessionReport
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExperimentResult {
-    /// Row ID in the SQLite experiments table. `None` when not yet persisted.
+    /// Row ID in the `SQLite` experiments table. `None` when not yet persisted.
     pub id: Option<i64>,
     /// Session ID of the experiment session that produced this result.
     pub session_id: SessionId,
@@ -317,7 +317,7 @@ pub enum ExperimentSource {
 }
 
 impl ExperimentSource {
-    /// Return the canonical snake_case name of this source.
+    /// Return the canonical `snake_case` name of this source.
     ///
     /// # Examples
     ///

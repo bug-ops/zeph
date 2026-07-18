@@ -352,7 +352,38 @@ impl Evaluator {
     pub async fn evaluate(&self, subject: &AnyProvider) -> Result<EvalReport, EvalError> {
         let cases_total = self.benchmark.cases.len();
 
-        // Phase 1: call subject model in parallel, bounded by `parallel_evals`.
+        let (subject_responses, subject_error_count) =
+            self.collect_subject_responses(subject).await?;
+
+        let (scores, mut error_count, budget_hit, total_tokens) =
+            self.score_subject_responses(&subject_responses).await;
+
+        let cases_scored = scores.len();
+        error_count += subject_error_count;
+        let is_partial = budget_hit || error_count > 0;
+
+        Ok(build_report(
+            scores,
+            cases_scored,
+            cases_total,
+            is_partial,
+            error_count,
+            total_tokens,
+        ))
+    }
+
+    /// Phase 1 of [`Self::evaluate`]: call the subject model for every benchmark case in
+    /// parallel, bounded by `parallel_evals`. Returns responses paired with their original
+    /// case index and reference, plus the count of cases skipped due to tolerated errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`EvalError`] encountered once `tolerate_subject_errors` is
+    /// `false` (the default).
+    async fn collect_subject_responses(
+        &self,
+        subject: &AnyProvider,
+    ) -> Result<(Vec<(usize, &BenchmarkCase, String)>, usize), EvalError> {
         let subject_semaphore = Arc::new(Semaphore::new(self.parallel_evals));
         let mut subject_futures: FuturesUnordered<_> = FuturesUnordered::new();
 
@@ -389,7 +420,8 @@ impl Evaluator {
 
         // Collect subject responses. When `tolerate_subject_errors` is false (default) any
         // error aborts the run immediately. When true, failed cases are excluded from Phase 2.
-        let mut indexed_responses: Vec<(usize, String)> = Vec::with_capacity(cases_total);
+        let mut indexed_responses: Vec<(usize, String)> =
+            Vec::with_capacity(self.benchmark.cases.len());
         let mut subject_error_count = 0usize;
         while let Some(result) = subject_futures.next().await {
             match result {
@@ -407,17 +439,26 @@ impl Evaluator {
         // Restore deterministic order for Phase 2 (FuturesUnordered yields in completion order).
         indexed_responses.sort_unstable_by_key(|(i, _)| *i);
 
-        let subject_responses: Vec<(usize, &BenchmarkCase, String)> = indexed_responses
+        let subject_responses = indexed_responses
             .into_iter()
             .map(|(i, response)| (i, &self.benchmark.cases[i], response))
             .collect();
 
-        // Phase 2: score responses in parallel with a per-invocation budget counter.
+        Ok((subject_responses, subject_error_count))
+    }
+
+    /// Phase 2 of [`Self::evaluate`]: score subject responses with the judge model in
+    /// parallel, enforcing the per-invocation token budget. Returns collected scores, the
+    /// judge error count, whether the budget was exhausted, and total tokens consumed.
+    async fn score_subject_responses(
+        &self,
+        subject_responses: &[(usize, &BenchmarkCase, String)],
+    ) -> (Vec<CaseScore>, usize, bool, u64) {
         let tokens_used = Arc::new(AtomicU64::new(0));
         let semaphore = Arc::new(Semaphore::new(self.parallel_evals));
         let mut futures: FuturesUnordered<_> = FuturesUnordered::new();
 
-        for (case_index, case, response) in &subject_responses {
+        for (case_index, case, response) in subject_responses {
             let judge = Arc::clone(&self.judge);
             let sem = Arc::clone(&semaphore);
             let budget = self.budget_tokens;
@@ -440,7 +481,7 @@ impl Evaluator {
                 // a reservation slot; if we are already at or above budget we roll back.
                 // The real token cost is added inside score_case_with_provider after the
                 // call completes. The reservation remains in the counter to keep the
-                // budget guard conservative — EvalReport::total_tokens is corrected by
+                // budget guard conservative — the caller's total_tokens is corrected by
                 // subtracting cases_scored (one reservation per successful call) after
                 // all futures complete, so the reported value reflects only real usage.
                 let prev = tokens_used.fetch_add(1, Ordering::AcqRel);
@@ -463,7 +504,7 @@ impl Evaluator {
             });
         }
 
-        let mut scores: Vec<CaseScore> = Vec::with_capacity(cases_total);
+        let mut scores: Vec<CaseScore> = Vec::with_capacity(subject_responses.len());
         let mut error_count = 0usize;
         let mut budget_hit = false;
 
@@ -495,23 +536,13 @@ impl Evaluator {
         }
 
         let cases_scored = scores.len();
-        error_count += subject_error_count;
-        let is_partial = budget_hit || error_count > 0;
-
         // Each successful judge call left a +1 reservation in tokens_used that was never
         // rolled back (the reservation is intentionally kept to prevent budget races).
-        // Subtract cases_scored here so EvalReport::total_tokens reflects only real usage.
+        // Subtract cases_scored here so the caller's total_tokens reflects only real usage.
         let raw_tokens = tokens_used.load(Ordering::Relaxed);
         let total_tokens = raw_tokens.saturating_sub(cases_scored as u64);
 
-        Ok(build_report(
-            scores,
-            cases_scored,
-            cases_total,
-            is_partial,
-            error_count,
-            total_tokens,
-        ))
+        (scores, error_count, budget_hit, total_tokens)
     }
 }
 

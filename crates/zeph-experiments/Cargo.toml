@@ -45,3 +45,6 @@ default = ["sqlite"]
 sqlite = ["zeph-memory/sqlite"]
 postgres = ["zeph-memory/postgres"]
 mock = []
+
+[lints]
+workspace = true
