@@ -241,6 +241,15 @@ impl JobStore {
 
     /// Insert a new job. Returns [`SchedulerError::DuplicateJob`] if a job with this name exists.
     ///
+    /// This is the CLI write path (`zeph schedule add`, both the cron and `--run-at` forms), so
+    /// the row is stored with [`crate::task::TaskProvenance::UserAdded`] provenance — reflecting
+    /// its genuine CLI/user origin — rather than relying on the `provenance` column's DB default.
+    /// `Scheduler::init()` hydration still force-downgrades out-of-process rows to
+    /// [`crate::task::TaskProvenance::External`] regardless of the stored value (#6114), so this
+    /// does not change runtime trust decisions; it keeps the stored label accurate for direct
+    /// inspection (e.g. a raw DB dump) — `zeph schedule list`/`show` do not currently surface
+    /// `provenance`.
+    ///
     /// # Errors
     ///
     /// Returns [`SchedulerError::DuplicateJob`] on unique constraint violation,
@@ -256,8 +265,8 @@ impl JobStore {
         task_data: &str,
     ) -> Result<(), SchedulerError> {
         let result = zeph_db::query(sql!(
-            "INSERT INTO scheduled_jobs (name, cron_expr, kind, task_mode, run_at, task_data)
-             VALUES (?, ?, ?, ?, ?, ?)"
+            "INSERT INTO scheduled_jobs (name, cron_expr, kind, task_mode, run_at, task_data, provenance)
+             VALUES (?, ?, ?, ?, ?, ?, ?)"
         ))
         .bind(name)
         .bind(cron_expr)
@@ -265,6 +274,7 @@ impl JobStore {
         .bind(task_mode)
         .bind(run_at)
         .bind(task_data)
+        .bind(crate::task::TaskProvenance::UserAdded.as_str())
         .execute(&self.pool)
         .await;
         match result {
@@ -854,6 +864,33 @@ mod tests {
             .await
             .unwrap();
         assert!(store.job_exists("new_job").await.unwrap());
+    }
+
+    /// `insert_job` is the CLI write path (`zeph schedule add`), so it must stamp
+    /// `provenance = "user_added"` rather than falling through to the `scheduled_jobs.provenance`
+    /// column's schema default. Regression test for #6442.
+    #[tokio::test]
+    async fn insert_job_stores_user_added_provenance() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool);
+        store.init().await.unwrap();
+        store
+            .insert_job(
+                "cli_added_job",
+                "0 * * * * *",
+                "custom",
+                "periodic",
+                None,
+                "run daily report",
+            )
+            .await
+            .unwrap();
+        let jobs = store.list_jobs_full().await.unwrap();
+        let job = jobs.iter().find(|j| j.name == "cli_added_job").unwrap();
+        assert_eq!(
+            job.provenance, "user_added",
+            "insert_job (the CLI write path) must stamp provenance = user_added, not the DB default"
+        );
     }
 
     #[tokio::test]

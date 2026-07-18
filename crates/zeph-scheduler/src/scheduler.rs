@@ -405,22 +405,22 @@ impl Scheduler {
             // above; control-channel adds live in `self.tasks` for their whole session and are
             // never hydrated in the same session that created them). The `provenance` column is
             // writer-controllable (direct SQL / out-of-process CLI), so it cannot be trusted as
-            // read — force the most restrictive tier regardless of the stored label. This hardens
-            // a latent trust-model gap (defense-in-depth); it does not patch an active bypass,
-            // since this (periodic) branch's own config stays `Value::Null` below, which never
-            // reaches a provenance-gated decision point today.
-            //
-            // TODO(critic): periodic hydration also drops task_data→config; same class as the
-            // #6361 oneshot fix (see the sibling `"oneshot"` branch above, which rebuilds
-            // `{"task": task_data}` instead of passing `Value::Null`). A CLI-added *periodic*
-            // custom task would likewise lose its prompt on restart. Pre-existing, out of scope
-            // for #6361 — left as-is pending a scoped follow-up.
+            // read — force the most restrictive tier regardless of the stored label.
             let hydrated_provenance = TaskProvenance::External;
+            // #6442: rebuild the custom-task config shape ({"task": "<prompt>"}, see
+            // handlers.rs/TaskHandler::execute) from the stored task_data column, mirroring the
+            // sibling oneshot arm's #6361 C1 fix above. Passing Value::Null here silently
+            // discarded a CLI-added periodic custom task's prompt on every restart.
+            let config = if job.task_data.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!({ "task": job.task_data })
+            };
             match ScheduledTask::periodic_with_provenance(
                 job.name.clone(),
                 cron_expr.as_ref(),
                 crate::task::TaskKind::from_str_kind(&job.kind),
-                serde_json::Value::Null,
+                config,
                 hydrated_provenance,
             ) {
                 Ok(task) => {
@@ -1677,6 +1677,83 @@ mod tests {
         let injected = prompt_rx
             .try_recv()
             .expect("hydrated custom oneshot must inject a prompt on tick()");
+        assert!(
+            injected.contains(real_prompt),
+            "injected prompt must contain the user's real prompt '{real_prompt}', got: {injected}"
+        );
+        assert!(
+            !injected.contains("check status"),
+            "injected prompt must NOT be the generic fallback, got: {injected}"
+        );
+    }
+
+    /// `init()` hydrates a CLI-added `kind="custom"` periodic row with its REAL prompt, not the
+    /// generic fallback.
+    ///
+    /// Regression test for #6442: the periodic hydration arm originally passed
+    /// `serde_json::Value::Null` as the reconstructed task's config, discarding
+    /// `job.task_data` — the same defect class #6361 C1 fixed for the sibling oneshot arm
+    /// above. A CLI-added periodic `kind="custom"` job lost its real prompt and would fire
+    /// the generic "check status" fallback after every restart.
+    #[tokio::test]
+    async fn init_hydrates_cli_added_periodic_custom_job_with_real_prompt() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        store.init().await.unwrap();
+
+        let real_prompt = "generate the weekly report";
+        // Mirrors the CLI write path exactly (`handle_schedule_add`'s cron branch):
+        // `store.insert_job(&job_name, &cron_expr, &kind, "periodic", None, &sanitized_prompt)`.
+        store
+            .insert_job(
+                "cli-custom-periodic",
+                "0 * * * * *",
+                "custom",
+                "periodic",
+                None,
+                real_prompt,
+            )
+            .await
+            .unwrap();
+
+        let store2 = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store2, rx);
+        let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::channel(8);
+        // Periodic custom tasks are dispatched via a registered `CustomTaskHandler` (unlike
+        // oneshot, which also has a no-handler-registered fallback keyed on `custom_task_tx`
+        // — see the `tick()` OneShot branch), so the handler must be registered explicitly.
+        scheduler.register_handler(
+            &TaskKind::Custom("custom".into()),
+            Box::new(crate::handlers::CustomTaskHandler::new(prompt_tx)),
+        );
+
+        scheduler.init().await.unwrap();
+
+        let task = scheduler
+            .tasks
+            .iter()
+            .find(|t| t.name == "cli-custom-periodic")
+            .expect("hydrated custom periodic job must appear in tasks after init()");
+        assert_eq!(
+            task.config.get("task").and_then(|v| v.as_str()),
+            Some(real_prompt),
+            "hydrated task config must carry the real prompt from task_data, not Value::Null"
+        );
+
+        // init() only computes a future next_run; force the task overdue so tick() fires it.
+        let past = Utc::now() - Duration::hours(1);
+        scheduler
+            .store
+            .set_next_run("cli-custom-periodic", &past.to_rfc3339())
+            .await
+            .unwrap();
+
+        scheduler.tick().await;
+
+        let injected = prompt_rx
+            .try_recv()
+            .expect("hydrated periodic custom task must inject a prompt on tick()");
         assert!(
             injected.contains(real_prompt),
             "injected prompt must contain the user's real prompt '{real_prompt}', got: {injected}"

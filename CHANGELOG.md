@@ -18,6 +18,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it still runs unconditionally under the default `sqlite` feature set and can be run manually
   against a live Postgres instance with `--ignored`.
 
+- `zeph-scheduler`: two related gaps deferred from #6361/#6441's review cycle (#6442). CLI-added
+  scheduled jobs (`zeph schedule add`, both the periodic-cron and `--run-at` one-shot paths) were
+  persisted via `JobStore::insert_job` without ever binding the `provenance` column, so the
+  stored value fell back to the column's DB default instead of reflecting their genuine CLI/user
+  origin. `insert_job` now stamps `provenance = "user_added"` (`TaskProvenance::UserAdded`) on
+  every row it writes. `Scheduler::init()` hydration already force-downgrades every out-of-process
+  row to `TaskProvenance::External` regardless of the stored label (#6114 hardening), so this has
+  no effect on runtime trust decisions — it only fixes the value surfaced by direct inspection
+  (DB dumps). Separately, `Scheduler::init()`'s periodic-job hydration arm rebuilt the
+  reconstructed task's config as `serde_json::Value::Null`, discarding the CLI-supplied prompt
+  stored in `task_data` — the same defect class #6441 had already fixed for the one-shot
+  hydration arm (#6361 C1). A CLI-added periodic `kind="custom"` job now correctly rebuilds
+  `{"task": task_data}` on hydration, mirroring the one-shot fix. **Behavior change**: any
+  existing periodic custom job that was silently firing the generic fallback prompt instead of
+  its real stored prompt will start firing its real prompt on the next restart after upgrading.
+
 - `zeph-core`: `/history` re-scanned the entire message vector on every call —
   `MessageAccessImpl::transcript_len` was O(total non-system messages) unconditionally, and
   `transcript_page`'s `.skip(start)` ran on top of a `.filter()`, so it walked from index 0 even
