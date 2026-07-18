@@ -664,6 +664,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Testing
 
+- **zeph-core**: added direct unit test coverage for `Agent::build_user_message`'s
+  vision-capability gate (#6412), which previously had no test exercising either branch.
+  `build_user_message_attaches_image_when_provider_vision_capable` drives a vision-capable
+  mock provider through `build_user_message` and asserts the returned `Message` carries both
+  the text part and the image part; `build_user_message_drops_image_when_provider_not_vision_capable`
+  drives the same call against a non-vision-capable provider and asserts the image is dropped
+  while `content` still carries the plain text, matching the existing `handle_image_command_*`
+  and `resolve_message_*` coverage already present in `image_attachment_tests.rs`. No
+  production code changed.
+
 - **zeph-orchestration** / **zeph-subagent**: closed three coverage gaps in the idle-timeout
   progress plumbing (#6245) flagged during review: direct unit tests for `effective_idle_timeout()`'s
   global-fallback branch (mirroring the existing `effective_run_timeout()` tests), a direct

@@ -3,6 +3,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use std::assert_matches;
 
 #[test]
 fn detect_image_mime_jpeg() {
@@ -131,6 +132,56 @@ fn handle_image_command_parent_dir_traversal_is_rejected() {
     let result = agent.handle_image_as_string("../../etc/passwd");
     assert!(agent.msg.pending_image_parts.is_empty());
     assert!(result.contains("path traversal") && result.contains("not allowed"));
+}
+
+fn sample_image_part() -> zeph_llm::provider::MessagePart {
+    zeph_llm::provider::MessagePart::Image(Box::new(zeph_llm::provider::ImageData {
+        data: vec![1, 2, 3, 4],
+        mime_type: "image/png".into(),
+    }))
+}
+
+#[test]
+fn build_user_message_attaches_image_when_provider_vision_capable() {
+    let provider = mock_provider_with_vision(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+    let msg = agent.build_user_message("look at this", vec![sample_image_part()]);
+
+    assert_eq!(msg.role, Role::User);
+    assert_eq!(
+        msg.parts.len(),
+        2,
+        "a vision-capable provider must attach the image alongside the text part, got {:?}",
+        msg.parts
+    );
+    assert_matches!(
+        &msg.parts[0],
+        zeph_llm::provider::MessagePart::Text { text } if text == "look at this"
+    );
+    assert_matches!(&msg.parts[1], zeph_llm::provider::MessagePart::Image(_));
+}
+
+#[test]
+fn build_user_message_drops_image_when_provider_not_vision_capable() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+    let msg = agent.build_user_message("look at this", vec![sample_image_part()]);
+
+    assert_eq!(msg.role, Role::User);
+    assert_eq!(msg.content, "look at this");
+    assert!(
+        msg.parts.is_empty(),
+        "a non-vision-capable provider must not attach images, got {:?}",
+        msg.parts
+    );
 }
 
 #[test]
