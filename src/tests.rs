@@ -766,16 +766,11 @@ fn cli_parse_durable_rotate_key_defaults() {
                     dry_run,
                     drop_previous,
                     force,
-                    ack_shared_db_drain,
                 },
         }) => {
             assert!(!dry_run, "dry_run must default to false");
             assert!(!drop_previous, "drop_previous must default to false");
             assert!(!force, "force must default to false");
-            assert!(
-                !ack_shared_db_drain,
-                "ack_shared_db_drain must default to false"
-            );
         }
         _ => panic!("expected DurableCommand::RotateKey"),
     }
@@ -821,21 +816,14 @@ fn cli_parse_durable_rotate_key_drop_previous_with_force() {
     }
 }
 
+/// #6451: `--ack-shared-db-drain` was removed outright (no deprecation shim, pre-v1.0.0) once the
+/// control-entry HMAC key gained its own rotation window, closing the premise the flag existed
+/// for. Parsing it must now fail rather than silently accept an unknown flag.
 #[test]
-fn cli_parse_durable_rotate_key_ack_shared_db_drain() {
-    let cli =
-        Cli::try_parse_from(["zeph", "durable", "rotate-key", "--ack-shared-db-drain"]).unwrap();
-    match cli.command {
-        Some(Command::Durable {
-            command:
-                DurableCommand::RotateKey {
-                    ack_shared_db_drain,
-                    ..
-                },
-        }) => assert!(
-            ack_shared_db_drain,
-            "--ack-shared-db-drain must set ack_shared_db_drain = true"
-        ),
-        _ => panic!("expected DurableCommand::RotateKey"),
-    }
+fn cli_parse_durable_rotate_key_rejects_removed_ack_shared_db_drain_flag() {
+    let result = Cli::try_parse_from(["zeph", "durable", "rotate-key", "--ack-shared-db-drain"]);
+    assert!(
+        result.is_err(),
+        "--ack-shared-db-drain must no longer be a recognized flag"
+    );
 }

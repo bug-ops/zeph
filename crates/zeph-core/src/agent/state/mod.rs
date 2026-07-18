@@ -789,6 +789,14 @@ pub(crate) struct OrchestrationState {
     /// `durable_hmac_key`, meant to be attached unconditionally (FR-009) whenever
     /// `ZEPH_DURABLE_KEY` resolves — `None` only when the vault key itself is unavailable.
     pub(crate) durable_hwm_key: Option<(u32, [u8; 32])>,
+    /// Previous control-entry row HMAC key for the P2 durable backend's rotation window (#6451).
+    /// `Some` only while a `zeph durable rotate-key` window is open
+    /// (`config.previous_key_id.is_some()`).
+    pub(crate) durable_previous_hmac_key: Option<[u8; 32]>,
+    /// Previous high-water-mark key for the P2 durable backend's rotation window (addendum to
+    /// #6451). `Some` only while a `zeph durable rotate-key` window is open, mirroring
+    /// `durable_previous_hmac_key` but epoch-addressed (see `durable_hwm_key`).
+    pub(crate) durable_previous_hwm_key: Option<(u32, [u8; 32])>,
 }
 
 /// Groups instruction hot-reload state.
@@ -1001,6 +1009,14 @@ pub(crate) struct SessionState {
     /// `durable_agent_turns_hmac_key`, meant to be attached unconditionally (FR-009) whenever
     /// `ZEPH_DURABLE_KEY` resolves — `None` only when the vault key itself is unavailable.
     pub(crate) durable_agent_turns_hwm_key: Option<(u32, [u8; 32])>,
+    /// Sibling companion to [`Self::durable_agent_turns_hmac_key`]: the previous control-entry row
+    /// HMAC key for the rotation window (#6451). `Some` only while a `zeph durable rotate-key`
+    /// window is open (`config.previous_key_id.is_some()`).
+    pub(crate) durable_agent_turns_previous_hmac_key: Option<[u8; 32]>,
+    /// Sibling companion to [`Self::durable_agent_turns_hwm_key`]: the previous high-water-mark
+    /// key for the rotation window (addendum to #6451). `Some` only while a `zeph durable
+    /// rotate-key` window is open (`config.previous_key_id.is_some()`).
+    pub(crate) durable_agent_turns_previous_hwm_key: Option<(u32, [u8; 32])>,
     /// Set to `true` the first time `ensure_session_durable_ctx` runs (success or failure) so a
     /// failed backend construction (missing vault key, disk error) is not retried on every turn.
     /// Reset to `false` by `reset_durable_ctx_for_conversation_switch` (`/new`, `/conv resume`,
@@ -1468,6 +1484,8 @@ impl SessionState {
             durable_agent_turns_cipher: None,
             durable_agent_turns_hmac_key: None,
             durable_agent_turns_hwm_key: None,
+            durable_agent_turns_previous_hmac_key: None,
+            durable_agent_turns_previous_hwm_key: None,
             durable_ctx_init_attempted: false,
             durable_writer: None,
             durable_writer_task: None,

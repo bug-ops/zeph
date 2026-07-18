@@ -141,6 +141,11 @@ pub struct LocalBackend {
     pool: DbPool,
     cipher: Option<Arc<dyn PayloadCipher>>,
     hmac_key: Option<[u8; 32]>,
+    /// Previous control-entry HMAC key for the rotation window (#6451), mirroring the AEAD
+    /// cipher's `previous` slot. `Some` only while a `zeph durable rotate-key` window is open
+    /// (`config.previous_key_id.is_some()`); `verify_control_hmac` tries this key when a row
+    /// fails to verify under `hmac_key`. Writes always stamp with `hmac_key` only.
+    previous_hmac_key: Option<[u8; 32]>,
     /// The current high-water-mark key (issue #6360), keyed by its non-secret rotation epoch.
     /// `None` disables the HWM: no bump on commit/fold, and [`open_execution`](Self::open_execution)
     /// skips its internal high-water-mark verification entirely on resume. Unlike
@@ -186,6 +191,10 @@ impl fmt::Debug for LocalBackend {
         f.debug_struct("LocalBackend")
             .field("cipher", &self.cipher.as_ref().map(|_| "<cipher>"))
             .field("hmac_key", &self.hmac_key.as_ref().map(|_| "<redacted>"))
+            .field(
+                "previous_hmac_key",
+                &self.previous_hmac_key.as_ref().map(|_| "<redacted>"),
+            )
             .field("hwm_key_epoch", &self.hwm_key.as_ref().map(|s| s.epoch))
             .field("max_payload_bytes", &self.max_payload_bytes)
             .finish_non_exhaustive()
@@ -204,6 +213,7 @@ impl LocalBackend {
             pool,
             cipher: None,
             hmac_key: None,
+            previous_hmac_key: None,
             hwm_key: None,
             hwm_key_previous: None,
             max_payload_bytes,
@@ -252,6 +262,22 @@ impl LocalBackend {
     #[must_use]
     pub fn with_hmac_key(mut self, key: [u8; 32]) -> Self {
         self.hmac_key = Some(key);
+        self
+    }
+
+    /// Register a previous control-entry HMAC key for the rotation window (#6451), mirroring the
+    /// AEAD cipher's `with_previous` window mechanism (`zeph_core::durable::XChaCha20Poly1305Cipher`).
+    ///
+    /// The row-HMAC verification path tries this key when a row fails to
+    /// verify under the current [`with_hmac_key`](Self::with_hmac_key) key, so pre-rotation
+    /// `EffectIntent` control entries stay readable until the window is closed with `zeph durable
+    /// rotate-key --drop-previous`. Unlike the AEAD cipher's `key_id`-tagged blob layout, the
+    /// stored `hmac` column carries no key selector — a deliberate divergence, since control rows
+    /// have no payload envelope to carry one; try-both is security-equivalent for a single-slot
+    /// window. Writes always stamp with the current key only, never this one.
+    #[must_use]
+    pub fn with_previous_hmac_key(mut self, key: [u8; 32]) -> Self {
+        self.previous_hmac_key = Some(key);
         self
     }
 
@@ -572,6 +598,137 @@ impl LocalBackend {
             .map_err(|e| DurableError::storage("count_sealed_under_key_id", e))?;
             Ok((journal_count.max(0) + promises_count.max(0)).cast_unsigned())
         }
+    }
+
+    /// Count `EffectIntent` control entries whose row HMAC (INV-8) verifies **only** under the
+    /// registered [`previous_hmac_key`](Self::with_previous_hmac_key), not the current
+    /// [`hmac_key`](Self::with_hmac_key) (#6451).
+    ///
+    /// The read-side counterpart to [`count_sealed_under_key_id`](Self::count_sealed_under_key_id)
+    /// for the control-entry HMAC's own rotation window, and **not redundant** with it: the AEAD
+    /// blob-scan only sees payload-bearing rows, but a pre-rotation `EffectIntent` whose
+    /// `StepResult` was never committed (a crash between intent and result, in a still-retained
+    /// non-terminal execution) has a previous-key HMAC and no payload at all — the blob-scan
+    /// cannot see it, so dropping the previous key without this scan would silently orphan its
+    /// HMAC verification. Only `EffectIntent` rows carry a persisted+verified HMAC:
+    /// `PromiseCreated`/`TimerArmed`/`TimerFired`/`Checkpoint` all return
+    /// [`DurableError::UnsupportedEntryKind`] in `prepare_row`, and
+    /// `durable_promises` has no `hmac` column.
+    ///
+    /// Backs `zeph durable rotate-key --drop-previous`'s safety scan alongside the AEAD blob-scan
+    /// — refuse the drop while **either** is nonzero. This is a fourth, dedicated key-attach site
+    /// distinct from the three runtime read paths (agent replay, scheduler daemon, CLI read):
+    /// the caller must attach **both** [`with_hmac_key`](Self::with_hmac_key) (current) and
+    /// [`with_previous_hmac_key`](Self::with_previous_hmac_key) (previous) to this backend before
+    /// calling, or every row's HMAC is unrecomputable and this returns
+    /// [`DurableError::ControlIntegrity`] rather than a (silently wrong) count.
+    ///
+    /// Uses the precise variant — recompute-and-compare against both keys — rather than a pure
+    /// "fails under current" fail-safe: a genuinely corrupt/forged row (matches neither key) is
+    /// not counted here, since it is not something dropping the previous key would newly break;
+    /// [`read_execution`](Journal::read_execution) already rejects it on every read regardless of
+    /// which key is dropped.
+    ///
+    /// Cold path (runs only at `--drop-previous`); control rows are sparse.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails, or [`DurableError::ControlIntegrity`]
+    /// if matching control rows exist but this backend is missing the current or previous HMAC
+    /// key needed to recompute them.
+    pub async fn count_control_entries_under_previous_hmac(&self) -> Result<u64, DurableError> {
+        let rows: Vec<ControlHmacScanRow> = zeph_db::query_as(sql!(
+            "SELECT execution_id, step_id, idem_key, hmac
+             FROM durable_journal
+             WHERE entry_kind = 'effect_intent' AND hmac IS NOT NULL"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("count_control_entries_under_previous_hmac", e))?;
+
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        let (Some(current_key), Some(previous_key)) =
+            (self.hmac_key.as_ref(), self.previous_hmac_key.as_ref())
+        else {
+            return Err(DurableError::ControlIntegrity);
+        };
+
+        let mut count = 0u64;
+        for (execution_id_raw, step_id_raw, idem_key_raw, hmac_raw) in rows {
+            let Ok(execution_id) = parse_execution_id(&execution_id_raw) else {
+                continue;
+            };
+            let Ok(step_id_value) = u32::try_from(step_id_raw) else {
+                continue;
+            };
+            let step_id = StepId::new(step_id_value);
+            let idem_key = idem_key_raw
+                .as_deref()
+                .and_then(|b| slice_to_array32(b, "effect_intent idem_key").ok())
+                .map(IdempotencyKey::from_bytes);
+            let Ok(stored) = slice_to_array32(&hmac_raw, "effect_intent hmac") else {
+                continue;
+            };
+
+            let tag = EntryKindTag::EffectIntent.as_str();
+            let expected_current = Self::keyed_control_hmac(
+                current_key,
+                execution_id,
+                step_id,
+                tag,
+                idem_key.as_ref(),
+            );
+            if blake3::Hash::from(expected_current) == blake3::Hash::from(stored) {
+                continue;
+            }
+            let expected_previous = Self::keyed_control_hmac(
+                previous_key,
+                execution_id,
+                step_id,
+                tag,
+                idem_key.as_ref(),
+            );
+            if blake3::Hash::from(expected_previous) == blake3::Hash::from(stored) {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    /// Count `durable_execution_integrity` rows whose high-water-mark was signed under `epoch`.
+    ///
+    /// The `--drop-previous` HWM scan (addendum to #6451, spec-081 FR-008): before permanently
+    /// removing the previous rotation key, refuse if any surviving execution's HWM row is still
+    /// addressed to the previous epoch. Unlike
+    /// [`count_control_entries_under_previous_hmac`](Self::count_control_entries_under_previous_hmac),
+    /// the HWM row carries `key_epoch` in the clear, so this is a plain indexed `COUNT` — no key
+    /// material, no per-row recompute. This is also the only one of the three `--drop-previous`
+    /// scans that catches a checkpoint-folded pre-rotation execution: `checkpoint_fold` never
+    /// re-signs the HWM, so a folded execution's integrity row keeps
+    /// `key_epoch = previous_key_id` even though its old-key-id payloads are gone — invisible to
+    /// both the AEAD blob-scan
+    /// ([`count_sealed_under_key_id`](Self::count_sealed_under_key_id)) and the control-HMAC scan
+    /// (`EffectIntent`-only). Terminal-but-unpruned executions are counted too (the row is deleted
+    /// only by the retention prune sweep, never on `finalize`) — fail-safe over-refusal, resolvable
+    /// with `--force`, mirroring the other two scans' coarseness.
+    ///
+    /// Cold path (runs only at `--drop-previous`); integrity rows are sparse (one per execution).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails.
+    pub async fn count_integrity_rows_under_epoch(&self, epoch: u32) -> Result<u64, DurableError> {
+        let count: i64 = zeph_db::query_scalar(sql!(
+            "SELECT COUNT(*) FROM durable_execution_integrity WHERE key_epoch = ?"
+        ))
+        .bind(i64::from(epoch))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("count_integrity_rows_under_epoch", e))?;
+        Ok(count.max(0).cast_unsigned())
     }
 
     /// Ensure a `durable_executions` row exists for `id`, returning whether this is a resume.
@@ -1711,6 +1868,24 @@ impl LocalBackend {
         idem_key: Option<&IdempotencyKey>,
     ) -> Option<[u8; 32]> {
         let key = self.hmac_key.as_ref()?;
+        Some(Self::keyed_control_hmac(
+            key,
+            execution_id,
+            step_id,
+            tag,
+            idem_key,
+        ))
+    }
+
+    /// Keyed-BLAKE3 computation over a control entry's identity, parameterized on the key so both
+    /// the current and previous rotation-window keys (#6451) can be tried against the same input.
+    fn keyed_control_hmac(
+        key: &[u8; 32],
+        execution_id: ExecutionId,
+        step_id: StepId,
+        tag: &'static str,
+        idem_key: Option<&IdempotencyKey>,
+    ) -> [u8; 32] {
         let mut input = Vec::with_capacity(16 + 4 + 16 + 32);
         input.extend_from_slice(execution_id.as_bytes());
         input.extend_from_slice(&step_id.value().to_le_bytes());
@@ -1718,11 +1893,12 @@ impl LocalBackend {
         if let Some(k) = idem_key {
             input.extend_from_slice(k.as_bytes());
         }
-        Some(*blake3::keyed_hash(key, &input).as_bytes())
+        *blake3::keyed_hash(key, &input).as_bytes()
     }
 
     /// Recompute and constant-time-verify a control entry's row HMAC read back from storage
-    /// (INV-8).
+    /// (INV-8), trying the previous rotation-window key (#6451) when the current key does not
+    /// match.
     ///
     /// A no-op only when no HMAC key is configured **and** the row carries no stored HMAC — the
     /// documented single-user local stance where control entries carry no HMAC and none is
@@ -1732,12 +1908,14 @@ impl LocalBackend {
     /// fail-closed rather than silently trusted, since an `EffectIntent`'s fields are plaintext
     /// and an unkeyed reader has no way to tell a genuine stamped row from a forged one. When a
     /// key *is* configured, every control row this backend reads must carry a matching HMAC: a
-    /// missing HMAC or a mismatch both indicate the row was forged, relocated, or written without
-    /// the configured key, and both fail closed with [`DurableError::ControlIntegrity`].
+    /// missing HMAC, or a mismatch under both the current and any registered
+    /// [`previous_hmac_key`](Self::with_previous_hmac_key), fails closed with
+    /// [`DurableError::ControlIntegrity`].
     ///
-    /// The comparison uses [`blake3::Hash`] equality, which compares in constant time (the same
+    /// Each comparison uses [`blake3::Hash`] equality, which compares in constant time (the same
     /// idiom used for the promise resolver-token check in `promise.rs`), so a forged HMAC reveals
-    /// no timing signal.
+    /// no timing signal beyond which of the (at most two) legitimate keys, if any, it was written
+    /// under — already observable via `created_at` relative to the rotation.
     fn verify_control_hmac(
         &self,
         execution_id: ExecutionId,
@@ -1746,17 +1924,29 @@ impl LocalBackend {
         idem_key: Option<&IdempotencyKey>,
         stored: Option<[u8; 32]>,
     ) -> Result<(), DurableError> {
-        let Some(expected) = self.compute_control_hmac(execution_id, step_id, tag, idem_key) else {
+        let Some(current_key) = self.hmac_key.as_ref() else {
             return if stored.is_some() {
                 Err(DurableError::ControlIntegrity)
             } else {
                 Ok(())
             };
         };
-        match stored {
-            Some(stored) if blake3::Hash::from(expected) == blake3::Hash::from(stored) => Ok(()),
-            _ => Err(DurableError::ControlIntegrity),
+        let Some(stored) = stored else {
+            return Err(DurableError::ControlIntegrity);
+        };
+        let expected_current =
+            Self::keyed_control_hmac(current_key, execution_id, step_id, tag, idem_key);
+        if blake3::Hash::from(expected_current) == blake3::Hash::from(stored) {
+            return Ok(());
         }
+        if let Some(previous_key) = self.previous_hmac_key.as_ref() {
+            let expected_previous =
+                Self::keyed_control_hmac(previous_key, execution_id, step_id, tag, idem_key);
+            if blake3::Hash::from(expected_previous) == blake3::Hash::from(stored) {
+                return Ok(());
+            }
+        }
+        Err(DurableError::ControlIntegrity)
     }
 
     /// Compute the high-water-mark HMAC (issue #6360) over the signed
@@ -1934,8 +2124,10 @@ impl LocalBackend {
                 "key_epoch_unresolvable",
                 "possibly re-keyed: this execution's signed key_epoch is neither the current key \
                  nor a registered previous rotation key — if ZEPH_DURABLE_KEY was recently \
-                 rotated, register the prior key via with_previous_hwm_key; the durable resume \
-                 path cannot proceed without it (no interactive override)",
+                 rotated, ensure the rotation window is still open (ZEPH_DURABLE_KEY_PREVIOUS \
+                 present and [durable] previous_key_id set); the window is closed permanently by \
+                 `zeph durable rotate-key --drop-previous`. The durable resume path cannot \
+                 proceed without it (no interactive override)",
             ));
         };
         let stored_hmac =
@@ -2447,6 +2639,10 @@ type JournalRowRead = (
     i64,
 );
 
+/// A `durable_journal` row read for [`LocalBackend::count_control_entries_under_previous_hmac`],
+/// in `SELECT` column order: `(execution_id, step_id, idem_key, hmac)`.
+type ControlHmacScanRow = (String, i64, Option<Vec<u8>>, Vec<u8>);
+
 /// A `durable_promises` row read back from storage, in `SELECT` column order:
 /// `(execution_id, resolver_token_hash, resolved, payload)`.
 type PromiseRowRead = (String, Vec<u8>, i64, Option<Vec<u8>>);
@@ -2615,6 +2811,45 @@ mod tests {
                 return Err(CipherError::Authentication);
             }
             Ok(sealed[8..].iter().map(|b| b ^ XOR_MASK).collect())
+        }
+    }
+
+    /// A test cipher double that embeds a `key_id` leading byte (mirroring the production
+    /// `key_id(1) || nonce || ciphertext || tag` contract documented on [`PayloadCipher`]) and,
+    /// like the real `XChaCha20Poly1305Cipher::with_previous`, can still decrypt a payload sealed
+    /// under a registered `previous_id` while always sealing new writes under `current_id` — the
+    /// minimal shape needed to exercise `checkpoint_fold`'s reseal-under-current behavior across a
+    /// simulated rotation window, without depending on the real AEAD cipher (out of scope for
+    /// `zeph-durable`, INV-1).
+    struct RotatingKeyedCipher {
+        current_id: u8,
+        previous_id: Option<u8>,
+    }
+
+    impl PayloadCipher for RotatingKeyedCipher {
+        fn seal(&self, plaintext: &[u8], aad: &PayloadAad) -> Result<Vec<u8>, CipherError> {
+            let tag = blake3::hash(&aad.canonical_bytes());
+            let mut out = vec![self.current_id];
+            out.extend_from_slice(&tag.as_bytes()[..8]);
+            out.extend(plaintext.iter().map(|b| b ^ XOR_MASK));
+            Ok(out)
+        }
+
+        fn open(&self, sealed: &[u8], aad: &PayloadAad) -> Result<Vec<u8>, CipherError> {
+            if sealed.len() < 9 {
+                return Err(CipherError::Malformed {
+                    context: "sealed blob shorter than the key-id + aad tag prefix",
+                });
+            }
+            let id = sealed[0];
+            if id != self.current_id && Some(id) != self.previous_id {
+                return Err(CipherError::UnknownKeyId { key_id: id });
+            }
+            let expected = blake3::hash(&aad.canonical_bytes());
+            if sealed[1..9] != expected.as_bytes()[..8] {
+                return Err(CipherError::Authentication);
+            }
+            Ok(sealed[9..].iter().map(|b| b ^ XOR_MASK).collect())
         }
     }
 
@@ -3044,6 +3279,158 @@ mod tests {
         let unkeyed_reader = LocalBackend::new(writer.pool().clone(), 1_048_576);
         assert_matches!(
             unkeyed_reader.read_execution(exec).await,
+            Err(DurableError::ControlIntegrity)
+        );
+    }
+
+    /// #6451: a control entry written under the pre-rotation key must still verify once a reader
+    /// registers that key as `previous_hmac_key`, even though its own `hmac_key` has moved on to
+    /// the new (post-rotation) key — the try-both rotation window, symmetric to the AEAD cipher's
+    /// `with_previous`. This is also the payload-less "crash-orphan" shape the drop-scan exists
+    /// for: `effect_intent` entries never carry a payload, so this row has a previous-key HMAC
+    /// with nothing for the AEAD blob-scan to see.
+    #[tokio::test]
+    async fn verify_control_hmac_accepts_row_under_previous_key_during_window() {
+        let writer = mem_backend(1_048_576).await.with_hmac_key([1u8; 32]);
+        let exec = ExecutionId::new();
+        writer
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        writer.append(effect_intent(exec, 0)).await.unwrap();
+
+        // Post-rotation reader: current key is the new key [2u8; 32], previous is the pre-rotation
+        // key [1u8; 32] that actually stamped the row.
+        let post_rotation_reader = LocalBackend::new(writer.pool().clone(), 1_048_576)
+            .with_hmac_key([2u8; 32])
+            .with_previous_hmac_key([1u8; 32]);
+        assert!(
+            post_rotation_reader.read_execution(exec).await.is_ok(),
+            "a row stamped under the previous key must verify during the rotation window"
+        );
+
+        // A fresh row written by the post-rotation writer stamps under the current key only, and
+        // must verify without needing the previous slot.
+        let post_rotation_writer = LocalBackend::new(writer.pool().clone(), 1_048_576)
+            .with_hmac_key([2u8; 32])
+            .with_previous_hmac_key([1u8; 32]);
+        post_rotation_writer
+            .append(effect_intent(exec, 1))
+            .await
+            .unwrap();
+        assert!(post_rotation_writer.read_execution(exec).await.is_ok());
+    }
+
+    /// #6451: a row that matches neither the current nor the registered previous key must still
+    /// fail closed — the rotation window widens acceptance to exactly two legitimate keys, never
+    /// to "any key".
+    #[tokio::test]
+    async fn verify_control_hmac_rejects_row_under_neither_current_nor_previous_key() {
+        let writer = mem_backend(1_048_576).await.with_hmac_key([9u8; 32]);
+        let exec = ExecutionId::new();
+        writer
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        writer.append(effect_intent(exec, 0)).await.unwrap();
+
+        let unrelated_reader = LocalBackend::new(writer.pool().clone(), 1_048_576)
+            .with_hmac_key([2u8; 32])
+            .with_previous_hmac_key([3u8; 32]);
+        assert_matches!(
+            unrelated_reader.read_execution(exec).await,
+            Err(DurableError::ControlIntegrity)
+        );
+    }
+
+    /// #6451: `count_control_entries_under_previous_hmac` is the drop-scan gate for
+    /// `--drop-previous` — it must count a row that verifies only under the previous key, and
+    /// must not count a row that still verifies under the current key (no false refusal once the
+    /// row has actually been re-keyed).
+    #[tokio::test]
+    async fn count_control_entries_under_previous_hmac_counts_previous_only_rows() {
+        let writer = mem_backend(1_048_576).await.with_hmac_key([1u8; 32]);
+        let exec = ExecutionId::new();
+        writer
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        // Pre-rotation row: stamped under [1u8; 32], the soon-to-be-previous key.
+        writer.append(effect_intent(exec, 0)).await.unwrap();
+
+        let scanner_mid_window = LocalBackend::new(writer.pool().clone(), 1_048_576)
+            .with_hmac_key([2u8; 32])
+            .with_previous_hmac_key([1u8; 32]);
+        assert_eq!(
+            scanner_mid_window
+                .count_control_entries_under_previous_hmac()
+                .await
+                .unwrap(),
+            1,
+            "a row stamped under the previous key only must be counted"
+        );
+
+        // A post-rotation row, stamped under the new current key, must not be counted.
+        let post_rotation_writer = LocalBackend::new(writer.pool().clone(), 1_048_576)
+            .with_hmac_key([2u8; 32])
+            .with_previous_hmac_key([1u8; 32]);
+        post_rotation_writer
+            .append(effect_intent(exec, 1))
+            .await
+            .unwrap();
+        assert_eq!(
+            post_rotation_writer
+                .count_control_entries_under_previous_hmac()
+                .await
+                .unwrap(),
+            1,
+            "the post-rotation row (verifies under current) must not add to the count"
+        );
+    }
+
+    /// #6451: once every previous-key row has been superseded (or there were none), the scan
+    /// reports zero without requiring any rows to exist at all — the clean `--drop-previous`
+    /// no-op/success path.
+    #[tokio::test]
+    async fn count_control_entries_under_previous_hmac_is_zero_on_empty_journal() {
+        let backend = mem_backend(1_048_576).await;
+        assert_eq!(
+            backend
+                .count_control_entries_under_previous_hmac()
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    /// #6451 critic finding 1: the scan cannot be trusted without both keys attached — a caller
+    /// that opens the backend unkeyed (as the pre-fix `--drop-previous` scan site did) must get a
+    /// hard error, not a silently-wrong count that could let `--drop-previous` refuse forever (or
+    /// worse, proceed unsafely).
+    #[tokio::test]
+    async fn count_control_entries_under_previous_hmac_errors_when_keys_missing() {
+        let writer = mem_backend(1_048_576).await.with_hmac_key([1u8; 32]);
+        let exec = ExecutionId::new();
+        writer
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        writer.append(effect_intent(exec, 0)).await.unwrap();
+
+        let unkeyed_scanner = LocalBackend::new(writer.pool().clone(), 1_048_576);
+        assert_matches!(
+            unkeyed_scanner
+                .count_control_entries_under_previous_hmac()
+                .await,
+            Err(DurableError::ControlIntegrity)
+        );
+
+        let current_only_scanner =
+            LocalBackend::new(writer.pool().clone(), 1_048_576).with_hmac_key([1u8; 32]);
+        assert_matches!(
+            current_only_scanner
+                .count_control_entries_under_previous_hmac()
+                .await,
             Err(DurableError::ControlIntegrity)
         );
     }
@@ -4812,6 +5199,91 @@ mod tests {
                 .unwrap(),
             "a legitimate fold must not trip the HWM check: committed_result_count is invariant \
              across it (folded_count restores what the DELETE removed)"
+        );
+    }
+
+    /// S1 regression (addendum to #6451, spec-081 FR-008): a pre-rotation execution whose
+    /// `StepResult`s are checkpoint-folded post-rotation reseals its checkpoint snapshot under
+    /// the NEW `key_id` and DELETEs every old-key-id `StepResult` row it folds, but
+    /// `checkpoint_fold` never re-signs the HWM (`committed_result_count` is deliberately
+    /// invariant across a fold — see the doc on `checkpoint_fold`). So the integrity row keeps
+    /// `key_epoch = previous_key_id` even once no old-key-id payload survives at all. This
+    /// execution has `StepResult`s only (no `EffectIntent`), so both the AEAD blob-scan and the
+    /// control-HMAC scan see nothing — `count_integrity_rows_under_epoch` is the only one of the
+    /// three `--drop-previous` scans that catches it.
+    #[tokio::test]
+    async fn count_integrity_rows_under_epoch_catches_a_checkpoint_folded_pre_rotation_execution() {
+        let pre_rotation = mem_backend(1_048_576)
+            .await
+            .with_cipher(Arc::new(RotatingKeyedCipher {
+                current_id: 0,
+                previous_id: None,
+            }))
+            .with_hwm_key(0, [20u8; 32]);
+        let exec = ExecutionId::new();
+        pre_rotation
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        for step in 0..3 {
+            pre_rotation
+                .append(step_result(exec, step, format!("v{step}").as_bytes()))
+                .await
+                .unwrap();
+        }
+
+        // Rotate: a fresh handle over the same journal now speaks the NEW current epoch/key-id
+        // (1), with the old one (0) registered as previous for both the cipher (so fold can still
+        // decrypt the not-yet-folded rows) and the HWM (the rotation window) — exactly mirroring
+        // a real `zeph durable rotate-key` followed by a background fold.
+        let post_rotation = LocalBackend::new(pre_rotation.pool().clone(), 1_048_576)
+            .with_cipher(Arc::new(RotatingKeyedCipher {
+                current_id: 1,
+                previous_id: Some(0),
+            }))
+            .with_hwm_key(1, [21u8; 32])
+            .with_previous_hwm_key(0, [20u8; 32]);
+
+        let folded = post_rotation.checkpoint_fold(exec, 3).await.unwrap();
+        assert_eq!(
+            folded, 3,
+            "fold must compact every committed StepResult, leaving none live"
+        );
+
+        assert_eq!(
+            post_rotation.count_sealed_under_key_id(0).await.unwrap(),
+            0,
+            "every pre-rotation payload was folded away and resealed under the new key_id; the \
+             AEAD scan sees nothing left sealed under the previous key_id"
+        );
+        assert_eq!(
+            post_rotation
+                .count_integrity_rows_under_epoch(0)
+                .await
+                .unwrap(),
+            1,
+            "the folded execution's HWM row still carries the previous epoch -- checkpoint_fold \
+             never re-signs it (S1)"
+        );
+        assert_eq!(
+            post_rotation
+                .count_integrity_rows_under_epoch(1)
+                .await
+                .unwrap(),
+            0,
+            "the row has not migrated to the current epoch -- only a fresh StepResult commit \
+             after resume would bump it"
+        );
+
+        // The folded execution is not corrupted — it must still resume cleanly through the open
+        // rotation window (this addendum's epoch=key_id design), it is just still dependent on
+        // the previous HWM key until `--drop-previous` (which S1's fix now correctly refuses).
+        assert!(
+            post_rotation
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap(),
+            "a folded pre-rotation execution must still resume through the open rotation window"
         );
     }
 

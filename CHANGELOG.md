@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Added
 
+- `zeph-tui`: the durable panel header now shows the active AEAD/HMAC `key_id` and, when a
+  rotation window is open (`[durable] previous_key_id` set), a passive
+  `rotation window open (previous_key_id = N)` indicator, plus a matching low-priority status-bar
+  chip (#6450). Read-only visibility — the panel offers no rotation action; rotation stays a
+  restart-required CLI-only operation (`zeph durable rotate-key`). Reuses the existing 5-second
+  `durable_poll_task`, so no new background task is spawned. **Known gap**: unlike the CLI's
+  `describe_reveal_error` (`src/commands/durable.rs`), the TUI's own reveal/inspect path does not
+  yet map `UnknownKeyId` to an actionable "previous key dropped" message — a dropped-key blob
+  surfaces as a raw decode error in the TUI. Scoped out of #6450 and this addendum; tracked as a
+  follow-up in #6459.
+
 - `zeph-config`/`zeph-core`/`zeph`: added `zeph durable rotate-key`, a windowed rotation
   command for the durable execution layer's AEAD payload key (`ZEPH_DURABLE_KEY`) — the
   `XChaCha20Poly1305Cipher::with_previous` rotation window existed but was never operationally
@@ -27,18 +38,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `durable_journal`/`durable_promises` for any payload still sealed under the previous key
   (dialect-specific predicate: SQLite blob-compare, Postgres `get_byte`) and refuses if any
   remain (`--force` skips the scan; scoped to this path only — it never bypasses the
-  open-window or shared-database refusals); a call with no window open is a clean no-op. On a
-  declared/detected shared database, `rotate-key` refuses unless `--ack-shared-db-drain` is
-  passed, since rotating also re-derives the control-entry HMAC key, which has no rotation
-  window of its own. `--dry-run` prints intended changes (including the shared-DB warning)
-  without writing anything. The cipher is built once at process startup (no hot-reload), so a
-  restart is required after rotating. A stale in-memory cipher hitting a rotated blob's
+  open-window refusal); a call with no window open is a clean no-op. `--dry-run` prints intended
+  changes without writing anything. The cipher is built once at process startup (no hot-reload),
+  so a restart is required after rotating. A stale in-memory cipher hitting a rotated blob's
   key-id now surfaces an actionable "restart to pick up the rotated key" message instead of
   the raw `UnknownKeyId`/decode error. `zeph --init`'s existing key-replacement wizard step is
   unchanged in behavior but now explicitly labels itself a destructive reset (no rotation
   window, discards sealed payloads immediately) and points to `zeph durable rotate-key` for
   the safe alternative. Added `MigrateDurableKeyRotation` (`--migrate-config` step 97) to
-  insert `key_id = 0` into an existing `[durable]` table lacking it.
+  insert `key_id = 0` into an existing `[durable]` table lacking it. On a declared/detected
+  shared database, `rotate-key` originally refused unless `--ack-shared-db-drain` was passed,
+  since rotating also re-derives the control-entry HMAC key, which had no rotation window of
+  its own at the time this landed — #6451, later in this same `[Unreleased]` section, closes
+  that gap and removes the flag and its refusal outright (see Removed below); shared-DB
+  rotation needs no acknowledgement as of this release.
 
 - `zeph-durable`: added an authenticated per-execution high-water-mark (HWM) — a signed
   `{execution_id, max_committed_step_id, committed_result_count, key_epoch}` tuple, verified once
@@ -114,6 +127,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   already applied to the analogous sub-agent debug-dump/outbound-LLM egress paths. Known
   limitation: combining `--bare` with `--json` interleaves two different JSON schemas on
   stdout — unsupported for now; use `--bare` without `--json` for scripted-pipeline forwarding.
+
+- `zeph-durable`: the control-entry row HMAC (INV-8) now has its own rotation window, closing
+  the gap #6447's AEAD key rotation left open (#6451). `LocalBackend` gains
+  `with_previous_hmac_key`, mirroring the AEAD cipher's `with_previous` — `verify_control_hmac`
+  now tries the current key first, falling back to the previous key when set, so a pre-rotation
+  `EffectIntent` control entry stays readable through the window on every read path (agent
+  replay, scheduler daemon, and the CLI). Unlike the AEAD cipher, the stored `hmac` column
+  carries no key-id selector (control rows have no payload envelope for one), so verification
+  is try-both rather than key-id-dispatched; this is security-equivalent for a single-slot
+  window. New `count_control_entries_under_previous_hmac` backs `--drop-previous`'s second
+  safety scan, alongside the existing AEAD blob-scan — it is not redundant with the blob-scan,
+  since a crash-orphaned `EffectIntent` (intent journaled, result never committed) has a
+  previous-key HMAC but no payload at all for the blob-scan to see. `--drop-previous` now
+  refuses while either scan is nonzero (`--force` still skips both). Writes always stamp with
+  the current key only.
+
+- `zeph-durable`/`zeph`: the durable high-water-mark (HWM, issue #6360) key gains a working
+  rotation window — wiring spec-081 FR-008's already-specified current+previous HWM window,
+  which #6453 shipped with a frozen `key_epoch` (`const HWM_KEY_EPOCH = 0`, never bumped
+  anywhere in-tree) that left the already-implemented `with_previous_hwm_key` slot unreachable.
+  Without this, any `zeph durable rotate-key` force-aborted every execution with a committed
+  `StepResult` on its next resume (`HighWaterMarkIntegrity`), and — because both the pre- and
+  post-rotation rows shared the same frozen epoch — misreported the failure as `hmac_mismatch`
+  (TAMPER) rather than the correct `key_epoch_unresolvable` (possibly re-keyed). The HWM epoch
+  now reuses the AEAD cipher's own `key_id`/`previous_key_id` rotation lifecycle instead of a
+  separate counter: `load_write_hwm_key` (`src/commands/durable.rs`) resolves a current +
+  previous `HwmSlot` pair from `config.durable.key_id`/`previous_key_id`, mirroring
+  `ControlHmacKeys`, and fails closed if `previous_key_id` is declared but
+  `ZEPH_DURABLE_KEY_PREVIOUS` is missing. `key_id` already defaults to `0`, matching the
+  existing `key_epoch = 0` rows, so there is no migration for an un-rotated deployment.
+  `open_durable_backend` and every write/read channel that attaches HWM keys (P1 agent-turn, P2
+  orchestration, the scheduler daemon — which previously never attached an HWM key at all — and
+  the CLI read path) now also attach the previous slot while a window is open. `--drop-previous`
+  gains a third safety scan, `count_integrity_rows_under_epoch` — a plain indexed `COUNT` on the
+  `durable_execution_integrity.key_epoch` column needing no key material — refusing the drop
+  while any surviving execution's HWM row still carries the previous epoch. This scan is not
+  redundant with the other two: `checkpoint_fold` reseals a folded checkpoint under the current
+  key and deletes the old-key-id `StepResult` rows it folds, but never re-signs the HWM, so a
+  checkpoint-folded pre-rotation execution can have zero surviving payload and zero control
+  entries while its integrity row still points at the previous epoch — invisible to both the
+  AEAD blob-scan and the control-HMAC scan.
+
+### Removed
+
+- `zeph durable rotate-key`: removed the `--ack-shared-db-drain` flag and its R3 refusal
+  outright (no deprecation shim, pre-v1.0.0) — the refusal existed solely because the
+  control-entry HMAC key had no rotation window of its own; #6451 closes that gap, so rotating
+  on a declared/detected shared database is now exactly as safe as local rotation and needs no
+  acknowledgement. `--ack-shared-db-drain` is now an unrecognized CLI flag.
 
 ### Fixed
 

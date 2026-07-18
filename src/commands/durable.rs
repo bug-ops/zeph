@@ -170,71 +170,177 @@ fn load_durable_cipher(config: &DurableConfig) -> anyhow::Result<XChaCha20Poly13
     Ok(cipher)
 }
 
-/// Resolve the control-entry row HMAC key (INV-8) for the durable journal at `url`, deriving it
-/// from the vault-stored `ZEPH_DURABLE_KEY` when this deployment is a declared/detected shared
-/// database ([`is_shared_db`]).
+/// Both control-entry HMAC keys (INV-8) resolved for a durable-journal deployment: the current
+/// key, present whenever this deployment is a declared/detected shared database, and the
+/// previous key, present only while a `zeph durable rotate-key` rotation window is open
+/// (`config.previous_key_id.is_some()`, #6451) — the HMAC-side counterpart to the AEAD cipher's
+/// current/previous key pair.
+#[derive(Default)]
+pub(crate) struct ControlHmacKeys {
+    pub(crate) current: Option<[u8; 32]>,
+    pub(crate) previous: Option<[u8; 32]>,
+}
+
+/// Resolve the control-entry row HMAC keys (INV-8) for the durable journal at `url`, deriving
+/// them from the vault-stored `ZEPH_DURABLE_KEY`/`ZEPH_DURABLE_KEY_PREVIOUS` when this deployment
+/// is a declared/detected shared database ([`is_shared_db`]).
 ///
-/// Returns `Ok(None)` for a single-user local, non-shared database — the documented stance where
-/// control entries carry no HMAC and none is enforced (INV-8). Fails closed (`Err`) when the
-/// deployment is shared but `ZEPH_DURABLE_KEY` cannot be resolved or decoded: a shared database
-/// must never silently run without the row-HMAC forgery defense.
+/// Returns both fields `None` for a single-user local, non-shared database — the documented
+/// stance where control entries carry no HMAC and none is enforced (INV-8). Fails closed (`Err`)
+/// when the deployment is shared but `ZEPH_DURABLE_KEY` cannot be resolved or decoded, or when a
+/// rotation window is declared (`config.previous_key_id.is_some()`) but
+/// `ZEPH_DURABLE_KEY_PREVIOUS` cannot be resolved or decoded — mirroring
+/// [`load_durable_cipher`]'s fail-closed stance on its own previous-key slot: a shared database
+/// must never silently run without the row-HMAC forgery defense, and a declared window must never
+/// silently degrade to no previous slot (#6451).
 fn load_control_hmac_key(
     config: &zeph_core::config::DurableConfig,
     url: &str,
-) -> anyhow::Result<Option<[u8; 32]>> {
+) -> anyhow::Result<ControlHmacKeys> {
     if !is_shared_db(config, url) {
-        return Ok(None);
+        return Ok(ControlHmacKeys::default());
     }
     let dir = zeph_core::vault::default_vault_dir();
     let provider = AgeVaultProvider::load(&dir.join("vault-key.txt"), &dir.join("secrets.age"))
         .map_err(|e| anyhow::anyhow!("failed to load vault: {e}"))?;
-    let key = provider.get("ZEPH_DURABLE_KEY").ok_or_else(|| {
+    let key = provider.get(CURRENT_KEY_VAULT_NAME).ok_or_else(|| {
         anyhow::anyhow!(
-            "ZEPH_DURABLE_KEY not found in vault; required to compute the control-entry row HMAC \
-             on a shared database (INV-8)"
+            "{CURRENT_KEY_VAULT_NAME} not found in vault; required to compute the control-entry \
+             row HMAC on a shared database (INV-8)"
         )
     })?;
-    let hmac_key = zeph_core::durable::derive_control_hmac_key_b64(key).map_err(|e| {
-        anyhow::anyhow!("invalid ZEPH_DURABLE_KEY for control-entry HMAC derivation: {e}")
+    let current = zeph_core::durable::derive_control_hmac_key_b64(key).map_err(|e| {
+        anyhow::anyhow!("invalid {CURRENT_KEY_VAULT_NAME} for control-entry HMAC derivation: {e}")
     })?;
-    Ok(Some(hmac_key))
+
+    let previous = if let Some(prev_id) = config.previous_key_id {
+        let prev_key = provider.get(PREVIOUS_KEY_VAULT_NAME).ok_or_else(|| {
+            anyhow::anyhow!(
+                "durable config declares previous_key_id = {prev_id} but \
+                 {PREVIOUS_KEY_VAULT_NAME} is missing from the vault; refusing to build \
+                 control-entry HMAC keys with an inconsistent rotation state (this can happen if \
+                 a previous `zeph durable rotate-key` run crashed mid-write) — reconcile config \
+                 and vault to a consistent pair, or re-run `zeph durable rotate-key` to see \
+                 recovery guidance, before retrying"
+            )
+        })?;
+        Some(
+            zeph_core::durable::derive_control_hmac_key_b64(prev_key).map_err(|e| {
+                anyhow::anyhow!(
+                    "invalid {PREVIOUS_KEY_VAULT_NAME} for control-entry HMAC derivation: {e}"
+                )
+            })?,
+        )
+    } else {
+        None
+    };
+
+    Ok(ControlHmacKeys {
+        current: Some(current),
+        previous,
+    })
 }
 
-/// Resolve the control-entry HMAC key to attach on a durable *write* path (INV-8), mirroring
+/// Resolve the control-entry HMAC keys to attach on a durable *write* path (INV-8), mirroring
 /// [`load_write_cipher`]'s `config` → `url` resolution.
 ///
 /// # Errors
 ///
 /// Returns an error when this deployment is a shared database and `ZEPH_DURABLE_KEY` cannot be
-/// resolved from the vault.
-pub(crate) fn load_write_hmac_key(config: &Config) -> anyhow::Result<Option<[u8; 32]>> {
+/// resolved from the vault, or a rotation window is declared but `ZEPH_DURABLE_KEY_PREVIOUS`
+/// cannot be resolved.
+pub(crate) fn load_write_hmac_key(config: &Config) -> anyhow::Result<ControlHmacKeys> {
     let url = resolve_durable_db_url(config);
     load_control_hmac_key(&config.durable, &url)
 }
 
-/// Resolve the high-water-mark key (issue #6360) to attach on a durable *write* path.
+/// One high-water-mark key, addressed by its non-secret rotation epoch (FR-008) — the loader-side
+/// mirror of [`zeph_durable::LocalBackend`]'s internal `HwmKeySlot`, named per the addendum's M3
+/// so the three key loaders (`load_durable_cipher`, `load_control_hmac_key`, this one) all return
+/// a named `{epoch, key}` / `{current, previous}` shape rather than a bare tuple.
+pub(crate) struct HwmSlot {
+    pub(crate) epoch: u32,
+    pub(crate) key: [u8; 32],
+}
+
+/// Both high-water-mark keys (FR-008/FR-009) resolved for a durable-journal deployment: the
+/// current slot, present whenever `ZEPH_DURABLE_KEY` resolves from the vault, and the previous
+/// slot, present only while a `zeph durable rotate-key` rotation window is open
+/// (`config.durable.previous_key_id.is_some()`) — the HWM-side counterpart to
+/// [`ControlHmacKeys`], addendum to #6451.
+#[derive(Default)]
+pub(crate) struct HwmKeys {
+    pub(crate) current: Option<HwmSlot>,
+    pub(crate) previous: Option<HwmSlot>,
+}
+
+/// Resolve the high-water-mark keys (issue #6360) to attach on a durable *write* path.
 ///
 /// Unlike [`load_control_hmac_key`] (attached only on a declared/detected shared database), the
 /// high-water-mark key is meant to be attached unconditionally (FR-009): it is the only mechanism
 /// that detects deletion of a committed `StepResult` row, a threat class the AEAD payload seal and
 /// the shared-DB row HMAC do not cover on any deployment, single-user local included.
 ///
-/// Returns `Ok(None)` when `ZEPH_DURABLE_KEY` is not (yet) resolvable from the vault — the same
-/// graceful-degrade posture as the rest of durable bootstrap (a missing key means the mechanism is
-/// inactive for this run, not that a verification failed) — rather than hard-failing bootstrap.
-pub(crate) fn load_write_hwm_key(_config: &Config) -> anyhow::Result<Option<(u32, [u8; 32])>> {
+/// The rotation epoch stamped alongside each key (FR-008) is `config.durable.key_id` /
+/// `previous_key_id` — the HWM key reuses the AEAD cipher's own `key_id`-driven rotation
+/// lifecycle rather than a separate epoch counter, addendum to #6451: this makes the
+/// previously-dead `with_previous_hwm_key` slot (#6453) reachable for the first time, since
+/// `key_id` defaults to `0` and un-rotated deployments already stamp `key_epoch = 0` rows, no
+/// migration is needed.
+///
+/// Returns `current: None` when `ZEPH_DURABLE_KEY` is not (yet) resolvable from the vault — the
+/// same graceful-degrade posture as the rest of durable bootstrap (a missing key means the
+/// mechanism is inactive for this run, not that a verification failed) — rather than hard-failing
+/// bootstrap. Fails closed (`Err`), mirroring [`load_control_hmac_key`]'s own previous-key stance,
+/// when a rotation window is declared (`previous_key_id.is_some()`) but
+/// `ZEPH_DURABLE_KEY_PREVIOUS` cannot be resolved or decoded: a declared window must never
+/// silently degrade to no previous slot.
+///
+/// # Errors
+///
+/// Returns an error when `ZEPH_DURABLE_KEY` resolves but fails to decode, or a rotation window is
+/// declared but `ZEPH_DURABLE_KEY_PREVIOUS` cannot be resolved or decoded.
+pub(crate) fn load_write_hwm_key(config: &Config) -> anyhow::Result<HwmKeys> {
     let dir = zeph_core::vault::default_vault_dir();
     let Ok(provider) = AgeVaultProvider::load(&dir.join("vault-key.txt"), &dir.join("secrets.age"))
     else {
-        return Ok(None);
+        return Ok(HwmKeys::default());
     };
-    let Some(key) = provider.get("ZEPH_DURABLE_KEY") else {
-        return Ok(None);
+    let Some(key) = provider.get(CURRENT_KEY_VAULT_NAME) else {
+        return Ok(HwmKeys::default());
     };
     let hwm_key = zeph_core::durable::derive_hwm_key_b64(key).map_err(|e| {
-        anyhow::anyhow!("invalid ZEPH_DURABLE_KEY for high-water-mark derivation: {e}")
+        anyhow::anyhow!("invalid {CURRENT_KEY_VAULT_NAME} for high-water-mark derivation: {e}")
     })?;
-    Ok(Some((zeph_core::durable::HWM_KEY_EPOCH, hwm_key)))
+    let current = Some(HwmSlot {
+        epoch: u32::from(config.durable.key_id),
+        key: hwm_key,
+    });
+
+    let previous = if let Some(prev_id) = config.durable.previous_key_id {
+        let prev_key = provider.get(PREVIOUS_KEY_VAULT_NAME).ok_or_else(|| {
+            anyhow::anyhow!(
+                "durable config declares previous_key_id = {prev_id} but \
+                 {PREVIOUS_KEY_VAULT_NAME} is missing from the vault; refusing to build \
+                 high-water-mark keys with an inconsistent rotation state (this can happen if \
+                 a previous `zeph durable rotate-key` run crashed mid-write) — reconcile config \
+                 and vault to a consistent pair, or re-run `zeph durable rotate-key` to see \
+                 recovery guidance, before retrying"
+            )
+        })?;
+        Some(HwmSlot {
+            epoch: u32::from(prev_id),
+            key: zeph_core::durable::derive_hwm_key_b64(prev_key).map_err(|e| {
+                anyhow::anyhow!(
+                    "invalid {PREVIOUS_KEY_VAULT_NAME} for high-water-mark derivation: {e}"
+                )
+            })?,
+        })
+    } else {
+        None
+    };
+
+    Ok(HwmKeys { current, previous })
 }
 
 /// Resolve the AEAD payload cipher to attach on a durable *write* path when
@@ -273,17 +379,26 @@ pub(crate) fn load_write_cipher(
 /// gate exists to reject, regardless of whether the read is via a write path or `--reveal`
 /// (#5996). The permitted single-user local override still emits a startup `WARN` and proceeds.
 ///
-/// Also attaches the control-entry HMAC key ([`load_control_hmac_key`]) whenever this deployment
+/// Also attaches the control-entry HMAC keys ([`load_control_hmac_key`]) whenever this deployment
 /// is a declared/detected shared database, unconditionally of `reveal` — HMAC verification guards
 /// every read of a control entry (`list`/`show`/`inspect`/`prune`/`resume`/`--reveal` alike), not
-/// just the decrypted view (#6043/#6044).
+/// just the decrypted view (#6043/#6044). Attaches the previous key too when a `zeph durable
+/// rotate-key` window is open (#6451), so a pre-rotation `EffectIntent` control entry stays
+/// readable on this CLI read path through the window, mirroring the two other runtime read paths
+/// (agent replay, scheduler daemon).
+///
+/// Also attaches the high-water-mark keys ([`load_write_hwm_key`], addendum to #6451) — current
+/// unconditionally (FR-009) and previous whenever a rotation window is open — mirroring the
+/// control-entry HMAC attach above, so this CLI read path stays symmetric with the other two
+/// runtime read channels for both key families.
 ///
 /// Returns `Ok(None)` when no journal file exists yet (a friendly signal that durable execution has
 /// not run on this deployment), so the caller can print guidance instead of creating an empty file.
 async fn open_backend(config: &Config, reveal: bool) -> anyhow::Result<Option<LocalBackend>> {
     let url = resolve_durable_db_url(config);
     enforce_encryption_gate(&config.durable, &url)?;
-    let hmac_key = load_control_hmac_key(&config.durable, &url)?;
+    let hmac_keys = load_control_hmac_key(&config.durable, &url)?;
+    let hwm_keys = load_write_hwm_key(config)?;
     if url != ":memory:" && !Path::new(&url).exists() {
         println!(
             "No durable journal at {url}.\n\
@@ -298,8 +413,23 @@ async fn open_backend(config: &Config, reveal: bool) -> anyhow::Result<Option<Lo
         .init()
         .await
         .map_err(|e| anyhow::anyhow!("failed to initialize durable schema: {e}"))?;
-    let backend = if let Some(key) = hmac_key {
+    let backend = if let Some(key) = hmac_keys.current {
         backend.with_hmac_key(key)
+    } else {
+        backend
+    };
+    let backend = if let Some(key) = hmac_keys.previous {
+        backend.with_previous_hmac_key(key)
+    } else {
+        backend
+    };
+    let backend = if let Some(slot) = hwm_keys.current {
+        backend.with_hwm_key(slot.epoch, slot.key)
+    } else {
+        backend
+    };
+    let backend = if let Some(slot) = hwm_keys.previous {
+        backend.with_previous_hwm_key(slot.epoch, slot.key)
     } else {
         backend
     };
@@ -316,8 +446,19 @@ async fn open_backend(config: &Config, reveal: bool) -> anyhow::Result<Option<Lo
 /// # Errors
 ///
 /// Returns an error if the config cannot be loaded, the journal cannot be opened, or a query fails.
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn handle_durable_command(
+    cmd: DurableCommand,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    // Boxed so every caller's own future only holds a thin `Pin<Box<dyn Future>>` rather than
+    // this function's full match-arm state machine inline — with `ControlHmacKeys` threaded
+    // through several branches (#6451), the inlined future crossed clippy's `large_futures`
+    // budget at essentially every call site.
+    Box::pin(handle_durable_command_inner(cmd, config_path)).await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn handle_durable_command_inner(
     cmd: DurableCommand,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
@@ -501,7 +642,6 @@ pub(crate) async fn handle_durable_command(
             dry_run,
             drop_previous,
             force,
-            ack_shared_db_drain,
         } => {
             handle_rotate_key(
                 &config_file,
@@ -510,7 +650,6 @@ pub(crate) async fn handle_durable_command(
                     dry_run,
                     drop_previous,
                     force,
-                    ack_shared_db_drain,
                 },
             )
             .await?;
@@ -521,10 +660,10 @@ pub(crate) async fn handle_durable_command(
 }
 
 /// Flags controlling `zeph durable rotate-key`'s behavior, bundled into one struct rather than
-/// four positional `bool` parameters (past clippy's `fn_params_excessive_bools` threshold, and
-/// call sites read as named fields instead of an ambiguous run of `bool`s).
+/// three positional `bool` parameters (call sites read as named fields instead of an ambiguous
+/// run of `bool`s).
 ///
-/// The four flags are independent CLI switches (mirroring `DurableConfig`'s own
+/// The three flags are independent CLI switches (mirroring `DurableConfig`'s own
 /// `#[allow(clippy::struct_excessive_bools)]` precedent) — not state-machine variants, since any
 /// combination is meaningful (e.g. `--dry-run --drop-previous --force`).
 #[allow(clippy::struct_excessive_bools)]
@@ -533,12 +672,9 @@ struct RotateKeyOptions {
     dry_run: bool,
     /// Close an open rotation window instead of opening a new one.
     drop_previous: bool,
-    /// Skip the `--drop-previous` blob-scan (drop-previous only; never gates the open-window or
-    /// shared-database refusals — see [`handle_open_window`]).
+    /// Skip the `--drop-previous` safety scans (drop-previous only; never gates the open-window
+    /// refusal — see [`handle_open_window`]).
     force: bool,
-    /// Acknowledge rotating on a declared/detected shared database despite the control-entry
-    /// HMAC having no rotation window of its own.
-    ack_shared_db_drain: bool,
 }
 
 /// Open or close a `ZEPH_DURABLE_KEY` AEAD rotation window (`zeph durable rotate-key`, #6447).
@@ -605,13 +741,7 @@ async fn handle_rotate_key(
     if opts.drop_previous {
         handle_drop_previous(config_file, config, &mut provider, opts.dry_run, opts.force).await
     } else {
-        handle_open_window(
-            config_file,
-            config,
-            &mut provider,
-            opts.dry_run,
-            opts.ack_shared_db_drain,
-        )
+        handle_open_window(config_file, config, &mut provider, opts.dry_run)
     }
 }
 
@@ -622,15 +752,16 @@ async fn handle_rotate_key(
 /// declaring a window that the vault does not yet back, which [`load_durable_cipher`]'s
 /// fail-closed branch turns into a loud startup error instead of a silent mis-decrypt. Refuses a
 /// second window while one is already open (R2 — the cipher holds only one previous key slot, so
-/// a second rotation would silently orphan the first previous key) and refuses on a
-/// declared/detected shared database without `--ack-shared-db-drain` (R3 — the control-entry HMAC
-/// key has no rotation window). Neither refusal is bypassable by any flag.
+/// a second rotation would silently orphan the first previous key); not bypassable by any flag.
+/// On a declared/detected shared database, `ZEPH_DURABLE_KEY_PREVIOUS` now backs a rotation
+/// window for the control-entry HMAC key too ([`LocalBackend::with_previous_hmac_key`], #6451),
+/// so shared-DB rotation needs no separate acknowledgement — it is exactly as safe as local
+/// rotation.
 fn handle_open_window(
     config_file: &Path,
     config: &Config,
     provider: &mut AgeVaultProvider,
     dry_run: bool,
-    ack_shared_db_drain: bool,
 ) -> anyhow::Result<()> {
     // R2 — refuse to open a second window; the cipher's single previous-key slot cannot hold two.
     if let Some(prev_id) = config.durable.previous_key_id {
@@ -639,21 +770,6 @@ fn handle_open_window(
              `zeph durable rotate-key --drop-previous` after the retention window has elapsed, \
              then rotate again"
         );
-    }
-
-    // R3 — shared-DB guard, enforced (not merely documented). Never bypassable by --force.
-    let url = resolve_durable_db_url(config);
-    if is_shared_db(&config.durable, &url) && !ack_shared_db_drain {
-        let msg = "this durable journal is a shared database. Rotating ZEPH_DURABLE_KEY \
-             re-derives the control-entry HMAC key, which has no rotation window of its own -- \
-             every in-flight execution's control entries will fail ControlIntegrity until they \
-             drain. Drain (finalize/prune) all in-flight executions first, then re-run with \
-             --ack-shared-db-drain. (HMAC-key rotation window: follow-up to #6447.)";
-        if dry_run {
-            println!("DRY RUN: {msg}");
-            return Ok(());
-        }
-        anyhow::bail!("{msg}");
     }
 
     let Some(old_key_b64) = provider.get(CURRENT_KEY_VAULT_NAME).map(str::to_owned) else {
@@ -708,17 +824,73 @@ fn handle_open_window(
     Ok(())
 }
 
-/// Close an open rotation window: verify no sealed payload still uses the previous key, then
-/// remove `ZEPH_DURABLE_KEY_PREVIOUS` from the vault and clear `previous_key_id`.
+/// Resolve both control-entry HMAC keys from `provider` for the `--drop-previous` HMAC scan
+/// (#6451 critic finding 1): the current key (must be present) and the previous key (must be
+/// present given `previous_key_id` is `Some`, per the caller's partial-state detector).
 ///
-/// The blob-scan verification is default-on (R4): refuses the drop when
-/// [`LocalBackend::count_sealed_under_key_id`] finds any surviving row, since dropping the
-/// previous key then makes those blobs permanently unreadable. `--force` skips the scan for an
-/// operator who has independently confirmed pruning is complete; it applies **only** to this
-/// scan, never to the caller's partial-state detector or [`handle_open_window`]'s refusals. A
-/// call with no window open (`previous_key_id = None`, `ZEPH_DURABLE_KEY_PREVIOUS` absent — the
-/// caller's partial-state detector already guarantees these agree) is a clean informational
-/// no-op, not an error.
+/// A plain (non-async) helper so this derivation's intermediate `&str` vault borrows and key
+/// bytes never live inside [`handle_drop_previous`]'s generated `async fn` state machine.
+///
+/// # Errors
+///
+/// Returns an error if either vault secret is missing or fails to decode.
+fn resolve_hmac_keys_for_drop_scan(
+    provider: &AgeVaultProvider,
+    previous_key_id: u8,
+) -> anyhow::Result<([u8; 32], [u8; 32])> {
+    let current_key_b64 = provider.get(CURRENT_KEY_VAULT_NAME).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{CURRENT_KEY_VAULT_NAME} not found in vault; cannot verify control-entry HMACs \
+             before dropping the previous key"
+        )
+    })?;
+    let current_hmac_key = zeph_core::durable::derive_control_hmac_key_b64(current_key_b64)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "invalid {CURRENT_KEY_VAULT_NAME} for control-entry HMAC derivation: {e}"
+            )
+        })?;
+    let previous_key_b64 = provider.get(PREVIOUS_KEY_VAULT_NAME).ok_or_else(|| {
+        anyhow::anyhow!(
+            "durable config declares previous_key_id = {previous_key_id} but \
+             {PREVIOUS_KEY_VAULT_NAME} is missing from the vault; refusing to verify \
+             control-entry HMACs with an inconsistent rotation state"
+        )
+    })?;
+    let previous_hmac_key = zeph_core::durable::derive_control_hmac_key_b64(previous_key_b64)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "invalid {PREVIOUS_KEY_VAULT_NAME} for control-entry HMAC derivation: {e}"
+            )
+        })?;
+    Ok((current_hmac_key, previous_hmac_key))
+}
+
+/// Close an open rotation window: verify no sealed payload and no control-entry HMAC still
+/// depends on the previous key, then remove `ZEPH_DURABLE_KEY_PREVIOUS` from the vault and clear
+/// `previous_key_id`.
+///
+/// Three independent safety scans are default-on: the AEAD blob-scan (R4) refuses the drop when
+/// [`LocalBackend::count_sealed_under_key_id`] finds any surviving payload; the HMAC scan (#6451)
+/// refuses when [`LocalBackend::count_control_entries_under_previous_hmac`] finds any control
+/// entry that verifies only under the previous key — the blob-scan alone would miss a
+/// payload-less crash-orphan `EffectIntent`; and the HWM scan (addendum to #6451) refuses when
+/// [`LocalBackend::count_integrity_rows_under_epoch`] finds any surviving execution whose
+/// high-water-mark is still addressed to the previous epoch — the only one of the three that
+/// catches a checkpoint-folded pre-rotation execution (`checkpoint_fold` never re-signs the HWM,
+/// so a folded execution's payloads and control entries can both be gone while its integrity row
+/// still carries the previous epoch; see [`LocalBackend::count_integrity_rows_under_epoch`]'s own
+/// doc). The HMAC scan needs a backend keyed with **both** the current and previous HMAC keys to
+/// recompute rows for comparison, so this is a dedicated (fourth) key-attach site, distinct from
+/// the three runtime read paths that only ever attach keys derived by [`load_control_hmac_key`];
+/// the HWM scan needs no key material at all — it is a plain indexed `COUNT` on the public
+/// `key_epoch` column, so it runs first (cheapest-first ordering) on the still-owned `backend`
+/// handle, before that handle is consumed by the HMAC scan's key attach. `--force` skips all
+/// three scans for an operator who has independently confirmed pruning is complete; it applies
+/// **only** to these scans, never to the caller's partial-state detector or
+/// [`handle_open_window`]'s refusal. A call with no window open (`previous_key_id = None`,
+/// `ZEPH_DURABLE_KEY_PREVIOUS` absent — the caller's partial-state detector already guarantees
+/// these agree) is a clean informational no-op, not an error.
 async fn handle_drop_previous(
     config_file: &Path,
     config: &Config,
@@ -752,6 +924,59 @@ async fn handle_drop_previous(
                      is complete (note: a deployment with plaintext-mode rows -- \
                      encrypt_payload = false -- can occasionally over-count a coincidental \
                      leading byte match; that is fail-safe, never a missed match)."
+                );
+            }
+
+            // HWM drop-scan (addendum to #6451): a plain indexed COUNT, no key material needed,
+            // so it runs on the still-owned `backend` handle before the HMAC scan below consumes
+            // it into `hmac_backend`. Cheapest-first ordering (indexed COUNT before the O(rows)
+            // trial-verify HMAC scan). This is the only scan that catches a checkpoint-folded
+            // pre-rotation execution — see `count_integrity_rows_under_epoch`'s doc.
+            let hwm_matches = backend
+                .count_integrity_rows_under_epoch(u32::from(previous_key_id))
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to scan high-water-mark rows for epoch {previous_key_id}: {e}"
+                    )
+                })?;
+            if hwm_matches > 0 {
+                anyhow::bail!(
+                    "refusing to drop: {hwm_matches} execution(s) in {url} still carry a \
+                     high-water-mark signed under the previous key epoch ({previous_key_id}). \
+                     Dropping the previous key now would make them unresumable \
+                     (HighWaterMarkIntegrity: key_epoch_unresolvable) — this includes \
+                     checkpoint-folded executions that the payload and control-entry scans \
+                     cannot see. Wait for retention to prune the owning executions, or pass \
+                     --force to skip this scan if you have independently confirmed pruning is \
+                     complete."
+                );
+            }
+
+            // HMAC drop-scan (#6451 critic finding 1): needs both keys attached to recompute
+            // and compare each control entry's row HMAC. Resolved in a plain (non-async) helper
+            // so the derived key material and intermediate `&str` borrows do not inflate this
+            // async fn's generated state machine (clippy::large_futures).
+            let (current_hmac_key, previous_hmac_key) =
+                resolve_hmac_keys_for_drop_scan(provider, previous_key_id)?;
+            let hmac_backend = backend
+                .with_hmac_key(current_hmac_key)
+                .with_previous_hmac_key(previous_hmac_key);
+            let hmac_matches = hmac_backend
+                .count_control_entries_under_previous_hmac()
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to scan control entries for previous-key-only HMACs: {e}"
+                    )
+                })?;
+            if hmac_matches > 0 {
+                anyhow::bail!(
+                    "refusing to drop: {hmac_matches} control entry(ies) in {url} still verify \
+                     only under the previous control-entry HMAC key. Dropping the previous key \
+                     now would make them permanently unreadable (ControlIntegrity). Wait for \
+                     retention to prune the owning executions, or pass --force to skip this scan \
+                     if you have independently confirmed pruning is complete."
                 );
             }
         }
@@ -1374,9 +1599,10 @@ mod tests {
     async fn load_write_hmac_key_returns_none_for_single_user_local() {
         let config = Config::default();
         assert!(!config.durable.shared_db);
+        let keys = load_write_hmac_key(&config).unwrap();
         assert!(
-            load_write_hmac_key(&config).unwrap().is_none(),
-            "single-user local, non-shared database must not resolve an HMAC key"
+            keys.current.is_none() && keys.previous.is_none(),
+            "single-user local, non-shared database must not resolve either HMAC key"
         );
     }
 
@@ -1559,7 +1785,7 @@ mod tests {
         }
 
         assert!(
-            result.unwrap().is_some(),
+            result.unwrap().current.is_some(),
             "a declared shared database with a real vault key must resolve an HMAC key"
         );
     }
@@ -1638,7 +1864,6 @@ mod tests {
                 dry_run: false,
                 drop_previous: false,
                 force: false,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
@@ -1676,7 +1901,6 @@ mod tests {
                 dry_run: false,
                 drop_previous: false,
                 force: false,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
@@ -1690,7 +1914,6 @@ mod tests {
                 dry_run: false,
                 drop_previous: false,
                 force: false,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
@@ -1722,7 +1945,6 @@ mod tests {
                 dry_run: true,
                 drop_previous: false,
                 force: false,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
@@ -1756,7 +1978,6 @@ mod tests {
                 dry_run: false,
                 drop_previous: true,
                 force: false,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
@@ -1793,7 +2014,6 @@ mod tests {
                 dry_run: false,
                 drop_previous: false,
                 force: false,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
@@ -1837,7 +2057,6 @@ mod tests {
                 dry_run: false,
                 drop_previous: true,
                 force: false,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
@@ -1857,7 +2076,6 @@ mod tests {
                 dry_run: false,
                 drop_previous: true,
                 force: true,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
@@ -1890,7 +2108,6 @@ mod tests {
                 dry_run: false,
                 drop_previous: false,
                 force: false,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
@@ -1902,11 +2119,13 @@ mod tests {
         );
     }
 
-    /// R3: rotating a declared shared database is refused without `--ack-shared-db-drain`, and
-    /// proceeds once it is passed.
+    /// #6451: rotating a declared shared database now succeeds without any acknowledgement flag —
+    /// the R3 refusal (`--ack-shared-db-drain`) existed solely because the control-entry HMAC key
+    /// had no rotation window of its own; that premise is closed by `with_previous_hmac_key`, so
+    /// shared-DB rotation is exactly as safe as local rotation.
     #[tokio::test]
     #[serial]
-    async fn rotate_key_refuses_on_shared_db_without_ack() {
+    async fn rotate_key_succeeds_on_shared_db_without_any_acknowledgement() {
         let _guard = VaultDirGuard::new();
         seed_vault_with_durable_key();
         let dir = tempfile::tempdir().unwrap();
@@ -1918,37 +2137,25 @@ mod tests {
         std::fs::write(&config_path, toml).unwrap();
         std::fs::write(resolve_durable_db_url(&config), []).unwrap();
 
-        let refused = handle_durable_command(
+        let result = handle_durable_command(
             DurableCommand::RotateKey {
                 dry_run: false,
                 drop_previous: false,
                 force: false,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
         .await;
         assert!(
-            refused.is_err(),
-            "a shared database must refuse rotation without --ack-shared-db-drain"
-        );
-        assert_eq!(load_config_or_default(&config_path).durable.key_id, 0);
-
-        let acked = handle_durable_command(
-            DurableCommand::RotateKey {
-                dry_run: false,
-                drop_previous: false,
-                force: false,
-                ack_shared_db_drain: true,
-            },
-            Some(&config_path),
-        )
-        .await;
-        assert!(
-            acked.is_ok(),
-            "--ack-shared-db-drain must allow rotation to proceed: {acked:?}"
+            result.is_ok(),
+            "a shared database must rotate without any acknowledgement flag now that the \
+             control-entry HMAC key has its own rotation window: {result:?}"
         );
         assert_eq!(load_config_or_default(&config_path).durable.key_id, 1);
+        assert_eq!(
+            load_config_or_default(&config_path).durable.previous_key_id,
+            Some(0)
+        );
     }
 
     // ── Gap-closing tests (team-lead review round, #6447) ──────────────────────────────────
@@ -2093,7 +2300,6 @@ mod tests {
                 dry_run: false,
                 drop_previous: false,
                 force: false,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
@@ -2104,7 +2310,6 @@ mod tests {
                 dry_run: false,
                 drop_previous: true,
                 force: true,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
@@ -2144,7 +2349,6 @@ mod tests {
                 dry_run: false,
                 drop_previous: false,
                 force: false,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
@@ -2195,7 +2399,6 @@ mod tests {
                 dry_run: true,
                 drop_previous: true,
                 force: false,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
@@ -2284,7 +2487,6 @@ mod tests {
                 dry_run: false,
                 drop_previous: false,
                 force: false,
-                ack_shared_db_drain: false,
             },
             Some(&config_path),
         )
@@ -2345,5 +2547,406 @@ mod tests {
             }
             other => panic!("unexpected entry kind: {other:?}"),
         }
+    }
+
+    /// #6451 regression (tester finding: missing CLI-read-channel coverage): the CLI read
+    /// channel (`open_backend`, backing `list`/`show`/`inspect`/`prune`/`resume`) is one of the
+    /// three runtime read channels that must verify a pre-rotation `EffectIntent` control entry
+    /// through an open rotation window (try-both: current-key-fail, previous-key-succeed) —
+    /// agent replay and the scheduler daemon already have dedicated coverage
+    /// (`open_durable_backend_reads_previous_key_control_entry_through_rotation_window` in
+    /// `zeph-core`, `scheduler_daemon_reads_previous_key_control_entry_through_rotation_window`
+    /// in `scheduler_daemon.rs`); this CLI channel did not.
+    #[tokio::test]
+    #[serial]
+    async fn cli_read_channel_verifies_previous_key_control_entry_through_rotation_window() {
+        use zeph_durable::{EffectClass, EntryKind, ExecutionKind, IdempotencyKey, JournalEntry};
+
+        let _guard = VaultDirGuard::new();
+        seed_vault_with_durable_key();
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.memory.sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+        config.durable.shared_db = true;
+        let toml = toml::to_string_pretty(&config).unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, toml).unwrap();
+
+        handle_durable_command(
+            DurableCommand::RotateKey {
+                dry_run: false,
+                drop_previous: false,
+                force: false,
+            },
+            Some(&config_path),
+        )
+        .await
+        .unwrap();
+
+        let rotated = load_config_or_default(&config_path);
+        let url = resolve_durable_db_url(&rotated);
+        let previous_hmac = load_control_hmac_key(&rotated.durable, &url)
+            .unwrap()
+            .previous
+            .expect("rotation window must be open after rotate-key");
+
+        let exec = ExecutionId::new();
+        {
+            let backend = LocalBackend::open(&url, rotated.durable.max_payload_bytes)
+                .await
+                .unwrap()
+                .with_hmac_key(previous_hmac);
+            backend.init().await.unwrap();
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+            let step_id = zeph_durable::StepId::new(0);
+            backend
+                .append(JournalEntry {
+                    seq: None,
+                    execution_id: exec,
+                    kind: ExecutionKind::AgentTurn,
+                    step_id,
+                    entry: EntryKind::EffectIntent {
+                        idempotency_key: IdempotencyKey::derive(exec, step_id, b"transfer"),
+                        effect: EffectClass::ExactlyOnceGuarded,
+                        hmac: None,
+                    },
+                    created_at_ms: 0,
+                })
+                .await
+                .unwrap();
+        }
+
+        let result = handle_durable_command(
+            DurableCommand::Show {
+                id: exec.as_uuid().to_string(),
+                reveal: true,
+                json: false,
+            },
+            Some(&config_path),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "the CLI read channel must verify a pre-rotation EffectIntent control entry through \
+             the open rotation window (try-both current-then-previous): {result:?}"
+        );
+    }
+
+    /// #6451 critic finding 1 (tester finding: missing end-to-end coverage): the
+    /// `--drop-previous` HMAC scan (`resolve_hmac_keys_for_drop_scan` /
+    /// `count_control_entries_under_previous_hmac`) was previously only unit-tested in isolation
+    /// at the backend level. This drives it end-to-end through `handle_durable_command` with a
+    /// payload-less `EffectIntent` (the crash-orphan shape: intent recorded, its `StepResult`
+    /// never committed) signed only under the previous control-entry HMAC key — the AEAD
+    /// blob-scan alone could never catch a missed wiring here, since there is no payload at all.
+    #[tokio::test]
+    #[serial]
+    async fn rotate_key_drop_previous_refuses_a_payload_less_previous_key_only_effect_intent() {
+        use zeph_durable::{EffectClass, EntryKind, ExecutionKind, IdempotencyKey, JournalEntry};
+
+        let _guard = VaultDirGuard::new();
+        seed_vault_with_durable_key();
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.memory.sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+        config.durable.shared_db = true;
+        let toml = toml::to_string_pretty(&config).unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, toml).unwrap();
+
+        handle_durable_command(
+            DurableCommand::RotateKey {
+                dry_run: false,
+                drop_previous: false,
+                force: false,
+            },
+            Some(&config_path),
+        )
+        .await
+        .unwrap();
+
+        let rotated = load_config_or_default(&config_path);
+        let url = resolve_durable_db_url(&rotated);
+        let previous_hmac = load_control_hmac_key(&rotated.durable, &url)
+            .unwrap()
+            .previous
+            .expect("rotation window must be open after rotate-key");
+
+        let exec = ExecutionId::new();
+        {
+            let backend = LocalBackend::open(&url, rotated.durable.max_payload_bytes)
+                .await
+                .unwrap()
+                .with_hmac_key(previous_hmac);
+            backend.init().await.unwrap();
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+            let step_id = zeph_durable::StepId::new(0);
+            backend
+                .append(JournalEntry {
+                    seq: None,
+                    execution_id: exec,
+                    kind: ExecutionKind::AgentTurn,
+                    step_id,
+                    entry: EntryKind::EffectIntent {
+                        idempotency_key: IdempotencyKey::derive(exec, step_id, b"crash-orphan"),
+                        effect: EffectClass::ExactlyOnceGuarded,
+                        hmac: None,
+                    },
+                    created_at_ms: 0,
+                })
+                .await
+                .unwrap();
+            // Deliberately no StepResult committed: the crash-orphan shape this scan exists for.
+        }
+
+        let refused = handle_durable_command(
+            DurableCommand::RotateKey {
+                dry_run: false,
+                drop_previous: true,
+                force: false,
+            },
+            Some(&config_path),
+        )
+        .await;
+        assert!(
+            refused.is_err(),
+            "drop-previous must refuse while a payload-less EffectIntent verifies only under \
+             the previous control-entry HMAC key"
+        );
+        assert_eq!(
+            load_config_or_default(&config_path).durable.previous_key_id,
+            Some(0),
+            "the refused drop must not clear previous_key_id"
+        );
+
+        let forced = handle_durable_command(
+            DurableCommand::RotateKey {
+                dry_run: false,
+                drop_previous: true,
+                force: true,
+            },
+            Some(&config_path),
+        )
+        .await;
+        assert!(
+            forced.is_ok(),
+            "--force must skip the HMAC scan: {forced:?}"
+        );
+    }
+
+    /// S1 CLI-level coverage (addendum to #6451, spec-081 FR-008): `--drop-previous` must refuse
+    /// when a `durable_execution_integrity` row still carries the previous key epoch, even when
+    /// neither the AEAD blob-scan nor the control-HMAC scan finds anything to refuse on — the
+    /// exact shape a checkpoint-folded pre-rotation execution leaves behind (see the backend-level
+    /// fold regression,
+    /// `count_integrity_rows_under_epoch_catches_a_checkpoint_folded_pre_rotation_execution`, in
+    /// `zeph-durable`'s own test module for the full fold mechanics — `checkpoint_fold` itself is
+    /// `pub(crate)` inside `zeph-durable` and not reachable from this CLI crate, so this test
+    /// drives the scan's target state directly: an execution with no journal rows at all, but an
+    /// integrity row still addressed to the previous epoch).
+    #[tokio::test]
+    #[serial]
+    async fn rotate_key_drop_previous_refuses_when_only_the_hwm_scan_catches_a_stale_epoch_row() {
+        let _guard = VaultDirGuard::new();
+        seed_vault_with_durable_key();
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_config_toml(dir.path());
+
+        handle_durable_command(
+            DurableCommand::RotateKey {
+                dry_run: false,
+                drop_previous: false,
+                force: false,
+            },
+            Some(&config_path),
+        )
+        .await
+        .unwrap();
+        let rotated = load_config_or_default(&config_path);
+        assert_eq!(rotated.durable.previous_key_id, Some(0));
+
+        let url = resolve_durable_db_url(&rotated);
+        let exec = ExecutionId::new();
+        {
+            let backend = LocalBackend::open(&url, rotated.durable.max_payload_bytes)
+                .await
+                .unwrap();
+            backend.init().await.unwrap();
+            zeph_db::query(zeph_db::sql!(
+                "INSERT INTO durable_executions
+                    (execution_id, kind, status, created_at, updated_at, finalized_at)
+                 VALUES (?, 'agent_turn', 'running', 0, 0, NULL)"
+            ))
+            .bind(exec.as_uuid().to_string())
+            .execute(backend.pool())
+            .await
+            .unwrap();
+            zeph_db::query(zeph_db::sql!(
+                "INSERT INTO durable_execution_integrity
+                    (execution_id, key_epoch, max_committed_step_id, committed_result_count, hwm_hmac, updated_at)
+                 VALUES (?, 0, 0, 1, ?, 0)"
+            ))
+            .bind(exec.as_uuid().to_string())
+            .bind(vec![0u8; 32])
+            .execute(backend.pool())
+            .await
+            .unwrap();
+        }
+
+        let refused = handle_durable_command(
+            DurableCommand::RotateKey {
+                dry_run: false,
+                drop_previous: true,
+                force: false,
+            },
+            Some(&config_path),
+        )
+        .await;
+        assert!(
+            refused.is_err(),
+            "drop-previous must refuse while an integrity row still carries the previous epoch, \
+             even with no payload or control-entry evidence"
+        );
+        assert_eq!(
+            load_config_or_default(&config_path).durable.previous_key_id,
+            Some(0),
+            "the refused drop must not clear previous_key_id"
+        );
+
+        let forced = handle_durable_command(
+            DurableCommand::RotateKey {
+                dry_run: false,
+                drop_previous: true,
+                force: true,
+            },
+            Some(&config_path),
+        )
+        .await;
+        assert!(forced.is_ok(), "--force must skip the HWM scan: {forced:?}");
+    }
+
+    /// M4 (addendum to #6451): with the HWM epoch now wired to `config.durable.key_id`, a benign
+    /// rotation must classify as `key_epoch_unresolvable` ("possibly re-keyed") when resumed
+    /// without the previous slot attached, and resolve cleanly via the previous slot when the
+    /// rotation window is open — never as `hmac_mismatch` (TAMPER). Before this addendum,
+    /// `HWM_KEY_EPOCH` was a frozen `const = 0`, so a benign rotation misclassified as TAMPER
+    /// (both epochs read 0, but signed under different keys); this is the production-wiring
+    /// counterpart to `zeph-durable`'s own backend-level classification tests
+    /// (`hwm_unresolvable_key_epoch_fails_closed_not_legacy`,
+    /// `hwm_previous_epoch_key_resolves_as_rekeyed_not_tampered`).
+    #[tokio::test]
+    #[serial]
+    async fn load_write_hwm_key_epoch_matches_key_id_so_rotation_classifies_as_rekeyed_not_tamper()
+    {
+        let _guard = VaultDirGuard::new();
+        seed_vault_with_durable_key();
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_config_toml(dir.path());
+
+        let exec = ExecutionId::new();
+        {
+            let config = load_config_or_default(&config_path);
+            let hwm_keys = load_write_hwm_key(&config).unwrap();
+            let slot = hwm_keys.current.expect("ZEPH_DURABLE_KEY is seeded");
+            assert_eq!(
+                slot.epoch, 0,
+                "un-rotated deployment (key_id=0) must stamp epoch 0 -- no migration"
+            );
+            let url = resolve_durable_db_url(&config);
+            let backend = LocalBackend::open(&url, config.durable.max_payload_bytes)
+                .await
+                .unwrap()
+                .with_hwm_key(slot.epoch, slot.key);
+            backend.init().await.unwrap();
+            backend
+                .open_execution(exec, zeph_durable::ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+            backend
+                .append(zeph_durable::JournalEntry {
+                    seq: None,
+                    execution_id: exec,
+                    kind: zeph_durable::ExecutionKind::AgentTurn,
+                    step_id: zeph_durable::StepId::new(0),
+                    entry: zeph_durable::EntryKind::StepResult {
+                        idempotency_key: zeph_durable::IdempotencyKey::derive(
+                            exec,
+                            zeph_durable::StepId::new(0),
+                            b"tool:test",
+                        ),
+                        payload: bytes::Bytes::copy_from_slice(b"pre-rotation result"),
+                        effect: zeph_durable::EffectClass::Idempotent,
+                        payload_version: 1,
+                    },
+                    created_at_ms: 0,
+                })
+                .await
+                .unwrap();
+        }
+
+        handle_durable_command(
+            DurableCommand::RotateKey {
+                dry_run: false,
+                drop_previous: false,
+                force: false,
+            },
+            Some(&config_path),
+        )
+        .await
+        .unwrap();
+
+        let rotated = load_config_or_default(&config_path);
+        assert_eq!(rotated.durable.key_id, 1);
+        assert_eq!(rotated.durable.previous_key_id, Some(0));
+        let hwm_keys = load_write_hwm_key(&rotated).unwrap();
+        let current = hwm_keys.current.expect("current HWM slot must resolve");
+        assert_eq!(current.epoch, 1, "epoch must follow key_id after rotation");
+        let previous = hwm_keys
+            .previous
+            .expect("previous HWM slot must resolve while the window is open");
+        assert_eq!(previous.epoch, 0);
+
+        let url = resolve_durable_db_url(&rotated);
+
+        // Resume WITHOUT the previous slot attached: the row's epoch (0) is neither the current
+        // epoch (1) nor a registered previous one, so this must classify as re-keyed, not tamper.
+        let no_previous = LocalBackend::open(&url, rotated.durable.max_payload_bytes)
+            .await
+            .unwrap()
+            .with_hwm_key(current.epoch, current.key);
+        let err = no_previous
+            .open_execution(exec, zeph_durable::ExecutionKind::AgentTurn)
+            .await
+            .unwrap_err();
+        match err {
+            zeph_durable::DurableError::HighWaterMarkIntegrity { reason, .. } => {
+                assert_eq!(
+                    reason, "key_epoch_unresolvable",
+                    "a benign rotation must classify as re-keyed, never as hmac_mismatch (TAMPER)"
+                );
+            }
+            other => panic!("expected HighWaterMarkIntegrity, got {other:?}"),
+        }
+
+        // Resume WITH both slots attached (the real production wiring during the window): the
+        // previous slot resolves the row cleanly.
+        let with_previous = LocalBackend::open(&url, rotated.durable.max_payload_bytes)
+            .await
+            .unwrap()
+            .with_hwm_key(current.epoch, current.key)
+            .with_previous_hwm_key(previous.epoch, previous.key);
+        assert!(
+            with_previous
+                .open_execution(exec, zeph_durable::ExecutionKind::AgentTurn)
+                .await
+                .unwrap(),
+            "a pre-rotation execution must resume cleanly through the open rotation window"
+        );
     }
 }

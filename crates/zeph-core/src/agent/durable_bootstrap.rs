@@ -38,9 +38,19 @@ const RETENTION_TASK_NAME: &str = "durable.retention_sweep";
 /// stance where control entries carry no HMAC. `hwm_key` (issue #6360) is meant to be attached
 /// unconditionally (FR-009): `None` only when `ZEPH_DURABLE_KEY` itself is unavailable — unlike
 /// `hmac_key`, single-user local deployments still get high-water-mark deletion detection.
+/// `previous_hmac_key` is `Some` only while a `zeph durable rotate-key` rotation window is open
+/// (#6451). `previous_hwm_key` is the HWM-side counterpart, `Some` under the same condition
+/// (addendum to #6451): unlike `previous_hmac_key`, its epoch reuses the AEAD cipher's `key_id`
+/// lifecycle rather than being epoch-less try-both (see `HwmKeySlot`/`with_previous_hwm_key` in
+/// `zeph-durable`).
 ///
 /// Returns `None` (after logging a `tracing::warn!`) on any I/O failure so callers degrade to
 /// non-durable mode rather than fail session bootstrap (#5452 FR-004).
+///
+/// `#[allow(clippy::too_many_arguments)]`: bundling the five key-material params into one
+/// `DurableKeyMaterial` struct is deliberately deferred (addendum to #6451, M2) — see
+/// `AgentBuilder::with_durable_orchestration`'s doc for the full rationale.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn open_durable_backend(
     task_supervisor: &zeph_common::TaskSupervisor,
     writer_task_name: &'static str,
@@ -49,6 +59,8 @@ pub(crate) async fn open_durable_backend(
     cipher: Option<Arc<dyn PayloadCipher>>,
     hmac_key: Option<[u8; 32]>,
     hwm_key: Option<(u32, [u8; 32])>,
+    previous_hmac_key: Option<[u8; 32]>,
+    previous_hwm_key: Option<(u32, [u8; 32])>,
 ) -> Option<(
     Arc<DurableBackendEnum>,
     JournalWriterHandle,
@@ -77,6 +89,16 @@ pub(crate) async fn open_durable_backend(
     };
     let local = if let Some((epoch, k)) = hwm_key {
         local.with_hwm_key(epoch, k)
+    } else {
+        local
+    };
+    let local = if let Some(k) = previous_hmac_key {
+        local.with_previous_hmac_key(k)
+    } else {
+        local
+    };
+    let local = if let Some((epoch, k)) = previous_hwm_key {
+        local.with_previous_hwm_key(epoch, k)
     } else {
         local
     };
@@ -118,6 +140,12 @@ impl<C: Channel> Agent<C> {
     /// The execution is keyed on the session's `ConversationId` (not per-turn), so every turn in
     /// the session journals as a step within the *same* execution and a crash mid-session can
     /// resume from any prior turn's journal state.
+    ///
+    /// `#[allow(clippy::too_many_lines)]`: threading `previous_hwm_key` alongside the existing
+    /// key-material stash (addendum to #6451) pushed this past the line budget by two lines;
+    /// splitting this single linear bootstrap sequence into sub-functions for that would add
+    /// indirection with no readability gain.
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn ensure_session_durable_ctx(&mut self) {
         if self.services.session.durable_ctx.is_some()
             || self.services.session.durable_ctx_init_attempted
@@ -147,6 +175,8 @@ impl<C: Channel> Agent<C> {
         let cipher = self.services.session.durable_agent_turns_cipher.clone();
         let hmac_key = self.services.session.durable_agent_turns_hmac_key;
         let hwm_key = self.services.session.durable_agent_turns_hwm_key;
+        let previous_hmac_key = self.services.session.durable_agent_turns_previous_hmac_key;
+        let previous_hwm_key = self.services.session.durable_agent_turns_previous_hwm_key;
 
         tracing::debug!("durable agent_turns: opening backend start");
         let backend_result = open_durable_backend(
@@ -157,6 +187,8 @@ impl<C: Channel> Agent<C> {
             cipher,
             hmac_key,
             hwm_key,
+            previous_hmac_key,
+            previous_hwm_key,
         )
         .await;
         tracing::debug!("durable agent_turns: opening backend done");
@@ -300,7 +332,7 @@ impl<C: Channel> Agent<C> {
 
 #[cfg(test)]
 mod tests {
-    use super::RETENTION_TASK_NAME;
+    use super::{RETENTION_TASK_NAME, open_durable_backend};
     use crate::agent::agent_tests::*;
 
     fn agent_with_conversation() -> crate::agent::Agent<MockChannel> {
@@ -356,6 +388,82 @@ mod tests {
         assert!(
             names.contains(&RETENTION_TASK_NAME.to_owned()),
             "expected {RETENTION_TASK_NAME:?} among supervised tasks, got {names:?}"
+        );
+    }
+
+    /// #6451 regression (critic finding 2): agent replay is one of the three runtime read
+    /// channels that must keep verifying a pre-rotation `EffectIntent` control entry through an
+    /// open rotation window. `open_durable_backend` is the shared glue both the P1 (agent-turn)
+    /// and P2 (orchestration) adapters route through (see the module doc), so exercising it
+    /// directly covers both. `EffectIntent` never carries a payload, so this also models the
+    /// payload-less crash-orphan shape the HMAC drop-scan exists for — the AEAD blob-scan alone
+    /// could never have caught a missed `previous_hmac_key` wiring here.
+    #[tokio::test]
+    async fn open_durable_backend_reads_previous_key_control_entry_through_rotation_window() {
+        use zeph_durable::Journal as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+        let current_key = [2u8; 32];
+        let previous_key = [1u8; 32];
+
+        let exec = zeph_durable::ExecutionId::new();
+        {
+            let pre_rotation_writer = zeph_durable::LocalBackend::open(&db_url, 1_048_576)
+                .await
+                .unwrap()
+                .with_hmac_key(previous_key);
+            pre_rotation_writer.init().await.unwrap();
+            pre_rotation_writer
+                .open_execution(exec, zeph_durable::ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+            let step_id = zeph_durable::StepId::new(0);
+            pre_rotation_writer
+                .append(zeph_durable::JournalEntry {
+                    seq: None,
+                    execution_id: exec,
+                    kind: zeph_durable::ExecutionKind::AgentTurn,
+                    step_id,
+                    entry: zeph_durable::EntryKind::EffectIntent {
+                        idempotency_key: zeph_durable::IdempotencyKey::derive(
+                            exec,
+                            step_id,
+                            b"transfer",
+                        ),
+                        effect: zeph_durable::EffectClass::ExactlyOnceGuarded,
+                        hmac: None,
+                    },
+                    created_at_ms: 0,
+                })
+                .await
+                .unwrap();
+        }
+
+        let task_supervisor =
+            zeph_common::TaskSupervisor::new(tokio_util::sync::CancellationToken::new());
+        let cfg = zeph_config::DurableConfig::default();
+        let backend_result = open_durable_backend(
+            &task_supervisor,
+            "test.durable.journal_writer",
+            &cfg,
+            &db_url,
+            None,
+            Some(current_key),
+            None,
+            Some(previous_key),
+            None,
+        )
+        .await;
+        let (backend, _writer, _task_handle) =
+            backend_result.expect("backend must open with both HMAC keys attached");
+        let zeph_durable::DurableBackendEnum::Local(local) = &*backend else {
+            panic!("expected LocalBackend");
+        };
+        assert!(
+            local.read_execution(exec).await.is_ok(),
+            "the agent-replay (P1/P2) shared backend glue must verify a pre-rotation \
+             EffectIntent control entry through the rotation window"
         );
     }
 

@@ -834,16 +834,11 @@ pub(crate) enum DurableCommand {
         /// clear `previous_key_id`, after verifying no sealed payload still uses the old key
         #[arg(long)]
         drop_previous: bool,
-        /// Skip the `--drop-previous` safety scan for sealed payloads still using the old key.
-        /// Applies only to `--drop-previous`; never bypasses the open-window or shared-database
-        /// refusals
+        /// Skip the `--drop-previous` safety scans for sealed payloads and control-entry HMACs
+        /// still depending on the old key. Applies only to `--drop-previous`; never bypasses the
+        /// open-window refusal
         #[arg(long)]
         force: bool,
-        /// Acknowledge that this durable journal is a shared database: rotating will re-derive
-        /// the control-entry HMAC key, which has no rotation window, breaking verification for
-        /// every in-flight execution until it drains
-        #[arg(long)]
-        ack_shared_db_drain: bool,
     },
 }
 

@@ -10,6 +10,11 @@
 //! missing) the panel shows the [`STATUS_UNAVAILABLE`] message; when `encryption_gate` (INV-8)
 //! rejects the deployment's configuration it shows [`STATUS_GATE_REJECTED`] instead, so the two
 //! distinct causes aren't conflated (see [`DurableStatus`]).
+//!
+//! The header also shows the current AEAD/HMAC `key_id` and, when a rotation window is open
+//! (`[durable] previous_key_id` set, #6451), a passive `rotation window open` indicator. This is
+//! visibility only — the panel never exposes a rotation action; rotation stays a
+//! restart-required CLI-only operation (`zeph durable rotate-key`).
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -61,6 +66,12 @@ pub struct DurableSnapshot {
     pub status: DurableStatus,
     /// Executions, newest first.
     pub executions: Vec<DurableRow>,
+    /// The current AEAD/HMAC key id (`[durable] key_id`, #6451).
+    pub key_id: u8,
+    /// Set when a key-rotation window is open (`[durable] previous_key_id`, #6451), carrying the
+    /// previous key id. Read-only visibility for the operator — the panel never offers a rotation
+    /// action; rotation stays a restart-required CLI-only operation (`zeph durable rotate-key`).
+    pub previous_key_id: Option<u8>,
 }
 
 fn status_color(status: &str) -> Color {
@@ -95,11 +106,21 @@ pub fn render(
     frame.render_widget(Clear, area);
 
     let exec_count = snapshot.executions.len();
-    let header_text = format!("durable · {exec_count}  [D]");
-    let header = Line::from(Span::styled(
-        header_text,
+    let mut header_spans = vec![Span::styled(
+        format!("durable · {exec_count}  key_id={}", snapshot.key_id),
+        theme.system_message.add_modifier(Modifier::BOLD),
+    )];
+    if let Some(previous_key_id) = snapshot.previous_key_id {
+        header_spans.push(Span::styled(
+            format!("  rotation window open (previous_key_id = {previous_key_id})"),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    header_spans.push(Span::styled(
+        "  [D]",
         theme.system_message.add_modifier(Modifier::BOLD),
     ));
+    let header = Line::from(header_spans);
     let splits = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     frame.render_widget(Paragraph::new(header), splits[0]);
 
@@ -206,6 +227,7 @@ mod tests {
         let snapshot = DurableSnapshot {
             status: DurableStatus::Unavailable,
             executions: Vec::new(),
+            ..DurableSnapshot::default()
         };
         let buf = render_over_sentinel(&snapshot);
         for cell in &buf.content {
@@ -227,6 +249,7 @@ mod tests {
         let snapshot = DurableSnapshot {
             status: DurableStatus::GateRejected,
             executions: Vec::new(),
+            ..DurableSnapshot::default()
         };
         let buf = render_over_sentinel(&snapshot);
         for cell in &buf.content {
@@ -254,6 +277,7 @@ mod tests {
                 step_count: 3,
                 age_secs: 12,
             }],
+            ..DurableSnapshot::default()
         };
         let buf = render_over_sentinel(&snapshot);
         for cell in &buf.content {
@@ -272,6 +296,7 @@ mod tests {
         let unavailable = render_over_sentinel(&DurableSnapshot {
             status: DurableStatus::Unavailable,
             executions: Vec::new(),
+            ..DurableSnapshot::default()
         });
         let rendered_unavailable: String = unavailable
             .content
@@ -284,6 +309,7 @@ mod tests {
         let gate_rejected = render_over_sentinel(&DurableSnapshot {
             status: DurableStatus::GateRejected,
             executions: Vec::new(),
+            ..DurableSnapshot::default()
         });
         let rendered_gate_rejected: String = gate_rejected
             .content
@@ -305,6 +331,7 @@ mod tests {
                 step_count: 7,
                 age_secs: 300,
             }],
+            ..DurableSnapshot::default()
         };
         let buf = render_over_sentinel(&snapshot);
         let rendered: String = buf.content.iter().map(|c| c.symbol().to_owned()).collect();
@@ -321,11 +348,57 @@ mod tests {
         let snapshot = DurableSnapshot {
             status: DurableStatus::Available,
             executions: Vec::new(),
+            ..DurableSnapshot::default()
         };
         let buf = render_over_sentinel(&snapshot);
         let rendered: String = buf.content.iter().map(|c| c.symbol().to_owned()).collect();
         assert!(rendered.contains("No durable executions recorded."));
         assert!(!rendered.contains(STATUS_UNAVAILABLE));
         assert!(!rendered.contains(STATUS_GATE_REJECTED));
+    }
+
+    /// Regression for #6450: the panel header must always show the active `key_id`, regardless
+    /// of whether a rotation window is open.
+    #[test]
+    fn header_always_shows_current_key_id() {
+        let snapshot = DurableSnapshot {
+            status: DurableStatus::Available,
+            executions: Vec::new(),
+            key_id: 3,
+            previous_key_id: None,
+        };
+        let buf = render_over_sentinel(&snapshot);
+        let rendered: String = buf.content.iter().map(|c| c.symbol().to_owned()).collect();
+        assert!(
+            rendered.contains("key_id=3"),
+            "expected current key_id in header, got: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("rotation window open"),
+            "no rotation window is open, indicator must not render, got: {rendered:?}"
+        );
+    }
+
+    /// Regression for #6450: when `previous_key_id` is set (a rotation window is open, #6451),
+    /// the panel shows a passive read-only indicator — no action button, restart-required
+    /// CLI-only rotation stays CLI-only.
+    #[test]
+    fn rotation_window_open_renders_passive_indicator_with_previous_key_id() {
+        let snapshot = DurableSnapshot {
+            status: DurableStatus::Available,
+            executions: Vec::new(),
+            key_id: 2,
+            previous_key_id: Some(1),
+        };
+        let buf = render_over_sentinel(&snapshot);
+        let rendered: String = buf.content.iter().map(|c| c.symbol().to_owned()).collect();
+        assert!(
+            rendered.contains("key_id=2"),
+            "expected current key_id in header, got: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("rotation window open (previous_key_id = 1)"),
+            "expected passive rotation window indicator, got: {rendered:?}"
+        );
     }
 }

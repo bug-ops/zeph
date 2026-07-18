@@ -84,6 +84,8 @@ fn make_session_state() -> SessionState {
         durable_agent_turns_cipher: None,
         durable_agent_turns_hmac_key: None,
         durable_agent_turns_hwm_key: None,
+        durable_agent_turns_previous_hmac_key: None,
+        durable_agent_turns_previous_hwm_key: None,
         durable_ctx_init_attempted: false,
         durable_writer: None,
         durable_writer_task: None,

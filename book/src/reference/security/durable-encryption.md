@@ -101,6 +101,36 @@ reader that disagrees (e.g. runs unkeyed against a keyed writer's file) now
 fails closed as soon as it encounters any row carrying a stamped HMAC, rather
 than silently trusting it as an ordinary unverified field.
 
+Like the AEAD payload cipher, the control-entry HMAC key has its own rotation
+window: verification tries the current key first, falling back to a registered
+previous key while a `zeph durable rotate-key` window is open, so a
+pre-rotation `EffectIntent` control entry stays readable on every read path
+(agent replay, scheduler daemon, and the CLI) through the window. Unlike the
+AEAD cipher, the stored `hmac` column carries no key-id selector — control
+entries have no payload envelope to carry one — so verification tries both
+keys rather than dispatching by an on-disk selector; this is
+security-equivalent for the single-slot window `rotate-key` supports.
+
+## High-water-mark (deletion detection)
+
+The AEAD seal and the control-entry HMAC both protect a row's own content and
+identity, but neither detects a committed `StepResult` row being deleted
+outright. A per-execution high-water-mark closes that gap: a signed
+`{key_epoch, max_committed_step_id, committed_result_count}` tuple is updated
+in the same transaction as every committed `StepResult`, and verified once on
+every resume. Unlike the control-entry HMAC, the high-water-mark is attached
+**unconditionally** — including single-user local deployments, which get
+deletion detection they would not otherwise have.
+
+The high-water-mark key shares `ZEPH_DURABLE_KEY`'s rotation lifecycle: its
+epoch is `[durable] key_id` (current) / `previous_key_id` (previous), the same
+fields `rotate-key` drives for the AEAD cipher, so no separate rotation
+procedure or flag is needed. A resumed execution whose signed epoch matches
+neither the current nor a registered previous key fails closed as
+"possibly re-keyed" rather than a generic tamper report, distinguishing a
+legitimate rotation the process cannot resolve from actual tampering; either
+way the resume is refused with no interactive override.
+
 ## Key rotation
 
 The `key_id` byte makes rotation possible without rewriting the journal.
@@ -134,18 +164,28 @@ zeph durable rotate-key --drop-previous
 ```
 
 This removes `ZEPH_DURABLE_KEY_PREVIOUS` from the vault and clears
-`previous_key_id`. By default it first scans the journal for any payload still
-sealed under the old key and refuses the drop if any remain; pass `--force` to
-skip that scan once you have independently confirmed pruning is complete.
-Payloads still sealed under the dropped key become permanently unreadable
-afterward. A call with no window open is a clean no-op.
+`previous_key_id`. By default it runs three independent safety scans and
+refuses the drop if any finds a surviving dependency on the previous key:
+
+- an AEAD blob-scan, refusing if any payload is still sealed under the old key,
+- a control-entry HMAC scan, refusing if any `EffectIntent` still verifies only
+  under the previous key (catching a payload-less crash-orphaned intent the
+  blob-scan cannot see), and
+- a high-water-mark scan, refusing if any execution's signed high-water-mark
+  still carries the previous key epoch (catching a checkpoint-folded
+  pre-rotation execution, whose payload and control entries may both already
+  be gone even though its high-water-mark has not migrated).
+
+Pass `--force` to skip all three scans once you have independently confirmed
+pruning is complete. Payloads and control/high-water-mark state still bound to
+the dropped key become permanently unreadable afterward. A call with no window
+open is a clean no-op.
 
 On a **shared database** (`[durable].shared_db = true`, or a `postgres://`
-journal URL), rotating also changes the derived control-entry HMAC key, which
-has no rotation window of its own — every in-flight execution's control entries
-fail closed with `ControlIntegrity` until they drain. `rotate-key` refuses on a
-shared database unless you pass `--ack-shared-db-drain`, after draining
-(finalizing/pruning) all in-flight executions first.
+journal URL), rotating also changes the derived control-entry HMAC key — this
+now has its own rotation window (see above), so shared-database rotation needs
+no special acknowledgement and works exactly like a single-user local
+rotation.
 
 `zeph --init`'s wizard step can also replace `ZEPH_DURABLE_KEY`, but that path
 is a **destructive reset**: it discards the old key immediately with no

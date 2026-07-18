@@ -736,6 +736,8 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(4);
         let cfg = zeph_config::DurableConfig {
             encrypt_payload: false,
+            key_id: 7,
+            previous_key_id: Some(6),
             ..zeph_config::DurableConfig::default()
         };
 
@@ -753,6 +755,10 @@ mod tests {
                     "gate rejection must be distinguishable from a plain Unavailable snapshot"
                 );
                 assert!(snapshot.executions.is_empty());
+                // Regression for #6450: key_id/previous_key_id must reach the panel even on the
+                // early-return gate-rejected branch, not just the happy-path Available branch.
+                assert_eq!(snapshot.key_id, 7);
+                assert_eq!(snapshot.previous_key_id, Some(6));
             }
             other => panic!("expected DurableSnapshot event, got {other:?}"),
         }
@@ -760,6 +766,46 @@ mod tests {
             rx.recv().await.is_none(),
             "durable_poll_task must return immediately after a gate rejection, not loop"
         );
+    }
+
+    /// Regression for #6450: the `Unavailable` early-return branch (journal file/backend could
+    /// not be opened) must also carry `key_id`/`previous_key_id` through — a third, easy-to-miss
+    /// construction site alongside `GateRejected` and the happy-path `Available` snapshot.
+    #[tokio::test]
+    async fn durable_poll_task_sends_key_ids_on_unavailable_backend_open_failure() {
+        use zeph_tui::widgets::durable::DurableStatus;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(4);
+        let cfg = zeph_config::DurableConfig {
+            key_id: 9,
+            previous_key_id: Some(8),
+            ..zeph_config::DurableConfig::default()
+        };
+
+        // A bare absolute path (no `sqlite://` scheme — `LocalBackend::open`/`connect_sqlite`
+        // takes a raw filesystem path, not a URL, and prepends its own `sqlite:` prefix) under a
+        // root-owned directory that a non-root test process cannot create. This fails
+        // `LocalBackend::open` via a clean permission-denied on `create_dir_all`, without needing
+        // a real Postgres/shared-DB setup and without leaving stray files behind. (A prior version
+        // of this test used a `sqlite://`-prefixed string here, which `connect_sqlite` treated as
+        // a literal relative path — `PathBuf::from("sqlite:///nonexistent/...")` — and created a
+        // real `sqlite:/nonexistent/` directory in the process cwd before the resulting
+        // double-prefixed URL failed to parse.)
+        durable_poll_task("/nonexistent/durable-poll-test.db".to_owned(), cfg, tx).await;
+
+        let event = rx
+            .recv()
+            .await
+            .expect("expected a DurableSnapshot event on backend open failure");
+        match event {
+            zeph_tui::AgentEvent::DurableSnapshot(snapshot) => {
+                assert_eq!(snapshot.status, DurableStatus::Unavailable);
+                assert!(snapshot.executions.is_empty());
+                assert_eq!(snapshot.key_id, 9);
+                assert_eq!(snapshot.previous_key_id, Some(8));
+            }
+            other => panic!("expected DurableSnapshot event, got {other:?}"),
+        }
     }
 }
 
@@ -896,6 +942,8 @@ pub(crate) async fn durable_poll_task(
             .send(zeph_tui::AgentEvent::DurableSnapshot(DurableSnapshot {
                 status: DurableStatus::GateRejected,
                 executions: Vec::new(),
+                key_id: cfg.key_id,
+                previous_key_id: cfg.previous_key_id,
             }))
             .await;
         return;
@@ -909,6 +957,8 @@ pub(crate) async fn durable_poll_task(
                 .send(zeph_tui::AgentEvent::DurableSnapshot(DurableSnapshot {
                     status: DurableStatus::Unavailable,
                     executions: Vec::new(),
+                    key_id: cfg.key_id,
+                    previous_key_id: cfg.previous_key_id,
                 }))
                 .await;
             return;
@@ -966,6 +1016,8 @@ pub(crate) async fn durable_poll_task(
         let snapshot = DurableSnapshot {
             status: DurableStatus::Available,
             executions,
+            key_id: cfg.key_id,
+            previous_key_id: cfg.previous_key_id,
         };
         if tx
             .send(zeph_tui::AgentEvent::DurableSnapshot(snapshot))

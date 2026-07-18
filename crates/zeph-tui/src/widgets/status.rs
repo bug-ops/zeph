@@ -521,6 +521,17 @@ fn push_extra_low_segments(
             )],
         );
     }
+    // Passive read-only durable HMAC/AEAD key-rotation window indicator (#6451, #6450). No action
+    // button here — rotation stays a restart-required CLI-only operation (`zeph durable rotate-key`).
+    if let Some(previous_key_id) = app.durable_snapshot.previous_key_id {
+        list.push(
+            Priority::Low,
+            vec![Span::styled(
+                format!(" · durable rotation window open (previous_key_id = {previous_key_id})"),
+                theme.status_bar,
+            )],
+        );
+    }
 }
 
 fn build_cocoon_spans(

@@ -173,9 +173,10 @@ async fn run_foreground(
 }
 
 /// Open the scheduler's durable backend, attach the write-path AEAD cipher when
-/// `[durable] encrypt_payload = true` and the control-entry HMAC key when this deployment is a
-/// declared/detected shared database (INV-8), then spawn its journal-writer task under
-/// `sched_supervisor`.
+/// `[durable] encrypt_payload = true`, the control-entry HMAC key when this deployment is a
+/// declared/detected shared database (INV-8), and the high-water-mark key unconditionally
+/// (FR-009, addendum to #6451 — previously never attached on this channel at all), then spawn its
+/// journal-writer task under `sched_supervisor`.
 ///
 /// Returns `Ok(None)` when durable execution is disabled for the scheduler
 /// (`[durable] enabled = false` or `[durable] scheduler = false`), so the caller runs without
@@ -194,11 +195,13 @@ async fn build_durable_adapter(
     if !(config.durable.enabled && config.durable.scheduler) {
         return Ok(None);
     }
-    // Resolve the write-path cipher (which evaluates the INV-8 encryption_gate, #5996) and the
-    // control-entry HMAC key (#6043/#6044) before opening the backend, so a forbidden config
-    // fails closed without creating a stray empty journal file on disk first.
+    // Resolve the write-path cipher (which evaluates the INV-8 encryption_gate, #5996), the
+    // control-entry HMAC key (#6043/#6044), and the high-water-mark key (addendum to #6451)
+    // before opening the backend, so a forbidden config fails closed without creating a stray
+    // empty journal file on disk first.
     let cipher = crate::commands::durable::load_write_cipher(config)?;
-    let hmac_key = crate::commands::durable::load_write_hmac_key(config)?;
+    let hmac_keys = crate::commands::durable::load_write_hmac_key(config)?;
+    let hwm_keys = crate::commands::durable::load_write_hwm_key(config)?;
     let durable_url = crate::commands::durable::resolve_durable_db_url(config);
     let local = zeph_durable::LocalBackend::open(&durable_url, config.durable.max_payload_bytes)
         .await
@@ -212,8 +215,23 @@ async fn build_durable_adapter(
     } else {
         local
     };
-    let local = if let Some(key) = hmac_key {
+    let local = if let Some(key) = hmac_keys.current {
         local.with_hmac_key(key)
+    } else {
+        local
+    };
+    let local = if let Some(key) = hmac_keys.previous {
+        local.with_previous_hmac_key(key)
+    } else {
+        local
+    };
+    let local = if let Some(slot) = hwm_keys.current {
+        local.with_hwm_key(slot.epoch, slot.key)
+    } else {
+        local
+    };
+    let local = if let Some(slot) = hwm_keys.previous {
+        local.with_previous_hwm_key(slot.epoch, slot.key)
     } else {
         local
     };
@@ -297,6 +315,7 @@ fn print_status_human(status: &zeph_scheduler::DaemonStatus) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeph_durable::Journal as _;
 
     /// #6264: `build_durable_adapter` must spawn the retention sweep (not just the journal
     /// writer) onto `sched_supervisor`, mirroring the P1/P2 coverage in
@@ -357,5 +376,253 @@ mod tests {
             .expect("build_durable_adapter must succeed (returns None, not an error)");
         assert!(adapter.is_none());
         assert!(sched_supervisor.snapshot().is_empty());
+    }
+
+    /// #6451 regression (critic finding 2): the scheduler-daemon read channel is one of the three
+    /// runtime paths that must stay able to verify a pre-rotation `EffectIntent` control entry
+    /// through an open rotation window. `build_durable_adapter` resolves both HMAC keys via
+    /// `load_write_hmac_key` and attaches them (lines above, `hmac_keys.current` /
+    /// `hmac_keys.previous`) exactly like this test's own re-derivation, so asserting both that
+    /// adapter construction succeeds and that a backend opened with the same resolved keys can
+    /// read a payload-less control entry stamped under the previous key is a faithful regression
+    /// for this channel's wiring — including the crash-orphan shape (`EffectIntent` never carries
+    /// a payload, so the AEAD blob-scan alone could never have caught a missed wiring here).
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn scheduler_daemon_reads_previous_key_control_entry_through_rotation_window() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", vault_dir.path());
+        }
+
+        let vault_root = zeph_core::vault::default_vault_dir();
+        zeph_core::vault::AgeVaultProvider::init_vault(&vault_root).unwrap();
+        let mut provider = zeph_core::vault::AgeVaultProvider::load(
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .unwrap();
+        let old_key_b64 = zeph_core::durable::generate_durable_key_b64();
+        let new_key_b64 = zeph_core::durable::generate_durable_key_b64();
+        provider
+            .set_secret_mut(
+                "ZEPH_DURABLE_KEY_PREVIOUS".to_owned(),
+                old_key_b64.clone(),
+                false,
+            )
+            .unwrap();
+        provider
+            .set_secret_mut("ZEPH_DURABLE_KEY".to_owned(), new_key_b64, false)
+            .unwrap();
+        provider.save().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = zeph_core::config::Config::default();
+        config.memory.sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+        config.durable.enabled = true;
+        config.durable.scheduler = true;
+        config.durable.shared_db = true;
+        config.durable.key_id = 1;
+        config.durable.previous_key_id = Some(0);
+
+        // Simulate a pre-rotation control entry: write it directly under the old (now-previous)
+        // HMAC key, before the daemon ever opens the backend.
+        let old_hmac_key = zeph_core::durable::derive_control_hmac_key_b64(&old_key_b64).unwrap();
+        let durable_url = crate::commands::durable::resolve_durable_db_url(&config);
+        let exec = zeph_durable::ExecutionId::new();
+        {
+            let pre_rotation_writer =
+                zeph_durable::LocalBackend::open(&durable_url, config.durable.max_payload_bytes)
+                    .await
+                    .unwrap()
+                    .with_hmac_key(old_hmac_key);
+            pre_rotation_writer.init().await.unwrap();
+            pre_rotation_writer
+                .open_execution(exec, zeph_durable::ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+            let step_id = zeph_durable::StepId::new(0);
+            pre_rotation_writer
+                .append(zeph_durable::JournalEntry {
+                    seq: None,
+                    execution_id: exec,
+                    kind: zeph_durable::ExecutionKind::AgentTurn,
+                    step_id,
+                    entry: zeph_durable::EntryKind::EffectIntent {
+                        idempotency_key: zeph_durable::IdempotencyKey::derive(
+                            exec,
+                            step_id,
+                            b"transfer",
+                        ),
+                        effect: zeph_durable::EffectClass::ExactlyOnceGuarded,
+                        hmac: None,
+                    },
+                    created_at_ms: 0,
+                })
+                .await
+                .unwrap();
+        }
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let sched_supervisor = zeph_common::TaskSupervisor::new(cancel);
+        let adapter = build_durable_adapter(&config, &sched_supervisor).await;
+        assert!(
+            adapter.is_ok() && adapter.unwrap().is_some(),
+            "build_durable_adapter must succeed with a consistent rotation window declared"
+        );
+
+        // Re-derive the same keys `build_durable_adapter` resolved, and confirm the pre-rotation
+        // entry is still readable through the window (the actual regression assertion) — still
+        // under the guard's vault dir, before it is restored below.
+        let hmac_keys = crate::commands::durable::load_write_hmac_key(&config).unwrap();
+        let reader =
+            zeph_durable::LocalBackend::open(&durable_url, config.durable.max_payload_bytes)
+                .await
+                .unwrap()
+                .with_hmac_key(hmac_keys.current.unwrap())
+                .with_previous_hmac_key(hmac_keys.previous.unwrap());
+        let read_result = reader.read_execution(exec).await;
+
+        unsafe {
+            match &prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+
+        assert!(
+            read_result.is_ok(),
+            "the scheduler-daemon read channel must verify a pre-rotation EffectIntent control \
+             entry through the rotation window"
+        );
+    }
+
+    /// Addendum to #6451 (tester-2 finding): mirrors
+    /// `scheduler_daemon_reads_previous_key_control_entry_through_rotation_window` above, but for
+    /// the high-water-mark path instead of the control-HMAC path. `build_durable_adapter`
+    /// previously never attached an HWM key at all on this channel (confirmed absent before this
+    /// addendum — unlike the control-HMAC key, the HWM key is meant to be attached
+    /// unconditionally per FR-009, so this test does not need `shared_db = true`), so this proves
+    /// both that it now attaches the current epoch unconditionally and the previous epoch while
+    /// the window is open, by resuming a pre-rotation execution with a committed `StepResult`
+    /// through the daemon's own resolved keys.
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn scheduler_daemon_resumes_previous_epoch_high_water_mark_through_rotation_window() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", vault_dir.path());
+        }
+
+        let vault_root = zeph_core::vault::default_vault_dir();
+        zeph_core::vault::AgeVaultProvider::init_vault(&vault_root).unwrap();
+        let mut provider = zeph_core::vault::AgeVaultProvider::load(
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .unwrap();
+        let old_key_b64 = zeph_core::durable::generate_durable_key_b64();
+        let new_key_b64 = zeph_core::durable::generate_durable_key_b64();
+        provider
+            .set_secret_mut(
+                "ZEPH_DURABLE_KEY_PREVIOUS".to_owned(),
+                old_key_b64.clone(),
+                false,
+            )
+            .unwrap();
+        provider
+            .set_secret_mut("ZEPH_DURABLE_KEY".to_owned(), new_key_b64, false)
+            .unwrap();
+        provider.save().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = zeph_core::config::Config::default();
+        config.memory.sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+        config.durable.enabled = true;
+        config.durable.scheduler = true;
+        config.durable.key_id = 1;
+        config.durable.previous_key_id = Some(0);
+
+        // Commit a StepResult under the OLD (now-previous) HWM key, before the daemon ever opens
+        // the backend -- simulating an execution that committed a result pre-rotation.
+        let old_hwm_key = zeph_core::durable::derive_hwm_key_b64(&old_key_b64).unwrap();
+        let durable_url = crate::commands::durable::resolve_durable_db_url(&config);
+        let exec = zeph_durable::ExecutionId::new();
+        {
+            let pre_rotation_writer =
+                zeph_durable::LocalBackend::open(&durable_url, config.durable.max_payload_bytes)
+                    .await
+                    .unwrap()
+                    .with_hwm_key(0, old_hwm_key);
+            pre_rotation_writer.init().await.unwrap();
+            pre_rotation_writer
+                .open_execution(exec, zeph_durable::ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+            let step_id = zeph_durable::StepId::new(0);
+            pre_rotation_writer
+                .append(zeph_durable::JournalEntry {
+                    seq: None,
+                    execution_id: exec,
+                    kind: zeph_durable::ExecutionKind::AgentTurn,
+                    step_id,
+                    entry: zeph_durable::EntryKind::StepResult {
+                        idempotency_key: zeph_durable::IdempotencyKey::derive(
+                            exec,
+                            step_id,
+                            b"tool:test",
+                        ),
+                        payload: bytes::Bytes::copy_from_slice(b"pre-rotation result"),
+                        effect: zeph_durable::EffectClass::Idempotent,
+                        payload_version: 1,
+                    },
+                    created_at_ms: 0,
+                })
+                .await
+                .unwrap();
+        }
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let sched_supervisor = zeph_common::TaskSupervisor::new(cancel);
+        let adapter = build_durable_adapter(&config, &sched_supervisor).await;
+        assert!(
+            adapter.is_ok() && adapter.unwrap().is_some(),
+            "build_durable_adapter must succeed with a consistent rotation window declared"
+        );
+
+        // Re-derive the same HWM keys `build_durable_adapter` resolved, and confirm the
+        // pre-rotation execution still resumes cleanly through the window (the actual regression
+        // assertion) -- still under the guard's vault dir, before it is restored below.
+        let hwm_keys = crate::commands::durable::load_write_hwm_key(&config).unwrap();
+        let current = hwm_keys.current.expect("current HWM slot must resolve");
+        let previous = hwm_keys
+            .previous
+            .expect("previous HWM slot must resolve while the window is open");
+        let reader =
+            zeph_durable::LocalBackend::open(&durable_url, config.durable.max_payload_bytes)
+                .await
+                .unwrap()
+                .with_hwm_key(current.epoch, current.key)
+                .with_previous_hwm_key(previous.epoch, previous.key);
+        let resume_result = reader
+            .open_execution(exec, zeph_durable::ExecutionKind::AgentTurn)
+            .await;
+
+        unsafe {
+            match &prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+
+        assert!(
+            resume_result.is_ok(),
+            "the scheduler-daemon read channel must resume a pre-rotation execution's \
+             high-water-mark through the rotation window: {resume_result:?}"
+        );
     }
 }

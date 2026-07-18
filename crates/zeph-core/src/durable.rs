@@ -254,15 +254,6 @@ pub fn derive_control_hmac_key_b64(b64_key: &str) -> Result<[u8; KEY_LEN], Ciphe
 /// `ZEPH_DURABLE_KEY` via BLAKE3 `derive_key`.
 const HWM_CONTEXT: &str = "zeph-durable v1 execution high-water-mark HMAC key 2026";
 
-/// The current high-water-mark key-rotation epoch (FR-008).
-///
-/// Mirrors [`DURABLE_KEY_ID`]'s role for the AEAD cipher: a non-secret marker stamped alongside
-/// every signed high-water-mark so a verifier can tell "signed under a key I don't currently hold"
-/// (re-keyed) from "signed under my current key but the hash doesn't match" (tampered). Bump this
-/// constant when `ZEPH_DURABLE_KEY` is rotated, and register the prior key as the backend's
-/// `with_previous_hwm_key` slot for the rotation window.
-pub const HWM_KEY_EPOCH: u32 = 0;
-
 /// Derive the high-water-mark key (issue #6360) from the base64-encoded `ZEPH_DURABLE_KEY` vault
 /// value.
 ///
@@ -276,6 +267,11 @@ pub const HWM_KEY_EPOCH: u32 = 0;
 /// the high-water-mark key is meant to be attached unconditionally (FR-009): it is the only
 /// mechanism that detects deletion of a committed `StepResult` row, a threat the AEAD payload seal
 /// and the row HMAC do not cover on any deployment, single-user local included.
+///
+/// This function derives only the key bytes; the non-secret rotation epoch stamped alongside them
+/// (FR-008) is `config.durable.key_id` (current) / `previous_key_id` (previous) — the same
+/// `rotate-key`-driven lifecycle the AEAD cipher's `key_id` uses — resolved by the caller
+/// (`load_write_hwm_key` in `src/commands/durable.rs`), not by this module.
 ///
 /// # Errors
 ///
