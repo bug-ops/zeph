@@ -746,6 +746,7 @@ pub(crate) fn build_agent_command_registry<'ctx>()
         policy::PolicyCommand,
         reasoning_effort::ReasoningEffortCommand,
         scheduler::SchedulerCommand,
+        search::SearchCommand,
         skill::{FeedbackCommand, SkillCommand, SkillsCommand},
         status::{FocusCommand, GuardrailCommand, SideQuestCommand, StatusCommand},
         think_tokens::ThinkTokensCommand,
@@ -772,6 +773,7 @@ pub(crate) fn build_agent_command_registry<'ctx>()
     agent_reg.register(McpCommand);
     agent_reg.register(PolicyCommand);
     agent_reg.register(SchedulerCommand);
+    agent_reg.register(SearchCommand);
     agent_reg.register(LspCommand);
     // Phase 4 migrations (Send-safe commands):
     agent_reg.register(CacheStatsCommand);

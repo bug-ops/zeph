@@ -156,6 +156,108 @@ impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> 
     }
 }
 
+/// Wraps `Option<T>` so an executor that may fail to construct (disabled by config, or a
+/// backend that fails to initialize — e.g. [`WebSearchExecutor::new`](crate::search::WebSearchExecutor::new)
+/// returning `None`) can still occupy a fixed slot in a static [`CompositeExecutor`] chain.
+///
+/// When `None`, every method behaves as "not handled": empty tool definitions, `Ok(None)`
+/// from the execute paths, unsupported checkpoints, not retryable/speculatable/confirmed.
+/// This lets `build_base_executor_chain`'s concrete nested type stay fixed regardless of
+/// whether the wrapped executor was actually constructed at wiring time.
+#[derive(Debug)]
+pub struct OptionalExecutor<T: ToolExecutor>(pub Option<T>);
+
+impl<T: ToolExecutor> ToolExecutor for OptionalExecutor<T> {
+    async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        match &self.0 {
+            Some(inner) => inner.execute(response).await,
+            None => Ok(None),
+        }
+    }
+
+    async fn execute_confirmed(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
+        match &self.0 {
+            Some(inner) => inner.execute_confirmed(response).await,
+            None => Ok(None),
+        }
+    }
+
+    fn tool_definitions(&self) -> Vec<ToolDef> {
+        self.0
+            .as_ref()
+            .map(ToolExecutor::tool_definitions)
+            .unwrap_or_default()
+    }
+
+    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+        match &self.0 {
+            Some(inner) => inner.execute_tool_call(call).await,
+            None => Ok(None),
+        }
+    }
+
+    async fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        match &self.0 {
+            Some(inner) => inner.execute_tool_call_confirmed(call).await,
+            None => Ok(None),
+        }
+    }
+
+    fn is_tool_retryable(&self, tool_id: &str) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|inner| inner.is_tool_retryable(tool_id))
+    }
+
+    fn is_tool_speculatable(&self, tool_id: &str) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|inner| inner.is_tool_speculatable(tool_id))
+    }
+
+    fn requires_confirmation(&self, call: &ToolCall) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|inner| inner.requires_confirmation(call))
+    }
+
+    fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
+        if let Some(inner) = &self.0 {
+            inner.set_skill_env(env);
+        }
+    }
+
+    fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
+        if let Some(inner) = &self.0 {
+            inner.set_effective_trust(level);
+        }
+    }
+
+    fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+        self.0.as_ref().map_or_else(
+            crate::executor::CheckpointActionResult::unsupported,
+            |inner| inner.checkpoint_undo(n),
+        )
+    }
+
+    fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+        self.0.as_ref().map_or_else(
+            crate::executor::CheckpointActionResult::unsupported,
+            ToolExecutor::checkpoint_redo,
+        )
+    }
+
+    fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+        self.0
+            .as_ref()
+            .map(ToolExecutor::checkpoint_list)
+            .unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -663,6 +765,58 @@ mod tests {
                 *outer.second.last_trust.lock().unwrap(),
                 Some(SkillTrustLevel::Quarantined)
             );
+        }
+    }
+
+    mod optional_executor {
+        use super::*;
+
+        #[tokio::test]
+        async fn none_execute_returns_ok_none() {
+            let wrapped: OptionalExecutor<MatchingExecutor> = OptionalExecutor(None);
+            assert!(wrapped.execute("anything").await.unwrap().is_none());
+        }
+
+        #[tokio::test]
+        async fn some_execute_delegates_to_inner() {
+            let wrapped = OptionalExecutor(Some(MatchingExecutor));
+            let result = wrapped.execute("anything").await.unwrap();
+            assert_eq!(result.unwrap().summary, "matched");
+        }
+
+        #[test]
+        fn none_tool_definitions_is_empty() {
+            let wrapped: OptionalExecutor<MatchingExecutor> = OptionalExecutor(None);
+            assert!(wrapped.tool_definitions().is_empty());
+        }
+
+        #[test]
+        fn none_checkpoint_undo_unsupported() {
+            let wrapped: OptionalExecutor<MatchingExecutor> = OptionalExecutor(None);
+            assert!(!wrapped.checkpoint_undo(1).supported);
+            assert!(!wrapped.checkpoint_redo().supported);
+            assert!(!wrapped.checkpoint_list().supported);
+        }
+
+        #[test]
+        fn none_not_retryable_or_speculatable() {
+            let wrapped: OptionalExecutor<MatchingExecutor> = OptionalExecutor(None);
+            assert!(!wrapped.is_tool_retryable("anything"));
+            assert!(!wrapped.is_tool_speculatable("anything"));
+        }
+
+        #[test]
+        fn none_requires_confirmation_false() {
+            let wrapped: OptionalExecutor<MatchingExecutor> = OptionalExecutor(None);
+            let call = ToolCall {
+                tool_id: ToolName::new("anything"),
+                params: serde_json::Map::new(),
+                caller_id: None,
+                context: None,
+                tool_call_id: String::new(),
+                skill_name: None,
+            };
+            assert!(!wrapped.requires_confirmation(&call));
         }
     }
 }

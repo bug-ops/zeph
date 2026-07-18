@@ -332,13 +332,16 @@ impl ErasedToolExecutor for PlanModeExecutor {
 /// `web_scrape`/`fetch` are the native `WebScrapeExecutor` tool IDs (see `zeph-tools`
 /// `scrape.rs`) — the tool an LLM reaches for by default to retrieve a URL, and therefore
 /// the highest-likelihood egress vector for a `Deny`-scoped task (#6030 critic finding S2).
-const NETWORK_ONLY_TOOL_IDS: &[&str] = &["web_scrape", "fetch"];
+/// `web_search` is the native `WebSearchExecutor` tool ID (spec 006-1-web-search, #6358) —
+/// added alongside them since it is also a pure network-egress tool with no non-network
+/// purpose.
+const NETWORK_ONLY_TOOL_IDS: &[&str] = &["web_scrape", "fetch", "web_search"];
 
 /// Blocks network-egress tool calls for a single sub-agent spawn.
 ///
 /// Wraps an [`ErasedToolExecutor`] and rejects two classes of call with
 /// [`ToolError::Blocked`]:
-/// - Any call to a network-only tool (`web_scrape`, `fetch`) — blocked unconditionally,
+/// - Any call to a network-only tool (`web_scrape`, `fetch`, `web_search`) — blocked unconditionally,
 ///   since these tools have no non-network purpose.
 /// - `bash` tool calls whose command matches [`zeph_tools::NETWORK_COMMANDS`] (`curl`,
 ///   `wget`, `nc`, `ncat`, `netcat`).
@@ -370,7 +373,7 @@ impl NetworkDenyToolExecutor {
         }
     }
 
-    /// Returns `Err` if `call` targets a network-only tool (`web_scrape`, `fetch`) or is a
+    /// Returns `Err` if `call` targets a network-only tool (`web_scrape`, `fetch`, `web_search`) or is a
     /// `bash` invocation whose command matches the network-command blocklist; `Ok(())`
     /// otherwise.
     fn check_call(&self, call: &ToolCall) -> Result<(), ToolError> {
@@ -1228,6 +1231,17 @@ mod tests {
         let exec = NetworkDenyToolExecutor::new(stub_box(&["fetch"]));
         let res = exec
             .execute_tool_call_confirmed_erased(&tool_call("fetch"))
+            .await;
+        assert_matches!(res, Err(ToolError::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn network_deny_blocks_web_search_unconditionally() {
+        // Regression guard for #6358: web_search is a pure network-egress tool like
+        // web_scrape/fetch — a NetworkScope::Deny sub-agent must not be able to reach it.
+        let exec = NetworkDenyToolExecutor::new(stub_box(&["web_search"]));
+        let res = exec
+            .execute_tool_call_erased(&tool_call("web_search"))
             .await;
         assert_matches!(res, Err(ToolError::Blocked { .. }));
     }

@@ -175,6 +175,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `zeph-common/src/timestamp.rs` gained a `rfc3339_from(SystemTime)` helper (the existing
     `utc_now_rfc3339()` now delegates to it) so `ClockSource` stays chrono-free, consistent with
     that module's "no external date/time crates" design.
+- **Native query-based `web_search` tool** (spec 006-1-web-search, #6358): Zeph previously had
+  only URL-targeted `web_scrape`/`fetch`, so it could not answer open-ended, current-info
+  questions with no obvious starting URL. New `WebSearchExecutor` (`zeph-tools`) exposes a
+  single `web_search` tool: natural-language query in, ranked `title`/`url`/`snippet` results
+  out. Mirrors `WebScrapeExecutor`'s cross-cutting machinery — SSRF validation (with DNS-
+  rebinding addr-pinning via `resolve_to_addrs`), egress logging (`010-5`), audit logging, and
+  IPI (prompt-injection) filtering on rendered results — but never auto-fetches a result URL;
+  opening one is a separate, explicit `fetch`/`web_scrape` call.
+  - `SearchProvider` trait + `SearchBackend` enum dispatch; v1 ships one backend,
+    `BraveSearchProvider` (Brave Search API). Runtime-gated (no cargo feature): the tool is
+    advertised to the LLM only when `[tools.search].enabled = true` AND the backend
+    constructs successfully (e.g. an API key is resolved). Disabled by default.
+  - API key resolved exclusively from the age vault (`tools.search.api_key_vault_key`,
+    default `ZEPH_WEB_SEARCH_API_KEY`) — never an environment variable.
+  - `web_search` output is classified identically to `web_scrape`/`fetch` by the sanitizer
+    trust bridge (`ExternalUntrusted` + quarantine) so untrusted search-result content gets
+    the same defense as scraped pages. New `ClaimSource::WebSearch` variant is
+    audit-provenance only, not a trust mechanism.
+  - The fixed search endpoint is exempt from `[tools.scrape].allowed_domains` (it is
+    operator-configured infrastructure, not an LLM-chosen target) but `denied_domains` and
+    full SSRF validation still apply unconditionally.
+  - HTTP 429 (quota exhaustion) maps to a terminal `ToolError::Blocked`, not a retryable
+    error, to avoid hammering an exhausted quota.
+  - `NetworkDenyToolExecutor` (sub-agent `NetworkScope::Deny` enforcement, `zeph-subagent`)
+    now also blocks `web_search` alongside `web_scrape`/`fetch` — closing a gap where a
+    network-denied sub-agent could otherwise reach the new tool.
+  - New integration points: `[tools.search]` config section, `zeph search <query> [--limit N]`
+    CLI subcommand, `/search <query> [--limit N]` TUI slash command, `--init` wizard step, and
+    a `--migrate-config` step inserting a commented `[tools.search]` block for existing
+    configs. `zeph search` shares the same audit/egress persistence as the TUI/LLM-invoked
+    paths (cross-mode consistency).
+  - Response body size capped by `[tools.scrape].max_body_bytes` (threaded into
+    `BraveSearchProvider`), matching `web_scrape`'s existing guard.
+  - Unconditional `tracing::instrument` spans on DNS resolution, the network request phase,
+    and IPI filtering (mirroring `web_scrape`'s instrumentation).
+  - Shared SSRF/domain-policy helpers (`validate_url`, `check_domain_policy`,
+    `is_private_host`) promoted from `scrape.rs` into `crate::net` so `web_scrape` and
+    `web_search` use one implementation instead of duplicating it.
 
 - **Resume UX and history visibility** (spec-068 §13, #6420): resuming a non-empty prior
   conversation no longer looks like starting from scratch on display-owning channels.

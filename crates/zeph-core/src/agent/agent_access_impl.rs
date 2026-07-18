@@ -1840,6 +1840,44 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         })
     }
 
+    // ----- /search -----
+
+    fn handle_web_search<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let (query, limit) = parse_search_args(args);
+        if query.is_empty() {
+            return Box::pin(async move { Ok("Usage: /search <query> [--limit N]".to_owned()) });
+        }
+        let executor = std::sync::Arc::clone(&self.tool_executor);
+        let query = query.to_owned();
+        Box::pin(async move {
+            let mut params = serde_json::Map::new();
+            params.insert("query".to_owned(), serde_json::Value::String(query));
+            if let Some(limit) = limit {
+                params.insert("limit".to_owned(), serde_json::Value::Number(limit.into()));
+            }
+            let call = zeph_tools::ToolCall {
+                tool_id: "web_search".into(),
+                params,
+                caller_id: None,
+                context: None,
+                tool_call_id: String::new(),
+                skill_name: None,
+            };
+            match executor.execute_tool_call_erased(&call).await {
+                Ok(Some(output)) => Ok(output.summary),
+                Ok(None) => Ok(
+                    "web_search is not available. Enable it under `[tools.search]` and store \
+                     an API key in the vault."
+                        .to_owned(),
+                ),
+                Err(e) => Err(CommandError::new(format!("web_search failed: {e}"))),
+            }
+        })
+    }
+
     // ----- /agents -----
 
     fn handle_agents<'a>(
@@ -2388,6 +2426,21 @@ async fn goal_list(store: &GoalStore) -> Result<String, CommandError> {
         );
     }
     Ok(out.trim_end().to_owned())
+}
+
+/// Parse `<query> [--limit N]` for `/search`. Returns `(trimmed_query, limit)`.
+fn parse_search_args(args: &str) -> (&str, Option<usize>) {
+    if let Some(pos) = args.find("--limit") {
+        let query = args[..pos].trim();
+        let rest = args[pos + "--limit".len()..].trim();
+        let limit = rest
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<usize>().ok());
+        (query, limit)
+    } else {
+        (args.trim(), None)
+    }
 }
 
 fn parse_goal_create_args(args: &str) -> (&str, Option<u64>) {

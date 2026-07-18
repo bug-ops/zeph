@@ -922,6 +922,10 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             )
             .await;
         }
+        Some(Command::Search { query, limit }) => {
+            return crate::commands::search::handle_search(query, limit, cli.config.as_deref())
+                .await;
+        }
         #[cfg(feature = "scheduler")]
         Some(Command::Schedule { command: sched_cmd }) => {
             return handle_schedule_command(sched_cmd, cli.config.as_deref()).await;

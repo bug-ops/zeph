@@ -491,11 +491,28 @@ pub(crate) async fn build_tool_setup(
     }
     let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape)
         .with_egress_config(config.tools.egress.clone());
+    // Runtime-gated (spec 006-1-web-search): `None` when disabled or the backend fails to
+    // construct (e.g. no vault key for a keyed backend) — `tool_definitions()` then never
+    // advertises `web_search` to the LLM (FR-002).
+    let search_api_key = config
+        .secrets
+        .web_search_api_key
+        .as_ref()
+        .map(|s| zeph_common::secret::Secret::new(s.expose()));
+    let mut search_executor = zeph_tools::WebSearchExecutor::new(
+        &config.tools.search,
+        &config.tools.scrape,
+        search_api_key,
+    )
+    .map(|w| w.with_egress_config(config.tools.egress.clone()));
     let mut egress_rx: Option<tokio::sync::mpsc::Receiver<zeph_tools::EgressEvent>> = None;
     if config.tools.egress.enabled {
         let (egress_tx, rx) = tokio::sync::mpsc::channel(256);
         let dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        scrape_executor = scrape_executor.with_egress_tx(egress_tx, Arc::clone(&dropped));
+        scrape_executor = scrape_executor.with_egress_tx(egress_tx.clone(), Arc::clone(&dropped));
+        if let Some(w) = search_executor.take() {
+            search_executor = Some(w.with_egress_tx(egress_tx, dropped));
+        }
         egress_rx = Some(rx);
     }
     let mut audit_logger: Option<Arc<zeph_tools::AuditLogger>> = None;
@@ -506,6 +523,9 @@ pub(crate) async fn build_tool_setup(
         let logger = Arc::new(logger);
         shell_executor = shell_executor.with_audit(Arc::clone(&logger));
         scrape_executor = scrape_executor.with_audit(Arc::clone(&logger));
+        if let Some(w) = search_executor.take() {
+            search_executor = Some(w.with_audit(Arc::clone(&logger)));
+        }
         audit_logger = Some(logger);
     }
     if config.tools.audit.tool_risk_summary {
@@ -513,6 +533,7 @@ pub(crate) async fn build_tool_setup(
             "shell",
             "web_scrape",
             "fetch",
+            "web_search",
             "file_read",
             "file_write",
         ]);
@@ -644,6 +665,7 @@ pub(crate) async fn build_tool_setup(
             .map(PathBuf::from)
             .collect(),
     );
+    let base_executor = with_search_executor(base_executor, search_executor);
     let composite = zeph_tools::CompositeExecutor::new(base_executor, mcp_executor);
     let (executor, taco_compressor) =
         build_compressed_executor(composite, &config.tools.compression, pool).await;
@@ -1815,6 +1837,20 @@ where
             ),
         ),
     )
+}
+
+/// Wraps `base` with the runtime-gated `web_search` tool (spec 006-1-web-search) as an
+/// outer composite layer, so the fixed nested type of [`build_base_executor_chain`] and
+/// its many test callers never need to know about `web_search`'s presence.
+///
+/// `search_executor` is `None` when the tool is disabled
+/// or its backend fails to construct — in that case this layer is a pure pass-through
+/// (`Ok(None)`/empty tool definitions), identical to `base` alone.
+pub(crate) fn with_search_executor<B: zeph_tools::ToolExecutor>(
+    base: B,
+    search_executor: Option<zeph_tools::WebSearchExecutor>,
+) -> zeph_tools::CompositeExecutor<zeph_tools::OptionalExecutor<zeph_tools::WebSearchExecutor>, B> {
+    zeph_tools::CompositeExecutor::new(zeph_tools::OptionalExecutor(search_executor), base)
 }
 
 /// MCP tool-id set consumed by [`zeph_tools::TrustGateExecutor`] to recognize genuinely

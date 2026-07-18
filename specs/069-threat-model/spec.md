@@ -164,7 +164,7 @@ Each tree starts from an adversarial goal and branches to leaf attack steps.
 | 2.2.1 Prompt → ShellExecutor | VIGIL tripwire; `ScopedToolExecutor`; Seatbelt sandbox | **Low** |
 | 2.2.2 MCP tool name collision | Collision detection in `zeph-mcp`; `normalize_tool_id` | **Low** |
 | 2.2.3 Seatbelt profile bypass | Deny-first profile; audited by `SeatbeltProfile` | **Medium** — depends on profile completeness |
-| 2.2.4 Spawned sub-agent scope (§5) | `NetworkDenyToolExecutor` blocks `curl`/`wget`/`nc`/`ncat`/`netcat` in `bash` calls, and unconditionally blocks the `web_scrape`/`fetch` tool, for both spawned sub-agents and `RunInline` tasks (OQ-1, resolved) | **Medium** — detection is tool/command-identity matching, not sandbox-level; MCP-provided tools and obfuscated shell commands are not covered |
+| 2.2.4 Spawned sub-agent scope (§5) | `NetworkDenyToolExecutor` blocks `curl`/`wget`/`nc`/`ncat`/`netcat` in `bash` calls, and unconditionally blocks the `web_scrape`/`fetch`/`web_search` tools, for both spawned sub-agents and `RunInline` tasks (OQ-1, resolved) | **Medium** — detection is tool/command-identity matching, not sandbox-level; MCP-provided tools and obfuscated shell commands are not covered |
 | 2.3.1 SSRF direct | `SsrfGuard` + `ScrapeConfig` allowlist | **Low** — if allowlist is configured |
 | 2.3.2 SSRF via redirect | `SsrfGuard` (initial URL only) | **Medium** — redirect not re-validated |
 | 2.3.3 DNS rebinding | No connect-time IP re-validation | **High** — no current control |
@@ -189,7 +189,7 @@ enforced on both dispatch paths: `handle_scheduler_spawn_action` (spawned sub-ag
 parent agent's own `tool_executor` for the duration of that inline turn, then restoring
 it) both wrap the task's tool executor with `NetworkDenyToolExecutor`, which blocks
 network-egress `bash` commands (`curl`/`wget`/`nc`/`ncat`/`netcat`) and the native
-`web_scrape`/`fetch` tool (OQ-1, resolved, #6030). Residual gap: MCP-provided tools are not
+`web_scrape`/`fetch`/`web_search` tools (OQ-1, resolved, #6030; web_search added #6358). Residual gap: MCP-provided tools are not
 inspected and may still perform their own HTTP egress — see §5.2.
 
 ### 4.2 Asset-sensitivity is not propagated to planner tool scoping
@@ -243,7 +243,7 @@ and graph-wide on `OrchestrationConfig::default_asset_sensitivity`.
 > per-task executor to wrap independently.
 >
 > `NetworkDenyToolExecutor` blocks two classes of call: `bash` invocations of `curl`,
-> `wget`, `nc`, `ncat`, `netcat`; and any call to the native `web_scrape`/`fetch` tool
+> `wget`, `nc`, `ncat`, `netcat`; and any call to the native `web_scrape`/`fetch`/`web_search` tools
 > (blocked unconditionally — no command inspection needed, since these tools have no
 > non-network purpose). **Known gap**: MCP-provided tools are not inspected.
 >
@@ -306,7 +306,7 @@ MCP client MUST emit an `EgressEvent` with a non-empty `ToolCall.skill_egress_at
 
 | # | Question | Tracked by |
 |---|----------|-----------|
-| OQ-1 | ~~Wire `network_scope: Deny` to `ShellConfig.allow_network` in `handle_scheduler_spawn_action` and `build_spawn_context`.~~ **Resolved** (#6030): both `handle_scheduler_spawn_action` (spawned sub-agents, via `SpawnContext::network_denied`) and `handle_run_inline_action` (`RunInline` tasks, via a temporary swap of `self.tool_executor`) wrap the task's tool executor with `NetworkDenyToolExecutor` instead of mutating the shared `ShellConfig` directly (avoids affecting sibling tasks / the parent agent outside the wrapped call). Blocks `bash` network commands and the native `web_scrape`/`fetch` tool. Remaining known gap: MCP-provided tools are not inspected. | #6030 |
+| OQ-1 | ~~Wire `network_scope: Deny` to `ShellConfig.allow_network` in `handle_scheduler_spawn_action` and `build_spawn_context`.~~ **Resolved** (#6030): both `handle_scheduler_spawn_action` (spawned sub-agents, via `SpawnContext::network_denied`) and `handle_run_inline_action` (`RunInline` tasks, via a temporary swap of `self.tool_executor`) wrap the task's tool executor with `NetworkDenyToolExecutor` instead of mutating the shared `ShellConfig` directly (avoids affecting sibling tasks / the parent agent outside the wrapped call). Blocks `bash` network commands and the native `web_scrape`/`fetch`/`web_search` tools. Remaining known gap: MCP-provided tools are not inspected. | #6030 |
 | OQ-2 | Wire `asset_sensitivity ≥ Confidential` to auto-tighten `ScopedToolExecutor` allow-list at dispatch time. | Follow-up issue after #3934 |
 | OQ-3 | Re-validate HTTP target IP after each redirect in `WebScrapeExecutor` to close SSRF-via-redirect (§4.4 / 2.3.2). | See `010-security/spec.md` |
 | OQ-4 | Add connect-time IP validation (DNS rebinding guard, §4.4 / 2.3.3). | See `010-security/spec.md` |

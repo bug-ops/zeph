@@ -745,6 +745,16 @@ timeout = 15
 # Maximum response body size in bytes (1MB)
 max_body_bytes = 1048576
 
+# Native query-based web_search tool (spec 006-1-web-search, #6358).
+# Runtime-gated: disabled unless enabled AND an API key is resolved from the vault.
+# [tools.search]
+# enabled = false
+# backend = "brave"
+# api_key_vault_key = "ZEPH_WEB_SEARCH_API_KEY"  # set via `zeph vault set <key> <token>`
+# endpoint = "https://api.search.brave.com/res/v1/web/search"
+# max_results = 10
+# timeout = 15
+
 [tools.filters]
 # Enable smart output filtering for tool results
 enabled = true

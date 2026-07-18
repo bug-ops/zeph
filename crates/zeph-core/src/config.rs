@@ -174,6 +174,16 @@ impl SecretResolver for Config {
             register_masked_secret(registry, &key_name, &val);
             self.secrets.skill_registry_token = Some(Secret::new(val));
         }
+        // Runtime-gated web_search tool (spec 006-1-web-search): only touch the vault
+        // when the tool is enabled, mirroring the skills.registry opt-in-only pattern.
+        if self.tools.search.enabled
+            && let Some(val) = vault
+                .get_secret(&self.tools.search.api_key_vault_key)
+                .await?
+        {
+            register_masked_secret(registry, &self.tools.search.api_key_vault_key, &val);
+            self.secrets.web_search_api_key = Some(Secret::new(val));
+        }
         log_gonka_credential_status(
             self.secrets.gonka_private_key.is_some(),
             self.secrets.gonka_address.is_some(),

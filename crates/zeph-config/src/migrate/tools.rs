@@ -410,3 +410,39 @@ pub fn migrate_overflow_max_per_call_override(
         sections_changed: vec!["tools.overflow.max_per_call_override".to_owned()],
     })
 }
+
+/// Add a commented-out `[tools.search]` advisory block to configs that predate the native
+/// `web_search` tool (spec 006-1-web-search, #6358).
+///
+/// Runtime-gated and disabled by default (`enabled = false`), so omitting this block leaves
+/// existing configs behaving exactly as before — this migration only surfaces the option for
+/// discoverability, mirroring [`migrate_egress_config`](super::migrate_egress_config).
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
+pub fn migrate_search_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if section_header_present(toml_src, "tools.search") || toml_src.contains("# [tools.search]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Native query-based web_search tool (spec 006-1-web-search, #6358).\n\
+        # Runtime-gated: disabled unless enabled AND an API key is resolved from the vault.\n\
+        # [tools.search]\n\
+        # enabled = false\n\
+        # backend = \"brave\"\n\
+        # api_key_vault_key = \"ZEPH_WEB_SEARCH_API_KEY\"  # set via `zeph vault set <key> <token>`\n\
+        # endpoint = \"https://api.search.brave.com/res/v1/web/search\"\n\
+        # max_results = 10\n\
+        # timeout = 15\n";
+
+    Ok(MigrationResult {
+        output: format!("{toml_src}{comment}"),
+        changed_count: 1,
+        sections_changed: vec!["tools.search".to_owned()],
+    })
+}

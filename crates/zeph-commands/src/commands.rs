@@ -269,6 +269,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         feature_gate: None,
     },
     CommandInfo {
+        name: "/search",
+        args: "<query> [--limit N]",
+        description: "Search the web for a natural-language query (requires tools.search.enabled)",
+        category: SlashCategory::Integration,
+        feature_gate: None,
+    },
+    CommandInfo {
         name: "/cocoon",
         args: "[status | models]",
         description: "Inspect Cocoon sidecar (status, models)",

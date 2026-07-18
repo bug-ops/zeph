@@ -687,10 +687,25 @@ pub(crate) async fn run_daemon(
     }
     let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape)
         .with_egress_config(config.tools.egress.clone());
+    let web_search_api_key = config
+        .secrets
+        .web_search_api_key
+        .as_ref()
+        .map(|s| zeph_common::secret::Secret::new(s.expose()));
+    let mut web_search_executor = zeph_tools::WebSearchExecutor::new(
+        &config.tools.search,
+        &config.tools.scrape,
+        web_search_api_key,
+    )
+    .map(|w| w.with_egress_config(config.tools.egress.clone()));
     if config.tools.egress.enabled {
         let (egress_tx, egress_rx) = tokio::sync::mpsc::channel(256);
         let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        scrape_executor = scrape_executor.with_egress_tx(egress_tx, dropped);
+        scrape_executor =
+            scrape_executor.with_egress_tx(egress_tx.clone(), std::sync::Arc::clone(&dropped));
+        if let Some(w) = web_search_executor.take() {
+            web_search_executor = Some(w.with_egress_tx(egress_tx, dropped));
+        }
         let fut = agent_setup::drain_egress_events(egress_rx, None);
         let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
         task_supervisor.spawn(zeph_common::TaskDescriptor {
@@ -715,6 +730,9 @@ pub(crate) async fn run_daemon(
         let logger = std::sync::Arc::new(logger);
         shell_executor = shell_executor.with_audit(std::sync::Arc::clone(&logger));
         scrape_executor = scrape_executor.with_audit(std::sync::Arc::clone(&logger));
+        if let Some(w) = web_search_executor.take() {
+            web_search_executor = Some(w.with_audit(std::sync::Arc::clone(&logger)));
+        }
         daemon_audit_logger = Some(logger);
     }
     let file_executor = zeph_tools::FileExecutor::new(
@@ -788,6 +806,7 @@ pub(crate) async fn run_daemon(
             .map(PathBuf::from)
             .collect(),
     );
+    let base_executor = agent_setup::with_search_executor(base_executor, web_search_executor);
     let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
         std::sync::Arc::clone(&memory),
         conversation_id,

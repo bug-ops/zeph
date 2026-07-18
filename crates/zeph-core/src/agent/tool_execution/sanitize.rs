@@ -85,7 +85,11 @@ fn split_bash_echo_prefix<'a>(body: &'a str, tool_name: &str) -> (&'a str, &'a s
 fn build_tool_output_source(tool_name: &str) -> ContentSource {
     if tool_name.contains(':') || tool_name == "mcp" {
         ContentSource::new(ContentSourceKind::McpResponse).with_identifier(tool_name)
-    } else if tool_name == "web-scrape" || tool_name == "web_scrape" || tool_name == "fetch" {
+    } else if tool_name == "web-scrape"
+        || tool_name == "web_scrape"
+        || tool_name == "fetch"
+        || tool_name == "web_search"
+    {
         ContentSource::new(ContentSourceKind::WebScrape).with_identifier(tool_name)
     } else if tool_name == "memory_search" {
         ContentSource::new(ContentSourceKind::MemoryRetrieval)
@@ -520,6 +524,42 @@ mod split_bash_echo_prefix_tests {
         let (prefix, remainder) = split_bash_echo_prefix(body, "bash");
         assert_eq!(prefix, "");
         assert_eq!(remainder, body);
+    }
+}
+
+#[cfg(test)]
+mod build_tool_output_source_tests {
+    use super::build_tool_output_source;
+    use zeph_sanitizer::ContentSourceKind;
+
+    /// INVARIANT-1 (spec 006-1-web-search §4): `web_search` output must be classified
+    /// identically to `web_scrape`/`fetch` — `ContentSourceKind::WebScrape`
+    /// (`ExternalUntrusted` + quarantine) — via the tool-name string branch, not
+    /// `ClaimSource`. Regression guard: dropping `web_search` from this branch would
+    /// silently fall through to `ContentSourceKind::ToolResult`, a strictly weaker trust
+    /// class for equivalent attacker-controllable content.
+    #[test]
+    fn web_search_classified_as_web_scrape_source() {
+        let source = build_tool_output_source("web_search");
+        assert_eq!(source.kind, ContentSourceKind::WebScrape);
+    }
+
+    #[test]
+    fn web_scrape_and_fetch_classified_as_web_scrape_source() {
+        for name in ["web-scrape", "web_scrape", "fetch"] {
+            let source = build_tool_output_source(name);
+            assert_eq!(
+                source.kind,
+                ContentSourceKind::WebScrape,
+                "{name} must classify as WebScrape"
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_tool_classified_as_tool_result() {
+        let source = build_tool_output_source("some_other_tool");
+        assert_eq!(source.kind, ContentSourceKind::ToolResult);
     }
 }
 

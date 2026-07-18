@@ -16,7 +16,7 @@
 //! - Configurable timeout and maximum response body size.
 //! - Redirect following is disabled to prevent open-redirect SSRF bypasses.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -34,7 +34,7 @@ use crate::config::{EgressConfig, ScrapeConfig};
 use crate::executor::{
     ClaimSource, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
 };
-use crate::net::is_private_ip;
+use crate::net::{check_domain_policy, validate_url};
 
 /// Strips userinfo (`user:pass@`) and sensitive query params from a URL for safe logging.
 ///
@@ -127,7 +127,7 @@ impl ExtractMode {
 ///
 /// - Only HTTPS URLs are accepted. HTTP and other schemes return [`ToolError::InvalidParams`].
 /// - DNS is resolved synchronously and each resolved address is checked against
-///   [`is_private_ip`]. Private addresses are rejected to prevent SSRF.
+///   [`crate::net::is_private_ip`]. Private addresses are rejected to prevent SSRF.
 /// - HTTP redirects are disabled (`Policy::none()`) to prevent open-redirect bypasses.
 /// - Domain allowlists and denylists from config are enforced before DNS resolution.
 ///
@@ -1046,93 +1046,6 @@ fn extract_scrape_blocks(text: &str) -> Vec<&str> {
     crate::executor::extract_fenced_blocks(text, "scrape")
 }
 
-/// Check host against the domain allowlist/denylist from `ScrapeConfig`.
-///
-/// Logic:
-/// 1. If `denied_domains` matches the host → block.
-/// 2. If `allowed_domains` is non-empty:
-///    a. IP address hosts are always rejected (no pattern can match a bare IP).
-///    b. Hosts not matching any entry → block.
-/// 3. Otherwise → allow.
-///
-/// Wildcard prefix matching: `*.example.com` matches `sub.example.com` but NOT `example.com`.
-/// Multiple wildcards are not supported; patterns with more than one `*` are treated as exact.
-fn check_domain_policy(
-    host: &str,
-    allowed_domains: &[String],
-    denied_domains: &[String],
-) -> Result<(), ToolError> {
-    if denied_domains.iter().any(|p| domain_matches(p, host)) {
-        return Err(ToolError::Blocked {
-            command: format!("domain blocked by denylist: {host}"),
-        });
-    }
-    if !allowed_domains.is_empty() {
-        // Bare IP addresses cannot match any domain pattern — reject when allowlist is active.
-        let is_ip = host.parse::<std::net::IpAddr>().is_ok()
-            || (host.starts_with('[') && host.ends_with(']'));
-        if is_ip {
-            return Err(ToolError::Blocked {
-                command: format!(
-                    "bare IP address not allowed when domain allowlist is active: {host}"
-                ),
-            });
-        }
-        if !allowed_domains.iter().any(|p| domain_matches(p, host)) {
-            return Err(ToolError::Blocked {
-                command: format!("domain not in allowlist: {host}"),
-            });
-        }
-    }
-    Ok(())
-}
-
-// Domain pattern matching is delegated to the shared `domain_match` module.
-use crate::domain_match::domain_matches;
-
-fn validate_url(raw: &str) -> Result<Url, ToolError> {
-    let parsed = Url::parse(raw).map_err(|_| ToolError::Blocked {
-        command: format!("invalid URL: {raw}"),
-    })?;
-
-    if parsed.scheme() != "https" {
-        return Err(ToolError::Blocked {
-            command: format!("scheme not allowed: {}", parsed.scheme()),
-        });
-    }
-
-    if let Some(host) = parsed.host()
-        && is_private_host(&host)
-    {
-        return Err(ToolError::Blocked {
-            command: format!(
-                "private/local host blocked: {}",
-                parsed.host_str().unwrap_or("")
-            ),
-        });
-    }
-
-    Ok(parsed)
-}
-
-fn is_private_host(host: &url::Host<&str>) -> bool {
-    match host {
-        url::Host::Domain(d) => {
-            // Exact match or subdomain of localhost (e.g. foo.localhost)
-            // and .internal/.local TLDs used in cloud/k8s environments.
-            #[allow(clippy::case_sensitive_file_extension_comparisons)]
-            {
-                *d == "localhost"
-                    || d.ends_with(".localhost")
-                    || d.ends_with(".internal")
-                    || d.ends_with(".local")
-            }
-        }
-        url::Host::Ipv4(v4) => is_private_ip(IpAddr::V4(*v4)),
-        url::Host::Ipv6(v6) => is_private_ip(IpAddr::V6(*v6)),
-    }
-}
-
 /// Resolves DNS for the URL host, validates all resolved IPs against private ranges,
 /// and returns the hostname and validated socket addresses.
 ///
@@ -1205,6 +1118,8 @@ fn parse_and_extract(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain_match::domain_matches;
+    use crate::net::is_private_host;
     use std::assert_matches;
 
     // --- extract_scrape_blocks ---
@@ -1312,77 +1227,8 @@ mod tests {
         assert_matches!(ExtractMode::parse("unknown"), ExtractMode::Text);
     }
 
-    // --- validate_url ---
-
-    #[test]
-    fn valid_https_url() {
-        assert!(validate_url("https://example.com").is_ok());
-    }
-
-    #[test]
-    fn http_rejected() {
-        let err = validate_url("http://example.com").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn ftp_rejected() {
-        let err = validate_url("ftp://files.example.com").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn file_rejected() {
-        let err = validate_url("file:///etc/passwd").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn invalid_url_rejected() {
-        let err = validate_url("not a url").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn localhost_blocked() {
-        let err = validate_url("https://localhost/path").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn loopback_ip_blocked() {
-        let err = validate_url("https://127.0.0.1/path").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn private_10_blocked() {
-        let err = validate_url("https://10.0.0.1/api").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn private_172_blocked() {
-        let err = validate_url("https://172.16.0.1/api").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn private_192_blocked() {
-        let err = validate_url("https://192.168.1.1/api").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn ipv6_loopback_blocked() {
-        let err = validate_url("https://[::1]/path").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn public_ip_allowed() {
-        assert!(validate_url("https://93.184.216.34/page").is_ok());
-    }
+    // validate_url is now shared in `crate::net` — see net.rs tests for scheme/private-host
+    // coverage. `ftp_rejected`/`file_rejected`/`ipv6_loopback_blocked` etc. moved there.
 
     // --- parse_and_extract ---
 
@@ -1476,61 +1322,6 @@ mod tests {
         let html = "<ul><li>A</li><li>B</li></ul>";
         let result = parse_and_extract(html, "li", &ExtractMode::Text, 0).unwrap();
         assert!(result.starts_with("No results for selector:"));
-    }
-
-    // --- validate_url edge cases ---
-
-    #[test]
-    fn url_with_port_allowed() {
-        assert!(validate_url("https://example.com:8443/path").is_ok());
-    }
-
-    #[test]
-    fn link_local_ip_blocked() {
-        let err = validate_url("https://169.254.1.1/path").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn url_no_scheme_rejected() {
-        let err = validate_url("example.com/path").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn unspecified_ipv4_blocked() {
-        let err = validate_url("https://0.0.0.0/path").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn broadcast_ipv4_blocked() {
-        let err = validate_url("https://255.255.255.255/path").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn ipv6_link_local_blocked() {
-        let err = validate_url("https://[fe80::1]/path").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn ipv6_unique_local_blocked() {
-        let err = validate_url("https://[fd12::1]/path").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn ipv4_mapped_ipv6_loopback_blocked() {
-        let err = validate_url("https://[::ffff:127.0.0.1]/path").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
-    }
-
-    #[test]
-    fn ipv4_mapped_ipv6_private_blocked() {
-        let err = validate_url("https://[::ffff:10.0.0.1]/path").unwrap_err();
-        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     // --- WebScrapeExecutor (no-network) ---

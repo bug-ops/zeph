@@ -102,10 +102,10 @@ use super::{
     migrate_planner_model_to_provider, migrate_policy_provider_and_utility_window,
     migrate_provider_max_concurrent, migrate_qdrant_api_key, migrate_qdrant_timeout_secs,
     migrate_quality_config, migrate_sandbox_config, migrate_sandbox_egress_filter,
-    migrate_scheduler_daemon_config, migrate_secret_masking_config, migrate_serve_config,
-    migrate_session_persist_provider_overrides, migrate_session_persistence_config,
-    migrate_session_provider_persistence, migrate_session_recap_config,
-    migrate_session_resume_config, migrate_shadow_sentinel_config,
+    migrate_scheduler_daemon_config, migrate_search_config, migrate_secret_masking_config,
+    migrate_serve_config, migrate_session_persist_provider_overrides,
+    migrate_session_persistence_config, migrate_session_provider_persistence,
+    migrate_session_recap_config, migrate_session_resume_config, migrate_shadow_sentinel_config,
     migrate_shell_checkpoints_config, migrate_shell_transactional,
     migrate_skill_trust_require_check, migrate_skills_registry, migrate_stt_to_provider,
     migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
@@ -300,6 +300,17 @@ impl Migration for MigrateEgressConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_egress_config(toml_src)
+    }
+}
+
+pub(super) struct MigrateSearchConfig;
+impl Migration for MigrateSearchConfig {
+    fn name(&self) -> &'static str {
+        "migrate_search_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_search_config(toml_src)
     }
 }
 

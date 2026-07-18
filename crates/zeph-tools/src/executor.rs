@@ -224,6 +224,10 @@ pub enum ClaimSource {
     FileSystem,
     /// HTTP web scrape.
     WebScrape,
+    /// Query-based web search (external search API). Audit-provenance only — the
+    /// sanitizer trust bridge dispatches on the tool-name string, not this variant
+    /// (see `zeph-core::agent::tool_execution::sanitize::build_tool_output_source`).
+    WebSearch,
     /// MCP server tool response.
     Mcp,
     /// A2A agent message.

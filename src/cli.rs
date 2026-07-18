@@ -412,6 +412,14 @@ pub(crate) enum Command {
         #[arg(long, default_value = "zeph_documents")]
         collection: String,
     },
+    /// Run a single `web_search` query (requires `[tools.search]` enabled and a vault API key)
+    Search {
+        /// Natural-language search query
+        query: String,
+        /// Max results to return (defaults to `tools.search.max_results`)
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// Manage scheduled jobs
     #[cfg(feature = "scheduler")]
     Schedule {

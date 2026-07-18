@@ -1181,6 +1181,71 @@ impl Default for ScrapeConfig {
     }
 }
 
+fn default_search_backend() -> String {
+    "brave".to_owned()
+}
+
+fn default_search_vault_key() -> String {
+    "ZEPH_WEB_SEARCH_API_KEY".to_owned()
+}
+
+fn default_search_endpoint() -> String {
+    "https://api.search.brave.com/res/v1/web/search".to_owned()
+}
+
+fn default_search_max_results() -> usize {
+    10
+}
+
+fn default_search_timeout() -> u64 {
+    15
+}
+
+/// Configuration for the native query-based `web_search` tool (`[tools.search]`).
+///
+/// Runtime-gated, not cargo-feature-gated: the tool compiles unconditionally but is only
+/// advertised to the LLM when `enabled` is `true` AND a backend resolves (see
+/// `zeph_tools::search::SearchBackend::from_config`). Disabled by default. The API key is
+/// resolved exclusively from the age vault under `api_key_vault_key` — never from an
+/// environment variable or a literal in this struct. See
+/// `specs/006-tools/006-1-web-search.md`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SearchConfig {
+    /// Runtime gate. When `false`, `web_search` is never advertised to the LLM. Default: `false`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// `SearchBackend` variant selector (`zeph-tools`). Default: `"brave"`.
+    #[serde(default = "default_search_backend")]
+    pub backend: String,
+    /// Age-vault key name the API key is resolved from. Never an environment variable.
+    /// Default: `"ZEPH_WEB_SEARCH_API_KEY"`.
+    #[serde(default = "default_search_vault_key")]
+    pub api_key_vault_key: String,
+    /// Search API endpoint. Override for a self-hosted/proxy/alternate backend.
+    /// Default: the Brave Search API endpoint.
+    #[serde(default = "default_search_endpoint")]
+    pub endpoint: String,
+    /// Cap on returned results. Default: `10`.
+    #[serde(default = "default_search_max_results")]
+    pub max_results: usize,
+    /// Request timeout in seconds. Default: `15`.
+    #[serde(default = "default_search_timeout")]
+    pub timeout: u64,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: default_search_backend(),
+            api_key_vault_key: default_search_vault_key(),
+            endpoint: default_search_endpoint(),
+            max_results: default_search_max_results(),
+            timeout: default_search_timeout(),
+        }
+    }
+}
+
 /// Speculative tool execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1416,6 +1481,9 @@ pub struct ToolsConfig {
     /// Web scrape tool configuration.
     #[serde(default)]
     pub scrape: ScrapeConfig,
+    /// Native query-based web search tool configuration.
+    #[serde(default)]
+    pub search: SearchConfig,
     /// Audit log configuration.
     #[serde(default)]
     pub audit: AuditConfig,
@@ -1482,6 +1550,7 @@ impl Default for ToolsConfig {
             summarize_output: true,
             shell: ShellConfig::default(),
             scrape: ScrapeConfig::default(),
+            search: SearchConfig::default(),
             audit: AuditConfig::default(),
             permissions: None,
             filters: FilterConfig::default(),

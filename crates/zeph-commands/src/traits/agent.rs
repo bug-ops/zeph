@@ -590,6 +590,20 @@ pub trait AgentAccess: Send {
         Box::pin(async move { Ok("Redo is not supported in this context.".to_owned()) })
     }
 
+    // ----- /search -----
+
+    /// Execute `/search <query> [--limit N]` by dispatching a `web_search` tool call.
+    ///
+    /// `args` is everything after `/search`. Returns the rendered result summary, or a
+    /// usage/error message. The default returns a "not supported" message.
+    fn handle_web_search<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let _ = args;
+        Box::pin(async move { Ok("Web search is not supported in this context.".to_owned()) })
+    }
+
     // ----- /agents -----
 
     /// Handle `/agents [subcommand] [args]` and return a formatted response string.

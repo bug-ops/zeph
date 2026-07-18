@@ -9,7 +9,7 @@
 #[cfg(test)]
 pub(crate) use zeph_config::tools::AuditDestination;
 pub(crate) use zeph_config::tools::{
-    AuditConfig, EgressConfig, FileConfig, SandboxConfig, ScrapeConfig, ShellConfig,
+    AuditConfig, EgressConfig, FileConfig, SandboxConfig, ScrapeConfig, SearchConfig, ShellConfig,
     ToolDependency, ToolsConfig, UtilityScoringConfig,
 };
 

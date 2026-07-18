@@ -188,6 +188,10 @@ pub struct ResolvedSecrets {
     /// `skills.registry.auth_vault_key` when `skills.registry.enabled = true` (spec-045,
     /// #5869). `None` when the registry is disabled or `auth_vault_key` is unset.
     pub skill_registry_token: Option<Secret>,
+    /// `web_search` tool API key, resolved from the vault key named by
+    /// `tools.search.api_key_vault_key` when `tools.search.enabled = true` (spec
+    /// 006-1-web-search). `None` when the tool is disabled or the key is unset.
+    pub web_search_api_key: Option<Secret>,
     /// Arbitrary named secrets resolved from `ZEPH_SECRET_*` vault keys.
     /// Key is the lowercased name after stripping the prefix (e.g. `github_token`).
     ///

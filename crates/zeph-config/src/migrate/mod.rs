@@ -622,15 +622,16 @@ use steps::{
     MigrateOverflowMaxPerCallOverride, MigratePiiFilterNames, MigratePlannerModelToProvider,
     MigratePolicyProviderAndUtilityWindow, MigrateProviderMaxConcurrent, MigrateQdrantApiKey,
     MigrateQdrantTimeoutSecs, MigrateQualityConfig, MigrateSandboxConfig,
-    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSecretMaskingConfig,
-    MigrateServeConfig, MigrateSessionPersistProviderOverrides, MigrateSessionPersistenceConfig,
-    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateSessionResumeConfig,
-    MigrateShadowSentinelConfig, MigrateShellCheckpointsConfig, MigrateShellTransactional,
-    MigrateSkillTrustRequireCheck, MigrateSkillsRegistry, MigrateSttToProvider,
-    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
-    MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig,
-    MigrateTuiThemeDefaults, MigrateUtilityHighGainTools, MigrateVigilConfig,
-    MigrateWorktreeConfig, MigrateWorktreeGitTimeout, MigrateWorktreeQuotaFields,
+    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSearchConfig,
+    MigrateSecretMaskingConfig, MigrateServeConfig, MigrateSessionPersistProviderOverrides,
+    MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
+    MigrateSessionResumeConfig, MigrateShadowSentinelConfig, MigrateShellCheckpointsConfig,
+    MigrateShellTransactional, MigrateSkillTrustRequireCheck, MigrateSkillsRegistry,
+    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
+    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
+    MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateUtilityHighGainTools,
+    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
+    MigrateWorktreeQuotaFields,
 };
 
 /// Ordered registry of all sequential migration steps (steps 1–95).
@@ -822,6 +823,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 95 — add time_reminder_enabled/time_reminder_interval_requests advisory
             // comments under [agent] (#6361)
             Box::new(MigrateAgentTimeReminder),
+            // Step 96 — add [tools.search] advisory block for the native query-based
+            // web_search tool (spec 006-1-web-search, #6358)
+            Box::new(MigrateSearchConfig),
         ]
     });
 

@@ -592,6 +592,17 @@ async fn build_tool_executor(
     }
     let mut scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape)
         .with_egress_config(config.tools.egress.clone());
+    let web_search_api_key = config
+        .secrets
+        .web_search_api_key
+        .as_ref()
+        .map(|s| zeph_common::secret::Secret::new(s.expose()));
+    let mut web_search_executor = zeph_tools::WebSearchExecutor::new(
+        &config.tools.search,
+        &config.tools.scrape,
+        web_search_api_key,
+    )
+    .map(|w| w.with_egress_config(config.tools.egress.clone()));
     let mut audit_logger = None;
     if config.tools.audit.enabled
         && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit, false).await
@@ -599,6 +610,9 @@ async fn build_tool_executor(
         let logger = Arc::new(logger);
         shell_executor = shell_executor.with_audit(Arc::clone(&logger));
         scrape_executor = scrape_executor.with_audit(Arc::clone(&logger));
+        if let Some(w) = web_search_executor.take() {
+            web_search_executor = Some(w.with_audit(Arc::clone(&logger)));
+        }
         audit_logger = Some(logger);
     }
     let file_executor = zeph_tools::FileExecutor::new(
@@ -623,7 +637,13 @@ async fn build_tool_executor(
         file_executor,
         zeph_tools::CompositeExecutor::new(
             shell_executor,
-            zeph_tools::CompositeExecutor::new(scrape_executor, cwd_executor),
+            zeph_tools::CompositeExecutor::new(
+                scrape_executor,
+                zeph_tools::CompositeExecutor::new(
+                    zeph_tools::OptionalExecutor(web_search_executor),
+                    cwd_executor,
+                ),
+            ),
         ),
     ));
     Ok((base, permission_policy, audit_logger))

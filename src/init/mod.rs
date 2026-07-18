@@ -67,6 +67,7 @@ pub(crate) struct WizardState {
     pub(crate) scheduler_tick_interval_secs: u64,
     pub(crate) scheduler_max_tasks: usize,
     pub(crate) skills_registry_enabled: bool,
+    pub(crate) search_enabled: bool,
     pub(crate) daemon_enabled: bool,
     pub(crate) daemon_host: String,
     pub(crate) daemon_port: u16,
@@ -390,6 +391,7 @@ impl Default for WizardState {
             scheduler_tick_interval_secs: 0,
             scheduler_max_tasks: 0,
             skills_registry_enabled: false,
+            search_enabled: false,
             daemon_enabled: false,
             daemon_host: String::new(),
             daemon_port: 0,
@@ -630,6 +632,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_update_check(&mut state)?;
     step_scheduler(&mut state)?;
     step_skills_registry(&mut state)?;
+    step_search(&mut state)?;
     step_orchestration(&mut state)?;
     step_durable(&mut state)?;
     step_daemon(&mut state)?;
@@ -1087,6 +1090,11 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         ..zeph_core::config::RegistryConfig::default()
     };
 
+    config.tools.search = zeph_tools::SearchConfig {
+        enabled: state.search_enabled,
+        ..zeph_tools::SearchConfig::default()
+    };
+
     config.agents.default_permission_mode = state.agents_default_permission_mode;
     config
         .agents
@@ -1510,6 +1518,30 @@ fn step_skills_registry(state: &mut WizardState) -> anyhow::Result<()> {
              zeph vault set ZEPH_SKILL_REGISTRY_TOKEN <token>\n  \
              then set skills.registry.auth_vault_key = \"ZEPH_SKILL_REGISTRY_TOKEN\" in \
              config.toml. This wizard never prompts for the raw token."
+        );
+    }
+
+    println!();
+    Ok(())
+}
+
+fn step_search(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Web Search Tool ==\n");
+
+    state.search_enabled = Confirm::new()
+        .with_prompt(
+            "Enable the native `web_search` tool (query-based web search via an external \
+             search API)? Opt-in only — off by default, disabled until an API key is stored.",
+        )
+        .default(false)
+        .interact()?;
+
+    if state.search_enabled {
+        println!(
+            "  Search enabled with the default backend (Brave Search API). Store the API key \
+             with:\n    zeph vault set ZEPH_WEB_SEARCH_API_KEY <key>\n  \
+             This wizard never prompts for the raw key. Override the backend, endpoint, or \
+             vault key name under `[tools.search]` in config.toml."
         );
     }
 

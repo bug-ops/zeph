@@ -9,6 +9,8 @@
 //!   output filtering, transactional rollback, and audit logging.
 //! - [`WebScrapeExecutor`] — fetches and scrapes web pages via CSS selectors, with SSRF
 //!   protection and domain policies.
+//! - [`WebSearchExecutor`] — issues a natural-language query to an external search API and
+//!   returns ranked results, without requiring a pre-known URL.
 //! - [`CompositeExecutor`] — chains two executors with first-match-wins dispatch.
 //! - [`FileExecutor`] — reads and writes local files within a sandbox.
 //! - [`DiagnosticsExecutor`] — exposes agent self-diagnostics as a tool.
@@ -83,6 +85,7 @@ pub mod sandbox;
 pub mod schema_filter;
 pub mod scope;
 pub mod scrape;
+pub mod search;
 pub mod search_code;
 pub mod shadow_probe;
 pub mod shell;
@@ -103,7 +106,7 @@ pub use audit::{
     log_tool_risk_summary,
 };
 pub use cache::{CacheKey, ToolResultCache, is_cacheable};
-pub use composite::CompositeExecutor;
+pub use composite::{CompositeExecutor, OptionalExecutor};
 pub use compression::{
     CompressedExecutor, CompressionError, CompressionRule, CompressionRuleStore,
     IdentityCompressor, OutputCompressor, RuleBasedCompressor, safe_compile,
@@ -148,6 +151,10 @@ pub use schema_filter::{
 };
 pub use scope::{ScopeError, ScopeWarning, ScopedToolExecutor, ToolScope, build_scoped_executor};
 pub use scrape::WebScrapeExecutor;
+pub use search::{
+    BraveSearchProvider, SearchBackend, SearchError, SearchProvider, SearchResult,
+    WebSearchExecutor,
+};
 pub use search_code::{
     LspSearchBackend, SearchCodeExecutor, SearchCodeHit, SearchCodeSource, SemanticSearchBackend,
 };
@@ -174,8 +181,8 @@ pub use zeph_config::tools::{
     AdversarialPolicyConfig, AnomalyConfig, AuditConfig, AuditDestination, AuthorizationConfig,
     DefaultEffect, DependencyConfig, EgressConfig, FileConfig, FilterConfig, OverflowConfig,
     PolicyConfig, PolicyEffect, PolicyRuleConfig, ResultCacheConfig, RetryConfig, SandboxConfig,
-    SandboxProfile, ScrapeConfig, SecurityFilterConfig, ShellConfig, TafcConfig, ToolDependency,
-    ToolsConfig, UtilityScoringConfig,
+    SandboxProfile, ScrapeConfig, SearchConfig, SecurityFilterConfig, ShellConfig, TafcConfig,
+    ToolDependency, ToolsConfig, UtilityScoringConfig,
 };
 pub use zeph_config::tools::{
     AutonomyLevel, PermissionAction, PermissionRule, PermissionsConfig, SpeculationMode,

@@ -34,6 +34,7 @@ pub mod plugins;
 pub mod policy;
 pub mod reasoning_effort;
 pub mod scheduler;
+pub mod search;
 pub mod session;
 pub mod skill;
 pub mod status;
