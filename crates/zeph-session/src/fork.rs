@@ -273,6 +273,8 @@ fn validate_blob_hash(hash: &str) -> Result<(), SessionError> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::store::SessionStore;
 
@@ -362,6 +364,54 @@ mod tests {
         let events = child_log.read_all().await.unwrap();
         // 1 synthesized SessionStarted header + 3 copied events.
         assert_eq!(events.len(), 4);
+    }
+
+    /// Issue #6360, S-new-3 (critic rev3): fork must not launder a tampered parent's history into
+    /// a "fresh, trusted" child. `ForkEngine::fork` reads the parent via `SessionEventLog::read_all`
+    /// (chain-verified) and separately validates the cut point via `ReplayEngine::replay`
+    /// (also chain-verified) — either one must reject a tampered parent before any event is
+    /// copied into the child log.
+    #[tokio::test]
+    async fn test_fork_rejects_a_tampered_parent_chain() {
+        let ring = Arc::new(zeph_common::hash_chain::ChainKeyRing::new(
+            0,
+            zeph_common::hash_chain::ChainKey::new([77u8; 32]),
+        ));
+        crate::log::configure_history_integrity(Some(ring));
+
+        let store = SessionStore::new(make_pool().await);
+        let data_dir = tempfile::tempdir().unwrap();
+        seed_parent(data_dir.path(), &store, "parent").await;
+
+        let events_path = crate::session_dir(data_dir.path(), "parent").join("events.jsonl");
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        let mut lines: Vec<&str> = raw.lines().collect();
+        assert!(
+            lines.len() >= 2,
+            "fixture must have a non-first line to tamper"
+        );
+        let tampered = lines[1].replace("hello", "forged-approval");
+        lines[1] = &tampered;
+        std::fs::write(&events_path, lines.join("\n") + "\n").unwrap();
+
+        let err = ForkEngine::fork(data_dir.path(), "parent", "child", Some(3), &store, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, SessionError::Integrity(_)),
+            "tampering the parent's chain must abort the fork with an Integrity error, not \
+             silently produce a child; got {err:?}"
+        );
+
+        // The child directory must not exist as a fresh, trusted session — fork failed before
+        // any laundering could occur.
+        let child_dir = crate::session_dir(data_dir.path(), "child");
+        assert!(
+            !child_dir.join("events.jsonl").exists(),
+            "a rejected fork must not leave behind a partially-written child log"
+        );
+
+        crate::log::configure_history_integrity(None);
     }
 
     #[tokio::test]
@@ -699,6 +749,7 @@ mod tests {
                 text: "with image".to_owned(),
                 image_refs: vec!["a1b2c3".to_owned()],
             },
+            chain: None,
         }];
 
         // First run: hard-links the blob into the child.

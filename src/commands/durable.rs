@@ -212,6 +212,31 @@ pub(crate) fn load_write_hmac_key(config: &Config) -> anyhow::Result<Option<[u8;
     load_control_hmac_key(&config.durable, &url)
 }
 
+/// Resolve the high-water-mark key (issue #6360) to attach on a durable *write* path.
+///
+/// Unlike [`load_control_hmac_key`] (attached only on a declared/detected shared database), the
+/// high-water-mark key is meant to be attached unconditionally (FR-009): it is the only mechanism
+/// that detects deletion of a committed `StepResult` row, a threat class the AEAD payload seal and
+/// the shared-DB row HMAC do not cover on any deployment, single-user local included.
+///
+/// Returns `Ok(None)` when `ZEPH_DURABLE_KEY` is not (yet) resolvable from the vault — the same
+/// graceful-degrade posture as the rest of durable bootstrap (a missing key means the mechanism is
+/// inactive for this run, not that a verification failed) — rather than hard-failing bootstrap.
+pub(crate) fn load_write_hwm_key(_config: &Config) -> anyhow::Result<Option<(u32, [u8; 32])>> {
+    let dir = zeph_core::vault::default_vault_dir();
+    let Ok(provider) = AgeVaultProvider::load(&dir.join("vault-key.txt"), &dir.join("secrets.age"))
+    else {
+        return Ok(None);
+    };
+    let Some(key) = provider.get("ZEPH_DURABLE_KEY") else {
+        return Ok(None);
+    };
+    let hwm_key = zeph_core::durable::derive_hwm_key_b64(key).map_err(|e| {
+        anyhow::anyhow!("invalid ZEPH_DURABLE_KEY for high-water-mark derivation: {e}")
+    })?;
+    Ok(Some((zeph_core::durable::HWM_KEY_EPOCH, hwm_key)))
+}
+
 /// Resolve the AEAD payload cipher to attach on a durable *write* path when
 /// `config.durable.encrypt_payload` is enabled (INV-5).
 ///

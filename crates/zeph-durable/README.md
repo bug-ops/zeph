@@ -89,6 +89,14 @@ a dedicated `durable.db` (SQLite) or a feature-gated Restate backend.
 - **Domain-separated idempotency keys.** `IdempotencyKey::derive` uses BLAKE3 `derive_key` with a
   fixed context string and length-delimited (injective) input, so an attacker-controlled
   fingerprint cannot collide with a different `(execution_id, step_id)` pair.
+- **Tamper-evident replay (issue #6360).** `LocalBackend::with_hwm_key` attaches an authenticated
+  per-execution high-water-mark (HWM) — a signed `{execution_id, max_committed_step_id,
+  committed_result_count, key_epoch}` tuple, verified O(1) on every resume — that detects
+  deletion of a committed `StepResult` row, including across a `checkpoint_fold` compaction. It
+  activates unconditionally whenever `ZEPH_DURABLE_KEY` is provisioned, unlike the row-HMAC above
+  which stays opt-in for shared-database deployments. Detects deletion/forgery of tracked
+  entries; does not yet resist an attacker deleting the HWM row itself (treated as legacy for
+  migration safety) — tracked in issue #6449.
 
 > [!NOTE]
 > **Schema ownership (INV-14).** `zeph-durable` owns **no** `.sql` files and **no**

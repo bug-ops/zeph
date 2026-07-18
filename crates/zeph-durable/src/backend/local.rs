@@ -141,6 +141,17 @@ pub struct LocalBackend {
     pool: DbPool,
     cipher: Option<Arc<dyn PayloadCipher>>,
     hmac_key: Option<[u8; 32]>,
+    /// The current high-water-mark key (issue #6360), keyed by its non-secret rotation epoch.
+    /// `None` disables the HWM: no bump on commit/fold, and [`open_execution`](Self::open_execution)
+    /// skips its internal high-water-mark verification entirely on resume. Unlike
+    /// `hmac_key` (shared-DB gated, INV-8), the HWM key is meant to be attached unconditionally
+    /// (FR-009) — it is the only mechanism that detects deletion of a committed `StepResult` row,
+    /// a threat class the AEAD payload seal and the row HMAC do not cover on any deployment,
+    /// single-user local included.
+    hwm_key: Option<HwmKeySlot>,
+    /// A previous HWM key, still accepted for verification during a rotation window (FR-008). Never
+    /// used to sign new writes — every bump/fold always signs under `hwm_key`.
+    hwm_key_previous: Option<HwmKeySlot>,
     max_payload_bytes: u64,
     /// In-process wakeup map for parked promise awaits, shared with the resolver path.
     promise_waiters: NotifyRegistry,
@@ -158,12 +169,24 @@ pub struct LocalBackend {
     orphan_sweep_warned: std::sync::atomic::AtomicBool,
 }
 
+/// One row-HMAC/high-water-mark key, addressed by its non-secret rotation epoch (FR-008).
+///
+/// The epoch is not sensitive (it is stored in the clear alongside the signed HWM tuple) — it lets
+/// a verifier distinguish "signed under a key I don't currently hold" (re-keyed) from "signed under
+/// my current key but the hash doesn't match" (tampered), per FR-008.
+#[derive(Clone, Copy)]
+struct HwmKeySlot {
+    epoch: u32,
+    key: [u8; 32],
+}
+
 impl fmt::Debug for LocalBackend {
-    /// Redacts the cipher and HMAC key — never print key material or a cipher handle.
+    /// Redacts the cipher and HMAC/HWM key material — never print key bytes or a cipher handle.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LocalBackend")
             .field("cipher", &self.cipher.as_ref().map(|_| "<cipher>"))
             .field("hmac_key", &self.hmac_key.as_ref().map(|_| "<redacted>"))
+            .field("hwm_key_epoch", &self.hwm_key.as_ref().map(|s| s.epoch))
             .field("max_payload_bytes", &self.max_payload_bytes)
             .finish_non_exhaustive()
     }
@@ -181,6 +204,8 @@ impl LocalBackend {
             pool,
             cipher: None,
             hmac_key: None,
+            hwm_key: None,
+            hwm_key_previous: None,
             max_payload_bytes,
             promise_waiters: NotifyRegistry::default(),
             timer_waiters: NotifyRegistry::default(),
@@ -227,6 +252,30 @@ impl LocalBackend {
     #[must_use]
     pub fn with_hmac_key(mut self, key: [u8; 32]) -> Self {
         self.hmac_key = Some(key);
+        self
+    }
+
+    /// Configure the current high-water-mark key (issue #6360), addressed by its non-secret
+    /// rotation `epoch`.
+    ///
+    /// Unlike [`with_hmac_key`](Self::with_hmac_key), this is meant to be attached unconditionally
+    /// (FR-009) — attach it whenever `ZEPH_DURABLE_KEY` resolves from the vault, regardless of
+    /// `shared_db`. When set, every committed `StepResult` bumps the signed
+    /// `{key_epoch, max_committed_step_id, committed_result_count}` tuple in-transaction, and
+    /// [`open_execution`](Self::open_execution) verifies it on every resume (FR-004, US-003).
+    #[must_use]
+    pub fn with_hwm_key(mut self, epoch: u32, key: [u8; 32]) -> Self {
+        self.hwm_key = Some(HwmKeySlot { epoch, key });
+        self
+    }
+
+    /// Register a previous high-water-mark key for the rotation window (FR-008).
+    ///
+    /// Verification tries [`hwm_key`](Self::with_hwm_key) first by epoch match, then this slot —
+    /// never the reverse. New writes always sign under the current key regardless of this slot.
+    #[must_use]
+    pub fn with_previous_hwm_key(mut self, epoch: u32, key: [u8; 32]) -> Self {
+        self.hwm_key_previous = Some(HwmKeySlot { epoch, key });
         self
     }
 
@@ -553,11 +602,21 @@ impl LocalBackend {
     /// genuinely gone) before deciding between reporting a resume or inserting a fresh execution —
     /// so this never reports `is_resume = true` for a row that turned out not to exist.
     ///
+    /// Every path that resolves to `is_resume = true` verifies the signed high-water-mark
+    /// (issue #6360) before returning: this is the single production call site every durable resume goes through (P1 agent-turn,
+    /// P2 orchestration, scheduler, sub-agent), so it is also the one place the HWM check needs to
+    /// live to cover unattended crash-resume (FR-004, US-003) uniformly.
+    ///
     /// Span: `durable.backend.open`.
     ///
     /// # Errors
     ///
-    /// Returns [`DurableError::Storage`] if the lookup, reset, or insert fails.
+    /// Returns [`DurableError::Storage`] if the lookup, reset, or insert fails,
+    /// [`DurableError::HighWaterMarkIntegrity`] if a resumed execution's signed high-water-mark
+    /// does not verify — this is a hard abort with no override (FR-004) — or
+    /// [`DurableError::ExecutionCanceled`] if the row is `canceled` (INV-16′, #6362): checked
+    /// before the HWM verification, since a canceled execution must never be resumed regardless
+    /// of whether its journal is otherwise intact.
     pub async fn open_execution(
         &self,
         id: ExecutionId,
@@ -585,6 +644,7 @@ impl LocalBackend {
             .await
             .map_err(|e| DurableError::storage("open", e))?;
             if reopened.rows_affected() > 0 {
+                self.verify_high_water_mark(id).await?;
                 tracing::Span::current().record("is_resume", true);
                 return Ok(true);
             }
@@ -606,6 +666,7 @@ impl LocalBackend {
                 if status == "canceled" {
                     return Err(DurableError::ExecutionCanceled { execution_id: id });
                 }
+                self.verify_high_water_mark(id).await?;
                 tracing::Span::current().record("is_resume", true);
                 return Ok(true);
             }
@@ -824,7 +885,7 @@ impl LocalBackend {
         let mut tx = zeph_db::begin_write(&self.pool)
             .await
             .map_err(|e| DurableError::storage("append_batch", e))?;
-        for row in rows {
+        for (entry, row) in entries.iter().zip(rows) {
             zeph_db::query(insert)
                 .bind(row.execution_id)
                 .bind(row.step_id)
@@ -838,6 +899,10 @@ impl LocalBackend {
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| DurableError::storage("append_batch", e))?;
+            if matches!(entry.entry, EntryKind::StepResult { .. }) {
+                self.bump_hwm_for_step_result(&mut tx, entry.execution_id, entry.step_id)
+                    .await?;
+            }
         }
         tx.commit()
             .await
@@ -1228,6 +1293,13 @@ impl LocalBackend {
     /// Returns the number of steps folded. Runs only on a background task (spec NEVER: not the hot
     /// path). Span: `durable.journal.checkpoint`.
     ///
+    /// The checkpoint row also carries the fold's `folded_count` (issue #6360), in the same
+    /// transaction as the DELETE. The high-water-mark's own `committed_result_count` is
+    /// deliberately left untouched here: a fold moves committed results from live rows into the
+    /// checkpoint snapshot net-zero, so the signed count stays valid without a bump — only the
+    /// resume-time recomputation needs `folded_count` (`count(surviving StepResult) +
+    /// SUM(folded_count)`) to see past the fold.
+    ///
     /// # Errors
     ///
     /// Returns [`DurableError::Storage`] on a database error, or a cipher failure if (re)sealing
@@ -1279,19 +1351,26 @@ impl LocalBackend {
                 PayloadAad::new(execution_id, StepId::new(fold_end), EntryKindTag::Checkpoint, None);
             let sealed_snapshot = self.seal_payload(&snapshot, &snap_aad)?;
 
+            // `folded_count` (issue #6360) is persisted on the checkpoint row itself, in the same
+            // transaction as the fold's DELETE, so resume can recompute `committed_result_count` as
+            // `count(surviving StepResult rows) + SUM(folded_count over checkpoints)` without ever
+            // observing a fold whose DELETE committed but whose count did not (or vice versa).
+            let count = folded.len() as u64;
+
             let mut tx = zeph_db::begin_write(&self.pool)
                 .await
                 .map_err(|e| DurableError::storage("checkpoint", e))?;
             zeph_db::query(sql!(
                 "INSERT INTO durable_journal
-                    (execution_id, step_id, entry_kind, idem_key, effect_class, payload, payload_version, hmac, created_at)
-                 VALUES (?, ?, 'checkpoint', NULL, NULL, ?, ?, NULL, ?)"
+                    (execution_id, step_id, entry_kind, idem_key, effect_class, payload, payload_version, hmac, created_at, folded_count)
+                 VALUES (?, ?, 'checkpoint', NULL, NULL, ?, ?, NULL, ?, ?)"
             ))
             .bind(&exec)
             .bind(i64::from(fold_end))
             .bind(sealed_snapshot)
             .bind(i32::from(crate::step::PAYLOAD_VERSION))
             .bind(now_unix_millis())
+            .bind(i64::try_from(count).unwrap_or(i64::MAX))
             .execute(&mut *tx)
             .await
             .map_err(|e| DurableError::storage("checkpoint", e))?;
@@ -1309,7 +1388,6 @@ impl LocalBackend {
                 .await
                 .map_err(|e| DurableError::storage("checkpoint", e))?;
 
-            let count = folded.len() as u64;
             tracing::Span::current().record("folded_count", count);
             Ok(count)
         }
@@ -1390,9 +1468,9 @@ impl LocalBackend {
     /// Delete one bounded batch of prunable terminal executions and their child rows.
     ///
     /// Selects up to `batch` executions past their TTL, then deletes their journal, promise, timer,
-    /// and execution rows in a single transaction (children first, to respect the foreign keys).
-    /// Returns the number of executions removed; the retention loop stops once a batch returns fewer
-    /// than `batch`.
+    /// integrity (issue #6360), and execution rows in a single transaction (children first, to
+    /// respect the foreign keys). Returns the number of executions removed; the retention loop
+    /// stops once a batch returns fewer than `batch`.
     ///
     /// The candidate-selection `SELECT` runs *inside* the same `begin_write` transaction as the
     /// deletes (not on the autocommit pool beforehand), closing the race where a concurrent
@@ -1455,6 +1533,15 @@ impl LocalBackend {
         let journal = sql!("DELETE FROM durable_journal WHERE execution_id = ?");
         let promises = sql!("DELETE FROM durable_promises WHERE execution_id = ?");
         let timers = sql!("DELETE FROM durable_timers WHERE execution_id = ?");
+        // Issue #6360: `durable_execution_integrity` references `durable_executions` without
+        // `ON DELETE CASCADE` (same convention as journal/promises/timers), so it must be deleted
+        // here too — otherwise the `DELETE FROM durable_executions` below violates the FK on every
+        // backend with FK enforcement on (Postgres always; SQLite via `zeph-db`'s
+        // `PRAGMA foreign_keys = ON`), rolling back the whole prune batch for any keyed execution
+        // that ever committed a `StepResult` (`bump_hwm_for_step_result` always writes this row
+        // when an HWM key is configured). A no-op `DELETE` for an unkeyed/never-committed execution
+        // (no row present) is fine.
+        let integrity = sql!("DELETE FROM durable_execution_integrity WHERE execution_id = ?");
         // Re-guarded by the same status/finalized_at predicate as the SELECT above (not just
         // `execution_id = ?`) — belt and suspenders alongside the transactional read above.
         let executions = sql!(
@@ -1466,7 +1553,7 @@ impl LocalBackend {
         );
         let mut removed = 0u64;
         for (id,) in &ids {
-            for stmt in [journal, promises, timers] {
+            for stmt in [journal, promises, timers, integrity] {
                 zeph_db::query(stmt)
                     .bind(id)
                     .execute(&mut *tx)
@@ -1670,6 +1757,222 @@ impl LocalBackend {
             Some(stored) if blake3::Hash::from(expected) == blake3::Hash::from(stored) => Ok(()),
             _ => Err(DurableError::ControlIntegrity),
         }
+    }
+
+    /// Compute the high-water-mark HMAC (issue #6360) over the signed
+    /// `{execution_id, max_committed_step_id, committed_result_count, key_epoch}` tuple.
+    ///
+    /// Domain-separated from [`compute_control_hmac`](Self::compute_control_hmac)'s input by
+    /// construction — this binds `max_committed_step_id` and `committed_result_count`, fields the
+    /// control-entry HMAC never includes — so the two mechanisms safely share key material without
+    /// a cross-mechanism forgery becoming possible.
+    fn compute_hwm_hmac(
+        execution_id: ExecutionId,
+        max_committed_step_id: u32,
+        committed_result_count: u64,
+        key_epoch: u32,
+        key: &[u8; 32],
+    ) -> [u8; 32] {
+        let mut input = Vec::with_capacity(16 + 4 + 8 + 4);
+        input.extend_from_slice(execution_id.as_bytes());
+        input.extend_from_slice(&max_committed_step_id.to_le_bytes());
+        input.extend_from_slice(&committed_result_count.to_le_bytes());
+        input.extend_from_slice(&key_epoch.to_le_bytes());
+        *blake3::keyed_hash(key, &input).as_bytes()
+    }
+
+    /// Resolve the high-water-mark key registered for `epoch`: the current key first, then the
+    /// registered previous key (FR-008 rotation window).
+    ///
+    /// Returns `None` when `epoch` matches neither slot — an unresolvable epoch on a row that
+    /// carries HWM metadata, which the caller must treat as fail-closed (NFR-004), never as legacy:
+    /// only a row's total *absence* is legacy, not a present-but-unverifiable one (closes the
+    /// downgrade lever where a stripped/forged epoch would otherwise masquerade as "predates the
+    /// feature").
+    fn resolve_hwm_key(&self, epoch: u32) -> Option<[u8; 32]> {
+        if let Some(slot) = &self.hwm_key
+            && slot.epoch == epoch
+        {
+            return Some(slot.key);
+        }
+        if let Some(slot) = &self.hwm_key_previous
+            && slot.epoch == epoch
+        {
+            return Some(slot.key);
+        }
+        None
+    }
+
+    /// Bump the signed high-water-mark (issue #6360) after committing a `StepResult` row, inside
+    /// the same transaction as its INSERT. A no-op when no HWM key is configured.
+    ///
+    /// Reads the current signed tuple (or starts from zero for a first-ever committed result),
+    /// increments `committed_result_count` by one, raises `max_committed_step_id` to `step_id` when
+    /// higher, and re-signs under the current epoch — all inside `tx`, so a `StepResult` can never
+    /// commit without its HWM update landing atomically alongside it (no TOCTOU gap). Folding
+    /// (`checkpoint_fold`) never calls this: a fold moves the same committed results from live rows
+    /// into a checkpoint snapshot net-zero, so `committed_result_count` is invariant across it —
+    /// only [`checkpoint_fold`](Self::checkpoint_fold)'s own `folded_count` column changes.
+    async fn bump_hwm_for_step_result(
+        &self,
+        tx: &mut zeph_db::DbTransaction<'_>,
+        execution_id: ExecutionId,
+        step_id: StepId,
+    ) -> Result<(), DurableError> {
+        let Some(slot) = &self.hwm_key else {
+            return Ok(());
+        };
+        let exec = execution_id.as_uuid().to_string();
+        let existing: Option<(i64, i64)> = zeph_db::query_as(sql!(
+            "SELECT max_committed_step_id, committed_result_count
+             FROM durable_execution_integrity WHERE execution_id = ?"
+        ))
+        .bind(&exec)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| DurableError::storage("hwm_bump", e))?;
+        let (prev_max, prev_count) = existing.unwrap_or((0, 0));
+        let new_max = prev_max.max(i64::from(step_id.value()));
+        let new_count = prev_count.saturating_add(1);
+        let hmac = Self::compute_hwm_hmac(
+            execution_id,
+            u32::try_from(new_max).unwrap_or(u32::MAX),
+            u64::try_from(new_count).unwrap_or(u64::MAX),
+            slot.epoch,
+            &slot.key,
+        );
+        zeph_db::query(sql!(
+            "INSERT INTO durable_execution_integrity
+                (execution_id, key_epoch, max_committed_step_id, committed_result_count, hwm_hmac, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(execution_id) DO UPDATE SET
+                key_epoch = excluded.key_epoch,
+                max_committed_step_id = excluded.max_committed_step_id,
+                committed_result_count = excluded.committed_result_count,
+                hwm_hmac = excluded.hwm_hmac,
+                updated_at = excluded.updated_at"
+        ))
+        .bind(&exec)
+        .bind(i64::from(slot.epoch))
+        .bind(new_max)
+        .bind(new_count)
+        .bind(hmac.to_vec())
+        .bind(now_unix_millis())
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| DurableError::storage("hwm_bump", e))?;
+        Ok(())
+    }
+
+    /// Verify the signed high-water-mark (issue #6360) for a resumed execution, and fail closed on
+    /// any mismatch (FR-004, US-003: the durable resume path never offers an override).
+    ///
+    /// A no-op when no HWM key is configured. On any verification failure, best-effort finalizes
+    /// the execution as `Aborted` (mirroring the step-cap-exceeded path in `handle.rs`) before
+    /// returning the error, so a corrupted execution does not linger `running` forever waiting for
+    /// a resume attempt that will keep failing.
+    async fn verify_high_water_mark(&self, execution_id: ExecutionId) -> Result<(), DurableError> {
+        if self.hwm_key.is_none() {
+            return Ok(());
+        }
+        if let Err(error) = self.check_high_water_mark(execution_id).await {
+            if let Err(finalize_error) = self.finalize(execution_id, ExecutionStatus::Aborted).await
+            {
+                tracing::warn!(
+                    error = %finalize_error,
+                    "failed to mark HWM-integrity-failed execution aborted"
+                );
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// The comparison half of `verify_high_water_mark`.
+    ///
+    /// Absent a stored `durable_execution_integrity` row, this execution predates the feature or
+    /// has committed no `StepResult` yet — nothing to compare against, so it is accepted (migration
+    /// posture: only a row's total absence is legacy, mirroring the JSONL side's "no chain metadata
+    /// at all" lane). A *present* row is always fully verified: an unresolvable `key_epoch`, an
+    /// HMAC that does not authenticate, or a recomputed `committed_result_count` that disagrees
+    /// with the signed value are each a distinct fail-closed [`DurableError::HighWaterMarkIntegrity`].
+    async fn check_high_water_mark(&self, execution_id: ExecutionId) -> Result<(), DurableError> {
+        let exec = execution_id.as_uuid().to_string();
+        let stored: Option<(i64, i64, i64, Vec<u8>)> = zeph_db::query_as(sql!(
+            "SELECT key_epoch, max_committed_step_id, committed_result_count, hwm_hmac
+             FROM durable_execution_integrity WHERE execution_id = ?"
+        ))
+        .bind(&exec)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("hwm_verify", e))?;
+        let Some((epoch_raw, max_step_raw, count_raw, hmac)) = stored else {
+            return Ok(());
+        };
+
+        // Per FR-008, the operator-facing `hint` distinguishes "possibly re-keyed" (a legitimate
+        // rotation this backend cannot resolve) from "TAMPER" (content that did not authenticate)
+        // — the durable resume path stays fail-closed either way (FR-004), but the two cases call
+        // for different operator follow-up, so they must not read the same in the logs.
+        let fail =
+            |reason: &'static str, hint: &'static str| DurableError::HighWaterMarkIntegrity {
+                execution_id,
+                reason,
+                hint,
+            };
+        let tamper = |reason: &'static str| {
+            fail(
+                reason,
+                "TAMPER: the signed high-water-mark did not authenticate under any key this \
+                 backend holds for the recorded epoch",
+            )
+        };
+
+        let epoch = u32::try_from(epoch_raw).map_err(|_| tamper("hmac_mismatch"))?;
+        let Some(key) = self.resolve_hwm_key(epoch) else {
+            return Err(fail(
+                "key_epoch_unresolvable",
+                "possibly re-keyed: this execution's signed key_epoch is neither the current key \
+                 nor a registered previous rotation key — if ZEPH_DURABLE_KEY was recently \
+                 rotated, register the prior key via with_previous_hwm_key; the durable resume \
+                 path cannot proceed without it (no interactive override)",
+            ));
+        };
+        let stored_hmac =
+            <[u8; 32]>::try_from(hmac.as_slice()).map_err(|_| tamper("hmac_mismatch"))?;
+        let max_step = u32::try_from(max_step_raw).unwrap_or(u32::MAX);
+        let count = u64::try_from(count_raw).unwrap_or(u64::MAX);
+        let expected = Self::compute_hwm_hmac(execution_id, max_step, count, epoch, &key);
+        if blake3::Hash::from(expected) != blake3::Hash::from(stored_hmac) {
+            return Err(tamper("hmac_mismatch"));
+        }
+
+        let live_count: i64 = zeph_db::query_scalar(sql!(
+            "SELECT COUNT(*) FROM durable_journal
+             WHERE execution_id = ? AND entry_kind = 'step_result'"
+        ))
+        .bind(&exec)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("hwm_verify", e))?;
+        let folded_sum: i64 = zeph_db::query_scalar(sql!(
+            "SELECT COALESCE(SUM(folded_count), 0) FROM durable_journal
+             WHERE execution_id = ? AND entry_kind = 'checkpoint'"
+        ))
+        .bind(&exec)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("hwm_verify", e))?;
+        let recomputed = u64::try_from(live_count.saturating_add(folded_sum)).unwrap_or(0);
+        if recomputed != count {
+            return Err(fail(
+                "count_mismatch",
+                "TAMPER: the recomputed committed-result count (surviving StepResult rows plus \
+                 every checkpoint's folded_count) disagrees with the signed value — a committed \
+                 result was likely deleted outside the write path",
+            ));
+        }
+        Ok(())
     }
 
     /// Derive the persisted column values for an entry, sealing payloads and stamping HMACs.
@@ -1912,24 +2215,54 @@ impl Journal for LocalBackend {
         );
         async move {
             let row = self.prepare_row(&entry)?;
-            let (seq,): (i64,) = zeph_db::query_as(sql!(
+            let insert = sql!(
                 "INSERT INTO durable_journal
                     (execution_id, step_id, entry_kind, idem_key, effect_class, payload, payload_version, hmac, created_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                  RETURNING seq"
-            ))
-                .bind(row.execution_id)
-                .bind(row.step_id)
-                .bind(row.entry_kind)
-                .bind(row.idem_key)
-                .bind(row.effect_class)
-                .bind(row.payload)
-                .bind(row.payload_version)
-                .bind(row.hmac)
-                .bind(row.created_at)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| DurableError::storage("append", e))?;
+            );
+            // A `StepResult` needs its HWM bump (issue #6360) committed atomically alongside the
+            // INSERT, so it runs inside a transaction; every other entry kind keeps the direct
+            // autocommit path (unchanged from before this feature).
+            let seq: i64 = if matches!(entry.entry, EntryKind::StepResult { .. }) {
+                let mut tx = zeph_db::begin_write(&self.pool)
+                    .await
+                    .map_err(|e| DurableError::storage("append", e))?;
+                let (seq,): (i64,) = zeph_db::query_as(insert)
+                    .bind(row.execution_id)
+                    .bind(row.step_id)
+                    .bind(row.entry_kind)
+                    .bind(row.idem_key)
+                    .bind(row.effect_class)
+                    .bind(row.payload)
+                    .bind(row.payload_version)
+                    .bind(row.hmac)
+                    .bind(row.created_at)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| DurableError::storage("append", e))?;
+                self.bump_hwm_for_step_result(&mut tx, entry.execution_id, entry.step_id)
+                    .await?;
+                tx.commit()
+                    .await
+                    .map_err(|e| DurableError::storage("append", e))?;
+                seq
+            } else {
+                let (seq,): (i64,) = zeph_db::query_as(insert)
+                    .bind(row.execution_id)
+                    .bind(row.step_id)
+                    .bind(row.entry_kind)
+                    .bind(row.idem_key)
+                    .bind(row.effect_class)
+                    .bind(row.payload)
+                    .bind(row.payload_version)
+                    .bind(row.hmac)
+                    .bind(row.created_at)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(|e| DurableError::storage("append", e))?;
+                seq
+            };
             Ok(JournalSeq::new(seq))
         }
         .instrument(span)
@@ -3782,6 +4115,73 @@ mod tests {
         assert!(backend.read_execution(exec).await.unwrap().is_empty());
     }
 
+    /// Regression for issue #6360 (critic B1): a keyed backend's `durable_execution_integrity` row
+    /// (created by `bump_hwm_for_step_result` for every committed `StepResult`) references
+    /// `durable_executions` without `ON DELETE CASCADE` — the same convention as
+    /// `durable_journal`/`durable_promises`/`durable_timers`, which `delete_prune_batch` deletes
+    /// manually before the parent row. Before the fix, the integrity row was never included in that
+    /// manual delete, so `DELETE FROM durable_executions` violated the FK under `SQLite`'s
+    /// `PRAGMA foreign_keys = ON` (and unconditionally on `PostgreSQL`), rolling back the whole
+    /// prune batch for every keyed execution — retention silently stopped working on any real
+    /// (`ZEPH_DURABLE_KEY`-configured) deployment. Exercises the previously-untested path: all
+    /// prior prune tests used unkeyed backends, which never create an integrity row and so never
+    /// hit the FK.
+    #[tokio::test]
+    async fn prune_deletes_a_keyed_execution_and_its_integrity_row() {
+        let backend = mem_backend(1_048_576).await.with_hwm_key(0, [42u8; 32]);
+        let old = ExecutionId::new();
+        backend
+            .open_execution(old, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend.append(step_result(old, 0, b"x")).await.unwrap();
+
+        // The committed StepResult must have created an integrity row.
+        let before: (i64,) = zeph_db::query_as(sql!(
+            "SELECT COUNT(*) FROM durable_execution_integrity WHERE execution_id = ?"
+        ))
+        .bind(old.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            before.0, 1,
+            "a committed StepResult must create an integrity row"
+        );
+
+        zeph_db::query(sql!(
+            "UPDATE durable_executions SET status = 'completed', finalized_at = 1000 WHERE execution_id = ?"
+        ))
+        .bind(old.as_uuid().to_string())
+        .execute(backend.pool())
+        .await
+        .unwrap();
+
+        let policy = RetentionPolicy {
+            ttl_completed_secs: 1,
+            prune_batch_size: 10,
+            ..RetentionPolicy::default()
+        };
+        let deleted = backend
+            .prune(&policy)
+            .await
+            .expect("prune must not fail closed on a keyed execution's FK");
+        assert_eq!(deleted, 1, "the keyed execution is pruned like any other");
+
+        assert!(backend.read_execution(old).await.unwrap().is_empty());
+        let after: (i64,) = zeph_db::query_as(sql!(
+            "SELECT COUNT(*) FROM durable_execution_integrity WHERE execution_id = ?"
+        ))
+        .bind(old.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            after.0, 0,
+            "the integrity row must be pruned alongside its execution"
+        );
+    }
+
     /// Backdate a `durable_executions` row's `updated_at` so it becomes a sweep candidate.
     async fn backdate_updated_at(backend: &LocalBackend, id: ExecutionId, updated_at_ms: i64) {
         zeph_db::query(sql!(
@@ -4292,5 +4692,301 @@ mod tests {
                 other => panic!("unexpected folded entry: {other:?}"),
             }
         }
+    }
+
+    // High-water-mark tests (issue #6360). `mem_backend` opens a fresh `:memory:` pool per call, so
+    // these tests share a pool via `LocalBackend::new(backend.pool().clone(), ...)` when they need a
+    // second backend handle (a different key, or unkeyed) reading the same journal — mirroring the
+    // existing `read_execution_rejects_control_hmac_under_wrong_key` pattern above.
+
+    #[tokio::test]
+    async fn hwm_is_a_no_op_when_unkeyed() {
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        assert!(
+            !backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap()
+        );
+        backend.append(step_result(exec, 0, b"v0")).await.unwrap();
+        // No integrity row should exist, and resume must still succeed.
+        assert!(
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn hwm_verifies_on_resume_after_single_append_and_batch_append() {
+        let backend = mem_backend(1_048_576).await.with_hwm_key(0, [1u8; 32]);
+        let exec = ExecutionId::new();
+        assert!(
+            !backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap()
+        );
+        backend.append(step_result(exec, 0, b"v0")).await.unwrap();
+        backend
+            .append_batch(&[step_result(exec, 1, b"v1"), step_result(exec, 2, b"v2")])
+            .await
+            .unwrap();
+
+        assert!(
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap(),
+            "resume must succeed when the recomputed count matches the signed HWM"
+        );
+    }
+
+    #[tokio::test]
+    async fn hwm_detects_deletion_of_a_committed_step_result() {
+        let backend = mem_backend(1_048_576).await.with_hwm_key(0, [2u8; 32]);
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend.append(step_result(exec, 0, b"v0")).await.unwrap();
+        backend.append(step_result(exec, 1, b"v1")).await.unwrap();
+
+        // Simulate an attacker (or a bug) deleting a committed result without going through the
+        // legitimate `checkpoint_fold` path, which would have kept `folded_count` in sync.
+        zeph_db::query(sql!(
+            "DELETE FROM durable_journal WHERE execution_id = ? AND step_id = 1"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .execute(backend.pool())
+        .await
+        .unwrap();
+
+        let err = backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap_err();
+        assert_matches!(
+            err,
+            DurableError::HighWaterMarkIntegrity {
+                reason: "count_mismatch",
+                ..
+            }
+        );
+
+        // The execution must be finalized Aborted, not left running for a retry loop to keep
+        // tripping the same check.
+        let summaries = backend.list_executions(None, None, 10).await.unwrap();
+        let summary = summaries.iter().find(|s| s.execution_id == exec).unwrap();
+        assert_eq!(summary.status, ExecutionStatus::Aborted);
+    }
+
+    #[tokio::test]
+    async fn hwm_survives_a_legitimate_checkpoint_fold() {
+        let backend = mem_backend(1_048_576)
+            .await
+            .with_cipher(Arc::new(XorCipher))
+            .with_hwm_key(0, [3u8; 32]);
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        for step in 0..5 {
+            backend
+                .append(step_result(exec, step, format!("v{step}").as_bytes()))
+                .await
+                .unwrap();
+        }
+
+        let folded = backend.checkpoint_fold(exec, 3).await.unwrap();
+        assert_eq!(folded, 3);
+
+        assert!(
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap(),
+            "a legitimate fold must not trip the HWM check: committed_result_count is invariant \
+             across it (folded_count restores what the DELETE removed)"
+        );
+    }
+
+    #[tokio::test]
+    async fn hwm_detects_deletion_that_a_fold_does_not_cover() {
+        let backend = mem_backend(1_048_576)
+            .await
+            .with_cipher(Arc::new(XorCipher))
+            .with_hwm_key(0, [4u8; 32]);
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        for step in 0..5 {
+            backend
+                .append(step_result(exec, step, format!("v{step}").as_bytes()))
+                .await
+                .unwrap();
+        }
+        backend.checkpoint_fold(exec, 3).await.unwrap();
+
+        // Delete one of the *surviving* (non-folded) rows outside the write path.
+        zeph_db::query(sql!(
+            "DELETE FROM durable_journal WHERE execution_id = ? AND step_id = 4 AND entry_kind = 'step_result'"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .execute(backend.pool())
+        .await
+        .unwrap();
+
+        assert_matches!(
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap_err(),
+            DurableError::HighWaterMarkIntegrity {
+                reason: "count_mismatch",
+                ..
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn hwm_unresolvable_key_epoch_fails_closed_not_legacy() {
+        let writer = mem_backend(1_048_576).await.with_hwm_key(0, [5u8; 32]);
+        let exec = ExecutionId::new();
+        writer
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        writer.append(step_result(exec, 0, b"v0")).await.unwrap();
+
+        // A different backend over the same journal, current epoch 9, no previous slot registered
+        // for epoch 0 — the stored row's epoch is unresolvable. Per NFR-004/S-new-2 this must fail
+        // closed, never silently degrade to "legacy" just because the row's epoch is unknown here.
+        let reader = LocalBackend::new(writer.pool().clone(), 1_048_576).with_hwm_key(9, [6u8; 32]);
+        assert_matches!(
+            reader
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap_err(),
+            DurableError::HighWaterMarkIntegrity {
+                reason: "key_epoch_unresolvable",
+                ..
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn hwm_previous_epoch_key_resolves_as_rekeyed_not_tampered() {
+        let writer = mem_backend(1_048_576).await.with_hwm_key(0, [7u8; 32]);
+        let exec = ExecutionId::new();
+        writer
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        writer.append(step_result(exec, 0, b"v0")).await.unwrap();
+
+        // A rotated backend: current epoch 1 under a new key, but the old epoch-0 key is still
+        // registered as `previous` for the rotation window (FR-008). Verification must succeed via
+        // the previous slot rather than reporting tamper.
+        let reader = LocalBackend::new(writer.pool().clone(), 1_048_576)
+            .with_hwm_key(1, [8u8; 32])
+            .with_previous_hwm_key(0, [7u8; 32]);
+        assert!(
+            reader
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap(),
+            "a row signed under a registered previous epoch must verify, not fail as tampered"
+        );
+    }
+
+    #[tokio::test]
+    async fn hwm_wrong_key_under_the_same_epoch_is_tamper() {
+        let writer = mem_backend(1_048_576).await.with_hwm_key(0, [9u8; 32]);
+        let exec = ExecutionId::new();
+        writer
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        writer.append(step_result(exec, 0, b"v0")).await.unwrap();
+
+        let reader =
+            LocalBackend::new(writer.pool().clone(), 1_048_576).with_hwm_key(0, [10u8; 32]);
+        assert_matches!(
+            reader
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap_err(),
+            DurableError::HighWaterMarkIntegrity {
+                reason: "hmac_mismatch",
+                ..
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn hwm_accepts_a_legacy_execution_with_no_integrity_row() {
+        // Entries written by an unkeyed backend leave no `durable_execution_integrity` row at all —
+        // the genuine "predates this feature" case, distinct from a row that exists but is
+        // unresolvable. A keyed backend resuming it must accept it (migration posture), not fail.
+        let unkeyed_writer = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        unkeyed_writer
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        unkeyed_writer
+            .append(step_result(exec, 0, b"v0"))
+            .await
+            .unwrap();
+
+        let keyed_reader =
+            LocalBackend::new(unkeyed_writer.pool().clone(), 1_048_576).with_hwm_key(0, [11u8; 32]);
+        assert!(
+            keyed_reader
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap(),
+            "an execution with no integrity row at all is legacy, not tampered"
+        );
+    }
+
+    #[tokio::test]
+    async fn hwm_ignores_effect_intent_and_control_entries() {
+        // Only `StepResult` rows count toward `committed_result_count` (S-new-1) — an EffectIntent
+        // must not bump the HWM, and its presence alone must not trip verification.
+        let backend = mem_backend(1_048_576).await.with_hwm_key(0, [12u8; 32]);
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend.append(effect_intent(exec, 0)).await.unwrap();
+        backend.append(step_result(exec, 1, b"v1")).await.unwrap();
+
+        let stored: (i64,) = zeph_db::query_as(sql!(
+            "SELECT committed_result_count FROM durable_execution_integrity WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            stored.0, 1,
+            "only the StepResult row counts, not the EffectIntent"
+        );
+
+        assert!(
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap()
+        );
     }
 }

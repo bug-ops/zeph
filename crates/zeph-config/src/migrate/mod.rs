@@ -605,21 +605,21 @@ use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
     MigrateAgentTimeReminder, MigrateAutodreamConfig, MigrateCavemanConfig,
     MigrateCocoonProviderNotice, MigrateCocoonShowBalance, MigrateCompressionPredictorConfig,
-    MigrateDatabaseUrl, MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableKeyRotation,
-    MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs, MigrateEgressConfig,
-    MigrateEmbedProviderRename, MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults,
-    MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
-    MigrateGoalsConfig, MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig,
-    MigrateHooksTurnComplete, MigrateKnowledgeConfig, MigrateLlmStreamLimits,
-    MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
-    MigrateMcpMediaConfig, MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels,
-    MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
-    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
-    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
-    MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig, MigrateMemoryTypeAwareCompose,
-    MigrateMicrocompactConfig, MigrateNliConfig, MigrateOrchestrationAssetSensitivity,
-    MigrateOrchestrationCommandConfig, MigrateOrchestrationEnsemble,
-    MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence,
+    MigrateDatabaseUrl, MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableHwmAdvisory,
+    MigrateDurableKeyRotation, MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs,
+    MigrateEgressConfig, MigrateEmbedProviderRename, MigrateEvalModelToProvider,
+    MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow,
+    MigrateForgettingConfig, MigrateGoalsConfig, MigrateGonkagateToGonka,
+    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateKnowledgeConfig,
+    MigrateLlmStreamLimits, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
+    MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig, MigrateMcpRetryAndToolTimeout,
+    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported,
+    MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread,
+    MigrateMemoryPersonaConfig, MigrateMemoryReasoning, MigrateMemoryReasoningJudge,
+    MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig,
+    MigrateMemoryTypeAwareCompose, MigrateMicrocompactConfig, MigrateNliConfig,
+    MigrateOrchestrationAssetSensitivity, MigrateOrchestrationCommandConfig,
+    MigrateOrchestrationEnsemble, MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence,
     MigrateOrchestrationWholePlanVerifierTimeout, MigrateOrchestratorProvider, MigrateOtelFilter,
     MigrateOverflowMaxPerCallOverride, MigratePiiFilterNames, MigratePlannerModelToProvider,
     MigratePluginsReputationConfig, MigratePolicyProviderAndUtilityWindow,
@@ -636,7 +636,7 @@ use steps::{
     MigrateWorktreeConfig, MigrateWorktreeGitTimeout, MigrateWorktreeQuotaFields,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–95).
+/// Ordered registry of all sequential migration steps (steps 1–99).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -834,6 +834,10 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 98 — add [plugins.reputation] advisory block for the install-time
             // name-similarity/typosquat check (spec-043, #5864)
             Box::new(MigratePluginsReputationConfig),
+            // Step 99 — add a documentation-only advisory comment to an existing active
+            // [durable] table noting that row-HMAC + high-water-mark tamper-evidence
+            // (issue #6360) is unconditional, not a new opt-in toggle
+            Box::new(MigrateDurableHwmAdvisory),
         ]
     });
 

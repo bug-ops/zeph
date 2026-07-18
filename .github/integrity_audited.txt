@@ -1,0 +1,70 @@
+# Issue #6360 (transcript-integrity) trusted-history-reader audit allowlist.
+#
+# Every file that reads a persisted transcript (`<task_id>.jsonl`), session event log
+# (`events.jsonl`), or durable journal and treats its content as legitimate prior context (i.e.
+# feeds it into an LLM message array, a replay/fold execution, or a resume decision) must appear
+# here with a verdict. `.github/scripts/check_integrity_audit.sh` greps the tree for the known
+# access patterns and fails CI if it finds a hit not listed below (a new, unaudited reader) or if
+# a file this list marks REQUIRED stops being detected (pattern rot).
+#
+# Verdicts:
+#   VERIFIED       - routes through TranscriptReader::load(_strict)/SessionEventLog chain
+#                     verification (issue #6360) before trusting the content, or is itself part
+#                     of that verification path.
+#   DISPLAY_ONLY   - reads already-verified/materialized data for presentation only; does not
+#                     independently re-establish trust.
+#   CALLER_CONTEXT - triggers/propagates a resume decision but does not itself read history
+#                     content (e.g. an unattended scheduler that must fail-closed with no
+#                     interactive override, not a reader lane).
+#   FOLLOW_UP      - a critic-identified trust-bearing surface not yet reachable by this script's
+#                     grep pattern (calls through an intermediate helper) — classification and
+#                     wiring verification is tracked as follow-up work, not yet audited in code.
+#
+# Format: <path> <verdict> [# note]
+
+crates/zeph-acp/src/agent/mod.rs VERIFIED # opens SessionEventLog via chain-verifying open()/open_exclusive()
+crates/zeph-acp/src/transport/http.rs VERIFIED # session inspection endpoint, open() verifies chain
+crates/zeph-agent-persistence/src/condense.rs VERIFIED # reads via SessionEventLog, chain-verified on open/read
+crates/zeph-agent-persistence/src/hydrate.rs VERIFIED # INV-SP-1 log-first hydration path, primary session-resume reader
+crates/zeph-agent-persistence/src/legacy_bootstrap.rs FOLLOW_UP # verify it cannot resurrect unverified history as trusted (critic S-new-3)
+crates/zeph-agent-persistence/src/reconcile.rs VERIFIED # projection reconcile reads through SessionEventLog
+crates/zeph-agent-persistence/src/session_sink.rs VERIFIED # log-first append path; reads for reconciliation are chain-verified
+crates/zeph-core/src/agent/agent_access_impl.rs VERIFIED # fork/resume test-and-production paths open() chain-verified logs
+crates/zeph-core/src/agent/durable_bootstrap.rs CALLER_CONTEXT # durable backend construction, not a JSONL reader
+crates/zeph-core/src/agent/plan.rs VERIFIED # orchestration plan replay reads TranscriptReader::load
+crates/zeph-core/src/agent/scheduler_loop.rs VERIFIED # scheduler-triggered subagent transcript reload via TranscriptReader
+crates/zeph-core/src/agent/shutdown.rs DISPLAY_ONLY # shutdown-path bookkeeping, not a trust-bearing content read
+crates/zeph-core/src/agent/state/mod.rs CALLER_CONTEXT # orchestration state carries durable key material, not a JSONL reader
+crates/zeph-core/src/agent/subagent_commands.rs VERIFIED # /agent command surface reads via TranscriptReader
+crates/zeph-core/src/agent/persistence/history.rs FOLLOW_UP # /history command's history load — verify it routes through a chain-verified read (critic S-new-3)
+crates/zeph-core/src/session_resume.rs DISPLAY_ONLY # presentation-only summary computed from an already-hydrated (verified) message slice
+crates/zeph-acp/src/agent/handlers/resume_session.rs FOLLOW_UP # ACP session restore — critic-named risk path, calls through a helper this pattern does not match yet
+crates/zeph-orchestration/src/scheduler/persistence.rs CALLER_CONTEXT # unattended scheduled restore trigger; must fail-closed into whatever resume path it invokes, not itself a content reader (critic S-new-3 scope clarification)
+crates/zeph-a2a/src/ibct.rs FOLLOW_UP # cross-check whether this reads projection state for trust (critic S4 seed list) — not yet classified
+crates/zeph-commands/src/handlers/session.rs FOLLOW_UP # session command handler surface — not yet classified
+crates/zeph-durable/src/backend.rs VERIFIED # durable backend trait surface, HWM-verified on open (see durable adapter)
+crates/zeph-durable/src/backend/execution_lock.rs VERIFIED # execution-lock read path, HWM-gated
+crates/zeph-durable/src/backend/local.rs VERIFIED # LocalBackend open_execution/open_execution_exclusive verify HWM before replay
+crates/zeph-durable/src/error.rs VERIFIED # defines DurableError::HighWaterMarkIntegrity, not itself a reader
+crates/zeph-durable/src/handle.rs VERIFIED # execution handle surface over the HWM-verified backend
+crates/zeph-durable/src/journal.rs VERIFIED # journal entry types; read paths verified at the backend layer
+crates/zeph-durable/src/replay.rs VERIFIED # ReplayCursor — HWM-verified before replay begins
+crates/zeph-durable/src/writer.rs CALLER_CONTEXT # write path, not a trust-bearing reader
+crates/zeph-orchestration/src/durable.rs VERIFIED # P2 durable adapter, HWM-verified via open_durable_backend
+crates/zeph-session/src/error.rs VERIFIED # defines SessionError::Integrity, not itself a reader
+crates/zeph-session/src/fork.rs VERIFIED # verifies parent chain pre-fork via ReplayEngine::replay before deriving the child log (history-laundering defense)
+crates/zeph-session/src/lib.rs VERIFIED # re-exports SessionEventLog; legacy-layout migration touches session dirs pre-verification by necessity
+crates/zeph-session/src/llm_condenser.rs VERIFIED # operates on already chain-verified SessionEventEnvelope slices
+crates/zeph-session/src/log.rs VERIFIED # the SessionEventLog chain-verification implementation itself
+crates/zeph-session/src/replay.rs VERIFIED # ReplayEngine::replay/fold — the chunked, chain-verified replay path
+crates/zeph-subagent/src/durable.rs CALLER_CONTEXT # durable-promise adapter, not a JSONL reader
+crates/zeph-subagent/src/error.rs VERIFIED # defines SubAgentError::Integrity, not itself a reader
+crates/zeph-subagent/src/manager/collect.rs VERIFIED # collection-time transcript load via TranscriptReader
+crates/zeph-subagent/src/manager/spawn.rs VERIFIED # resume-on-spawn transcript load via TranscriptReader
+crates/zeph-subagent/src/transcript.rs VERIFIED # the TranscriptReader/TranscriptWriter chain-verification implementation itself
+src/acp.rs VERIFIED # ACP session-lock/open path, chain-verified
+src/commands/durable.rs VERIFIED # zeph durable CLI, HWM-verified reads
+src/commands/sessions.rs VERIFIED # zeph sessions resume/show CLI, chain-verified reads
+src/runner.rs VERIFIED # main CLI dispatch; configures history-integrity key rings before any reader opens
+src/serve/agent_factory.rs VERIFIED # serve-mode session bootstrap, chain-verified opens
+src/serve/handlers.rs VERIFIED # HTTP serve handlers, chain-verified opens

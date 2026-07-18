@@ -646,6 +646,9 @@ pub fn migrate_durable_config(toml_src: &str) -> Result<MigrationResult, Migrate
     let _doc = toml_src.parse::<DocumentMut>()?;
 
     let block = "\n# Native durable execution layer (spec-064, #4949). Opt-in, default-off.\n\
+         # Row-HMAC + high-water-mark tamper-evidence (issue #6360) is unconditional whenever\n\
+         # ZEPH_DURABLE_KEY is provisioned in the vault -- no field here disables it (the durable\n\
+         # resume path never offers an override for a detected integrity failure).\n\
          # [durable]\n\
          # enabled = false\n\
          # backend = \"local\"\n\
@@ -773,6 +776,69 @@ pub fn migrate_durable_shared_db(toml_src: &str) -> Result<MigrationResult, Migr
         changed_count,
         sections_changed: if changed {
             vec!["durable.shared_db".to_owned()]
+        } else {
+            Vec::new()
+        },
+    })
+}
+
+/// Adds a documentation-only advisory comment to an existing active `[durable]` table noting that
+/// the row-HMAC/high-water-mark tamper-evidence mechanism (issue #6360) is unconditional whenever
+/// `ZEPH_DURABLE_KEY` is provisioned, rather than a fresh `[durable].integrity` toggle.
+///
+/// There is deliberately no new config field: the durable resume path never offers an override for
+/// a detected integrity failure (FR-004), so a "disable this" knob would contradict the mechanism's
+/// own fail-closed intent. The high-water-mark activates automatically once `ZEPH_DURABLE_KEY` is
+/// provisioned (the same key that already backs `encrypt_payload`/the control-entry HMAC) — nothing
+/// for an operator to opt into. This migration exists purely to surface that behavior change in an
+/// upgraded config file. Purely additive and idempotent: skips if either an active or a previously-
+/// injected commented advisory is present, so running `--migrate-config` twice does not duplicate
+/// it. No-op when `[durable]` is absent (a fresh install's `migrate_durable_config` documents the
+/// same posture in its commented block instead).
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the source is not valid TOML.
+pub fn migrate_durable_hwm_advisory(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Anchored multiline pattern: matches `[durable]` with optional inline comment, followed by
+    // LF or CRLF. Does NOT match `[durable.retention]` so the replacement target stays aligned.
+    static DURABLE_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?m)^[ \t]*\[durable\][ \t]*(?:#[^\r\n]*)?\r?\n").expect("static pattern")
+    });
+
+    if !section_header_present(toml_src, "durable") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let marker = "high-water-mark tamper-evidence";
+    if toml_src.contains(marker) || !DURABLE_HEADER_RE.is_match(toml_src) {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "# Row-HMAC + high-water-mark tamper-evidence (issue #6360) is unconditional \
+        whenever ZEPH_DURABLE_KEY is provisioned in the vault -- no field here disables it \
+        (the durable resume path never offers an override for a detected integrity failure).\n";
+    let output = DURABLE_HEADER_RE
+        .replacen(toml_src, 1, |caps: &regex::Captures| {
+            format!("{}{comment}", &caps[0])
+        })
+        .into_owned();
+
+    let changed = output != toml_src;
+    let changed_count = usize::from(changed);
+    Ok(MigrationResult {
+        output,
+        changed_count,
+        sections_changed: if changed {
+            vec!["durable.integrity".to_owned()]
         } else {
             Vec::new()
         },

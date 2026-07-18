@@ -30,12 +30,14 @@ use crate::channel::Channel;
 /// redundant sweeps against the same journal.
 const RETENTION_TASK_NAME: &str = "durable.retention_sweep";
 
-/// Open a [`LocalBackend`] at `db_url`, initialise its schema, attach `cipher` and `hmac_key` if
-/// present, spawn its [`JournalWriter`](zeph_durable::JournalWriter) actor, and spawn the
-/// background [`DurableRetentionService`] prune sweep — all via `task_supervisor`.
+/// Open a [`LocalBackend`] at `db_url`, initialise its schema, attach `cipher`, `hmac_key`, and
+/// `hwm_key` if present, spawn its [`JournalWriter`](zeph_durable::JournalWriter) actor, and spawn
+/// the background [`DurableRetentionService`] prune sweep — all via `task_supervisor`.
 ///
 /// `hmac_key` is `None` for a single-user local, non-shared database (INV-8) — the documented
-/// stance where control entries carry no HMAC.
+/// stance where control entries carry no HMAC. `hwm_key` (issue #6360) is meant to be attached
+/// unconditionally (FR-009): `None` only when `ZEPH_DURABLE_KEY` itself is unavailable — unlike
+/// `hmac_key`, single-user local deployments still get high-water-mark deletion detection.
 ///
 /// Returns `None` (after logging a `tracing::warn!`) on any I/O failure so callers degrade to
 /// non-durable mode rather than fail session bootstrap (#5452 FR-004).
@@ -46,6 +48,7 @@ pub(crate) async fn open_durable_backend(
     db_url: &str,
     cipher: Option<Arc<dyn PayloadCipher>>,
     hmac_key: Option<[u8; 32]>,
+    hwm_key: Option<(u32, [u8; 32])>,
 ) -> Option<(
     Arc<DurableBackendEnum>,
     JournalWriterHandle,
@@ -69,6 +72,11 @@ pub(crate) async fn open_durable_backend(
     };
     let local = if let Some(k) = hmac_key {
         local.with_hmac_key(k)
+    } else {
+        local
+    };
+    let local = if let Some((epoch, k)) = hwm_key {
+        local.with_hwm_key(epoch, k)
     } else {
         local
     };
@@ -138,6 +146,7 @@ impl<C: Channel> Agent<C> {
         };
         let cipher = self.services.session.durable_agent_turns_cipher.clone();
         let hmac_key = self.services.session.durable_agent_turns_hmac_key;
+        let hwm_key = self.services.session.durable_agent_turns_hwm_key;
 
         tracing::debug!("durable agent_turns: opening backend start");
         let backend_result = open_durable_backend(
@@ -147,6 +156,7 @@ impl<C: Channel> Agent<C> {
             &db_url,
             cipher,
             hmac_key,
+            hwm_key,
         )
         .await;
         tracing::debug!("durable agent_turns: opening backend done");

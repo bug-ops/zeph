@@ -15,13 +15,118 @@
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock as StdRwLock};
 
 use serde::{Deserialize, Serialize};
+use zeph_common::hash_chain::{
+    ChainHash, ChainKeyRing, KeyResolution, chain_next, genesis, verify_chained_prefix,
+};
 use zeph_llm::provider::{Message, MessagePart};
 
 use super::error::SubAgentError;
 use super::state::SubAgentState;
+
+/// Domain-separation tag for this subsystem's hash chain (issue #6360) — distinct from
+/// `zeph-session`'s so a chain from one subsystem can never verify against the other, and folded
+/// into every genesis hash via [`zeph_common::hash_chain::genesis`].
+pub const CHAIN_DOMAIN: &str = "zeph-subagent transcript v1";
+
+/// Process-wide history-chain key ring, configured once at bootstrap by resolving
+/// `ZEPH_HISTORY_KEY` from the vault (see `zeph_core::history_integrity`).
+///
+/// # Why a process-global registry, not a constructor parameter
+///
+/// `TranscriptWriter::new`/[`TranscriptReader::load`] are called from 3+ call sites across
+/// crates outside this feature's ownership (`zeph-core`'s scheduler loop and subagent-plan
+/// tests, in addition to `zeph-subagent::manager::collect`), and `PayloadCipher`-style explicit
+/// `Option<Arc<dyn _>>` injection into every one of those call sites was judged too invasive for
+/// this change (would require touching crates outside this PR's scope during a period other
+/// teammates are also editing them). A `RwLock` (not `OnceLock`) is used deliberately so tests
+/// in this crate and its callers can reconfigure it per-test rather than being limited to a
+/// single process-lifetime value — see `configure_history_integrity`'s doc for the tradeoff this
+/// accepts. Flagged in the implementation handoff for critic/reviewer scrutiny as a deviation
+/// from the codebase's usual per-call dependency injection pattern.
+static HISTORY_INTEGRITY: StdRwLock<Option<Arc<ChainKeyRing>>> = StdRwLock::new(None);
+
+/// Configure (or disable, with `None`) history-chain verification for every
+/// [`TranscriptWriter`]/[`TranscriptReader`] operation in this process from this point forward.
+///
+/// Call once at process bootstrap after resolving `ZEPH_HISTORY_KEY` from the vault (see
+/// `zeph_core::history_integrity::resolve_key_ring`). Passing `None` — the default until this is
+/// called — disables chain computation/verification entirely: writers append unchained entries
+/// (as before this feature existed) and readers treat every file as legacy. This is the
+/// generate-on-first-use / vault-unavailable fallback posture (spec-069 M2): a transient vault
+/// outage degrades to unchained rather than blocking every transcript write.
+///
+/// # Invariant: single-set-at-startup
+///
+/// This is `pub` (not `pub(crate)`) specifically so `src/runner.rs` — a different crate from
+/// this one — can call it once during CLI bootstrap, before any transcript is written or read
+/// (see `configure_history_integrity_from_default_vault` in `src/runner.rs`). It is **not**
+/// meant to be called again later by production code: reconfiguring mid-process cannot make an
+/// already-constructed `TranscriptWriter` less safe (each writer captures `ring` at construction
+/// and is immune to later reconfiguration, and setting `ring = None` only ever makes
+/// *subsequent* reads fail-closed on a chained file, never trust-bypassing), but a caller
+/// reconfiguring after bootstrap without a clear reason is almost certainly a bug, not an
+/// intended feature — no production code path does this today, and none should be added without
+/// updating this doc. Tests are the one legitimate exception, calling this per-test under
+/// `cargo nextest`'s one-process-per-test isolation.
+pub fn configure_history_integrity(ring: Option<Arc<ChainKeyRing>>) {
+    if let Ok(mut guard) = HISTORY_INTEGRITY.write() {
+        *guard = ring;
+    }
+}
+
+fn history_integrity() -> Option<Arc<ChainKeyRing>> {
+    HISTORY_INTEGRITY.read().ok().and_then(|g| g.clone())
+}
+
+/// Derive a transcript file's chain identity from its path (the `task_id`, e.g. `"abc123"` from
+/// `"abc123.jsonl"`) — binds the chain to this one file so a whole-file substitution (swapping
+/// in another task's transcript) breaks at the genesis hash.
+fn file_identity(path: &Path) -> Vec<u8> {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .into_bytes()
+}
+
+/// Paths already warned about via [`warn_legacy_under_active_key_once`] this process — kept
+/// small (one entry per distinct transcript path actually read while chaining-disabled, not
+/// per-read) so a session's history isn't re-warned every time it's reloaded.
+static WARNED_LEGACY_UNDER_KEY: std::sync::LazyLock<StdRwLock<std::collections::HashSet<PathBuf>>> =
+    std::sync::LazyLock::new(|| StdRwLock::new(std::collections::HashSet::new()));
+
+/// Log a structured `WARN` the first time a given path is found to be pure-legacy (no `chain`
+/// field anywhere) while a history-integrity key ring IS configured (issue #6360, security
+/// review B2 condition (c)).
+///
+/// Deliberately `WARN`, not a hard failure: a chainless file under an active key is *anomalous*
+/// but not distinguishable from genuine pre-upgrade content without the vault anchor (#6449) —
+/// this exists purely to make that anomaly observable instead of silent. Deduplicated per path
+/// (not per read) to avoid alert fatigue on the many genuinely-legacy files that exist right
+/// after upgrading to this feature.
+fn warn_legacy_under_active_key_once(path: &Path) {
+    let already_warned = WARNED_LEGACY_UNDER_KEY
+        .read()
+        .is_ok_and(|set| set.contains(path));
+    if already_warned {
+        return;
+    }
+    if let Ok(mut set) = WARNED_LEGACY_UNDER_KEY.write()
+        && !set.insert(path.to_path_buf())
+    {
+        return; // another thread warned first between the read and write locks
+    }
+    tracing::warn!(
+        path = %path.display(),
+        "history-chain integrity: transcript classifies as legacy (no chain field anywhere) \
+         while a history-integrity key IS configured for this process — this is expected for \
+         genuine pre-upgrade content, but is also the signature of a full chain-strip downgrade \
+         attack (issue #6449, the vault-anchor gap); accepted per FR-006, flagged for operator \
+         visibility"
+    );
+}
 
 /// A single entry in a JSONL transcript file.
 ///
@@ -36,6 +141,14 @@ pub struct TranscriptEntry {
     pub timestamp: String,
     /// The LLM message that was appended at this sequence position.
     pub message: Message,
+    /// Keyed-BLAKE3 hash chain link (hex-encoded), binding this entry's content and the
+    /// previous entry's hash (issue #6360). `None` on every entry means this transcript
+    /// predates the feature or history-chain verification is disabled for this process
+    /// (legacy, auto-trusted-once per spec-069 FR-006). Additive field: `#[serde(default)]`
+    /// means an older reader/writer that doesn't know this field ignores it, and legacy files
+    /// without it parse unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<String>,
 }
 
 /// Sidecar metadata for a transcript, written as `<agent_id>.meta.json`.
@@ -86,26 +199,66 @@ pub struct TranscriptMeta {
 /// let writer = TranscriptWriter::new(Path::new("/tmp/session.jsonl")).unwrap();
 /// // writer.append(seq, &message) to persist each message.
 /// ```
+struct TranscriptWriteState {
+    file: File,
+    /// Running chain head. `None` until either the first chained append in this writer's
+    /// lifetime (fresh chaining start on a legacy or empty file) or seeded from the file's
+    /// existing chained tail at open time (M3, see [`TranscriptWriter::new`]).
+    prev: Option<ChainHash>,
+}
+
 #[derive(Clone)]
 pub struct TranscriptWriter {
-    file: Arc<Mutex<File>>,
+    /// `file` and `prev` share one lock so the chain-link read-modify-write is always atomic
+    /// with the physical write (S2, issue #6360 critic rev2): two concurrent `append` calls via
+    /// `spawn_blocking` can never compute their chain link in one order but land their physical
+    /// writes in another, which would desynchronize on-disk order from chain order and produce
+    /// a false tamper verdict on read.
+    state: Arc<Mutex<TranscriptWriteState>>,
+    file_identity: Vec<u8>,
+    /// Captured once at construction so every `append` on this writer instance uses one
+    /// consistent key ring, even if `configure_history_integrity` is called again concurrently
+    /// (which only affects writers/readers constructed afterward).
+    ring: Option<Arc<ChainKeyRing>>,
 }
 
 impl TranscriptWriter {
     /// Create (or open) a JSONL transcript file in append mode.
     ///
-    /// Creates parent directories if they do not already exist.
+    /// Creates parent directories if they do not already exist. If the file already has content
+    /// and history-chain verification is configured (see [`configure_history_integrity`]), the
+    /// existing content is scanned and its chain verified before the writer is returned (M3
+    /// open-time tail verify/seed) — a writer can never open atop content it hasn't itself
+    /// verified, and the running chain state (`prev`) is seeded from the verified tail so the
+    /// very next append continues the existing chain rather than restarting it.
     ///
     /// # Errors
     ///
-    /// Returns `io::Error` if the directory cannot be created or the file cannot be opened.
+    /// Returns `io::Error` if the directory cannot be created, the file cannot be opened, or
+    /// (per NFR-004) the existing content fails chain verification — a broken chain must never
+    /// be silently opened past.
     pub fn new(path: &Path) -> io::Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
+        let ring = history_integrity();
+        let identity = file_identity(path);
+
+        let prev = if path.exists() {
+            let entries =
+                parse_entries(path, false).map_err(|e| io::Error::other(e.to_string()))?;
+            let (_messages, head) = verify_and_extract_messages(path, entries, ring.as_deref())
+                .map_err(|e| io::Error::other(e.to_string()))?;
+            head
+        } else {
+            None
+        };
+
         let file = zeph_common::fs_secure::append_private(path)?;
         Ok(Self {
-            file: Arc::new(Mutex::new(file)),
+            state: Arc::new(Mutex::new(TranscriptWriteState { file, prev })),
+            file_identity: identity,
+            ring,
         })
     }
 
@@ -118,8 +271,12 @@ impl TranscriptWriter {
     /// caller's `message` is untouched, so callers that hold onto it for the current turn's
     /// provider request keep their `Image` parts.
     ///
-    /// Serialization is done on the caller's thread; the blocking write and flush
-    /// are offloaded to `tokio::task::spawn_blocking` so the Tokio executor is not stalled.
+    /// When history-chain verification is configured, the chain-link read-modify-write,
+    /// canonicalization (serialize with `chain: None`, hash, then serialize again with the
+    /// computed hash), physical write, and flush all happen inside the same
+    /// `tokio::task::spawn_blocking` critical section, under the single lock guarding both the
+    /// file handle and the running chain state (S2) — so on-disk order always matches chain
+    /// order even under concurrent `append` calls from a cloned writer.
     ///
     /// # Errors
     ///
@@ -127,21 +284,54 @@ impl TranscriptWriter {
     pub async fn append(&self, seq: u32, message: &Message) -> io::Result<()> {
         let mut persisted_message = message.clone();
         persisted_message.parts = MessagePart::strip_images(&persisted_message.parts);
-        let entry = TranscriptEntry {
-            seq,
-            timestamp: utc_now(),
-            message: persisted_message,
-        };
-        let line = serde_json::to_string(&entry)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let file = Arc::clone(&self.file);
+        let timestamp = utc_now();
+        let state = Arc::clone(&self.state);
+        let ring = self.ring.clone();
+        let identity = self.file_identity.clone();
+
         tokio::task::spawn_blocking(move || {
-            let mut guard = file
+            let mut guard = state
                 .lock()
                 .map_err(|_| io::Error::other("transcript writer lock poisoned"))?;
-            guard.write_all(line.as_bytes())?;
-            guard.write_all(b"\n")?;
-            guard.flush()
+
+            let mut entry = TranscriptEntry {
+                seq,
+                timestamp,
+                message: persisted_message,
+                chain: None,
+            };
+
+            let new_head = match ring.as_deref() {
+                Some(ring) => {
+                    let content = serde_json::to_vec(&entry)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                    let base = guard.prev.unwrap_or_else(|| {
+                        genesis(
+                            &ring.current_key(),
+                            CHAIN_DOMAIN,
+                            &identity,
+                            ring.current_epoch(),
+                        )
+                    });
+                    let h = chain_next(&ring.current_key(), &base, &content);
+                    entry.chain = Some(h.to_hex());
+                    Some(h)
+                }
+                None => None,
+            };
+
+            let line = serde_json::to_string(&entry)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            guard.file.write_all(line.as_bytes())?;
+            guard.file.write_all(b"\n")?;
+            guard.file.flush()?;
+
+            // Only advance the running chain state after the write+flush succeeded — a failed
+            // write must not desynchronize `prev` from what is actually durable on disk.
+            if let Some(h) = new_head {
+                guard.prev = Some(h);
+            }
+            Ok(())
         })
         .await
         .map_err(|e| io::Error::other(format!("spawn_blocking panicked: {e}")))?
@@ -224,80 +414,28 @@ impl TranscriptReader {
     }
 
     fn load_impl(path: &Path, strict: bool) -> Result<Vec<Message>, SubAgentError> {
-        let file = match File::open(path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                // Check if a meta sidecar exists — if so, data has been lost.
-                // Build meta path from the file stem (e.g. "abc" from "abc.jsonl")
-                // so it is consistent with write_meta which uses format!("{agent_id}.meta.json").
-                let meta_path =
-                    if let (Some(parent), Some(stem)) = (path.parent(), path.file_stem()) {
-                        parent.join(format!("{}.meta.json", stem.to_string_lossy()))
-                    } else {
-                        path.with_extension("meta.json")
-                    };
-                if meta_path.exists() {
-                    return Err(SubAgentError::Transcript(format!(
-                        "transcript file '{}' is missing but meta sidecar exists — \
-                         transcript data may have been deleted",
-                        path.display()
-                    )));
-                }
-                return Ok(vec![]);
-            }
-            Err(e) => {
+        if !path.exists() {
+            // Check if a meta sidecar exists — if so, data has been lost.
+            // Build meta path from the file stem (e.g. "abc" from "abc.jsonl")
+            // so it is consistent with write_meta which uses format!("{agent_id}.meta.json").
+            let meta_path = if let (Some(parent), Some(stem)) = (path.parent(), path.file_stem()) {
+                parent.join(format!("{}.meta.json", stem.to_string_lossy()))
+            } else {
+                path.with_extension("meta.json")
+            };
+            if meta_path.exists() {
                 return Err(SubAgentError::Transcript(format!(
-                    "failed to open transcript '{}': {e}",
+                    "transcript file '{}' is missing but meta sidecar exists — \
+                     transcript data may have been deleted",
                     path.display()
                 )));
             }
-        };
-
-        let reader = BufReader::new(file);
-        let mut messages = Vec::new();
-        for (line_no, line_result) in reader.lines().enumerate() {
-            let line = match line_result {
-                Ok(l) => l,
-                Err(e) => {
-                    if strict {
-                        return Err(SubAgentError::Transcript(format!(
-                            "failed to read transcript '{}' line {}: {e}",
-                            path.display(),
-                            line_no + 1
-                        )));
-                    }
-                    tracing::warn!(
-                        path = %path.display(),
-                        line = line_no + 1,
-                        error = %e,
-                        "failed to read transcript line — skipping"
-                    );
-                    continue;
-                }
-            };
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<TranscriptEntry>(trimmed) {
-                Ok(entry) => messages.push(entry.message),
-                Err(e) => {
-                    if strict {
-                        return Err(SubAgentError::Transcript(format!(
-                            "malformed transcript entry in '{}' line {}: {e}",
-                            path.display(),
-                            line_no + 1
-                        )));
-                    }
-                    tracing::warn!(
-                        path = %path.display(),
-                        line = line_no + 1,
-                        error = %e,
-                        "malformed transcript entry — skipping"
-                    );
-                }
-            }
+            return Ok(vec![]);
         }
+
+        let entries = parse_entries(path, strict)?;
+        let ring = history_integrity();
+        let (messages, _head) = verify_and_extract_messages(path, entries, ring.as_deref())?;
         Ok(messages)
     }
 
@@ -355,6 +493,192 @@ impl TranscriptReader {
             1 => Ok(matches.remove(0)),
             n => Err(SubAgentError::AmbiguousId(prefix.to_owned(), n)),
         }
+    }
+}
+
+/// Open and parse every line of an existing transcript file into [`TranscriptEntry`] values,
+/// applying the same read/parse leniency [`TranscriptReader::load`]/[`TranscriptReader::load_strict`]
+/// use (`strict` fails on the first unreadable/malformed line; lenient warns and skips it).
+///
+/// Assumes `path` exists — callers needing the "missing file" / "meta sidecar exists"
+/// disambiguation must check that first (see [`TranscriptReader::load_impl`]).
+///
+/// Note this is purely JSON-syntax leniency, unrelated to chain verification: chain breaks
+/// always escalate to a hard error in both modes (Q3, see [`verify_and_extract_messages`]).
+///
+/// # Errors
+///
+/// Returns [`SubAgentError::Transcript`] if the file cannot be opened, or if `strict` and any
+/// line is unreadable or fails to parse as JSON.
+fn parse_entries(path: &Path, strict: bool) -> Result<Vec<TranscriptEntry>, SubAgentError> {
+    let file = File::open(path).map_err(|e| {
+        SubAgentError::Transcript(format!(
+            "failed to open transcript '{}': {e}",
+            path.display()
+        ))
+    })?;
+    let reader = BufReader::new(file);
+    let mut entries = Vec::new();
+    for (line_no, line_result) in reader.lines().enumerate() {
+        let line = match line_result {
+            Ok(l) => l,
+            Err(e) => {
+                if strict {
+                    return Err(SubAgentError::Transcript(format!(
+                        "failed to read transcript '{}' line {}: {e}",
+                        path.display(),
+                        line_no + 1
+                    )));
+                }
+                tracing::warn!(
+                    path = %path.display(),
+                    line = line_no + 1,
+                    error = %e,
+                    "failed to read transcript line — skipping"
+                );
+                continue;
+            }
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<TranscriptEntry>(trimmed) {
+            Ok(entry) => entries.push(entry),
+            Err(e) => {
+                if strict {
+                    return Err(SubAgentError::Transcript(format!(
+                        "malformed transcript entry in '{}' line {}: {e}",
+                        path.display(),
+                        line_no + 1
+                    )));
+                }
+                tracing::warn!(
+                    path = %path.display(),
+                    line = line_no + 1,
+                    error = %e,
+                    "malformed transcript entry — skipping"
+                );
+            }
+        }
+    }
+    Ok(entries)
+}
+
+/// Walk a transcript's parsed entries, verifying the hash chain over the chained region
+/// (spec-069 FR-001/FR-002) and returning the trusted messages plus the verified head hash (used
+/// by [`TranscriptWriter::new`]'s open-time seeding, M3).
+///
+/// The **legacy prefix** — entries before the first one carrying a `chain` field — is
+/// auto-trusted-once (FR-006 Q2): best-effort, unverified, exactly as this transcript format
+/// behaved before this feature existed. A file with no `chain` field anywhere is pure legacy;
+/// its messages are returned with `head = None` and no key is required.
+///
+/// Once a `chain` field appears, **every subsequent entry MUST also carry one**: a missing field
+/// after the chained region starts is a partial strip, not a legacy tail, and is a hard tamper
+/// failure (critic C1) — this check runs regardless of the caller's lenient/strict JSON-parsing
+/// mode, because a chain break invalidates trust in everything downstream of it, unlike a single
+/// malformed line (Q3).
+///
+/// # Errors
+///
+/// Returns [`SubAgentError::Integrity`] when: the file carries chain metadata but no
+/// history-integrity key ring is configured (`ring.is_none()`, NFR-004 — never silently treated
+/// as legacy); a partial strip is detected; or [`verify_chained_prefix`] reports a definite
+/// tamper ([`ChainError::Mismatch`]) or an unverifiable/possibly-re-keyed chain
+/// ([`ChainError::Unverifiable`]).
+fn verify_and_extract_messages(
+    path: &Path,
+    entries: Vec<TranscriptEntry>,
+    ring: Option<&ChainKeyRing>,
+) -> Result<(Vec<Message>, Option<ChainHash>), SubAgentError> {
+    let Some(chain_start) = entries.iter().position(|e| e.chain.is_some()) else {
+        // Pure legacy file: no chain metadata anywhere. Auto-trusted per FR-006 — but if a key
+        // ring IS configured, every legitimately-written file since this process started should
+        // carry a chain field, so a chainless file under an active key is anomalous: either
+        // genuine pre-upgrade content, or the signature of a full-strip downgrade attack (issue
+        // #6449, the vault-anchor gap that would otherwise catch this). Not distinguishable from
+        // here, so this stays accepted (never a hard failure) — but it must be observable, not
+        // silent (security review B2 condition, NFR-005).
+        if ring.is_some() {
+            warn_legacy_under_active_key_once(path);
+        }
+        return Ok((entries.into_iter().map(|e| e.message).collect(), None));
+    };
+
+    for (offset, entry) in entries[chain_start..].iter().enumerate() {
+        if entry.chain.is_none() {
+            return Err(SubAgentError::Integrity(format!(
+                "transcript '{}' entry at chained-region position {offset} is missing its \
+                 chain field while earlier entries in this file are chained — partial strip \
+                 detected, TAMPER DETECTED",
+                path.display()
+            )));
+        }
+    }
+
+    let Some(ring) = ring else {
+        return Err(SubAgentError::Integrity(format!(
+            "transcript '{}' carries chain metadata but no history-integrity key is configured \
+             for this process — refusing to trust it unverified (NFR-004)",
+            path.display()
+        )));
+    };
+
+    let mut chained: Vec<(Vec<u8>, ChainHash)> = Vec::with_capacity(entries.len() - chain_start);
+    for entry in &entries[chain_start..] {
+        let stored_hex = entry.chain.as_deref().unwrap_or_default();
+        let stored = ChainHash::from_hex(stored_hex).map_err(|_| {
+            SubAgentError::Integrity(format!(
+                "transcript '{}' has a malformed chain hash",
+                path.display()
+            ))
+        })?;
+        let mut stripped = entry.clone();
+        stripped.chain = None;
+        let content = serde_json::to_vec(&stripped).map_err(|e| {
+            SubAgentError::Transcript(format!("failed to canonicalize transcript entry: {e}"))
+        })?;
+        chained.push((content, stored));
+    }
+
+    let identity = file_identity(path);
+    let (head, resolution) = verify_chained_prefix(ring, CHAIN_DOMAIN, &identity, &chained)
+        .map_err(|e| describe_chain_error(path, &e))?;
+
+    if let KeyResolution::Rekeyed(epoch) = resolution {
+        tracing::info!(
+            path = %path.display(),
+            epoch,
+            "transcript verified under a previous key epoch (re-keyed, not tampered)"
+        );
+    }
+
+    let messages = entries.into_iter().map(|e| e.message).collect();
+    Ok((messages, Some(head)))
+}
+
+/// Render a [`ChainError`] as a [`SubAgentError::Integrity`] with operator-actionable wording
+/// that distinguishes a definite tamper verdict from an ambiguous/possibly-re-keyed one (FR-008
+/// — an operator must not be misled into believing a re-keyed transcript was tampered with).
+fn describe_chain_error(path: &Path, err: &zeph_common::hash_chain::ChainError) -> SubAgentError {
+    use zeph_common::hash_chain::ChainError;
+    match err {
+        ChainError::Unverifiable => SubAgentError::Integrity(format!(
+            "transcript '{}' is unverifiable: no known key epoch (current or previous rotation \
+             window) produces a valid chain — possibly re-keyed past the rotation window, or \
+             tampered; this is fail-closed by design (NFR-004) and cannot be auto-recovered",
+            path.display()
+        )),
+        ChainError::Mismatch { index } => SubAgentError::Integrity(format!(
+            "TAMPER DETECTED in transcript '{}': chain hash mismatch at chained-entry index \
+             {index} — content was modified, reordered, or deleted after being written",
+            path.display()
+        )),
+        other => SubAgentError::Integrity(format!(
+            "transcript '{}' failed chain verification: {other}",
+            path.display()
+        )),
     }
 }
 
@@ -629,6 +953,7 @@ mod tests {
             seq: 0,
             timestamp: "2026-01-01T00:00:00Z".to_owned(),
             message: good.clone(),
+            chain: None,
         };
         let good_line = serde_json::to_string(&entry).unwrap();
         let content = format!("{good_line}\nnot valid json\n{good_line}\n");
@@ -648,6 +973,7 @@ mod tests {
             seq: 0,
             timestamp: "2026-01-01T00:00:00Z".to_owned(),
             message: good.clone(),
+            chain: None,
         };
         let good_line = serde_json::to_string(&entry).unwrap();
         // A torn/malformed line sits between two well-formed entries — simulates a sub-agent
@@ -674,6 +1000,7 @@ mod tests {
             seq: 0,
             timestamp: "2026-01-01T00:00:00Z".to_owned(),
             message: good,
+            chain: None,
         };
         let good_line = serde_json::to_string(&entry).unwrap();
         std::fs::write(&path, format!("{good_line}\n")).unwrap();
@@ -856,5 +1183,273 @@ mod tests {
         TranscriptWriter::write_meta(dir.path(), agent_id, &meta).unwrap();
         let loaded = TranscriptReader::load_meta(dir.path(), agent_id).unwrap();
         assert_eq!(loaded.mcp_tool_names, vec!["search", "write_file"]);
+    }
+
+    // --- Hash-chain integrity tests (issue #6360) ---
+    //
+    // `configure_history_integrity` mutates process-global state, so these tests rely on
+    // `cargo nextest`'s one-process-per-test model for isolation (never run this module with
+    // plain `cargo test`, which shares one process across tests in a binary and could race).
+
+    fn test_ring(epoch: u32, byte: u8) -> Arc<ChainKeyRing> {
+        Arc::new(ChainKeyRing::new(
+            epoch,
+            zeph_common::hash_chain::ChainKey::new([byte; 32]),
+        ))
+    }
+
+    #[tokio::test]
+    async fn chained_writer_reader_roundtrip() {
+        configure_history_integrity(Some(test_ring(0, 1)));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.jsonl");
+
+        let writer = TranscriptWriter::new(&path).unwrap();
+        writer
+            .append(0, &test_message(Role::User, "hello"))
+            .await
+            .unwrap();
+        writer
+            .append(1, &test_message(Role::Assistant, "world"))
+            .await
+            .unwrap();
+        drop(writer);
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.lines().all(|l| l.contains("\"chain\":")),
+            "every line must carry a chain field once integrity is configured"
+        );
+
+        let messages = TranscriptReader::load(&path).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "hello");
+        assert_eq!(messages[1].content, "world");
+
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn tamper_in_place_edit_is_detected() {
+        configure_history_integrity(Some(test_ring(0, 2)));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.jsonl");
+
+        let writer = TranscriptWriter::new(&path).unwrap();
+        // A first, untouched entry so the key epoch resolves cleanly there; tampering the
+        // *second* entry below then produces a definite Mismatch (not an ambiguous
+        // Unverifiable, which is what tampering the very first chained entry would produce).
+        writer
+            .append(0, &test_message(Role::User, "untouched"))
+            .await
+            .unwrap();
+        writer
+            .append(1, &test_message(Role::Assistant, "original"))
+            .await
+            .unwrap();
+        drop(writer);
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let tampered = raw.replace("original", "forged-approval");
+        assert_ne!(raw, tampered);
+        std::fs::write(&path, tampered).unwrap();
+
+        let err = TranscriptReader::load(&path).unwrap_err();
+        assert_matches!(err, SubAgentError::Integrity(ref m) if m.contains("TAMPER"));
+        // load_strict must fail identically — chain breaks always escalate (Q3), even in modes
+        // that otherwise differ only on JSON-syntax leniency.
+        let err = TranscriptReader::load_strict(&path).unwrap_err();
+        assert_matches!(err, SubAgentError::Integrity(_));
+
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn legacy_file_is_auto_trusted_once_when_integrity_configured_later() {
+        // Written with integrity disabled (the pre-feature/legacy shape).
+        configure_history_integrity(None);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.jsonl");
+        let writer = TranscriptWriter::new(&path).unwrap();
+        writer
+            .append(0, &test_message(Role::User, "pre-feature message"))
+            .await
+            .unwrap();
+        drop(writer);
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !raw.contains("\"chain\":"),
+            "legacy file must carry no chain field"
+        );
+
+        // Now integrity comes online for this process (e.g. vault became available).
+        configure_history_integrity(Some(test_ring(0, 3)));
+        let messages = TranscriptReader::load(&path).unwrap();
+        assert_eq!(
+            messages.len(),
+            1,
+            "legacy content must be auto-trusted, not rejected"
+        );
+
+        // A legacy file read while a key IS configured must be flagged exactly once per path
+        // (security review B2 condition (c)) — repeat reads must not re-warn.
+        assert!(
+            WARNED_LEGACY_UNDER_KEY.read().unwrap().contains(&path),
+            "path must be recorded as warned after the first legacy-under-active-key read"
+        );
+        let warned_count_before = WARNED_LEGACY_UNDER_KEY.read().unwrap().len();
+        let _ = TranscriptReader::load(&path).unwrap();
+        assert_eq!(
+            WARNED_LEGACY_UNDER_KEY.read().unwrap().len(),
+            warned_count_before,
+            "a second read of the same path must not add a second warned-set entry"
+        );
+
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn partial_strip_of_chain_field_is_detected_as_tamper() {
+        configure_history_integrity(Some(test_ring(0, 4)));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.jsonl");
+
+        let writer = TranscriptWriter::new(&path).unwrap();
+        writer
+            .append(0, &test_message(Role::User, "one"))
+            .await
+            .unwrap();
+        writer
+            .append(1, &test_message(Role::Assistant, "two"))
+            .await
+            .unwrap();
+        drop(writer);
+
+        // Strip the chain field from only the second line, simulating an attacker who deletes
+        // one line's chain metadata rather than the whole file's (the C1 partial-strip attack).
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = raw.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let mut second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        second.as_object_mut().unwrap().remove("chain");
+        let stripped = format!("{}\n{}\n", lines[0], second);
+        std::fs::write(&path, stripped).unwrap();
+
+        let err = TranscriptReader::load(&path).unwrap_err();
+        assert_matches!(err, SubAgentError::Integrity(ref m) if m.contains("partial strip"));
+
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn key_unavailable_on_chained_file_fails_closed_not_legacy() {
+        configure_history_integrity(Some(test_ring(0, 5)));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.jsonl");
+        let writer = TranscriptWriter::new(&path).unwrap();
+        writer
+            .append(0, &test_message(Role::User, "chained"))
+            .await
+            .unwrap();
+        drop(writer);
+
+        // Simulate the vault becoming unavailable: no key ring configured at read time.
+        configure_history_integrity(None);
+        let err = TranscriptReader::load(&path).unwrap_err();
+        assert_matches!(err, SubAgentError::Integrity(ref m) if m.contains("NFR-004") || m.contains("no history-integrity key"));
+    }
+
+    #[tokio::test]
+    async fn rotated_key_epoch_verifies_as_rekeyed_not_tampered() {
+        let old_key_byte = 6u8;
+        configure_history_integrity(Some(test_ring(0, old_key_byte)));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.jsonl");
+        let writer = TranscriptWriter::new(&path).unwrap();
+        writer
+            .append(0, &test_message(Role::User, "written before rotation"))
+            .await
+            .unwrap();
+        drop(writer);
+
+        // Rotate: new current epoch 1, old epoch 0 retained as the previous window.
+        let ring = Arc::new(
+            ChainKeyRing::new(1, zeph_common::hash_chain::ChainKey::new([9u8; 32])).with_previous(
+                0,
+                zeph_common::hash_chain::ChainKey::new([old_key_byte; 32]),
+            ),
+        );
+        configure_history_integrity(Some(ring));
+
+        let messages = TranscriptReader::load(&path).unwrap();
+        assert_eq!(
+            messages.len(),
+            1,
+            "a legitimately re-keyed file must still verify"
+        );
+
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn writer_reopen_seeds_chain_from_existing_tail() {
+        configure_history_integrity(Some(test_ring(0, 7)));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.jsonl");
+
+        {
+            let writer = TranscriptWriter::new(&path).unwrap();
+            writer
+                .append(0, &test_message(Role::User, "first session"))
+                .await
+                .unwrap();
+        }
+        // Reopen a fresh writer on the same file (M3 open-time tail seed) and append more.
+        {
+            let writer = TranscriptWriter::new(&path).unwrap();
+            writer
+                .append(1, &test_message(Role::Assistant, "second session"))
+                .await
+                .unwrap();
+        }
+
+        // The full file, spanning both writer instances, must verify as one continuous chain.
+        let messages = TranscriptReader::load(&path).unwrap();
+        assert_eq!(messages.len(), 2);
+
+        configure_history_integrity(None);
+    }
+
+    /// S2 regression: concurrent `append` calls via a cloned writer must never desynchronize
+    /// on-disk physical order from chain-link order. Mirrors
+    /// `zeph_session::log::tests::test_concurrent_append_preserves_seq_order`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_append_preserves_chain_order() {
+        const N: u32 = 50;
+        configure_history_integrity(Some(test_ring(0, 8)));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.jsonl");
+        let writer = TranscriptWriter::new(&path).unwrap();
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for i in 0..N {
+            let writer = writer.clone();
+            tasks.spawn(async move {
+                writer
+                    .append(i, &test_message(Role::User, &format!("msg-{i}")))
+                    .await
+                    .unwrap();
+            });
+        }
+        while tasks.join_next().await.is_some() {}
+        drop(writer);
+
+        // If chain order had diverged from physical write order, this would fail with a
+        // definite Mismatch tamper verdict even though nothing was actually tampered with.
+        let messages = TranscriptReader::load(&path).unwrap();
+        assert_eq!(messages.len(), usize::try_from(N).unwrap());
+
+        configure_history_integrity(None);
     }
 }

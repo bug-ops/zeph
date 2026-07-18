@@ -195,6 +195,7 @@ Secrets live in an [age-encrypted](https://github.com/FiloSottile/age) vault, ne
 - **SSRF defense (5 layers)** — HTTPS-only, pre-DNS blocklist, post-DNS IP validation, pinned-address client (blocks DNS-rebinding), and redirect-chain re-validation (max 3 hops).
 - **ShadowSentinel** — an optional LLM probe evaluates risky tool calls *before* execution, with every verdict written to an audit table.
 - **Exfiltration guard** — blocks tracking-pixel image links and suspicious URLs in tool output, and suppresses injection-flagged memory writes.
+- **Tamper-evident history** — sub-agent transcripts and session event logs are keyed-BLAKE3 hash-chained (vault-keyed `ZEPH_HISTORY_KEY`), so an edited, reordered, or partially-stripped entry is detected and fails closed before it's replayed as trusted prior context; a tampered session can be inspected read-only via `zeph sessions resume <id> --print --allow-unverified`. Durable execution journals use a separate authenticated high-water-mark for the same guarantee. Detects modification and partial tampering; a fully-consistent whole-file strip-to-legacy downgrade is a tracked follow-up, not yet closed.
 
 See the [security model](https://bug-ops.github.io/zeph/reference/security.html).
 

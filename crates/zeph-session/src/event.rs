@@ -44,6 +44,14 @@ pub struct SessionEventEnvelope {
     pub parent_seq: Option<u64>,
     /// The tagged event payload, nested under the `kind` key (spec §4.2).
     pub kind: SessionEvent,
+    /// Keyed-BLAKE3 hash chain link (hex-encoded), binding this event's content and the
+    /// previous event's hash (issue #6360). `None` on every event means this log predates the
+    /// feature or history-chain verification is disabled for this process (legacy,
+    /// auto-trusted-once per spec-069 FR-006). Additive field: `#[serde(default)]` means an
+    /// older reader/writer that doesn't know this field ignores it, and legacy logs without it
+    /// parse unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<String>,
 }
 
 impl SessionEventEnvelope {
@@ -61,6 +69,7 @@ impl SessionEventEnvelope {
             turn_id,
             parent_seq,
             kind,
+            chain: None,
         }
     }
 }

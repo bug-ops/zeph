@@ -30,10 +30,14 @@
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock as StdRwLock};
 
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
+use zeph_common::hash_chain::{
+    ChainError, ChainHash, ChainKeyRing, ChainStreamVerifier, KeyResolution, chain_next, genesis,
+};
 
 use crate::error::SessionError;
 use crate::event::{SessionEvent, SessionEventEnvelope};
@@ -41,6 +45,47 @@ use crate::event::{SessionEvent, SessionEventEnvelope};
 const EVENTS_FILE_NAME: &str = "events.jsonl";
 #[cfg(unix)]
 const LOCK_FILE_NAME: &str = "events.jsonl.lock";
+
+/// Domain-separation tag for this subsystem's hash chain (issue #6360) — distinct from
+/// `zeph-subagent`'s so a chain from one subsystem can never verify against the other.
+pub const CHAIN_DOMAIN: &str = "zeph-session log v1";
+
+/// Process-wide history-chain key ring, configured once at bootstrap by resolving
+/// `ZEPH_HISTORY_KEY` from the vault (see `zeph_core::history_integrity`).
+///
+/// See `zeph_subagent::transcript`'s identical registry for the full rationale (a `RwLock`, not
+/// `OnceLock`, so tests can reconfigure it, and process-global rather than a constructor
+/// parameter because `SessionEventLog::open`/`open_exclusive` have 40+ call sites across crates
+/// outside this feature's ownership).
+static HISTORY_INTEGRITY: StdRwLock<Option<Arc<ChainKeyRing>>> = StdRwLock::new(None);
+
+/// Configure (or disable, with `None`) history-chain verification for every
+/// [`SessionEventLog`] operation in this process from this point forward. See
+/// `zeph_subagent::transcript::configure_history_integrity`'s doc for the full contract — this
+/// mirrors it exactly.
+///
+/// # Invariant: single-set-at-startup
+///
+/// This is `pub` (not `pub(crate)`) specifically so `src/runner.rs` — a different crate from
+/// this one — can call it once during CLI bootstrap, before any `SessionEventLog` is opened
+/// (see `configure_history_integrity_from_default_vault` in `src/runner.rs`). It is **not**
+/// meant to be called again later by production code: reconfiguring mid-process cannot make an
+/// already-open handle less safe (each handle captures `ring` at construction and is immune to
+/// later reconfiguration, and setting `ring = None` only ever makes *subsequent* opens
+/// fail-closed, never trust-bypassing), but a caller reconfiguring after bootstrap without a
+/// clear reason is almost certainly a bug, not an intended feature — no production code path
+/// does this today, and none should be added without updating this doc. Tests are the one
+/// legitimate exception, calling this per-test under `cargo nextest`'s one-process-per-test
+/// isolation.
+pub fn configure_history_integrity(ring: Option<Arc<ChainKeyRing>>) {
+    if let Ok(mut guard) = HISTORY_INTEGRITY.write() {
+        *guard = ring;
+    }
+}
+
+fn history_integrity() -> Option<Arc<ChainKeyRing>> {
+    HISTORY_INTEGRITY.read().ok().and_then(|g| g.clone())
+}
 
 /// Chunk size for [`SessionEventLog::read_chunked`] (spec §6.2 step 3: "bounded buffer, ≤ 100
 /// events in memory at once").
@@ -65,12 +110,45 @@ const REPLAY_CHUNK_SIZE: usize = 100;
 /// assert_eq!(log.last_seq(), Some(0));
 /// # }
 /// ```
+struct SessionWriteState {
+    file: File,
+    /// Running chain head; `None` until either the first chained append in this handle's
+    /// lifetime (fresh chaining start on a legacy or empty log) or seeded from the log's
+    /// existing chained tail at open time (M3).
+    prev: Option<ChainHash>,
+}
+
 pub struct SessionEventLog {
     events_path: PathBuf,
-    writer: Mutex<File>,
+    /// `file` and the running chain state share one lock so the chain-link read-modify-write is
+    /// always atomic with the physical write and `sync_all` (S2, issue #6360 critic rev2) —
+    /// matches `seq` assignment, which already had to be under this same lock for INV-SP-2's
+    /// ascending-seq-order guarantee (#5487); folding the chain link in adds no new await inside
+    /// the guarded section (BLAKE3 is CPU-only).
+    writer: Mutex<SessionWriteState>,
     next_seq: AtomicU64,
+    file_identity: Vec<u8>,
+    /// Captured once at open time so every `append` on this handle uses one consistent key
+    /// ring, even if `configure_history_integrity` is called again concurrently.
+    ring: Option<Arc<ChainKeyRing>>,
+    /// Set only by [`SessionEventLog::open_exclusive_allow_unverified`] — every subsequent
+    /// [`Self::read_all`]/[`Self::read_chunked`] call on this handle also skips chain
+    /// verification, not just the initial open, so the deliberate operator override applies
+    /// for this handle's whole lifetime rather than just its construction.
+    allow_unverified: bool,
     #[allow(dead_code)] // held only for its Drop (releases the flock, if taken)
     lock: Option<AdvisoryLock>,
+}
+
+/// Derive a session log's chain identity from its directory (the `session_id`) — binds the
+/// chain to this one session so a whole-log substitution (swapping in another session's
+/// `events.jsonl`) breaks at the genesis hash.
+fn file_identity(session_dir: &Path) -> Vec<u8> {
+    session_dir
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .into_bytes()
 }
 
 impl SessionEventLog {
@@ -93,7 +171,21 @@ impl SessionEventLog {
     /// [`SessionError::Serde`] surfaces only via [`Self::read_all`], never here (torn lines are
     /// discarded, not treated as fatal).
     pub async fn open(session_dir: &Path) -> Result<Self, SessionError> {
-        Self::open_with_lock(session_dir, None).await
+        Self::open_with_lock(session_dir, None, false).await
+    }
+
+    /// Open the `events.jsonl` log under `session_dir` like [`Self::open`], but **skip
+    /// hash-chain verification** for this handle's whole lifetime — see
+    /// [`Self::open_exclusive_allow_unverified`]'s doc for the full contract (this is its
+    /// lockless counterpart, for read-only tooling such as `sessions resume --print
+    /// --allow-unverified`).
+    ///
+    /// # Errors
+    ///
+    /// Returns any error [`Self::open`] can return other than [`SessionError::Integrity`]
+    /// (which this method exists specifically to bypass).
+    pub async fn open_allow_unverified(session_dir: &Path) -> Result<Self, SessionError> {
+        Self::open_with_lock(session_dir, None, true).await
     }
 
     /// Open the `events.jsonl` log under `session_dir` like [`Self::open`], but additionally
@@ -111,21 +203,71 @@ impl SessionEventLog {
     pub async fn open_exclusive(session_dir: &Path) -> Result<Self, SessionError> {
         fs::create_dir_all(session_dir).await?;
         let lock = AdvisoryLock::acquire(session_dir)?;
-        Self::open_with_lock(session_dir, Some(lock)).await
+        Self::open_with_lock(session_dir, Some(lock), false).await
+    }
+
+    /// Open the `events.jsonl` log under `session_dir` like [`Self::open_exclusive`], but
+    /// **skip hash-chain verification** for this one open.
+    ///
+    /// This is the deliberate, logged override an operator invokes explicitly (e.g. `zeph
+    /// sessions resume <id> --allow-unverified`) after being shown a detected chain-integrity
+    /// failure — never a silent fallback. Per spec-069 FR-004's fail-closed-by-default posture:
+    /// callers on an **unattended** path (durable resume, the crash-orphan sweep, automatic
+    /// sub-agent transcript reload) must never call this — only a human-attended path with an
+    /// explicit, deliberate opt-in may bypass verification. `read_all`/`read_chunked` on the
+    /// returned handle also skip chain verification (a dedicated `allow_unverified` flag carried
+    /// on `Self`, threaded through every subsequent read — **not** implemented by nulling the
+    /// key ring, which would instead re-trigger the normal "no key configured" fail-closed path
+    /// and make this override indistinguishable from a plain hard failure), so the whole session
+    /// is treated as best-effort-trusted, matching the legacy posture, for as long as this
+    /// handle is held.
+    ///
+    /// **Scope of the bypass**: this skips cryptographic chain verification only. It does
+    /// **not** bypass the structural torn-tail/internal-malformed-line check (S1, the private
+    /// `peek_confirms_trailing_torn` helper) — a line that fails to parse as JSON is still a
+    /// hard error even with this override, since that is a distinct failure class (structural
+    /// corruption, not a cryptographic tamper verdict) that this override was never meant to
+    /// paper over. An operator with a genuinely corrupt (non-tamper) internal-malformed-line
+    /// session cannot recover it via `--allow-unverified`.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error [`Self::open_exclusive`] can return other than
+    /// [`SessionError::Integrity`] (which this method exists specifically to bypass).
+    pub async fn open_exclusive_allow_unverified(session_dir: &Path) -> Result<Self, SessionError> {
+        fs::create_dir_all(session_dir).await?;
+        let lock = AdvisoryLock::acquire(session_dir)?;
+        Self::open_with_lock(session_dir, Some(lock), true).await
     }
 
     async fn open_with_lock(
         session_dir: &Path,
         lock: Option<AdvisoryLock>,
+        allow_unverified: bool,
     ) -> Result<Self, SessionError> {
         fs::create_dir_all(session_dir).await?;
         set_permissions(session_dir, 0o700).await?;
 
         let events_path = session_dir.join(EVENTS_FILE_NAME);
+        let ring = history_integrity();
+        let identity = file_identity(session_dir);
         // Only the exclusive-lock holder may physically repair a torn tail (see
         // `read_events`'s doc comment) — a lockless `open()` cannot prove the "torn" line
-        // isn't a live writer's in-flight, not-yet-fsynced append.
-        let (_, max_seq) = read_events(&events_path, lock.is_some()).await?;
+        // isn't a live writer's in-flight, not-yet-fsynced append. Chain verification (S1)
+        // always runs regardless of lock status — only the physical *repair* is gated, never
+        // the integrity check itself; a failed check here means `open`/`open_exclusive` fails
+        // outright rather than opening atop unverified content (M3 open-time tail verify/seed)
+        // — unless `allow_unverified` is set (the deliberate `--allow-unverified` operator
+        // override), in which case verification is skipped entirely for this open, distinct
+        // from `ring = None` (which still fail-closes a chained file per NFR-004).
+        let (_, max_seq, chain_head) = read_events(
+            &events_path,
+            lock.is_some(),
+            ring.as_deref(),
+            &identity,
+            allow_unverified,
+        )
+        .await?;
 
         let file = OpenOptions::new()
             .create(true)
@@ -137,8 +279,14 @@ impl SessionEventLog {
         let next_seq = max_seq.map_or(0, |seq| seq + 1);
         Ok(Self {
             events_path,
-            writer: Mutex::new(file),
+            writer: Mutex::new(SessionWriteState {
+                file,
+                prev: chain_head,
+            }),
             next_seq: AtomicU64::new(next_seq),
+            file_identity: identity,
+            ring,
+            allow_unverified,
             lock,
         })
     }
@@ -161,6 +309,12 @@ impl SessionEventLog {
     /// The single `write_all` + `sync_all` pair is the atomicity boundary INV-SP-2 relies on: a
     /// crash mid-write can only ever corrupt this one trailing line.
     ///
+    /// When history-chain verification is configured, the chain-link read-modify-write
+    /// (canonicalize with `chain: None`, hash, then serialize again with the computed hash) is
+    /// folded into the same critical section as `seq` assignment and the physical write/fsync
+    /// (S2) — on-disk order always matches chain order, exactly as it already had to for `seq`
+    /// (#5487).
+    ///
     /// # Errors
     ///
     /// Returns [`SessionError::Serde`] if the event cannot be JSON-encoded, or
@@ -172,20 +326,43 @@ impl SessionEventLog {
         parent_seq: Option<u64>,
         kind: SessionEvent,
     ) -> Result<SessionEventEnvelope, SessionError> {
-        let mut file = self.writer.lock().await;
+        let mut state = self.writer.lock().await;
 
         // seq assignment MUST happen while holding the writer lock: two concurrent
         // callers assigned seq N and N+1 before the lock could still race for the
         // lock and land their physical writes in the opposite order, breaking
         // INV-SP-2's ascending-seq-order assumption (#5487).
         let seq = self.next_seq.fetch_add(1, Ordering::SeqCst);
-        let envelope = SessionEventEnvelope::new(seq, turn_id, parent_seq, kind);
+        let mut envelope = SessionEventEnvelope::new(seq, turn_id, parent_seq, kind);
+
+        let new_head = if let Some(ring) = self.ring.as_deref() {
+            let content = serde_json::to_vec(&envelope)?;
+            let base = state.prev.unwrap_or_else(|| {
+                genesis(
+                    &ring.current_key(),
+                    CHAIN_DOMAIN,
+                    &self.file_identity,
+                    ring.current_epoch(),
+                )
+            });
+            let h = chain_next(&ring.current_key(), &base, &content);
+            envelope.chain = Some(h.to_hex());
+            Some(h)
+        } else {
+            None
+        };
 
         let mut line = serde_json::to_vec(&envelope)?;
         line.push(b'\n');
 
-        file.write_all(&line).await?;
-        file.sync_all().await?;
+        state.file.write_all(&line).await?;
+        state.file.sync_all().await?;
+
+        // Only advance the running chain state after the write+fsync succeeded — a failed
+        // write must not desynchronize `prev` from what is actually durable on disk.
+        if let Some(h) = new_head {
+            state.prev = Some(h);
+        }
 
         Ok(envelope)
     }
@@ -196,7 +373,9 @@ impl SessionEventLog {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError::Io`] if the file cannot be read.
+    /// Returns [`SessionError::Io`] if the file cannot be read, or [`SessionError::Integrity`]
+    /// if hash-chain verification fails (S1: this check always runs before any torn-tail
+    /// repair).
     #[tracing::instrument(name = "session.log.read_all", skip_all, level = "debug")]
     pub async fn read_all(&self) -> Result<Vec<SessionEventEnvelope>, SessionError> {
         // Same repair gating as `open_with_lock`: only repair the physical file when this
@@ -204,7 +383,14 @@ impl SessionEventLog {
         // handle (`open()`) calling `read_all()` — e.g. `sessions show --events`, the ACP HTTP
         // inspection endpoint — must never truncate a live writer's in-flight tail out from
         // under it (#5487 Finding B).
-        let (events, _) = read_events(&self.events_path, self.lock.is_some()).await?;
+        let (events, _, _) = read_events(
+            &self.events_path,
+            self.lock.is_some(),
+            self.ring.as_deref(),
+            &self.file_identity,
+            self.allow_unverified,
+        )
+        .await?;
         Ok(events)
     }
 
@@ -225,17 +411,209 @@ impl SessionEventLog {
     /// stops the instant the `up_to` seq is reached.
     ///
     /// Same torn-tail detection/repair gating as [`Self::read_all`]: only physically repairs
-    /// the file when this handle was opened via [`Self::open_exclusive`].
+    /// the file when this handle was opened via [`Self::open_exclusive`]. Chain verification
+    /// (S1) runs incrementally as each event is parsed — before it is ever handed to
+    /// `on_chunk` — so a tampered event is never exposed to the caller even transiently, and
+    /// the bounded-memory guarantee this method exists for is preserved (verification state is
+    /// O(1): at most two in-flight [`zeph_common::hash_chain::ChainStreamVerifier`] candidates
+    /// until the key epoch resolves, then one).
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError::Io`] if the file cannot be read.
+    /// Returns [`SessionError::Io`] if the file cannot be read, or [`SessionError::Integrity`]
+    /// if hash-chain verification fails.
     #[tracing::instrument(name = "session.log.read_chunked", skip_all, level = "debug")]
     pub(crate) async fn read_chunked(
         &self,
         on_chunk: impl FnMut(Vec<SessionEventEnvelope>) -> ControlFlow<()>,
     ) -> Result<(), SessionError> {
-        read_events_chunked(&self.events_path, self.lock.is_some(), on_chunk).await
+        read_events_chunked(
+            &self.events_path,
+            self.lock.is_some(),
+            self.ring.as_deref(),
+            &self.file_identity,
+            self.allow_unverified,
+            on_chunk,
+        )
+        .await
+    }
+}
+
+/// Incremental chain-tracking state shared by [`read_events`]'s whole-file loop and
+/// [`read_events_chunked`]'s bounded-chunk loop, so both apply identical legacy-prefix /
+/// partial-strip / verification logic to each event as it is parsed (S1: this runs strictly
+/// before any torn-tail repair in both callers, and strictly before an event is exposed to a
+/// `read_chunked` caller via `on_chunk`).
+struct SessionChainTracker<'a> {
+    path: &'a Path,
+    ring: Option<&'a ChainKeyRing>,
+    file_identity: &'a [u8],
+    verifier: Option<ChainStreamVerifier>,
+    chain_started: bool,
+    /// Set only by [`SessionEventLog::open_exclusive_allow_unverified`]'s deliberate operator
+    /// override (spec-069 FR-004): when `true`, [`Self::feed`] is a no-op for every event,
+    /// chained or not — this is NOT the same as `ring = None` (which still fail-closes a
+    /// chained file per NFR-004; the override must actually bypass verification, not just
+    /// simulate a missing key, or `--allow-unverified` would be indistinguishable from a
+    /// plain hard failure).
+    allow_unverified: bool,
+}
+
+impl<'a> SessionChainTracker<'a> {
+    fn new(
+        path: &'a Path,
+        ring: Option<&'a ChainKeyRing>,
+        file_identity: &'a [u8],
+        allow_unverified: bool,
+    ) -> Self {
+        Self {
+            path,
+            ring,
+            file_identity,
+            verifier: None,
+            chain_started: false,
+            allow_unverified,
+        }
+    }
+
+    /// Feed one parsed event in on-disk order. Must be called for every event, in order,
+    /// including the legacy prefix (a no-op for those).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::Integrity`] on a partial strip (a `chain`-less event after
+    /// chaining has started), a chained log with no key ring configured (NFR-004), or a
+    /// definite/ambiguous chain-verification failure. Always `Ok` when this tracker was
+    /// constructed with `allow_unverified = true`.
+    fn feed(&mut self, event: &SessionEventEnvelope) -> Result<(), SessionError> {
+        if self.allow_unverified {
+            return Ok(());
+        }
+        let Some(hex) = event.chain.as_deref() else {
+            return if self.chain_started {
+                Err(SessionError::Integrity(format!(
+                    "session log '{}' has an event missing its chain field while earlier \
+                     events in this log are chained — partial strip detected, TAMPER DETECTED",
+                    self.path.display()
+                )))
+            } else {
+                Ok(()) // legacy prefix, no-op
+            };
+        };
+        self.chain_started = true;
+
+        let stored = ChainHash::from_hex(hex).map_err(|_| {
+            SessionError::Integrity(format!(
+                "session log '{}' has a malformed chain hash",
+                self.path.display()
+            ))
+        })?;
+
+        if self.verifier.is_none() {
+            let ring = self.ring.ok_or_else(|| {
+                SessionError::Integrity(format!(
+                    "session log '{}' carries chain metadata but no history-integrity key is \
+                     configured for this process — refusing to trust it unverified (NFR-004)",
+                    self.path.display()
+                ))
+            })?;
+            self.verifier = Some(ChainStreamVerifier::new(
+                ring,
+                CHAIN_DOMAIN,
+                self.file_identity.to_vec(),
+            ));
+        }
+
+        let mut stripped = event.clone();
+        stripped.chain = None;
+        let content = serde_json::to_vec(&stripped)?;
+        // `verifier` was just ensured `Some` above.
+        self.verifier
+            .as_mut()
+            .expect("verifier initialized above")
+            .verify_next(&content, &stored)
+            .map_err(|e| describe_chain_error(self.path, &e))
+    }
+
+    /// Finalize: logs a re-keyed note if applicable and returns the verified head hash (`None`
+    /// if the log was pure legacy — chaining never started).
+    fn finish(self) -> Option<ChainHash> {
+        if let Some(KeyResolution::Rekeyed(epoch)) = self
+            .verifier
+            .as_ref()
+            .and_then(ChainStreamVerifier::resolution)
+        {
+            tracing::info!(
+                path = %self.path.display(),
+                epoch,
+                "session log verified under a previous key epoch (re-keyed, not tampered)"
+            );
+        }
+        // Pure legacy (chaining never started) while a key IS configured is anomalous: every
+        // legitimately-written log since this process started should carry a chain field.
+        // Auto-trusted per FR-006 (it's also indistinguishable from a full-strip downgrade
+        // attack without the vault anchor, #6449), but must be observable, not silent (security
+        // review B2 condition, NFR-005).
+        if !self.chain_started && self.ring.is_some() {
+            warn_legacy_under_active_key_once(self.path);
+        }
+        self.verifier.and_then(|v| v.head())
+    }
+}
+
+/// Paths already warned about via [`warn_legacy_under_active_key_once`] this process — kept
+/// small (one entry per distinct session path actually read while chaining-disabled, not
+/// per-read) so a session's history isn't re-warned every time it's reloaded.
+static WARNED_LEGACY_UNDER_KEY: std::sync::LazyLock<StdRwLock<std::collections::HashSet<PathBuf>>> =
+    std::sync::LazyLock::new(|| StdRwLock::new(std::collections::HashSet::new()));
+
+/// Log a structured `WARN` the first time a given path is found to be pure-legacy (no `chain`
+/// field anywhere) while a history-integrity key ring IS configured (issue #6360, security
+/// review B2 condition (c)). See `zeph_subagent::transcript`'s identical helper for the full
+/// rationale — this mirrors it exactly.
+fn warn_legacy_under_active_key_once(path: &Path) {
+    let already_warned = WARNED_LEGACY_UNDER_KEY
+        .read()
+        .is_ok_and(|set| set.contains(path));
+    if already_warned {
+        return;
+    }
+    if let Ok(mut set) = WARNED_LEGACY_UNDER_KEY.write()
+        && !set.insert(path.to_path_buf())
+    {
+        return; // another thread warned first between the read and write locks
+    }
+    tracing::warn!(
+        path = %path.display(),
+        "history-chain integrity: session log classifies as legacy (no chain field anywhere) \
+         while a history-integrity key IS configured for this process — this is expected for \
+         genuine pre-upgrade content, but is also the signature of a full chain-strip downgrade \
+         attack (issue #6449, the vault-anchor gap); accepted per FR-006, flagged for operator \
+         visibility"
+    );
+}
+
+/// Render a [`ChainError`] as a [`SessionError::Integrity`] with operator-actionable wording
+/// that distinguishes a definite tamper verdict from an ambiguous/possibly-re-keyed one (FR-008
+/// — an operator must not be misled into believing a re-keyed log was tampered with).
+fn describe_chain_error(path: &Path, err: &ChainError) -> SessionError {
+    match err {
+        ChainError::Unverifiable => SessionError::Integrity(format!(
+            "session log '{}' is unverifiable: no known key epoch (current or previous \
+             rotation window) produces a valid chain — possibly re-keyed past the rotation \
+             window, or tampered; this is fail-closed by design (NFR-004) and cannot be \
+             auto-recovered",
+            path.display()
+        )),
+        ChainError::Mismatch { index } => SessionError::Integrity(format!(
+            "TAMPER DETECTED in session log '{}': chain hash mismatch at chained-entry index \
+             {index} — content was modified, reordered, or deleted after being written",
+            path.display()
+        )),
+        other => SessionError::Integrity(format!(
+            "session log '{}' failed chain verification: {other}",
+            path.display()
+        )),
     }
 }
 
@@ -245,8 +623,10 @@ enum LineOutcome {
     Eof,
     /// A blank line (allowed, e.g. trailing newline) — no envelope produced.
     Blank,
-    /// A well-formed, newline-terminated envelope.
-    Event(SessionEventEnvelope),
+    /// A well-formed, newline-terminated envelope. Boxed: adding the `chain` field (issue
+    /// #6360) grew `SessionEventEnvelope` past clippy's `large_enum_variant` threshold relative
+    /// to this enum's other all-unit variants.
+    Event(Box<SessionEventEnvelope>),
     /// A garbled or unterminated line — the torn tail (INV-SP-2). Can only be the final line
     /// because appends are serialized through a single writer (INV-D2).
     Torn,
@@ -299,7 +679,7 @@ impl EventLineReader {
             Ok(envelope) if is_terminated => {
                 self.offset += bytes_read;
                 self.valid_len = self.offset;
-                Ok(LineOutcome::Event(envelope))
+                Ok(LineOutcome::Event(Box::new(envelope)))
             }
             _ => Ok(LineOutcome::Torn),
         }
@@ -351,32 +731,46 @@ async fn finish_torn_tail(
 /// in-flight, not-yet-fsynced append (#5487 Finding B) — a lockless reader physically truncating
 /// the file could destroy a concurrent writer's tail out from under it.
 ///
-/// Returns the validated events and the maximum `seq` seen (`None` for an empty/absent log).
+/// Returns the validated events, the maximum `seq` seen (`None` for an empty/absent log), and
+/// the verified chain head hash (`None` if the log is pure legacy — no chain metadata anywhere).
+///
+/// # Errors
+///
+/// Returns [`SessionError::Integrity`] (S1) if an internal (non-trailing) line is malformed —
+/// which must never be treated as a repairable torn tail — or if hash-chain verification fails.
+/// This check always completes, and any resulting error is returned, **before** the torn-tail
+/// repair below ever runs: a chain-verifiable-but-corrupted internal line must never be silently
+/// truncated away as ordinary crash recovery.
 async fn read_events(
     path: &Path,
     repair: bool,
-) -> Result<(Vec<SessionEventEnvelope>, Option<u64>), SessionError> {
+    ring: Option<&ChainKeyRing>,
+    file_identity: &[u8],
+    allow_unverified: bool,
+) -> Result<(Vec<SessionEventEnvelope>, Option<u64>, Option<ChainHash>), SessionError> {
     let Some(mut lines) = EventLineReader::open(path).await? else {
-        return Ok((Vec::new(), None));
+        return Ok((Vec::new(), None, None));
     };
 
     let mut events = Vec::new();
     let mut max_seq = None;
     let mut torn = false;
+    let mut chain = SessionChainTracker::new(path, ring, file_identity, allow_unverified);
 
     loop {
         match lines.next_line().await? {
             LineOutcome::Eof => break,
             LineOutcome::Blank => {}
             LineOutcome::Event(envelope) => {
+                chain.feed(&envelope)?;
                 // Track the true running maximum, not just the last line's value: a
                 // file whose physical order doesn't match seq order (e.g. from a
                 // pre-fix #5487 race) must still yield the correct next seq.
                 max_seq = Some(max_seq.map_or(envelope.seq, |m: u64| m.max(envelope.seq)));
-                events.push(envelope);
+                events.push(*envelope);
             }
             LineOutcome::Torn => {
-                torn = true;
+                torn = peek_confirms_trailing_torn(&mut lines, path).await?;
                 break;
             }
         }
@@ -384,18 +778,28 @@ async fn read_events(
     let valid_len = lines.valid_len;
     drop(lines);
 
+    // S1: chain verification has already run above, per event, as it was parsed — any failure
+    // already returned via `chain.feed`'s `?` before this point, so `finish_torn_tail`'s
+    // physical repair below is only ever reached once the whole read is chain-verified clean.
+    let chain_head = chain.finish();
+
     finish_torn_tail(path, valid_len, repair, torn).await?;
 
-    Ok((events, max_seq))
+    Ok((events, max_seq, chain_head))
 }
 
 /// Read `path`'s events in bounded chunks of at most [`REPLAY_CHUNK_SIZE`], invoking `on_chunk`
 /// for each chunk instead of materializing the whole file into one `Vec` (spec §6.2 step 3).
 /// Torn-tail detection/repair semantics match [`read_events`] exactly — the torn check happens
-/// once, when EOF is reached (or not at all, if `on_chunk` breaks early).
+/// once, when EOF is reached (or not at all, if `on_chunk` breaks early). Chain verification
+/// (S1) runs per event as it is parsed, strictly before that event is added to a chunk that
+/// might be handed to `on_chunk`, so a tampered event is never exposed to the caller.
 async fn read_events_chunked(
     path: &Path,
     repair: bool,
+    ring: Option<&ChainKeyRing>,
+    file_identity: &[u8],
+    allow_unverified: bool,
     mut on_chunk: impl FnMut(Vec<SessionEventEnvelope>) -> ControlFlow<()>,
 ) -> Result<(), SessionError> {
     let Some(mut lines) = EventLineReader::open(path).await? else {
@@ -405,13 +809,15 @@ async fn read_events_chunked(
     let mut chunk = Vec::with_capacity(REPLAY_CHUNK_SIZE);
     let mut torn = false;
     let mut broke_early = false;
+    let mut chain = SessionChainTracker::new(path, ring, file_identity, allow_unverified);
 
     loop {
         match lines.next_line().await? {
             LineOutcome::Eof => break,
             LineOutcome::Blank => {}
             LineOutcome::Event(envelope) => {
-                chunk.push(envelope);
+                chain.feed(&envelope)?;
+                chunk.push(*envelope);
                 if chunk.len() >= REPLAY_CHUNK_SIZE {
                     let flushed =
                         std::mem::replace(&mut chunk, Vec::with_capacity(REPLAY_CHUNK_SIZE));
@@ -422,7 +828,7 @@ async fn read_events_chunked(
                 }
             }
             LineOutcome::Torn => {
-                torn = true;
+                torn = peek_confirms_trailing_torn(&mut lines, path).await?;
                 break;
             }
         }
@@ -440,10 +846,37 @@ async fn read_events_chunked(
 
     let valid_len = lines.valid_len;
     drop(lines);
+    let _chain_head = chain.finish();
 
     finish_torn_tail(path, valid_len, repair, torn).await?;
 
     Ok(())
+}
+
+/// S1 guard: a genuinely crash-torn tail (INV-D2, single serialized writer) can only be the
+/// file's physical last line. Called immediately after [`LineOutcome::Torn`], this peeks one
+/// more line to confirm nothing follows — if more content does follow, the "torn" line was not
+/// a crash artifact (it is either mid-file corruption or a deliberately tampered line hiding
+/// further tampering), and must never be treated as a repairable trailing tail.
+///
+/// Returns `Ok(true)` (genuine trailing torn tail, eligible for [`repair_torn_tail`]) only when
+/// EOF immediately follows.
+///
+/// # Errors
+///
+/// Returns [`SessionError::Integrity`] if anything other than EOF follows the torn line.
+async fn peek_confirms_trailing_torn(
+    lines: &mut EventLineReader,
+    path: &Path,
+) -> Result<bool, SessionError> {
+    match lines.next_line().await? {
+        LineOutcome::Eof => Ok(true),
+        _ => Err(SessionError::Integrity(format!(
+            "internal malformed line in '{}' is not the file's physical last line — refusing \
+             to treat it as a torn crash-recovery tail (TAMPER DETECTED or mid-file corruption)",
+            path.display()
+        ))),
+    }
 }
 
 /// Sets Unix permission bits on `path` (e.g. `0o700` for a directory, `0o600` for a file); a
@@ -907,12 +1340,15 @@ mod tests {
             .unwrap();
         }
 
-        let (whole_file_events, _) = read_events(log.path(), false).await.unwrap();
+        let (whole_file_events, _, _) =
+            read_events(log.path(), false, None, b"test-session", false)
+                .await
+                .unwrap();
         assert_eq!(whole_file_events.len(), usize::try_from(N).unwrap());
 
         let mut chunked_events = Vec::new();
         let mut chunk_sizes = Vec::new();
-        read_events_chunked(log.path(), false, |chunk| {
+        read_events_chunked(log.path(), false, None, b"test-session", false, |chunk| {
             assert!(
                 chunk.len() <= REPLAY_CHUNK_SIZE,
                 "a single chunk must never exceed REPLAY_CHUNK_SIZE ({REPLAY_CHUNK_SIZE}), got {}",
@@ -937,5 +1373,469 @@ mod tests {
             chunk_sizes.len() > 1,
             "expected multiple chunks for N={N} events with REPLAY_CHUNK_SIZE={REPLAY_CHUNK_SIZE}"
         );
+    }
+
+    // --- Hash-chain integrity tests (issue #6360) ---
+    //
+    // `configure_history_integrity` mutates process-global state, so these tests rely on
+    // `cargo nextest`'s one-process-per-test model for isolation (never run this module with
+    // plain `cargo test`, which shares one process across tests in a binary and could race).
+
+    fn test_ring(epoch: u32, byte: u8) -> Arc<ChainKeyRing> {
+        Arc::new(ChainKeyRing::new(
+            epoch,
+            zeph_common::hash_chain::ChainKey::new([byte; 32]),
+        ))
+    }
+
+    #[tokio::test]
+    async fn chained_log_roundtrip() {
+        configure_history_integrity(Some(test_ring(0, 20)));
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::UserMessage {
+                text: "hello".to_owned(),
+                image_refs: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::SessionEnded { reason: "x".into() },
+        )
+        .await
+        .unwrap();
+        drop(log);
+
+        let raw = tokio::fs::read_to_string(dir.path().join(EVENTS_FILE_NAME))
+            .await
+            .unwrap();
+        assert!(
+            raw.lines().all(|l| l.contains("\"chain\":")),
+            "every line must carry a chain field once integrity is configured"
+        );
+
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        let events = log.read_all().await.unwrap();
+        assert_eq!(events.len(), 2);
+
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn tamper_in_place_edit_is_detected() {
+        configure_history_integrity(Some(test_ring(0, 21)));
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        // A first, untouched entry so the key epoch resolves cleanly there; tampering the
+        // *second* entry below then produces a definite Mismatch (not an ambiguous
+        // Unverifiable, which is what tampering the very first chained entry would produce —
+        // that case is covered separately by the epoch-resolution tests).
+        log.append(
+            None,
+            None,
+            SessionEvent::SessionEnded {
+                reason: "untouched".into(),
+            },
+        )
+        .await
+        .unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::UserMessage {
+                text: "original".to_owned(),
+                image_refs: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        drop(log);
+
+        let path = dir.path().join(EVENTS_FILE_NAME);
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        let tampered = raw.replace("original", "forged-approval");
+        assert_ne!(raw, tampered);
+        tokio::fs::write(&path, tampered).await.unwrap();
+
+        let result = SessionEventLog::open(dir.path()).await;
+        assert!(matches!(result, Err(SessionError::Integrity(ref m)) if m.contains("TAMPER")));
+
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn legacy_log_is_auto_trusted_once_when_integrity_configured_later() {
+        configure_history_integrity(None);
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::UserMessage {
+                text: "pre-feature message".to_owned(),
+                image_refs: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        drop(log);
+
+        let raw = tokio::fs::read_to_string(dir.path().join(EVENTS_FILE_NAME))
+            .await
+            .unwrap();
+        assert!(!raw.contains("\"chain\":"));
+
+        configure_history_integrity(Some(test_ring(0, 22)));
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        let events = log.read_all().await.unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "legacy content must be auto-trusted, not rejected"
+        );
+
+        // A legacy log read while a key IS configured must be flagged exactly once per path
+        // (security review B2 condition (c)) — repeat reads must not re-warn.
+        let events_path = dir.path().join(EVENTS_FILE_NAME);
+        assert!(
+            WARNED_LEGACY_UNDER_KEY
+                .read()
+                .unwrap()
+                .contains(&events_path),
+            "path must be recorded as warned after the first legacy-under-active-key read"
+        );
+        let warned_count_before = WARNED_LEGACY_UNDER_KEY.read().unwrap().len();
+        let _ = log.read_all().await.unwrap();
+        assert_eq!(
+            WARNED_LEGACY_UNDER_KEY.read().unwrap().len(),
+            warned_count_before,
+            "a second read of the same path must not add a second warned-set entry"
+        );
+
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn partial_strip_of_chain_field_is_detected_as_tamper() {
+        configure_history_integrity(Some(test_ring(0, 23)));
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::UserMessage {
+                text: "one".to_owned(),
+                image_refs: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::UserMessage {
+                text: "two".to_owned(),
+                image_refs: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        drop(log);
+
+        let path = dir.path().join(EVENTS_FILE_NAME);
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        let lines: Vec<&str> = raw.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let mut second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        second.as_object_mut().unwrap().remove("chain");
+        let stripped = format!("{}\n{}\n", lines[0], second);
+        tokio::fs::write(&path, stripped).await.unwrap();
+
+        let result = SessionEventLog::open(dir.path()).await;
+        assert!(
+            matches!(result, Err(SessionError::Integrity(ref m)) if m.contains("partial strip"))
+        );
+
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn key_unavailable_on_chained_log_fails_closed_not_legacy() {
+        configure_history_integrity(Some(test_ring(0, 24)));
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::SessionEnded { reason: "x".into() },
+        )
+        .await
+        .unwrap();
+        drop(log);
+
+        configure_history_integrity(None);
+        let result = SessionEventLog::open(dir.path()).await;
+        assert!(matches!(result, Err(SessionError::Integrity(_))));
+    }
+
+    /// `--allow-unverified` override: a tampered chained log must still open and read via
+    /// `open_exclusive_allow_unverified`, and the bypass must persist across `read_all` calls
+    /// on the same handle, not just the initial open.
+    #[tokio::test]
+    async fn allow_unverified_bypasses_tamper_detection_for_the_whole_handle() {
+        configure_history_integrity(Some(test_ring(0, 40)));
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::SessionEnded {
+                reason: "untouched".into(),
+            },
+        )
+        .await
+        .unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::UserMessage {
+                text: "original".to_owned(),
+                image_refs: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        drop(log);
+
+        let path = dir.path().join(EVENTS_FILE_NAME);
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        let tampered = raw.replace("original", "forged-approval");
+        assert_ne!(raw, tampered);
+        tokio::fs::write(&path, tampered).await.unwrap();
+
+        // The normal path still fails closed.
+        let result = SessionEventLog::open_exclusive(dir.path()).await;
+        assert!(matches!(result, Err(SessionError::Integrity(_))));
+
+        // The deliberate override succeeds, both at open and on a subsequent read_all.
+        let log = SessionEventLog::open_exclusive_allow_unverified(dir.path())
+            .await
+            .unwrap();
+        let events = log.read_all().await.unwrap();
+        assert_eq!(events.len(), 2);
+
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn rotated_key_epoch_verifies_as_rekeyed_not_tampered() {
+        let old_key_byte = 25u8;
+        configure_history_integrity(Some(test_ring(0, old_key_byte)));
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::SessionEnded { reason: "x".into() },
+        )
+        .await
+        .unwrap();
+        drop(log);
+
+        let ring = Arc::new(
+            ChainKeyRing::new(1, zeph_common::hash_chain::ChainKey::new([30u8; 32])).with_previous(
+                0,
+                zeph_common::hash_chain::ChainKey::new([old_key_byte; 32]),
+            ),
+        );
+        configure_history_integrity(Some(ring));
+
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        let events = log.read_all().await.unwrap();
+        assert_eq!(events.len(), 1);
+
+        configure_history_integrity(None);
+    }
+
+    /// S1 regression: a mid-file (non-trailing) malformed line must never be silently
+    /// auto-truncated by `open_exclusive`'s torn-tail repair — it must surface as an integrity
+    /// error instead. This is a correctness bug independent of chaining (it corrupts crash
+    /// recovery itself), reproduced here without configuring any key ring.
+    #[tokio::test]
+    async fn internal_malformed_line_is_never_treated_as_torn_tail() {
+        configure_history_integrity(None);
+        let dir = tempfile::tempdir().unwrap();
+        let path;
+        {
+            let log = SessionEventLog::open(dir.path()).await.unwrap();
+            for i in 0..3u64 {
+                log.append(
+                    None,
+                    None,
+                    SessionEvent::UserMessage {
+                        text: format!("msg-{i}"),
+                        image_refs: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+            }
+            path = log.path().to_path_buf();
+        }
+
+        // Corrupt the *middle* line (not the last) so it fails to parse as JSON, followed by
+        // legitimate content — simulates a tamper that overwrites one line in place with
+        // garbage, as opposed to a genuine crash mid-append (which can only corrupt the tail).
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 3);
+        let corrupted = format!("{}\nnot valid json at all\n{}\n", lines[0], lines[2]);
+        tokio::fs::write(&path, corrupted).await.unwrap();
+
+        // Under the pre-S1 bug, `open_exclusive` would silently truncate everything from the
+        // corrupted line onward, treating it as an ordinary torn crash-recovery tail. It must
+        // instead fail closed.
+        let result = SessionEventLog::open_exclusive(dir.path()).await;
+        assert!(matches!(result, Err(SessionError::Integrity(_))));
+
+        // And the file on disk must be untouched — no silent repair happened.
+        let after = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(
+            after.lines().count(),
+            3,
+            "file must not have been truncated"
+        );
+
+        configure_history_integrity(None);
+    }
+
+    /// S2 regression: concurrent `append` calls must never desynchronize on-disk physical order
+    /// from chain-link order.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_append_preserves_chain_order() {
+        const N: u64 = 60;
+        configure_history_integrity(Some(test_ring(0, 26)));
+        let dir = tempfile::tempdir().unwrap();
+        let log = std::sync::Arc::new(SessionEventLog::open(dir.path()).await.unwrap());
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for i in 0..N {
+            let log = log.clone();
+            tasks.spawn(async move {
+                log.append(
+                    None,
+                    None,
+                    SessionEvent::UserMessage {
+                        text: format!("msg-{i}"),
+                        image_refs: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+            });
+        }
+        while tasks.join_next().await.is_some() {}
+        drop(log);
+
+        // If chain order had diverged from physical write order, this would fail with a
+        // definite Mismatch tamper verdict even though nothing was actually tampered with.
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        let events = log.read_all().await.unwrap();
+        assert_eq!(events.len(), usize::try_from(N).unwrap());
+
+        configure_history_integrity(None);
+    }
+
+    /// Chunked reads (used by replay) must verify the chain identically to the whole-file read.
+    #[tokio::test]
+    async fn chunked_read_verifies_chain_and_matches_whole_file_read() {
+        const N: u64 = 250; // > REPLAY_CHUNK_SIZE, exercises the chunk-boundary epoch resolution
+        configure_history_integrity(Some(test_ring(0, 27)));
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        for i in 0..N {
+            log.append(
+                None,
+                None,
+                SessionEvent::UserMessage {
+                    text: format!("msg-{i}"),
+                    image_refs: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let whole = log.read_all().await.unwrap();
+        assert_eq!(whole.len(), usize::try_from(N).unwrap());
+
+        let mut chunked = Vec::new();
+        log.read_chunked(|chunk| {
+            chunked.extend(chunk);
+            ControlFlow::Continue(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(chunked.len(), whole.len());
+
+        configure_history_integrity(None);
+    }
+
+    /// Chunked reads must also detect tamper, not just the whole-file read — a tampered event
+    /// deep enough to land in a later chunk must abort before ever reaching `on_chunk`.
+    #[tokio::test]
+    async fn chunked_read_detects_tamper_in_a_later_chunk() {
+        const N: u64 = 150;
+        configure_history_integrity(Some(test_ring(0, 28)));
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        for i in 0..N {
+            log.append(
+                None,
+                None,
+                SessionEvent::UserMessage {
+                    text: format!("msg-{i}"),
+                    image_refs: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let path = log.path().to_path_buf();
+        drop(log);
+
+        // Tamper an event past the first REPLAY_CHUNK_SIZE (100) events.
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        let tampered = raw.replacen("msg-120", "forged-120", 1);
+        assert_ne!(raw, tampered);
+        tokio::fs::write(&path, tampered).await.unwrap();
+
+        configure_history_integrity(Some(test_ring(0, 28)));
+        let log = SessionEventLog::open(dir.path()).await;
+        // Depending on where tamper lands relative to open-time seeding, this may fail at
+        // `open` (M3 tail verify covers the whole file) — assert the failure is an Integrity
+        // error either at open or at an explicit chunked read.
+        match log {
+            Err(SessionError::Integrity(_)) => {}
+            Ok(log) => {
+                let mut seen = Vec::new();
+                let result = log
+                    .read_chunked(|chunk| {
+                        seen.extend(chunk);
+                        ControlFlow::Continue(())
+                    })
+                    .await;
+                assert!(matches!(result, Err(SessionError::Integrity(_))));
+            }
+            Err(other) => panic!("expected Integrity error, got {other:?}"),
+        }
+
+        configure_history_integrity(None);
     }
 }

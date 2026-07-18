@@ -18,6 +18,7 @@ pub mod error_taxonomy;
 pub mod fidelity;
 pub mod fs_secure;
 pub mod hash;
+pub mod hash_chain;
 #[cfg(feature = "http-middleware")]
 pub mod http_middleware;
 pub mod llm_response;

@@ -250,6 +250,61 @@ pub fn derive_control_hmac_key_b64(b64_key: &str) -> Result<[u8; KEY_LEN], Ciphe
     Ok(blake3::derive_key(CONTROL_HMAC_CONTEXT, &bytes))
 }
 
+/// Domain-separation context for deriving the high-water-mark HMAC key (issue #6360) from
+/// `ZEPH_DURABLE_KEY` via BLAKE3 `derive_key`.
+const HWM_CONTEXT: &str = "zeph-durable v1 execution high-water-mark HMAC key 2026";
+
+/// The current high-water-mark key-rotation epoch (FR-008).
+///
+/// Mirrors [`DURABLE_KEY_ID`]'s role for the AEAD cipher: a non-secret marker stamped alongside
+/// every signed high-water-mark so a verifier can tell "signed under a key I don't currently hold"
+/// (re-keyed) from "signed under my current key but the hash doesn't match" (tampered). Bump this
+/// constant when `ZEPH_DURABLE_KEY` is rotated, and register the prior key as the backend's
+/// `with_previous_hwm_key` slot for the rotation window.
+pub const HWM_KEY_EPOCH: u32 = 0;
+
+/// Derive the high-water-mark key (issue #6360) from the base64-encoded `ZEPH_DURABLE_KEY` vault
+/// value.
+///
+/// Not a separate vault secret: it is a BLAKE3 `derive_key` subkey of the same `ZEPH_DURABLE_KEY`
+/// used for the AEAD payload cipher and the control-entry HMAC, domain-separated by a fixed
+/// context string distinct from the control-entry HMAC's own context so all three keys are
+/// cryptographically independent despite sharing one root secret — the same pattern
+/// [`derive_control_hmac_key_b64`] already establishes.
+///
+/// Unlike [`derive_control_hmac_key_b64`] (attached only on a declared/detected shared database),
+/// the high-water-mark key is meant to be attached unconditionally (FR-009): it is the only
+/// mechanism that detects deletion of a committed `StepResult` row, a threat the AEAD payload seal
+/// and the row HMAC do not cover on any deployment, single-user local included.
+///
+/// # Errors
+///
+/// Returns [`CipherKeyError::MalformedEncoding`] when `b64_key` is not valid base64, or
+/// [`CipherKeyError::InvalidKeyLength`] when the decoded key is not exactly 32 bytes.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_core::durable::{derive_hwm_key_b64, generate_durable_key_b64};
+///
+/// let key = generate_durable_key_b64();
+/// assert!(derive_hwm_key_b64(&key).is_ok());
+/// assert!(derive_hwm_key_b64("not base64!").is_err());
+/// ```
+pub fn derive_hwm_key_b64(b64_key: &str) -> Result<[u8; KEY_LEN], CipherKeyError> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64_key.trim())
+        .map_err(|_| CipherKeyError::MalformedEncoding)?;
+    if bytes.len() != KEY_LEN {
+        return Err(CipherKeyError::InvalidKeyLength {
+            expected: KEY_LEN,
+            actual: bytes.len(),
+        });
+    }
+    Ok(blake3::derive_key(HWM_CONTEXT, &bytes))
+}
+
 /// Generate a fresh random 32-byte durable payload key, base64-encoded for vault storage.
 ///
 /// Stored under `ZEPH_DURABLE_KEY` (never inline in TOML); decode it back with

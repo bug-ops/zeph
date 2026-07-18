@@ -785,6 +785,10 @@ pub(crate) struct OrchestrationState {
     /// Control-entry row HMAC key (INV-8) for the P2 durable backend. `None` for a single-user
     /// local, non-shared database — the documented stance where control entries carry no HMAC.
     pub(crate) durable_hmac_key: Option<[u8; 32]>,
+    /// High-water-mark key (`epoch`, `key`; issue #6360) for the P2 durable backend. Unlike
+    /// `durable_hmac_key`, meant to be attached unconditionally (FR-009) whenever
+    /// `ZEPH_DURABLE_KEY` resolves — `None` only when the vault key itself is unavailable.
+    pub(crate) durable_hwm_key: Option<(u32, [u8; 32])>,
 }
 
 /// Groups instruction hot-reload state.
@@ -992,6 +996,11 @@ pub(crate) struct SessionState {
     /// (INV-8) to attach to the backend. `None` for a single-user local, non-shared database —
     /// the documented stance where control entries carry no HMAC.
     pub(crate) durable_agent_turns_hmac_key: Option<[u8; 32]>,
+    /// Sibling companion to [`Self::durable_agent_turns_config`]: the high-water-mark key
+    /// (`epoch`, `key`; issue #6360) to attach to the backend. Unlike
+    /// `durable_agent_turns_hmac_key`, meant to be attached unconditionally (FR-009) whenever
+    /// `ZEPH_DURABLE_KEY` resolves — `None` only when the vault key itself is unavailable.
+    pub(crate) durable_agent_turns_hwm_key: Option<(u32, [u8; 32])>,
     /// Set to `true` the first time `ensure_session_durable_ctx` runs (success or failure) so a
     /// failed backend construction (missing vault key, disk error) is not retried on every turn.
     /// Reset to `false` by `reset_durable_ctx_for_conversation_switch` (`/new`, `/conv resume`,
@@ -1458,6 +1467,7 @@ impl SessionState {
             durable_agent_turns_sqlite_path: None,
             durable_agent_turns_cipher: None,
             durable_agent_turns_hmac_key: None,
+            durable_agent_turns_hwm_key: None,
             durable_ctx_init_attempted: false,
             durable_writer: None,
             durable_writer_task: None,

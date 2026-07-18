@@ -158,6 +158,36 @@ pub enum DurableError {
     #[error("promise resolution rejected: resolver token did not authenticate")]
     PromiseRejected,
 
+    /// The execution's authenticated high-water-mark (issue #6360) did not verify on resume.
+    ///
+    /// The high-water-mark is a signed `{key_epoch, max_committed_step_id,
+    /// committed_result_count}` tuple, recomputed on every resume from the surviving `StepResult`
+    /// rows plus every checkpoint's persisted `folded_count` and compared against the value signed
+    /// at write time. Unlike [`ControlIntegrity`](Self::ControlIntegrity) (a single-row check),
+    /// this is a whole-execution fail-closed abort (FR-004, US-003): a mismatch means a committed
+    /// result was deleted, or the signed tuple itself was tampered with outside the write path.
+    /// The durable resume path never offers an override for this variant — it always hard-aborts.
+    #[error("execution {execution_id} high-water-mark integrity check failed ({reason}): {hint}")]
+    HighWaterMarkIntegrity {
+        /// The execution whose high-water-mark did not verify.
+        execution_id: ExecutionId,
+        /// A stable, non-sensitive, machine-matchable classification of the failure (INV-5):
+        /// `"count_mismatch"` (the recomputed committed-result count disagreed with the signed
+        /// value), `"hmac_mismatch"` (the signed tuple's HMAC did not authenticate under the
+        /// current epoch's key), or `"key_epoch_unresolvable"` (the stored `key_epoch` is neither
+        /// the current nor a known previous rotation epoch, per FR-008/NFR-004 — a chained/HWM-
+        /// bearing entry with an unresolvable key always fails closed rather than degrading to
+        /// legacy).
+        reason: &'static str,
+        /// A human-readable operator hint distinguishing "possibly re-keyed" (a legitimate key
+        /// rotation the durable resume path cannot resolve automatically) from "TAMPER" (the
+        /// content itself did not authenticate), per FR-008 — so an operator reading logs is not
+        /// misled into treating a rotation-window miss the same as a confirmed forgery. Durable
+        /// resume never offers an interactive override for either case (FR-004): the hint informs
+        /// the operator's own follow-up action, it does not unlock a bypass.
+        hint: &'static str,
+    },
+
     /// [`crate::backend::LocalBackend::open_execution_exclusive`] found another process already
     /// holding the execution's advisory lock (INV-15, #6122).
     ///
@@ -269,6 +299,40 @@ mod tests {
 
         let serialize = DurableError::Serialize { step: "persist" };
         assert!(serialize.to_string().contains("persist"));
+    }
+
+    #[test]
+    fn high_water_mark_integrity_names_execution_reason_and_hint() {
+        let execution_id = ExecutionId::new();
+        let err = DurableError::HighWaterMarkIntegrity {
+            execution_id,
+            reason: "count_mismatch",
+            hint: "TAMPER: a committed result was likely deleted outside the write path",
+        };
+        let rendered = err.to_string();
+        assert!(rendered.contains(&execution_id.to_string()));
+        assert!(rendered.contains("count_mismatch"));
+        assert!(rendered.contains("TAMPER"));
+    }
+
+    #[test]
+    fn high_water_mark_integrity_distinguishes_rekeyed_from_tamper_in_the_hint() {
+        // FR-008: the operator-facing hint must read differently for "possibly re-keyed" than
+        // for a confirmed content mismatch, even though both fail closed identically (FR-004).
+        let execution_id = ExecutionId::new();
+        let rekeyed = DurableError::HighWaterMarkIntegrity {
+            execution_id,
+            reason: "key_epoch_unresolvable",
+            hint: "possibly re-keyed: register the prior key",
+        };
+        let tampered = DurableError::HighWaterMarkIntegrity {
+            execution_id,
+            reason: "hmac_mismatch",
+            hint: "TAMPER: the signed value did not authenticate",
+        };
+        assert!(rekeyed.to_string().contains("re-keyed"));
+        assert!(!rekeyed.to_string().contains("TAMPER"));
+        assert!(tampered.to_string().contains("TAMPER"));
     }
 
     #[test]

@@ -1161,6 +1161,17 @@ pub(crate) enum SessionsCommand {
         /// (the pre-#5343 one-shot dump behavior)
         #[arg(long)]
         print: bool,
+        /// Deliberately proceed past a detected hash-chain tamper/integrity failure
+        /// (issue #6360) instead of failing closed. A logged, explicit operator override —
+        /// never the default. Has no effect on an already-legacy (pre-feature, unchained)
+        /// session, which is unaffected by chain verification either way.
+        ///
+        /// Requires `--print`: the interactive (non-`--print`) resume path does not yet honor
+        /// this override (tracked as follow-up work) — passing it without `--print` would
+        /// otherwise silently do nothing while appearing to work, so clap rejects that
+        /// combination outright rather than accepting a misleading no-op.
+        #[arg(long, requires = "print")]
+        allow_unverified: bool,
     },
     /// Show metadata (and optionally events) for a single session
     Show {

@@ -56,6 +56,17 @@ pub enum SessionError {
     /// being joined into a filesystem path (#5982 follow-up, path-traversal guard).
     #[error("invalid blob hash (must be a non-empty hex string): {0:?}")]
     InvalidBlobHash(String),
+
+    /// A session event log's hash chain failed to verify (issue #6360): a definite tamper
+    /// verdict, a partial strip of chain metadata, an unverifiable/possibly-re-keyed chain, an
+    /// internal (non-trailing) malformed line masquerading as a torn crash-recovery tail, or a
+    /// chained log read with no history-integrity key configured. Distinct from
+    /// [`SessionError::Serde`] (JSON-syntax errors) because a chain break always escalates to a
+    /// hard failure and — critically — must be detected and reported **before** any torn-tail
+    /// repair runs, so a mid-file tamper is never silently auto-truncated away as ordinary crash
+    /// recovery (S1).
+    #[error("{0}")]
+    Integrity(String),
 }
 
 /// Formats [`SessionError::AlreadyLocked`]'s message, distinguishing a recorded-not-running

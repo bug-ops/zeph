@@ -49,6 +49,15 @@ pub enum SubAgentError {
     #[error("transcript error: {0}")]
     Transcript(String),
 
+    /// A transcript's hash chain failed to verify (issue #6360): a definite tamper verdict, a
+    /// partial strip of chain metadata, an unverifiable/possibly-re-keyed chain, or a chained
+    /// file read with no history-integrity key configured. Distinct from [`SubAgentError::Transcript`]
+    /// (JSON-syntax/I-O errors) because a chain break always escalates to a hard failure — even
+    /// in `TranscriptReader::load`'s otherwise-lenient mode — since it invalidates trust in
+    /// everything downstream of the break, unlike a single malformed line.
+    #[error("{0}")]
+    Integrity(String),
+
     /// An ID prefix matched more than one transcript; provide a longer prefix.
     #[error("ambiguous id prefix '{0}': matches {1} agents")]
     AmbiguousId(String, usize),

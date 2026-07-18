@@ -2421,7 +2421,9 @@ impl<C: Channel> Agent<C> {
     /// `db_url` is the `sqlite://…/durable.db` connection string (a sibling of the main DB).
     /// The `cipher` is `None` when `config.encrypt_payload = false` (development mode only). The
     /// `hmac_key` is `None` for a single-user local, non-shared database (INV-8) — see
-    /// `crate::durable::derive_control_hmac_key_b64`.
+    /// `crate::durable::derive_control_hmac_key_b64`. The `hwm_key` (issue #6360) is meant to be
+    /// attached unconditionally (FR-009) — `None` only when `ZEPH_DURABLE_KEY` itself is
+    /// unavailable — see `crate::durable::derive_hwm_key_b64`.
     #[must_use]
     pub fn with_durable_orchestration(
         mut self,
@@ -2429,11 +2431,13 @@ impl<C: Channel> Agent<C> {
         db_url: String,
         cipher: Option<std::sync::Arc<dyn zeph_durable::PayloadCipher>>,
         hmac_key: Option<[u8; 32]>,
+        hwm_key: Option<(u32, [u8; 32])>,
     ) -> Self {
         self.services.orchestration.durable_config = Some(config);
         self.services.orchestration.durable_db_url = Some(db_url);
         self.services.orchestration.durable_cipher = cipher;
         self.services.orchestration.durable_hmac_key = hmac_key;
+        self.services.orchestration.durable_hwm_key = hwm_key;
         self
     }
 
@@ -2460,12 +2464,14 @@ impl<C: Channel> Agent<C> {
         sqlite_path: String,
         cipher: Option<std::sync::Arc<dyn zeph_durable::PayloadCipher>>,
         hmac_key: Option<[u8; 32]>,
+        hwm_key: Option<(u32, [u8; 32])>,
     ) -> Self {
         self.services.session.durable_agent_turns_config = Some(config);
         self.services.session.durable_agent_turns_db_url = Some(db_url);
         self.services.session.durable_agent_turns_sqlite_path = Some(sqlite_path);
         self.services.session.durable_agent_turns_cipher = cipher;
         self.services.session.durable_agent_turns_hmac_key = hmac_key;
+        self.services.session.durable_agent_turns_hwm_key = hwm_key;
         self
     }
 

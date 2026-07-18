@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        98,
-        "MIGRATIONS registry must contain all 98 sequential steps"
+        99,
+        "MIGRATIONS registry must contain all 99 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -2074,7 +2074,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 98);
+    assert_eq!(MIGRATIONS.len(), 99);
 }
 
 #[test]
@@ -2111,9 +2111,10 @@ fn registry_is_idempotent_on_empty_input() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // flat, ordered list of every registered migration step name
+#[allow(clippy::too_many_lines)] // a flat ordered list of every migration step name; grows by
+// one line per new step and does not benefit from decomposition
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–95).
+    // Names must follow the documented step order (steps 1–99).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -2213,6 +2214,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_search_config",
         "migrate_durable_key_rotation",
         "migrate_plugins_reputation_config",
+        "migrate_durable_hwm_advisory",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -4409,6 +4411,69 @@ fn step_79_still_adds_advisory_when_unsafe_topology_detected() {
     assert_eq!(
         result.sections_changed,
         vec!["durable.shared_db".to_owned()]
+    );
+}
+
+// ── migrate_durable_hwm_advisory tests (step 95, #6360) ──────────────────
+
+#[test]
+fn step_95_adds_advisory_when_durable_active_and_missing_marker() {
+    let src = "[durable]\nenabled = true\nencrypt_payload = true\n";
+    let result = migrate_durable_hwm_advisory(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("high-water-mark tamper-evidence"));
+    assert!(result.output.contains("enabled = true"));
+    assert!(result.output.contains("encrypt_payload = true"));
+    assert_eq!(
+        result.sections_changed,
+        vec!["durable.integrity".to_owned()]
+    );
+}
+
+#[test]
+fn step_95_noop_when_marker_already_present() {
+    let src = "[durable]\n# high-water-mark tamper-evidence note\nenabled = true\n";
+    let result = migrate_durable_hwm_advisory(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_95_noop_when_durable_section_absent() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_durable_hwm_advisory(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_95_noop_when_durable_only_commented_advisory() {
+    let src = "# [durable]\n# enabled = false\n";
+    let result = migrate_durable_hwm_advisory(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_95_does_not_match_durable_retention_subtable() {
+    let src = "[durable.retention]\nttl_completed_secs = 604800\n";
+    let result = migrate_durable_hwm_advisory(src).expect("migrate");
+    assert_eq!(
+        result.changed_count, 0,
+        "[durable.retention] alone must not count as an active [durable] table"
+    );
+}
+
+#[test]
+fn step_95_idempotent_on_own_output() {
+    let src = "[durable]\nenabled = true\n";
+    let first = migrate_durable_hwm_advisory(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_durable_hwm_advisory(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
     );
 }
 

@@ -40,6 +40,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the safe alternative. Added `MigrateDurableKeyRotation` (`--migrate-config` step 97) to
   insert `key_id = 0` into an existing `[durable]` table lacking it.
 
+- `zeph-durable`: added an authenticated per-execution high-water-mark (HWM) — a signed
+  `{execution_id, max_committed_step_id, committed_result_count, key_epoch}` tuple, verified once
+  (O(1)) on every durable resume via `LocalBackend::open_execution`/`open_execution_exclusive`
+  (issue #6360). Closes the gap the existing opt-in, shared-DB-gated control-entry row HMAC never
+  covered: deletion of a committed `StepResult` row. A positional hash-chain (the original design)
+  was rejected after adversarial review found it fundamentally incompatible with `checkpoint_fold`'s
+  routine compaction — `committed_result_count` is instead kept invariant across a fold by
+  persisting each fold's `folded_count` on its checkpoint row, and resume recomputes
+  `count(surviving StepResult rows) + Σ folded_count` against the signed value. The HWM is meant to
+  activate unconditionally whenever `ZEPH_DURABLE_KEY` is provisioned (`with_hwm_key`), unlike the
+  existing row HMAC which stays opt-in for shared-database deployments — single-user local backends
+  now get deletion detection they never had. Supports a key-rotation window
+  (`with_previous_hwm_key`) that distinguishes "possibly re-keyed" from "TAMPER" in its error
+  taxonomy (`DurableError::HighWaterMarkIntegrity`); an execution carrying HWM metadata under an
+  unresolvable key epoch always fails closed rather than degrading to legacy-trusted. The durable
+  resume path never offers an interactive override for a detected mismatch — every failure is a
+  hard abort with the affected execution finalized `Aborted`. New `durable_execution_integrity`
+  table and `durable_journal.folded_count` column (migration 113, additive). **Scope**: v1 detects
+  in-place modification, reordering, and forgery of tracked entries. It does not resist an attacker
+  who deletes the `durable_execution_integrity` row itself — a keyed execution with no integrity
+  row is treated as legacy (migration-safety accommodation), not tamper, the same downgrade class
+  the JSONL hash-chain side scopes explicitly below; closing it (e.g. an out-of-band anchor, or a
+  post-migration-window cutover to "missing row on a keyed execution = tamper") is tracked as a
+  fast-follow in #6449, not covered by this PR.
+
+- `zeph-common`, `zeph-subagent`, `zeph-session`: added a shared keyed-BLAKE3 hash-chain primitive
+  (`zeph_common::hash_chain`) and wired it into the `<task_id>.jsonl` sub-agent transcript
+  (`TranscriptWriter`/`TranscriptReader`) and the `events.jsonl` session event log
+  (`SessionEventLog`) — issue #6360, the JSONL half of the transcript-integrity feature (see the
+  `zeph-durable` HWM entry above for the durable-journal half). Each appended entry is chained to
+  the previous one (`chain[i] = keyed_hash(key, chain[i-1] || content_bytes[i])`), detecting
+  in-place content edits, reordering, and a partial strip of chain metadata; a pre-feature legacy
+  file with no chain metadata anywhere is auto-trusted once (no backfill), while any file carrying
+  chain metadata under an unresolvable key epoch fails closed rather than degrading to
+  legacy-trusted, closing an epoch-downgrade lever. A `key_epoch` rotation window (current +
+  previous) distinguishes "possibly re-keyed" from a definite tamper verdict in the error
+  taxonomy. Fixes a pre-existing, chain-independent correctness bug in `SessionEventLog`
+  (`SessionError::Integrity`, S1): an internal (non-trailing) malformed line was previously
+  indistinguishable from a torn crash-recovery tail and could be silently auto-truncated by
+  `open_exclusive`'s repair path — chain/tamper verification now always runs, and completes,
+  before any torn-tail repair. Both writers fold the chain-link read-modify-write into the same
+  critical section as the physical write (S2), so on-disk order always matches chain order under
+  concurrent appends. Key material is resolved from a new `ZEPH_HISTORY_KEY` vault root secret
+  (decoupled from `ZEPH_DURABLE_KEY`), domain-separated per subsystem via
+  `zeph_core::history_integrity::derive_history_chain_key_b64`, and wired up once at CLI bootstrap
+  (`src/runner.rs`) before any transcript/session log is opened; a transient or first-run
+  vault/key miss degrades to chaining-disabled rather than blocking ordinary CLI usage.
+  **Scope**: v1 detects in-place content edits, reordering, a partial strip of chain metadata,
+  and key-epoch tampering — all fail closed. It does not yet resist a fully-consistent
+  whole-file downgrade (an adaptive attacker stripping every chain field to make a chained file
+  look legacy); closing that gap requires a vault-stored per-file anchor and is tracked as a
+  fast-follow in #6449, not covered by this PR. `--allow-unverified` (`zeph sessions resume
+  <id> --print --allow-unverified`) is available for the CLI dump path only; the interactive
+  live-agent resume path does not yet honor it (also tracked as follow-up) — passing it without
+  `--print` is rejected by the CLI rather than silently ignored.
+
 ### Fixed
 
 - `zeph-experiments`: `engine::tests::engine_persists_results_to_sqlite` `.unwrap()`ed

@@ -27,9 +27,15 @@ pub(crate) async fn handle_sessions_command(
         // `print: false` is intercepted earlier, in `runner::run`, and dispatched to a live
         // interactive agent instead (spec-068 D-6, #5343) — this handler only ever sees
         // `print: true` in practice, but the field stays on the CLI schema either way.
-        SessionsCommand::Resume { id, print: _ } => {
-            print_session_events(&data_dir, &id, None, None).await
-        }
+        // `allow_unverified` (issue #6360) applies to this `--print` dump path; the live
+        // interactive resume path (intercepted in `runner::run` before reaching this handler)
+        // does not yet thread the flag through its bootstrap — tracked as follow-up work (see
+        // the implementation handoff for this feature).
+        SessionsCommand::Resume {
+            id,
+            print: _,
+            allow_unverified,
+        } => print_session_events(&data_dir, &id, None, None, allow_unverified).await,
         SessionsCommand::Show {
             id,
             from,
@@ -128,7 +134,7 @@ async fn show_session(
 
     if events {
         println!();
-        print_session_events(data_dir, id, from, to).await?;
+        print_session_events(data_dir, id, from, to, false).await?;
     }
 
     Ok(())
@@ -140,11 +146,15 @@ async fn print_session_events(
     id: &str,
     from: Option<u64>,
     to: Option<u64>,
+    allow_unverified: bool,
 ) -> anyhow::Result<()> {
     let session_path = zeph_session::session_dir(data_dir, id);
-    let log = zeph_session::SessionEventLog::open(&session_path)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to open session event log: {e}"))?;
+    let log = if allow_unverified {
+        zeph_session::SessionEventLog::open_allow_unverified(&session_path).await
+    } else {
+        zeph_session::SessionEventLog::open(&session_path).await
+    }
+    .map_err(|e| anyhow::anyhow!("failed to open session event log: {e}"))?;
     let events = log
         .read_all()
         .await
@@ -307,13 +317,19 @@ mod tests {
     fn sessions_resume_parses_without_print() {
         let cli = Cli::try_parse_from(["zeph", "sessions", "resume", "abc"]).expect("parse");
         let Some(Command::Sessions {
-            command: SessionsCommand::Resume { id, print },
+            command:
+                SessionsCommand::Resume {
+                    id,
+                    print,
+                    allow_unverified,
+                },
         }) = cli.command
         else {
             panic!("expected Sessions(Resume)");
         };
         assert_eq!(id, "abc");
         assert!(!print);
+        assert!(!allow_unverified);
     }
 
     #[test]
@@ -321,13 +337,64 @@ mod tests {
         let cli =
             Cli::try_parse_from(["zeph", "sessions", "resume", "abc", "--print"]).expect("parse");
         let Some(Command::Sessions {
-            command: SessionsCommand::Resume { id, print },
+            command:
+                SessionsCommand::Resume {
+                    id,
+                    print,
+                    allow_unverified,
+                },
         }) = cli.command
         else {
             panic!("expected Sessions(Resume)");
         };
         assert_eq!(id, "abc");
         assert!(print);
+        assert!(!allow_unverified);
+    }
+
+    #[test]
+    fn sessions_resume_parses_with_allow_unverified_flag() {
+        // --allow-unverified requires --print (issue #6360 B3): the interactive resume path
+        // doesn't honor the override yet, so clap rejects the flag combination outright rather
+        // than accepting a silent no-op.
+        let cli = Cli::try_parse_from([
+            "zeph",
+            "sessions",
+            "resume",
+            "abc",
+            "--print",
+            "--allow-unverified",
+        ])
+        .expect("parse");
+        let Some(Command::Sessions {
+            command:
+                SessionsCommand::Resume {
+                    id,
+                    allow_unverified,
+                    ..
+                },
+        }) = cli.command
+        else {
+            panic!("expected Sessions(Resume)");
+        };
+        assert_eq!(id, "abc");
+        assert!(allow_unverified);
+    }
+
+    /// Issue #6360 B3: `--allow-unverified` without `--print` must be rejected at arg-parsing
+    /// time, not silently accepted and then ignored on the interactive resume path.
+    #[test]
+    fn sessions_resume_rejects_allow_unverified_without_print() {
+        let result =
+            Cli::try_parse_from(["zeph", "sessions", "resume", "abc", "--allow-unverified"]);
+        let Err(err) = result else {
+            panic!("--allow-unverified without --print must be rejected");
+        };
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("--print"),
+            "error message should mention the missing required --print flag, got: {rendered}"
+        );
     }
 
     #[test]

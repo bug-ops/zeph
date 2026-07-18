@@ -705,6 +705,13 @@ async fn init_session_sink(
             Err(e @ zeph_session::SessionError::AlreadyLocked { .. }) => Err(anyhow::anyhow!(
                 "another zeph session is already active for this conversation: {e}"
             )),
+            // issue #6360: a detected hash-chain integrity failure must surface to the user, not
+            // silently degrade to "no history" — the whole point of fail-closed verification is
+            // defeated if the failure is absorbed into the generic best-effort-persistence arm
+            // below (which is meant for ordinary I/O errors, not a tamper signal).
+            Err(e @ zeph_session::SessionError::Integrity(_)) => Err(anyhow::anyhow!(
+                "session event log failed hash-chain integrity verification: {e}"
+            )),
             Err(e) => {
                 tracing::warn!(error = %e, "failed to open session event log; session persistence disabled for this run");
                 Ok((None, Vec::new(), None))
@@ -751,6 +758,15 @@ async fn init_session_sink(
         )) => Err(anyhow::anyhow!(
             "another zeph session is already active for this conversation: {e}"
         )),
+        // issue #6360: same fail-closed-must-be-visible reasoning as the bare-open branch above
+        // — a hash-chain tamper signal must never be absorbed into the generic
+        // best-effort-persistence fallback, or the fail-closed design is defeated by a silent
+        // UX degradation to "fresh session, no history."
+        Err(zeph_agent_persistence::PersistenceError::Session(
+            e @ zeph_session::SessionError::Integrity(_),
+        )) => Err(anyhow::anyhow!(
+            "session event log failed hash-chain integrity verification: {e}"
+        )),
         Err(e) => {
             tracing::warn!(error = %e, "session hydration failed for default continuation; session persistence disabled for this run");
             Ok((None, Vec::new(), None))
@@ -791,10 +807,70 @@ async fn resume_session_sink_fallback(
         Err(e @ zeph_session::SessionError::AlreadyLocked { .. }) => Err(anyhow::anyhow!(
             "another zeph session is already active for session '{resume_id}': {e}"
         )),
+        // issue #6360: same fail-closed-must-be-visible reasoning as `init_session_sink` — a
+        // hash-chain tamper signal reaching this fallback (the initial hydration attempt above
+        // already failed the same way) must not be absorbed into "continuing with SQLite-only
+        // history."
+        Err(e @ zeph_session::SessionError::Integrity(_)) => Err(anyhow::anyhow!(
+            "session '{resume_id}' failed hash-chain integrity verification: {e}"
+        )),
         Err(open_err) => {
             tracing::warn!(error = %open_err, "bare session event log fallback also failed; continuing with SQLite-only history");
             Ok(None)
         }
+    }
+}
+
+/// Resolve `ZEPH_HISTORY_KEY` from the default vault location and configure hash-chain
+/// verification (issue #6360) for the `zeph-subagent` transcript and `zeph-session` event-log
+/// JSONL adapters, one key ring per subsystem (domain-separated per
+/// `zeph_core::history_integrity::derive_history_chain_key_b64`).
+///
+/// Never fails the caller: an absent vault or an absent key both log at `debug`/`warn` and
+/// leave chaining disabled for this process (the pre-feature behavior) — only a *malformed*
+/// present key (wrong length, bad base64, non-numeric epoch) is distinguishable as a
+/// misconfiguration, and even that only disables chaining for the affected subsystem rather
+/// than aborting startup, since the primary command dispatch (which may not even touch
+/// transcripts/sessions, e.g. `zeph vault`) must not be blocked by it.
+fn configure_history_integrity_from_default_vault() {
+    let vault_dir = zeph_core::vault::default_vault_dir();
+    let Ok(provider) = zeph_core::vault::AgeVaultProvider::load(
+        &vault_dir.join("vault-key.txt"),
+        &vault_dir.join("secrets.age"),
+    ) else {
+        tracing::debug!(
+            "history-chain integrity: vault not yet initialized; transcript/session log \
+             chaining disabled for this run"
+        );
+        return;
+    };
+
+    match zeph_core::history_integrity::resolve_key_ring_sync(
+        &provider,
+        zeph_subagent::transcript::CHAIN_DOMAIN,
+    ) {
+        Ok(ring) => {
+            zeph_subagent::transcript::configure_history_integrity(ring.map(std::sync::Arc::new));
+        }
+        Err(e) => tracing::warn!(
+            error = %e,
+            "history-chain integrity: failed to resolve subagent transcript key ring; \
+             transcript chaining disabled for this run"
+        ),
+    }
+
+    match zeph_core::history_integrity::resolve_key_ring_sync(
+        &provider,
+        zeph_session::log::CHAIN_DOMAIN,
+    ) {
+        Ok(ring) => {
+            zeph_session::log::configure_history_integrity(ring.map(std::sync::Arc::new));
+        }
+        Err(e) => tracing::warn!(
+            error = %e,
+            "history-chain integrity: failed to resolve session log key ring; session log \
+             chaining disabled for this run"
+        ),
     }
 }
 
@@ -862,6 +938,16 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             "failed to migrate legacy (#5981) session directory layout; continuing startup"
         );
     }
+
+    // History-chain integrity bootstrap (issue #6360): resolve ZEPH_HISTORY_KEY once and
+    // configure hash-chain verification for both JSONL adapters before any entry point below
+    // opens a transcript or session log — same ordering requirement as the migration step
+    // above. Gracefully degrades to chaining-disabled (never a hard failure) when the vault or
+    // the key itself is not yet provisioned (M2 bootstrap posture): a transient or first-run
+    // vault miss must never block ordinary CLI usage. Uses the default vault directory only
+    // (mirrors `crate::commands::durable::load_write_hwm_key`'s existing simplification) —
+    // `--vault-key`/`--vault-path` CLI overrides are not threaded through here yet.
+    configure_history_integrity_from_default_vault();
 
     // Flag aliases for the init / migrate-config subcommands (spec-076, #6277). Route to the exact
     // same handlers as the subcommand arms below — no forked logic. If both a flag and its
@@ -940,12 +1026,16 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         // above) rather than `return`ing, so replay/hydration and the continuation loop reuse
         // the existing interactive machinery — only `conversation_id` resolution differs (see
         // `resume_session_id` handling further down).
+        // `allow_unverified` requires `--print` (clap-enforced, see `SessionsCommand::Resume`),
+        // so it is always `false` on this `print: false` arm — the interactive resume path does
+        // not yet have an override to plumb through (tracked as follow-up work).
         #[cfg(any(feature = "acp", feature = "session"))]
         Some(Command::Sessions {
             command:
                 SessionsCommand::Resume {
                     ref id,
                     print: false,
+                    ..
                 },
         }) => {
             cli.resume_session_id = Some(id.clone());
@@ -2025,6 +2115,20 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 )) => {
                     anyhow::bail!(
                         "another zeph session is already active for session '{resume_id}': {e}"
+                    );
+                }
+                // issue #6360: a detected hash-chain integrity failure must abort with a clear
+                // message here too, rather than falling through to the bare-open fallback below
+                // — that fallback would just re-open the same tampered file and fail identically
+                // (its own generic-error arm now also `Err`s on `Integrity`, so this is a
+                // defense-in-depth short-circuit, not the only place this is caught), and
+                // attempting it first would print a misleading "attempting bare event log
+                // fallback" log line before the real error surfaces.
+                Err(zeph_agent_persistence::PersistenceError::Session(
+                    e @ zeph_session::SessionError::Integrity(_),
+                )) => {
+                    anyhow::bail!(
+                        "session '{resume_id}' failed hash-chain integrity verification: {e}"
                     );
                 }
                 Err(e) => {
@@ -3181,7 +3285,14 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             let durable_url = crate::commands::durable::resolve_durable_db_url(config);
             let cipher = crate::commands::durable::load_write_cipher(config)?;
             let hmac_key = crate::commands::durable::load_write_hmac_key(config)?;
-            agent.with_durable_orchestration(config.durable.clone(), durable_url, cipher, hmac_key)
+            let hwm_key = crate::commands::durable::load_write_hwm_key(config)?;
+            agent.with_durable_orchestration(
+                config.durable.clone(),
+                durable_url,
+                cipher,
+                hmac_key,
+                hwm_key,
+            )
         } else {
             agent
         };
@@ -3191,12 +3302,14 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             let durable_url = crate::commands::durable::resolve_durable_db_url(config);
             let cipher = crate::commands::durable::load_write_cipher(config)?;
             let hmac_key = crate::commands::durable::load_write_hmac_key(config)?;
+            let hwm_key = crate::commands::durable::load_write_hwm_key(config)?;
             agent.with_durable_agent_turns(
                 config.durable.clone(),
                 durable_url,
                 config.memory.sqlite_path.clone(),
                 cipher,
                 hmac_key,
+                hwm_key,
             )
         } else {
             agent
