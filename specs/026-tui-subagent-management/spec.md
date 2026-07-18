@@ -14,6 +14,7 @@ related:
   - "[[011-tui/spec]]"
   - "[[033-subagent-context-propagation/spec]]"
   - "[[027-runtime-layer/spec]]"
+  - "[[044-subagent-lifecycle/spec]]"
 ---
 
 # Feature: TUI Subagent Management
@@ -276,6 +277,16 @@ Tab cycling now includes `SubAgents` as a panel in the cycle order. `Shift+Tab` 
 
 Transcripts are JSONL files written by `TranscriptWriter`. Each line is a
 `TranscriptEntry` with `role`, `content`, `tool_name`, and `timestamp`.
+
+### Live Transcript Forwarding (#6359, opt-in)
+
+When `agents.forward_transcript = true`, the subagent detail view surfaces a running sub-agent's
+full per-turn text/thinking output as it is produced, via a bounded ring buffer
+(`SubAgentMetrics::live_transcript`) fed by the manager-owned sanitizing drain — see
+`[[044-subagent-lifecycle/spec]]` §14 for the forwarding mechanism. This is distinct from the
+truncated-JSONL sidebar view above: it is a live, opt-in feed layered on top, not a replacement.
+Default `false`; the sidebar's existing 200-entry JSONL truncation behavior is unchanged when
+forwarding is disabled.
 
 ## 10. References
 

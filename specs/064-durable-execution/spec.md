@@ -21,6 +21,7 @@ related:
   - "[[specs/029-feature-flags/spec]]"
   - "[[specs/078-agent-persistence/spec]]"
   - "[[specs/063-worktree-subsystem/spec]]"
+  - "[[081-transcript-integrity/spec]]"
   - "[[constitution]]"
 ---
 
@@ -907,7 +908,26 @@ CREATE TABLE durable_timers (
     created_at   INTEGER NOT NULL
 );
 CREATE INDEX idx_durable_timers_due ON durable_timers(fired, due_at);
+
+-- durable_execution_integrity: authenticated per-execution high-water-mark (HWM, issue #6360).
+-- One row per execution once ZEPH_DURABLE_KEY is provisioned; see spec-081 §11 for the full
+-- tamper-evidence rationale and §11.1/11.2 for the vault-anchor and rotation-window addenda.
+CREATE TABLE durable_execution_integrity (
+    execution_id             TEXT    PRIMARY KEY REFERENCES durable_executions(execution_id),
+    max_committed_step_id    INTEGER NOT NULL,
+    committed_result_count   INTEGER NOT NULL,
+    key_epoch                INTEGER NOT NULL,  -- resolves against config.durable.key_id/previous_key_id
+    hwm                      BLOB    NOT NULL,  -- keyed-BLAKE3 signature over the tuple above
+    updated_at               INTEGER NOT NULL
+);
+CREATE INDEX idx_durable_integrity_epoch ON durable_execution_integrity(key_epoch);
 ```
+
+`durable_journal` also gains a `folded_count INTEGER` column (migration 113, additive):
+`checkpoint_fold` persists the number of `StepResult` rows a given fold subsumed on the
+`Checkpoint` entry it writes, so `committed_result_count` above stays invariant across a fold —
+resume recomputes `count(surviving StepResult rows) + Σ folded_count` and compares it against the
+signed `hwm` value.
 
 **Notes:**
 - `BLOB` → `BYTEA` in Postgres; `AUTOINCREMENT` → `BIGSERIAL`; partial index syntax is
@@ -1187,6 +1207,9 @@ executions are cleaned by TTL. Hot-path is never blocked by pruning (INV).
 enabled = false                     # opt-in; false = current behavior, no journal opened
 backend = "local"                   # "local" | "restate"
 encrypt_payload = true              # false = dev override; WARN at startup; FORBIDDEN for non-local
+key_id = 0                          # operator-controlled current-key selector (#6447)
+# previous_key_id = 0               # rotation-window state; set by `zeph durable rotate-key`,
+                                     # cleared by `--drop-previous`. Absent = no window open.
 agent_turns = true                  # P1: wrap agent loop steps
 orchestration = true                # P2: /plan resume replan-budget journaling
 scheduler = true                    # P3: scheduler exactly-once
@@ -1220,9 +1243,61 @@ All fields use `#[serde(default)]`. No provider credentials appear inline (spec-
 contract).
 
 **New vault keys (registered in vault at first run / `--init`):**
-- `ZEPH_DURABLE_KEY` — raw key bytes for `PayloadCipher` (XChaCha20-Poly1305).
+- `ZEPH_DURABLE_KEY` — raw key bytes for `PayloadCipher` (XChaCha20-Poly1305), the control-entry
+  HMAC (INV-8, BLAKE3 `derive_key` subkey), and the HWM signature (issue #6360) — all three derive
+  from this one root secret, domain-separated.
+- `ZEPH_DURABLE_KEY_PREVIOUS` — the pre-rotation key, stashed here by `zeph durable rotate-key`
+  for the duration of the rotation window (see Key Rotation below); absent when no window is open.
+- `ZEPH_DURABLE_INTEGRITY_SEALED` — vault-presence marker (never a DB column) written by
+  `zeph durable seal-integrity`; see spec-081 §11.1.
 - `ZEPH_RESTATE_INGRESS_URL` — Restate ingress URL (only with `restate` feature).
 - `ZEPH_RESTATE_API_KEY` — Restate API key if required (only with `restate` feature).
+
+---
+
+## Key Rotation Windows (#6447, #6451, #6460)
+
+Three independent keyed materials all derive from `ZEPH_DURABLE_KEY`: the AEAD payload cipher,
+the control-entry HMAC (INV-8), and the HWM signature (issue #6360, spec-081 §11). `zeph durable
+rotate-key` is the single operator-facing surface that opens and closes a rotation window for all
+three at once — a consumer never rotates just one.
+
+**Opening a window (`zeph durable rotate-key`):** generates a fresh key, stashes the previous key
+under `ZEPH_DURABLE_KEY_PREVIOUS`, and writes `[durable] key_id`/`previous_key_id` back to the
+config file in place (`toml_edit`, preserving formatting) — **config first, then vault**, so a
+crash between the two writes hits `load_durable_cipher`'s existing fail-closed branch (loud
+startup error) rather than silently mis-decrypting pre-rotation payloads. Only one window is open
+at a time (single previous-key slot); opening a second window while one is open is refused,
+pointing at `--drop-previous`. The cipher is built once at process startup — a restart is required
+to pick up a rotation.
+
+**Uniform key lifecycle.** All three mechanisms resolve a current + previous key pair from the
+same `config.durable.key_id`/`previous_key_id` fields (`LocalBackend::with_hmac_key` +
+`with_previous_hmac_key` for the control HMAC, `with_hwm_key` + `with_previous_hwm_key` for the
+HWM — see spec-081 §11.2), rather than each keeping its own rotation counter. This closed a defect
+where the HWM epoch was originally a separate, frozen constant (`HWM_KEY_EPOCH = 0`, never bumped)
+left unreachable after #6453 shipped — any rotation force-aborted every execution with a committed
+`StepResult` and misreported the failure as tamper rather than "possibly re-keyed" (#6460).
+
+**Closing a window (`--drop-previous`):** by default runs three safety scans and refuses if any is
+nonzero (`--force` skips all three):
+1. `count_sealed_under_key_id` — AEAD payload blob-scan (pre-existing).
+2. `count_control_entries_under_previous_hmac` — control-entry HMAC scan (#6451). Not redundant
+   with (1): a crash-orphaned `EffectIntent` with no committed `StepResult` has a previous-key
+   HMAC but no payload for the blob-scan to see.
+3. `count_integrity_rows_under_epoch` — HWM epoch scan (#6460), a plain indexed `COUNT` needing no
+   key material. Not redundant with (1) or (2): `checkpoint_fold` reseals a folded checkpoint
+   under the current key and deletes the old-key-id `StepResult` rows it folds, but never re-signs
+   the HWM row, so a checkpoint-folded pre-rotation execution can have zero surviving payload and
+   zero control entries while its integrity row still points at the previous epoch.
+
+A call with no window open is a clean no-op. `--dry-run` prints intended changes without writing
+anything.
+
+**Shared-database deployments.** `rotate-key` originally refused on a declared/detected shared
+database unless `--ack-shared-db-drain` was passed, since the control-entry HMAC had no rotation
+window of its own. #6451 closed that gap; the flag and its refusal are removed outright (no
+deprecation shim, pre-v1.0.0) — shared-DB rotation is now exactly as safe as local rotation.
 
 ---
 
@@ -1240,6 +1315,9 @@ Analogous to `zeph schedule`. Connects directly to `durable.db`; no agent proces
 | `zeph durable inspect <execution_id> --step <n>` | Inspect a single step entry |
 | `zeph durable prune [--dry-run]` | Force crash-orphan sweep, then TTL prune (#6254). `--dry-run` reports both counts separately: "N orphaned executions would be aborted" and "M would be pruned" |
 | `zeph durable resume <execution_id>` | Manual replay trigger (for supported execution kinds) |
+| `zeph durable rotate-key [--dry-run]` | Open a rotation window for the AEAD/HMAC/HWM key trio (#6447). Refuses if a window is already open |
+| `zeph durable rotate-key --drop-previous [--force] [--dry-run]` | Close the window: runs the three safety scans above (or skips them with `--force`), then clears `previous_key_id` and `ZEPH_DURABLE_KEY_PREVIOUS` |
+| `zeph durable seal-integrity [--grandfather <id,...>] [--dry-run]` | Write the `ZEPH_DURABLE_INTEGRITY_SEALED` vault marker (spec-081 §11.1); refuses while any resumable execution has committed results but no integrity row |
 
 **Redaction rule (INV-5):** default output shows only: `entry_kind`, `step_id`, `effect_class`,
 payload size in bytes, `idem_key` (hex, first 8 bytes), `created_at`. Payload bytes and resolver
@@ -1311,8 +1389,12 @@ Must cover:
 8. **ReplayDivergence guard** — manually corrupt a journal fingerprint; verify
    `DurableError::ReplayDivergence` is raised and fresh restart occurs.
 9. **Promise resolution auth** — attempt resolution with wrong resolver token; verify rejection.
-10. **Key rotation** — rotate `ZEPH_DURABLE_KEY`; verify in-flight executions complete or drain
-    cleanly.
+10. **Key rotation (#6447, #6451, #6460)** — `zeph durable rotate-key` to open a window; verify
+    pre-rotation executions with committed `StepResult`s and in-flight `EffectIntent`s still
+    resume/replay after restart (AEAD, control-HMAC, and HWM all readable under the previous
+    key). `zeph durable rotate-key --drop-previous` before draining: verify refusal, citing which
+    of the three scans is nonzero. Drain, then `--drop-previous`: verify clean close. Repeat on a
+    declared shared-DB config: verify no `--ack-shared-db-drain` prompt (removed).
 11. **Crash-orphan sweep (#6254)** — `kill -9` an agent process mid-turn; verify the
     `durable_executions` row stays `status='running', finalized_at=NULL` (invisible to plain TTL
     prune). Run `zeph durable prune` (or wait a tick with `stale_running_after_secs` lowered for

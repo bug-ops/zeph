@@ -18,6 +18,7 @@ related:
   - "[[010-4-audit]]"
   - "[[039-durable-agent-turns-subagent-adapters-unwired/spec]]"
   - "[[056-vault-key-hardening-rotation/spec]]"
+  - "[[064-durable-execution/spec]]"
 ---
 
 # Feature: Tamper-Evident Persisted Transcripts, Session Event Logs, and Durable Journal Entries
@@ -287,3 +288,26 @@ decisions for future readers of the permanent spec.
   session; requires a destructive precursor the threat model already grants file-write access
   to). No reap grace-window or tombstone is implemented; a candidate hardening for a future PR
   if this residual proves unacceptable in practice.
+
+### 11.2 HWM key-rotation window fix (issue #6460)
+
+§11's FR-009 resolution states the HWM supports "a key-rotation window (`with_previous_hwm_key`)
+that distinguishes 'possibly re-keyed' from 'TAMPER'." As shipped in #6453, that window was
+unreachable: `key_epoch` was a standalone constant (`HWM_KEY_EPOCH = 0`) never bumped anywhere
+in-tree, and the scheduler-daemon read path never attached an HWM key at all. Any
+`zeph durable rotate-key` (see `[[064-durable-execution/spec]]` Key Rotation Windows) followed by
+a restart force-aborted every execution with a committed `StepResult` on its next resume, and —
+because both pre- and post-rotation rows carried the same frozen epoch — misreported the failure
+as `hmac_mismatch` (TAMPER) rather than the correct `key_epoch_unresolvable` (possibly re-keyed).
+
+**Fix:** the HWM epoch no longer has its own counter. It reuses the AEAD payload cipher's
+`key_id`/`previous_key_id` lifecycle directly — `load_write_hwm_key` resolves a current + previous
+`HwmSlot` pair from `config.durable.key_id`/`previous_key_id` (mirroring the control-HMAC's
+`ControlHmacKeys`), failing closed if `previous_key_id` is declared but
+`ZEPH_DURABLE_KEY_PREVIOUS` is missing. Every write/read channel that attaches an HWM key (P1
+agent-turn, P2 orchestration, the scheduler daemon — previously unattached — and the CLI read
+path) now also attaches the previous slot while a window is open. `key_id` already defaults to
+`0`, matching the pre-fix `key_epoch = 0` rows, so no migration is needed for an un-rotated
+deployment. `zeph durable rotate-key --drop-previous` gained a third safety scan
+(`count_integrity_rows_under_epoch`) alongside the pre-existing AEAD blob-scan and the #6451
+control-HMAC scan — see `[[064-durable-execution/spec]]` for the full three-scan mechanics.

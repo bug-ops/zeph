@@ -18,6 +18,7 @@ related:
   - "[[002-agent-loop/spec]]"
   - "[[007-channels/spec]]"
   - "[[042-zeph-commands/spec]]"
+  - "[[044-subagent-lifecycle/spec]]"
 ---
 
 # Spec: CLI Modes — --bare, --json, -y, /loop, /recap
@@ -143,6 +144,7 @@ AND the command is available in the slash command registry and TUI autocomplete
 | FR-010 | `/recap` SHALL be registered in `COMMANDS` (static list in `zeph-commands`) for `/help` and TUI autocomplete | must |
 | FR-011 | WHEN `--bare` is set THE SYSTEM SHALL still load skills, vault, and MCP servers — only background non-interactive workers are skipped | must |
 | FR-012 | WHEN `--json` and `--bare` are combined THE SYSTEM SHALL suppress interactive prompts; stdin is treated as a JSONL command stream | should |
+| FR-013 | WHEN `agents.forward_transcript = true` (or `--forward-subagent-text`) and `--bare` is set THE SYSTEM SHALL forward each running sub-agent's sanitized per-turn text/thinking output as JSON lines on stdout, distinct from the JSONL `--json` event schema in §5 — see `[[044-subagent-lifecycle/spec]]` §14 for the forwarding mechanism | should |
 
 ---
 
@@ -232,6 +234,7 @@ All events are single-line JSON objects:
 | `-y` and MCP elicitation with type=password | Emit a WARN log; auto-approve the prompt but mark the elicitation response with `warned=true` |
 | `response_end` without chunks (MARCH marker race) | Suppressed by `pending_chunks` guard; no duplicate `response_end` emitted |
 | `/loop` user enters empty string | Treated as "n" (stop); clean exit |
+| `--bare` combined with `--json` and `forward_transcript = true` | Unsupported: the forwarded live-transcript JSON lines (FR-013) and the `--json` event schema (§5) interleave on the same stdout stream with no line-level discriminator; use `--bare` without `--json` for scripted live-transcript consumption |
 
 ---
 

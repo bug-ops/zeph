@@ -19,6 +19,8 @@ related:
   - "[[010-security/spec]]"
   - "[[026-tui-subagent-management/spec]]"
   - "[[033-subagent-context-propagation/spec]]"
+  - "[[039-background-task-supervisor/spec]]"
+  - "[[047-cli-modes/spec]]"
 ---
 
 # Spec: Subagent Lifecycle (`zeph-subagent`)
@@ -372,6 +374,55 @@ constraints.
 ## 13. Open Questions
 
 None.
+
+---
+
+## 14. Live Transcript Forwarding (issue #6359)
+
+### Problem
+
+The pre-existing subagent status surface (TUI sidebar, `--bare` status lines) exposes only a
+120-char once-per-turn snippet or the blocking end-of-run result — an operator watching a
+long-running sub-agent cannot see its actual per-turn text/thinking output as it is produced.
+
+### Mechanism
+
+Opt-in (`agents.forward_transcript = true`, env `ZEPH_AGENTS_FORWARD_TRANSCRIPT`, CLI
+`--forward-subagent-text`; default `false`, zero behavioral change when disabled or when no
+consumer surface — `--tui` and/or `--bare` — is active). When enabled, each running sub-agent's
+full, untruncated per-turn text/thinking output is forwarded the moment a turn's LLM response
+arrives:
+
+1. Each sub-agent turn loop (`crates/zeph-subagent/src/agent_loop.rs`) pushes a `RawChunk` into a
+   per-task `mpsc` ingress channel — one channel per spawned task, never a shared broadcast.
+2. A manager-owned drain (`crates/zeph-subagent/src/forward.rs`) consumes each task's channel and
+   sanitizes every chunk through the same layers already applied to the analogous sub-agent
+   debug-dump/outbound-LLM egress paths: the baseline `ContentSanitizer` pass plus, when
+   configured, `SecretMaskRegistry` and `PiiFilter`. A `RawChunk`→`SanitizedChunk` typestate
+   structurally enforces that no unsanitized chunk can reach a consumer.
+3. Sanitized chunks dispatch to whichever consumer surface is active:
+   - TUI: a bounded ring buffer per subagent, surfaced in the runtime subagent detail view
+     (`SubAgentMetrics::live_transcript`) — see `[[026-tui-subagent-management/spec]]`.
+   - `--bare`: JSON lines on stdout — see `[[047-cli-modes/spec]]`.
+
+### Key Invariants
+
+- Structurally non-blocking on the sub-agent's own turn loop: the per-task ingress uses
+  `try_send`, dropping on a full channel with a per-task drop counter, never blocking the
+  producing turn.
+- Routed through `zeph_common::TaskSupervisor` (per CLAUDE.md's Async & Background Tasks
+  contract) — never an untracked `tokio::spawn`.
+- Forwarded content passes through the same sanitization chain as debug-dump/egress paths before
+  reaching any consumer — no unsanitized path exists.
+- Default `false`; enabling it changes only what is forwarded, never the underlying turn loop's
+  control flow or result.
+
+### Known Limitation
+
+Token-level intra-turn streaming (sub-turn granularity) is deferred to a follow-up — forwarding
+happens once per completed LLM response, not per token. Combining `--bare` with `--json`
+interleaves two different JSON schemas on stdout — unsupported for now; use `--bare` without
+`--json` for scripted-pipeline forwarding.
 
 ---
 

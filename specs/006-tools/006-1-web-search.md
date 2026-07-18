@@ -219,6 +219,11 @@ pub struct WebSearchExecutor {
     egress_tx: Option<tokio::sync::mpsc::Sender<EgressEvent>>,
     egress_dropped: Arc<AtomicU64>,
     ipi_filter: IpiFilter,
+    /// Last pinned `reqwest::Client`, keyed by the resolved address set (sorted and
+    /// deduplicated) it was built with. Reused across calls when a fresh
+    /// `resolve_and_validate` returns the same address set — regardless of resolver
+    /// ordering — avoiding a TCP+TLS handshake per search (#6457).
+    client_cache: RwLock<Option<(Vec<SocketAddr>, reqwest::Client)>>,
 }
 ```
 
@@ -276,6 +281,16 @@ against a benign IP and then have the actual `reqwest` connection resolve the
 hostname again independently, landing on a private/internal address — a
 TOCTOU gap. Pinning closes it.
 
+**Client caching (#6457).** `client_for(host, addrs)` reuses the last pinned client instead of
+calling `build_client` on every search: the resolved address set is sorted and deduplicated
+before comparison, so a harmless reorder of the same addresses (DNS round-robin gives no
+ordering guarantee across calls) is a cache **hit**, not a rebuild. A genuinely different
+address set is a cache miss and triggers a fresh `build_client` call, which replaces the cached
+entry. This does not weaken INVARIANT-2: the cache key is always the exact address set the
+current call's `resolve_and_validate` just checked, never a stale set from an earlier
+resolution — sorting only changes cache-key equality, not which addresses get pinned into the
+client that actually issues the request.
+
 ### 3.5 Error handling
 
 | `SearchError` | Maps to | Category | Notes |
@@ -284,7 +299,7 @@ TOCTOU gap. Pinning closes it.
 | `Http { status: 429, .. }` | `ToolError::Blocked` | PolicyBlocked (terminal, not retried) | FR-008. Distinguishes quota exhaustion from transient network errors. |
 | `Http { status, message }` (other) | `ToolError::Http { status, message }` | per `classify_http_status` | Standard HTTP error taxonomy. |
 | `Timeout` | `ToolError::Timeout { timeout_secs }` | Timeout | Every external `.await` wrapped in `tokio::time::timeout` per Await Discipline. |
-| `Blocked { reason }` (SSRF/denylist) | `ToolError::Blocked { command: reason }` | PolicyBlocked (terminal) | Same terminal semantics as scrape's SSRF/denylist blocks. |
+| `Blocked { reason, status }` (SSRF/denylist/backend rate-limit) | `ToolError::Blocked { command: reason }` | PolicyBlocked (terminal) | Same terminal semantics as scrape's SSRF/denylist blocks. `status` (added #6457) carries the real backend HTTP status (e.g. `Some(429)` from Brave's rate-limit response) through to `EgressEvent.status` — previously always `None` for this variant, losing the actual status code in egress telemetry. |
 | `Parse` | `ToolError::Execution` | per IO/parse classification | No partial results surfaced on malformed JSON. |
 | `Provider` | `ToolError::Execution` | per IO/parse classification | Catch-all for backend-specific failures. |
 
