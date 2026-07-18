@@ -7,9 +7,10 @@ use crate::PluginError;
 
 use super::{
     AddResult, AutoUpdateResult, AutoUpdateStatus, InstalledPlugin, PluginManager, PluginSource,
-    collect_skill_names, extract_archive_safe, scan_skill_entries, strip_bundled_markers,
-    validate_manifest_for_install, validate_mcp_commands, validate_overlay_keys,
-    validate_url_scheme, validate_url_scheme_ephemeral,
+    ReputationEnforcement, ReputationSource, collect_skill_names, extract_archive_safe,
+    scan_skill_entries, strip_bundled_markers, validate_manifest_for_install,
+    validate_mcp_commands, validate_overlay_keys, validate_url_scheme,
+    validate_url_scheme_ephemeral,
 };
 
 /// Build an HTTP client that refuses to follow any redirect leaving the `https` scheme.
@@ -217,6 +218,10 @@ impl PluginManager {
         let mcp_allowed_commands = self.mcp_allowed_commands.clone();
         let base_allowed_commands = self.base_allowed_commands.clone();
         let integrity_registry_path = self.integrity_registry_path.clone();
+        // Inherit this manager's reputation source/policy (spec-043, #5864) so a remote
+        // install goes through the same typosquat check as a local `add()`.
+        let reputation = self.reputation.clone();
+        let reputation_enforcement = self.reputation_enforcement;
         let source_str = tmp.path().to_str().unwrap_or(url).to_owned();
 
         let result = tokio::task::spawn_blocking(move || {
@@ -227,6 +232,8 @@ impl PluginManager {
                 base_allowed_commands,
                 integrity_registry_path,
                 download_timeout_secs: 0, // add() does not perform network I/O
+                reputation,
+                reputation_enforcement,
             };
             mgr.add(&source_str)
         })
@@ -385,6 +392,15 @@ impl PluginManager {
         let integrity_registry_path = self.integrity_registry_path.clone();
         let url_clone = url.clone();
         let base_allowed_commands = self.base_allowed_commands.clone();
+        // Clone the same reputation source/policy this manager was built with (spec-043,
+        // #5864) so the auto-update path runs the identical typosquat check `add()` does —
+        // `apply_staged_update` builds its own throwaway `PluginManager` purely for the skill
+        // conflict check, which has `reputation: None`; without threading it explicitly here,
+        // the check would silently never run on auto-update (the #5401 call-site-divergence
+        // defect class). `Arc<dyn ReputationSource>` is `Send + Sync`, so it moves into the
+        // `spawn_blocking` closure like every other owned clone above.
+        let reputation = self.reputation.clone();
+        let reputation_enforcement = self.reputation_enforcement;
 
         let result = tokio::task::spawn_blocking(move || {
             apply_staged_update(
@@ -399,6 +415,8 @@ impl PluginManager {
                 &plugins_dir,
                 &integrity_registry_path,
                 &base_allowed_commands,
+                reputation.as_deref(),
+                reputation_enforcement,
             )
         })
         .await;
@@ -529,6 +547,32 @@ impl PluginManager {
                     source: e,
                 })?;
             if let Ok(manifest) = toml::from_str::<crate::manifest::PluginManifest>(&manifest_str) {
+                // Reputation/typosquat check (spec-043, #5864): US-001 names `--plugin-url` as
+                // the primary install vector, so this ephemeral path must run the same check
+                // `add()`/`apply_staged_update` do, not just the injection scan below. Runs
+                // synchronously — same as the `strip_bundled_markers` call above it, which
+                // already does comparable filesystem work inline in this async fn without
+                // `spawn_blocking` (one-shot startup path, not a per-turn hot path).
+                let skill_names = collect_skill_names(tmp.path(), &manifest);
+                let mut reputation_warnings = self.check_reputation(
+                    manifest.plugin.name.as_str(),
+                    &skill_names,
+                    manifest.plugin.name.as_str(),
+                );
+                if self.reputation_enforcement == ReputationEnforcement::Block
+                    && !reputation_warnings.is_empty()
+                {
+                    return Err(PluginError::ReputationBlocked(
+                        reputation_warnings.remove(0),
+                    ));
+                }
+                for w in &reputation_warnings {
+                    tracing::warn!(
+                        plugin = %manifest.plugin.name,
+                        "{w} (ephemeral --plugin-url install advisory)"
+                    );
+                }
+
                 // Blocking scan: treat any injection match as a hard error.
                 for entry in &manifest.skills {
                     let skill_md_path = tmp.path().join(&entry.path).join("SKILL.md");
@@ -615,6 +659,42 @@ pub async fn download_and_extract(
     extract_archive_safe(&bytes, dest, url)
 }
 
+/// Advisory (or, when configured, blocking) typosquat/reputation check for the auto-update
+/// path (spec-043, #5864) — the parity counterpart of the check
+/// [`super::PluginManager::add`] runs via [`super::PluginManager::check_reputation`].
+///
+/// Checks `installed_plugin_name` and every entry in `staged_skill_names` against `tmp_mgr`'s
+/// shared [`super::PluginManager::known_names`] corpus. Every warning is logged regardless of
+/// enforcement; in [`ReputationEnforcement::Block`] mode the first warning becomes the returned
+/// error (the caller is responsible for cleaning up `staging`).
+fn run_reputation_check(
+    tmp_mgr: &PluginManager,
+    installed_plugin_name: &str,
+    staged_skill_names: &[String],
+    reputation: Option<&dyn ReputationSource>,
+    reputation_enforcement: ReputationEnforcement,
+) -> Result<(), String> {
+    let Some(source) = reputation else {
+        return Ok(());
+    };
+    let corpus = tmp_mgr.known_names(installed_plugin_name);
+    let mut warnings = source.check(installed_plugin_name, &corpus);
+    for skill in staged_skill_names {
+        warnings.extend(source.check(skill, &corpus));
+    }
+    for w in &warnings {
+        tracing::warn!(plugin = %installed_plugin_name, "{w} (auto-update advisory)");
+    }
+    if reputation_enforcement == ReputationEnforcement::Block
+        && let Some(blocked) = warnings.first()
+    {
+        return Err(format!(
+            "staged manifest failed reputation check: {blocked}"
+        ));
+    }
+    Ok(())
+}
+
 /// Extract archive to `staging`, run all security validations, then swap `staging` with `dest`.
 ///
 /// Strategy: extract → staging, validate, rename dest → backup, rename staging → dest, delete
@@ -641,6 +721,8 @@ pub(crate) fn apply_staged_update(
     plugins_dir: &std::path::Path,
     integrity_registry_path: &std::path::Path,
     base_allowed_commands: &[String],
+    reputation: Option<&dyn ReputationSource>,
+    reputation_enforcement: ReputationEnforcement,
 ) -> Result<(), String> {
     // Clean up any leftover staging/backup dirs from a previous interrupted attempt.
     let _ = std::fs::remove_dir_all(staging);
@@ -708,6 +790,19 @@ pub(crate) fn apply_staged_update(
     {
         let _ = std::fs::remove_dir_all(staging);
         return Err(format!("staged manifest failed skill conflict check: {e}"));
+    }
+
+    // Advisory (or, when configured, blocking) typosquat/reputation check (spec-043, #5864) —
+    // the auto-update parity counterpart of the check `add()` runs.
+    if let Err(e) = run_reputation_check(
+        &tmp_mgr,
+        installed_plugin_name,
+        &staged_skill_names,
+        reputation,
+        reputation_enforcement,
+    ) {
+        let _ = std::fs::remove_dir_all(staging);
+        return Err(e);
     }
 
     // Advisory SKILL.md scan (non-blocking — logs warnings only).

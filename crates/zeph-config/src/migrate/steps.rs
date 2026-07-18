@@ -67,7 +67,9 @@
 //! advisory block for the generic cross-thread key-value store (spec-080, #6363); step 93
 //! adds a `whole_plan_verifier_timeout_secs` advisory comment under `[orchestration]` (#6379);
 //! step 94 adds a commented `[session.resume]` advisory block for the resume-visibility
-//! banner and `/history` bound (spec-068 §13, §18, #6420).
+//! banner and `/history` bound (spec-068 §13, §18, #6420);
+//! step 98 adds a `[plugins.reputation]` advisory block for the install-time
+//! name-similarity/typosquat check (spec-043, #5864).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -99,13 +101,14 @@ use super::{
     migrate_orchestration_orchestrator_provider, migrate_orchestration_persistence,
     migrate_orchestration_whole_plan_verifier_timeout, migrate_otel_filter,
     migrate_overflow_max_per_call_override, migrate_pii_filter_names,
-    migrate_planner_model_to_provider, migrate_policy_provider_and_utility_window,
-    migrate_provider_max_concurrent, migrate_qdrant_api_key, migrate_qdrant_timeout_secs,
-    migrate_quality_config, migrate_sandbox_config, migrate_sandbox_egress_filter,
-    migrate_scheduler_daemon_config, migrate_search_config, migrate_secret_masking_config,
-    migrate_serve_config, migrate_session_persist_provider_overrides,
-    migrate_session_persistence_config, migrate_session_provider_persistence,
-    migrate_session_recap_config, migrate_session_resume_config, migrate_shadow_sentinel_config,
+    migrate_planner_model_to_provider, migrate_plugins_reputation_config,
+    migrate_policy_provider_and_utility_window, migrate_provider_max_concurrent,
+    migrate_qdrant_api_key, migrate_qdrant_timeout_secs, migrate_quality_config,
+    migrate_sandbox_config, migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
+    migrate_search_config, migrate_secret_masking_config, migrate_serve_config,
+    migrate_session_persist_provider_overrides, migrate_session_persistence_config,
+    migrate_session_provider_persistence, migrate_session_recap_config,
+    migrate_session_resume_config, migrate_shadow_sentinel_config,
     migrate_shell_checkpoints_config, migrate_shell_transactional,
     migrate_skill_trust_require_check, migrate_skills_registry, migrate_stt_to_provider,
     migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
@@ -1230,5 +1233,18 @@ impl Migration for MigrateDurableKeyRotation {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_durable_key_rotation(toml_src)
+    }
+}
+
+/// Step 98 — adds a commented `[plugins.reputation]` advisory block for the install-time
+/// name-similarity/typosquat check (spec-043, #5864).
+pub(super) struct MigratePluginsReputationConfig;
+impl Migration for MigratePluginsReputationConfig {
+    fn name(&self) -> &'static str {
+        "migrate_plugins_reputation_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_plugins_reputation_config(toml_src)
     }
 }

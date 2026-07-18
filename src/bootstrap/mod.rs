@@ -2173,12 +2173,15 @@ async fn run_plugin_auto_updates(config: &zeph_core::config::Config) {
     use tracing::Instrument as _;
     use zeph_plugins::{AutoUpdateStatus, PluginManager};
 
+    // Same reputation check as `plugin add` (spec-043, #5864) — the auto-update path must not
+    // silently skip the typosquat check while a fresh install enforces it (#5401 parity).
     let mgr = PluginManager::new(
         plugins_dir(),
         managed_skills_dir(),
         config.mcp.allowed_commands.clone(),
         config.tools.shell.allowed_commands.clone(),
-    );
+    )
+    .with_reputation_config(&config.plugins.reputation, false);
 
     let results = tokio::time::timeout(
         std::time::Duration::from_mins(2),

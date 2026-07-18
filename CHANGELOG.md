@@ -179,6 +179,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Plugin install-time reputation/typosquat scanning** (spec-043, #5864): `zeph plugin add`,
+  the auto-update path, and `--plugin-url` ephemeral loading now compare an incoming plugin's
+  name and declared skill names — plus other installed plugins' own names — against bundled,
+  managed, and other installed plugins' skill names using a local, zero-network
+  Levenshtein-similarity heuristic — closing a supply-chain gap identified via competitive
+  parity comparison against IronClaw's "Community Scanner". Advisory by default: a near-match
+  (e.g. `github-pr` vs the bundled `git-pr`-shaped example) prints a warning and the install
+  still proceeds; a `[plugins.reputation] enforcement = "block"` config or the new `zeph plugin
+  add --strict-reputation` CLI flag turns it into a hard gate, refused before any file is
+  written or the ephemeral load completes. Exposed as a pluggable `ReputationSource` trait
+  (`LocalTyposquatCheck` is the only shipped implementation) so a future opt-in external
+  registry can be added without changing any install call site. New `[plugins.reputation]`
+  config section (`enabled`, `similarity_threshold`, `min_name_len`, `enforcement`), migration
+  Step 98, `--init` wizard prompt, and TUI/chat `/plugins add` parity with the CLI path.
+
 - **`zeph durable cancel <id>`** (#6362): a new `Canceled` durable execution status and CLI
   command for deliberately, permanently stopping a running execution. `LocalBackend::cancel_execution`
   probes the execution's INV-15 advisory lock (SQLite/Unix) before writing: no live owner →

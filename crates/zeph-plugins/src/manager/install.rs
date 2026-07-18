@@ -9,10 +9,11 @@ use crate::PluginError;
 use crate::manifest::PluginManifest;
 
 use super::{
-    AddResult, DisableResult, PluginManager, RemoveResult, check_allowed_commands_overlay_effect,
-    collect_skill_names, copy_dir_all, load_installed_manifest, scan_skill_entries,
-    strip_bundled_markers, validate_manifest_for_install, validate_mcp_commands,
-    validate_overlay_keys, validate_plugin_name,
+    AddResult, DisableResult, PluginManager, RemoveResult, ReputationEnforcement,
+    check_allowed_commands_overlay_effect, collect_skill_names, copy_dir_all,
+    load_installed_manifest, scan_skill_entries, strip_bundled_markers,
+    validate_manifest_for_install, validate_mcp_commands, validate_overlay_keys,
+    validate_plugin_name,
 };
 
 impl PluginManager {
@@ -78,6 +79,27 @@ impl PluginManager {
 
         // Check for name conflicts.
         self.check_skill_conflicts(&skill_names, manifest.plugin.name.as_str())?;
+
+        // Advisory (or, when configured, blocking) typosquat/reputation check (spec-043,
+        // #5864). Runs after the exact-conflict check and before any file is copied, so a
+        // block-mode enforcement leaves nothing on disk.
+        let mut reputation_warnings = self.check_reputation(
+            manifest.plugin.name.as_str(),
+            &skill_names,
+            manifest.plugin.name.as_str(),
+        );
+        if self.reputation_enforcement == ReputationEnforcement::Block
+            && !reputation_warnings.is_empty()
+        {
+            return Err(PluginError::ReputationBlocked(
+                reputation_warnings.remove(0),
+            ));
+        }
+        for w in &reputation_warnings {
+            let msg = format!("{w}. Install proceeds — re-run with --strict-reputation to block.");
+            tracing::warn!(plugin = %manifest.plugin.name, "{msg}");
+            warnings.push(msg);
+        }
 
         let dest = self.plugins_dir.join(manifest.plugin.name.as_str());
 

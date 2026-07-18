@@ -388,6 +388,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         mcp_allowed: Vec<String>,
         base_shell_allowed: Vec<String>,
         ephemeral_plugin_names: Vec<String>,
+        reputation_cfg: &zeph_config::plugins::ReputationConfig,
     ) -> String {
         // Use the canonical default so CLI and TUI always reference the same directory.
         let plugins_dir = zeph_plugins::PluginManager::default_plugins_dir();
@@ -408,7 +409,8 @@ impl<C: crate::channel::Channel> Agent<C> {
             managed_dir,
             mcp_allowed,
             base_shell_allowed,
-        );
+        )
+        .with_reputation_config(reputation_cfg, false);
 
         match subcmd {
             "" | "list" => match mgr.list_installed() {

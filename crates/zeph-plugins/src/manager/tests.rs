@@ -5,6 +5,7 @@
 
 use std::assert_matches;
 use std::path::Path;
+use std::sync::Arc;
 
 use walkdir::WalkDir;
 use zeph_skills::bundled::bundled_skill_names;
@@ -2281,6 +2282,8 @@ fn apply_staged_update_rejects_too_many_dependencies() {
         &plugins_dir,
         &integrity_path,
         &[],
+        None,
+        ReputationEnforcement::Warn,
     )
     .unwrap_err();
     assert!(
@@ -2342,6 +2345,8 @@ path = "../outside-skill"
         &plugins_dir,
         &integrity_path,
         &[],
+        None,
+        ReputationEnforcement::Warn,
     )
     .unwrap_err();
     assert!(
@@ -2454,4 +2459,435 @@ path = "skills/my-skill"
     // Plugin must still be installed at the old version — the downgraded update never applied.
     let installed = mgr.list_installed().unwrap();
     assert_eq!(installed[0].version, "0.1.0");
+}
+
+// --- spec-043, #5864: install-time typosquat/reputation scanning ---
+
+/// Seed `plugins_dir` with an already-installed "other-plugin" declaring skill "git-pr", via a
+/// plain (no-reputation) manager — gives every reputation test a deterministic, real corpus
+/// entry to near-match against instead of depending on the actual bundled skill name set.
+fn seed_git_pr_plugin(
+    plugins_dir: &std::path::Path,
+    managed_dir: &std::path::Path,
+    tmp: &std::path::Path,
+) {
+    let other_source = tmp.join("other-source");
+    write_plugin(
+        &other_source,
+        "other-plugin",
+        &simple_manifest("other-plugin", "git-pr"),
+        &[("git-pr", "body")],
+    );
+    let seed_mgr = PluginManager::new(
+        plugins_dir.to_path_buf(),
+        managed_dir.to_path_buf(),
+        vec![],
+        vec![],
+    );
+    seed_mgr.add(other_source.to_str().unwrap()).unwrap();
+}
+
+#[test]
+fn reputation_check_warns_but_still_installs_in_advisory_mode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let managed_dir = tmp.path().join("managed");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    seed_git_pr_plugin(&plugins_dir, &managed_dir, tmp.path());
+
+    let mgr = PluginManager::new(plugins_dir.clone(), managed_dir, vec![], vec![])
+        .with_reputation(Arc::new(LocalTyposquatCheck::default()));
+
+    let source = tmp.path().join("github-pr-source");
+    write_plugin(
+        &source,
+        "github-pr",
+        &simple_manifest("github-pr", "unrelated-skill"),
+        &[("unrelated-skill", "body")],
+    );
+
+    let result = mgr.add(source.to_str().unwrap()).unwrap();
+    assert_eq!(result.name, "github-pr");
+    assert!(
+        result.warnings.iter().any(|w| w.contains("git-pr")),
+        "expected a reputation warning mentioning the near-match 'git-pr', got {:?}",
+        result.warnings
+    );
+    assert!(
+        plugins_dir.join("github-pr").join(".plugin.toml").is_file(),
+        "advisory mode must not block the install"
+    );
+}
+
+#[test]
+fn reputation_check_block_mode_rejects_install_and_writes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let managed_dir = tmp.path().join("managed");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    seed_git_pr_plugin(&plugins_dir, &managed_dir, tmp.path());
+
+    let mgr = PluginManager::new(plugins_dir.clone(), managed_dir, vec![], vec![])
+        .with_reputation(Arc::new(LocalTyposquatCheck::default()))
+        .with_reputation_enforcement(ReputationEnforcement::Block);
+
+    let source = tmp.path().join("github-pr-source");
+    write_plugin(
+        &source,
+        "github-pr",
+        &simple_manifest("github-pr", "unrelated-skill"),
+        &[("unrelated-skill", "body")],
+    );
+
+    let err = mgr.add(source.to_str().unwrap()).unwrap_err();
+    assert_matches!(err, PluginError::ReputationBlocked(_));
+    assert!(
+        !plugins_dir.join("github-pr").exists(),
+        "block mode must leave nothing on disk for the rejected plugin"
+    );
+}
+
+#[test]
+fn reputation_check_disabled_by_default_is_noop() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let managed_dir = tmp.path().join("managed");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    seed_git_pr_plugin(&plugins_dir, &managed_dir, tmp.path());
+
+    // No `.with_reputation(...)` attached — the default `None` must be a true no-op even
+    // though a near-match ("git-pr") exists in the corpus (NFR-002).
+    let mgr = PluginManager::new(plugins_dir.clone(), managed_dir, vec![], vec![]);
+
+    let source = tmp.path().join("github-pr-source");
+    write_plugin(
+        &source,
+        "github-pr",
+        &simple_manifest("github-pr", "unrelated-skill"),
+        &[("unrelated-skill", "body")],
+    );
+
+    let result = mgr.add(source.to_str().unwrap()).unwrap();
+    assert!(
+        result.warnings.is_empty(),
+        "reputation must be a no-op when no ReputationSource is attached, got {:?}",
+        result.warnings
+    );
+}
+
+/// #5401 call-site parity: the auto-update path (`apply_staged_update`) must run the identical
+/// reputation check `add()` runs — not silently skip it on a throwaway `tmp_mgr` with
+/// `reputation: None`. Asserts the check actually *emits* a warning log (not merely that the
+/// call returns `Ok`), per the critic's note on the S1 regression class this guards against.
+#[test]
+#[tracing_test::traced_test]
+fn apply_staged_update_emits_reputation_warning_and_still_applies_in_advisory_mode() {
+    use super::registry::apply_staged_update;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let managed_dir = tmp.path().join("managed");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    seed_git_pr_plugin(&plugins_dir, &managed_dir, tmp.path());
+
+    let manifest = simple_manifest("github-pr", "unrelated-skill");
+    let src = tmp.path().join("staged-src");
+    write_plugin(&src, "github-pr", &manifest, &[("unrelated-skill", "body")]);
+    let archive = build_tar_gz(&src);
+
+    let dest = plugins_dir.join("github-pr");
+    let staging = plugins_dir.join(".staging-github-pr");
+    let backup = plugins_dir.join(".backup-github-pr");
+    let integrity_path = plugins_dir.join(".plugin-integrity.toml");
+
+    let source: Arc<dyn ReputationSource> = Arc::new(LocalTyposquatCheck::default());
+    let result = apply_staged_update(
+        &archive,
+        "https://example.com/github-pr.tar.gz",
+        &dest,
+        &staging,
+        &backup,
+        "github-pr",
+        &[],
+        &managed_dir,
+        &plugins_dir,
+        &integrity_path,
+        &[],
+        Some(source.as_ref()),
+        ReputationEnforcement::Warn,
+    );
+
+    assert!(
+        result.is_ok(),
+        "advisory mode must not block the update: {result:?}"
+    );
+    assert!(
+        dest.join(".plugin.toml").is_file(),
+        "update must still apply in warn mode"
+    );
+    assert!(
+        logs_contain("closely resembles"),
+        "auto-update must emit a reputation warning log — a None-carrying tmp_mgr would pass \
+         a weaker 'no error' assertion while never actually running the check"
+    );
+}
+
+/// spec-043 OQ3 (empirical threshold tuning): the shipped default
+/// (`similarity_threshold = 0.65`, `min_name_len = 3`) must not self-collide across the real
+/// bundled skill corpus — if a future bundled skill addition makes two legitimate names warn
+/// against each other, this test catches it instead of it surfacing as install-time noise.
+#[test]
+fn default_reputation_threshold_has_no_internal_collisions_among_bundled_names() {
+    let check = LocalTyposquatCheck::default();
+    let names = bundled_skill_names();
+    let mut collisions = Vec::new();
+    for (i, a) in names.iter().enumerate() {
+        let known = [(a.clone(), MatchedSource::Bundled)];
+        for b in &names[i + 1..] {
+            if check.check(b, &known).is_empty() {
+                continue;
+            }
+            collisions.push((a.clone(), b.clone()));
+        }
+    }
+    assert!(
+        collisions.is_empty(),
+        "default threshold produced internal collisions among bundled skill names: {collisions:?}"
+    );
+}
+
+#[test]
+fn apply_staged_update_block_mode_rejects_update_and_leaves_staging_cleaned() {
+    use super::registry::apply_staged_update;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let managed_dir = tmp.path().join("managed");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    seed_git_pr_plugin(&plugins_dir, &managed_dir, tmp.path());
+
+    let manifest = simple_manifest("github-pr", "unrelated-skill");
+    let src = tmp.path().join("staged-src");
+    write_plugin(&src, "github-pr", &manifest, &[("unrelated-skill", "body")]);
+    let archive = build_tar_gz(&src);
+
+    let dest = plugins_dir.join("github-pr");
+    let staging = plugins_dir.join(".staging-github-pr");
+    let backup = plugins_dir.join(".backup-github-pr");
+    let integrity_path = plugins_dir.join(".plugin-integrity.toml");
+
+    let source: Arc<dyn ReputationSource> = Arc::new(LocalTyposquatCheck::default());
+    let err = apply_staged_update(
+        &archive,
+        "https://example.com/github-pr.tar.gz",
+        &dest,
+        &staging,
+        &backup,
+        "github-pr",
+        &[],
+        &managed_dir,
+        &plugins_dir,
+        &integrity_path,
+        &[],
+        Some(source.as_ref()),
+        ReputationEnforcement::Block,
+    )
+    .unwrap_err();
+
+    assert!(
+        err.contains("reputation check"),
+        "expected a reputation-check rejection, got {err}"
+    );
+    assert!(
+        !staging.exists(),
+        "staging dir must be cleaned up after a rejected update"
+    );
+    assert!(
+        !dest.exists(),
+        "dest must not be touched when reputation enforcement blocks"
+    );
+}
+
+// --- spec-043 critic follow-up: --plugin-url ephemeral install parity (US-001) ---
+//
+// `add_remote_ephemeral` requires an `https://` URL (`validate_url_scheme_ephemeral`) and this
+// crate has no TLS mock server harness — the pre-existing `scan_failure_blocks_load` test hit
+// the same limitation for the injection scan and worked around it by exercising the
+// post-download logic directly (extract -> parse manifest -> run the check) instead of driving
+// the whole async fn over a live HTTPS connection. These tests follow the same pattern to
+// verify the reputation check `add_remote_ephemeral` now runs internally.
+
+#[test]
+fn ephemeral_reputation_check_warns_on_near_match_advisory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let managed_dir = tmp.path().join("managed");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    seed_git_pr_plugin(&plugins_dir, &managed_dir, tmp.path());
+
+    let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![])
+        .with_reputation(Arc::new(LocalTyposquatCheck::default()));
+
+    // Build and extract an archive the same way add_remote_ephemeral does post-download.
+    let src = tmp.path().join("github-pr-ephemeral-source");
+    write_plugin(
+        &src,
+        "github-pr",
+        &simple_manifest("github-pr", "unrelated-skill"),
+        &[("unrelated-skill", "body")],
+    );
+    let archive = build_tar_gz(&src);
+    let dest = tempfile::tempdir().unwrap();
+    extract_archive(&archive, dest.path(), "https://test/github-pr.tar.gz").unwrap();
+
+    let manifest_str = std::fs::read_to_string(dest.path().join("plugin.toml")).unwrap();
+    let manifest: crate::manifest::PluginManifest = toml::from_str(&manifest_str).unwrap();
+    let skill_names = collect_skill_names(dest.path(), &manifest);
+
+    let warnings = mgr.check_reputation(
+        manifest.plugin.name.as_str(),
+        &skill_names,
+        manifest.plugin.name.as_str(),
+    );
+    assert!(
+        warnings.iter().any(|w| w.matched_name == "git-pr"),
+        "ephemeral install must run the same reputation check as add(); got {warnings:?}"
+    );
+}
+
+#[test]
+fn ephemeral_reputation_check_block_mode_yields_reputation_blocked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let managed_dir = tmp.path().join("managed");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    seed_git_pr_plugin(&plugins_dir, &managed_dir, tmp.path());
+
+    let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![])
+        .with_reputation(Arc::new(LocalTyposquatCheck::default()))
+        .with_reputation_enforcement(ReputationEnforcement::Block);
+
+    let src = tmp.path().join("github-pr-ephemeral-source-block");
+    write_plugin(
+        &src,
+        "github-pr",
+        &simple_manifest("github-pr", "unrelated-skill"),
+        &[("unrelated-skill", "body")],
+    );
+    let archive = build_tar_gz(&src);
+    let dest = tempfile::tempdir().unwrap();
+    extract_archive(&archive, dest.path(), "https://test/github-pr.tar.gz").unwrap();
+
+    let manifest_str = std::fs::read_to_string(dest.path().join("plugin.toml")).unwrap();
+    let manifest: crate::manifest::PluginManifest = toml::from_str(&manifest_str).unwrap();
+    let skill_names = collect_skill_names(dest.path(), &manifest);
+
+    let warnings = mgr.check_reputation(
+        manifest.plugin.name.as_str(),
+        &skill_names,
+        manifest.plugin.name.as_str(),
+    );
+    // Mirrors the exact block-mode condition `add_remote_ephemeral` evaluates internally.
+    assert!(
+        mgr.reputation_enforcement == ReputationEnforcement::Block && !warnings.is_empty(),
+        "expected block-mode enforcement with at least one warning; got {warnings:?}"
+    );
+    assert!(
+        warnings.iter().any(|w| w.matched_name == "git-pr"),
+        "expected the seeded 'git-pr' near-match among the warnings, got {warnings:?}"
+    );
+    let err = PluginError::ReputationBlocked(warnings.into_iter().next().unwrap());
+    assert!(err.to_string().contains("closely resembles"));
+}
+
+// --- spec-043 M1 follow-up: corpus includes installed plugin *names*, not just skill names ---
+
+#[test]
+fn check_reputation_catches_plugin_name_vs_plugin_name_squat() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let managed_dir = tmp.path().join("managed");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+
+    // Install "acme-tools" with a skill named "unrelated-skill" — no skill-name overlap with
+    // the squat below, so this can only be caught via the plugin's own *name* in the corpus.
+    let other_source = tmp.path().join("acme-tools-source");
+    write_plugin(
+        &other_source,
+        "acme-tools",
+        &simple_manifest("acme-tools", "unrelated-skill"),
+        &[("unrelated-skill", "body")],
+    );
+    let seed_mgr = PluginManager::new(plugins_dir.clone(), managed_dir.clone(), vec![], vec![]);
+    seed_mgr.add(other_source.to_str().unwrap()).unwrap();
+
+    let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![])
+        .with_reputation(Arc::new(LocalTyposquatCheck::default()));
+
+    // "acme-tool" (singular) closely resembles installed "acme-tools" (plural) — a pure
+    // plugin-name-vs-plugin-name squat with zero skill-name overlap.
+    let warnings = mgr.check_reputation("acme-tool", &[], "acme-tool");
+    assert!(
+        warnings.iter().any(|w| w.matched_name == "acme-tools"
+            && matches!(&w.matched_source, MatchedSource::Plugin(p) if p == "acme-tools")),
+        "expected a warning matching installed plugin name 'acme-tools', got {warnings:?}"
+    );
+}
+
+// --- with_reputation_config coverage (tester-flagged gap) ---
+
+#[test]
+fn with_reputation_config_disabled_is_noop() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = zeph_config::plugins::ReputationConfig {
+        enabled: false,
+        ..zeph_config::plugins::ReputationConfig::default()
+    };
+    let mgr = PluginManager::new(
+        tmp.path().join("plugins"),
+        tmp.path().join("managed"),
+        vec![],
+        vec![],
+    )
+    .with_reputation_config(&cfg, false);
+    assert!(
+        mgr.reputation.is_none(),
+        "enabled=false must leave reputation unattached"
+    );
+}
+
+#[test]
+fn with_reputation_config_force_block_overrides_warn_enforcement() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = zeph_config::plugins::ReputationConfig {
+        enforcement: zeph_config::plugins::ReputationEnforcement::Warn,
+        ..zeph_config::plugins::ReputationConfig::default()
+    };
+    let mgr = PluginManager::new(
+        tmp.path().join("plugins"),
+        tmp.path().join("managed"),
+        vec![],
+        vec![],
+    )
+    .with_reputation_config(&cfg, true);
+    assert!(mgr.reputation.is_some());
+    assert_eq!(mgr.reputation_enforcement, ReputationEnforcement::Block);
+}
+
+#[test]
+fn with_reputation_config_maps_block_enforcement_without_force() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = zeph_config::plugins::ReputationConfig {
+        enforcement: zeph_config::plugins::ReputationEnforcement::Block,
+        ..zeph_config::plugins::ReputationConfig::default()
+    };
+    let mgr = PluginManager::new(
+        tmp.path().join("plugins"),
+        tmp.path().join("managed"),
+        vec![],
+        vec![],
+    )
+    .with_reputation_config(&cfg, false);
+    assert!(mgr.reputation.is_some());
+    assert_eq!(mgr.reputation_enforcement, ReputationEnforcement::Block);
 }

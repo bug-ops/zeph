@@ -97,6 +97,7 @@ pub mod memory;
 pub mod metrics;
 pub mod migrate;
 pub mod notifications;
+pub mod plugins;
 pub mod providers;
 pub mod quality;
 pub mod rate_limit;
@@ -167,6 +168,7 @@ pub use memory::{
 };
 pub use metrics::MetricsConfig;
 pub use notifications::NotificationsConfig;
+pub use plugins::{PluginsConfig, ReputationConfig, ReputationEnforcement};
 pub use providers::default_stt_language;
 pub use providers::{
     BanditConfig, CacheTtl, CandleConfig, CandleDevice, CandleInlineConfig, CandleSource,

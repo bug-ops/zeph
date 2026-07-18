@@ -30,7 +30,8 @@ pub mod types;
 pub use error::PluginError;
 pub use manager::{
     AddResult, AutoUpdateResult, AutoUpdateStatus, DisableResult, InstalledPlugin,
-    MAX_ARCHIVE_BYTES, PluginManager, PluginSource, RemoveResult, SkillScanInput,
+    LocalTyposquatCheck, MAX_ARCHIVE_BYTES, MatchedSource, PluginManager, PluginSource,
+    RemoveResult, ReputationEnforcement, ReputationSource, ReputationWarning, SkillScanInput,
     download_and_extract, validate_url_scheme_ephemeral,
 };
 pub use manifest::PluginManifest;

@@ -35,6 +35,7 @@ zeph-tools.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing-test.workspace = true
 wiremock.workspace = true
 
 [features]

@@ -2221,7 +2221,8 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             crate::bootstrap::managed_skills_dir(),
             config.mcp.allowed_commands.clone(),
             config.tools.shell.allowed_commands.clone(),
-        );
+        )
+        .with_reputation_config(&config.plugins.reputation, false);
         for raw in &cli.plugin_url {
             // Accept both plain URLs and `url@sha256` pairs.
             let (url, sha256) = parse_plugin_url_arg(raw);

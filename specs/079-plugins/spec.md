@@ -569,7 +569,136 @@ bundle includes `.bundled` markers that would incorrectly grant `Trusted` trust 
 
 ---
 
-## 16. Open Questions
+## 16. Install-Time Reputation and Typosquat Scanning (spec-043, #5864)
+
+### Problem Statement
+
+None of the existing install-time checks (§§1–15) evaluate a plugin's **name or source
+identity** against any reputation signal — all are structural (path/archive safety) or
+content-pattern-based (regex injection scan on skill body text). There was no check for
+whether an incoming plugin's declared name is a likely typosquat of a bundled or
+already-installed plugin/skill name (competitive parity gap vs. IronClaw's "Community
+Scanner"; originally scoped in the draft spec at
+`.local/specs/043-plugin-install-reputation-scanning/spec.md`, CI-1267).
+
+### `ReputationSource` Trait Contract
+
+```rust
+pub trait ReputationSource: Send + Sync {
+    fn check(&self, name: &str, known_names: &[(String, MatchedSource)]) -> Vec<ReputationWarning>;
+}
+```
+
+**What implementors must guarantee:**
+- `check` is advisory-only: it reports near-matches and never decides whether an install is
+  blocked. Enforcement (`warn` vs `block`) is a caller-side policy applied by
+  `PluginManager`, not the source.
+- `check` is synchronous and must complete within the install-time budget (NFR-003-equivalent:
+  sub-millisecond against a small local name set). No network I/O for the default/only
+  built-in implementation (`LocalTyposquatCheck`); an opt-in future external source could add
+  network calls, but that requires explicit user configuration (Ask-First boundary).
+- `check` must be side-effect-free and safe to call with an empty `known_names` slice
+  (returns an empty `Vec`, never panics).
+
+**What callers may assume:**
+- `PluginManager::add`, `add_remote_ephemeral`, and the auto-update path
+  (`apply_staged_update`) all invoke the *same* configured `ReputationSource` instance
+  (threaded via `Arc<dyn ReputationSource>`), preserving the #5401 call-site-parity invariant.
+- When `PluginManager.reputation` is `None` (default), the corpus is never assembled and
+  `check` is never called — zero cost when disabled.
+- `MatchedSource` is `#[non_exhaustive]`; callers formatting warnings must handle unknown
+  future variants (e.g., a later `External(String)` source-provenance variant) without a
+  hard match.
+
+### Functional Requirements
+
+| ID | Requirement | Priority |
+|----|------------|----------|
+| FR-001 | WHEN a plugin manifest is validated for install (`add`, `add_remote_ephemeral`) or staged for auto-update (`apply_staged_update`) THE SYSTEM SHALL compare the plugin's declared name and each declared skill name against a corpus of bundled skill names (`bundled_skill_names()`), managed skill names, and other installed plugins' names/skill names using a Levenshtein-based similarity ratio | must |
+| FR-002 | WHEN a near-match is found at or above `similarity_threshold` THE SYSTEM SHALL surface a `ReputationWarning` identifying the matched name, its `MatchedSource`, and the similarity ratio, without failing the install by default (`enforcement = "warn"`) | must |
+| FR-003 | WHEN `[plugins.reputation].enabled = false` or no `ReputationSource` is attached THE SYSTEM SHALL skip the check entirely — the corpus is not assembled and the install proceeds using only the existing content-based checks (NFR-002: zero cost when disabled) | must |
+| FR-004 | THE SYSTEM SHALL expose the check as the `ReputationSource` trait so a future external source can be attached via `PluginManager::with_reputation` without changing any of the three call sites | should |
+| FR-005 | THE default (and only built-in) `ReputationSource`, `LocalTyposquatCheck`, SHALL make zero network calls; an external source requires explicit user configuration to enable network access (not implemented — trait boundary only) | must |
+| FR-006 | THE SYSTEM SHALL NOT hard-block an install/update based on a reputation warning unless `[plugins.reputation].enforcement = "block"` is configured, or `--strict-reputation` is passed to `zeph plugin add` for that invocation | must |
+| FR-007 | WHEN `enforcement = "block"` and at least one warning is produced THE SYSTEM SHALL return `PluginError::ReputationBlocked` before any file is written (`add`) or staged content is swapped (`apply_staged_update`), and log every warning at `WARN` regardless of enforcement mode | must |
+| FR-008 | Raw byte-identical names (`checked_name == known_name`) SHALL NOT warn — this is treated as a legitimate re-install/update, not a typosquat; the exact-match guard is applied on the original strings before the hyphen-stripped similarity pass, so a hyphen-stripped pair that reaches `1.0` similarity without being raw-equal still warns (catches separator-removal squats like `gitpr` vs `git-pr`) | must |
+| FR-009 | Comparisons where the shorter of the two compared names has fewer than `min_name_len` characters SHALL be skipped as noise | must |
+
+### Config Surface (`[plugins.reputation]`)
+
+```toml
+[plugins.reputation]
+enabled = true               # advisory typosquat check at install (local, zero network)
+similarity_threshold = 0.65  # [0,1]; higher = require closer match to warn = fewer warnings
+min_name_len = 3             # skip comparisons where the shorter name has fewer chars
+enforcement = "warn"         # "warn" (advisory, default) | "block" (opt-in hard gate)
+```
+
+- `enabled` (bool, default `true`) — advisory-only and zero-network, so on-by-default is
+  consistent with the existing `scan_skill_entries` posture.
+- `similarity_threshold` (f32, default `0.65`) — the loosest value that still catches the
+  motivating `github-pr`/`git-pr` example (similarity 0.667) with margin, while producing zero
+  self-collisions among Zeph's own bundled skill names.
+- `min_name_len` (usize, default `3`) — covers the bundled `git` skill; names of 1–2 characters
+  are always skipped regardless of this setting.
+- `enforcement` (`"warn"` | `"block"`, default `"warn"`) — `"block"` refuses the install/update
+  before any file is written or swapped. `zeph plugin add --strict-reputation` forces `block`
+  for a single invocation without persisting a config change.
+
+**Integration points:** CLI (`--strict-reputation` flag on `plugin add`), TUI (`AddResult.warnings`
+surfaced + `Checking plugin reputation…` spinner status, per TUI Rules), `--init` wizard prompt,
+`--migrate-config` Step 98 (commented advisory block), playbook
+(`.local/testing/playbooks/plugins.md` Scenario G, 9 sub-scenarios including G9 for the
+`--plugin-url` path), `coverage-status.md` row.
+
+### Call Sites (all three, per #5401 parity invariant)
+
+1. **`PluginManager::add`** (`install.rs`) — after `validate_manifest_for_install` and
+   `collect_skill_names`, before `copy_dir_all`. Warnings pushed to `AddResult.warnings`.
+2. **`PluginManager::add_remote_ephemeral`** (`registry.rs`, `--plugin-url` path) — after
+   manifest parse and skill-name collection, before the injection scan. Mirrors `add`'s pattern
+   exactly; wired at `src/runner.rs` via `.with_reputation_config(&config.plugins.reputation, false)`.
+3. **`apply_staged_update`** (`registry.rs`, auto-update path) — a free function; the
+   `ReputationSource` and enforcement posture are threaded in as explicit parameters (cloned
+   `Arc`/`Copy` enum) from `check_auto_updates`'s `spawn_blocking` closure, rather than relying
+   on the throwaway `tmp_mgr` built for the conflict check (which would otherwise silently never
+   run the check — the same call-site-divergence class as #5401).
+
+### Key Invariants
+
+- **Zero cost when disabled**: `PluginManager.reputation == None` (the default) means the
+  known-names corpus is never assembled and `ReputationSource::check` is never called on any
+  of the three call sites.
+- **Call-site parity**: all three install/update entry points run the check through the *same*
+  configured `ReputationSource` instance and the *same* `reputation_enforcement` value — no
+  entry point may silently use a different or absent source.
+- **Advisory by default**: `enforcement = "warn"` is the shipped default; a warning never blocks
+  an install unless the operator has explicitly opted into `"block"` (config or
+  `--strict-reputation`).
+- **No persistent storage**: `ReputationWarning` is a transient install-time result, never
+  written to the integrity registry or any other persistent store.
+
+### NEVER Constraints
+
+- **NEVER** make a network call from the default (`LocalTyposquatCheck`) reputation check.
+- **NEVER** hard-block an install/update on a reputation warning without explicit
+  `enforcement = "block"` configuration or `--strict-reputation`.
+- **NEVER** assemble the known-names corpus or invoke `ReputationSource::check` when
+  `[plugins.reputation].enabled = false` or no source is attached.
+- **NEVER** run the check on only a subset of the three install/update call sites — all three
+  must share the same configured source and enforcement posture.
+
+### Out of Scope (unchanged from the draft spec)
+
+- A live/hosted community reputation registry or database — only the local heuristic ships;
+  the `ReputationSource` trait boundary exists for a future opt-in external source.
+- Dependency-graph reputation scanning (IronClaw's other "Community Scanner" input) — deferred
+  to a separate follow-up spec.
+- Homoglyph/Unicode-confusable detection — plugin names are ASCII-only by
+  `validate_plugin_name`, structurally precluding this for the plugin-name axis; skill names
+  are a documented future refinement.
+
+## 17. Open Questions
 
 None.
 

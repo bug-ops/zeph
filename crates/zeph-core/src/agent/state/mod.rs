@@ -356,6 +356,9 @@ pub(crate) struct RuntimeConfig {
     /// (spec-072 FR-011). Read by `assemble_final_system_prompt` to add the static
     /// untrusted-image caveat line once per session.
     pub(crate) media_passthrough_note_enabled: bool,
+    /// Install-time plugin/skill name-similarity typosquat check config (spec-043, #5864).
+    /// Read by the `/plugins add` slash-command handler.
+    pub(crate) plugins_reputation: zeph_config::plugins::ReputationConfig,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.
@@ -1428,6 +1431,7 @@ impl Default for RuntimeConfig {
             safe_mode: false,
             mcp_media: zeph_config::McpMediaConfig::default(),
             media_passthrough_note_enabled: false,
+            plugins_reputation: zeph_config::plugins::ReputationConfig::default(),
         }
     }
 }

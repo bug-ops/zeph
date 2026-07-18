@@ -159,6 +159,10 @@ pub struct Config {
     /// document limit, and recall inclusion of imported rows (spec-067).
     #[serde(default)]
     pub knowledge: crate::knowledge::KnowledgeConfig,
+    /// Plugin subsystem configuration (`[plugins]`), currently the install-time
+    /// name-similarity/typosquat check (spec-043, #5864).
+    #[serde(default)]
+    pub plugins: crate::plugins::PluginsConfig,
     /// Deep-link scheme configuration (`[deep_link]`). Gated by the `deep-link` feature.
     #[cfg(feature = "deep-link")]
     #[serde(default)]
@@ -394,6 +398,7 @@ impl Default for Config {
             durable: crate::durable::DurableConfig::default(),
             caveman: crate::features::CavemanConfig::default(),
             knowledge: crate::knowledge::KnowledgeConfig::default(),
+            plugins: crate::plugins::PluginsConfig::default(),
             #[cfg(feature = "deep-link")]
             deep_link: crate::deep_link::DeepLinkConfig::default(),
         }

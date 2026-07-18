@@ -94,7 +94,11 @@ pub(crate) async fn handle_plugin_command(
             }
         }
 
-        PluginCommand::Add { source } => {
+        PluginCommand::Add {
+            source,
+            strict_reputation,
+        } => {
+            let mgr = mgr.with_reputation_config(&config.plugins.reputation, strict_reputation);
             let result = mgr.add(&source)?;
             println!("Installed plugin \"{}\".", result.name);
             if !result.installed_skills.is_empty() {
@@ -147,6 +151,10 @@ pub(crate) async fn handle_plugin_command(
         PluginCommand::Get { registry_id } => {
             #[cfg(feature = "registry")]
             {
+                // Fetched packages install via the same `mgr.add(...)` path as `plugin add`, so
+                // they get the same reputation check (spec-043, #5864). No `--strict-reputation`
+                // flag on `get` — config's `enforcement` applies as-is.
+                let mgr = mgr.with_reputation_config(&config.plugins.reputation, false);
                 registry_get(&config, &mgr, &registry_id).await?;
             }
             #[cfg(not(feature = "registry"))]

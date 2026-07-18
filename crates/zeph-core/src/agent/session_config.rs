@@ -156,6 +156,11 @@ pub struct AgentSessionConfig {
     /// `media_passthrough = true` (spec-072 FR-011). Gates the static untrusted-image
     /// caveat line added once at session-assembly time in `assemble_final_system_prompt`.
     pub media_passthrough_note_enabled: bool,
+
+    /// Install-time plugin/skill name-similarity typosquat check config (spec-043, #5864).
+    /// Read by the `/plugins add` slash-command handler so it applies the same
+    /// `plugins.reputation` policy as `zeph plugin add` and the bootstrap auto-update path.
+    pub plugins_reputation: zeph_config::plugins::ReputationConfig,
 }
 
 impl AgentSessionConfig {
@@ -242,6 +247,7 @@ impl AgentSessionConfig {
             },
             mcp_media: config.mcp.media.clone(),
             media_passthrough_note_enabled: config.mcp.servers.iter().any(|s| s.media_passthrough),
+            plugins_reputation: config.plugins.reputation.clone(),
         }
     }
 }
@@ -354,6 +360,16 @@ mod tests {
         assert_eq!(
             sc.subagent_skill_token_budget,
             config.skills.subagent_skill_token_budget.get()
+        );
+        assert_eq!(
+            sc.plugins_reputation.enabled,
+            config.plugins.reputation.enabled
+        );
+        assert!(
+            (sc.plugins_reputation.similarity_threshold
+                - config.plugins.reputation.similarity_threshold)
+                .abs()
+                < f32::EPSILON
         );
     }
 }

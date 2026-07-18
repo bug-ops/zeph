@@ -5,6 +5,8 @@
 
 use std::path::PathBuf;
 
+use crate::manager::ReputationWarning;
+
 /// Errors that can occur during plugin install, remove, or list operations.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
@@ -127,4 +129,13 @@ pub enum PluginError {
     /// plugin archives (security invariant INV-EPH-1).
     #[error("insecure URL scheme for --plugin-url: {0} (only https:// is accepted)")]
     InsecureUrl(String),
+
+    /// A plugin or skill name closely resembles a known name and
+    /// `plugins.reputation.enforcement = "block"` is configured (spec-043, #5864).
+    ///
+    /// Returned by [`crate::manager::PluginManager::add`] before any file is copied. The
+    /// auto-update path (`apply_staged_update`) reports the equivalent condition as a `String`
+    /// error and leaves the plugin at its current version — see its own docs.
+    #[error("plugin install blocked by reputation check: {0}")]
+    ReputationBlocked(ReputationWarning),
 }

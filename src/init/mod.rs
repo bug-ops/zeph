@@ -230,6 +230,8 @@ pub(crate) struct WizardState {
     pub(crate) recap_on_resume: bool,
     // Resume-visibility banner on CLI/TUI startup (spec-068 §13, #6420)
     pub(crate) resume_show_banner: bool,
+    // Install-time plugin/skill name-similarity typosquat check (spec-043, #5864)
+    pub(crate) plugins_reputation_enabled: bool,
     // Provider override persistence (#4654)
     pub(crate) persist_provider_overrides: bool,
     // MCP elicitation (#3141)
@@ -511,6 +513,7 @@ impl Default for WizardState {
             store_max_value_bytes: 65536,
             recap_on_resume: true,
             resume_show_banner: true,
+            plugins_reputation_enabled: true,
             persist_provider_overrides: true,
             mcp_elicitation_enabled: false,
             mcp_elicitation_warn_sensitive: true,
@@ -658,6 +661,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_session(&mut state)?;
     step_serve(&mut state)?;
     step_session_recap(&mut state)?;
+    step_plugins_reputation(&mut state)?;
     step_caveman(&mut state)?;
     step_knowledge(&mut state)?;
     #[cfg(feature = "deep-link")]
@@ -962,6 +966,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.store.max_value_bytes = state.store_max_value_bytes;
     config.session.recap.on_resume = state.recap_on_resume;
     config.session.resume.show_banner = state.resume_show_banner;
+    config.plugins.reputation.enabled = state.plugins_reputation_enabled;
     config.session.persist_provider_overrides = state.persist_provider_overrides;
     config.session.enabled = state.session_persistence_enabled;
     config.session.data_dir.clone_from(&state.session_data_dir);
@@ -1970,6 +1975,21 @@ fn step_session_recap(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn step_plugins_reputation(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Plugin Install Safety ==\n");
+    state.plugins_reputation_enabled = Confirm::new()
+        .with_prompt(
+            "Enable install-time typosquat check? [Y/n]\n  \
+             (local, zero-network Levenshtein-similarity check against bundled/installed \
+             names; advisory-only by default — warns, never blocks)",
+        )
+        .default(true)
+        .interact()?;
+
+    println!();
+    Ok(())
+}
+
 fn step_caveman(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Output Style ==\n");
     state.caveman_default_on = Confirm::new()
@@ -2483,6 +2503,24 @@ mod tests {
         let state = single_provider_state();
         let config = build_config(&state);
         assert!(!config.memory.store.enabled);
+    }
+
+    #[test]
+    fn build_config_plugins_reputation_enabled_by_default() {
+        // spec-043 (#5864): the wizard defaults to enabling the advisory typosquat check.
+        let state = single_provider_state();
+        let config = build_config(&state);
+        assert!(config.plugins.reputation.enabled);
+    }
+
+    #[test]
+    fn build_config_plugins_reputation_disabled_when_declined() {
+        let state = WizardState {
+            plugins_reputation_enabled: false,
+            ..single_provider_state()
+        };
+        let config = build_config(&state);
+        assert!(!config.plugins.reputation.enabled);
     }
 
     #[test]

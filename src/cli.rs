@@ -1074,6 +1074,10 @@ pub(crate) enum PluginCommand {
     Add {
         /// Local directory path to the plugin root (must contain plugin.toml)
         source: String,
+        /// Force reputation/typosquat enforcement to "block" for this invocation, overriding
+        /// `plugins.reputation.enforcement` in config.toml (spec-043, #5864)
+        #[arg(long)]
+        strict_reputation: bool,
     },
     /// Remove an installed plugin
     Remove {
@@ -1882,8 +1886,30 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Plugin {
-                command: PluginCommand::Add { source }
+                command: PluginCommand::Add { source, .. }
             }) if source == "/tmp/my-plugin"
+        ));
+    }
+
+    #[test]
+    fn cli_parses_plugin_add_strict_reputation_flag() {
+        use super::{Command, PluginCommand};
+        let cli = Cli::try_parse_from([
+            "zeph",
+            "plugin",
+            "add",
+            "/tmp/my-plugin",
+            "--strict-reputation",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Plugin {
+                command: PluginCommand::Add {
+                    strict_reputation: true,
+                    ..
+                }
+            })
         ));
     }
 }

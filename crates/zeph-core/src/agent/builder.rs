@@ -2698,6 +2698,7 @@ impl<C: Channel> Agent<C> {
             fidelity_config,
             mcp_media,
             media_passthrough_note_enabled,
+            plugins_reputation,
         } = cfg;
 
         self.tool_orchestrator.apply_config(
@@ -2770,6 +2771,7 @@ impl<C: Channel> Agent<C> {
         self.runtime.config.loop_min_interval_secs = loop_min_interval_secs;
         self.runtime.config.mcp_media = mcp_media;
         self.runtime.config.media_passthrough_note_enabled = media_passthrough_note_enabled;
+        self.runtime.config.plugins_reputation = plugins_reputation;
         self.runtime.config.goals = crate::agent::state::GoalRuntimeConfig {
             enabled: goal_config.enabled,
             max_text_chars: goal_config.max_text_chars,

@@ -1464,6 +1464,9 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         let managed_dir = self.services.skill.managed_dir.clone();
         let mcp_allowed = self.services.mcp.allowed_commands.clone();
         let base_shell_allowed = self.runtime.lifecycle.startup_shell_overlay.allowed.clone();
+        // Same reputation config the CLI/bootstrap paths use (spec-043, #5864) — threaded
+        // through so `/plugins add` gets the identical typosquat check `zeph plugin add` does.
+        let reputation_cfg = self.runtime.config.plugins_reputation.clone();
         // Collect manifest paths for ephemeral plugins. Reading the actual files is
         // deferred into the async block below to avoid blocking the tokio worker thread.
         let ephemeral_manifest_paths: Vec<std::path::PathBuf> = self
@@ -1557,6 +1560,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                     mcp_allowed,
                     base_shell_allowed,
                     ephemeral_names,
+                    &reputation_cfg,
                 )
             })
             .await

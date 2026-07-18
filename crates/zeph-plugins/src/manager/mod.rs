@@ -10,10 +10,15 @@
 //! - `store` — filesystem state and manifest reading
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use crate::types::PluginName;
+
+pub use reputation::{
+    LocalTyposquatCheck, MatchedSource, ReputationEnforcement, ReputationSource, ReputationWarning,
+};
 
 /// Result of a successful `plugin add` operation.
 #[derive(Debug)]
@@ -166,6 +171,13 @@ pub struct PluginManager {
     integrity_registry_path: PathBuf,
     /// Timeout in seconds for each HTTP phase of [`Self::add_remote`] (connect + body read).
     download_timeout_secs: u64,
+    /// Install-time name-similarity/typosquat check (spec-043, #5864). `None` (default) means
+    /// the check is disabled — [`Self::add`] and the auto-update path incur zero cost (no
+    /// corpus assembly) in that case (NFR-002).
+    reputation: Option<Arc<dyn ReputationSource>>,
+    /// Enforcement posture applied when `reputation` reports a warning. Defaults to
+    /// [`ReputationEnforcement::Warn`] (advisory-only, FR-006/SC-004).
+    reputation_enforcement: ReputationEnforcement,
 }
 
 impl PluginManager {
@@ -205,6 +217,8 @@ impl PluginManager {
             base_allowed_commands,
             integrity_registry_path,
             download_timeout_secs: 30,
+            reputation: None,
+            reputation_enforcement: ReputationEnforcement::Warn,
         }
     }
 
@@ -218,6 +232,61 @@ impl PluginManager {
         self
     }
 
+    /// Attach a [`ReputationSource`] (spec-043, #5864) that [`Self::add`] and the auto-update
+    /// path (`apply_staged_update`) will run the incoming plugin/skill names through. When not
+    /// called, `reputation` stays `None` and both call sites skip the check entirely (NFR-002).
+    #[must_use]
+    pub fn with_reputation(mut self, source: Arc<dyn ReputationSource>) -> Self {
+        self.reputation = Some(source);
+        self
+    }
+
+    /// Set the enforcement posture applied when the attached [`ReputationSource`] reports a
+    /// warning. Defaults to [`ReputationEnforcement::Warn`] (advisory-only). Has no effect
+    /// unless [`Self::with_reputation`] was also called.
+    #[must_use]
+    pub fn with_reputation_enforcement(mut self, enforcement: ReputationEnforcement) -> Self {
+        self.reputation_enforcement = enforcement;
+        self
+    }
+
+    /// Attach a [`LocalTyposquatCheck`] built directly from `[plugins.reputation]` config
+    /// (spec-043, #5864) — a convenience wrapper around [`Self::with_reputation`] +
+    /// [`Self::with_reputation_enforcement`] so every call site (CLI `plugin add`, TUI/chat
+    /// `/plugins add`, bootstrap auto-update) maps config to builder calls identically instead
+    /// of re-deriving the mapping independently. Returns `self` unchanged when
+    /// `cfg.enabled` is `false` (NFR-002).
+    ///
+    /// `force_block` corresponds to the CLI's `--strict-reputation` flag: it overrides
+    /// `cfg.enforcement` to [`ReputationEnforcement::Block`] for this manager only, without
+    /// touching the persisted config.
+    #[must_use]
+    pub fn with_reputation_config(
+        self,
+        cfg: &zeph_config::plugins::ReputationConfig,
+        force_block: bool,
+    ) -> Self {
+        if !cfg.enabled {
+            return self;
+        }
+        let source: Arc<dyn ReputationSource> = Arc::new(LocalTyposquatCheck::new(
+            cfg.similarity_threshold,
+            cfg.min_name_len,
+        ));
+        let enforcement = if force_block {
+            ReputationEnforcement::Block
+        } else {
+            match cfg.enforcement {
+                zeph_config::plugins::ReputationEnforcement::Block => ReputationEnforcement::Block,
+                // `#[non_exhaustive]`: any other/future variant falls back to the safe
+                // advisory default.
+                _ => ReputationEnforcement::Warn,
+            }
+        };
+        self.with_reputation(source)
+            .with_reputation_enforcement(enforcement)
+    }
+
     /// Override the integrity registry path. Intended for tests only.
     #[cfg(test)]
     #[must_use]
@@ -229,6 +298,7 @@ impl PluginManager {
 
 mod install;
 mod registry;
+mod reputation;
 mod security;
 mod store;
 

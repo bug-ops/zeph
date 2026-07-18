@@ -12,7 +12,9 @@ use zeph_skills::scanner::scan_skill_body;
 use crate::PluginError;
 use crate::manifest::{PluginManifest, PluginMcpServer};
 
-use super::{PluginManager, SkillScanInput, parse_frontmatter_meta};
+use super::{
+    MatchedSource, PluginManager, ReputationWarning, SkillScanInput, parse_frontmatter_meta,
+};
 
 /// The tighten-only config overlay safelist. Any key outside this list causes
 /// [`PluginError::UnsafeOverlay`] at install time.
@@ -218,9 +220,42 @@ impl PluginManager {
         skill_names: &[String],
         this_plugin: &str,
     ) -> Result<(), PluginError> {
-        let bundled = bundled_skill_names();
+        let corpus = self.known_names(this_plugin);
+        for name in skill_names {
+            if let Some((_, source)) = corpus.iter().find(|(known, _)| known == name) {
+                return Err(match source {
+                    MatchedSource::Bundled => {
+                        PluginError::SkillNameConflictWithBundled { name: name.clone() }
+                    }
+                    MatchedSource::Managed => {
+                        PluginError::SkillNameConflictWithManaged { name: name.clone() }
+                    }
+                    MatchedSource::Plugin(plugin) => PluginError::SkillNameConflictWithPlugin {
+                        name: name.clone(),
+                        plugin: plugin.clone(),
+                    },
+                });
+            }
+        }
+        Ok(())
+    }
 
-        // Managed skills: any name in the managed skills dir.
+    /// Assemble the corpus of known skill/plugin names, tagged by [`MatchedSource`], used by
+    /// both the exact-match conflict check ([`Self::check_skill_conflicts`]) and the advisory
+    /// reputation/typosquat check ([`Self::check_reputation`]) — DRY per spec-043 NFR-005.
+    ///
+    /// Skips `this_plugin`'s own skills so the auto-update path does not self-flag against the
+    /// plugin's own currently-installed skills, which are about to be replaced.
+    ///
+    /// Order is bundled, then managed, then other-plugin skills — [`Self::check_skill_conflicts`]
+    /// relies on this order to report the same conflict category (bundled > managed > plugin)
+    /// it did before this helper was extracted.
+    pub(crate) fn known_names(&self, this_plugin: &str) -> Vec<(String, MatchedSource)> {
+        let mut names: Vec<(String, MatchedSource)> = bundled_skill_names()
+            .into_iter()
+            .map(|n| (n, MatchedSource::Bundled))
+            .collect();
+
         let managed_registry = {
             let dirs: Vec<PathBuf> = if self.managed_skills_dir.exists() {
                 vec![self.managed_skills_dir.clone()]
@@ -229,40 +264,70 @@ impl PluginManager {
             };
             SkillRegistry::load(&dirs)
         };
-        let managed_names: std::collections::HashSet<String> = managed_registry
-            .all_meta()
-            .iter()
-            .map(|m| m.name.clone())
-            .collect();
+        names.extend(
+            managed_registry
+                .all_meta()
+                .iter()
+                .map(|m| (m.name.clone(), MatchedSource::Managed)),
+        );
 
-        // Other installed plugins' skill names — already collected by list_installed.
         let installed = self.list_installed().unwrap_or_default();
-        let mut other_plugin_skills: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
         for plugin in &installed {
             if plugin.name.as_str() == this_plugin {
                 continue;
             }
-            for name in &plugin.skill_names {
-                other_plugin_skills.insert(name.clone(), plugin.name.as_str().to_owned());
-            }
+            names.extend(plugin.skill_names.iter().map(|n| {
+                (
+                    n.clone(),
+                    MatchedSource::Plugin(plugin.name.as_str().to_owned()),
+                )
+            }));
         }
+        names
+    }
 
-        for name in skill_names {
-            if bundled.contains(name) {
-                return Err(PluginError::SkillNameConflictWithBundled { name: name.clone() });
-            }
-            if managed_names.contains(name) {
-                return Err(PluginError::SkillNameConflictWithManaged { name: name.clone() });
-            }
-            if let Some(other) = other_plugin_skills.get(name) {
-                return Err(PluginError::SkillNameConflictWithPlugin {
-                    name: name.clone(),
-                    plugin: other.clone(),
-                });
-            }
+    /// Advisory typosquat/reputation check (spec-043, #5864).
+    ///
+    /// Returns an empty `Vec` when no [`super::ReputationSource`] is attached
+    /// (`self.reputation.is_none()`) — the corpus is not assembled in that case, satisfying
+    /// NFR-002 (zero cost when disabled). Checks `plugin_name` and every entry in
+    /// `skill_names` against the shared [`Self::known_names`] corpus, extended with every other
+    /// installed plugin's own *name* (not just its skill names) — FR-001 reads "bundled skill
+    /// names … and currently-installed **plugin**/skill names", so a plugin-name-vs-plugin-name
+    /// squat (e.g. installing `acme-tool` to impersonate an installed `acme-tools` whose skills
+    /// happen to be named differently) must be caught too. Plugin names are deliberately NOT
+    /// added to [`Self::known_names`] itself — that corpus also feeds
+    /// [`Self::check_skill_conflicts`]'s exact-match check, and an incoming *skill* exactly
+    /// matching another plugin's *name* is not a skill-name conflict.
+    #[tracing::instrument(name = "plugins.security.reputation_check", skip_all, fields(plugin = %plugin_name))]
+    pub(crate) fn check_reputation(
+        &self,
+        plugin_name: &str,
+        skill_names: &[String],
+        this_plugin: &str,
+    ) -> Vec<ReputationWarning> {
+        let Some(source) = &self.reputation else {
+            return Vec::new();
+        };
+        let mut corpus = self.known_names(this_plugin);
+        corpus.extend(
+            self.list_installed()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|plugin| {
+                    (plugin.name.as_str() != this_plugin).then(|| {
+                        (
+                            plugin.name.to_string(),
+                            MatchedSource::Plugin(plugin.name.to_string()),
+                        )
+                    })
+                }),
+        );
+        let mut warnings = source.check(plugin_name, &corpus);
+        for skill in skill_names {
+            warnings.extend(source.check(skill, &corpus));
         }
-        Ok(())
+        warnings
     }
 }
 
