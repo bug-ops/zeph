@@ -17,6 +17,27 @@ Query-aware memory routing (`MemoryRouter` trait, `HeuristicRouter` default) cla
 
 Includes a document ingestion subsystem for loading, chunking, and storing user documents (text, Markdown, PDF) into Qdrant for RAG workflows.
 
+## Usage
+
+```rust,no_run
+use zeph_llm::any::AnyProvider;
+use zeph_memory::semantic::SemanticMemory;
+
+# async fn example(provider: AnyProvider) -> Result<(), zeph_memory::MemoryError> {
+// Qdrant connection is best-effort: semantic search degrades gracefully if unavailable.
+let memory = SemanticMemory::new(
+    "zeph.db",
+    "http://localhost:6334",
+    None,
+    provider,
+    "qwen3-embedding",
+)
+.await?;
+# let _ = memory;
+# Ok(())
+# }
+```
+
 **SYNAPSE spreading activation** enables multi-hop graph retrieval: seed entities are activated, then energy propagates through the entity graph with hop-by-hop decay (configurable lambda), lateral inhibition, and edge-type filtering. Configure via `[memory.graph.spreading_activation]`.
 
 **MAGMA multi-graph memory** provides typed edges (`EdgeType` enum: uses, related_to, part_of, depends_on, created_by, authored, manages, contains) for fine-grained relationship tracking and edge-type-aware traversal.

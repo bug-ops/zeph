@@ -32,6 +32,8 @@ Implements a multi-stage security pipeline that processes all external data befo
 | `ipi_filter::IpiFilter` / `IpiVerdict` | Indirect prompt injection filter and verdict type |
 | `ContentSource` | Source metadata with `ContentSourceKind` and optional `MemorySourceHint` for memory retrieval classification |
 | `MemorySourceHint` | `ConversationHistory` / `LlmSummary` / `ExternalContent` — classifies memory retrieval sources to suppress false positive injection flags on recalled user text and LLM-generated summaries |
+| `media::MediaSanitizer` | Validation pipeline for MCP-sourced images: magic-byte vs declared-MIME check, format allowlist, byte-size cap, and decoded-dimension/pixel caps (decompression-bomb defense) before an image is attached as a native `MessagePart::Image` |
+| `media::MediaRejected` | Typed rejection reason (`SizeExceeded`, `DimensionExceeded`, `MimeMismatch`, `DecodeFailed`, format-not-allowed); the text placeholder always remains as a fallback |
 
 ## Architecture
 
@@ -49,6 +51,9 @@ The crate is a layered defense-in-depth pipeline; each layer is independently co
 | 8 | `causal_ipi::TurnCausalAnalyzer` | Behavioral deviation detection at tool-return boundaries |
 | 9 | `nli::NliSanitizer` | Probabilistic NLI entailment check for injected instructions |
 | 10 | `secret_mask::SecretMaskRegistry` | Vault-secret placeholder masking at the LLM boundary |
+
+> [!NOTE]
+> `media::MediaSanitizer` is a separate, image-specific validation pipeline for MCP tool-result passthrough (`[mcp.media]`) — it does not sit in the text-content layer chain above and is invoked directly by `zeph-mcp`'s tool executor when a server has `media_passthrough` enabled.
 
 ### Sanitization pipeline (layer 1 detail)
 

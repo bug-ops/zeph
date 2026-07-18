@@ -18,7 +18,13 @@ Detects when a user is implicitly correcting a previous agent response — witho
 
 ```toml
 [dependencies]
-zeph-agent-feedback = { version = "0.22", workspace = true }
+zeph-agent-feedback = "0.22"
+```
+
+Or with cargo-add:
+
+```bash
+cargo add zeph-agent-feedback
 ```
 
 **Note:** Requires Rust 1.97 or later (Edition 2024).

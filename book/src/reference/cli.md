@@ -56,14 +56,19 @@ tokens are shown only with `--reveal`, which decrypts through the vault-resolved
 | `durable list [--status <s>] [--kind <k>] [--limit <n>]` | List executions, newest first |
 | `durable show <id> [--reveal]` | Show an execution's journal entries (metadata only by default) |
 | `durable inspect <id> --step <n> [--reveal]` | Inspect a single step entry |
+| `durable cancel <id>` | Cancel an in-flight durable execution |
 | `durable prune [--dry-run]` | Sweep terminal executions past their TTL |
 | `durable resume <id>` | Report resume state for an execution |
+| `durable rotate-key [--dry-run] [--force]` | Rotate the durable encryption key (see [Key Rotation](../reference/security/durable-encryption.md#key-rotation)) |
 
 ```bash
 zeph durable list --status running          # in-flight executions
 zeph durable show <uuid>                     # redacted journal entries
 zeph durable show <uuid> --reveal            # decrypted payloads (prints a warning)
+zeph durable cancel <uuid>                   # cancel an in-flight execution
 zeph durable prune --dry-run                 # how many would be pruned
+zeph durable rotate-key                      # rotate the encryption key
+zeph durable rotate-key --drop-previous      # close rotation window after safe period
 ```
 
 ### `zeph init`
@@ -400,12 +405,12 @@ zeph router stats --state-path /custom/path.json
 
 ### `zeph schedule`
 
-Manage cron-based scheduled jobs from the command line. Requires the `scheduler` feature. All commands read the same SQLite database used by the running agent.
+Manage scheduled jobs from the command line. Requires the `scheduler` feature. All commands read the same SQLite database used by the running agent.
 
 | Subcommand | Description |
 |------------|-------------|
-| `schedule list` | List all active scheduled jobs with NAME, KIND, MODE, NEXT RUN, and CRON columns |
-| `schedule add <CRON> <PROMPT>` | Add a new periodic job with a cron expression and task prompt |
+| `schedule list` | List all active scheduled jobs with NAME, KIND, MODE, NEXT RUN, and CRON/RUN-AT columns |
+| `schedule add <PROMPT> [CRON]` | Add a new periodic job with a task prompt and optional cron expression |
 | `schedule remove <NAME>` | Remove a scheduled job by name |
 | `schedule show <NAME>` | Show full details for a single job |
 
@@ -413,11 +418,17 @@ Manage cron-based scheduled jobs from the command line. Requires the `scheduler`
 # List all scheduled jobs
 zeph schedule list
 
-# Add a daily cleanup job at 03:00 UTC
-zeph schedule add "0 3 * * *" "run memory cleanup"
+# Add a periodic job — cron expression
+zeph schedule add "run memory cleanup" "0 3 * * *"
 
 # Add with an explicit name and task kind
-zeph schedule add "0 3 * * *" "run memory cleanup" --name daily-cleanup --kind memory_cleanup
+zeph schedule add "run memory cleanup" "0 3 * * *" --name daily-cleanup --kind memory_cleanup
+
+# Add a one-shot job — fire once at a specific time
+zeph schedule add "generate end-of-week summary" --run-at "2026-07-25T18:00:00Z"
+
+# Add a one-shot job — natural language time (examples: "in 1 hour", "tomorrow 09:00", "today 14:30")
+zeph schedule add "send reminder" --run-at "in 2 hours"
 
 # Show details of a job
 zeph schedule show daily-cleanup
@@ -426,12 +437,15 @@ zeph schedule show daily-cleanup
 zeph schedule remove daily-cleanup
 ```
 
+**Note:** In v0.22.2+, the argument order for `schedule add` changed from `<CRON> <PROMPT>` to `<PROMPT> [CRON]` to support the new `--run-at` flag for one-shot tasks. Existing scripts using the old order will need to be updated.
+
 `schedule add` options:
 
 | Flag | Description |
 |------|-------------|
 | `--name <NAME>` | Job name (auto-generated from prompt hash if omitted) |
 | `--kind <KIND>` | Task kind string (default: `custom`) |
+| `--run-at <TIME>` | Schedule a one-shot task instead of a recurring one. Accepts RFC 3339, relative formats (`+2h`, `+30m`), or natural language (`in 1 hour`, `tomorrow 09:00`) |
 
 See [Scheduler](../concepts/scheduler.md) for the full list of built-in task kinds, cron expression formats, and how jobs are persisted.
 

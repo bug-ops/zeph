@@ -48,6 +48,8 @@ Core orchestration crate for the Zeph agent. Manages the main agent loop, bootst
 | `debug_dump` | `DebugDumper` — writes numbered `{id:04}-request.json`, `{id:04}-response.txt`, and `{id:04}-tool-{name}.txt` files to a timestamped session directory; request dumps include model, token limit, tools, temperature, cache metadata, and message payloads in both `json` and `raw` formats; enabled via `--debug-dump [PATH]` CLI flag, `[debug] enabled = true` config, or `/debug-dump [path]` slash command; hooks into both streaming and non-streaming LLM paths and before `maybe_summarize_tool_output` |
 | `agent::log_commands` | `/log` slash command handler — displays current `LoggingConfig` (file path, level, rotation, max files) and tails the last 20 lines from the active log file |
 | `hash` | `content_hash` — BLAKE3 hex digest utility |
+| `history_integrity` | Concrete vault-key resolution for the transcript/session-log hash-chain (`zeph-subagent`/`zeph-session` stay vault-free by design); derives history-chain subkeys from `ZEPH_HISTORY_KEY`, decoupled from `ZEPH_DURABLE_KEY` |
+| `anchor_store` | `AgeVaultAnchorStore` — concrete `AnchorStore` implementation backing vault-anchor downgrade resistance for transcripts and sessions (`[integrity]`); `run_anchor_sweep` bounds vault growth to `O(max_session_anchors + max_transcript_files)`, evicting oldest anchors by their embedded `written_at`, never filesystem mtime |
 | `pipeline` | Composable, type-safe step chains for multi-stage workflows |
 | `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle with background execution, `SubAgentDef` YAML definitions with 4-level resolution priority (CLI > project > user > config) and scope labels, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access (with `tools.except` additional denylist), `PermissionMode` enum (`Default`, `AcceptEdits`, `DontAsk`, `BypassPermissions`, `Plan`), `max_turns` turn cap, A2A in-process channels, `SubAgentState` lifecycle enum (`Submitted`, `Working`, `Completed`, `Failed`, `Canceled`), real-time status tracking, persistent JSONL transcript storage with resume-by-ID (`TranscriptWriter`/`TranscriptReader`, `TranscriptMeta` sidecar, prefix-based ID lookup, automatic old transcript sweep); CRUD helpers: `serialize_to_markdown()` (round-trip Markdown serialization), `save_atomic()` (write-rename with parent-dir creation and name validation), `delete_file()`, `default_template()` (scaffold for new definitions); `AgentsCommand` enum drives the `zeph agents` CLI subcommands |
 | `subagent::hooks` | Lifecycle hooks for sub-agents: `HookDef` (shell command with timeout and fail-open/closed policy), `HookMatcher` (pipe-separated tool-name patterns), `SubagentHooks` (per-agent `PreToolUse`/`PostToolUse` from YAML frontmatter); config-level `SubagentStart`/`SubagentStop` events; `fire_hooks()` executes sequentially with env-cleared sandbox and child kill on timeout |
@@ -185,6 +187,22 @@ provider = "fast"   # optional; references [[llm.providers]] name
 
 > [!TIP]
 > Use `/recap` to request a session recap on demand at any time during a session, regardless of the `enabled` setting.
+
+Key `IntegrityConfig` fields (TOML section `[integrity]`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `anchor` | `"vault"` / `"none"` | `"vault"` | Vault-anchor downgrade resistance for transcript/session hash-chains. `"vault"` writes a per-file anchor on finalize, closing the gap where a whole-file chain-field strip would otherwise be indistinguishable from legacy pre-feature content; degrades gracefully to chain-only protection if the vault is unreachable at bootstrap. `"none"` opts out |
+| `max_session_anchors` | usize | `512` | Upper bound on session anchors retained in the vault; the reconcile sweep evicts the oldest (by embedded `written_at`) once exceeded — an evicted session degrades to chain-only protection, never a brick |
+
+```toml
+[integrity]
+anchor              = "vault"
+max_session_anchors = 512
+```
+
+> [!NOTE]
+> Vault-anchor protection layers on top of the always-available keyed-BLAKE3 hash-chain (`ZEPH_HISTORY_KEY`), which alone detects in-place edits but not a fully consistent whole-file strip. Manage sealed durable executions and manual verification via the `zeph durable seal-integrity` and `zeph sessions verify` CLI subcommands.
 
 Key `DebugConfig` fields (TOML section `[debug]`):
 

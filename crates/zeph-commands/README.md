@@ -110,11 +110,11 @@ Commands are grouped into categories for `/help` output:
 |---|---|
 | `Session` | `/clear`, `/reset`, `/exit`, `/new`, … |
 | `Configuration` | `/model`, `/provider`, `/guardrail`, … |
-| `Memory` | `/memory`, `/graph`, `/compact`, `/guidelines`, … |
+| `Memory` | `/memory`, `/graph`, `/compact`, `/guidelines`, `/store`, … |
 | `Skills` | `/skill`, `/skills`, `/feedback`, … |
 | `Planning` | `/plan`, `/focus`, `/sidequest`, … |
 | `Debugging` | `/debug-dump`, `/log`, `/lsp`, `/status`, … |
-| `Integration` | `/mcp`, `/image`, `/agent`, … |
+| `Integration` | `/mcp`, `/image`, `/agent`, `/search`, … |
 | `Advanced` | `/experiment`, `/policy`, `/scheduler`, … |
 
 ## Features

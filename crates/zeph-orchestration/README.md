@@ -22,7 +22,7 @@ Implements the multi-agent task orchestration pipeline extracted from `zeph-core
 | `cascade` | `CascadeDetector`, `CascadeConfig`, `RegionHealth` — cascading-failure detection and abort decisions |
 | `lineage` | `ErrorLineage`, `classify_error` — error provenance tracking across the DAG |
 | `router` | `AgentRouter` trait + `RuleBasedRouter` — 3-step fallback task-to-agent routing |
-| `command` | `PlanCommand` parser for `/plan` CLI slash commands |
+| `command` | `PlanCommand` parser for `/plan` CLI slash commands; `HandoffCommand`/`parse_handoff_command`/`has_handoff_fence` — parses a node's trailing ` ```zeph-command ` fenced JSON block for Command-style dynamic task handoff (spec-080, feature `[orchestration.command]`) |
 | `error` | `OrchestrationError` unified error type |
 | `planner` | `Planner` trait + `LlmPlanner` — goal decomposition via `chat_typed` structured output (feature `llm-planning`) |
 | `aggregator` | `Aggregator` trait + `LlmAggregator` — synthesizes completed task outputs; content-sanitized before injection (feature `llm-planning`) |
@@ -57,9 +57,27 @@ planner_max_tokens = 4096          # LLM token budget for goal decomposition
 dependency_context_budget = 16384  # chars of cross-task context injected per task
 confirm_before_execute = true      # require /plan confirm before starting
 aggregator_max_tokens = 4096       # token budget for LlmAggregator synthesis call
+whole_plan_verifier_timeout_secs = 0  # timeout for the whole-plan verify_plan() call; 0 = fall back to verifier_timeout_secs
+
+[orchestration.command]
+enabled      = false   # opt-in: node-agent-driven dynamic task handoff via a zeph-command block
+max_handoffs = 16      # per-graph livelock budget on Command.goto handoffs
 ```
 
 Deterministic ensemble-merge verification (opt-in, disabled by default) has its own `[orchestration.ensemble]` table — see the `ensemble` module above.
+
+## Command-style dynamic task handoff
+
+Opt-in LangGraph-`Command`-style routing (spec-080, `[orchestration.command]`, default disabled): a DAG node's agent can end its output with a trailing fenced block naming an alternate target task and a state update, instead of following the statically declared `depends_on` graph:
+
+````text
+Investigated the failure.
+```zeph-command
+{"goto": "2", "update": {"finding": "root cause found"}}
+```
+````
+
+`dag::try_handoff` resolves `goto` against the graph (by `TaskId` or unique title — an ambiguous or absent match is rejected as `OrchestrationError::InvalidHandoffTarget`, never guessed), activates the target forward-only within `max_handoffs`, and persists `update` into the cross-thread key-value store (`zeph-memory`, `[memory.store]`, exposed via `zeph store` CLI / `/store` slash command in `zeph-commands`) before the routed-to node's prompt is built. `zeph-orchestration` has no production dependency on `zeph-memory` — all store I/O is performed by the `zeph-core` binding layer, per the design's layering invariant. The parsed command is scanned through the sanitizer before it can drive routing or a store write.
 
 ## Failure strategies
 
@@ -73,6 +91,9 @@ Deterministic ensemble-merge verification (opt-in, disabled by default) has its 
 > [!NOTE]
 > A `TaskNode` can also carry a declarative `recovery: RecoveryAction` (Mode 1, spec `075-orchestration-node-control-parity`). On an `Abort`-default or retry-exhausted `Retry` failure, a node with `recovery` set is marked `Completed` with `state_injection` substituted as its output instead of failing the graph, letting downstream tasks proceed. `run_timeout_secs` on the same node bounds both spawned and `RunInline` dispatch; `None` falls back to `OrchestrationConfig::task_timeout_secs`.
 
+> [!NOTE]
+> A `TaskNode` can instead set `route_to: Some(TaskId)` (Mode 2, mutually exclusive with `recovery`) — on the same failure conditions, the target node is activated as an alternate fallback branch instead of substituting inline state. The fallback node starts in a `Dormant` state (excluded from normal scheduling) until `dag::mark_dormant_route_to_targets` activates it on failure.
+
 ## Plan template caching
 
 When a goal is decomposed into a task graph, the resulting structure is cached as a `PlanTemplate` keyed by a normalized goal hash. Subsequent requests with semantically equivalent goals reuse the cached template instead of invoking the LLM planner, reducing latency and token costs for repeated orchestration patterns.
@@ -83,6 +104,7 @@ When a goal is decomposed into a task graph, the resulting structure is cached a
 - `zeph-memory::RawGraphStore` / `TaskGraphStore` persists graph state
 - `zeph-sanitizer::ContentSanitizer` wraps cross-task context before injection
 - `zeph-subagent::SubAgentManager::spawn_for_task()` spawns sub-agents per task
+- `zeph-memory`'s cross-thread key-value store backs Command-style handoff state updates — accessed only through `zeph-core`, never directly by this crate
 
 ## Feature flags
 

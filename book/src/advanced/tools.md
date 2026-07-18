@@ -21,6 +21,8 @@ Each tool executor declares its definitions via `tool_definitions()`. On every L
 | `grep` | Search file contents with regex | `ToolCall` | `pattern` (string) | `path` (string), `case_sensitive` (boolean) |
 | `web_scrape` | Scrape data from a web page via CSS selectors | ` ```scrape ` | `url` (string), `select` (string) | `extract` (string), `limit` (integer) |
 | `fetch` | Fetch a URL and return plain text (no selector required) | `ToolCall` | `url` (string) | |
+| `web_search` | Search the web via a search provider | `ToolCall` | `query` (string) | `limit` (integer) |
+| `get_current_time` | Get the current wall-clock time in RFC 3339 format | `ToolCall` | | |
 | `diagnostics` | Run `cargo check` or `cargo clippy` and return structured diagnostics | `ToolCall` | | `kind` (`check`\|`clippy`), `max_diagnostics` (integer) |
 
 ## FileExecutor
@@ -206,6 +208,86 @@ max_body_bytes = 1048576  # Maximum response body size in bytes (default: 1 MiB)
 | `select` | Yes | — | CSS selector |
 | `extract` | No | `text` | Extraction mode: `text`, `html`, or `attr:<name>` |
 | `limit` | No | `10` | Maximum number of matching elements to return |
+
+## WebSearchExecutor — `web_search` tool
+
+`WebSearchExecutor` enables the agent to discover URLs on its own by searching the web. The tool is disabled by default and must be explicitly enabled via configuration.
+
+### Setup
+
+Web search requires an API key from a supported search provider. Currently, Brave Search is supported. Store the API key in the age vault:
+
+```bash
+zeph vault set ZEPH_WEB_SEARCH_API_KEY <your-api-key>
+```
+
+Enable in config:
+
+```toml
+[tools.search]
+enabled = true
+provider = "brave"  # Currently the only supported provider
+```
+
+### How it works
+
+The `web_search` tool accepts a natural-language query and returns ranked results with titles, URLs, and snippets. Results are never automatically fetched — the agent must explicitly call `fetch` or `web_scrape` to open a returned URL.
+
+```json
+{
+  "query": "how to write rust async code",
+  "limit": 5
+}
+```
+
+Returns:
+
+```json
+[
+  {
+    "title": "Async Rust Programming",
+    "url": "https://example.com/async",
+    "snippet": "Learn how to write efficient async Rust code..."
+  },
+  ...
+]
+```
+
+### SSRF and security
+
+Search results pass through the same SSRF validation as `web_scrape` and `fetch`: private IPs and hostnames are excluded from results. Snippets and titles pass through IPI filtering to prevent exfiltration attacks.
+
+### Configuration
+
+```toml
+[tools.search]
+enabled = false              # Enable web search (default: false)
+provider = "brave"          # Search provider (default: brave)
+max_results = 10            # Maximum results per query (default: 10)
+```
+
+## Time and Scheduling
+
+### `get_current_time` tool
+
+The agent can query the current wall-clock time using the `get_current_time` tool. This is useful for reasoning about deadlines, scheduling decisions, and time-aware workflows.
+
+```json
+{}
+```
+
+Returns the current time in RFC 3339 format (e.g., `2026-07-18T12:34:56Z`). No parameters required.
+
+### Time-reminder injection
+
+Optionally enable periodic time reminders in the volatile system prompt to keep the agent aware of the passage of time:
+
+```toml
+[agent]
+time_reminder_interval_secs = 300  # Inject a time reminder every 5 minutes (default: disabled)
+```
+
+When enabled, every N seconds the agent's system prompt is updated with the current time, allowing it to reason about elapsed time within a session.
 
 ## Native Tool Use
 

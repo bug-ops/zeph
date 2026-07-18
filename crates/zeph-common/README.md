@@ -20,6 +20,8 @@ Provides foundational utilities used across multiple Zeph crates: Unicode-safe s
 | `sanitize` | Low-level sanitization primitives (null byte stripping, control character removal) |
 | `fs_secure` | Secure file I/O helpers — `open_private_truncate`, `append_private`, `write_private`, `atomic_write_private`; all create files with mode `0o600` independent of process umask; `atomic_write_private` uses `O_EXCL` on the temp file and fsyncs before rename for crash safety |
 | `secrets` | Canonical secret-token and path-prefix constants (`SECRET_PREFIXES`, `PATH_PREFIXES`, `BEARER_TOKEN_PATTERN`, `JWT_PATTERN`) shared by redaction layers across crates — the single source of truth so `zeph-core::redact` and `zeph-memory` compression guidelines can't drift apart |
+| `hash_chain` | Keyed-BLAKE3 hash-chain primitive for tamper-evident, append-only JSONL history — the shared core behind transcript (`zeph-subagent`) and session (`zeph-session`) integrity (issue #6360) |
+| `anchor` | Vault-anchor downgrade-resistance primitives — a per-file attestation record checked on read to detect a whole-file chain strip that `hash_chain` alone cannot catch (issue #6449) |
 | `treesitter` | Tree-sitter query constants and parser helpers for Rust, Python, JavaScript, TypeScript, Go, Bash, TOML, JSON, Markdown (optional, requires `treesitter` feature) |
 
 ## Usage

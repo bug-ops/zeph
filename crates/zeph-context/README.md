@@ -12,6 +12,15 @@ This crate contains the **stateless and data-only** parts of context management 
 `zeph-core`. It has no dependency on `zeph-core` — callers implement the `IndexAccess` trait and
 populate `ContextMemoryView` before each assembly pass.
 
+## Usage
+
+```rust
+use zeph_context::budget::ContextBudget;
+
+let budget = ContextBudget::new(128_000, 0.15);
+assert_eq!(budget.max_tokens(), 128_000);
+```
+
 ## Modules
 
 - `budget` — `ContextBudget` and `BudgetAllocation` for token budget calculation

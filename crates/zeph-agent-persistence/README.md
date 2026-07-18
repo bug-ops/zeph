@@ -26,6 +26,7 @@ zeph-agent-persistence = { version = "0.22", workspace = true }
 | `MemoryPersistenceView<'a>` | Borrow-lens over the agent's memory state (passed by `zeph-core`) |
 | `SecurityView<'a>` | Read-only borrow-lens over security state (exfiltration guard flag) |
 | `MetricsView<'a>` | Mutable borrow-lens over metrics counters |
+| `SessionSink` | Dual-writes turn messages to the durable `zeph-session` JSONL event log ahead of the SQLite projection, so the log never lags the projection (spec-068 INV-SP-1) |
 
 ## Usage
 

@@ -19,11 +19,38 @@ zeph --tui
 # Via environment variable
 ZEPH_TUI=true zeph
 
+# Via --bare mode (TUI optimized for sub-agent transcript forwarding)
+zeph --tui --bare
+
 # Connect to a remote daemon (requires tui + a2a features)
 zeph --connect http://localhost:3000
 ```
 
 When using `--connect`, the TUI renders token-by-token streaming from the remote agent via A2A SSE. See [Daemon Mode](../guides/daemon-mode.md) for the full setup guide.
+
+### Bare Mode and Live Transcript Forwarding
+
+The `--bare` flag optimizes the TUI for sub-agent coordination by enabling live transcript forwarding. When enabled, the agent forwards its current transcript to spawned sub-agents in real time, allowing them to maintain full context awareness and coordinate their work more effectively.
+
+```bash
+zeph --tui --bare
+```
+
+Live transcript forwarding is **opt-in** via the `[subagent]` config section:
+
+```toml
+[subagent]
+live_transcript_forwarding = true  # Enable real-time transcript sharing with sub-agents
+```
+
+Benefits of live transcript forwarding:
+
+- Sub-agents can observe the parent agent's actions and reasoning in real time
+- Better coordination on multi-step workflows and parallel tasks
+- Reduced re-context overhead for sub-agents joining mid-session
+- Improved consistency when sub-agents need to track state changes
+
+Note: Enabling this increases network traffic between parent and sub-agents. Only enable if you have sub-agents spawning frequently or working on highly coordinated tasks.
 
 ## Layout
 

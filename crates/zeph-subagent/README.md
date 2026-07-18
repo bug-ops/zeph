@@ -20,7 +20,8 @@ Manages the full lifecycle of sub-agents: loading YAML definitions from disk, sp
 | `grants` | `PermissionGrants`, `Grant`, `GrantKind`, `SecretRequest` — zero-trust delegation |
 | `filter` | `FilteredToolExecutor` — scoped tool access with `tools.except` additional denylist; `PlanModeExecutor` — restricts to read-only tools |
 | `hooks` | `HookDef`, `HookMatcher`, `SubagentHooks` — `PreToolUse`/`PostToolUse` per-agent hooks; `SubagentStart`/`SubagentStop` config-level hooks |
-| `transcript` | `TranscriptWriter`, `TranscriptReader` — JSONL-backed history with `.meta.json` sidecars; prefix-based ID lookup; resume-by-ID |
+| `transcript` | `TranscriptWriter`, `TranscriptReader` — JSONL-backed history with `.meta.json` sidecars; prefix-based ID lookup; resume-by-ID; keyed-BLAKE3 hash-chained entries with vault-anchor downgrade resistance (opt-in, see [Transcript integrity](#transcript-integrity)) |
+| `forward` | `ForwardSurfaces` — opt-in, per-turn forwarding of a running sub-agent's full text/thinking output to the TUI detail view and/or `--bare` stdout via a per-task `mpsc` ingress and a manager-owned sanitizing drain; disabled by default (`forward_transcript`) |
 | `memory` | `MemoryScope` — `User`/`Project`/`Local`; memory directory lifecycle; injection into sub-agent system prompt |
 | `state` | `SubAgentState` — `Submitted`/`Working`/`Completed`/`Failed`/`Canceled` |
 | `resolve` | Definition discovery and 4-level priority resolution (CLI > project > user > config) |
@@ -122,6 +123,26 @@ Resume a previous session:
 ```
 
 `TranscriptReader` performs prefix-based lookup — partial IDs are resolved to the most recent matching session.
+
+## Transcript integrity
+
+Each appended `TranscriptEntry` carries a keyed-BLAKE3 hash-chain link (`chain`) binding its content to every prior entry in the file, so an in-place edit or partial field strip breaks verification on the next read (fail-closed). Chain verification is opt-in and off by default — it activates once a process configures a history-integrity key ring (`ZEPH_HISTORY_KEY` in the vault) via `configure_history_integrity`. Pre-feature transcripts with no `chain` field anywhere are treated as legacy and auto-trusted.
+
+A per-file vault anchor (`{epoch, count, head, written_at}`, mirrored to the age vault on finalize) closes the residual gap where an attacker with file-write access strips every `chain` field, which would otherwise be indistinguishable from genuine legacy content. Controlled by the root `[integrity]` config section (`anchor = "vault"` by default, `"none"` to opt out); see `zeph-core`'s `anchor_store` module for the sweep that bounds vault growth.
+
+> [!NOTE]
+> Transcript integrity is process-global, configured once at bootstrap by the `zeph` binary — this crate never resolves vault keys itself (`zeph-subagent` has no `zeph-vault` dependency).
+
+## Live transcript forwarding
+
+Opt-in, per-turn forwarding of a running sub-agent's full text/thinking output to the TUI runtime detail view and/or a `--bare` stdout JSON sink, instead of only the once-per-turn status snippet or the blocking end-of-run result:
+
+```toml
+[agents]
+forward_transcript = false   # default: false; also settable via --forward-subagent-text or ZEPH_AGENTS_FORWARD_TRANSCRIPT
+```
+
+Forwarding is structurally non-blocking on the sub-agent's own turn loop: `agent_loop.rs` does a non-blocking `try_send` of a `RawChunk` into a bounded per-task `mpsc` (capacity 128, tail-drop on full), and a manager-owned drain performs the one sanitize step before dispatching to whichever consumer surfaces (`ForwardSurfaces`) are active for the session.
 
 ## Features
 

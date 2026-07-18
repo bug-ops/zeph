@@ -777,6 +777,7 @@ confirm_before_execute = true           # Show task summary and require /plan co
 aggregator_max_tokens = 4096            # Token budget for the aggregation LLM call (default: 4096)
 # topology_selection = false            # Enable topology classification and adaptive dispatch (default: false, requires experiments feature)
 # verify_provider = ""                  # Provider name from [[llm.providers]] for post-task completeness verification; empty = primary provider
+verify_timeout_secs = 120                # Timeout for post-task completeness verification LLM call in seconds (default: 120)
 
 [orchestration.plan_cache]
 # enabled = false                       # Enable plan template caching (default: false)

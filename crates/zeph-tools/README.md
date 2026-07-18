@@ -19,6 +19,7 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `shell` | Shell command executor with tokenizer-based command detection, escape normalization, and transparent wrapper skipping; receives skill-scoped env vars injected by the agent for active skills that declare `x-requires-secrets`. Default `confirm_patterns` cover process substitution (`<(`, `>(`), here-strings (`<<<`), and `eval` |
 | `file` | File operation executor |
 | `scrape` | Web scraping executor with SSRF protection: HTTPS-only, pre-DNS host blocklist, post-DNS private IP validation, pinned address client, and redirect chain defense (up to 3 hops each re-validated before following) |
+| `search` | `WebSearchExecutor` — the `web_search` tool: issues a natural-language query to an external search provider (Brave) and returns ranked `title`/`url`/`snippet` results without requiring a pre-known URL. Reuses `scrape`'s SSRF validation and IPI filtering; result URLs are never auto-fetched. Disabled by default, gated by `[tools.search]` |
 | `composite` | `CompositeExecutor` — chains executors with middleware |
 | `filter` | Output filtering pipeline — unified declarative TOML engine with 9 strategy types (`strip_noise`, `truncate`, `keep_matching`, `strip_annotated`, `test_summary`, `group_by_rule`, `git_status`, `git_diff`, `dedup`) and 19 embedded built-in rules; user-configurable via `filters.toml` |
 | `permissions` | Permission checks for tool invocation |
@@ -66,8 +67,6 @@ allow_read = ["/home/user/projects/**"]
 
 `claim_source` is now propagated into `AdversarialPolicyGateExecutor` audit entries, so audit logs record which claim triggered the gate decision. `extract_paths` detects relative path tokens (e.g. `src/main.rs`) in addition to absolute paths.
 
-## Security
-
 ### SSRF Protection in `WebScrapeExecutor`
 
 `WebScrapeExecutor` applies a layered SSRF defense:
@@ -91,7 +90,24 @@ The `ShellExecutor` enforces two layers of protection:
 **Warning:**
 > `find_blocked_command` does **not** detect commands hidden inside `eval`/`bash -c` string arguments or variable expansion (`$cmd`). Backtick substitution (`` `cmd` ``), `$(cmd)`, and process substitution (`<(...)` / `>(...)`) are now detected by the blocklist tokenizer; they are also covered by `confirm_patterns` as a second layer. For high-security deployments, complement this filter with OS-level sandboxing.
 
-## Installation
+## WebSearchExecutor — `web_search` tool
+
+Disabled by default. Requires a Brave Search API key stored in the age vault, then enabled via `[tools.search]`:
+
+```bash
+zeph vault set ZEPH_WEB_SEARCH_API_KEY <your-api-key>
+```
+
+```toml
+[tools.search]
+enabled      = true
+backend      = "brave"   # currently the only supported provider
+max_results  = 10
+```
+
+The pinned `reqwest::Client` used for the search endpoint is cached and reused across calls
+keyed by the resolved (sorted, deduplicated) address set, avoiding a fresh TCP+TLS handshake
+per query while preserving SSRF address-pinning on every resolution change.
 
 ## Anomaly detection configuration
 

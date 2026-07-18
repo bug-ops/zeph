@@ -37,6 +37,30 @@ Full symbol extraction (functions, types, impls) drives repo map and MCP tools; 
 | Go | functions, structs, interfaces | yes |
 | Bash, TOML, JSON, Markdown | — | yes |
 
+## Usage
+
+```rust,no_run
+use std::sync::Arc;
+use zeph_index::indexer::{CodeIndexer, IndexerConfig};
+use zeph_index::retriever::{CodeRetriever, RetrievalConfig};
+use zeph_index::store::CodeStore;
+# async fn example() -> zeph_index::Result<()> {
+# let store: CodeStore = panic!("placeholder");
+# let provider: Arc<zeph_llm::any::AnyProvider> = panic!("placeholder");
+
+// Build and run initial project index.
+let indexer = CodeIndexer::new(store.clone(), Arc::clone(&provider), IndexerConfig::default());
+let report = indexer.index_project(std::path::Path::new("."), None).await?;
+println!("{} chunks indexed", report.chunks_created);
+
+// Retrieve relevant code for a query.
+let retriever = CodeRetriever::new(store, Arc::clone(&provider), RetrievalConfig::default());
+let result = retriever.retrieve("how does authentication work?", 8_000).await?;
+println!("{} chunks, {} tokens", result.chunks.len(), result.total_tokens);
+# Ok(())
+# }
+```
+
 ## Installation
 
 ```bash

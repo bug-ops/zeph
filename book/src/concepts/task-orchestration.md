@@ -311,8 +311,34 @@ When recovery fires:
 
 - A cascade-abort check (fan-out or linear-chain failure-rate threshold) runs *before* `propagate_failure()` on the event path. If a cascade trips, the graph aborts and recovery never fires for that failure — cascade-abort takes precedence.
 - On the timeout path there is no cascade check, so a timed-out task with `recovery` configured always recovers if `state_injection` is set.
-- Recovery is Mode 1 only (substitute-and-continue). Mode 2 (reroute to an alternate node) is not implemented.
 - `validate()` rejects a node that sets both `recovery` and `verify_predicate` (a predicate-gated task must not be recovery-eligible) and warns — without rejecting — when `recovery` is set under an effective `skip` or `ask` strategy, since those arms never consult recovery.
+
+#### Mode-2 Recovery: Route-To
+
+Mode-2 recovery allows a failed task to be rerouted to an alternate, pre-defined subtask instead of being replaced with synthetic output or aborting the plan.
+
+```json
+{
+  "recovery": {
+    "route_to": [
+      {
+        "title": "Retry with fallback strategy",
+        "description": "Attempt the API call with exponential backoff and cache fallback",
+        "depends_on": ["previous_task"]
+      }
+    ]
+  }
+}
+```
+
+When Mode-2 recovery is triggered:
+
+- The original failed task's status remains `Failed` (for auditing).
+- The injected route-to tasks are added to the graph with dependencies on the original task's dependencies.
+- Downstream tasks that depended on the original task now depend on the route-to task(s) instead, unblocking on their completion.
+- The route-to tasks execute with full context — they see the original task's failure reason in their prompt.
+
+Mode-2 can be combined with cascade-abort mitigation to implement sophisticated fallback chains. If all route-to tasks also fail, the cascade-abort check runs again on the updated graph structure.
 
 #### Cross-Task Context Injection
 

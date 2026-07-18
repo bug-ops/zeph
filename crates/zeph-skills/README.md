@@ -11,6 +11,23 @@ SKILL.md parser, registry, embedding matcher, and hot-reload for Zeph.
 
 Parses SKILL.md files (YAML frontmatter + markdown body) from the `.zeph/skills/` directory, maintains an in-memory registry with hot-reload support, and formats selected skills into LLM system prompts. Supports semantic matching via Qdrant embeddings and self-learning skill evolution with trust scoring. Multi-language feedback detection (7 languages) drives trust transitions across all skills.
 
+## Usage
+
+```rust
+use zeph_skills::registry::SkillRegistry;
+
+# fn try_main() -> Result<(), zeph_skills::SkillError> {
+// Load all skills from a directory (metadata only — bodies are lazy).
+let registry = SkillRegistry::load(&["/path/to/skills"]);
+println!("loaded {} skills", registry.all_meta().len());
+
+// Look up a skill body by name.
+let body = registry.body("my-skill")?;
+println!("{}", body);
+# Ok(())
+# }
+```
+
 ## Key modules
 
 | Module | Description |

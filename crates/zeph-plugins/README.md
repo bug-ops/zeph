@@ -20,6 +20,29 @@ Manages the full lifecycle of Zeph plugin packages: installing from a path or UR
 | `ResolvedOverlay` | Result of merging all installed plugin overlays into the live config |
 | `PluginName` | Validated plugin identifier (`[a-z0-9][a-z0-9-]*`) |
 | `PluginError` | Typed error enum (`InvalidManifest`, `InvalidName`, `UnsafeOverlay`, `SkillNameConflict*`, `NotFound`, `Io`) |
+| `ReputationSource` | Trait for a pluggable install-time typosquat check; `check(name, known_names)` returns near-matches |
+| `LocalTyposquatCheck` | Built-in `ReputationSource` — zero-network, Levenshtein-similarity check against bundled, managed, and other installed plugins' skill names |
+| `ReputationWarning` / `ReputationEnforcement` | A single near-match result; enforcement posture (`Warn` default / `Block`) applied when at least one warning is returned |
+
+## Reputation and typosquat scanning
+
+`PluginManager::add` and `apply_staged_update` run an advisory, local-only name-similarity check against every incoming plugin/skill name before install or auto-update, guarding against typosquat-style names that closely resemble a bundled or already-installed skill:
+
+```toml
+[plugins.reputation]
+enabled               = true    # zero-network Levenshtein check, on by default
+similarity_threshold  = 0.65    # [0, 1]; higher = stricter = fewer warnings
+min_name_len          = 3       # names shorter than this are skipped as noise
+enforcement           = "warn"  # "warn" (advisory, default) | "block" (refuse install/update)
+```
+
+```bash
+# Escalate to a hard block for a single invocation without changing the persisted config
+zeph plugin add ./path/to/my-plugin --strict-reputation
+```
+
+> [!NOTE]
+> The check is entirely local (no network calls): it compares names via Levenshtein similarity against `zeph_skills::bundled::bundled_skill_names()`, the managed skills directory, and other installed plugins' skill names. It never blocks by default — `enforcement = "warn"` surfaces the warning and lets the install proceed.
 
 ## Key modules
 
@@ -133,6 +156,8 @@ At bootstrap (`AppBuilder::new`) and on hot-reload (`reload_config`), `apply_plu
 - **`.bundled` marker stripping** — `.bundled` marker files in the installed package are stripped recursively to prevent trust escalation; if stripping fails, the partial install is cleaned up before propagating the error.
 - **Symlink skip** — symlinks in the source package are never copied, preventing symlink-based path traversal.
 - **Path traversal defense** — all install paths are canonicalized and verified to remain inside the managed root.
+- **Manifest integrity registry** — a sha256 digest of each installed `plugin.toml` is recorded in `<data_root>/.plugin-integrity.toml`; a mismatch at load time is a tamper-detection hint, not a cryptographic guarantee (an attacker with write access to `data_root` can modify both files).
+- **Reputation/typosquat scanning** — see [Reputation and typosquat scanning](#reputation-and-typosquat-scanning) above.
 
 ## Installation
 

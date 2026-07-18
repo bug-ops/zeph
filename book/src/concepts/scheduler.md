@@ -291,8 +291,11 @@ Manage scheduled jobs outside the agent session using the `zeph schedule` subcom
 # List all jobs
 zeph schedule list
 
-# Add a recurring job (cron expression + prompt)
-zeph schedule add "0 3 * * *" "run memory cleanup" --name daily-cleanup --kind memory_cleanup
+# Add a periodic job (cron expression)
+zeph schedule add "run memory cleanup" "0 3 * * *" --name daily-cleanup --kind memory_cleanup
+
+# Add a one-shot job (fire once at a specific time)
+zeph schedule add "send end-of-week report" --run-at "2026-07-25T18:00:00Z"
 
 # Show details of a single job
 zeph schedule show daily-cleanup
@@ -301,9 +304,15 @@ zeph schedule show daily-cleanup
 zeph schedule remove daily-cleanup
 ```
 
-`schedule add` accepts any valid 5-field or 6-field cron expression. The `--kind` flag defaults to `custom` if omitted. The `--name` flag is optional — if omitted, a name is auto-generated from the BLAKE3 hash of the prompt.
+`schedule add` accepts:
 
-See [CLI Reference — zeph schedule](../reference/cli.md#zeph-schedule) for the full flag list.
+- **Positional argument 1:** task prompt (required)
+- **Positional argument 2:** cron expression (optional for periodic jobs; omit if using `--run-at`)
+- `--run-at <TIME>`: schedule a one-shot job instead of a recurring one
+
+For periodic jobs, the cron expression must be a valid 5-field or 6-field expression. The `--kind` flag defaults to `custom` if omitted. The `--name` flag is optional — if omitted, a name is auto-generated from the BLAKE3 hash of the prompt.
+
+See [CLI Reference — zeph schedule](../reference/cli.md#zeph-schedule) for the full flag list and time format details.
 
 ## Listing Tasks
 

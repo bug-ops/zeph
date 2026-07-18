@@ -39,6 +39,7 @@ embedding_model = "qwen3-embedding"
 | `OrchestrationConfig` | `[orchestration]` | DAG planner, aggregator, confirmation flow |
 | `ComplexityRoutingConfig` | `[llm.complexity_routing]` | Per-tier provider pools for complexity triage routing |
 | `SecurityConfig` | `[security]` | Content isolation, exfiltration guard, quarantine |
+| `IntegrityConfig` | `[integrity]` | Vault-anchor downgrade-resistance for transcript/session integrity — anchor mode, LRU cap on retained session anchors (issue #6449) |
 | `DebugConfig` | `[debug]` | Debug dump path and format |
 | `LoggingConfig` | `[logging]` | Log file path, level, rotation, retention |
 | `VaultConfig` | `[vault]` | Vault backend (`env`, `age`) and key path |

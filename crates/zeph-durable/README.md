@@ -104,6 +104,12 @@ a dedicated `durable.db` (SQLite) or a feature-gated Restate backend.
   are vault-stored, never a DB column, so a DB-write attacker cannot forge or evade them.
   Residual: a grandfathered `execution_id` remains a *permanent* forge-able slot (an explicit,
   documented operator opt-out, not free protection) — prefer draining where practical.
+- **Windowed key rotation (issue #6460).** `LocalBackend::with_previous_hmac_key` and
+  `with_previous_hwm_key` register a previous key alongside the current one, mirroring the AEAD
+  cipher's own `previous` slot: verification tries the current key then the previous key, so
+  `zeph durable rotate-key` no longer force-aborts every in-flight execution the moment it runs.
+  Three drop-scans (control-entry HMAC, high-water-mark, and post-rotation `checkpoint_fold`
+  compaction) back `rotate-key --drop-previous`'s default-on safety check before the window closes.
 
 > [!NOTE]
 > **Schema ownership (INV-14).** `zeph-durable` owns **no** `.sql` files and **no**

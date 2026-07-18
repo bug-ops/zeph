@@ -58,6 +58,15 @@ When a sub-agent is active, the panel shows a spinner alongside the agent name a
 > [!NOTE]
 > The transcript viewer reads from the persistent JSONL transcript stored by `zeph-core`. Transcripts are available for both active and completed agents as long as the session file exists. Use `/agent resume <id>` to continue a completed session.
 
+**Live transcript forwarding** — when `agents.forward_transcript = true` (env `ZEPH_AGENTS_FORWARD_TRANSCRIPT`, CLI `--forward-subagent-text`), the runtime subagent detail view splits to show a bounded, auto-scrolling tail of the selected sub-agent's full, untruncated per-turn text/thinking output as it is produced — instead of only the existing 120-char once-per-turn status snippet. The panel falls back to the unchanged list-only layout when nothing has been forwarded yet or the area is too short to usefully split.
+
+> [!NOTE]
+> Forwarding is opt-in and defaults to `false` (zero behavior change when disabled). Forwarded content passes through `ContentSanitizer` plus the optional `SecretMaskRegistry`/`PiiFilter` layers before reaching the panel.
+
+## Durable panel
+
+Press `D` (or the `durable` command-palette entry) to open a live view of `zeph-durable` executions — status, name, and progress per row, polled every 5 seconds. The header shows the active AEAD/HMAC `key_id` and, when a key-rotation window is open (`[durable] previous_key_id` set), a passive `rotation window open (previous_key_id = N)` indicator plus a matching low-priority status-bar chip. This is read-only visibility — the panel offers no rotation action; rotation stays a restart-required CLI-only operation (`zeph durable rotate-key`).
+
 ## Graph memory commands
 
 When the `graph-memory` feature is enabled, the TUI provides `/graph` slash commands for inspecting the knowledge graph:
@@ -137,6 +146,8 @@ The command palette is opened with `:` in normal mode. Type to fuzzy-filter entr
 | `scheduler:list` | List active scheduled tasks (name, kind, mode, next run) — requires `scheduler` feature |
 | `gateway:status` | Show gateway server state — requires `gateway` feature |
 | `tasks` | Toggle the task registry panel (`t` shortcut), showing live `TaskSupervisor` tasks |
+| `fleet` | Show agent sessions (`f` shortcut) |
+| `durable` | Show durable executions with key rotation status (`D` shortcut) |
 | `settings` | Browse configured providers, MCP servers, and agents (`S` shortcut) |
 | `search:transcript` | Find in conversation (`Ctrl+F` shortcut) |
 | `security:events` | Show security event history |

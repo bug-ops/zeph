@@ -142,6 +142,13 @@ The harness is built on three composable traits:
 `BenchRunner` wires them together: one fresh `Agent<BenchmarkChannel>` per scenario, no shared
 state between runs. Results accumulate into a `BenchRun` and are persisted by `ResultWriter`.
 
+## Features
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `sqlite` | yes | SQLite backend forwarded to `zeph-memory`/`zeph-core`/`zeph-skills`/`zeph-tools` |
+| `postgres` | no | PostgreSQL backend forwarded to the same crates |
+
 ## Installation
 
 ```toml

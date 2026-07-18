@@ -80,6 +80,17 @@ Pass the benchmark file via config:
 benchmark_file = ".zeph/benchmarks/core.toml"
 ```
 
+## Features
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `sqlite` | yes | SQLite backend forwarded to `zeph-memory` |
+| `postgres` | no | PostgreSQL backend forwarded to `zeph-memory` |
+| `mock` | no | Exposes mock types for downstream tests |
+
+> [!NOTE]
+> `zeph-memory` (and transitively `zeph-db`) requires a backend to compile; `sqlite` is the default so this crate builds in isolation.
+
 ## Installation
 
 ```bash
@@ -92,8 +103,6 @@ Or reference it from another workspace crate:
 [dependencies]
 zeph-experiments = { workspace = true }
 ```
-
-This crate exposes no Cargo features — the engine is always available once the dependency is added.
 
 ## Documentation
 

@@ -9,6 +9,7 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Benchmark harness for evaluating Zeph agent performance on standardized datasets"
+readme = "README.md"
 publish = true
 
 [features]
