@@ -84,6 +84,7 @@ impl SearchProvider for BraveSearchProvider {
         if status.as_u16() == 429 {
             return Err(SearchError::Blocked {
                 reason: "rate limited".to_owned(),
+                status: Some(status.as_u16()),
             });
         }
         if !status.is_success() {
@@ -260,7 +261,13 @@ mod tests {
         let provider = provider_for(&server, 1_048_576);
         let client = reqwest::Client::new();
         let err = provider.search(&client, "quota test", 5).await.unwrap_err();
-        assert!(matches!(err, SearchError::Blocked { .. }));
+        assert!(matches!(
+            err,
+            SearchError::Blocked {
+                status: Some(429),
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

@@ -252,6 +252,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   auto-recovery or auto-unlink was introduced, since breaking a live `flock` without the
   holder's cooperation is unsafe.
 
+- `zeph-tools`: follow-ups from PR #6444's `web_search` tool review (#6445). `WebSearchExecutor`
+  now caches its SSRF-addr-pinned `reqwest::Client`, keyed by the resolved address set, and
+  reuses it across calls when DNS resolution is unchanged — the common case for the fixed Brave
+  endpoint — instead of paying a fresh TCP+TLS handshake on every search. It still rebuilds (and
+  re-pins) the client whenever the resolved addresses differ, so INVARIANT-2 (SSRF addr-pinning,
+  spec 006-1-web-search §4) continues to hold for the exact addresses each call's
+  `resolve_and_validate` just checked. Separately, Brave 429 responses now thread the real HTTP
+  status code into the egress-event telemetry (`SearchError::Blocked` gained a
+  `status: Option<u16>` field) instead of always recording `status: None`. `src/serve/deps.rs`'s
+  `web_search` wiring now uses the shared `with_search_executor()` helper instead of inlining
+  `OptionalExecutor(...)` directly, matching the other 3 production wiring sites (cosmetic, no
+  behavior change).
+
 ### Added
 
 - **Plugin install-time reputation/typosquat scanning** (spec-043, #5864): `zeph plugin add`,
@@ -952,6 +965,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   confirmed excluded, giving a real recovered-vs-failed contrast (SC-9). No production code
   changed; both mechanisms already behaved correctly, this closes the direct-assertion gap
   only.
+
+- `zeph-tools`: closed three test gaps flagged during PR #6444's `web_search` review (#6445).
+  `OptionalExecutor::execute_tool_call` — the actual dispatch path routing `web_search` through
+  the composite executor chain — now has direct tests for both the `Some` and `None` variants,
+  mirroring the sibling `execute()` coverage. `crates/zeph-core/src/config.rs`: added tests for
+  the `tools.search` vault-key opt-in gate (mirroring the `skills.registry.auth_vault_key`
+  pattern) covering both "enabled + key present resolves it" and "disabled leaves the secret
+  unset even when the vault holds it under the default key name". `migrate_search_config` now
+  has dedicated tests asserting the inserted commented-out `[tools.search]` block's content, the
+  no-op branch when a real or already-commented section is present, and idempotency — previously
+  only exercised indirectly via the migration-step-order/count assertion.
 
 ### Docs
 

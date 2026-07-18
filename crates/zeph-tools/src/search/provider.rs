@@ -46,6 +46,9 @@ pub enum SearchError {
     Blocked {
         /// Human-readable block reason.
         reason: String,
+        /// HTTP status code that triggered the block, when applicable (e.g. `429` for
+        /// backend rate-limiting). `None` for non-HTTP blocks (SSRF, denylist).
+        status: Option<u16>,
     },
     /// The backend response body could not be parsed.
     #[error("failed to parse response: {0}")]

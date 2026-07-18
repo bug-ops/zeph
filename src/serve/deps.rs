@@ -639,10 +639,7 @@ async fn build_tool_executor(
             shell_executor,
             zeph_tools::CompositeExecutor::new(
                 scrape_executor,
-                zeph_tools::CompositeExecutor::new(
-                    zeph_tools::OptionalExecutor(web_search_executor),
-                    cwd_executor,
-                ),
+                crate::agent_setup::with_search_executor(cwd_executor, web_search_executor),
             ),
         ),
     ));

@@ -4999,3 +4999,59 @@ fn step_89_is_idempotent() {
         "output unchanged on second run"
     );
 }
+
+// ── migrate_search_config tests (spec 006-1-web-search, #6444, #6445) ────
+
+#[test]
+fn migrate_search_config_injects_commented_block_content() {
+    let src = "[agent]\nmax_turns = 10\n";
+    let result = migrate_search_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert_eq!(result.sections_changed, vec!["tools.search".to_owned()]);
+    assert!(result.output.starts_with(src), "original content preserved");
+    assert!(result.output.contains("# [tools.search]"));
+    assert!(result.output.contains("# enabled = false"));
+    assert!(result.output.contains("# backend = \"brave\""));
+    assert!(
+        result
+            .output
+            .contains("# api_key_vault_key = \"ZEPH_WEB_SEARCH_API_KEY\"")
+    );
+    assert!(
+        result
+            .output
+            .contains("# endpoint = \"https://api.search.brave.com/res/v1/web/search\"")
+    );
+    assert!(result.output.contains("# max_results = 10"));
+    assert!(result.output.contains("# timeout = 15"));
+}
+
+#[test]
+fn migrate_search_config_noop_when_real_section_present() {
+    let src = "[tools.search]\nenabled = true\nbackend = \"brave\"\n";
+    let result = migrate_search_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+    assert!(result.sections_changed.is_empty());
+}
+
+#[test]
+fn migrate_search_config_noop_when_commented_block_already_present() {
+    let src = "[agent]\nmax_turns = 10\n\n# [tools.search]\n# enabled = false\n";
+    let result = migrate_search_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn migrate_search_config_is_idempotent() {
+    let src = "[agent]\nmax_turns = 10\n";
+    let first = migrate_search_config(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_search_config(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
+    );
+}

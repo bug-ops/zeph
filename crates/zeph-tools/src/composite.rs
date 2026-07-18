@@ -784,6 +784,35 @@ mod tests {
             assert_eq!(result.unwrap().summary, "matched");
         }
 
+        #[tokio::test]
+        async fn none_execute_tool_call_returns_ok_none() {
+            let wrapped: OptionalExecutor<FileToolExecutor> = OptionalExecutor(None);
+            let call = ToolCall {
+                tool_id: ToolName::new("read"),
+                params: serde_json::Map::new(),
+                caller_id: None,
+                context: None,
+                tool_call_id: String::new(),
+                skill_name: None,
+            };
+            assert!(wrapped.execute_tool_call(&call).await.unwrap().is_none());
+        }
+
+        #[tokio::test]
+        async fn some_execute_tool_call_delegates_to_inner() {
+            let wrapped = OptionalExecutor(Some(FileToolExecutor));
+            let call = ToolCall {
+                tool_id: ToolName::new("read"),
+                params: serde_json::Map::new(),
+                caller_id: None,
+                context: None,
+                tool_call_id: String::new(),
+                skill_name: None,
+            };
+            let result = wrapped.execute_tool_call(&call).await.unwrap();
+            assert_eq!(result.unwrap().summary, "file_handler");
+        }
+
         #[test]
         fn none_tool_definitions_is_empty() {
             let wrapped: OptionalExecutor<MatchingExecutor> = OptionalExecutor(None);

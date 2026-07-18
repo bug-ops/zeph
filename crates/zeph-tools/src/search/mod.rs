@@ -31,6 +31,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use parking_lot::RwLock;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -107,6 +108,18 @@ pub struct WebSearchExecutor {
     egress_tx: Option<tokio::sync::mpsc::Sender<EgressEvent>>,
     egress_dropped: Arc<AtomicU64>,
     ipi_filter: IpiFilter,
+    /// Last pinned `reqwest::Client`, keyed by the resolved address set (sorted and
+    /// deduplicated — see [`Self::client_for`]) it was built with. Reused across calls when
+    /// a fresh `resolve_and_validate` returns the same address set, regardless of the order
+    /// the resolver returned it in (the common case for this fixed-host endpoint), avoiding
+    /// a TCP+TLS handshake per search.
+    client_cache: RwLock<Option<(Vec<SocketAddr>, reqwest::Client)>>,
+    /// Counts calls to `build_client` inside [`Self::client_for`] (cache misses only). Test-only
+    /// instrumentation to prove a cache *hit* actually skipped the rebuild, since two
+    /// separately-built clients are otherwise indistinguishable from the outside (`reqwest::Client`
+    /// has no `PartialEq`).
+    #[cfg(test)]
+    client_rebuilds: std::sync::atomic::AtomicU32,
 }
 
 impl WebSearchExecutor {
@@ -142,6 +155,9 @@ impl WebSearchExecutor {
             egress_tx: None,
             egress_dropped: Arc::new(AtomicU64::new(0)),
             ipi_filter: IpiFilter::new(scrape_cfg.ipi_filter_threshold),
+            client_cache: RwLock::new(None),
+            #[cfg(test)]
+            client_rebuilds: std::sync::atomic::AtomicU32::new(0),
         })
     }
 
@@ -309,6 +325,46 @@ impl WebSearchExecutor {
         }
     }
 
+    /// Returns a `reqwest::Client` pinned to `addrs`, reusing the cached client when the
+    /// freshly resolved address set is unchanged since the last call — the common case for
+    /// this fixed-host endpoint — instead of paying a fresh TCP+TLS handshake on every
+    /// search. Rebuilds (and re-caches) whenever the resolved addresses differ, so
+    /// INVARIANT-2 (SSRF addr-pinning, spec 006-1-web-search §4) always holds for the exact
+    /// addresses this call's `resolve_and_validate` just checked, never a stale set from an
+    /// earlier resolution.
+    ///
+    /// The address set is sorted and deduplicated before comparison/caching: the resolver
+    /// does not guarantee stable ordering across calls (DNS round-robin), so comparing raw
+    /// slices would treat a harmless reorder of the same addresses as a change and rebuild
+    /// unnecessarily, defeating the point of caching for any host with 2+ addresses. Sorting
+    /// only changes cache-key equality, not which addresses get pinned — it does not weaken
+    /// INVARIANT-2.
+    fn client_for(&self, host: &str, addrs: &[SocketAddr]) -> reqwest::Client {
+        let mut canonical = addrs.to_vec();
+        canonical.sort_unstable();
+        canonical.dedup();
+        {
+            let cache = self.client_cache.read();
+            if let Some((cached_addrs, client)) = cache.as_ref()
+                && cached_addrs == &canonical
+            {
+                return client.clone();
+            }
+        }
+        #[cfg(test)]
+        self.client_rebuilds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let client = build_client(host, &canonical, self.timeout);
+        *self.client_cache.write() = Some((canonical, client.clone()));
+        client
+    }
+
+    #[cfg(test)]
+    fn client_rebuild_count(&self) -> u32 {
+        self.client_rebuilds
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Runs the full search flow: SSRF-validate the endpoint, then delegate to
     /// [`issue_search`](Self::issue_search) for the pinned network request.
     ///
@@ -402,7 +458,8 @@ impl WebSearchExecutor {
         let endpoint = self.backend.endpoint();
         // INVARIANT-2: the resolved addresses are pinned into the request client via
         // `resolve_to_addrs`, closing the TOCTOU window between validation and connection.
-        let client = build_client(&host, addrs, self.timeout);
+        // `client_for` reuses the cached client when `addrs` is unchanged (see its docs).
+        let client = self.client_for(&host, addrs);
         let limit = params
             .limit
             .unwrap_or(self.max_results)
@@ -452,7 +509,7 @@ impl WebSearchExecutor {
             Err(e) => {
                 let (status, blocked, block_reason) = match &e {
                     SearchError::Http { status, .. } => (Some(*status), false, None),
-                    SearchError::Blocked { .. } => (None, true, Some("policy")),
+                    SearchError::Blocked { status, .. } => (*status, true, Some("policy")),
                     _ => (None, false, None),
                 };
                 if self.egress_config.enabled {
@@ -559,7 +616,7 @@ fn map_search_error(e: SearchError) -> ToolError {
         },
         SearchError::Http { status, message } => ToolError::Http { status, message },
         SearchError::Timeout => ToolError::Timeout { timeout_secs: 0 },
-        SearchError::Blocked { reason } => ToolError::Blocked { command: reason },
+        SearchError::Blocked { reason, .. } => ToolError::Blocked { command: reason },
         SearchError::Parse(msg) | SearchError::Provider(msg) => {
             ToolError::Execution(std::io::Error::other(msg))
         }
@@ -718,6 +775,82 @@ mod tests {
             Some(Secret::new("k")),
         );
         assert!(executor.is_some());
+    }
+
+    #[test]
+    fn client_for_reuses_cache_when_addrs_unchanged_and_rebuilds_when_addrs_differ() {
+        let executor = WebSearchExecutor::new(
+            &enabled_config(),
+            &ScrapeConfig::default(),
+            Some(Secret::new("k")),
+        )
+        .unwrap();
+        let addr_a: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let addr_b: SocketAddr = "127.0.0.1:2".parse().unwrap();
+
+        executor.client_for("search.example.com", &[addr_a]);
+        assert_eq!(executor.client_rebuild_count(), 1);
+        {
+            let cache = executor.client_cache.read();
+            let (cached_addrs, _) = cache.as_ref().expect("cache populated after first call");
+            assert_eq!(cached_addrs, &vec![addr_a]);
+        }
+
+        // Same addrs again: the cache-hit branch is taken, no rebuild, key stays the same.
+        executor.client_for("search.example.com", &[addr_a]);
+        assert_eq!(
+            executor.client_rebuild_count(),
+            1,
+            "unchanged addrs must hit the cache"
+        );
+        {
+            let cache = executor.client_cache.read();
+            let (cached_addrs, _) = cache.as_ref().unwrap();
+            assert_eq!(cached_addrs, &vec![addr_a]);
+        }
+
+        // Different addrs: the rebuild branch is taken, cache key updates.
+        executor.client_for("search.example.com", &[addr_b]);
+        assert_eq!(
+            executor.client_rebuild_count(),
+            2,
+            "changed addrs must rebuild"
+        );
+        let cache = executor.client_cache.read();
+        let (cached_addrs, _) = cache.as_ref().unwrap();
+        assert_eq!(cached_addrs, &vec![addr_b]);
+    }
+
+    #[test]
+    fn client_for_reordered_multi_addr_set_is_a_cache_hit_not_a_rebuild() {
+        // Regression test: the resolver does not guarantee stable ordering across calls for
+        // a host with 2+ addresses (DNS round-robin), so the cache key must be order-
+        // independent — otherwise a harmless reorder of the same address set forces an
+        // unnecessary rebuild on every call, defeating the point of caching.
+        let executor = WebSearchExecutor::new(
+            &enabled_config(),
+            &ScrapeConfig::default(),
+            Some(Secret::new("k")),
+        )
+        .unwrap();
+        let addr_a: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let addr_b: SocketAddr = "127.0.0.1:2".parse().unwrap();
+        let addr_c: SocketAddr = "127.0.0.1:3".parse().unwrap();
+
+        executor.client_for("search.example.com", &[addr_a, addr_b, addr_c]);
+        assert_eq!(executor.client_rebuild_count(), 1);
+
+        // Same set, fully reversed order: must be recognized as unchanged (cache hit).
+        executor.client_for("search.example.com", &[addr_c, addr_b, addr_a]);
+        assert_eq!(
+            executor.client_rebuild_count(),
+            1,
+            "reordered-but-identical resolved address set must hit the cache, not rebuild"
+        );
+
+        // Same set, shuffled order: still a hit.
+        executor.client_for("search.example.com", &[addr_b, addr_a, addr_c]);
+        assert_eq!(executor.client_rebuild_count(), 1);
     }
 
     #[test]
@@ -1030,6 +1163,11 @@ mod tests {
         let event = rx.try_recv().expect("egress event should be emitted");
         assert!(event.blocked);
         assert_eq!(event.block_reason, Some("policy"));
+        assert_eq!(
+            event.status,
+            Some(429),
+            "the real 429 status must be threaded into the egress event, not None"
+        );
     }
 
     #[tokio::test]

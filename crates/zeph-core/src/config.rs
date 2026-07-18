@@ -444,4 +444,44 @@ mod tests {
 
         assert!(config.a2a.auth_token.is_none());
     }
+
+    // --- tools.search vault-key opt-in gate (spec 006-1-web-search, #6445) ---
+    // Mirrors the skills.registry.auth_vault_key opt-in-only pattern this gate copies.
+
+    #[tokio::test]
+    #[cfg(any(test, feature = "mock"))]
+    async fn resolve_secrets_web_search_enabled_resolves_key() {
+        use crate::vault::MockVaultProvider;
+
+        let vault = MockVaultProvider::new().with_secret("ZEPH_WEB_SEARCH_API_KEY", "brave-key-1");
+        let mut config = Config::load(std::path::Path::new("/nonexistent/config.toml")).unwrap();
+        config.tools.search.enabled = true;
+        config.resolve_secrets(&vault).await.unwrap();
+
+        assert_eq!(
+            config.secrets.web_search_api_key.as_ref().unwrap().expose(),
+            "brave-key-1"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(any(test, feature = "mock"))]
+    async fn resolve_secrets_web_search_disabled_key_stays_unset() {
+        use crate::vault::MockVaultProvider;
+
+        // The key is present in the vault under the default vault key name, but the tool is
+        // disabled (the default) — the gate must skip resolution entirely, so the secret
+        // stays unset even though the vault could have supplied it. `MockVaultProvider` has
+        // no call-tracking, so this asserts the observable outcome (key stays `None`) rather
+        // than literally proving `get_secret` was never invoked.
+        let vault = MockVaultProvider::new().with_secret("ZEPH_WEB_SEARCH_API_KEY", "brave-key-2");
+        let mut config = Config::load(std::path::Path::new("/nonexistent/config.toml")).unwrap();
+        assert!(
+            !config.tools.search.enabled,
+            "search must be disabled by default"
+        );
+        config.resolve_secrets(&vault).await.unwrap();
+
+        assert!(config.secrets.web_search_api_key.is_none());
+    }
 }
