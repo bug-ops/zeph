@@ -467,18 +467,47 @@ pub fn verify_chained_prefix(
     file_identity: &[u8],
     entries: &[(Vec<u8>, ChainHash)],
 ) -> Result<(ChainHash, KeyResolution), ChainError> {
+    let (head, _checkpoint, resolution) =
+        verify_chained_prefix_with_checkpoint(ring, domain, file_identity, entries, u64::MAX)?;
+    Ok((head, resolution))
+}
+
+/// Like [`verify_chained_prefix`], but additionally captures the chain head immediately after
+/// entry `checkpoint_index` (0-based within `entries`) is verified — used by the vault-anchor
+/// downgrade-resistance mechanism (issue #6449) to compare a stored anchor's head against the
+/// file's head at the anchor's recorded count, without re-deriving the chain a second time.
+///
+/// Returns `(final_head, checkpoint_head, resolution)`. `checkpoint_head` is `None` if
+/// `checkpoint_index >= entries.len()` (out of range — including the common case of passing
+/// `u64::MAX` from [`verify_chained_prefix`] to opt out of capturing a checkpoint).
+///
+/// # Errors
+///
+/// Same as [`verify_chained_prefix`].
+pub fn verify_chained_prefix_with_checkpoint(
+    ring: &ChainKeyRing,
+    domain: &str,
+    file_identity: &[u8],
+    entries: &[(Vec<u8>, ChainHash)],
+    checkpoint_index: u64,
+) -> Result<(ChainHash, Option<ChainHash>, KeyResolution), ChainError> {
     if entries.is_empty() {
         // Nothing to verify: an empty chained region has no key to resolve. Callers should not
         // invoke this with an empty slice; treat it as trivially verified at the current epoch.
         return Ok((
             genesis(&ring.current_key, domain, file_identity, ring.current_epoch),
+            None,
             KeyResolution::Current,
         ));
     }
 
     let mut streaming = ChainStreamVerifier::new(ring, domain, file_identity.to_vec());
-    for (content, stored) in entries {
+    let mut checkpoint_head = None;
+    for (i, (content, stored)) in entries.iter().enumerate() {
         streaming.verify_next(content, stored)?;
+        if i as u64 == checkpoint_index {
+            checkpoint_head = streaming.head();
+        }
     }
     // Infallible: the loop above verified at least one entry (entries is non-empty), which
     // always sets `resolved`/`resolution` on success.
@@ -486,7 +515,7 @@ pub fn verify_chained_prefix(
         .head()
         .unwrap_or_else(|| genesis(&ring.current_key, domain, file_identity, ring.current_epoch));
     let resolution = streaming.resolution().unwrap_or(KeyResolution::Current);
-    Ok((head, resolution))
+    Ok((head, checkpoint_head, resolution))
 }
 
 #[cfg(test)]
@@ -732,6 +761,30 @@ mod tests {
         }
         assert_eq!(streaming.head(), Some(whole_head));
         assert_eq!(streaming.resolution(), Some(whole_res));
+    }
+
+    #[test]
+    fn verify_chained_prefix_with_checkpoint_captures_intermediate_head() {
+        let k = key(13);
+        let ring = ChainKeyRing::new(0, k);
+        let base = genesis(&k, "d", b"f", 0);
+        let h0 = chain_next(&k, &base, b"a");
+        let h1 = chain_next(&k, &h0, b"b");
+        let h2 = chain_next(&k, &h1, b"c");
+        let entries = vec![
+            (b"a".to_vec(), h0),
+            (b"b".to_vec(), h1),
+            (b"c".to_vec(), h2),
+        ];
+
+        let (final_head, checkpoint, _res) =
+            verify_chained_prefix_with_checkpoint(&ring, "d", b"f", &entries, 1).unwrap();
+        assert_eq!(final_head, h2);
+        assert_eq!(checkpoint, Some(h1), "checkpoint at index 1 must be h1");
+
+        let (_final, out_of_range, _res) =
+            verify_chained_prefix_with_checkpoint(&ring, "d", b"f", &entries, 99).unwrap();
+        assert_eq!(out_of_range, None, "an out-of-range checkpoint is None");
     }
 
     #[test]

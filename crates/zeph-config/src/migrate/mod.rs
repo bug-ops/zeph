@@ -13,6 +13,7 @@ use toml_edit::{Array, DocumentMut, Item, Table, Value};
 // ── Submodules: migration steps grouped by subsystem (#4874) ─────────────────────────────────────
 mod features;
 mod infra;
+mod integrity;
 mod llm;
 mod mcp;
 mod memory;
@@ -32,6 +33,7 @@ pub use features::{
     migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
 };
 pub use infra::*;
+pub use integrity::migrate_integrity_config;
 /// Advisory `GonkaGate` migration is crate-internal (registered via the [`MIGRATIONS`] registry).
 pub(crate) use llm::migrate_gonkagate_to_gonka;
 pub use llm::*;
@@ -610,16 +612,17 @@ use steps::{
     MigrateEgressConfig, MigrateEmbedProviderRename, MigrateEvalModelToProvider,
     MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow,
     MigrateForgettingConfig, MigrateGoalsConfig, MigrateGonkagateToGonka,
-    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateKnowledgeConfig,
-    MigrateLlmStreamLimits, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
-    MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig, MigrateMcpRetryAndToolTimeout,
-    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported,
-    MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread,
-    MigrateMemoryPersonaConfig, MigrateMemoryReasoning, MigrateMemoryReasoningJudge,
-    MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig,
-    MigrateMemoryTypeAwareCompose, MigrateMicrocompactConfig, MigrateNliConfig,
-    MigrateOrchestrationAssetSensitivity, MigrateOrchestrationCommandConfig,
-    MigrateOrchestrationEnsemble, MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence,
+    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateIntegrityConfig,
+    MigrateKnowledgeConfig, MigrateLlmStreamLimits, MigrateMagicDocsConfig,
+    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig,
+    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryGraph,
+    MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
+    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
+    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
+    MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig, MigrateMemoryTypeAwareCompose,
+    MigrateMicrocompactConfig, MigrateNliConfig, MigrateOrchestrationAssetSensitivity,
+    MigrateOrchestrationCommandConfig, MigrateOrchestrationEnsemble,
+    MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence,
     MigrateOrchestrationWholePlanVerifierTimeout, MigrateOrchestratorProvider, MigrateOtelFilter,
     MigrateOverflowMaxPerCallOverride, MigratePiiFilterNames, MigratePlannerModelToProvider,
     MigratePluginsReputationConfig, MigratePolicyProviderAndUtilityWindow,
@@ -838,6 +841,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // [durable] table noting that row-HMAC + high-water-mark tamper-evidence
             // (issue #6360) is unconditional, not a new opt-in toggle
             Box::new(MigrateDurableHwmAdvisory),
+            // Step 100 — add [integrity] advisory block for vault-anchor downgrade-resistance
+            // (issue #6449)
+            Box::new(MigrateIntegrityConfig),
         ]
     });
 

@@ -795,6 +795,21 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
                     app.set_active_panel(Panel::Durable);
                     return vec![];
                 }
+                TuiCommand::IntegrityStatusInfo => {
+                    // Detailed per-session/per-execution verification is a CLI-only operation
+                    // today (`zeph sessions verify`, `zeph durable seal-integrity`) — it opens
+                    // its own vault/DB connections outside the running agent process, which the
+                    // reducer's no-I/O invariant (INV-R2) forbids doing inline here. This entry
+                    // is a discoverability pointer, not a live check; a follow-up can wire a real
+                    // async effect + spinner if in-TUI verification is wanted.
+                    app.push_system_message_pub(
+                        "Transcript/session tamper-evidence (issues #6360/#6449): run `zeph \
+                         sessions verify` to check session chains/anchors, or `zeph doctor` for \
+                         this deployment's overall anchor/seal status."
+                            .to_owned(),
+                    );
+                    return vec![];
+                }
                 TuiCommand::Settings => {
                     app.set_active_panel(Panel::Settings);
                     return vec![];

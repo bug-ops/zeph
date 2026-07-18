@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use zeph_core::redact::scrub_content;
+use zeph_core::vault::AgeVaultProvider;
 
 /// Individual check outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +242,79 @@ fn check_config_parse(config_path: &Path) -> (CheckResult, Option<zeph_core::con
             CheckResult::fail("config.parse", e.to_string(), elapsed_ms(start)),
             None,
         ),
+    }
+}
+
+/// Reports whether vault-anchor downgrade-resistance (issue #6449) is active for this
+/// deployment. `[integrity] anchor = "none"` is a documented, valid opt-out (reported `OK`, not
+/// `WARN`) — see `zeph_config::AnchorMode`.
+fn check_integrity_anchor(config: &zeph_core::config::Config) -> CheckResult {
+    let start = Instant::now();
+    match config.integrity.anchor {
+        zeph_config::AnchorMode::None => CheckResult::ok(
+            "integrity.anchor",
+            "anchor = \"none\" (explicit opt-out — chain-verified but not downgrade-resistant)",
+            elapsed_ms(start),
+        ),
+        zeph_config::AnchorMode::Vault => {
+            let dir = zeph_core::vault::default_vault_dir();
+            if dir.join("vault-key.txt").exists() && dir.join("secrets.age").exists() {
+                CheckResult::ok(
+                    "integrity.anchor",
+                    format!(
+                        "anchor = \"vault\" (max_session_anchors = {})",
+                        config.integrity.max_session_anchors
+                    ),
+                    elapsed_ms(start),
+                )
+            } else {
+                CheckResult::warn(
+                    "integrity.anchor",
+                    "anchor = \"vault\" but no age vault found at bootstrap — sessions/transcripts \
+                     are tamper-evident (issue #6360) but not downgrade-resistant until a vault \
+                     exists (run `zeph --init`)",
+                    elapsed_ms(start),
+                )
+            }
+        }
+    }
+}
+
+/// Reports the durable integrity seal status (issue #6449): sealed/unsealed, and how many
+/// resumable pre-feature executions remain (blocking `zeph durable seal-integrity`).
+fn check_durable_integrity_seal(config: &zeph_core::config::Config) -> CheckResult {
+    let start = Instant::now();
+    if !config.durable.enabled {
+        return CheckResult::ok(
+            "durable.integrity_seal",
+            "durable execution disabled",
+            elapsed_ms(start),
+        );
+    }
+    let dir = zeph_core::vault::default_vault_dir();
+    let Ok(provider) = AgeVaultProvider::load(&dir.join("vault-key.txt"), &dir.join("secrets.age"))
+    else {
+        return CheckResult::warn(
+            "durable.integrity_seal",
+            "durable enabled but no age vault found — cannot resolve seal status",
+            elapsed_ms(start),
+        );
+    };
+    let (sealed, grandfather) = zeph_core::anchor_store::load_durable_integrity_seal(&provider);
+    if sealed {
+        CheckResult::ok(
+            "durable.integrity_seal",
+            format!("sealed ({} execution(s) grandfathered)", grandfather.len()),
+            elapsed_ms(start),
+        )
+    } else {
+        CheckResult::warn(
+            "durable.integrity_seal",
+            "not sealed — an absent integrity row on a resumed keyed execution is still trusted \
+             as legacy; run `zeph durable seal-integrity` once no pre-feature resumable \
+             executions remain (issue #6449)",
+            elapsed_ms(start),
+        )
     }
 }
 
@@ -950,6 +1024,10 @@ pub(crate) async fn run_doctor(
     // 16. url_scheme.registration (deep-link feature only)
     #[cfg(feature = "deep-link")]
     results.push(check_url_scheme());
+
+    // 17. integrity.anchor / durable.seal (issue #6449)
+    results.push(check_integrity_anchor(&config));
+    results.push(check_durable_integrity_seal(&config));
 
     let report = DoctorReport {
         elapsed_ms: elapsed_ms(total_start),

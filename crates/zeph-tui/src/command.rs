@@ -134,6 +134,8 @@ pub enum TuiCommand {
     Settings,
     // Ctrl+F in-transcript search overlay (#6023)
     TranscriptSearch,
+    // Vault-anchor / hash-chain integrity status (issue #6449)
+    IntegrityStatusInfo,
     // Worktree subsystem (#4679)
     WorktreeList,
     WorktreeClean,
@@ -326,6 +328,13 @@ fn build_view_commands() -> Vec<CommandEntry> {
             category: "view",
             shortcut: Some("Ctrl+F"),
             command: TuiCommand::TranscriptSearch,
+        },
+        CommandEntry {
+            id: "integrity:status",
+            label: "Integrity: transcript/session tamper-evidence status",
+            category: "view",
+            shortcut: None,
+            command: TuiCommand::IntegrityStatusInfo,
         },
     ]
 }
@@ -1168,8 +1177,9 @@ mod tests {
 
     #[test]
     fn registry_has_correct_count() {
-        // +1 view:latency (#6059); +2 settings + search:transcript (#6024/#6023)
-        assert_eq!(command_registry().len(), 30);
+        // +1 view:latency (#6059); +2 settings + search:transcript (#6024/#6023);
+        // +1 integrity:status (#6449)
+        assert_eq!(command_registry().len(), 31);
     }
 
     #[test]

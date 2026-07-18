@@ -840,6 +840,20 @@ pub(crate) enum DurableCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Seal this backend against pre-feature integrity-row absence (issue #6449), closing the
+    /// durable downgrade gap. Refuses while any resumable (`running`) execution has committed
+    /// `StepResult`s but no integrity row — drain those to a terminal status first, or pass
+    /// `--grandfather` to explicitly opt specific execution IDs out of the seal
+    SealIntegrity {
+        /// Comma-separated execution IDs (UUIDs) to grandfather past the seal despite still
+        /// being resumable. Each ID becomes a permanent, vault-recorded opt-out for that one
+        /// execution — prefer draining where practical (see the command's long help)
+        #[arg(long, value_delimiter = ',')]
+        grandfather: Vec<String>,
+        /// Report the drain-precondition scan result without writing the seal to the vault
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Typed session status filter for the `agents fleet` sub-command.
@@ -1193,6 +1207,11 @@ pub(crate) enum SessionsCommand {
     Delete {
         /// Session ID
         id: String,
+    },
+    /// Verify a session's hash chain and vault anchor (issue #6449), without resuming it
+    Verify {
+        /// Session ID (omit to verify every session)
+        id: Option<String>,
     },
     /// Fork a session into a new, independent child session
     Fork {

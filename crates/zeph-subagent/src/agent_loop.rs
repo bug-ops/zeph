@@ -946,6 +946,15 @@ pub(super) async fn run_agent_loop(
         started_at,
     );
 
+    // Anchor the transcript (issue #6449): best-effort, logged rather than propagated — the
+    // transcript file itself is already durably written, and a failed anchor put only means this
+    // one file falls back to #6453-level chain-only protection, never data loss.
+    if let Some(writer) = transcript_writer
+        && let Err(e) = writer.finalize().await
+    {
+        tracing::warn!(error = %e, task_id = %loop_task_id, "transcript anchor finalize failed");
+    }
+
     Ok(last_result)
 }
 

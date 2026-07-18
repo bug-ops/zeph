@@ -94,9 +94,16 @@ a dedicated `durable.db` (SQLite) or a feature-gated Restate backend.
   committed_result_count, key_epoch}` tuple, verified O(1) on every resume — that detects
   deletion of a committed `StepResult` row, including across a `checkpoint_fold` compaction. It
   activates unconditionally whenever `ZEPH_DURABLE_KEY` is provisioned, unlike the row-HMAC above
-  which stays opt-in for shared-database deployments. Detects deletion/forgery of tracked
-  entries; does not yet resist an attacker deleting the HWM row itself (treated as legacy for
-  migration safety) — tracked in issue #6449.
+  which stays opt-in for shared-database deployments.
+- **Downgrade-resistant, vault-sealed (issue #6449).** `LocalBackend::with_integrity_sealed`/
+  `with_grandfather` close the gap the HWM alone left open: deleting the whole
+  `durable_execution_integrity` row used to be trusted as "predates the feature." Once an
+  operator runs `zeph durable seal-integrity` (which refuses while any resumable execution has
+  committed results but no integrity row), an absent row on a keyed, non-grandfathered execution
+  with ≥1 committed `StepResult` is unconditional tamper — the seal marker and grandfather set
+  are vault-stored, never a DB column, so a DB-write attacker cannot forge or evade them.
+  Residual: a grandfathered `execution_id` remains a *permanent* forge-able slot (an explicit,
+  documented operator opt-out, not free protection) — prefer draining where practical.
 
 > [!NOTE]
 > **Schema ownership (INV-14).** `zeph-durable` owns **no** `.sql` files and **no**

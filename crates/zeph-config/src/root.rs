@@ -148,6 +148,9 @@ pub struct Config {
     /// Durable execution layer configuration (`[durable]`).
     #[serde(default)]
     pub durable: crate::durable::DurableConfig,
+    /// Vault-anchor downgrade-resistance configuration (`[integrity]`, issue #6449).
+    #[serde(default)]
+    pub integrity: crate::integrity::IntegrityConfig,
     /// Ultra-compressed telegraphic output mode configuration (`[caveman]`).
     ///
     /// Toggle at runtime with `/caveman [on|off]` or via the bundled `caveman` skill.
@@ -396,6 +399,7 @@ impl Default for Config {
             secrets: ResolvedSecrets::default(),
             worktree: crate::worktree::WorktreeConfig::default(),
             durable: crate::durable::DurableConfig::default(),
+            integrity: crate::integrity::IntegrityConfig::default(),
             caveman: crate::features::CavemanConfig::default(),
             knowledge: crate::knowledge::KnowledgeConfig::default(),
             plugins: crate::plugins::PluginsConfig::default(),

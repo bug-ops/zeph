@@ -45,6 +45,20 @@ impl SessionSink {
         &self.session_id
     }
 
+    /// Finalize the underlying session event log (issue #6449): if a vault-anchor store is
+    /// configured, persists a downgrade-resistance anchor recording this session's chain state
+    /// as of this clean close. Call this once, at the end of a run (graceful shutdown, session
+    /// resume-and-close, etc.) — see [`zeph_session::SessionEventLog::finalize`]'s doc for the
+    /// full contract (best-effort, never a hard failure the caller must propagate).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError`] if the configured anchor store's `put` fails. Callers should log
+    /// and continue rather than fail the whole shutdown sequence over this.
+    pub async fn finalize(&self) -> Result<(), SessionError> {
+        self.log.finalize().await
+    }
+
     /// Record one persisted message as a `SessionEvent`, then update `acp_sessions.last_seq`.
     ///
     /// `role == Role::System` (and any future non-exhaustive `Role` variant) is a no-op:

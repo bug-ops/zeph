@@ -245,8 +245,45 @@ decisions for future readers of the permanent spec.
   write access but *not* vault access. Within that model, in-place edits, reordering, partial
   chain-strips, and key-epoch tampering are all detected and fail closed. A **fully-consistent
   whole-file/whole-execution strip** (delete every chain field, or delete the durable
-  `durable_execution_integrity` row entirely) is **not** resisted in this initial implementation
-  — it is indistinguishable from genuine pre-feature legacy content without an external anchor
-  outside filesystem-write reach. Closing this (a vault-stored per-file attestation on the JSONL
-  side, and a post-migration-window "missing row = tamper" cutover on the durable side) is
-  tracked as a P1 follow-up: **issue #6449**.
+  `durable_execution_integrity` row entirely) was **not** resisted in this initial
+  implementation — it was indistinguishable from genuine pre-feature legacy content without an
+  external anchor outside filesystem-write reach. **Closed by issue #6449** (below).
+
+### 11.1 Vault-anchor downgrade-resistance (issue #6449, closes the §11 whole-file/whole-row gap)
+
+- **JSONL side**: a per-file **vault anchor** (`zeph_common::anchor::Anchor`, `{version, epoch,
+  count, head, written_at}`) is written on finalize/close (`TranscriptWriter::finalize`,
+  `SessionEventLog::finalize`) and checked on read. An age vault entry can only be removed by an
+  attacker holding the age private key, so "legacy-looking file, but a live anchor for its
+  identity" is an unambiguous whole-strip signature. An **absent** anchor is never a tamper
+  signature — it cannot be attacker-induced without the age key, so it is trusted exactly like
+  pre-#6449 behavior (this is what avoids bricking every session/transcript created before this
+  feature). Session anchors are a prefix commitment as of the last clean close (documented
+  residual: an attacker can roll back at most one run's worth of unanchored tail appends);
+  transcripts have no such residual (finalize-once).
+- **Durable side**: `zeph durable seal-integrity` writes a vault-presence marker
+  (`ZEPH_DURABLE_INTEGRITY_SEALED`) after confirming no resumable (`status='running'`) execution
+  has committed `StepResult`s without an integrity row (drain-before-seal). Once sealed, an
+  absent row on a keyed, non-grandfathered execution with ≥1 committed result is unconditional
+  tamper — no DB column sits on this boundary, closing the `created_at`-column defeat an earlier
+  design iteration of this fix had (a DB-write attacker could otherwise forge the column the
+  cutover compared against). `--grandfather <id,...>` records a vault-stored, permanent
+  per-execution opt-out for operators who cannot drain a legacy execution.
+- **Growth bound**: session anchors are never deleted on `sessions delete` (the event log itself
+  survives that command), so a reconcile-and-cap sweep (`zeph-core::anchor_store`, startup +
+  hourly) reaps orphaned anchors and evicts the oldest session anchors past
+  `[integrity] max_session_anchors` (default 512) — ordered by the anchor-embedded `written_at`
+  field, never filesystem mtime (attacker-writable). Eviction degrades a session to chain-only
+  protection; it never bricks (an evicted session still opens per the "absent anchor" rule
+  above).
+- **Residuals, accepted and documented**: (1) session prefix-rollback (bounded, at most one
+  run's unanchored tail); (2) a grandfathered `execution_id` is a *permanent* forge-able slot,
+  not a frozen snapshot — each is an explicit, bounded operator opt-out; (3) sessions aged out
+  past `max_session_anchors` fall back to chain-only (§11) protection; (4) the reconcile sweep's
+  orphan-reap step treats file/session-directory absence as sufficient grounds to remove an
+  anchor — an attacker who deletes the real file, waits out a sweep window (≤ 1h, or a restart),
+  and recreates a forged legacy-looking replacement under the same identity gets it trusted
+  (overlaps residual (via FR-006's no-backfill posture) with fabricating a brand-new legacy
+  session; requires a destructive precursor the threat model already grants file-write access
+  to). No reap grace-window or tombstone is implemented; a candidate hardening for a future PR
+  if this residual proves unacceptable in practice.

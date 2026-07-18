@@ -70,6 +70,7 @@
 pub mod agent;
 #[cfg(feature = "profiling-alloc")]
 pub mod alloc_layer;
+pub mod anchor_store;
 pub mod channel;
 pub mod config;
 pub mod config_watcher;

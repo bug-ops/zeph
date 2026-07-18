@@ -47,7 +47,7 @@ const RETENTION_TASK_NAME: &str = "durable.retention_sweep";
 /// Returns `None` (after logging a `tracing::warn!`) on any I/O failure so callers degrade to
 /// non-durable mode rather than fail session bootstrap (#5452 FR-004).
 ///
-/// `#[allow(clippy::too_many_arguments)]`: bundling the five key-material params into one
+/// `#[allow(clippy::too_many_arguments)]`: bundling the seven key-material/seal params into one
 /// `DurableKeyMaterial` struct is deliberately deferred (addendum to #6451, M2) — see
 /// `AgentBuilder::with_durable_orchestration`'s doc for the full rationale.
 #[allow(clippy::too_many_arguments)]
@@ -61,6 +61,7 @@ pub(crate) async fn open_durable_backend(
     hwm_key: Option<(u32, [u8; 32])>,
     previous_hmac_key: Option<[u8; 32]>,
     previous_hwm_key: Option<(u32, [u8; 32])>,
+    integrity_seal: (bool, std::collections::HashSet<zeph_durable::ExecutionId>),
 ) -> Option<(
     Arc<DurableBackendEnum>,
     JournalWriterHandle,
@@ -102,6 +103,9 @@ pub(crate) async fn open_durable_backend(
     } else {
         local
     };
+    let local = local
+        .with_integrity_sealed(integrity_seal.0)
+        .with_grandfather(integrity_seal.1);
     let local = Arc::new(local);
     let backend = Arc::new(DurableBackendEnum::Local(local.clone()));
     let (writer_actor, handle) = zeph_durable::JournalWriter::new(local, cfg);
@@ -141,10 +145,10 @@ impl<C: Channel> Agent<C> {
     /// the session journals as a step within the *same* execution and a crash mid-session can
     /// resume from any prior turn's journal state.
     ///
-    /// `#[allow(clippy::too_many_lines)]`: threading `previous_hwm_key` alongside the existing
-    /// key-material stash (addendum to #6451) pushed this past the line budget by two lines;
-    /// splitting this single linear bootstrap sequence into sub-functions for that would add
-    /// indirection with no readability gain.
+    /// `#[allow(clippy::too_many_lines)]`: threading `previous_hwm_key`/`previous_hmac_key`
+    /// (addendum to #6451) and `integrity_seal` (#6449) alongside the existing key-material stash
+    /// pushed this past the line budget; splitting this single linear bootstrap sequence into
+    /// sub-functions for that would add indirection with no readability gain.
     #[allow(clippy::too_many_lines)]
     pub(crate) async fn ensure_session_durable_ctx(&mut self) {
         if self.services.session.durable_ctx.is_some()
@@ -177,6 +181,13 @@ impl<C: Channel> Agent<C> {
         let hwm_key = self.services.session.durable_agent_turns_hwm_key;
         let previous_hmac_key = self.services.session.durable_agent_turns_previous_hmac_key;
         let previous_hwm_key = self.services.session.durable_agent_turns_previous_hwm_key;
+        let integrity_seal = (
+            self.services.session.durable_agent_turns_integrity_sealed,
+            self.services
+                .session
+                .durable_agent_turns_integrity_grandfather
+                .clone(),
+        );
 
         tracing::debug!("durable agent_turns: opening backend start");
         let backend_result = open_durable_backend(
@@ -189,6 +200,7 @@ impl<C: Channel> Agent<C> {
             hwm_key,
             previous_hmac_key,
             previous_hwm_key,
+            integrity_seal,
         )
         .await;
         tracing::debug!("durable agent_turns: opening backend done");
@@ -453,6 +465,7 @@ mod tests {
             None,
             Some(previous_key),
             None,
+            (false, std::collections::HashSet::new()),
         )
         .await;
         let (backend, _writer, _task_handle) =

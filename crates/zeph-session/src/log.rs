@@ -35,6 +35,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
+use zeph_common::anchor::{Anchor, AnchorStore, AnchorSubsystem};
 use zeph_common::hash_chain::{
     ChainError, ChainHash, ChainKeyRing, ChainStreamVerifier, KeyResolution, chain_next, genesis,
 };
@@ -87,9 +88,34 @@ fn history_integrity() -> Option<Arc<ChainKeyRing>> {
     HISTORY_INTEGRITY.read().ok().and_then(|g| g.clone())
 }
 
+/// Process-wide vault-anchor store (issue #6449). See
+/// `zeph_subagent::transcript::configure_anchor_store`'s identical registry for the full
+/// rationale — this mirrors it exactly. `None` (the default) disables anchor writes/checks
+/// entirely: sessions behave exactly as they did under #6453.
+static ANCHOR_STORE: StdRwLock<Option<Arc<dyn AnchorStore>>> = StdRwLock::new(None);
+
+/// Configure (or disable, with `None`) the vault-anchor store for every [`SessionEventLog`]
+/// operation in this process from this point forward.
+pub fn configure_anchor_store(store: Option<Arc<dyn AnchorStore>>) {
+    if let Ok(mut guard) = ANCHOR_STORE.write() {
+        *guard = store;
+    }
+}
+
+fn anchor_store() -> Option<Arc<dyn AnchorStore>> {
+    ANCHOR_STORE.read().ok().and_then(|g| g.clone())
+}
+
 /// Chunk size for [`SessionEventLog::read_chunked`] (spec §6.2 step 3: "bounded buffer, ≤ 100
 /// events in memory at once").
 const REPLAY_CHUNK_SIZE: usize = 100;
+
+/// Bound on the single async vault-anchor `get` performed at open time (issue #6449). A vault
+/// stall must fail deterministically rather than hang an unattended caller (durable resume,
+/// scheduler restore, ACP resume, fork pre-copy) — this timeout applies uniformly regardless of
+/// caller, since `open`/`open_exclusive` cannot distinguish attended from unattended callers
+/// itself.
+const ANCHOR_GET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Append-only JSONL log for one conversation-session's `events.jsonl`.
 ///
@@ -116,6 +142,10 @@ struct SessionWriteState {
     /// lifetime (fresh chaining start on a legacy or empty log) or seeded from the log's
     /// existing chained tail at open time (M3).
     prev: Option<ChainHash>,
+    /// Total on-disk event count (seeded from any pre-existing content at open time,
+    /// incremented on every successful append) — the `count` half of the vault anchor written
+    /// by [`SessionEventLog::finalize`] (issue #6449).
+    count: u64,
 }
 
 pub struct SessionEventLog {
@@ -136,6 +166,9 @@ pub struct SessionEventLog {
     /// verification, not just the initial open, so the deliberate operator override applies
     /// for this handle's whole lifetime rather than just its construction.
     allow_unverified: bool,
+    /// Captured once at open time, like `ring` (issue #6449) — `None` if no anchor store is
+    /// configured, or none is on file for this session yet.
+    anchor: Option<Anchor>,
     #[allow(dead_code)] // held only for its Drop (releases the flock, if taken)
     lock: Option<AdvisoryLock>,
 }
@@ -251,6 +284,29 @@ impl SessionEventLog {
         let events_path = session_dir.join(EVENTS_FILE_NAME);
         let ring = history_integrity();
         let identity = file_identity(session_dir);
+
+        // Resolve the vault anchor once, bounded by a timeout (issue #6449) so a vault stall
+        // fails deterministically rather than hanging an unattended caller (durable resume,
+        // scheduler restore, ACP resume, fork pre-copy — none of which can offer an interactive
+        // retry).
+        let anchor = match anchor_store() {
+            Some(store) => tokio::time::timeout(
+                ANCHOR_GET_TIMEOUT,
+                store.get(AnchorSubsystem::SessionLog, &identity),
+            )
+            .await
+            .map_err(|_| {
+                SessionError::Integrity(format!(
+                    "vault anchor lookup for session '{}' timed out after {:?} — failing \
+                         closed rather than opening unverified",
+                    session_dir.display(),
+                    ANCHOR_GET_TIMEOUT
+                ))
+            })?
+            .map_err(|e| SessionError::Integrity(format!("anchor lookup failed: {e}")))?,
+            None => None,
+        };
+
         // Only the exclusive-lock holder may physically repair a torn tail (see
         // `read_events`'s doc comment) — a lockless `open()` cannot prove the "torn" line
         // isn't a live writer's in-flight, not-yet-fsynced append. Chain verification (S1)
@@ -266,6 +322,7 @@ impl SessionEventLog {
             ring.as_deref(),
             &identity,
             allow_unverified,
+            anchor.as_ref(),
         )
         .await?;
 
@@ -277,16 +334,19 @@ impl SessionEventLog {
         set_permissions(&events_path, 0o600).await?;
 
         let next_seq = max_seq.map_or(0, |seq| seq + 1);
+        let count = max_seq.map_or(0, |seq| seq + 1);
         Ok(Self {
             events_path,
             writer: Mutex::new(SessionWriteState {
                 file,
                 prev: chain_head,
+                count,
             }),
             next_seq: AtomicU64::new(next_seq),
             file_identity: identity,
             ring,
             allow_unverified,
+            anchor,
             lock,
         })
     }
@@ -363,8 +423,45 @@ impl SessionEventLog {
         if let Some(h) = new_head {
             state.prev = Some(h);
         }
+        state.count += 1;
 
         Ok(envelope)
+    }
+
+    /// Finalize this handle: if a vault-anchor store is configured (issue #6449) and this
+    /// handle's lifetime saw at least one chained append, persist an [`Anchor`] recording the
+    /// current `(epoch, count, head)` — a *prefix commitment* as of this clean close, not a
+    /// guarantee against every possible future truncation (see the module docs' session prefix
+    /// residual note).
+    ///
+    /// Written **last**, after every append is durably fsynced, so a crash before this point
+    /// leaves the log present with no anchor, which is always benign (never a false tamper
+    /// signature).
+    ///
+    /// A no-op, not an error, when no anchor store is configured or this handle never chained.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::Integrity`] if the configured anchor store's `put` fails. Callers
+    /// should treat this as best-effort and log rather than fail the whole close/shutdown flow —
+    /// the session log itself is already safely written.
+    pub async fn finalize(&self) -> Result<(), SessionError> {
+        let Some(store) = anchor_store() else {
+            return Ok(());
+        };
+        let (head, count) = {
+            let state = self.writer.lock().await;
+            let Some(head) = state.prev else {
+                return Ok(());
+            };
+            (head, state.count)
+        };
+        let epoch = self.ring.as_ref().map_or(0, |r| r.current_epoch());
+        let anchor = Anchor::new(epoch, count, head);
+        store
+            .put(AnchorSubsystem::SessionLog, &self.file_identity, anchor)
+            .await
+            .map_err(|e| SessionError::Integrity(format!("anchor put failed: {e}")))
     }
 
     /// Read and validate every event currently in the log, dropping a torn trailing line from
@@ -389,6 +486,7 @@ impl SessionEventLog {
             self.ring.as_deref(),
             &self.file_identity,
             self.allow_unverified,
+            self.anchor.as_ref(),
         )
         .await?;
         Ok(events)
@@ -433,6 +531,7 @@ impl SessionEventLog {
             self.ring.as_deref(),
             &self.file_identity,
             self.allow_unverified,
+            self.anchor.as_ref(),
             on_chunk,
         )
         .await
@@ -457,6 +556,15 @@ struct SessionChainTracker<'a> {
     /// simulate a missing key, or `--allow-unverified` would be indistinguishable from a
     /// plain hard failure).
     allow_unverified: bool,
+    /// Vault anchor for this session, if configured and present (issue #6449). Also bypassed
+    /// entirely when `allow_unverified` is set, consistent with that override treating the
+    /// whole session as best-effort-trusted.
+    anchor: Option<&'a Anchor>,
+    /// Total physical event count fed so far (including any legacy prefix) — used to locate the
+    /// entry at `anchor.count` and capture the chain head immediately after it.
+    physical_index: u64,
+    /// The chain head immediately after the `anchor.count`-th event was fed, if reached.
+    anchor_checkpoint_head: Option<ChainHash>,
 }
 
 impl<'a> SessionChainTracker<'a> {
@@ -465,6 +573,7 @@ impl<'a> SessionChainTracker<'a> {
         ring: Option<&'a ChainKeyRing>,
         file_identity: &'a [u8],
         allow_unverified: bool,
+        anchor: Option<&'a Anchor>,
     ) -> Self {
         Self {
             path,
@@ -473,6 +582,9 @@ impl<'a> SessionChainTracker<'a> {
             verifier: None,
             chain_started: false,
             allow_unverified,
+            anchor,
+            physical_index: 0,
+            anchor_checkpoint_head: None,
         }
     }
 
@@ -497,7 +609,10 @@ impl<'a> SessionChainTracker<'a> {
                     self.path.display()
                 )))
             } else {
-                Ok(()) // legacy prefix, no-op
+                // legacy prefix, no-op — but still advance the physical index (issue #6449:
+                // the anchor's `count` is a total physical count including any legacy prefix).
+                self.physical_index += 1;
+                Ok(())
             };
         };
         self.chain_started = true;
@@ -532,12 +647,33 @@ impl<'a> SessionChainTracker<'a> {
             .as_mut()
             .expect("verifier initialized above")
             .verify_next(&content, &stored)
-            .map_err(|e| describe_chain_error(self.path, &e))
+            .map_err(|e| describe_chain_error(self.path, &e))?;
+
+        self.physical_index += 1;
+        if let Some(anchor) = self.anchor
+            && self.physical_index == anchor.count
+        {
+            self.anchor_checkpoint_head =
+                self.verifier.as_ref().and_then(ChainStreamVerifier::head);
+        }
+        Ok(())
     }
 
-    /// Finalize: logs a re-keyed note if applicable and returns the verified head hash (`None`
-    /// if the log was pure legacy — chaining never started).
-    fn finish(self) -> Option<ChainHash> {
+    /// Finalize: logs a re-keyed note if applicable, enforces the anchor decision table (issue
+    /// #6449), and returns the verified head hash (`None` if the log was pure legacy — chaining
+    /// never started).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::Integrity`] if an anchor is configured and: this log is
+    /// legacy-looking (no chain field ever fed) despite the anchor existing — a whole-strip
+    /// downgrade signature; the on-disk event count is below the anchor's recorded count
+    /// (truncation); or the chain head at the anchor's recorded count disagrees with the stored
+    /// anchor. A no-op when `allow_unverified` was set (mirrors [`Self::feed`]'s bypass).
+    fn finish(self) -> Result<Option<ChainHash>, SessionError> {
+        if self.allow_unverified {
+            return Ok(None);
+        }
         if let Some(KeyResolution::Rekeyed(epoch)) = self
             .verifier
             .as_ref()
@@ -551,13 +687,81 @@ impl<'a> SessionChainTracker<'a> {
         }
         // Pure legacy (chaining never started) while a key IS configured is anomalous: every
         // legitimately-written log since this process started should carry a chain field.
-        // Auto-trusted per FR-006 (it's also indistinguishable from a full-strip downgrade
-        // attack without the vault anchor, #6449), but must be observable, not silent (security
-        // review B2 condition, NFR-005).
+        // Auto-trusted per FR-006 (unless an anchor proves otherwise, checked below), but must
+        // be observable, not silent (security review B2 condition, NFR-005).
         if !self.chain_started && self.ring.is_some() {
             warn_legacy_under_active_key_once(self.path);
         }
-        self.verifier.and_then(|v| v.head())
+
+        if let Some(anchor) = self.anchor {
+            if !self.chain_started {
+                // Legacy-looking (no chain field anywhere), but a vault anchor exists for this
+                // session's identity: a file-write-only attacker cannot delete a vault entry, so
+                // this can only mean every chain field was deliberately stripped.
+                tracing::error!(
+                    audit_event = "history_integrity_tamper",
+                    subsystem = "session_log",
+                    reason = "whole_strip_legacy_with_anchor",
+                    path = %self.path.display(),
+                    anchored_count = anchor.count,
+                    "TAMPER DETECTED: session log is legacy-looking but a vault anchor exists for \
+                     it (issue #6449)"
+                );
+                return Err(SessionError::Integrity(format!(
+                    "TAMPER DETECTED in session log '{}': log has no chain metadata \
+                     (legacy-looking) but a vault anchor exists for it (anchored at count={}) — \
+                     this log was previously chained and its chain fields have been stripped",
+                    self.path.display(),
+                    anchor.count
+                )));
+            }
+            if self.physical_index < anchor.count {
+                tracing::error!(
+                    audit_event = "history_integrity_tamper",
+                    subsystem = "session_log",
+                    reason = "truncated_below_anchor_count",
+                    path = %self.path.display(),
+                    on_disk_count = self.physical_index,
+                    anchored_count = anchor.count,
+                    "TAMPER DETECTED: session log truncated below its anchored count (issue #6449)"
+                );
+                return Err(SessionError::Integrity(format!(
+                    "TAMPER DETECTED in session log '{}': on-disk event count ({}) is below the \
+                     anchored count ({}) — the log was truncated after being anchored",
+                    self.path.display(),
+                    self.physical_index,
+                    anchor.count
+                )));
+            }
+            let anchor_head = anchor.head().map_err(|e| {
+                SessionError::Integrity(format!(
+                    "session log '{}' anchor is malformed: {e}",
+                    self.path.display()
+                ))
+            })?;
+            match self.anchor_checkpoint_head {
+                Some(h) if h == anchor_head => {}
+                _ => {
+                    tracing::error!(
+                        audit_event = "history_integrity_tamper",
+                        subsystem = "session_log",
+                        reason = "anchor_head_mismatch",
+                        path = %self.path.display(),
+                        anchored_count = anchor.count,
+                        "TAMPER DETECTED: session log chain head at the anchored count does not \
+                         match the stored vault anchor (issue #6449)"
+                    );
+                    return Err(SessionError::Integrity(format!(
+                        "TAMPER DETECTED in session log '{}': chain head at the anchored count \
+                         ({}) does not match the stored vault anchor",
+                        self.path.display(),
+                        anchor.count
+                    )));
+                }
+            }
+        }
+
+        Ok(self.verifier.and_then(|v| v.head()))
     }
 }
 
@@ -747,6 +951,7 @@ async fn read_events(
     ring: Option<&ChainKeyRing>,
     file_identity: &[u8],
     allow_unverified: bool,
+    anchor: Option<&Anchor>,
 ) -> Result<(Vec<SessionEventEnvelope>, Option<u64>, Option<ChainHash>), SessionError> {
     let Some(mut lines) = EventLineReader::open(path).await? else {
         return Ok((Vec::new(), None, None));
@@ -755,7 +960,7 @@ async fn read_events(
     let mut events = Vec::new();
     let mut max_seq = None;
     let mut torn = false;
-    let mut chain = SessionChainTracker::new(path, ring, file_identity, allow_unverified);
+    let mut chain = SessionChainTracker::new(path, ring, file_identity, allow_unverified, anchor);
 
     loop {
         match lines.next_line().await? {
@@ -781,7 +986,7 @@ async fn read_events(
     // S1: chain verification has already run above, per event, as it was parsed — any failure
     // already returned via `chain.feed`'s `?` before this point, so `finish_torn_tail`'s
     // physical repair below is only ever reached once the whole read is chain-verified clean.
-    let chain_head = chain.finish();
+    let chain_head = chain.finish()?;
 
     finish_torn_tail(path, valid_len, repair, torn).await?;
 
@@ -800,6 +1005,7 @@ async fn read_events_chunked(
     ring: Option<&ChainKeyRing>,
     file_identity: &[u8],
     allow_unverified: bool,
+    anchor: Option<&Anchor>,
     mut on_chunk: impl FnMut(Vec<SessionEventEnvelope>) -> ControlFlow<()>,
 ) -> Result<(), SessionError> {
     let Some(mut lines) = EventLineReader::open(path).await? else {
@@ -809,7 +1015,7 @@ async fn read_events_chunked(
     let mut chunk = Vec::with_capacity(REPLAY_CHUNK_SIZE);
     let mut torn = false;
     let mut broke_early = false;
-    let mut chain = SessionChainTracker::new(path, ring, file_identity, allow_unverified);
+    let mut chain = SessionChainTracker::new(path, ring, file_identity, allow_unverified, anchor);
 
     loop {
         match lines.next_line().await? {
@@ -846,7 +1052,7 @@ async fn read_events_chunked(
 
     let valid_len = lines.valid_len;
     drop(lines);
-    let _chain_head = chain.finish();
+    let _chain_head = chain.finish()?;
 
     finish_torn_tail(path, valid_len, repair, torn).await?;
 
@@ -971,6 +1177,9 @@ pub(crate) async fn set_permissions(_path: &Path, _mode: u32) -> Result<(), Sess
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+
     use super::*;
 
     #[tokio::test]
@@ -1341,14 +1550,14 @@ mod tests {
         }
 
         let (whole_file_events, _, _) =
-            read_events(log.path(), false, None, b"test-session", false)
+            read_events(log.path(), false, None, b"test-session", false, None)
                 .await
                 .unwrap();
         assert_eq!(whole_file_events.len(), usize::try_from(N).unwrap());
 
         let mut chunked_events = Vec::new();
         let mut chunk_sizes = Vec::new();
-        read_events_chunked(log.path(), false, None, b"test-session", false, |chunk| {
+        read_events_chunked(log.path(), false, None, b"test-session", false, None, |chunk| {
             assert!(
                 chunk.len() <= REPLAY_CHUNK_SIZE,
                 "a single chunk must never exceed REPLAY_CHUNK_SIZE ({REPLAY_CHUNK_SIZE}), got {}",
@@ -1837,5 +2046,283 @@ mod tests {
         }
 
         configure_history_integrity(None);
+    }
+
+    // --- Vault-anchor downgrade-resistance tests (issue #6449) ---
+
+    /// In-memory [`AnchorStore`] mock for tests, mirroring the identical mock in
+    /// `zeph_subagent::transcript`'s test module.
+    #[derive(Default)]
+    struct MockAnchorStore {
+        map: std::sync::Mutex<std::collections::HashMap<String, Anchor>>,
+    }
+
+    impl AnchorStore for MockAnchorStore {
+        fn get(
+            &self,
+            subsystem: AnchorSubsystem,
+            file_id: &[u8],
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Option<Anchor>, zeph_common::anchor::AnchorError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            let result = self.get_sync(subsystem, file_id);
+            Box::pin(async move { result })
+        }
+
+        fn get_sync(
+            &self,
+            subsystem: AnchorSubsystem,
+            file_id: &[u8],
+        ) -> Result<Option<Anchor>, zeph_common::anchor::AnchorError> {
+            let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+            Ok(self.map.lock().unwrap().get(&key).cloned())
+        }
+
+        fn put(
+            &self,
+            subsystem: AnchorSubsystem,
+            file_id: &[u8],
+            anchor: Anchor,
+        ) -> Pin<Box<dyn Future<Output = Result<(), zeph_common::anchor::AnchorError>> + Send + '_>>
+        {
+            let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+            self.map.lock().unwrap().insert(key, anchor);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn delete(
+            &self,
+            subsystem: AnchorSubsystem,
+            file_id: &[u8],
+        ) -> Pin<Box<dyn Future<Output = Result<(), zeph_common::anchor::AnchorError>> + Send + '_>>
+        {
+            let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+            self.map.lock().unwrap().remove(&key);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// FINDING B regression: a session log chained before any anchor store existed must still
+    /// open normally once one comes online — an absent anchor is never a tamper signature.
+    #[tokio::test]
+    async fn pre_anchor_chained_log_still_opens_with_anchor_store_online() {
+        configure_history_integrity(Some(test_ring(0, 40)));
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::UserMessage {
+                text: "pre-anchor".to_owned(),
+                image_refs: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        drop(log);
+
+        configure_anchor_store(Some(Arc::new(MockAnchorStore::default())));
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        let events = log.read_all().await.unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "absent anchor must never brick a legacy-chained log"
+        );
+
+        configure_anchor_store(None);
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn whole_strip_of_anchored_session_is_tamper() {
+        configure_history_integrity(Some(test_ring(0, 41)));
+        let store: Arc<dyn AnchorStore> = Arc::new(MockAnchorStore::default());
+        configure_anchor_store(Some(Arc::clone(&store)));
+
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::UserMessage {
+                text: "one".to_owned(),
+                image_refs: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::SessionEnded { reason: "x".into() },
+        )
+        .await
+        .unwrap();
+        log.finalize().await.unwrap();
+        drop(log);
+
+        // Sanity: anchored and untouched, the log still opens.
+        assert!(SessionEventLog::open(dir.path()).await.is_ok());
+
+        let path = dir.path().join(EVENTS_FILE_NAME);
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        let stripped: String = raw
+            .lines()
+            .map(|line| {
+                let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+                value.as_object_mut().unwrap().remove("chain");
+                value.to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        tokio::fs::write(&path, stripped).await.unwrap();
+
+        match SessionEventLog::open(dir.path()).await {
+            Err(SessionError::Integrity(m)) => {
+                assert!(m.contains("TAMPER") && m.contains("vault anchor"), "{m}");
+            }
+            other => panic!("expected Integrity TAMPER error, got {}", other.is_ok()),
+        }
+
+        configure_anchor_store(None);
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn truncation_below_anchored_session_count_is_tamper() {
+        configure_history_integrity(Some(test_ring(0, 42)));
+        let store: Arc<dyn AnchorStore> = Arc::new(MockAnchorStore::default());
+        configure_anchor_store(Some(Arc::clone(&store)));
+
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::UserMessage {
+                text: "one".to_owned(),
+                image_refs: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::SessionEnded { reason: "x".into() },
+        )
+        .await
+        .unwrap();
+        log.finalize().await.unwrap();
+        drop(log);
+
+        let path = dir.path().join(EVENTS_FILE_NAME);
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        let first_line = raw.lines().next().unwrap();
+        tokio::fs::write(&path, format!("{first_line}\n"))
+            .await
+            .unwrap();
+
+        match SessionEventLog::open(dir.path()).await {
+            Err(SessionError::Integrity(m)) => {
+                assert!(m.contains("TAMPER") && m.contains("truncated"), "{m}");
+            }
+            other => panic!("expected Integrity TAMPER error, got {}", other.is_ok()),
+        }
+
+        configure_anchor_store(None);
+        configure_history_integrity(None);
+    }
+
+    /// Legitimate post-close growth (on-disk count > anchor.count, prefix matches) must open OK
+    /// — the anchor is a prefix commitment, not an exact-count requirement, for sessions.
+    #[tokio::test]
+    async fn growth_after_anchor_with_matching_prefix_is_ok() {
+        configure_history_integrity(Some(test_ring(0, 43)));
+        let store: Arc<dyn AnchorStore> = Arc::new(MockAnchorStore::default());
+        configure_anchor_store(Some(Arc::clone(&store)));
+
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::UserMessage {
+                text: "one".to_owned(),
+                image_refs: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        log.finalize().await.unwrap();
+
+        // More appended after the anchor was written (no new finalize) — a legitimate
+        // still-open session continuing to grow.
+        log.append(
+            None,
+            None,
+            SessionEvent::SessionEnded { reason: "x".into() },
+        )
+        .await
+        .unwrap();
+        drop(log);
+
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        let events = log.read_all().await.unwrap();
+        assert_eq!(
+            events.len(),
+            2,
+            "post-anchor growth with a matching prefix must open OK"
+        );
+
+        configure_anchor_store(None);
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn finalize_is_noop_without_anchor_store_or_without_chaining() {
+        configure_history_integrity(Some(test_ring(0, 44)));
+        let dir = tempfile::tempdir().unwrap();
+        let log = SessionEventLog::open(dir.path()).await.unwrap();
+        log.append(
+            None,
+            None,
+            SessionEvent::SessionEnded { reason: "x".into() },
+        )
+        .await
+        .unwrap();
+        log.finalize().await.unwrap();
+        configure_history_integrity(None);
+
+        let store: Arc<dyn AnchorStore> = Arc::new(MockAnchorStore::default());
+        configure_anchor_store(Some(Arc::clone(&store)));
+        let dir2 = tempfile::tempdir().unwrap();
+        let log2 = SessionEventLog::open(dir2.path()).await.unwrap();
+        log2.append(
+            None,
+            None,
+            SessionEvent::SessionEnded {
+                reason: "legacy".into(),
+            },
+        )
+        .await
+        .unwrap();
+        log2.finalize().await.unwrap();
+        let identity = file_identity(dir2.path());
+        assert!(
+            store
+                .get_sync(AnchorSubsystem::SessionLog, &identity)
+                .unwrap()
+                .is_none(),
+            "no anchor should be written for an unchained handle"
+        );
+
+        configure_anchor_store(None);
     }
 }

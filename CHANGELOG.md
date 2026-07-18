@@ -18,6 +18,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   surfaces as a raw decode error in the TUI. Scoped out of #6450 and this addendum; tracked as a
   follow-up in #6459.
 
+- `zeph-common`/`zeph-subagent`/`zeph-session`/`zeph-durable`/`zeph-config`/`zeph-core`/`zeph`:
+  closed the whole-file/whole-row downgrade gap the transcript-integrity feature (#6360,
+  PR #6453) left as a tracked follow-up (issue #6449). The hash-chain alone detects in-place
+  edits and a partial strip of chain metadata, but a fully consistent whole-file strip (delete
+  every `chain` field so a chained file looks pre-feature-legacy) was undetectable — a
+  file-write-only attacker could downgrade an already-anchored transcript or session to
+  trusted-legacy. Fixed with a new **vault anchor**: a small per-file record (`{epoch, count,
+  head, written_at}`, `zeph_common::anchor::Anchor`) written to the age vault on
+  finalize/close and checked on read. An age vault entry can only be removed by an attacker
+  who holds the age private key (decrypt → re-encrypt → rename), so "legacy-looking file, but
+  an anchor exists for its identity" is an unambiguous tamper signature; an **absent** anchor
+  is never a tamper signature (it can only mean pre-feature content, `anchor = "none"`, or a
+  vault outage during finalize) — this is what prevents every pre-#6449 session/transcript from
+  bricking.
+  - New `zeph_common::anchor` module: `Anchor`, `AnchorStore` trait (async `get`/`put`/`delete`
+    plus a sync `get_sync` for the transcript read path, which has call sites outside this
+    feature's ownership that cannot be made async without a large blast radius), `AnchorSubsystem`,
+    `anchor_key`/`parse_anchor_key`. Pure, no vault dependency (INV-1) — mirrors `hash_chain`'s
+    layering.
+  - `zeph-subagent`/`zeph-session`: `TranscriptWriter::finalize`/`SessionEventLog::finalize`
+    write the anchor last, after every append is durably flushed. Read paths
+    (`TranscriptReader::load`/`load_strict`, `SessionEventLog::open`/`read_all`/`read_chunked`)
+    check the anchor when present: truncation below the anchored count, or a legacy-looking
+    file with a live anchor, is `TAMPER` (fail-closed, same `--allow-unverified` override split
+    as #6360); legitimate post-close growth with a matching prefix is `OK`.
+  - `zeph-durable`: closed the durable-journal downgrade lever too (an attacker with DB write
+    access could previously `DELETE FROM durable_execution_integrity` on a resumable execution
+    and resume it unverified). New `LocalBackend::with_integrity_sealed`/`with_grandfather`: once
+    sealed (a vault-presence marker, `ZEPH_DURABLE_INTEGRITY_SEALED` — never a DB column), an
+    absent integrity row on a keyed, non-grandfathered execution with ≥1 committed `StepResult`
+    is unconditional tamper. `zeph durable seal-integrity [--grandfather <id,...>]` refuses to
+    seal while any resumable (`status='running'`) execution has committed results but no
+    integrity row (drain-before-seal); `--grandfather` records specific execution IDs as a
+    permanent, vault-recorded opt-out for operators who cannot drain.
+  - `zeph-core`: new `anchor_store` module — `AgeVaultAnchorStore` (routes blocking age-vault
+    I/O through `TaskSupervisor::spawn_blocking`, never a raw `tokio::spawn`) and a
+    reconcile-and-cap sweep (startup + hourly, via `TaskSupervisor`) that reaps orphaned anchors
+    (file/session gone) and evicts the oldest session anchors once `[integrity]
+    max_session_anchors` (default 512) is exceeded — ordered by the `written_at` field embedded
+    *inside* the AEAD-protected anchor value, never filesystem mtime (which a file-write-only
+    attacker can freely rewrite). An evicted session degrades to chain-only (#6453-level)
+    protection; it never bricks.
+  - `zeph-config`: new `[integrity]` section (`anchor: "vault" | "none"`, default `"vault"`;
+    `max_session_anchors`, default `512`). Migration step 100 (`migrate_integrity_config`) adds
+    a discoverability advisory block to existing configs.
+  - CLI: `zeph durable seal-integrity [--grandfather <id,...>] [--dry-run]`, `zeph sessions
+    verify [id]` (chain + anchor check without resuming). `zeph doctor` reports anchor/seal
+    status; `zeph --init` offers to generate and store `ZEPH_HISTORY_KEY` (the root secret that
+    activates both #6360 and #6449) directly into the vault.
+  - Residuals, documented rather than silently accepted: a session anchor is a prefix
+    commitment as of its last clean close, so an attacker can roll back an unanchored tail (at
+    most one run's worth of appends since the last close); a grandfathered `execution_id` is a
+    *permanent* forge-able slot (an operator-accepted opt-out, not free protection); sessions
+    aged out past `max_session_anchors` fall back to chain-only protection; the reconcile-and-cap
+    sweep's orphan-reap step removes an anchor whenever its backing file/session directory is
+    absent — an attacker who first deletes the real file, waits out a sweep window (≤ 1h, or a
+    restart), then recreates a forged legacy-looking replacement under the same identity gets it
+    trusted (overlaps the accepted "fabricate a brand-new legacy session" no-backfill residual;
+    no reap grace-window or tombstone is implemented in this PR).
 - `zeph-config`/`zeph-core`/`zeph`: added `zeph durable rotate-key`, a windowed rotation
   command for the durable execution layer's AEAD payload key (`ZEPH_DURABLE_KEY`) — the
   `XChaCha20Poly1305Cipher::with_previous` rotation window existed but was never operationally

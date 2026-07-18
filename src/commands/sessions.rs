@@ -43,6 +43,7 @@ pub(crate) async fn handle_sessions_command(
             events,
         } => show_session(&session_store, &data_dir, &id, from, to, events).await,
         SessionsCommand::Delete { id } => delete_session(&store, &session_store, &id).await,
+        SessionsCommand::Verify { id } => verify_sessions(&session_store, &data_dir, id).await,
         SessionsCommand::Fork { id, at } => {
             fork_session_cli(&session_store, &data_dir, &id, at).await
         }
@@ -202,6 +203,70 @@ async fn delete_session(
     println!(
         "Note: the on-disk event log directory is not removed yet (blob/event-log GC lands in a follow-up)."
     );
+    Ok(())
+}
+
+/// `sessions verify [id]` (issue #6449) — verify one session's (or every session's) hash chain
+/// and vault anchor without resuming it. Uses the lockless
+/// [`zeph_session::SessionEventLog::open`] and [`zeph_session::SessionEventLog::read_all`] path,
+/// which runs full chain and anchor verification as a side effect of reading (see the
+/// module-level anchor docs, `zeph_common::anchor`) — never mutates the session (never
+/// `open_exclusive`).
+///
+/// Prints one `OK`/`TAMPER`/`FAIL` line per session and exits non-zero if any failed.
+///
+/// # Errors
+///
+/// Returns an error if the session list cannot be queried, or if one or more sessions fail
+/// verification (the summary failure, not a lookup failure).
+#[cfg(any(feature = "acp", feature = "session"))]
+async fn verify_sessions(
+    session_store: &zeph_session::SessionStore,
+    data_dir: &std::path::Path,
+    id: Option<String>,
+) -> anyhow::Result<()> {
+    let ids: Vec<String> = if let Some(id) = id {
+        vec![id]
+    } else {
+        let sessions = session_store
+            .list(&zeph_session::SessionFilter {
+                status: None,
+                limit: usize::MAX,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to list sessions: {e}"))?;
+        sessions.into_iter().map(|s| s.session_id).collect()
+    };
+
+    if ids.is_empty() {
+        println!("No sessions found.");
+        return Ok(());
+    }
+
+    let mut failures = 0usize;
+    for id in &ids {
+        let session_path = zeph_session::session_dir(data_dir, id);
+        let outcome = match zeph_session::SessionEventLog::open(&session_path).await {
+            Ok(log) => log.read_all().await.map(|events| events.len()),
+            Err(e) => Err(e),
+        };
+        match outcome {
+            Ok(count) => println!("OK      {id}  ({count} events)"),
+            Err(e @ zeph_session::SessionError::Integrity(_)) => {
+                failures += 1;
+                println!("TAMPER  {id}: {e}");
+            }
+            Err(e) => {
+                failures += 1;
+                println!("FAIL    {id}: {e}");
+            }
+        }
+    }
+
+    if failures > 0 {
+        anyhow::bail!("{failures} of {} session(s) failed verification", ids.len());
+    }
+    println!("All {} session(s) verified OK.", ids.len());
     Ok(())
 }
 

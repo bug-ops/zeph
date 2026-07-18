@@ -3316,6 +3316,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             let cipher = crate::commands::durable::load_write_cipher(config)?;
             let hmac_keys = crate::commands::durable::load_write_hmac_key(config)?;
             let hwm_keys = crate::commands::durable::load_write_hwm_key(config)?;
+            let integrity_seal = crate::commands::durable::load_integrity_seal(config);
             agent.with_durable_orchestration(
                 config.durable.clone(),
                 durable_url,
@@ -3324,6 +3325,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 hwm_keys.current.map(|s| (s.epoch, s.key)),
                 hmac_keys.previous,
                 hwm_keys.previous.map(|s| (s.epoch, s.key)),
+                integrity_seal,
             )
         } else {
             agent
@@ -3335,6 +3337,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             let cipher = crate::commands::durable::load_write_cipher(config)?;
             let hmac_keys = crate::commands::durable::load_write_hmac_key(config)?;
             let hwm_keys = crate::commands::durable::load_write_hwm_key(config)?;
+            let integrity_seal = crate::commands::durable::load_integrity_seal(config);
             agent.with_durable_agent_turns(
                 config.durable.clone(),
                 durable_url,
@@ -3344,12 +3347,52 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 hwm_keys.current.map(|s| (s.epoch, s.key)),
                 hmac_keys.previous,
                 hwm_keys.previous.map(|s| (s.epoch, s.key)),
+                integrity_seal,
             )
         } else {
             agent
         };
         agent.with_durable_subagent(config.durable.enabled && config.durable.subagent)
     };
+
+    // Vault-anchor downgrade-resistance (issue #6449): install the concrete anchor store and
+    // spawn the reconcile-and-cap sweep whenever `anchor = "vault"` (the default) and the age
+    // vault is actually reachable. Degrades gracefully (never a hard failure) when the vault
+    // isn't available yet — sessions/transcripts stay chain-verified (#6453) but not
+    // downgrade-resistant, exactly mirroring `configure_history_integrity_from_default_vault`'s
+    // own degrade posture.
+    if config.integrity.anchor == zeph_config::AnchorMode::Vault {
+        if let Some(vault_arc) = app.age_vault_arc() {
+            let store: std::sync::Arc<dyn zeph_common::anchor::AnchorStore> =
+                std::sync::Arc::new(zeph_core::anchor_store::AgeVaultAnchorStore::new(
+                    std::sync::Arc::clone(vault_arc),
+                    (*supervisor).clone(),
+                ));
+            zeph_core::anchor_store::install_anchor_store(Some(store));
+
+            let transcript_dir = config
+                .agents
+                .transcript_dir
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from(".zeph/subagents"));
+            let sessions_dir_for_sweep = std::path::PathBuf::from(&config.session.data_dir);
+            zeph_core::anchor_store::spawn_anchor_sweep(
+                &supervisor,
+                std::sync::Arc::clone(vault_arc),
+                transcript_dir,
+                sessions_dir_for_sweep,
+                config.integrity.max_session_anchors,
+            );
+        } else {
+            tracing::warn!(
+                "history tamper-anchoring disabled: age vault unavailable at bootstrap — \
+                 sessions/transcripts remain tamper-evident (issue #6360) but are not \
+                 downgrade-resistant against a whole-file strip (issue #6449); set \
+                 `[integrity] anchor = \"none\"` to silence this warning if this is intentional"
+            );
+        }
+    }
+
     let agent = {
         let baseline = zeph_experiments::ConfigSnapshot::from_config(config);
         let agent = agent.with_experiment(config.experiments.clone(), baseline);

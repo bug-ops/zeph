@@ -797,6 +797,11 @@ pub(crate) struct OrchestrationState {
     /// #6451). `Some` only while a `zeph durable rotate-key` window is open, mirroring
     /// `durable_previous_hmac_key` but epoch-addressed (see `durable_hwm_key`).
     pub(crate) durable_previous_hwm_key: Option<(u32, [u8; 32])>,
+    /// Whether the P2 durable backend is vault-sealed against pre-feature integrity-row absence
+    /// (issue #6449). `false` (the default) is the pre-cutover migration posture.
+    pub(crate) durable_integrity_sealed: bool,
+    /// Execution IDs explicitly grandfathered past the seal (issue #6449).
+    pub(crate) durable_integrity_grandfather: std::collections::HashSet<zeph_durable::ExecutionId>,
 }
 
 /// Groups instruction hot-reload state.
@@ -1017,6 +1022,13 @@ pub(crate) struct SessionState {
     /// key for the rotation window (addendum to #6451). `Some` only while a `zeph durable
     /// rotate-key` window is open (`config.previous_key_id.is_some()`).
     pub(crate) durable_agent_turns_previous_hwm_key: Option<(u32, [u8; 32])>,
+    /// Sibling companion to [`Self::durable_agent_turns_config`]: whether the P1 durable backend
+    /// is vault-sealed against pre-feature integrity-row absence (issue #6449).
+    pub(crate) durable_agent_turns_integrity_sealed: bool,
+    /// Sibling companion to [`Self::durable_agent_turns_config`]: execution IDs explicitly
+    /// grandfathered past the seal (issue #6449).
+    pub(crate) durable_agent_turns_integrity_grandfather:
+        std::collections::HashSet<zeph_durable::ExecutionId>,
     /// Set to `true` the first time `ensure_session_durable_ctx` runs (success or failure) so a
     /// failed backend construction (missing vault key, disk error) is not retried on every turn.
     /// Reset to `false` by `reset_durable_ctx_for_conversation_switch` (`/new`, `/conv resume`,
@@ -1486,6 +1498,8 @@ impl SessionState {
             durable_agent_turns_hwm_key: None,
             durable_agent_turns_previous_hmac_key: None,
             durable_agent_turns_previous_hwm_key: None,
+            durable_agent_turns_integrity_sealed: false,
+            durable_agent_turns_integrity_grandfather: std::collections::HashSet::new(),
             durable_ctx_init_attempted: false,
             durable_writer: None,
             durable_writer_task: None,

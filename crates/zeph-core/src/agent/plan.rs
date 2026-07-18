@@ -334,6 +334,13 @@ impl<C: crate::channel::Channel> Agent<C> {
             let hwm_key = self.services.orchestration.durable_hwm_key;
             let previous_hmac_key = self.services.orchestration.durable_previous_hmac_key;
             let previous_hwm_key = self.services.orchestration.durable_previous_hwm_key;
+            let integrity_seal = (
+                self.services.orchestration.durable_integrity_sealed,
+                self.services
+                    .orchestration
+                    .durable_integrity_grandfather
+                    .clone(),
+            );
             let (backend, handle, task_handle) =
                 crate::agent::durable_bootstrap::open_durable_backend(
                     &self.runtime.lifecycle.task_supervisor,
@@ -345,6 +352,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     hwm_key,
                     previous_hmac_key,
                     previous_hwm_key,
+                    integrity_seal,
                 )
                 .await?;
             self.services.orchestration.durable_backend = Some(backend);

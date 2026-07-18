@@ -172,6 +172,21 @@ pub struct LocalBackend {
     /// `lock_dir = None` backend (#6254), so a background retention tick every
     /// `prune_interval_secs` does not spam the log for the lifetime of the process.
     orphan_sweep_warned: std::sync::atomic::AtomicBool,
+    /// Vault-sealed integrity marker (issue #6449). `true` only when the *presence* of
+    /// `ZEPH_DURABLE_INTEGRITY_SEALED` in the vault was confirmed at bootstrap — an
+    /// attacker with DB write access cannot set this to `true` (it is never derived from any DB
+    /// column). Once sealed, [`check_high_water_mark`](Self::check_high_water_mark) treats an
+    /// absent integrity row on a keyed, non-grandfathered execution with committed `StepResult`s
+    /// as unconditional tamper, closing the pre-seal migration posture's downgrade lever.
+    integrity_sealed: bool,
+    /// Execution IDs explicitly grandfathered past the seal via `zeph durable seal-integrity
+    /// --grandfather` (issue #6449) — a vault-stored, unforgeable-by-DB-write set. Each entry is
+    /// a **permanent** opt-out for that one execution (not merely a frozen pre-seal snapshot): an
+    /// attacker with DB write access can delete-and-reinsert forged content under the same
+    /// grandfathered `execution_id` and it will still resume unverified. This is an accepted,
+    /// bounded, documented residual of the opt-out — operators should prefer draining a
+    /// resumable execution to a terminal state over grandfathering it.
+    integrity_grandfather: std::collections::HashSet<ExecutionId>,
 }
 
 /// One row-HMAC/high-water-mark key, addressed by its non-secret rotation epoch (FR-008).
@@ -221,6 +236,8 @@ impl LocalBackend {
             timer_waiters: NotifyRegistry::default(),
             lock_dir: None,
             orphan_sweep_warned: std::sync::atomic::AtomicBool::new(false),
+            integrity_sealed: false,
+            integrity_grandfather: std::collections::HashSet::new(),
         }
     }
 
@@ -302,6 +319,28 @@ impl LocalBackend {
     #[must_use]
     pub fn with_previous_hwm_key(mut self, epoch: u32, key: [u8; 32]) -> Self {
         self.hwm_key_previous = Some(HwmKeySlot { epoch, key });
+        self
+    }
+
+    /// Configure whether this backend has been sealed against pre-feature integrity-row absence
+    /// (issue #6449). Pass `true` only when the vault-stored `ZEPH_DURABLE_INTEGRITY_SEALED`
+    /// marker's *presence* was confirmed at bootstrap — never derive this from any DB column
+    /// (that was the S1 defeat the vault-sealed design fixes; see `check_high_water_mark`'s
+    /// doc).
+    #[must_use]
+    pub fn with_integrity_sealed(mut self, sealed: bool) -> Self {
+        self.integrity_sealed = sealed;
+        self
+    }
+
+    /// Register the vault-stored set of execution IDs grandfathered past the integrity seal
+    /// (issue #6449). Each grandfathered id is a *permanent* forge-able slot (not merely a
+    /// frozen pre-existing posture): an attacker with DB write access can delete and re-insert
+    /// forged content under the same id. This is an accepted, bounded, documented operator
+    /// opt-out — prefer draining a resumable execution to a terminal status where practical.
+    #[must_use]
+    pub fn with_grandfather(mut self, ids: std::collections::HashSet<ExecutionId>) -> Self {
+        self.integrity_grandfather = ids;
         self
     }
 
@@ -2078,14 +2117,97 @@ impl LocalBackend {
         Ok(())
     }
 
+    /// Find every **resumable** (`status = 'running'`) execution that has committed at least one
+    /// `StepResult` but carries no `durable_execution_integrity` row (issue #6449).
+    ///
+    /// This is the drain-before-seal precondition scan for `zeph durable seal-integrity`: the
+    /// returned set is exactly the executions that would be silently downgraded to
+    /// unconditional-tamper the moment this backend seals, unless drained to a terminal status
+    /// first or explicitly grandfathered. A non-resumable (terminal) execution missing its row is
+    /// not a concern — it can never be resumed again, sealed or not.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails.
+    pub async fn find_unsealed_resumable_executions(
+        &self,
+    ) -> Result<Vec<ExecutionId>, DurableError> {
+        let rows: Vec<(String,)> = zeph_db::query_as(sql!(
+            "SELECT e.execution_id FROM durable_executions e
+             WHERE e.status = 'running'
+               AND NOT EXISTS (
+                 SELECT 1 FROM durable_execution_integrity i WHERE i.execution_id = e.execution_id
+               )
+               AND (
+                 EXISTS (
+                   SELECT 1 FROM durable_journal j
+                   WHERE j.execution_id = e.execution_id AND j.entry_kind = 'step_result'
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM durable_journal j
+                   WHERE j.execution_id = e.execution_id AND j.entry_kind = 'checkpoint'
+                     AND j.folded_count > 0
+                 )
+               )"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("seal_integrity_scan", e))?;
+
+        rows.into_iter()
+            .map(|(id,)| {
+                ExecutionId::parse_str(&id).map_err(|_| DurableError::Decode {
+                    context: "malformed execution_id in durable_executions",
+                })
+            })
+            .collect()
+    }
+
+    /// Recompute the number of committed `StepResult`s for `execution_id` directly from the
+    /// journal: surviving `step_result` rows plus every checkpoint's `folded_count` (a fold moves
+    /// committed results into a checkpoint snapshot net-zero, so this sum is invariant across
+    /// folding). Shared by [`check_high_water_mark`](Self::check_high_water_mark)'s present-row
+    /// recomputation and its post-seal absent-row check (issue #6449).
+    async fn committed_step_result_count(
+        &self,
+        execution_id: ExecutionId,
+    ) -> Result<u64, DurableError> {
+        let exec = execution_id.as_uuid().to_string();
+        let live_count: i64 = zeph_db::query_scalar(sql!(
+            "SELECT COUNT(*) FROM durable_journal
+             WHERE execution_id = ? AND entry_kind = 'step_result'"
+        ))
+        .bind(&exec)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("hwm_verify", e))?;
+        let folded_sum: i64 = zeph_db::query_scalar(sql!(
+            "SELECT COALESCE(SUM(folded_count), 0) FROM durable_journal
+             WHERE execution_id = ? AND entry_kind = 'checkpoint'"
+        ))
+        .bind(&exec)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("hwm_verify", e))?;
+        Ok(u64::try_from(live_count.saturating_add(folded_sum)).unwrap_or(0))
+    }
+
     /// The comparison half of `verify_high_water_mark`.
     ///
-    /// Absent a stored `durable_execution_integrity` row, this execution predates the feature or
-    /// has committed no `StepResult` yet — nothing to compare against, so it is accepted (migration
-    /// posture: only a row's total absence is legacy, mirroring the JSONL side's "no chain metadata
-    /// at all" lane). A *present* row is always fully verified: an unresolvable `key_epoch`, an
-    /// HMAC that does not authenticate, or a recomputed `committed_result_count` that disagrees
-    /// with the signed value are each a distinct fail-closed [`DurableError::HighWaterMarkIntegrity`].
+    /// Absent a stored `durable_execution_integrity` row: **pre-seal** (or unkeyed), this
+    /// execution predates the feature or has committed no `StepResult` yet — nothing to compare
+    /// against, so it is accepted (migration posture: only a row's total absence is legacy,
+    /// mirroring the JSONL side's "no chain metadata at all" lane). **Post-seal** (issue #6449 —
+    /// `integrity_sealed == true`, confirmed via the vault-stored `ZEPH_DURABLE_INTEGRITY_SEALED`
+    /// marker, never a DB column), a keyed, non-grandfathered execution with at least one
+    /// committed `StepResult` but no integrity row is unconditional tamper: the drain-before-seal
+    /// precondition on `zeph durable seal-integrity` guarantees no execution can reach this state
+    /// legitimately once sealed (the keyed integrity-row write is atomic-in-transaction with the
+    /// `StepResult` commit, so "committed result present, row absent" cannot occur for anything
+    /// that started after the vault key was attached). A *present* row is always fully verified:
+    /// an unresolvable `key_epoch`, an HMAC that does not authenticate, or a recomputed
+    /// `committed_result_count` that disagrees with the signed value are each a distinct
+    /// fail-closed [`DurableError::HighWaterMarkIntegrity`].
     async fn check_high_water_mark(&self, execution_id: ExecutionId) -> Result<(), DurableError> {
         let exec = execution_id.as_uuid().to_string();
         let stored: Option<(i64, i64, i64, Vec<u8>)> = zeph_db::query_as(sql!(
@@ -2097,6 +2219,22 @@ impl LocalBackend {
         .await
         .map_err(|e| DurableError::storage("hwm_verify", e))?;
         let Some((epoch_raw, max_step_raw, count_raw, hmac)) = stored else {
+            if self.hwm_key.is_some()
+                && self.integrity_sealed
+                && !self.integrity_grandfather.contains(&execution_id)
+                && self.committed_step_result_count(execution_id).await? >= 1
+            {
+                return Err(DurableError::HighWaterMarkIntegrity {
+                    execution_id,
+                    reason: "integrity_row_absent_post_seal",
+                    hint: "TAMPER: this backend is sealed against pre-feature integrity-row \
+                           absence, this execution is keyed and not grandfathered, and it has \
+                           committed StepResults — a legitimate keyed execution can never reach \
+                           this state (the integrity row is written atomically with its first \
+                           committed StepResult), so an absent row here means the row was \
+                           deleted outside the write path",
+                });
+            }
             return Ok(());
         };
 
@@ -2139,23 +2277,7 @@ impl LocalBackend {
             return Err(tamper("hmac_mismatch"));
         }
 
-        let live_count: i64 = zeph_db::query_scalar(sql!(
-            "SELECT COUNT(*) FROM durable_journal
-             WHERE execution_id = ? AND entry_kind = 'step_result'"
-        ))
-        .bind(&exec)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DurableError::storage("hwm_verify", e))?;
-        let folded_sum: i64 = zeph_db::query_scalar(sql!(
-            "SELECT COALESCE(SUM(folded_count), 0) FROM durable_journal
-             WHERE execution_id = ? AND entry_kind = 'checkpoint'"
-        ))
-        .bind(&exec)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DurableError::storage("hwm_verify", e))?;
-        let recomputed = u64::try_from(live_count.saturating_add(folded_sum)).unwrap_or(0);
+        let recomputed = self.committed_step_result_count(execution_id).await?;
         if recomputed != count {
             return Err(fail(
                 "count_mismatch",
@@ -5426,6 +5548,239 @@ mod tests {
                 .await
                 .unwrap(),
             "an execution with no integrity row at all is legacy, not tampered"
+        );
+    }
+
+    // --- Vault-sealed integrity boundary tests (issue #6449) ---
+
+    #[tokio::test]
+    async fn hwm_unsealed_absent_row_after_deletion_is_still_ok() {
+        // A keyed but *unsealed* backend (the pre-#6449-cutover posture): even after a committed
+        // StepResult's integrity row is deleted, resume must still succeed — the migration
+        // posture unless/until an operator explicitly seals.
+        let backend = mem_backend(1_048_576).await.with_hwm_key(0, [30u8; 32]);
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend.append(step_result(exec, 0, b"v0")).await.unwrap();
+
+        zeph_db::query(sql!(
+            "DELETE FROM durable_execution_integrity WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .execute(backend.pool())
+        .await
+        .unwrap();
+
+        assert!(
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap(),
+            "unsealed backend must not treat an absent integrity row as tamper"
+        );
+    }
+
+    #[tokio::test]
+    async fn hwm_post_seal_absent_row_with_committed_results_is_tamper() {
+        let backend = mem_backend(1_048_576)
+            .await
+            .with_hwm_key(0, [31u8; 32])
+            .with_integrity_sealed(true);
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend.append(step_result(exec, 0, b"v0")).await.unwrap();
+
+        // Attacker (DB write access) deletes the integrity row, keeping the committed
+        // StepResult in place to replay it.
+        zeph_db::query(sql!(
+            "DELETE FROM durable_execution_integrity WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .execute(backend.pool())
+        .await
+        .unwrap();
+
+        let err = backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap_err();
+        assert_matches!(
+            err,
+            DurableError::HighWaterMarkIntegrity {
+                reason: "integrity_row_absent_post_seal",
+                ..
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn hwm_post_seal_forged_created_at_does_not_evade_the_seal() {
+        // Proves S1 is fully closed: the boundary no longer consults `created_at` at all, so
+        // an attacker forging it (the rev1 defeat) has no effect once sealed.
+        let backend = mem_backend(1_048_576)
+            .await
+            .with_hwm_key(0, [32u8; 32])
+            .with_integrity_sealed(true);
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend.append(step_result(exec, 0, b"v0")).await.unwrap();
+
+        zeph_db::query(sql!(
+            "UPDATE durable_executions SET created_at = 0 WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .execute(backend.pool())
+        .await
+        .unwrap();
+        zeph_db::query(sql!(
+            "DELETE FROM durable_execution_integrity WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .execute(backend.pool())
+        .await
+        .unwrap();
+
+        let err = backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap_err();
+        assert_matches!(
+            err,
+            DurableError::HighWaterMarkIntegrity {
+                reason: "integrity_row_absent_post_seal",
+                ..
+            },
+            "forging created_at must not evade the seal — it is never consulted"
+        );
+    }
+
+    #[tokio::test]
+    async fn hwm_grandfathered_execution_absent_row_is_ok() {
+        let exec = ExecutionId::new();
+        let writer = mem_backend(1_048_576).await.with_hwm_key(0, [33u8; 32]);
+        writer
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        writer.append(step_result(exec, 0, b"v0")).await.unwrap();
+        zeph_db::query(sql!(
+            "DELETE FROM durable_execution_integrity WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .execute(writer.pool())
+        .await
+        .unwrap();
+
+        let sealed_but_grandfathered = LocalBackend::new(writer.pool().clone(), 1_048_576)
+            .with_hwm_key(0, [33u8; 32])
+            .with_integrity_sealed(true)
+            .with_grandfather(std::collections::HashSet::from([exec]));
+
+        assert!(
+            sealed_but_grandfathered
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap(),
+            "a grandfathered execution_id must resume despite the seal"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_unsealed_resumable_executions_finds_only_the_offending_set() {
+        let backend = mem_backend(1_048_576).await.with_hwm_key(0, [35u8; 32]);
+
+        // (a) running, keyed, committed StepResult, integrity row deleted — the offending case.
+        let offending = ExecutionId::new();
+        backend
+            .open_execution(offending, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend
+            .append(step_result(offending, 0, b"v0"))
+            .await
+            .unwrap();
+        zeph_db::query(sql!(
+            "DELETE FROM durable_execution_integrity WHERE execution_id = ?"
+        ))
+        .bind(offending.as_uuid().to_string())
+        .execute(backend.pool())
+        .await
+        .unwrap();
+
+        // (b) running, keyed, has an intact integrity row — not offending.
+        let intact = ExecutionId::new();
+        backend
+            .open_execution(intact, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend.append(step_result(intact, 0, b"v0")).await.unwrap();
+
+        // (c) running, no committed results at all — not offending (nothing to smuggle).
+        let empty = ExecutionId::new();
+        backend
+            .open_execution(empty, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+
+        // (d) terminal (finalized), integrity row absent — not offending (can never resume again).
+        let terminal = ExecutionId::new();
+        backend
+            .open_execution(terminal, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend
+            .append(step_result(terminal, 0, b"v0"))
+            .await
+            .unwrap();
+        zeph_db::query(sql!(
+            "DELETE FROM durable_execution_integrity WHERE execution_id = ?"
+        ))
+        .bind(terminal.as_uuid().to_string())
+        .execute(backend.pool())
+        .await
+        .unwrap();
+        backend
+            .finalize(terminal, ExecutionStatus::Completed)
+            .await
+            .unwrap();
+
+        let found = backend.find_unsealed_resumable_executions().await.unwrap();
+        assert_eq!(
+            found,
+            vec![offending],
+            "only the truly offending execution must be returned"
+        );
+    }
+
+    #[tokio::test]
+    async fn hwm_post_seal_absent_row_with_zero_committed_results_is_ok() {
+        // A sealed backend with no committed StepResult at all (e.g. an execution that was
+        // opened but never produced a result) has nothing to smuggle — accepted even post-seal.
+        let backend = mem_backend(1_048_576)
+            .await
+            .with_hwm_key(0, [34u8; 32])
+            .with_integrity_sealed(true);
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+
+        assert!(
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap(),
+            "zero committed results, post-seal, must not be treated as tamper"
         );
     }
 

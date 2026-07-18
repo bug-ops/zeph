@@ -18,8 +18,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock as StdRwLock};
 
 use serde::{Deserialize, Serialize};
+use zeph_common::anchor::{Anchor, AnchorStore, AnchorSubsystem};
 use zeph_common::hash_chain::{
-    ChainHash, ChainKeyRing, KeyResolution, chain_next, genesis, verify_chained_prefix,
+    ChainHash, ChainKeyRing, KeyResolution, chain_next, genesis,
+    verify_chained_prefix_with_checkpoint,
 };
 use zeph_llm::provider::{Message, MessagePart};
 
@@ -79,6 +81,25 @@ pub fn configure_history_integrity(ring: Option<Arc<ChainKeyRing>>) {
 
 fn history_integrity() -> Option<Arc<ChainKeyRing>> {
     HISTORY_INTEGRITY.read().ok().and_then(|g| g.clone())
+}
+
+/// Process-wide vault-anchor store (issue #6449), configured once at bootstrap alongside
+/// [`configure_history_integrity`]. `None` (the default) disables anchor writes/checks entirely —
+/// transcripts behave exactly as they did under #6453 (chain-verified, but not
+/// downgrade-resistant against a whole-file strip).
+static ANCHOR_STORE: StdRwLock<Option<Arc<dyn AnchorStore>>> = StdRwLock::new(None);
+
+/// Configure (or disable, with `None`) the vault-anchor store for every [`TranscriptWriter`]/
+/// [`TranscriptReader`] operation in this process from this point forward. See
+/// [`configure_history_integrity`]'s doc for the single-set-at-startup contract this mirrors.
+pub fn configure_anchor_store(store: Option<Arc<dyn AnchorStore>>) {
+    if let Ok(mut guard) = ANCHOR_STORE.write() {
+        *guard = store;
+    }
+}
+
+fn anchor_store() -> Option<Arc<dyn AnchorStore>> {
+    ANCHOR_STORE.read().ok().and_then(|g| g.clone())
 }
 
 /// Derive a transcript file's chain identity from its path (the `task_id`, e.g. `"abc123"` from
@@ -205,6 +226,10 @@ struct TranscriptWriteState {
     /// lifetime (fresh chaining start on a legacy or empty file) or seeded from the file's
     /// existing chained tail at open time (M3, see [`TranscriptWriter::new`]).
     prev: Option<ChainHash>,
+    /// Total on-disk entry count (seeded from any pre-existing content at open time,
+    /// incremented on every successful append) — the `count` half of the vault anchor written
+    /// by [`TranscriptWriter::finalize`] (issue #6449).
+    count: u64,
 }
 
 #[derive(Clone)]
@@ -244,19 +269,27 @@ impl TranscriptWriter {
         let ring = history_integrity();
         let identity = file_identity(path);
 
-        let prev = if path.exists() {
+        let (prev, count) = if path.exists() {
             let entries =
                 parse_entries(path, false).map_err(|e| io::Error::other(e.to_string()))?;
-            let (_messages, head) = verify_and_extract_messages(path, entries, ring.as_deref())
-                .map_err(|e| io::Error::other(e.to_string()))?;
-            head
+            let count = u64::try_from(entries.len()).unwrap_or(u64::MAX);
+            let anchor = match anchor_store() {
+                Some(store) => store
+                    .get_sync(AnchorSubsystem::SubagentTranscript, &identity)
+                    .map_err(|e| io::Error::other(format!("anchor lookup failed: {e}")))?,
+                None => None,
+            };
+            let (_messages, head) =
+                verify_and_extract_messages(path, entries, ring.as_deref(), anchor.as_ref())
+                    .map_err(|e| io::Error::other(e.to_string()))?;
+            (head, count)
         } else {
-            None
+            (None, 0)
         };
 
         let file = zeph_common::fs_secure::append_private(path)?;
         Ok(Self {
-            state: Arc::new(Mutex::new(TranscriptWriteState { file, prev })),
+            state: Arc::new(Mutex::new(TranscriptWriteState { file, prev, count })),
             file_identity: identity,
             ring,
         })
@@ -331,10 +364,51 @@ impl TranscriptWriter {
             if let Some(h) = new_head {
                 guard.prev = Some(h);
             }
+            guard.count += 1;
             Ok(())
         })
         .await
         .map_err(|e| io::Error::other(format!("spawn_blocking panicked: {e}")))?
+    }
+
+    /// Finalize this writer: if a vault-anchor store is configured (issue #6449) and this
+    /// writer's lifetime saw at least one chained append, persist an [`Anchor`] recording the
+    /// final `(epoch, count, head)` — written **last**, after every append is durably flushed,
+    /// so a crash before this point leaves the file present with no anchor, which is always
+    /// benign (never a false tamper signature — see the module-level anchor docs).
+    ///
+    /// A no-op, not an error, when no anchor store is configured or this writer never chained
+    /// (pure legacy for its whole lifetime): there is nothing to anchor.
+    ///
+    /// # Errors
+    ///
+    /// Returns `io::Error` if the configured anchor store's `put` fails (a store-level failure,
+    /// not an absent anchor). Callers should treat this as best-effort and log rather than fail
+    /// the whole collection flow — the transcript file itself is already safely written.
+    pub async fn finalize(self) -> io::Result<()> {
+        let Some(store) = anchor_store() else {
+            return Ok(());
+        };
+        let (head, count) = {
+            let guard = self
+                .state
+                .lock()
+                .map_err(|_| io::Error::other("transcript writer lock poisoned"))?;
+            let Some(head) = guard.prev else {
+                return Ok(());
+            };
+            (head, guard.count)
+        };
+        let epoch = self.ring.as_ref().map_or(0, |r| r.current_epoch());
+        let anchor = Anchor::new(epoch, count, head);
+        store
+            .put(
+                AnchorSubsystem::SubagentTranscript,
+                &self.file_identity,
+                anchor,
+            )
+            .await
+            .map_err(|e| io::Error::other(format!("anchor put failed: {e}")))
     }
 
     /// Write the meta sidecar file for an agent.
@@ -435,7 +509,15 @@ impl TranscriptReader {
 
         let entries = parse_entries(path, strict)?;
         let ring = history_integrity();
-        let (messages, _head) = verify_and_extract_messages(path, entries, ring.as_deref())?;
+        let identity = file_identity(path);
+        let anchor = match anchor_store() {
+            Some(store) => store
+                .get_sync(AnchorSubsystem::SubagentTranscript, &identity)
+                .map_err(|e| SubAgentError::Integrity(format!("anchor lookup failed: {e}")))?,
+            None => None,
+        };
+        let (messages, _head) =
+            verify_and_extract_messages(path, entries, ring.as_deref(), anchor.as_ref())?;
         Ok(messages)
     }
 
@@ -584,22 +666,48 @@ fn parse_entries(path: &Path, strict: bool) -> Result<Vec<TranscriptEntry>, SubA
 ///
 /// Returns [`SubAgentError::Integrity`] when: the file carries chain metadata but no
 /// history-integrity key ring is configured (`ring.is_none()`, NFR-004 — never silently treated
-/// as legacy); a partial strip is detected; or [`verify_chained_prefix`] reports a definite
-/// tamper ([`ChainError::Mismatch`]) or an unverifiable/possibly-re-keyed chain
-/// ([`ChainError::Unverifiable`]).
+/// as legacy); a partial strip is detected; [`verify_chained_prefix`] reports a definite tamper
+/// ([`ChainError::Mismatch`]) or an unverifiable/possibly-re-keyed chain
+/// ([`ChainError::Unverifiable`]); or `anchor` disagrees with the on-disk content (issue #6449 —
+/// see the read-side decision table in the module-level anchor docs, `zeph_common::anchor`).
+#[allow(clippy::too_many_lines)]
 fn verify_and_extract_messages(
     path: &Path,
     entries: Vec<TranscriptEntry>,
     ring: Option<&ChainKeyRing>,
+    anchor: Option<&Anchor>,
 ) -> Result<(Vec<Message>, Option<ChainHash>), SubAgentError> {
     let Some(chain_start) = entries.iter().position(|e| e.chain.is_some()) else {
-        // Pure legacy file: no chain metadata anywhere. Auto-trusted per FR-006 — but if a key
-        // ring IS configured, every legitimately-written file since this process started should
-        // carry a chain field, so a chainless file under an active key is anomalous: either
-        // genuine pre-upgrade content, or the signature of a full-strip downgrade attack (issue
-        // #6449, the vault-anchor gap that would otherwise catch this). Not distinguishable from
-        // here, so this stays accepted (never a hard failure) — but it must be observable, not
-        // silent (security review B2 condition, NFR-005).
+        // Legacy-looking file (no chain field anywhere) + a vault anchor exists for this file's
+        // identity: this IS a tamper signature, unlike the "absent anchor" case below. An anchor
+        // can only exist if this file was previously finalized while chained — a file-write-only
+        // attacker cannot delete a vault entry, so a legacy-looking file with a live anchor means
+        // every `chain` field was deliberately stripped (the whole-strip downgrade attack #6449
+        // closes).
+        if let Some(anchor) = anchor {
+            tracing::error!(
+                audit_event = "history_integrity_tamper",
+                subsystem = "subagent_transcript",
+                reason = "whole_strip_legacy_with_anchor",
+                path = %path.display(),
+                anchored_count = anchor.count,
+                "TAMPER DETECTED: transcript is legacy-looking but a vault anchor exists for it \
+                 (issue #6449)"
+            );
+            return Err(SubAgentError::Integrity(format!(
+                "TAMPER DETECTED in transcript '{}': file has no chain metadata (legacy-looking) \
+                 but a vault anchor exists for it (anchored at count={}) — this file was \
+                 previously chained and its chain fields have been stripped",
+                path.display(),
+                anchor.count
+            )));
+        }
+        // Pure legacy file: no chain metadata anywhere, and no anchor either. Auto-trusted per
+        // FR-006 — but if a key ring IS configured, every legitimately-written file since this
+        // process started should carry a chain field, so a chainless file under an active key is
+        // anomalous: either genuine pre-upgrade content, or (absent an anchor to prove otherwise)
+        // indistinguishable from one. Not a hard failure — but it must be observable, not silent
+        // (security review B2 condition, NFR-005).
         if ring.is_some() {
             warn_legacy_under_active_key_once(path);
         }
@@ -643,8 +751,22 @@ fn verify_and_extract_messages(
     }
 
     let identity = file_identity(path);
-    let (head, resolution) = verify_chained_prefix(ring, CHAIN_DOMAIN, &identity, &chained)
-        .map_err(|e| describe_chain_error(path, &e))?;
+    let on_disk_count = u64::try_from(entries.len()).unwrap_or(u64::MAX);
+    // The anchor's `count` is a total on-disk count; the chained region starts at `chain_start`,
+    // so the checkpoint index within `chained` (already sliced from `chain_start`) is
+    // `count - chain_start - 1` (0-based, the position of the anchor's last entry).
+    let checkpoint_index = anchor.and_then(|a| {
+        a.count
+            .checked_sub(u64::try_from(chain_start).unwrap_or(u64::MAX) + 1)
+    });
+    let (head, checkpoint_head, resolution) = verify_chained_prefix_with_checkpoint(
+        ring,
+        CHAIN_DOMAIN,
+        &identity,
+        &chained,
+        checkpoint_index.unwrap_or(u64::MAX),
+    )
+    .map_err(|e| describe_chain_error(path, &e))?;
 
     if let KeyResolution::Rekeyed(epoch) = resolution {
         tracing::info!(
@@ -652,6 +774,52 @@ fn verify_and_extract_messages(
             epoch,
             "transcript verified under a previous key epoch (re-keyed, not tampered)"
         );
+    }
+
+    if let Some(anchor) = anchor {
+        if on_disk_count < anchor.count {
+            tracing::error!(
+                audit_event = "history_integrity_tamper",
+                subsystem = "subagent_transcript",
+                reason = "truncated_below_anchor_count",
+                path = %path.display(),
+                on_disk_count,
+                anchored_count = anchor.count,
+                "TAMPER DETECTED: transcript truncated below its anchored count (issue #6449)"
+            );
+            return Err(SubAgentError::Integrity(format!(
+                "TAMPER DETECTED in transcript '{}': on-disk entry count ({on_disk_count}) is \
+                 below the anchored count ({}) — the file was truncated after being anchored",
+                path.display(),
+                anchor.count
+            )));
+        }
+        let anchor_head = anchor.head().map_err(|e| {
+            SubAgentError::Integrity(format!(
+                "transcript '{}' anchor is malformed: {e}",
+                path.display()
+            ))
+        })?;
+        match checkpoint_head {
+            Some(h) if h == anchor_head => {}
+            _ => {
+                tracing::error!(
+                    audit_event = "history_integrity_tamper",
+                    subsystem = "subagent_transcript",
+                    reason = "anchor_head_mismatch",
+                    path = %path.display(),
+                    anchored_count = anchor.count,
+                    "TAMPER DETECTED: transcript chain head at the anchored count does not match \
+                     the stored vault anchor (issue #6449)"
+                );
+                return Err(SubAgentError::Integrity(format!(
+                    "TAMPER DETECTED in transcript '{}': chain head at the anchored count ({}) \
+                     does not match the stored vault anchor",
+                    path.display(),
+                    anchor.count
+                )));
+            }
+        }
     }
 
     let messages = entries.into_iter().map(|e| e.message).collect();
@@ -682,10 +850,25 @@ fn describe_chain_error(path: &Path, err: &zeph_common::hash_chain::ChainError) 
     }
 }
 
-/// Delete the oldest `.jsonl` files in `dir` when the count exceeds `max_files`.
+/// Delete the oldest `.jsonl` files in `dir` when the count exceeds `max_files`, plus each
+/// deleted file's companion `.meta.json` sidecar.
 ///
 /// Files are sorted by modification time (oldest first). Returns the number of
 /// files deleted.
+///
+/// # Vault anchors (issue #6449)
+///
+/// This function stays deliberately synchronous (it is called from 2+ sync/`spawn_blocking`
+/// contexts outside this feature's ownership — see `crates/zeph-subagent/src/manager/collect.rs`
+/// — and making it async would force those callers async too, an out-of-scope blast radius).
+/// It therefore does **not** delete a swept file's vault anchor inline. This is safe, not merely
+/// deferred-and-hoped: an anchor whose file no longer exists is an **orphan**, and an orphan
+/// anchor is always benign on read (an anchor is only ever consulted when opening a file that
+/// exists — see the module-level anchor docs, `zeph_common::anchor`) — it never produces a false
+/// TAMPER verdict for anything. Orphans left behind by this sweep are reaped later by the
+/// process-wide reconcile-and-cap sweep (`zeph-core`'s `anchor_store` module), which lists every
+/// `ZEPH_HISTORY_ANCHOR_*` vault key and drops any whose file no longer exists on disk, bounding
+/// vault growth exactly as it already does for the session-anchor LRU cap.
 ///
 /// # Errors
 ///
@@ -1451,5 +1634,220 @@ mod tests {
         assert_eq!(messages.len(), usize::try_from(N).unwrap());
 
         configure_history_integrity(None);
+    }
+
+    // --- Vault-anchor downgrade-resistance tests (issue #6449) ---
+
+    /// In-memory [`AnchorStore`] mock for tests — a simple `Mutex<HashMap>` keyed by
+    /// [`zeph_common::anchor::anchor_key`], mirroring `zeph_vault::MockVaultProvider`'s role for
+    /// the history-key tests above.
+    #[derive(Default)]
+    struct MockAnchorStore {
+        map: std::sync::Mutex<std::collections::HashMap<String, Anchor>>,
+    }
+
+    impl AnchorStore for MockAnchorStore {
+        fn get(
+            &self,
+            subsystem: AnchorSubsystem,
+            file_id: &[u8],
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<Option<Anchor>, zeph_common::anchor::AnchorError>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            let result = self.get_sync(subsystem, file_id);
+            Box::pin(async move { result })
+        }
+
+        fn get_sync(
+            &self,
+            subsystem: AnchorSubsystem,
+            file_id: &[u8],
+        ) -> Result<Option<Anchor>, zeph_common::anchor::AnchorError> {
+            let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+            Ok(self.map.lock().unwrap().get(&key).cloned())
+        }
+
+        fn put(
+            &self,
+            subsystem: AnchorSubsystem,
+            file_id: &[u8],
+            anchor: Anchor,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<(), zeph_common::anchor::AnchorError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+            self.map.lock().unwrap().insert(key, anchor);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn delete(
+            &self,
+            subsystem: AnchorSubsystem,
+            file_id: &[u8],
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<(), zeph_common::anchor::AnchorError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+            self.map.lock().unwrap().remove(&key);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// Regression test for FINDING B / acceptance criterion 2: a pre-anchor chained file (no
+    /// anchor store configured when it was written) must still open normally when an anchor
+    /// store comes online later — an absent anchor is never a tamper signature.
+    #[tokio::test]
+    async fn pre_anchor_chained_file_still_opens_with_anchor_store_online() {
+        configure_history_integrity(Some(test_ring(0, 20)));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.jsonl");
+
+        // Written with no anchor store configured (the #6453-only posture).
+        let writer = TranscriptWriter::new(&path).unwrap();
+        writer
+            .append(0, &test_message(Role::User, "pre-anchor"))
+            .await
+            .unwrap();
+        drop(writer);
+
+        // Now an anchor store comes online, but this file was never anchored.
+        configure_anchor_store(Some(Arc::new(MockAnchorStore::default())));
+        let messages = TranscriptReader::load(&path).unwrap();
+        assert_eq!(
+            messages.len(),
+            1,
+            "absent anchor must never brick a legacy-chained file"
+        );
+
+        configure_anchor_store(None);
+        configure_history_integrity(None);
+    }
+
+    /// Acceptance criterion 1/3: whole-strip of an anchored transcript is TAMPER, and so is
+    /// truncation below the anchored count.
+    #[tokio::test]
+    async fn whole_strip_of_anchored_transcript_is_tamper() {
+        configure_history_integrity(Some(test_ring(0, 21)));
+        let store: Arc<dyn AnchorStore> = Arc::new(MockAnchorStore::default());
+        configure_anchor_store(Some(Arc::clone(&store)));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.jsonl");
+        let writer = TranscriptWriter::new(&path).unwrap();
+        writer
+            .append(0, &test_message(Role::User, "one"))
+            .await
+            .unwrap();
+        writer
+            .append(1, &test_message(Role::Assistant, "two"))
+            .await
+            .unwrap();
+        writer.finalize().await.unwrap();
+
+        // Sanity: with the anchor present and content untouched, the file still opens.
+        let messages = TranscriptReader::load(&path).unwrap();
+        assert_eq!(messages.len(), 2);
+
+        // Whole-strip: rewrite every line with its `chain` field removed, so the file looks
+        // pre-feature-legacy — the attack #6449 closes.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let stripped: String = raw
+            .lines()
+            .map(|line| {
+                let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+                value.as_object_mut().unwrap().remove("chain");
+                value.to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&path, stripped).unwrap();
+
+        let err = TranscriptReader::load(&path).unwrap_err();
+        assert_matches!(err, SubAgentError::Integrity(ref m) if m.contains("TAMPER") && m.contains("vault anchor"));
+
+        configure_anchor_store(None);
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn truncation_below_anchored_count_is_tamper() {
+        configure_history_integrity(Some(test_ring(0, 22)));
+        let store: Arc<dyn AnchorStore> = Arc::new(MockAnchorStore::default());
+        configure_anchor_store(Some(Arc::clone(&store)));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.jsonl");
+        let writer = TranscriptWriter::new(&path).unwrap();
+        writer
+            .append(0, &test_message(Role::User, "one"))
+            .await
+            .unwrap();
+        writer
+            .append(1, &test_message(Role::Assistant, "two"))
+            .await
+            .unwrap();
+        writer.finalize().await.unwrap();
+
+        // Truncate the file to just its first line — content still verifies as a valid (shorter)
+        // chain, but disagrees with the anchor's recorded count.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let first_line = raw.lines().next().unwrap();
+        std::fs::write(&path, format!("{first_line}\n")).unwrap();
+
+        let err = TranscriptReader::load(&path).unwrap_err();
+        assert_matches!(err, SubAgentError::Integrity(ref m) if m.contains("TAMPER") && m.contains("truncated"));
+
+        configure_anchor_store(None);
+        configure_history_integrity(None);
+    }
+
+    #[tokio::test]
+    async fn finalize_is_noop_without_anchor_store_or_without_chaining() {
+        // No anchor store configured: finalize must succeed as a no-op.
+        configure_history_integrity(Some(test_ring(0, 23)));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.jsonl");
+        let writer = TranscriptWriter::new(&path).unwrap();
+        writer
+            .append(0, &test_message(Role::User, "x"))
+            .await
+            .unwrap();
+        writer.finalize().await.unwrap();
+        configure_history_integrity(None);
+
+        // Anchor store configured, but chaining disabled: finalize must still be a no-op (no
+        // chain head to anchor).
+        let store: Arc<dyn AnchorStore> = Arc::new(MockAnchorStore::default());
+        configure_anchor_store(Some(Arc::clone(&store)));
+        let path2 = dir.path().join("legacy.jsonl");
+        let writer2 = TranscriptWriter::new(&path2).unwrap();
+        writer2
+            .append(0, &test_message(Role::User, "legacy"))
+            .await
+            .unwrap();
+        writer2.finalize().await.unwrap();
+        assert!(
+            store
+                .get_sync(AnchorSubsystem::SubagentTranscript, b"legacy")
+                .unwrap()
+                .is_none(),
+            "no anchor should be written for an unchained writer"
+        );
+
+        configure_anchor_store(None);
     }
 }

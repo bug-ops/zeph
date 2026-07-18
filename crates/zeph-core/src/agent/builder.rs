@@ -2426,10 +2426,12 @@ impl<C: Channel> Agent<C> {
     /// unavailable — see `crate::durable::derive_hwm_key_b64`. `previous_hmac_key` is `Some`
     /// only while a `zeph durable rotate-key` rotation window is open (#6451). `previous_hwm_key`
     /// is the HWM-side counterpart, `Some` under the same condition (addendum to #6451).
+    /// `integrity_seal` (issue #6449) is `(sealed, grandfather)`, resolved from the vault by
+    /// `crate::commands::durable::load_integrity_seal`.
     ///
-    /// `#[allow(clippy::too_many_arguments)]`: bundling the five key-material params into one
-    /// `DurableKeyMaterial` struct is deliberately deferred (addendum to #6451, M2) — it would
-    /// re-touch every already-threaded call site (runner → builder → state → bootstrap → plan →
+    /// `#[allow(clippy::too_many_arguments)]`: bundling the key-material/seal params into one
+    /// struct is deliberately deferred (addendum to #6451, M2) — it would re-touch every
+    /// already-threaded call site (runner → builder → state → bootstrap → plan →
     /// `scheduler_daemon`) a second time for no safety gain, since a mis-wired key `Option` here
     /// fails closed (`ControlIntegrity`/`HighWaterMarkIntegrity`), never a silent accept. Tracked
     /// as a follow-up.
@@ -2444,6 +2446,7 @@ impl<C: Channel> Agent<C> {
         hwm_key: Option<(u32, [u8; 32])>,
         previous_hmac_key: Option<[u8; 32]>,
         previous_hwm_key: Option<(u32, [u8; 32])>,
+        integrity_seal: (bool, std::collections::HashSet<zeph_durable::ExecutionId>),
     ) -> Self {
         self.services.orchestration.durable_config = Some(config);
         self.services.orchestration.durable_db_url = Some(db_url);
@@ -2452,6 +2455,8 @@ impl<C: Channel> Agent<C> {
         self.services.orchestration.durable_hwm_key = hwm_key;
         self.services.orchestration.durable_previous_hmac_key = previous_hmac_key;
         self.services.orchestration.durable_previous_hwm_key = previous_hwm_key;
+        self.services.orchestration.durable_integrity_sealed = integrity_seal.0;
+        self.services.orchestration.durable_integrity_grandfather = integrity_seal.1;
         self
     }
 
@@ -2472,7 +2477,9 @@ impl<C: Channel> Agent<C> {
     /// `db_url`, their executions still would not collide (#5553).
     ///
     /// `#[allow(clippy::too_many_arguments)]`: see [`Self::with_durable_orchestration`]'s doc —
-    /// the `DurableKeyMaterial` bundling is deferred, not skipped.
+    /// the key-material/seal bundling is deferred, not skipped.
+    /// `integrity_seal` (issue #6449) is `(sealed, grandfather)`, resolved from the vault by
+    /// `crate::commands::durable::load_integrity_seal`.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn with_durable_agent_turns(
@@ -2485,6 +2492,7 @@ impl<C: Channel> Agent<C> {
         hwm_key: Option<(u32, [u8; 32])>,
         previous_hmac_key: Option<[u8; 32]>,
         previous_hwm_key: Option<(u32, [u8; 32])>,
+        integrity_seal: (bool, std::collections::HashSet<zeph_durable::ExecutionId>),
     ) -> Self {
         self.services.session.durable_agent_turns_config = Some(config);
         self.services.session.durable_agent_turns_db_url = Some(db_url);
@@ -2494,6 +2502,10 @@ impl<C: Channel> Agent<C> {
         self.services.session.durable_agent_turns_hwm_key = hwm_key;
         self.services.session.durable_agent_turns_previous_hmac_key = previous_hmac_key;
         self.services.session.durable_agent_turns_previous_hwm_key = previous_hwm_key;
+        self.services.session.durable_agent_turns_integrity_sealed = integrity_seal.0;
+        self.services
+            .session
+            .durable_agent_turns_integrity_grandfather = integrity_seal.1;
         self
     }
 

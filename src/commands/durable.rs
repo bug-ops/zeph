@@ -343,6 +343,22 @@ pub(crate) fn load_write_hwm_key(config: &Config) -> anyhow::Result<HwmKeys> {
     Ok(HwmKeys { current, previous })
 }
 
+/// Resolve the vault-sealed durable integrity marker + grandfather set (issue #6449) to attach
+/// on a durable *write* path, mirroring [`load_write_hwm_key`]'s vault-load shape.
+///
+/// Returns `(false, {})` when the vault is unreachable: an unsealed backend is the safe default
+/// (migration posture unchanged), never a hard-fail of bootstrap.
+pub(crate) fn load_integrity_seal(
+    _config: &Config,
+) -> (bool, std::collections::HashSet<zeph_durable::ExecutionId>) {
+    let dir = zeph_core::vault::default_vault_dir();
+    let Ok(provider) = AgeVaultProvider::load(&dir.join("vault-key.txt"), &dir.join("secrets.age"))
+    else {
+        return (false, std::collections::HashSet::new());
+    };
+    zeph_core::anchor_store::load_durable_integrity_seal(&provider)
+}
+
 /// Resolve the AEAD payload cipher to attach on a durable *write* path when
 /// `config.durable.encrypt_payload` is enabled (INV-5).
 ///
@@ -442,6 +458,11 @@ async fn open_backend(config: &Config, reveal: bool) -> anyhow::Result<Option<Lo
 }
 
 /// Dispatch a `zeph durable` subcommand.
+///
+/// Boxes its (large — many match arms over a config-heavy `Config`) implementation future so
+/// every call site sees a small, stack-cheap future (`clippy::large_futures`), rather than
+/// requiring every caller — including this file's ~25 test call sites — to `Box::pin` it
+/// individually.
 ///
 /// # Errors
 ///
@@ -654,8 +675,130 @@ async fn handle_durable_command_inner(
             )
             .await?;
         }
+
+        DurableCommand::SealIntegrity {
+            grandfather,
+            dry_run,
+        } => {
+            handle_seal_integrity(&config, &grandfather, dry_run).await?;
+        }
     }
 
+    Ok(())
+}
+
+/// Seal this backend against pre-feature integrity-row absence (issue #6449, `zeph durable
+/// seal-integrity`).
+///
+/// # Errors
+///
+/// Returns an error if the config/backend cannot be opened, if `grandfather` contains a
+/// malformed UUID, or if the drain-before-seal precondition scan finds resumable executions not
+/// covered by `grandfather` (the refusal path — not an I/O error, just a non-zero exit via
+/// `anyhow::bail!`).
+async fn handle_seal_integrity(
+    config: &Config,
+    grandfather: &[String],
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let Some(backend) = open_backend(config, false).await? else {
+        anyhow::bail!("no durable journal found; nothing to seal");
+    };
+
+    let grandfather_ids: std::collections::HashSet<ExecutionId> = grandfather
+        .iter()
+        .map(|s| {
+            ExecutionId::parse_str(s.trim())
+                .map_err(|e| anyhow::anyhow!("invalid --grandfather execution id {s:?}: {e}"))
+        })
+        .collect::<Result<_, _>>()?;
+
+    let offending = backend
+        .find_unsealed_resumable_executions()
+        .await
+        .map_err(|e| anyhow::anyhow!("drain-precondition scan failed: {e}"))?;
+    let still_blocking: Vec<ExecutionId> = offending
+        .into_iter()
+        .filter(|id| !grandfather_ids.contains(id))
+        .collect();
+
+    if !still_blocking.is_empty() {
+        let ids: Vec<String> = still_blocking
+            .iter()
+            .map(|id| id.as_uuid().to_string())
+            .collect();
+        anyhow::bail!(
+            "refusing to seal: {} resumable execution(s) have committed StepResults but no \
+             integrity row:\n  {}\n\
+             Let them drain to a terminal status, or pass --grandfather <id,...> to explicitly \
+             opt them out (a permanent, documented per-execution downgrade-resistance waiver — \
+             prefer draining where practical).",
+            ids.len(),
+            ids.join("\n  ")
+        );
+    }
+
+    if dry_run {
+        println!(
+            "Drain precondition satisfied — {} execution(s) would be grandfathered. \
+             Dry run: vault not modified.",
+            grandfather_ids.len()
+        );
+        return Ok(());
+    }
+
+    let dir = zeph_core::vault::default_vault_dir();
+    let key_path = dir.join("vault-key.txt");
+    let vault_path = dir.join("secrets.age");
+    if !key_path.exists() || !vault_path.exists() {
+        anyhow::bail!(
+            "no age vault found at {}; run `zeph --init` first",
+            dir.display()
+        );
+    }
+    let mut provider = AgeVaultProvider::load(&key_path, &vault_path)
+        .map_err(|e| anyhow::anyhow!("failed to load vault: {e}"))?;
+
+    if !grandfather_ids.is_empty() {
+        let existing = provider
+            .get(zeph_core::anchor_store::DURABLE_INTEGRITY_GRANDFATHER_KEY)
+            .unwrap_or("");
+        let rendered = zeph_core::anchor_store::render_grandfather_set(existing, &grandfather_ids);
+        provider
+            .set_secret_mut(
+                zeph_core::anchor_store::DURABLE_INTEGRITY_GRANDFATHER_KEY.to_owned(),
+                rendered,
+                true,
+            )
+            .map_err(|e| anyhow::anyhow!("failed to record grandfather set: {e}"))?;
+    }
+
+    // Display-only value (never on the security boundary — presence of the key is what matters,
+    // per `check_high_water_mark`'s doc): Unix seconds at seal time, for `zeph doctor` output.
+    let sealed_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string();
+    provider
+        .set_secret_mut(
+            zeph_core::anchor_store::DURABLE_INTEGRITY_SEALED_KEY.to_owned(),
+            sealed_at,
+            true,
+        )
+        .map_err(|e| anyhow::anyhow!("failed to record seal marker: {e}"))?;
+    provider
+        .save()
+        .map_err(|e| anyhow::anyhow!("failed to save vault: {e}"))?;
+
+    println!(
+        "Durable backend sealed against pre-feature integrity-row absence (issue #6449).{}",
+        if grandfather_ids.is_empty() {
+            String::new()
+        } else {
+            format!(" {} execution(s) grandfathered.", grandfather_ids.len())
+        }
+    );
     Ok(())
 }
 

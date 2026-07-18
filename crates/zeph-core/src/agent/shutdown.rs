@@ -289,6 +289,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Call this before dropping the agent to ensure no data loss.
     #[tracing::instrument(name = "core.agent.shutdown", skip_all, level = "debug")]
+    #[allow(clippy::too_many_lines)]
     pub async fn shutdown(&mut self) {
         self.channel
             .send_status_best_effort("Shutting down...")
@@ -310,6 +311,16 @@ impl<C: Channel> Agent<C> {
 
         if let Some(ref manager) = self.services.mcp.manager {
             manager.shutdown_all_shared().await;
+        }
+
+        // Anchor the session log (issue #6449): best-effort, logged rather than propagated — a
+        // failed anchor put only degrades this session to #6453-level chain-only protection,
+        // never data loss. Runs on every channel (CLI, TUI, Telegram, ACP, serve), since
+        // `shutdown` is the one call every channel already makes before dropping the agent.
+        if let Some(ref sink) = self.services.session.session_sink
+            && let Err(e) = sink.finalize().await
+        {
+            tracing::warn!(error = %e, "session anchor finalize failed");
         }
 
         // Finalize compaction trajectory: push the last open segment into the Vec.

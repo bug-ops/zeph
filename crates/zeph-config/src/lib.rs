@@ -88,6 +88,7 @@ pub mod experiment;
 pub mod features;
 pub mod fidelity;
 pub mod hooks;
+pub mod integrity;
 pub mod knowledge;
 pub mod learning;
 mod loader;
@@ -148,6 +149,7 @@ pub use features::{
 };
 pub use fidelity::FidelityConfig;
 pub use hooks::{FileChangedConfig, HooksConfig};
+pub use integrity::{AnchorMode, IntegrityConfig};
 pub use knowledge::KnowledgeConfig;
 pub use learning::{DetectorMode, LearningConfig};
 pub use logging::{LogRotation, LoggingConfig};

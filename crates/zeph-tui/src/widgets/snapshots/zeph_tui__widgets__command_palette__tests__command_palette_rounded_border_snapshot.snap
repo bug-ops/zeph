@@ -20,7 +20,7 @@ expression: output
                 │durable               Durable: show durable ex│                
                 │settings              Settings: browse provide│                
                 │search:transcript     Find in conversation (Ct│                
+                │integrity:status      Integrity: transcript/se│                
                 │session:new           Start new conversation  │                
                 │session:history       Browse session history [│                
-                │session:next          Switch to next session (│                
                 ╰──────────────────────────────────────────────╯

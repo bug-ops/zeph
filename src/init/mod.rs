@@ -632,6 +632,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
 
     step_deployment_mode(&mut state)?;
     step_vault(&mut state)?;
+    step_integrity(&mut state)?;
     step_llm(&mut state)?;
     step_memory(&mut state)?;
     step_context_compression(&mut state)?;
@@ -808,6 +809,61 @@ fn step_vault(state: &mut WizardState) -> anyhow::Result<()> {
     };
 
     println!();
+    Ok(())
+}
+
+/// Offer to generate and store `ZEPH_HISTORY_KEY` (issue #6449), the root secret that activates
+/// transcript/session hash-chain tamper-evidence (#6360) and vault-anchor downgrade-resistance
+/// (#6449, `[integrity] anchor = "vault"`, the default). Without this secret, `anchor = "vault"`
+/// stays inert — chained files verify their internal consistency but nothing detects a whole-file
+/// strip.
+fn step_integrity(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Step 1b/10: Transcript/Session Tamper-Evidence ==\n");
+    println!(
+        "Zeph can cryptographically anchor sub-agent transcripts and session logs against \
+         tampering and downgrade attacks (issues #6360/#6449). This requires a \
+         ZEPH_HISTORY_KEY secret in the vault.\n"
+    );
+
+    if state.vault_backend != "age" {
+        println!(
+            "Secrets backend is \"{}\", not \"age\" — history tamper-anchoring requires the age \
+             vault and will stay inactive until you switch backends and provision \
+             ZEPH_HISTORY_KEY manually.\n",
+            state.vault_backend
+        );
+        return Ok(());
+    }
+
+    let generate = Confirm::new()
+        .with_prompt("Generate and store a ZEPH_HISTORY_KEY now? (recommended)")
+        .default(true)
+        .interact()?;
+
+    if generate {
+        let dir = zeph_core::vault::default_vault_dir();
+        if !dir.join("vault-key.txt").exists() {
+            zeph_core::vault::AgeVaultProvider::init_vault(&dir)?;
+        }
+        let mut provider = zeph_core::vault::AgeVaultProvider::load(
+            &dir.join("vault-key.txt"),
+            &dir.join("secrets.age"),
+        )?;
+        if provider.get("ZEPH_HISTORY_KEY").is_none() {
+            let key = zeph_core::history_integrity::generate_history_key_b64();
+            provider.set_secret_mut("ZEPH_HISTORY_KEY".to_owned(), key, false)?;
+            provider.save()?;
+            println!("ZEPH_HISTORY_KEY generated and stored in the vault.\n");
+        } else {
+            println!("ZEPH_HISTORY_KEY already present in the vault — left unchanged.\n");
+        }
+    } else {
+        println!(
+            "Skipped. Default `[integrity] anchor = \"vault\"` will stay inactive (chain-only \
+             #6453-level protection; `zeph doctor` will show a WARN) until ZEPH_HISTORY_KEY is \
+             provisioned — generate one later with `zeph vault set ZEPH_HISTORY_KEY <base64>`.\n"
+        );
+    }
     Ok(())
 }
 
