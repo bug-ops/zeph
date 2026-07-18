@@ -278,6 +278,13 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) tafc: bool,
 
+    /// Forward each running sub-agent's full, untruncated per-turn text/thinking output to
+    /// the TUI runtime detail view and/or `--bare` stdout as it is produced, instead of only
+    /// the 120-char once-per-turn status snippet (issue #6359). Mirrors Claude Code's
+    /// `CLAUDE_CODE_FORWARD_SUBAGENT_TEXT`. Overrides `agents.forward_transcript` from config.
+    #[arg(long)]
+    pub(crate) forward_subagent_text: bool,
+
     /// Bare mode: skip skill loading, memory init, MCP connections, scheduler
     /// startup, and filesystem watchers. Useful for scripting and CI pipelines.
     #[arg(long)]

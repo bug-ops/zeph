@@ -3226,10 +3226,40 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         }
 
         mgr.set_task_supervisor((*supervisor).clone());
+        // Live transcript forwarding (issue #6359): fixed at session start — a headless run
+        // never gains a TUI mid-session, so `--bare`/`--tui` decide the active surface(s) once
+        // here. `set_forward_surfaces` must run before any `spawn`/`resume` call below.
+        //
+        // Known limitation (impl-critic M3): the bare forward sink is gated on `exec_mode.bare`
+        // alone, independent of `exec_mode.json`. `--bare --json` therefore interleaves
+        // `BareForwardEvent` JSON lines with `JsonCliChannel`'s own `JsonEventSink` schema on
+        // the same stdout — two different JSON shapes on one stream. Undefined/unsupported
+        // combination for now; `--bare` without `--json` is the intended scripted-pipeline use
+        // case (FR-006).
+        mgr.set_forward_surfaces(zeph_subagent::ForwardSurfaces {
+            tui: cli.tui,
+            bare: exec_mode.bare,
+        });
+        // Security Finding 1 (NFR-005): forwarded content must get the same secret-mask and
+        // PII-scrub layers already applied to the analogous sub-agent-output egress path
+        // (outbound-LLM masking, debug-dump PII scrubbing) rather than only the baseline
+        // ContentSanitizer pass. `secret_registry()` mirrors `apply_secret_masking`'s source
+        // above; `PiiFilter` is unconditionally constructed and self-gates on its own
+        // `enabled` config field, matching `AgentBuilder`'s own `services.security.pii_filter`
+        // construction convention.
+        if let Some(registry) = app.secret_registry() {
+            mgr.set_secret_registry(registry);
+        }
+        mgr.set_pii_filter(zeph_sanitizer::pii::PiiFilter::new(
+            config.security.pii_filter.clone(),
+        ));
         // Propagate root worktree config into agents_config so SubAgentManager::spawn
         // can read it without a reference to the full Config.
         let mut agents_config = config.agents.clone();
         agents_config.worktree = config.worktree.clone();
+        if cli.forward_subagent_text {
+            agents_config.forward_transcript = true;
+        }
         if let Some(ref override_ref) = cli.worktree_base_ref {
             agents_config.worktree.base_ref = if override_ref == "fresh" {
                 zeph_config::WorktreeBaseRef::Fresh

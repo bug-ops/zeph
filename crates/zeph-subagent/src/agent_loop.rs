@@ -10,12 +10,14 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{
-    ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ToolDefinition,
+    ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ThinkingBlock,
+    ToolDefinition,
 };
 use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
 use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
 
 use super::filter::FilteredToolExecutor;
+use super::forward::ForwardSender;
 use super::grants::{GrantedSecret, SecretRequest};
 use super::hooks::{HookDef, SubagentHooks, fire_hooks, make_base_hook_env, matching_hooks};
 use super::manager::SubAgentStatus;
@@ -83,6 +85,12 @@ pub(super) struct AgentLoopArgs {
     /// Cross-crate debug-dump sink, threaded down from `SpawnContext::debug_dump_sink`
     /// (issue #6391). `None` when debug dumps are disabled.
     pub(super) debug_dump_sink: Option<Arc<dyn zeph_llm::debug_dump::DebugDumpSink>>,
+    /// Live transcript forwarding sender (issue #6359). `None` when forwarding is disabled,
+    /// no consumer surface is active, or no `TaskSupervisor` is wired — the `if let Some(f)`
+    /// gate at every call site is then a genuine no-op (FR-007): no allocation, no clone,
+    /// nothing sent. Owned exclusively by this run's own turn loop for its lifetime; never
+    /// clone the inner sender into a longer-lived struct (see `forward::ForwardSender` docs).
+    pub(super) forward: Option<ForwardSender>,
 }
 
 /// Record a progress heartbeat, if this loop has a live handle. No-op for `None` (untracked
@@ -170,6 +178,7 @@ async fn call_provider_with_status(
     started_at: Instant,
     llm_timeout: std::time::Duration,
     debug_dump_sink: Option<&dyn zeph_llm::debug_dump::DebugDumpSink>,
+    forward: Option<&ForwardSender>,
 ) -> Result<ChatResponse, super::error::SubAgentError> {
     // Mirrors `zeph-core`'s `prepare_chat_debug_dump`/`write_chat_debug_dump` pair so
     // sub-agent LLM calls are captured through the same `--debug-dump` pipeline as the
@@ -202,6 +211,9 @@ async fn call_provider_with_status(
                     turns_used: turns,
                     started_at,
                 });
+                if let Some(f) = forward {
+                    f.send_terminal(SubAgentState::Failed);
+                }
                 timeout_err
             })?;
     match llm_result {
@@ -219,8 +231,40 @@ async fn call_provider_with_status(
                 turns_used: turns,
                 started_at,
             });
+            if let Some(f) = forward {
+                f.send_terminal(SubAgentState::Failed);
+            }
             Err(super::error::SubAgentError::Llm(e.to_string()))
         }
+    }
+}
+
+/// Publish the loop's final status and, if forwarding is active, its matching terminal chunk
+/// — kept as one call site so `run_agent_loop` stays under clippy's `too_many_lines`
+/// threshold.
+///
+/// `status_tx` always publishes `Completed` here, matching this loop's pre-existing behavior
+/// (unchanged, including for the graceful-cancel and max-turns-exhausted break paths — not in
+/// scope to change here). The *forwarded* terminal state is independently accurate: callers
+/// pass `forward_state = SubAgentState::Canceled` when the loop broke due to cancellation
+/// (impl-critic M1) so a `--bare` consumer reading the forwarded terminal isn't misled, while
+/// every other exit path passes `Completed` (identical to `status_tx`).
+fn publish_completed_status(
+    status_tx: &watch::Sender<SubAgentStatus>,
+    forward: Option<&ForwardSender>,
+    forward_state: SubAgentState,
+    last_result: &str,
+    turns: u32,
+    started_at: Instant,
+) {
+    let _ = status_tx.send(SubAgentStatus {
+        state: SubAgentState::Completed,
+        last_message: Some(last_result.chars().take(120).collect()),
+        turns_used: turns,
+        started_at,
+    });
+    if let Some(f) = forward {
+        f.send_terminal(forward_state);
     }
 }
 
@@ -463,6 +507,7 @@ async fn run_turn(
     sanitizer: &ContentSanitizer,
     llm_timeout: std::time::Duration,
     debug_dump_sink: Option<&dyn zeph_llm::debug_dump::DebugDumpSink>,
+    forward: Option<&ForwardSender>,
 ) -> Result<TurnOutcome, super::error::SubAgentError> {
     let response = call_provider_with_status(
         provider,
@@ -473,6 +518,7 @@ async fn run_turn(
         started_at,
         llm_timeout,
         debug_dump_sink,
+        forward,
     )
     .await?;
 
@@ -485,6 +531,24 @@ async fn run_turn(
     *turns += 1;
     last_result.clone_from(&response_text);
     emit_working_status(status_tx, &response_text, *turns, started_at);
+
+    // FR-002a/FR-007: forward the turn's full text + any visible thinking blocks the
+    // instant this turn's response arrives. The `if let Some(f)` gate wraps the thinking
+    // extraction itself, not just the send — zero allocation when forwarding is inactive
+    // (critic M2). Must run before `response` is moved into `handle_tool_step` below.
+    if let Some(f) = forward {
+        f.send_text(&response_text);
+        if let ChatResponse::ToolUse {
+            thinking_blocks, ..
+        } = &response
+        {
+            for block in thinking_blocks {
+                if let ThinkingBlock::Thinking { thinking, .. } = block {
+                    f.send_thinking(thinking);
+                }
+            }
+        }
+    }
 
     let is_text_response = matches!(&response, ChatResponse::Text(_));
     match handle_secret_request(
@@ -760,6 +824,7 @@ fn trim_message_history(messages: &mut Vec<Message>, limit: usize) {
 }
 
 #[tracing::instrument(name = "subagent.agent_loop.run", skip_all, fields(task_id = %args.task_id, agent_name = %args.agent_name))]
+#[allow(clippy::too_many_lines)] // top-level orchestration function; same precedent as handle_tool_step/spawn/resume in this crate
 pub(super) async fn run_agent_loop(
     args: AgentLoopArgs,
 ) -> Result<String, super::error::SubAgentError> {
@@ -788,6 +853,7 @@ pub(super) async fn run_agent_loop(
         llm_timeout,
         progress_at,
         debug_dump_sink,
+        forward,
     } = args;
     let debug_dump_sink = debug_dump_sink.as_deref();
 
@@ -810,17 +876,19 @@ pub(super) async fn run_agent_loop(
     let mut turns: u32 = 0;
     let mut last_result = String::new();
     let mut any_tool_called = false;
-    // Accumulates resolved secret values across the loop's lifetime so a later approval
-    // does not evict an earlier one from the tool executor's environment (see
-    // `handle_secret_request`). Entries whose grant TTL has elapsed are evicted live in
-    // `handle_tool_step`, not just gated once at delivery time.
+    // Accumulates resolved secrets so a later approval doesn't evict an earlier one; TTL'd
+    // entries are evicted live in `handle_tool_step` (see `handle_secret_request`).
     let mut granted_secrets: HashMap<String, GrantedSecret> = HashMap::new();
+    // Forwarded terminal state, independent of status_tx's always-Completed publish below
+    // (impl-critic M1) — set to Canceled on either cancellation exit path.
+    let mut forward_terminal_state = SubAgentState::Completed;
 
     loop {
         record_progress(progress_at.as_ref());
 
         if cancel.is_cancelled() {
             tracing::debug!("sub-agent cancelled, stopping loop");
+            forward_terminal_state = SubAgentState::Canceled;
             break;
         }
         if turns >= max_turns {
@@ -851,12 +919,17 @@ pub(super) async fn run_agent_loop(
             &sanitizer,
             llm_timeout,
             debug_dump_sink,
+            forward.as_ref(),
         )
         .await?
         {
             TurnOutcome::ToolCalled => any_tool_called = true,
             TurnOutcome::NudgeSent | TurnOutcome::SecretHandled => {}
-            TurnOutcome::Done | TurnOutcome::Cancelled => break,
+            TurnOutcome::Done => break,
+            TurnOutcome::Cancelled => {
+                forward_terminal_state = SubAgentState::Canceled;
+                break;
+            }
         }
 
         record_progress(progress_at.as_ref());
@@ -864,12 +937,14 @@ pub(super) async fn run_agent_loop(
         trim_message_history(&mut messages, max_history_messages);
     }
 
-    let _ = status_tx.send(SubAgentStatus {
-        state: SubAgentState::Completed,
-        last_message: Some(last_result.chars().take(120).collect()),
-        turns_used: turns,
+    publish_completed_status(
+        &status_tx,
+        forward.as_ref(),
+        forward_terminal_state,
+        &last_result,
+        turns,
         started_at,
-    });
+    );
 
     Ok(last_result)
 }

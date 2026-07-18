@@ -46,6 +46,7 @@ pub mod durable;
 pub mod error;
 pub mod filter;
 pub mod fleet;
+pub mod forward;
 pub mod grants;
 pub mod hooks;
 pub mod manager;
@@ -67,6 +68,7 @@ pub use durable::{
 pub use error::SubAgentError;
 pub use filter::{FilteredToolExecutor, NetworkDenyToolExecutor, PlanModeExecutor, filter_skills};
 pub use fleet::{FleetRegistry, FleetSessionInfo, FleetSessionStatus, SharedFleetRegistry};
+pub use forward::ForwardSurfaces;
 pub use grants::{Grant, GrantKind, GrantedSecret, PermissionGrants, SecretRequest};
 pub use hooks::{
     HookAction, HookDef, HookError, HookMatcher, HookOutput, HookRunResult, McpDispatch,

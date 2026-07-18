@@ -2292,6 +2292,7 @@ fn make_agent_loop_args(
         llm_timeout: std::time::Duration::from_mins(2),
         progress_at: None,
         debug_dump_sink: None,
+        forward: None,
     }
 }
 
@@ -2451,6 +2452,7 @@ async fn run_agent_loop_publishes_failed_status_on_llm_call_timeout() {
         llm_timeout: std::time::Duration::from_millis(30),
         progress_at: None,
         debug_dump_sink: None,
+        forward: None,
     };
 
     let result = run_agent_loop(args).await;
@@ -4621,5 +4623,162 @@ async fn supervised_subagent_abort_via_cancel_cleans_up() {
     // Result may be empty or partial — both are acceptable for a cancelled task.
     let _ = result;
 
+    cancel.cancel();
+}
+
+// ── Live transcript forwarding: maybe_spawn_forward gating (issue #6359) ────────
+
+#[test]
+fn maybe_spawn_forward_returns_none_without_supervisor() {
+    // NFR-002/P-new-2: forwarding must never fall back to an untracked spawn — with no
+    // TaskSupervisor wired, maybe_spawn_forward must return None even when otherwise fully
+    // configured (enabled + a surface active).
+    let mut mgr = make_manager();
+    mgr.set_forward_surfaces(crate::forward::ForwardSurfaces {
+        tui: true,
+        bare: false,
+    });
+
+    let sender = mgr.maybe_spawn_forward("task-1", "bot", true, &ContentIsolationConfig::default());
+    assert!(
+        sender.is_none(),
+        "must return None when no TaskSupervisor is wired, never spawn untracked"
+    );
+}
+
+#[test]
+fn maybe_spawn_forward_returns_none_when_config_disabled() {
+    use tokio_util::sync::CancellationToken;
+
+    let mut mgr = make_manager();
+    mgr.set_task_supervisor(TaskSupervisor::new(CancellationToken::new()));
+    mgr.set_forward_surfaces(crate::forward::ForwardSurfaces {
+        tui: true,
+        bare: false,
+    });
+
+    let sender = mgr.maybe_spawn_forward(
+        "task-1",
+        "bot",
+        false, // forward_transcript = false
+        &ContentIsolationConfig::default(),
+    );
+    assert!(
+        sender.is_none(),
+        "must return None when forward_transcript config is false (FR-007)"
+    );
+}
+
+#[test]
+fn maybe_spawn_forward_returns_none_when_no_surface_active() {
+    use tokio_util::sync::CancellationToken;
+
+    let mut mgr = make_manager();
+    mgr.set_task_supervisor(TaskSupervisor::new(CancellationToken::new()));
+    // forward_surfaces left at its default (both false) — no TUI, no --bare.
+
+    let sender = mgr.maybe_spawn_forward("task-1", "bot", true, &ContentIsolationConfig::default());
+    assert!(
+        sender.is_none(),
+        "must return None when no consumer surface is active (FR-007)"
+    );
+}
+
+#[tokio::test]
+async fn maybe_spawn_forward_returns_some_when_active_and_supervised() {
+    use tokio_util::sync::CancellationToken;
+
+    let mut mgr = make_manager();
+    mgr.set_task_supervisor(TaskSupervisor::new(CancellationToken::new()));
+    mgr.set_forward_surfaces(crate::forward::ForwardSurfaces {
+        tui: true,
+        bare: false,
+    });
+
+    let sender = mgr.maybe_spawn_forward("task-1", "bot", true, &ContentIsolationConfig::default());
+    assert!(
+        sender.is_some(),
+        "must return a sender when forwarding is enabled, a surface is active, and a \
+         TaskSupervisor is wired"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_forwarding_subagents_do_not_cross_contaminate_buffers() {
+    // FR-004: concurrent subagents must forward independently — one task's forwarded lines
+    // must never appear under another task's buffer entry. Exercised through the real
+    // SubAgentManager::spawn() path (not forward.rs's own unit tests, which construct
+    // channels directly and bypass the manager entirely).
+    use tokio_util::sync::CancellationToken;
+
+    let cancel = CancellationToken::new();
+    let mut mgr = make_manager();
+    mgr.set_task_supervisor(TaskSupervisor::new(cancel.clone()));
+    mgr.set_forward_surfaces(crate::forward::ForwardSurfaces {
+        tui: true,
+        bare: false,
+    });
+    mgr.definitions.push(sample_def());
+
+    let mut config = SubAgentConfig::default();
+    config.forward_transcript = true;
+
+    let task_a = mgr
+        .spawn(
+            "bot",
+            "task a prompt",
+            mock_provider(vec!["alpha-marker-output"]),
+            noop_executor(),
+            None,
+            &config,
+            SpawnContext::default(),
+        )
+        .await
+        .unwrap();
+    let task_b = mgr
+        .spawn(
+            "bot",
+            "task b prompt",
+            mock_provider(vec!["beta-marker-output"]),
+            noop_executor(),
+            None,
+            &config,
+            SpawnContext::default(),
+        )
+        .await
+        .unwrap();
+
+    // Poll briefly for both drains to catch up — well within the 5s post-terminal grace
+    // window, so eviction cannot race this assertion.
+    let mut tail_a = Vec::new();
+    let mut tail_b = Vec::new();
+    for _ in 0..50 {
+        tail_a = mgr.forwarded_tail(&task_a, 10);
+        tail_b = mgr.forwarded_tail(&task_b, 10);
+        if !tail_a.is_empty() && !tail_b.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    assert!(
+        tail_a.iter().any(|l| l.contains("alpha-marker-output")),
+        "task A's buffer must contain task A's own forwarded text: {tail_a:?}"
+    );
+    assert!(
+        tail_a.iter().all(|l| !l.contains("beta-marker-output")),
+        "task A's buffer must never contain task B's forwarded text: {tail_a:?}"
+    );
+    assert!(
+        tail_b.iter().any(|l| l.contains("beta-marker-output")),
+        "task B's buffer must contain task B's own forwarded text: {tail_b:?}"
+    );
+    assert!(
+        tail_b.iter().all(|l| !l.contains("alpha-marker-output")),
+        "task B's buffer must never contain task A's forwarded text: {tail_b:?}"
+    );
+
+    let _ = mgr.collect(&task_a).await;
+    let _ = mgr.collect(&task_b).await;
     cancel.cancel();
 }

@@ -539,6 +539,7 @@ pub(crate) fn build_context_summary(parent_messages: &[Message], max_chars: usiz
 /// collected, permanently occupying a `max_concurrent` slot (#6257).
 fn send_setup_failure_status(
     status_tx: &watch::Sender<SubAgentStatus>,
+    forward: Option<&crate::forward::ForwardSender>,
     started_at: Instant,
     error: &SubAgentError,
 ) {
@@ -548,6 +549,14 @@ fn send_setup_failure_status(
         turns_used: 0,
         started_at,
     });
+    // Send an explicit Failed terminal so the forward channel doesn't fall back to the
+    // hard-abort backstop's synthesized Canceled — agent_loop_args (and its ForwardSender)
+    // is dropped on this early return without ever calling run_agent_loop, so without this
+    // the drain would see a bare channel close and synthesize the wrong terminal state
+    // (impl-critic M1).
+    if let Some(f) = forward {
+        f.send_terminal(SubAgentState::Failed);
+    }
 }
 
 // ── SubAgentManager impl ──────────────────────────────────────────────────────
@@ -712,6 +721,17 @@ impl SubAgentManager {
 
         let transcript_writer = self.create_transcript_writer(config, &task_id, &def.name, None);
 
+        // Captured before `ctx.content_isolation` is moved into `agent_loop_args` below
+        // (P-new-4): the drain needs its own clone of the sanitizer config, taken at spawn
+        // time rather than read back out of the loop's own args.
+        let forward_content_isolation = ctx.content_isolation.clone();
+        let forward_sender = self.maybe_spawn_forward(
+            &task_id,
+            &agent_name_clone,
+            config.forward_transcript,
+            &forward_content_isolation,
+        );
+
         let task_id_for_loop = task_id.clone();
         let task_id_for_worktree = task_id.clone();
         let agent_loop_args = AgentLoopArgs {
@@ -739,6 +759,7 @@ impl SubAgentManager {
             llm_timeout: std::time::Duration::from_secs(config.llm_timeout_secs),
             progress_at: ctx.progress_at,
             debug_dump_sink: ctx.debug_dump_sink,
+            forward: forward_sender,
         };
 
         let join_handle = self.spawn_agent_task(Arc::from(task_id.as_str()), move || async move {
@@ -756,6 +777,7 @@ impl SubAgentManager {
                             .inspect_err(|err| {
                                 send_setup_failure_status(
                                     &agent_loop_args.status_tx,
+                                    agent_loop_args.forward.as_ref(),
                                     agent_loop_args.started_at,
                                     err,
                                 );
@@ -769,6 +791,7 @@ impl SubAgentManager {
                             .inspect_err(|err| {
                                 send_setup_failure_status(
                                     &agent_loop_args.status_tx,
+                                    agent_loop_args.forward.as_ref(),
                                     agent_loop_args.started_at,
                                     err,
                                 );
@@ -796,6 +819,7 @@ impl SubAgentManager {
                         .inspect_err(|err| {
                             send_setup_failure_status(
                                 &agent_loop_args.status_tx,
+                                agent_loop_args.forward.as_ref(),
                                 agent_loop_args.started_at,
                                 err,
                             );
@@ -1148,6 +1172,16 @@ impl SubAgentManager {
         // `spawn_context` itself is borrowed for this method call only and cannot be
         // captured by the `'static` task closure.
         let debug_dump_sink_for_loop = spawn_context.and_then(|ctx| ctx.debug_dump_sink.clone());
+        // Resume never propagates the original session's `content_isolation` (matches the
+        // existing `ContentIsolationConfig::default()` below); the drain's sanitizer must use
+        // the same default, captured here before the closure moves `agent_name_clone` (P-new-4).
+        let forward_content_isolation = ContentIsolationConfig::default();
+        let forward_sender = self.maybe_spawn_forward(
+            &new_task_id,
+            &agent_name_clone,
+            config.forward_transcript,
+            &forward_content_isolation,
+        );
         let join_handle = self.spawn_agent_task(Arc::from(new_task_id.as_str()), move || {
             run_agent_loop(AgentLoopArgs {
                 provider,
@@ -1176,6 +1210,7 @@ impl SubAgentManager {
                 // by a `DagScheduler` — no progress handle to reattach to.
                 progress_at: None,
                 debug_dump_sink: debug_dump_sink_for_loop,
+                forward: forward_sender,
             })
         });
 

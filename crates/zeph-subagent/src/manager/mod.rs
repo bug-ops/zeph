@@ -25,6 +25,7 @@ use crate::def::{PermissionMode, SubAgentDef};
 use crate::durable::DurableResolverSeat;
 use crate::error::SubAgentError;
 use crate::fleet::SharedFleetRegistry;
+use crate::forward::ForwardSurfaces;
 use crate::grants::{GrantedSecret, PermissionGrants, SecretRequest};
 use crate::state::SubAgentState;
 
@@ -380,6 +381,28 @@ pub struct SubAgentManager {
     /// When set, each spawned agent loop task is registered under its task ID so it is
     /// visible to TUI status panels and shutdown is coordinated through the supervisor.
     task_supervisor: Option<TaskSupervisor>,
+    /// Which forwarding consumer surfaces are active for this session (issue #6359).
+    ///
+    /// Fixed at session start via [`set_forward_surfaces`][Self::set_forward_surfaces].
+    /// `ForwardSurfaces::default()` (all `false`) until then, matching "forwarding
+    /// disabled" byte-for-byte (FR-001/NFR-003).
+    forward_surfaces: ForwardSurfaces,
+    /// Ring buffer of recent sanitized display lines per task ID, owned by each task's
+    /// forwarding drain (issue #6359). Read by [`forwarded_tail`][Self::forwarded_tail]
+    /// for the TUI runtime detail view; entries are evicted by the drain itself shortly
+    /// after that task's terminal chunk.
+    forward_buffer: Arc<crate::forward::ForwardBuffer>,
+    /// Optional secret-mask registry applied to forwarded chunks (issue #6359, security
+    /// Finding 1 / NFR-005) — closes the consistency gap with the analogous outbound-LLM
+    /// egress path (`apply_secret_masking`), which the forwarding pipeline would otherwise
+    /// bypass. `None` (the default) means forwarded content is not masked for known vault
+    /// secrets — set via [`set_secret_registry`][Self::set_secret_registry].
+    secret_registry: Option<Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
+    /// Optional PII filter applied to forwarded chunks (issue #6359, security Finding 1 /
+    /// NFR-005) — mirrors the optional `PiiFilter` layer sub-agent debug dumps get via
+    /// `PiiScrubbingDumpSink` (#6407). `None` (the default) means no PII scrubbing beyond the
+    /// baseline `ContentSanitizer` pass — set via [`set_pii_filter`][Self::set_pii_filter].
+    pii_filter: Option<zeph_sanitizer::pii::PiiFilter>,
 }
 
 impl std::fmt::Debug for SubAgentManager {
@@ -398,6 +421,10 @@ impl std::fmt::Debug for SubAgentManager {
             .field("worktree_manager", &self.worktree_manager.is_some())
             .field("cwd_lock", &"<Mutex>")
             .field("task_supervisor", &self.task_supervisor.is_some())
+            .field("forward_surfaces", &self.forward_surfaces)
+            .field("forward_buffer", &"<Mutex>")
+            .field("secret_registry", &self.secret_registry.is_some())
+            .field("pii_filter", &self.pii_filter.is_some())
             .finish()
     }
 }
@@ -420,6 +447,10 @@ impl SubAgentManager {
             worktree_manager: None,
             cwd_lock: Arc::new(tokio::sync::Mutex::new(())),
             task_supervisor: None,
+            forward_surfaces: ForwardSurfaces::default(),
+            forward_buffer: crate::forward::new_buffer(),
+            secret_registry: None,
+            pii_filter: None,
         }
     }
 
@@ -430,6 +461,122 @@ impl SubAgentManager {
     /// [`TaskSupervisor::snapshot`].
     pub fn set_task_supervisor(&mut self, supervisor: TaskSupervisor) {
         self.task_supervisor = Some(supervisor);
+    }
+
+    /// Declare which forwarding consumer surfaces are active for this session (issue #6359).
+    ///
+    /// Fixed at session start — call once during bootstrap, before the first
+    /// [`spawn`][Self::spawn]. When `surfaces.any()` is `false` (the default) or
+    /// `SubAgentConfig::forward_transcript` is `false`, no forwarding sender or drain is ever
+    /// constructed for any subagent (FR-007). A [`TaskSupervisor`] must also be wired via
+    /// [`set_task_supervisor`][Self::set_task_supervisor] — unlike other subagent lifecycle
+    /// tasks, the forward drain never falls back to an untracked spawn (NFR-002).
+    pub fn set_forward_surfaces(&mut self, surfaces: ForwardSurfaces) {
+        self.forward_surfaces = surfaces;
+    }
+
+    /// Wire the bootstrap-level secret-mask registry into the forwarding pipeline (issue
+    /// #6359, security Finding 1 / NFR-005).
+    ///
+    /// When set, every forwarded `Text`/`Thinking` chunk has known vault secrets replaced
+    /// with opaque placeholders before reaching any sink (TUI ring, `--bare` stdout) — the
+    /// same registry already applied to the outbound-LLM path via `apply_secret_masking`.
+    /// Call during bootstrap, before the first [`spawn`][Self::spawn]; has no effect on
+    /// already-spawned drains.
+    pub fn set_secret_registry(
+        &mut self,
+        registry: Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>,
+    ) {
+        self.secret_registry = Some(registry);
+    }
+
+    /// Wire a PII filter into the forwarding pipeline (issue #6359, security Finding 1 /
+    /// NFR-005).
+    ///
+    /// When set, every forwarded `Text`/`Thinking` chunk is scrubbed for emails, phone
+    /// numbers, SSNs, etc. before reaching any sink — mirroring the optional `PiiFilter`
+    /// layer sub-agent debug dumps already get via `PiiScrubbingDumpSink` (#6407). The filter
+    /// itself is unconditionally constructible and self-gates on its own `enabled` config
+    /// field, matching the top-level agent's own `PiiFilter` construction convention. Call
+    /// during bootstrap, before the first [`spawn`][Self::spawn].
+    pub fn set_pii_filter(&mut self, filter: zeph_sanitizer::pii::PiiFilter) {
+        self.pii_filter = Some(filter);
+    }
+
+    /// Read the current forwarded-transcript tail for `task_id` (up to the last `n` lines).
+    ///
+    /// Returns an empty vector when forwarding is disabled, no surface is active, or the
+    /// task has not forwarded any lines yet. Backing store for
+    /// [`crate::manager::SubAgentManager`]'s TUI runtime detail view integration
+    /// (FR-005) — see `zeph-core`'s `refresh_subagent_metrics`.
+    #[must_use]
+    pub fn forwarded_tail(&self, task_id: &str, n: usize) -> Vec<String> {
+        crate::forward::forwarded_tail(&self.forward_buffer, task_id, n)
+    }
+
+    /// Build a forwarding sender + spawn its per-task drain for `task_id`, if forwarding is
+    /// active for this session.
+    ///
+    /// Returns `None` (no-op) unless `config.forward_transcript` is set, at least one
+    /// consumer surface is active, and a [`TaskSupervisor`] is wired — the forward drain must
+    /// never fall back to an untracked `tokio::spawn` (NFR-002, P-new-2). The returned
+    /// [`crate::forward::ForwardSender`] must be threaded into `AgentLoopArgs::forward` and
+    /// owned exclusively by that subagent's own turn loop for the run's lifetime (P-new-3).
+    pub(crate) fn maybe_spawn_forward(
+        &self,
+        task_id: &str,
+        def_name: &str,
+        forward_transcript: bool,
+        content_isolation: &ContentIsolationConfig,
+    ) -> Option<crate::forward::ForwardSender> {
+        if !forward_transcript || !self.forward_surfaces.any() {
+            return None;
+        }
+        let Some(ref supervisor) = self.task_supervisor else {
+            tracing::warn!(
+                task_id,
+                "subagent transcript forwarding is enabled but no TaskSupervisor is wired — \
+                 skipping forwarding for this run rather than spawning an untracked drain \
+                 (NFR-002)"
+            );
+            return None;
+        };
+
+        let task_id_arc: Arc<str> = Arc::from(task_id);
+        let def_name_arc: Arc<str> = Arc::from(def_name);
+        let (sender, rx) =
+            crate::forward::new_channel(Arc::clone(&task_id_arc), Arc::clone(&def_name_arc));
+
+        let surfaces = self.forward_surfaces;
+        let buffer = Arc::clone(&self.forward_buffer);
+        let layers = crate::forward::SanitizeLayers {
+            sanitizer: zeph_sanitizer::ContentSanitizer::new(content_isolation),
+            secret_registry: self.secret_registry.clone(),
+            pii_filter: self.pii_filter.clone(),
+        };
+        let span = tracing::info_span!(
+            "subagent.forward.drain",
+            task_id = %task_id_arc,
+            tui = surfaces.tui,
+            bare = surfaces.bare,
+        );
+        let drain_task_id = Arc::clone(&task_id_arc);
+        let drain_def_name = Arc::clone(&def_name_arc);
+        let drain_name: Arc<str> = Arc::from(format!("subagent-forward-drain-{task_id}").as_str());
+        let _handle = supervisor.spawn_oneshot(drain_name, move || {
+            use tracing::Instrument as _;
+            crate::forward::run_forward_drain(
+                drain_task_id,
+                drain_def_name,
+                rx,
+                layers,
+                surfaces,
+                buffer,
+            )
+            .instrument(span)
+        });
+
+        Some(sender)
     }
 
     /// Inject a [`DefaultWorktreeManager`][zeph_worktree::DefaultWorktreeManager] into the

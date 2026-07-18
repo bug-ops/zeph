@@ -338,6 +338,10 @@ pub struct SubAgentMetrics {
     /// Path to the directory containing this agent's JSONL transcript file.
     /// `None` when transcript writing is disabled for this agent.
     pub transcript_dir: Option<String>,
+    /// Tail of recently forwarded, sanitized display lines (issue #6359, FR-005).
+    /// Empty unless `agents.forward_transcript = true` and a consumer surface (TUI/`--bare`)
+    /// is active — see `SubAgentManager::forwarded_tail`.
+    pub live_transcript: Vec<String>,
 }
 
 /// Per-turn latency breakdown for the four agent hot-path phases.

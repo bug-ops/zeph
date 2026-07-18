@@ -231,6 +231,15 @@ pub(super) fn step_agents(state: &mut WizardState) -> anyhow::Result<()> {
         _ => None,
     };
 
+    state.agents_forward_transcript = Confirm::new()
+        .with_prompt(
+            "Forward each running sub-agent's full per-turn text/thinking output to the TUI \
+             runtime detail view and/or --bare stdout as it is produced? (opt-in; see \
+             --forward-subagent-text / ZEPH_AGENTS_FORWARD_TRANSCRIPT to override per session)",
+        )
+        .default(false)
+        .interact()?;
+
     println!();
     Ok(())
 }

@@ -174,9 +174,43 @@ pub fn render_interactive(
         frame.render_widget(Paragraph::new(vec![header]), area);
         return;
     }
-    let splits = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+
+    // FR-005 (issue #6359): extend this existing runtime detail view with a live forwarded
+    // transcript tail for the selected agent, rather than building a separate UI surface.
+    // Falls back to the unchanged list-only layout when nothing has been forwarded yet
+    // (forwarding disabled, no surface active, or the agent has not produced output) or
+    // when the panel is too short to usefully split.
+    let live_tail: &[String] = selected
+        .and_then(|i| metrics.sub_agents.get(i))
+        .map_or(&[][..], |sa| sa.live_transcript.as_slice());
+
+    if live_tail.is_empty() || area.height < 8 {
+        let splits = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+        frame.render_widget(Paragraph::new(vec![header]), splits[0]);
+        frame.render_stateful_widget(List::new(items), splits[1], &mut sidebar.list_state);
+        return;
+    }
+
+    let splits = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Percentage(45),
+        Constraint::Min(3),
+    ])
+    .split(area);
     frame.render_widget(Paragraph::new(vec![header]), splits[0]);
     frame.render_stateful_widget(List::new(items), splits[1], &mut sidebar.list_state);
+    render_live_transcript_panel(live_tail, theme, frame, splits[2]);
+}
+
+/// Render the trailing forwarded-transcript lines for the selected subagent (FR-005).
+fn render_live_transcript_panel(lines: &[String], theme: &Theme, frame: &mut Frame, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .title(Span::styled(" live transcript ", theme.highlight));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let text = lines.join("\n");
+    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
 }
 
 // ── Definition manager ────────────────────────────────────────────────────────
@@ -1058,6 +1092,7 @@ mod tests {
                     elapsed_secs: 42,
                     permission_mode: String::new(),
                     transcript_dir: None,
+                    live_transcript: Vec::new(),
                 },
                 SubAgentMetrics {
                     id: "def456".into(),
@@ -1069,6 +1104,7 @@ mod tests {
                     elapsed_secs: 100,
                     permission_mode: "dont_ask".into(),
                     transcript_dir: None,
+                    live_transcript: Vec::new(),
                 },
             ],
             ..MetricsSnapshot::default()
@@ -1100,6 +1136,7 @@ mod tests {
                     elapsed_secs: 1,
                     permission_mode: "plan".into(),
                     transcript_dir: None,
+                    live_transcript: Vec::new(),
                 },
                 SubAgentMetrics {
                     id: "b".into(),
@@ -1111,6 +1148,7 @@ mod tests {
                     elapsed_secs: 1,
                     permission_mode: "bypass_permissions".into(),
                     transcript_dir: None,
+                    live_transcript: Vec::new(),
                 },
             ],
             ..MetricsSnapshot::default()
@@ -1121,6 +1159,91 @@ mod tests {
         });
         assert!(output.contains("[plan]"));
         assert!(output.contains("[bypass!]"));
+    }
+
+    // ── Live transcript panel tests (issue #6359, FR-005) ─────────────────────
+
+    fn agent_with_live_transcript(id: &str, live_transcript: Vec<String>) -> SubAgentMetrics {
+        SubAgentMetrics {
+            id: id.into(),
+            name: "watched-agent".into(),
+            state: "working".into(),
+            turns_used: 2,
+            max_turns: 10,
+            background: false,
+            elapsed_secs: 5,
+            permission_mode: String::new(),
+            transcript_dir: None,
+            live_transcript,
+        }
+    }
+
+    #[test]
+    fn render_interactive_shows_live_transcript_for_selected_agent() {
+        let metrics = MetricsSnapshot {
+            sub_agents: vec![agent_with_live_transcript(
+                "abc",
+                vec![
+                    "first forwarded turn".into(),
+                    "second forwarded turn".into(),
+                ],
+            )],
+            ..MetricsSnapshot::default()
+        };
+        let mut sidebar = crate::app::SubAgentSidebarState::new();
+        sidebar.select_next(1);
+
+        let output = render_to_string(60, 20, |frame, area| {
+            let theme = crate::theme::Theme::default();
+            super::render_interactive(&metrics, &mut sidebar, frame, area, 0, &theme, false);
+        });
+
+        assert!(
+            output.contains("live transcript"),
+            "expected a live-transcript panel title, got: {output:?}"
+        );
+        assert!(output.contains("first forwarded turn"));
+        assert!(output.contains("second forwarded turn"));
+    }
+
+    #[test]
+    fn render_interactive_omits_panel_when_nothing_forwarded() {
+        let metrics = MetricsSnapshot {
+            sub_agents: vec![agent_with_live_transcript("abc", Vec::new())],
+            ..MetricsSnapshot::default()
+        };
+        let mut sidebar = crate::app::SubAgentSidebarState::new();
+        sidebar.select_next(1);
+
+        let output = render_to_string(60, 20, |frame, area| {
+            let theme = crate::theme::Theme::default();
+            super::render_interactive(&metrics, &mut sidebar, frame, area, 0, &theme, false);
+        });
+
+        assert!(
+            !output.contains("live transcript"),
+            "no forwarded lines yet — the panel must not appear, got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn render_interactive_omits_panel_when_area_too_short() {
+        let metrics = MetricsSnapshot {
+            sub_agents: vec![agent_with_live_transcript("abc", vec!["a line".into()])],
+            ..MetricsSnapshot::default()
+        };
+        let mut sidebar = crate::app::SubAgentSidebarState::new();
+        sidebar.select_next(1);
+
+        let output = render_to_string(60, 4, |frame, area| {
+            let theme = crate::theme::Theme::default();
+            super::render_interactive(&metrics, &mut sidebar, frame, area, 0, &theme, false);
+        });
+
+        assert!(
+            !output.contains("live transcript"),
+            "too little vertical room — must fall back to the list-only layout, got: {output:?}"
+        );
     }
 
     // ── AgentManagerState tests ───────────────────────────────────────────────

@@ -18,6 +18,7 @@ impl Config {
         self.apply_env_overrides_core_1b();
         self.apply_env_overrides_core_2();
         self.apply_env_overrides_core_2b();
+        self.apply_env_overrides_core_2c();
     }
 
     fn apply_env_overrides_core_1(&mut self) {
@@ -351,6 +352,14 @@ impl Config {
         }
         if let Ok(v) = std::env::var("ZEPH_LOG_LEVEL") {
             self.logging.level = v;
+        }
+    }
+
+    fn apply_env_overrides_core_2c(&mut self) {
+        if let Ok(v) = std::env::var("ZEPH_AGENTS_FORWARD_TRANSCRIPT")
+            && let Ok(enabled) = v.parse::<bool>()
+        {
+            self.agents.forward_transcript = enabled;
         }
     }
 

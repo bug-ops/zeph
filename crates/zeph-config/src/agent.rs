@@ -547,6 +547,7 @@ impl Default for TaskSupervisorConfig {
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)] // independent config toggles; bitflags or enum would obscure semantics without reducing complexity
 pub struct SubAgentConfig {
     /// Enable the sub-agent subsystem. Default: `false`.
     pub enabled: bool,
@@ -581,6 +582,15 @@ pub struct SubAgentConfig {
     /// Maximum number of `.jsonl` transcript files to keep.
     #[serde(default = "default_transcript_max_files")]
     pub transcript_max_files: usize,
+    /// Forward each running sub-agent's full, untruncated per-turn text/thinking output to
+    /// an active consumer surface (TUI runtime detail view and/or `--bare` stdout) as it is
+    /// produced, instead of only the 120-char once-per-turn status snippet (issue #6359,
+    /// spec `068-subagent-transcript-forward`). Default: `false` — disabling it (the
+    /// default) preserves today's exact `SubAgentStatus`/`collect()` behavior byte-for-byte.
+    /// Mirrors `CLAUDE_CODE_FORWARD_SUBAGENT_TEXT`; overridable via
+    /// `ZEPH_AGENTS_FORWARD_TRANSCRIPT` or the `--forward-subagent-text` CLI flag.
+    #[serde(default)]
+    pub forward_transcript: bool,
     /// Number of recent parent conversation turns to pass to spawned sub-agents.
     /// Set to 0 to disable history propagation.
     #[serde(default = "default_context_window_turns")]
@@ -651,6 +661,7 @@ impl Default for SubAgentConfig {
             transcript_dir: None,
             transcript_enabled: default_transcript_enabled(),
             transcript_max_files: default_transcript_max_files(),
+            forward_transcript: false,
             context_window_turns: default_context_window_turns(),
             max_spawn_depth: default_max_spawn_depth(),
             context_injection_mode: ContextInjectionMode::default(),
@@ -691,6 +702,24 @@ mod tests {
             ParentContextPolicy::InheritSanitized
         );
         assert_eq!(cfg.max_parent_messages, 20);
+        assert!(
+            !cfg.forward_transcript,
+            "forward_transcript must default to false (NFR-003)"
+        );
+    }
+
+    #[test]
+    fn subagent_config_deserialize_forward_transcript() {
+        let toml_str = "forward_transcript = true";
+        let cfg: SubAgentConfig = toml::from_str(toml_str).unwrap();
+        assert!(cfg.forward_transcript);
+    }
+
+    #[test]
+    fn subagent_config_forward_transcript_omitted_defaults_false() {
+        let toml_str = "enabled = true";
+        let cfg: SubAgentConfig = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.forward_transcript);
     }
 
     #[test]

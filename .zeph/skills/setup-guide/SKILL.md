@@ -256,6 +256,14 @@ export ZEPH_SKILLS_MAX_ACTIVE=5
 
 Config: `skills.paths` (default: `[".zeph/skills"]`). Top-K skills selected per query via embedding similarity. File changes detected automatically (hot-reload).
 
+## Sub-Agents
+
+Live transcript forwarding — stream a running sub-agent's full per-turn text/thinking to the TUI runtime detail view and/or `--bare` stdout as it happens, instead of only a 120-char once-per-turn snippet:
+```bash
+export ZEPH_AGENTS_FORWARD_TRANSCRIPT=true
+```
+Opt-in, default `false` (`agents.forward_transcript` in config). Also settable via `--forward-subagent-text`. No effect unless a consumer surface (`--tui` or `--bare`) is active for the session.
+
 ## Security
 
 Secret redaction:

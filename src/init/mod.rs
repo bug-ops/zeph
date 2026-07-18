@@ -96,6 +96,9 @@ pub(crate) struct WizardState {
     pub(crate) agents_user_dir: Option<std::path::PathBuf>,
     /// Default memory scope for sub-agents (None = no memory by default).
     pub(crate) agents_default_memory_scope: Option<MemoryScope>,
+    /// Forward each running sub-agent's per-turn text/thinking output to an active consumer
+    /// surface (issue #6359). Default `false` (opt-in, matches `SubAgentConfig::default()`).
+    pub(crate) agents_forward_transcript: bool,
     /// "regex", "judge", or "model" — defaults to "regex" (no LLM calls).
     pub(crate) detector_mode: Option<String>,
     pub(crate) judge_model: Option<String>,
@@ -415,6 +418,7 @@ impl Default for WizardState {
             agents_allow_bypass_permissions: false,
             agents_user_dir: None,
             agents_default_memory_scope: None,
+            agents_forward_transcript: false,
             detector_mode: None,
             judge_model: None,
             feedback_provider: None,
@@ -1111,6 +1115,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         .user_agents_dir
         .clone_from(&state.agents_user_dir);
     config.agents.default_memory_scope = state.agents_default_memory_scope;
+    config.agents.forward_transcript = state.agents_forward_transcript;
 
     // Worktree isolation for sub-agents (#4656)
     if state.worktree_enabled {

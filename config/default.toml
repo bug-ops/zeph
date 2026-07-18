@@ -1160,6 +1160,10 @@ transcript_enabled = true
 transcript_max_files = 50
 # Maximum wall time in seconds for a single LLM call inside a sub-agent turn (default 120)
 llm_timeout_secs = 120
+# Forward each running sub-agent's full per-turn text/thinking output to the TUI runtime
+# detail view and/or --bare stdout as it is produced (issue #6359). Env override:
+# ZEPH_AGENTS_FORWARD_TRANSCRIPT. CLI override: --forward-subagent-text.
+forward_transcript = false
 
 [orchestration]
 # Enable the orchestration subsystem (/plan commands and task graph execution)

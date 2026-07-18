@@ -15,6 +15,10 @@ use zeph_tools::registry::ToolDef;
 use super::{Agent, error};
 use crate::channel::Channel;
 
+/// Number of trailing forwarded-transcript lines surfaced per subagent in
+/// [`crate::metrics::SubAgentMetrics::live_transcript`] (issue #6359, FR-005).
+const LIVE_TRANSCRIPT_TAIL_LINES: usize = 20;
+
 impl<C: Channel> Agent<C> {
     /// Resolve a sub-agent's requested vault-secret key against the custom secrets already
     /// resolved from the vault at startup (`ZEPH_SECRET_<NAME>` keys — the same pre-resolved
@@ -106,6 +110,7 @@ impl<C: Channel> Agent<C> {
                     transcript_dir: mgr
                         .agent_transcript_dir(&id)
                         .map(|p| p.to_string_lossy().into_owned()),
+                    live_transcript: mgr.forwarded_tail(&id, LIVE_TRANSCRIPT_TAIL_LINES),
                 }
             })
             .collect();

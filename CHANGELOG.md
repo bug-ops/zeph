@@ -96,6 +96,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   live-agent resume path does not yet honor it (also tracked as follow-up) — passing it without
   `--print` is rejected by the CLI rather than silently ignored.
 
+- `zeph-subagent`: opt-in live sub-agent transcript forwarding (issue #6359) — when
+  `agents.forward_transcript = true` (env `ZEPH_AGENTS_FORWARD_TRANSCRIPT`, CLI
+  `--forward-subagent-text`) and a consumer surface is active (`--tui` and/or `--bare`), each
+  running sub-agent's full, untruncated per-turn text/thinking output is forwarded the moment
+  a turn's LLM response arrives, instead of only the existing 120-char once-per-turn status
+  snippet. Delivered via a per-task `mpsc` ingress into a manager-owned sanitizing drain
+  (`zeph-sanitizer`, one sanitize point, structurally enforced through a
+  `RawChunk`→`SanitizedChunk` typestate) that dispatches to a bounded TUI ring buffer
+  (surfaced in the runtime subagent detail view, `SubAgentMetrics::live_transcript`) and/or
+  `--bare` stdout as JSON lines. Structurally non-blocking on the sub-agent's own turn loop
+  (`try_send`, drop-on-full with a per-task counter) and routed through `TaskSupervisor`
+  (never an untracked `tokio::spawn`); default `false`, zero behavioral change when disabled
+  or unopted-in. Token-level intra-turn streaming is deferred (tracked as a follow-up issue).
+  Forwarded content passes through the optional `SecretMaskRegistry` and `PiiFilter` layers
+  (when configured) in addition to the baseline `ContentSanitizer` pass, matching the hardening
+  already applied to the analogous sub-agent debug-dump/outbound-LLM egress paths. Known
+  limitation: combining `--bare` with `--json` interleaves two different JSON schemas on
+  stdout — unsupported for now; use `--bare` without `--json` for scripted-pipeline forwarding.
+
 ### Fixed
 
 - `zeph-experiments`: `engine::tests::engine_persists_results_to_sqlite` `.unwrap()`ed
