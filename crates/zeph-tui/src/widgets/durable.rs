@@ -69,6 +69,7 @@ fn status_color(status: &str) -> Color {
         "completed" => Color::DarkGray,
         "failed" => Color::Red,
         "aborted" => Color::Yellow,
+        "canceled" => Color::Magenta,
         _ => Color::White,
     }
 }
@@ -173,6 +174,7 @@ mod tests {
     fn status_color_maps_known_states() {
         assert_eq!(status_color("running"), Color::Green);
         assert_eq!(status_color("failed"), Color::Red);
+        assert_eq!(status_color("canceled"), Color::Magenta);
         assert_eq!(status_color("mystery"), Color::White);
     }
 

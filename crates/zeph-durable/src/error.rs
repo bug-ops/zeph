@@ -174,6 +174,16 @@ pub enum DurableError {
         /// PID of the process currently holding the lock, or `0` if it could not be determined.
         holder_pid: u32,
     },
+
+    /// [`crate::backend::LocalBackend::open_execution`] (or its exclusive variant) found the
+    /// execution's row already `canceled` (INV-16′, #6362). Unlike `completed`/`failed`/`aborted`,
+    /// a canceled row is never un-finalized and reopened — the cancellation was an explicit
+    /// operator decision that this execution must not run again.
+    #[error("execution {execution_id} was canceled and cannot be resumed")]
+    ExecutionCanceled {
+        /// The execution whose row is `canceled`.
+        execution_id: ExecutionId,
+    },
 }
 
 impl DurableError {
@@ -271,5 +281,14 @@ mod tests {
         let rendered = err.to_string();
         assert!(rendered.contains(&execution_id.to_string()));
         assert!(rendered.contains("4242"));
+    }
+
+    #[test]
+    fn execution_canceled_names_execution_and_is_metadata_only() {
+        let execution_id = ExecutionId::new();
+        let err = DurableError::ExecutionCanceled { execution_id };
+        let rendered = err.to_string();
+        assert!(rendered.contains(&execution_id.to_string()));
+        assert!(rendered.contains("canceled"));
     }
 }

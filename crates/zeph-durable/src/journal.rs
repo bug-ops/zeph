@@ -26,7 +26,7 @@ use crate::ids::{
 /// Terminal and in-flight status of a durable execution.
 ///
 /// Maps one-to-one to the `status` column `CHECK` constraint
-/// (`'running' | 'completed' | 'failed' | 'aborted'`).
+/// (`'running' | 'completed' | 'failed' | 'aborted' | 'canceled'`).
 ///
 /// # Examples
 ///
@@ -48,6 +48,9 @@ pub enum ExecutionStatus {
     Failed,
     /// The execution was discarded (e.g. after a replay divergence or step-cap abort).
     Aborted,
+    /// The execution was deliberately stopped by an operator (`zeph durable cancel`) and must
+    /// never be reopened (INV-16′) — distinct from `Aborted`, which the system may re-drive.
+    Canceled,
 }
 
 impl ExecutionStatus {
@@ -59,13 +62,14 @@ impl ExecutionStatus {
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Aborted => "aborted",
+            Self::Canceled => "canceled",
         }
     }
 
     /// Reconstruct a status from its canonical `status`-column string.
     ///
     /// Returns `None` for an unrecognized tag. The `durable_executions.status` column carries a
-    /// `CHECK` constraint over exactly these four values, so a `None` indicates schema corruption
+    /// `CHECK` constraint over exactly these five values, so a `None` indicates schema corruption
     /// or drift rather than a routine miss; callers should fail closed.
     #[must_use]
     pub fn from_tag(tag: &str) -> Option<Self> {
@@ -74,6 +78,7 @@ impl ExecutionStatus {
             "completed" => Some(Self::Completed),
             "failed" => Some(Self::Failed),
             "aborted" => Some(Self::Aborted),
+            "canceled" => Some(Self::Canceled),
             _ => None,
         }
     }
@@ -404,10 +409,13 @@ mod tests {
             ExecutionStatus::Completed,
             ExecutionStatus::Failed,
             ExecutionStatus::Aborted,
+            ExecutionStatus::Canceled,
         ] {
             assert!(!status.as_str().is_empty());
+            assert_eq!(ExecutionStatus::from_tag(status.as_str()), Some(status));
         }
         assert!(ExecutionStatus::Running.is_running());
         assert!(!ExecutionStatus::Aborted.is_running());
+        assert!(!ExecutionStatus::Canceled.is_running());
     }
 }

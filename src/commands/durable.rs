@@ -16,7 +16,7 @@ use crate::bootstrap::load_config_or_default;
 use zeph_core::config::Config;
 use zeph_core::durable::XChaCha20Poly1305Cipher;
 use zeph_core::vault::AgeVaultProvider;
-use zeph_durable::{ExecutionId, Journal, LocalBackend};
+use zeph_durable::{CancelOutcome, ExecutionId, Journal, LocalBackend};
 
 use crate::cli::DurableCommand;
 
@@ -359,6 +359,18 @@ pub(crate) async fn handle_durable_command(
             let Some(backend) = open_backend(&config, false).await? else {
                 return Ok(());
             };
+            // FR-011: a canceled execution is refused distinctly, before the generic
+            // adapters-not-wired message — resuming it would contradict the operator's own
+            // deliberate `zeph durable cancel` decision (INV-16′).
+            if backend
+                .execution_status(exec)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to look up execution status: {e}"))?
+                == Some(zeph_durable::ExecutionStatus::Canceled)
+            {
+                println!("Execution {id} was intentionally canceled and will not be resumed.");
+                return Ok(());
+            }
             let entries = backend
                 .read_execution_redacted(exec)
                 .await
@@ -375,6 +387,47 @@ pub(crate) async fn handle_durable_command(
                  standalone CLI replay is not available in this build (durable adapters A1-A4).",
                 entries.len()
             );
+        }
+
+        DurableCommand::Cancel { id } => {
+            let exec = ExecutionId::parse_str(&id)
+                .map_err(|e| anyhow::anyhow!("invalid execution id '{id}': {e}"))?;
+            let Some(backend) = open_backend(&config, false).await? else {
+                return Ok(());
+            };
+            let outcome = backend
+                .cancel_execution(exec)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to cancel execution: {e}"))?;
+            match outcome {
+                CancelOutcome::Canceled => {
+                    println!("Execution {id} canceled; it will not be resumed.");
+                }
+                CancelOutcome::AlreadyTerminal { status } => {
+                    println!(
+                        "Execution {id} is already {}; nothing to cancel.",
+                        status.as_str()
+                    );
+                }
+                CancelOutcome::NotFound => {
+                    anyhow::bail!("No durable execution {id} found.");
+                }
+                CancelOutcome::LiveOwner { pid } => {
+                    anyhow::bail!(
+                        "Execution {id} is currently locked by pid {pid} (an active owner, or a \
+                         maintenance sweep/prune); live cancellation is not yet supported. If \
+                         that process is the owner, stop it (or wait for it to exit) then re-run \
+                         cancel; if it was a transient sweep, just retry shortly."
+                    );
+                }
+                CancelOutcome::LivenessUnverifiable => {
+                    anyhow::bail!(
+                        "Cannot verify whether execution {id} has a live owner on this backend \
+                         (no advisory lock available); refusing to cancel to avoid stopping a \
+                         running execution unsafely."
+                    );
+                }
+            }
         }
     }
 
@@ -929,6 +982,111 @@ mod tests {
         assert!(
             result.is_err(),
             "a declared shared database must fail closed without ZEPH_DURABLE_KEY (INV-8)"
+        );
+    }
+
+    /// Write a minimal config file (default config with `memory.sqlite_path` overridden) and
+    /// return its path, for exercising [`handle_durable_command`]'s config-file-driven entry
+    /// point rather than the lower-level `open_backend` helper directly.
+    ///
+    /// Also touches an empty durable journal file at the resolved URL — `open_backend` treats a
+    /// missing file as "durable execution has never run yet" and refuses to open it (prints a
+    /// friendly notice and returns `Ok(None)`), so a fresh temp dir must have the file pre-created
+    /// before any `open_backend`/`handle_durable_command` call, mirroring
+    /// `open_backend_reveal_succeeds_without_key_when_encrypt_payload_disabled`'s pattern above.
+    fn write_config_toml(dir: &std::path::Path) -> std::path::PathBuf {
+        let mut config = Config::default();
+        config.memory.sqlite_path = dir.join("zeph.db").to_string_lossy().into_owned();
+        let toml = toml::to_string_pretty(&config).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, toml).unwrap();
+        std::fs::write(resolve_durable_db_url(&config), []).unwrap();
+        path
+    }
+
+    /// Regression for #6362: `zeph durable cancel <id>` dispatches to `LocalBackend::cancel_execution`
+    /// and actually marks the row `canceled` in the database.
+    #[tokio::test]
+    async fn handle_durable_command_cancel_marks_a_running_execution_canceled() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_config_toml(dir.path());
+        let config = load_config_or_default(&config_path);
+
+        let exec = ExecutionId::new();
+        {
+            let backend = open_backend(&config, false).await.unwrap().unwrap();
+            backend
+                .open_execution(exec, zeph_durable::ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+        }
+
+        let result = handle_durable_command(
+            DurableCommand::Cancel {
+                id: exec.as_uuid().to_string(),
+            },
+            Some(&config_path),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "canceling a running execution must succeed: {result:?}"
+        );
+
+        let backend = open_backend(&config, false).await.unwrap().unwrap();
+        let status = backend.execution_status(exec).await.unwrap();
+        assert_eq!(status, Some(zeph_durable::ExecutionStatus::Canceled));
+    }
+
+    /// Regression for #6362 (FR-004): canceling an unknown execution id must exit non-zero.
+    #[tokio::test]
+    async fn handle_durable_command_cancel_on_unknown_id_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_config_toml(dir.path());
+
+        let result = handle_durable_command(
+            DurableCommand::Cancel {
+                id: ExecutionId::new().as_uuid().to_string(),
+            },
+            Some(&config_path),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "canceling an unknown execution id must exit non-zero"
+        );
+    }
+
+    /// Regression for #6362 (FR-011): `zeph durable resume` on a canceled execution must report
+    /// the distinct "intentionally canceled" message and succeed, rather than reaching the
+    /// generic "adapters not wired" message or erroring.
+    #[tokio::test]
+    async fn handle_durable_command_resume_on_canceled_execution_refuses_distinctly() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_config_toml(dir.path());
+        let config = load_config_or_default(&config_path);
+
+        let exec = ExecutionId::new();
+        {
+            let backend = open_backend(&config, false).await.unwrap().unwrap();
+            backend
+                .open_execution(exec, zeph_durable::ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+            let outcome = backend.cancel_execution(exec).await.unwrap();
+            assert_eq!(outcome, CancelOutcome::Canceled);
+        }
+
+        let result = handle_durable_command(
+            DurableCommand::Resume {
+                id: exec.as_uuid().to_string(),
+            },
+            Some(&config_path),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "resume on a canceled execution must report a message and exit 0, not error: {result:?}"
         );
     }
 

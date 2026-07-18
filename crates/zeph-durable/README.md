@@ -18,9 +18,12 @@ point of failure instead of restarting from scratch.
 > protocol, and `parallel()` batches), the promise/timer layer (`DurablePromise`, `DurableHandle`,
 > `DurableTimerService`), and journal retention (`DurableRetentionService`, including the
 > flock-verified crash-orphan staleness sweep) have all landed. The `zeph durable` CLI (`list` /
-> `show` / ...) and the TUI durable-execution widget are wired, and all four consuming adapters —
-> agent tool loop, orchestration (`/plan resume`), scheduler, and subagent — journal their steps
-> through `DurableContext`.
+> `show` / `inspect` / `prune` / `resume` / `cancel`) and the TUI durable-execution widget are
+> wired, and all four consuming adapters — agent tool loop, orchestration (`/plan resume`),
+> scheduler, and subagent — journal their steps through `DurableContext`. `zeph durable cancel <id>`
+> (issue [#6362](https://github.com/bug-ops/zeph/issues/6362)) durably marks a specific execution as
+> intentionally stopped via a terminal `Canceled` status, distinct from the crash-driven `Aborted`
+> state, so crash-resume sweeps never resurrect it.
 
 ## Overview
 

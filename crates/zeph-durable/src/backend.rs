@@ -39,7 +39,7 @@ pub mod execution_lock;
 pub mod local;
 
 pub use execution_lock::ExecutionLock;
-pub use local::LocalBackend;
+pub use local::{CancelOutcome, LocalBackend};
 
 /// A read-only summary of a single durable execution, for operability surfaces.
 ///
@@ -259,13 +259,28 @@ impl ExecutionBackend for DurableBackendEnum {
 /// Promise, timer, and retention dispatch.
 ///
 /// These methods back the [`DurablePromise`](crate::DurablePromise) /
-/// [`DurableTimerService`](crate::DurableTimerService) / [`DurableRetentionService`] surfaces. They
+/// [`DurableTimerService`](crate::DurableTimerService) /
+/// [`DurableRetentionService`](crate::DurableRetentionService) surfaces. They
 /// are inherent on the enum rather than on the sealed [`ExecutionBackend`] trait because they are
 /// implemented through the local backend's dedicated `durable_promises` / `durable_timers` tables; a
 /// future cross-process backend (Restate) would satisfy the same surface through its own SDK
 /// primitives, so the closed `match` here gains a new arm at that point — a compile-time prompt
 /// rather than a silent gap.
 impl DurableBackendEnum {
+    /// Cancel a `running` execution so it is never resumed. See [`LocalBackend::cancel_execution`].
+    ///
+    /// A plain in-process-callable primitive (#6362 trimmed US-002): no CLI or orchestration
+    /// coupling, just a dispatch to the active backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns any [`DurableError`] [`LocalBackend::cancel_execution`] can return.
+    pub async fn cancel_execution(&self, id: ExecutionId) -> Result<CancelOutcome, DurableError> {
+        match self {
+            Self::Local(backend) => backend.cancel_execution(id).await,
+        }
+    }
+
     /// Insert a freshly-created promise row. See [`LocalBackend::insert_promise`].
     pub(crate) async fn insert_promise(
         &self,

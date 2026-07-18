@@ -117,6 +117,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`zeph durable cancel <id>`** (#6362): a new `Canceled` durable execution status and CLI
+  command for deliberately, permanently stopping a running execution. `LocalBackend::cancel_execution`
+  probes the execution's INV-15 advisory lock (SQLite/Unix) before writing: no live owner →
+  immediate cancel; a live owner (or a concurrent maintenance sweep) → refused with a `LiveOwner`
+  outcome, row untouched; a cross-process backend with no lock to probe (Postgres) → refused with
+  `LivenessUnverifiable` rather than blind-flipping a possibly-live row. The write itself reuses
+  `finalize`'s race-safe `UPDATE … WHERE status = 'running'` pattern (no read-then-write window).
+  A canceled execution is never reopened: `open_execution`/`open_execution_exclusive` now fail
+  closed with `DurableError::ExecutionCanceled` instead of un-finalizing it (INV-16′, refining
+  INV-16 in spec-064 — operator intent outranks the active-reopen heuristic it stands in for), and
+  `zeph durable resume` reports "intentionally canceled" distinctly from the generic
+  adapters-not-wired message. `zeph durable list --status canceled` and `prune`/`prune --dry-run`
+  (TTL retention, grouped with `failed`/`aborted`) both recognize the new status. Cooperative
+  cancellation of a genuinely live owner (FR-007) is explicitly deferred to a follow-up issue — see
+  `.local/specs/071-durable-run-cancel/spec.md` §2.1 for the rationale. New SQLite migration 112
+  rebuilds `durable_executions`' CHECK constraint under `-- no-transaction` + explicit
+  `BEGIN`/`COMMIT` (required so `PRAGMA foreign_keys = OFF` actually takes effect for the parent
+  table rebuild — the `PRAGMA` is a no-op inside sqlx's default per-migration transaction); the
+  matching Postgres migration is a plain constraint swap.
+
 - **Resume UX and history visibility** (spec-068 §13, #6420): resuming a non-empty prior
   conversation no longer looks like starting from scratch on display-owning channels.
   - CLI prints a neutral `↻ Resuming session (last active …) — N messages, M turns.` banner at

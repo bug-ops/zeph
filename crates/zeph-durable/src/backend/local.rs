@@ -88,6 +88,38 @@ fn idem_key_prefix(bytes: &[u8]) -> String {
     })
 }
 
+/// Outcome of a [`LocalBackend::cancel_execution`] request (#6362).
+///
+/// `Canceled` is the only outcome that wrote to the row; every other variant is a refusal or a
+/// no-op, so a caller can always trust "did this call change the database" from the variant alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelOutcome {
+    /// The execution was `running` with no live owner detected; it is now `canceled` and will
+    /// never be reopened (INV-16′).
+    Canceled,
+    /// The execution was already terminal (`completed`, `failed`, `aborted`, or already
+    /// `canceled`) — idempotent no-op, per NFR-003.
+    AlreadyTerminal {
+        /// The execution's status before (and, since no write happened, after) this call.
+        status: ExecutionStatus,
+    },
+    /// No execution exists for the given id.
+    NotFound,
+    /// Another process holds the execution's [`ExecutionLock`] (SQLite/Unix only). This may be the
+    /// execution's true owner still journaling, or a concurrent maintenance sweep/prune/cancel
+    /// transiently holding the same lock — the flock alone cannot distinguish the two, so no claim
+    /// stronger than "held" is made. The row was not touched; cooperative live-owner cancellation
+    /// (FR-007) is deferred to a follow-up issue.
+    LiveOwner {
+        /// PID of the process currently holding the lock, or `0` if it could not be determined.
+        pid: u32,
+    },
+    /// This backend cannot verify whether a live owner holds the execution (a cross-process
+    /// backend, e.g. Postgres, with no advisory-lock directory to probe). Refusing rather than
+    /// blind-flipping a possibly-live row (F3).
+    LivenessUnverifiable,
+}
+
 /// The always-compiled durable backend that journals to a dedicated `durable.db`.
 ///
 /// Construct it from a [`zeph_db::DbPool`] (or open one with [`LocalBackend::open`]), then attach an
@@ -291,6 +323,35 @@ impl LocalBackend {
         .await
     }
 
+    /// Look up a single execution's current status, without touching journal entries or payloads.
+    ///
+    /// Backs the `zeph durable resume` CLI's canceled-refusal check (FR-011): resume must report a
+    /// `canceled` execution distinctly from "no adapters wired", which requires knowing the status
+    /// before deciding which message to print.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails, or [`DurableError::Decode`] if the
+    /// stored status cannot be reconstructed (schema corruption — the column is `CHECK`-constrained).
+    pub async fn execution_status(
+        &self,
+        id: ExecutionId,
+    ) -> Result<Option<ExecutionStatus>, DurableError> {
+        let row: Option<(String,)> = zeph_db::query_as(sql!(
+            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(id.as_uuid().to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("execution_status", e))?;
+        row.map(|(status,)| {
+            ExecutionStatus::from_tag(&status).ok_or(DurableError::Decode {
+                context: "execution status is not a recognized CHECK-constrained value",
+            })
+        })
+        .transpose()
+    }
+
     /// Read one execution's journal entries as redaction-safe metadata, without decrypting payloads.
     ///
     /// Unlike [`read_execution`](Journal::read_execution), this never touches the cipher, so it works
@@ -346,7 +407,7 @@ impl LocalBackend {
             "SELECT COUNT(*) FROM durable_executions
              WHERE finalized_at IS NOT NULL
                AND ( (status = 'completed' AND finalized_at <= ?)
-                  OR (status IN ('failed', 'aborted') AND finalized_at <= ?) )"
+                  OR (status IN ('failed', 'aborted', 'canceled') AND finalized_at <= ?) )"
         ))
         .bind(cutoffs.completed_before_ms)
         .bind(cutoffs.failed_before_ms)
@@ -402,9 +463,10 @@ impl LocalBackend {
     /// any entry is appended, so callers open the execution first.
     ///
     /// Reopening a row previously [`finalize`](Journal::finalize)d as `completed`, `failed`, or
-    /// `aborted` un-finalizes it: status resets to `running` and `finalized_at` clears (INV-16,
-    /// #6254). A caller reopening an execution is, by definition, still using it, so the retention
-    /// sweep (gated on `finalized_at`) must not consider it prunable while it does — without this,
+    /// `aborted` un-finalizes it: status resets to `running` and `finalized_at` clears (INV-16′,
+    /// #6254). A `canceled` row is the deliberate exception — see the `canceled` branch below
+    /// (INV-16′, #6362). A caller reopening an execution is, by definition, still using it, so the
+    /// retention sweep (gated on `finalized_at`) must not consider it prunable while it does — without this,
     /// a long-lived execution finalized at one process's graceful shutdown and legitimately resumed
     /// by a later process (e.g. a per-conversation `AgentTurn` execution) would keep a stale
     /// `finalized_at` and could be pruned out from under its still-active journal. `aborted` rows
@@ -459,8 +521,9 @@ impl LocalBackend {
             }
 
             // Zero rows: either the row doesn't exist, or it exists but wasn't terminal (already
-            // `running`, no reset needed — every terminal status is covered by the UPDATE above).
-            // Distinguish the two — if a concurrent prune deleted a terminal row between any
+            // `running`, no reset needed — every terminal status is covered by the UPDATE above),
+            // or it is `canceled` — deliberately excluded from the UPDATE's IN-list (INV-16′).
+            // Distinguish the cases — if a concurrent prune deleted a terminal row between any
             // earlier observation and this check, this SELECT sees the authoritative post-delete
             // state instead of a stale belief that it's there.
             let existing: Option<(String,)> = zeph_db::query_as(sql!(
@@ -470,7 +533,10 @@ impl LocalBackend {
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| DurableError::storage("open", e))?;
-            if existing.is_some() {
+            if let Some((status,)) = existing {
+                if status == "canceled" {
+                    return Err(DurableError::ExecutionCanceled { execution_id: id });
+                }
                 tracing::Span::current().record("is_resume", true);
                 return Ok(true);
             }
@@ -527,6 +593,135 @@ impl LocalBackend {
             .transpose()?;
         let is_resume = self.open_execution(id, kind).await?;
         Ok((is_resume, lock))
+    }
+
+    /// Cancel a `running` execution so it is deliberately, permanently stopped and never resumed
+    /// (#6362, FR-003/006/012/014).
+    ///
+    /// Unlike [`finalize`](Journal::finalize), which blindly flips `status` under the caller's
+    /// authority, this is the operator-facing entry point: it first tries to establish that no
+    /// live process still owns the execution, so a cancel never races a genuinely active owner's
+    /// own `finalize` into an inconsistent state.
+    ///
+    /// **Liveness probe (SQLite/Unix only).** When this backend has an on-disk `lock_dir`
+    /// (opened via [`LocalBackend::open`] against a real file), a non-blocking acquire of `id`'s
+    /// [`ExecutionLock`] distinguishes a live owner from a dead one:
+    /// - Lock held by another process → [`CancelOutcome::LiveOwner`], row untouched.
+    /// - Lock free → held across the write below (a restart cannot race in mid-window), then
+    ///   released.
+    ///
+    /// **No `lock_dir` (`:memory:` or a backend built via [`LocalBackend::new`]).** The safety
+    /// argument here rests on [`ExecutionBackend::capabilities`]'s `cross_process` flag, which
+    /// this crate only ever sets from `cfg!(feature = "postgres")` — i.e. it assumes "no
+    /// `lock_dir` on a `SQLite` build" implies "no other process can hold this row", true for
+    /// `:memory:` but **not** for a file-backed pool handed to [`LocalBackend::new`] directly
+    /// (which never derives a `lock_dir`); that programmatic path is not reachable from the CLI
+    /// (which always uses [`LocalBackend::open`]), but a future caller of `::new` on a shared file
+    /// should not assume the immediate-cancel path is probe-safe there.
+    /// - `cross_process == false` → provably single-process; proceed directly to the write.
+    /// - `cross_process == true` (Postgres) → a live owner cannot be ruled out and there is no
+    ///   flock to probe → [`CancelOutcome::LivenessUnverifiable`], row untouched (F3).
+    ///
+    /// **Write.** A conditional `UPDATE … WHERE status = 'running'` (the same single-writer-wins
+    /// pattern as `finalize`) — no read-then-write window (NFR-001). Zero rows affected then
+    /// disambiguates via a follow-up `SELECT` into [`CancelOutcome::NotFound`] or
+    /// [`CancelOutcome::AlreadyTerminal`] (idempotent for an already-`canceled` row, NFR-003).
+    ///
+    /// Span: `durable.backend.cancel`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if a query fails, or propagates any
+    /// [`DurableError`] other than [`DurableError::ExecutionLocked`] from the lock acquisition
+    /// (`ExecutionLocked` itself is caught and converted into [`CancelOutcome::LiveOwner`], never
+    /// surfaced as an `Err`).
+    pub async fn cancel_execution(&self, id: ExecutionId) -> Result<CancelOutcome, DurableError> {
+        let span = tracing::info_span!(
+            "durable.backend.cancel",
+            execution_id = %id.as_uuid(),
+            prior_status = tracing::field::Empty,
+            path = tracing::field::Empty,
+        );
+        async move {
+            let exec = id.as_uuid().to_string();
+
+            if let Some(lock_dir) = self.lock_dir.clone() {
+                let _lock = match ExecutionLock::acquire(&lock_dir, id) {
+                    Ok(lock) => lock,
+                    Err(DurableError::ExecutionLocked { holder_pid, .. }) => {
+                        tracing::Span::current().record("path", "live_owner_refused");
+                        return Ok(CancelOutcome::LiveOwner { pid: holder_pid });
+                    }
+                    Err(e) => return Err(e),
+                };
+                let outcome = self.cancel_write(&exec).await?;
+                tracing::Span::current().record("path", "immediate");
+                record_prior_status(outcome);
+                return Ok(outcome);
+                // `_lock` drops here, after the write commits.
+            }
+
+            if self.capabilities().cross_process {
+                tracing::Span::current().record("path", "unverifiable");
+                return Ok(CancelOutcome::LivenessUnverifiable);
+            }
+
+            tracing::Span::current().record("path", "no_lock_dir_single_process");
+            let outcome = self.cancel_write(&exec).await?;
+            record_prior_status(outcome);
+            Ok(outcome)
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// The conditional terminal write behind [`cancel_execution`](Self::cancel_execution),
+    /// factored out so both the SQLite/Unix (lock-held) and single-process (no-`lock_dir`) paths
+    /// share one implementation of the race-safe `UPDATE … WHERE status = 'running'` pattern.
+    async fn cancel_write(&self, exec: &str) -> Result<CancelOutcome, DurableError> {
+        let now = now_unix_millis();
+        let mut tx = zeph_db::begin_write(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("cancel", e))?;
+        let result = zeph_db::query(sql!(
+            "UPDATE durable_executions SET status = 'canceled', finalized_at = ?, updated_at = ?
+             WHERE execution_id = ? AND status = 'running'"
+        ))
+        .bind(now)
+        .bind(now)
+        .bind(exec)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DurableError::storage("cancel", e))?;
+        if result.rows_affected() > 0 {
+            tx.commit()
+                .await
+                .map_err(|e| DurableError::storage("cancel", e))?;
+            return Ok(CancelOutcome::Canceled);
+        }
+
+        // Zero rows: either no such execution, or it exists but was not `running`. Read the
+        // current status inside the same transaction so this reflects exactly what the UPDATE
+        // above saw — no window for a concurrent writer to change the answer in between.
+        let existing: Option<(String,)> = zeph_db::query_as(sql!(
+            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| DurableError::storage("cancel", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| DurableError::storage("cancel", e))?;
+        match existing {
+            None => Ok(CancelOutcome::NotFound),
+            Some((status,)) => {
+                let status = ExecutionStatus::from_tag(&status).ok_or(DurableError::Decode {
+                    context: "unrecognized durable_executions.status value",
+                })?;
+                Ok(CancelOutcome::AlreadyTerminal { status })
+            }
+        }
     }
 
     /// Group-commit a batch of buffered entries in a single write transaction.
@@ -1158,7 +1353,7 @@ impl LocalBackend {
             "SELECT execution_id FROM durable_executions
              WHERE finalized_at IS NOT NULL
                AND ( (status = 'completed' AND finalized_at <= ?)
-                  OR (status IN ('failed', 'aborted') AND finalized_at <= ?) )
+                  OR (status IN ('failed', 'aborted', 'canceled') AND finalized_at <= ?) )
              ORDER BY finalized_at LIMIT ?
              FOR UPDATE"
         ))
@@ -1173,7 +1368,7 @@ impl LocalBackend {
             "SELECT execution_id FROM durable_executions
              WHERE finalized_at IS NOT NULL
                AND ( (status = 'completed' AND finalized_at <= ?)
-                  OR (status IN ('failed', 'aborted') AND finalized_at <= ?) )
+                  OR (status IN ('failed', 'aborted', 'canceled') AND finalized_at <= ?) )
              ORDER BY finalized_at LIMIT ?"
         ))
         .bind(cutoffs.completed_before_ms)
@@ -1198,7 +1393,7 @@ impl LocalBackend {
              WHERE execution_id = ?
                AND finalized_at IS NOT NULL
                AND ( (status = 'completed' AND finalized_at <= ?)
-                  OR (status IN ('failed', 'aborted') AND finalized_at <= ?) )"
+                  OR (status IN ('failed', 'aborted', 'canceled') AND finalized_at <= ?) )"
         );
         let mut removed = 0u64;
         for (id,) in &ids {
@@ -1900,6 +2095,25 @@ pub(crate) fn now_unix_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// Record `cancel_execution`'s `prior_status` span field for a write-path outcome.
+///
+/// `Canceled` was `running` immediately before this call (that is the only status the guarded
+/// `UPDATE` matches); `AlreadyTerminal` already carries its own prior status. `NotFound` leaves
+/// the field unset — there was no row to have had a status.
+fn record_prior_status(outcome: CancelOutcome) {
+    match outcome {
+        CancelOutcome::Canceled => {
+            tracing::Span::current().record("prior_status", "running");
+        }
+        CancelOutcome::AlreadyTerminal { status } => {
+            tracing::Span::current().record("prior_status", status.as_str());
+        }
+        CancelOutcome::NotFound
+        | CancelOutcome::LiveOwner { .. }
+        | CancelOutcome::LivenessUnverifiable => {}
+    }
 }
 
 /// The absolute `updated_at` cutoff (Unix ms) at or before which a `status='running'` row becomes
@@ -2629,6 +2843,352 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_execution_with_no_live_owner_cancels_immediately() {
+        // `:memory:` has `lock_dir = None` and `cross_process = false` (sqlite build), so this
+        // exercises the provably-safe single-process direct-write path (F3).
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+
+        let outcome = backend.cancel_execution(exec).await.unwrap();
+        assert_eq!(outcome, CancelOutcome::Canceled);
+
+        let (status, finalized): (String, Option<i64>) = zeph_db::query_as(sql!(
+            "SELECT status, finalized_at FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(status, "canceled");
+        assert!(finalized.is_some(), "a terminal status stamps finalized_at");
+    }
+
+    #[tokio::test]
+    async fn cancel_execution_with_no_live_owner_on_file_backed_pool_cancels_immediately() {
+        // The SQLite/Unix lock-probe path: no lock is held, so the probe succeeds and the write
+        // proceeds while the lock is held across it, then releases.
+        let dir = tempfile::tempdir().unwrap();
+        let backend =
+            LocalBackend::open(&dir.path().join("durable.db").to_string_lossy(), 1_048_576)
+                .await
+                .unwrap();
+        backend.init().await.unwrap();
+
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+
+        let outcome = backend.cancel_execution(exec).await.unwrap();
+        assert_eq!(outcome, CancelOutcome::Canceled);
+
+        // The lock must have been released after the write: a fresh acquire succeeds.
+        let lock_dir = backend.lock_dir.clone().unwrap();
+        assert!(ExecutionLock::acquire(&lock_dir, exec).is_ok());
+    }
+
+    #[tokio::test]
+    async fn cancel_execution_refuses_a_live_owner_without_touching_the_row() {
+        // FR-006/FR-007 refusal: a live owner's held flock must short-circuit cancel to
+        // `LiveOwner`, and the row must be left completely untouched.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("durable.db");
+        let url = db_path.to_string_lossy().into_owned();
+
+        let owner = LocalBackend::open(&url, 1_048_576).await.unwrap();
+        owner.init().await.unwrap();
+        let canceler = LocalBackend::open(&url, 1_048_576).await.unwrap();
+
+        let exec = ExecutionId::new();
+        let (_, _lock) = owner
+            .open_execution_exclusive(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+
+        let outcome = canceler.cancel_execution(exec).await.unwrap();
+        assert!(
+            matches!(outcome, CancelOutcome::LiveOwner { pid } if pid == std::process::id()),
+            "expected LiveOwner{{pid: {}}}, got {outcome:?}",
+            std::process::id()
+        );
+
+        let (status,): (String,) = zeph_db::query_as(sql!(
+            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(owner.pool())
+        .await
+        .unwrap();
+        assert_eq!(status, "running", "a live-owned row must never be touched");
+    }
+
+    #[tokio::test]
+    async fn cancel_execution_is_idempotent_on_a_second_call() {
+        // NFR-003: canceling an already-canceled row is a no-op, not an error.
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            backend.cancel_execution(exec).await.unwrap(),
+            CancelOutcome::Canceled
+        );
+        let second = backend.cancel_execution(exec).await.unwrap();
+        assert_eq!(
+            second,
+            CancelOutcome::AlreadyTerminal {
+                status: ExecutionStatus::Canceled
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_execution_on_each_other_terminal_status_is_already_terminal() {
+        for status in [
+            ExecutionStatus::Completed,
+            ExecutionStatus::Failed,
+            ExecutionStatus::Aborted,
+        ] {
+            let backend = mem_backend(1_048_576).await;
+            let exec = ExecutionId::new();
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+            backend.finalize(exec, status).await.unwrap();
+
+            let outcome = backend.cancel_execution(exec).await.unwrap();
+            assert_eq!(
+                outcome,
+                CancelOutcome::AlreadyTerminal { status },
+                "canceling a {status:?} execution must be a no-op reporting its own status"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_execution_on_unknown_id_returns_not_found() {
+        let backend = mem_backend(1_048_576).await;
+        let outcome = backend.cancel_execution(ExecutionId::new()).await.unwrap();
+        assert_eq!(outcome, CancelOutcome::NotFound);
+    }
+
+    #[tokio::test]
+    async fn cancel_execution_races_finalize_exactly_one_terminal_status_wins() {
+        // SC-003: concurrent `cancel_execution` and `finalize(Completed)` — the guarded
+        // `UPDATE ... WHERE status = 'running'` pattern shared by both means whichever commits
+        // first wins, and the loser's write is simply a no-op rather than clobbering the winner.
+        // Drives the two as genuinely concurrent tasks against a real multi-connection pool
+        // (file-backed — `:memory:` forces a single connection, per `zeph-db/src/pool.rs`'s
+        // `connect_sqlite`, which would serialize the two calls trivially and prove nothing),
+        // across many trials so both orderings are exercised without artificial delay injection —
+        // mirrors `concurrent_prune_and_reopen_never_lose_or_corrupt_the_row`'s pattern.
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+        let backend = Arc::new(LocalBackend::open(&db_url, 1_048_576).await.unwrap());
+        backend.init().await.unwrap();
+
+        for _ in 0..20 {
+            let exec = ExecutionId::new();
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+
+            let cancel_backend = backend.clone();
+            let cancel = tokio::spawn(async move { cancel_backend.cancel_execution(exec).await });
+            let finalize_backend = backend.clone();
+            let finalize = tokio::spawn(async move {
+                finalize_backend
+                    .finalize(exec, ExecutionStatus::Completed)
+                    .await
+            });
+
+            let (cancel_result, finalize_result) = tokio::join!(cancel, finalize);
+            let cancel_outcome = cancel_result
+                .expect("cancel task must not panic")
+                .expect("cancel_execution must not error under a concurrent finalize");
+            finalize_result
+                .expect("finalize task must not panic")
+                .expect("finalize must not error under a concurrent cancel");
+
+            let (status,): (String,) = zeph_db::query_as(sql!(
+                "SELECT status FROM durable_executions WHERE execution_id = ?"
+            ))
+            .bind(exec.as_uuid().to_string())
+            .fetch_one(backend.pool())
+            .await
+            .unwrap();
+
+            // Whichever guarded UPDATE committed first wins; the loser's is a no-op. Both
+            // outcomes are legitimate depending on scheduling — the invariant is that exactly one
+            // terminal status is recorded, matching whichever `cancel_execution` outcome resulted.
+            match cancel_outcome {
+                CancelOutcome::Canceled => assert_eq!(
+                    status, "canceled",
+                    "cancel_execution won the race — the row must be canceled"
+                ),
+                CancelOutcome::AlreadyTerminal {
+                    status: ExecutionStatus::Completed,
+                } => assert_eq!(
+                    status, "completed",
+                    "finalize won the race — the row must be completed, and cancel's own \
+                     guarded UPDATE must have found it already non-running"
+                ),
+                other => panic!(
+                    "cancel_execution must only ever win or lose cleanly against a concurrent \
+                     finalize, got {other:?}"
+                ),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_execution_races_sweep_orphans_exactly_one_of_canceled_or_aborted_wins() {
+        // SC-004: concurrent `cancel_execution` and `sweep_orphans` on the same stale `running`
+        // row. Both probe the same INV-15 `ExecutionLock` before writing, so this race has two
+        // layers: whichever task wins the flock is the only one that ever attempts a write (the
+        // loser either gets `LiveOwner` immediately without touching the row, or skips the
+        // candidate without aborting it — INV-17's "never abort on staleness alone" rule already
+        // covers a live-held lock). Drives the two as genuinely concurrent tasks against a real
+        // multi-connection pool, across many trials so both lock-acquisition orderings are
+        // exercised — mirrors `concurrent_sweep_and_reopen_race_never_corrupts_the_row`'s pattern.
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+        let backend = Arc::new(LocalBackend::open(&db_url, 1_048_576).await.unwrap());
+        backend.init().await.unwrap();
+
+        let policy = RetentionPolicy {
+            stale_running_after_secs: 1,
+            prune_batch_size: 10,
+            ..RetentionPolicy::default()
+        };
+
+        for _ in 0..20 {
+            let exec = ExecutionId::new();
+            backend
+                .open_execution(exec, ExecutionKind::AgentTurn)
+                .await
+                .unwrap();
+            backdate_updated_at(&backend, exec, 0).await;
+
+            let cancel_backend = backend.clone();
+            let cancel = tokio::spawn(async move { cancel_backend.cancel_execution(exec).await });
+            let sweep_backend = backend.clone();
+            let policy_for_task = policy.clone();
+            let sweep =
+                tokio::spawn(async move { sweep_backend.sweep_orphans(&policy_for_task).await });
+
+            let (cancel_result, sweep_result) = tokio::join!(cancel, sweep);
+            let cancel_outcome = cancel_result
+                .expect("cancel task must not panic")
+                .expect("cancel_execution must not error under a concurrent sweep");
+            let aborted = sweep_result
+                .expect("sweep task must not panic")
+                .expect("sweep_orphans must not error under a concurrent cancel");
+
+            let (status,): (String,) = zeph_db::query_as(sql!(
+                "SELECT status FROM durable_executions WHERE execution_id = ?"
+            ))
+            .bind(exec.as_uuid().to_string())
+            .fetch_one(backend.pool())
+            .await
+            .unwrap();
+
+            match cancel_outcome {
+                CancelOutcome::Canceled => {
+                    assert_eq!(aborted, 0, "cancel won the lock — sweep must skip this row");
+                    assert_eq!(status, "canceled");
+                }
+                CancelOutcome::LiveOwner { .. } => {
+                    assert_eq!(aborted, 1, "sweep won the lock — it must abort this row");
+                    assert_eq!(status, "aborted");
+                }
+                other => panic!(
+                    "cancel_execution must only ever win the lock (Canceled) or lose it \
+                     (LiveOwner) against a concurrent sweep, got {other:?}"
+                ),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn open_execution_on_canceled_row_fails_closed_and_never_resumes() {
+        // INV-16′ (#6362), mirroring spec-064 scenario #13: unlike `completed`/`failed`/`aborted`,
+        // a `canceled` row is the one deliberate carve-out — reopening it must fail closed with
+        // `ExecutionCanceled` rather than un-finalizing it back to `running`.
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        let outcome = backend.cancel_execution(exec).await.unwrap();
+        assert_eq!(outcome, CancelOutcome::Canceled);
+
+        let err = backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .expect_err("reopening a canceled execution must fail closed");
+        assert!(
+            matches!(err, DurableError::ExecutionCanceled { execution_id } if execution_id == exec),
+            "expected ExecutionCanceled, got {err:?}"
+        );
+
+        let (status,): (String,) = zeph_db::query_as(sql!(
+            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            status, "canceled",
+            "the row must never be reset to running by a reopen attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_execution_exclusive_on_canceled_row_fails_closed_with_lock_released() {
+        // Same INV-16′ guarantee via the exclusive entry point; the flock guard must still be
+        // released normally (no lock leak) when the call returns an error.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("durable.db");
+        let backend = LocalBackend::open(&db_path.to_string_lossy(), 1_048_576)
+            .await
+            .unwrap();
+        backend.init().await.unwrap();
+
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        assert_eq!(
+            backend.cancel_execution(exec).await.unwrap(),
+            CancelOutcome::Canceled
+        );
+
+        let err = backend
+            .open_execution_exclusive(exec, ExecutionKind::AgentTurn)
+            .await
+            .expect_err("reopening a canceled execution exclusively must fail closed");
+        assert!(matches!(err, DurableError::ExecutionCanceled { .. }));
+
+        // The lock must have been released (no leak): a fresh acquire on the same id succeeds.
+        let dir2 = backend.lock_dir.clone().unwrap();
+        assert!(ExecutionLock::acquire(&dir2, exec).is_ok());
+    }
+
+    #[tokio::test]
     async fn reopen_of_a_row_deleted_out_from_under_it_starts_fresh() {
         // #6251 critic S1: simulates the tail of the prune-vs-reopen race — a concurrent prune
         // sweep deletes the row entirely before the reopen's guarded UPDATE runs. The guarded
@@ -3055,6 +3615,45 @@ mod tests {
         assert_eq!(backend.read_execution(live).await.unwrap().len(), 1);
     }
 
+    #[tokio::test]
+    async fn count_prunable_and_prune_include_canceled_executions_past_ttl() {
+        // FR-013 (#6362): a canceled row groups with failed/aborted for the retention TTL cutoff
+        // — without this, canceled rows would never be pruned and would accumulate forever.
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        assert_eq!(
+            backend.cancel_execution(exec).await.unwrap(),
+            CancelOutcome::Canceled
+        );
+        // Backdate finalized_at far into the past so it is past the failed/aborted TTL cutoff.
+        zeph_db::query(sql!(
+            "UPDATE durable_executions SET finalized_at = 1000 WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .execute(backend.pool())
+        .await
+        .unwrap();
+
+        let policy = RetentionPolicy {
+            ttl_failed_secs: 1,
+            prune_batch_size: 10,
+            ..RetentionPolicy::default()
+        };
+        let prunable = backend.count_prunable(&policy).await.unwrap();
+        assert_eq!(
+            prunable, 1,
+            "an aged canceled row must be counted as prunable"
+        );
+
+        let deleted = backend.prune(&policy).await.unwrap();
+        assert_eq!(deleted, 1, "an aged canceled row must actually be pruned");
+        assert!(backend.read_execution(exec).await.unwrap().is_empty());
+    }
+
     /// Backdate a `durable_executions` row's `updated_at` so it becomes a sweep candidate.
     async fn backdate_updated_at(backend: &LocalBackend, id: ExecutionId, updated_at_ms: i64) {
         zeph_db::query(sql!(
@@ -3233,6 +3832,51 @@ mod tests {
         };
         let aborted = backend.sweep_orphans(&policy).await.unwrap();
         assert_eq!(aborted, 0);
+    }
+
+    #[tokio::test]
+    async fn sweep_orphans_never_touches_a_stale_canceled_row() {
+        // FR-008 regression (#6362): `sweep_orphan_batch` only ever candidate-selects
+        // `status = 'running'` rows, so a canceled row — even a stale one — must never be
+        // resurrected or otherwise touched, across repeated sweep cycles.
+        let dir = tempfile::tempdir().unwrap();
+        let backend =
+            LocalBackend::open(&dir.path().join("durable.db").to_string_lossy(), 1_048_576)
+                .await
+                .unwrap();
+        backend.init().await.unwrap();
+
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        assert_eq!(
+            backend.cancel_execution(exec).await.unwrap(),
+            CancelOutcome::Canceled
+        );
+        backdate_updated_at(&backend, exec, 0).await;
+
+        let policy = RetentionPolicy {
+            stale_running_after_secs: 1,
+            ..RetentionPolicy::default()
+        };
+        for _ in 0..3 {
+            let aborted = backend.sweep_orphans(&policy).await.unwrap();
+            assert_eq!(aborted, 0, "a canceled row must never be swept");
+        }
+
+        let (status,): (String,) = zeph_db::query_as(sql!(
+            "SELECT status FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            status, "canceled",
+            "sweep must never resurrect a canceled row"
+        );
     }
 
     #[tokio::test]

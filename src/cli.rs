@@ -755,7 +755,7 @@ pub(crate) enum DbCommand {
 pub(crate) enum DurableCommand {
     /// List durable executions, newest first
     List {
-        /// Filter by status: running | completed | failed | aborted
+        /// Filter by status: running | completed | failed | aborted | canceled
         #[arg(long)]
         status: Option<String>,
         /// Filter by execution kind (e.g. `agent_turn`, `dag_run`, `scheduled_job`, `subagent_session`)
@@ -801,6 +801,11 @@ pub(crate) enum DurableCommand {
     },
     /// Trigger a manual replay of a supported execution
     Resume {
+        /// Execution id (UUID)
+        id: String,
+    },
+    /// Cancel a running durable execution so it is never resumed
+    Cancel {
         /// Execution id (UUID)
         id: String,
     },

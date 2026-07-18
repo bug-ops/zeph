@@ -199,19 +199,29 @@ binds `execution_id` (cipher.rs) and `IdempotencyKey::derive` already folds `exe
 `IdempotencyKey` collision this invariant's introduction considered was only ever possible when
 `ExecutionId` itself collided, which this lock now prevents structurally.
 
-**INV-16 — Reopening an execution un-finalizes ALL terminal statuses identically (#6254).**
+**INV-16′ — Reopening an execution un-finalizes every terminal status EXCEPT a deliberate operator
+cancel, which fails closed instead (#6254, refined #6362).**
 `open_execution`/`open_execution_exclusive`'s reopen path MUST reset `status='running'` and clear
-`finalized_at` for a row found in ANY terminal status — `completed`, `failed`, OR `aborted` — not
-just `completed`/`failed` as in the pre-#6254 behavior. The deciding fact for prunability is
-"is this execution being actively reopened right now", never "which terminal status produced the
-row". Leaving `aborted` untouched on reopen (the pre-#6254 behavior, justified at the time because
-the only `aborted` producers were rare, immediately-redriven divergence-recovery/`StepCapExceeded`
-aborts) becomes unsafe once the crash-orphan sweep (INV-17) makes `aborted` the common outcome of a
-resumable crash: a resumed execution whose row keeps `finalized_at` set is prunable out from under
-the active resume — the exact hazard the completed/failed un-finalize was built to prevent. Un-
-finalizing `aborted` on reopen is strictly safer for the pre-existing divergence-recovery case too
-(it now also protects that fresh re-drive from prune) and does not change replay-cursor
-fresh-vs-resume selection, which is independent of the `status` column.
+`finalized_at` for a row found in `completed`, `failed`, OR `aborted` — not just `completed`/
+`failed` as in the pre-#6254 behavior. The deciding fact for prunability is "is this execution
+being actively reopened right now", never "which terminal status produced the row" — for those
+three statuses. Leaving `aborted` untouched on reopen (the pre-#6254 behavior, justified at the
+time because the only `aborted` producers were rare, immediately-redriven divergence-recovery/
+`StepCapExceeded` aborts) becomes unsafe once the crash-orphan sweep (INV-17) makes `aborted` the
+common outcome of a resumable crash: a resumed execution whose row keeps `finalized_at` set is
+prunable out from under the active resume — the exact hazard the completed/failed un-finalize was
+built to prevent. Un-finalizing `aborted` on reopen is strictly safer for the pre-existing
+divergence-recovery case too (it now also protects that fresh re-drive from prune) and does not
+change replay-cursor fresh-vs-resume selection, which is independent of the `status` column.
+`canceled` (#6362, `zeph durable cancel`) is the one deliberate carve-out: the reopen-reset
+heuristic above exists as a *proxy* for "someone still wants this execution", and a `canceled` row
+records the direct, opposite signal — an explicit human decision that it must never run again.
+Operator intent outranks the proxy it stands in for, so reopen MUST NOT un-finalize a `canceled`
+row; `open_execution`/`open_execution_exclusive` instead fail closed with
+[`DurableError::ExecutionCanceled`](../../crates/zeph-durable/src/error.rs), and the row's status
+never changes. This is not a mechanical "…except canceled" exception bolted onto the "status never
+decides" language above — it is a reasoned carve-out for the one status whose entire purpose is to
+decide, permanently.
 
 **INV-17 — A crash-orphaned `running` execution is reclaimed only after its liveness is verified
 via the INV-15 advisory lock, never by staleness alone (#6254).**
