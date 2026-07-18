@@ -60,6 +60,12 @@ const REACTIVATION_LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::
 /// `session_id`/`conversation_id` are owned, `SessionSink` is `Send + Sync`, replayed messages
 /// are plain data) — the `LoopbackChannel` and the resulting `!Send` `Agent` never leave that
 /// thread.
+///
+/// `is_fork` must be `true` only when `session_id` is a fork's freshly minted child id (i.e.
+/// its `SessionStore` row was just written by `zeph_session::ForkEngine::fork`, not by this
+/// function) — it suppresses the `last_active` lookup so the returned resume banner never shows
+/// a misleading "just now" timestamp for a session that has never actually been resumed by a
+/// caller (S1, #6425 follow-up). `create`/`reactivate` callers must pass `false`.
 #[tracing::instrument(
     name = "serve.agent_factory.build",
     skip_all,
@@ -71,7 +77,35 @@ pub(crate) async fn build_agent_factory(
     deps: ServeAgentDeps,
     session_id: zeph_common::SessionId,
     conversation_id: zeph_memory::ConversationId,
-) -> impl FnOnce(LoopbackChannel) -> Agent<LoopbackChannel> + Send + 'static {
+    is_fork: bool,
+) -> (
+    Option<String>,
+    impl FnOnce(LoopbackChannel) -> Agent<LoopbackChannel> + Send + 'static,
+) {
+    // #6425: looked up BEFORE hydrate_session_sink, which itself seeds/mutates this session's
+    // metadata row (SessionStore::create/link_conversation) — reading last_active afterward
+    // would return "just now" instead of the row's true prior updated_at on reactivation.
+    //
+    // `is_fork` short-circuits this to `None` unconditionally (S1 fix): unlike create/reactivate,
+    // a forked session's row already exists by the time we get here —
+    // `fork_session_handler` calls `zeph_session::ForkEngine::fork` first, which itself calls
+    // `store.record_fork` + `store.update_seq` (the latter sets `updated_at = NOW()`) on the new
+    // child id — so a plain `store.get` here would read back "just now" instead of `None`,
+    // rendering a misleading "(last active just now)" segment on a session that has never
+    // actually been resumed by a caller. A freshly forked session is fresh, like `create`'s, and
+    // must render the same no-timestamp banner.
+    let last_active = if deps.session_persistence_config.enabled && !is_fork {
+        let store = zeph_session::SessionStore::new(deps.memory.sqlite().pool().clone());
+        store
+            .get(session_id.as_str())
+            .await
+            .ok()
+            .flatten()
+            .map(|meta| meta.updated_at)
+    } else {
+        None
+    };
+
     let (session_sink, preloaded_messages) = if deps.session_persistence_config.enabled {
         hydrate_session_sink(
             &deps.session_persistence_config,
@@ -86,6 +120,22 @@ pub(crate) async fn build_agent_factory(
     } else {
         (None, Vec::new())
     };
+
+    // #6425 (spec-068 §13.5, AC-24): computed once, here, from the already-reconstructed
+    // message stream — zero additional I/O beyond the last_active lookup above. Rendered later
+    // by exactly one attach path via SessionActorHandle::claim_resume_banner (see
+    // events_session_handler in src/serve/handlers.rs).
+    let resume_banner = deps
+        .session_config
+        .resume
+        .show_banner
+        .then(|| {
+            zeph_core::session_resume::SessionResumeInfo::from_messages(
+                &preloaded_messages,
+                last_active.as_deref(),
+            )
+        })
+        .and_then(|info| info.banner_text());
 
     // SkillOrchestra: wire the RL routing head, if enabled (#5921). `deps.rl_head` is loaded/
     // cold-started exactly once in `crate::acp::build_shared_core` and cloned (cheap `Arc`
@@ -138,7 +188,7 @@ pub(crate) async fn build_agent_factory(
         Some((&trajectory_risk_slot, &trajectory_signal_queue)),
     );
 
-    move |channel| {
+    let build_agent = move |channel| {
         // Capture before apply_session_config consumes deps.session_config (mirrors
         // spawn_acp_agent's debug_config capture in src/acp.rs).
         let debug_config = deps.session_config.debug_config.clone();
@@ -287,7 +337,8 @@ pub(crate) async fn build_agent_factory(
             .0;
         }
         agent
-    }
+    };
+    (resume_banner, build_agent)
 }
 
 /// Wraps `tool_executor` in the per-session trust/policy/adversarial gate stack (SEC-H1 / R1):
@@ -862,7 +913,8 @@ mod tests {
             tools_enabled: true,
         };
 
-        let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
+        let (_, build_agent) =
+            Box::pin(build_agent_factory(deps, session_id.clone(), cid, false)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let _agent = build_agent(channel);
 
@@ -879,6 +931,90 @@ mod tests {
             has_timestamped_child,
             "DebugDumper::new must create a timestamped subdirectory under the session dir"
         );
+    }
+
+    /// #6425 regression: when `[session] enabled = false`, `build_agent_factory` must skip both
+    /// the `last_active` lookup and `hydrate_session_sink` entirely (no `SessionStore`/event-log
+    /// I/O against a session that was never persisted) and still return `None` for the banner,
+    /// rather than panicking or attempting to open a nonexistent durable log. This is the one
+    /// branch of the new async-prefix banner computation not already exercised by
+    /// `hydrate_session_sink_*` (which all set `enabled: true`) or by the `enabled: true`
+    /// `build_agent_factory_wires_*` tests below.
+    #[tokio::test]
+    async fn build_agent_factory_computes_no_banner_when_persistence_disabled() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("no-persistence-session");
+
+        let session_config =
+            zeph_core::AgentSessionConfig::from_config(&zeph_core::config::Config::default(), 0);
+        let (condenser, token_counter) = make_test_condenser();
+
+        let deps = ServeAgentDeps {
+            provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            embedding_provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            registry: Arc::new(parking_lot::RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: None,
+            max_active_skills: 5,
+            skill_disambiguation_threshold: 0.2,
+            skill_two_stage_matching: false,
+            skill_confusability_threshold: 0.0,
+            skill_group_structured: false,
+            skill_support_similarity_threshold: 0.50,
+            skill_min_injection_score: 0.20,
+            skill_generation_provider: String::new(),
+            skill_disambiguate_provider: String::new(),
+            semantic_scan: false,
+            semantic_scan_provider: String::new(),
+            trust_config: zeph_core::config::TrustConfig::default(),
+            rl_routing_enabled: false,
+            rl_learning_rate: 0.0,
+            rl_weight: 0.0,
+            rl_persist_interval: 0,
+            rl_warmup_updates: 0,
+            rl_head: None,
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor::new(vec![])),
+            capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
+            permission_policy: zeph_tools::PermissionPolicy::default(),
+            audit_logger: None,
+            policy_gate_pieces: crate::agent_setup::PolicyGatePieces::default(),
+            memory: Arc::clone(&memory),
+            history_limit: 10,
+            recall_limit: 5,
+            summarization_threshold: 1000,
+            session_config,
+            session_persistence_config: zeph_config::SessionConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            resume_condenser: Arc::new(condenser),
+            resume_token_counter: Arc::new(token_counter),
+            provider_pool: Vec::new(),
+            provider_config_snapshot: zeph_core::ProviderConfigSnapshot::default(),
+            shadow_sentinel_config: zeph_config::ShadowSentinelConfig::default(),
+            shadow_sentinel_probe_provider: AnyProvider::Mock(
+                zeph_llm::mock::MockProvider::default(),
+            ),
+            trajectory_sentinel_config: zeph_config::TrajectorySentinelConfig::default(),
+            quality_pipeline: None,
+            safe_mode: false,
+            allowed_paths: vec![],
+            tools_enabled: true,
+        };
+
+        let (resume_banner, build_agent) =
+            Box::pin(build_agent_factory(deps, session_id.clone(), cid, false)).await;
+        assert!(
+            resume_banner.is_none(),
+            "no last_active lookup or history exists when persistence is disabled, so the \
+             banner must be None; got: {resume_banner:?}"
+        );
+        // Drives the closure too, proving the disabled-persistence path also builds a working
+        // agent (empty session_sink, no preloaded messages) rather than only type-checking.
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let _agent = build_agent(channel);
     }
 
     /// #5450 regression: `build_agent_factory` must call `Agent::with_provider_pool` so
@@ -956,7 +1092,8 @@ mod tests {
             tools_enabled: true,
         };
 
-        let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
+        let (_, build_agent) =
+            Box::pin(build_agent_factory(deps, session_id.clone(), cid, false)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let mut agent = build_agent(channel);
 
@@ -1069,7 +1206,8 @@ mod tests {
             tools_enabled: true,
         };
 
-        let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
+        let (_, build_agent) =
+            Box::pin(build_agent_factory(deps, session_id.clone(), cid, false)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let mut agent = build_agent(channel);
 
@@ -1171,7 +1309,8 @@ mod tests {
             tools_enabled: true,
         };
 
-        let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
+        let (_, build_agent) =
+            Box::pin(build_agent_factory(deps, session_id.clone(), cid, false)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let mut agent = build_agent(channel);
 
@@ -1272,7 +1411,8 @@ mod tests {
             tools_enabled: true,
         };
 
-        let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
+        let (_, build_agent) =
+            Box::pin(build_agent_factory(deps, session_id.clone(), cid, false)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let mut agent = build_agent(channel);
 
@@ -1370,7 +1510,8 @@ mod tests {
             tools_enabled: true,
         };
 
-        let build_agent = Box::pin(build_agent_factory(deps, session_id.clone(), cid)).await;
+        let (_, build_agent) =
+            Box::pin(build_agent_factory(deps, session_id.clone(), cid, false)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let mut agent = build_agent(channel);
 
@@ -1491,8 +1632,15 @@ mod tests {
             crate::agent_setup::PolicyGatePieces::default(),
         );
 
-        let build_agent_a = Box::pin(build_agent_factory(deps.clone(), session_id_a, cid_a)).await;
-        let build_agent_b = Box::pin(build_agent_factory(deps, session_id_b, cid_b)).await;
+        let (_, build_agent_a) = Box::pin(build_agent_factory(
+            deps.clone(),
+            session_id_a,
+            cid_a,
+            false,
+        ))
+        .await;
+        let (_, build_agent_b) =
+            Box::pin(build_agent_factory(deps, session_id_b, cid_b, false)).await;
         let (channel_a, _handle_a) = zeph_core::LoopbackChannel::pair(8);
         let (channel_b, _handle_b) = zeph_core::LoopbackChannel::pair(8);
         let agent_a = build_agent_a(channel_a);
@@ -1564,7 +1712,7 @@ mod tests {
             policy_gate_pieces,
         );
 
-        let build_agent = Box::pin(build_agent_factory(deps, session_id, cid)).await;
+        let (_, build_agent) = Box::pin(build_agent_factory(deps, session_id, cid, false)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let agent = build_agent(channel);
 
@@ -1734,7 +1882,7 @@ mod tests {
             ..Default::default()
         };
 
-        let build_agent = Box::pin(build_agent_factory(deps, session_id, cid)).await;
+        let (_, build_agent) = Box::pin(build_agent_factory(deps, session_id, cid, false)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let agent = build_agent(channel);
         let executor = agent.tool_executor_arc();
@@ -1812,7 +1960,7 @@ mod tests {
             ..Default::default()
         };
 
-        let build_agent = Box::pin(build_agent_factory(deps, session_id, cid)).await;
+        let (_, build_agent) = Box::pin(build_agent_factory(deps, session_id, cid, false)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let agent = build_agent(channel);
         let executor = agent.tool_executor_arc();
@@ -1875,7 +2023,7 @@ mod tests {
             crate::agent_setup::PolicyGatePieces::default(),
         );
 
-        let build_agent = Box::pin(build_agent_factory(deps, session_id, cid)).await;
+        let (_, build_agent) = Box::pin(build_agent_factory(deps, session_id, cid, false)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let agent = build_agent(channel);
 
@@ -1931,7 +2079,7 @@ mod tests {
             crate::agent_setup::PolicyGatePieces::default(),
         );
 
-        let build_agent = Box::pin(build_agent_factory(deps, session_id, cid)).await;
+        let (_, build_agent) = Box::pin(build_agent_factory(deps, session_id, cid, false)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let agent = build_agent(channel);
 
@@ -2006,7 +2154,8 @@ mod tests {
             .create_conversation()
             .await
             .unwrap();
-        let build_agent = Box::pin(build_agent_factory(serve_deps, session_id, cid)).await;
+        let (_, build_agent) =
+            Box::pin(build_agent_factory(serve_deps, session_id, cid, false)).await;
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
         let agent = build_agent(channel);
 

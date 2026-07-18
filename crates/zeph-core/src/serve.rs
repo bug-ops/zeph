@@ -149,6 +149,7 @@ impl SessionActor {
         session_id: &SessionId,
         build_agent: F,
         mailbox_capacity: usize,
+        resume_banner: Option<String>,
     ) -> (SessionActorHandle, BlockingHandle<()>)
     where
         F: FnOnce(LoopbackChannel) -> Agent<LoopbackChannel> + Send + 'static,
@@ -227,6 +228,7 @@ impl SessionActor {
                 last_active: Instant::now(),
                 cancel: session_cancel,
                 resume_banner_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                pending_resume_banner: resume_banner.map(Arc::from),
             },
             blocking_handle,
         )
@@ -400,6 +402,12 @@ pub struct SessionActorHandle {
     /// paths observe the same flag. Use [`Self::claim_resume_banner`] rather than reading
     /// this directly.
     pub resume_banner_sent: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Resume-visibility banner text, computed once at session build time (spec-068 §13.5,
+    /// AC-24) from the session's replayed history. `None` when `[session.resume] show_banner
+    /// = false` or the session had no prior history to resume. Rendered by exactly one
+    /// attach path, gated by [`Self::claim_resume_banner`] — see `GET /sessions/:id/events`
+    /// (`events_session_handler`, `src/serve/handlers.rs`) for the sole production consumer.
+    pub pending_resume_banner: Option<std::sync::Arc<str>>,
 }
 
 impl SessionActorHandle {
@@ -586,6 +594,7 @@ mod tests {
             last_active: Instant::now(),
             cancel: CancellationToken::new(),
             resume_banner_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            pending_resume_banner: None,
         }
     }
 
@@ -851,6 +860,7 @@ mod tests {
                 agent
             },
             4,
+            None,
         );
 
         handle
@@ -901,6 +911,7 @@ mod tests {
                 Agent::new(provider, channel, registry, None, 5, executor)
             },
             4,
+            None,
         );
 
         // No `SessionCommand::Shutdown` sent — cancel the per-session token directly, as idle
@@ -1010,6 +1021,7 @@ mod tests {
                         )
                     },
                     4,
+                    None,
                 );
                 actors.push((handle, blocking));
             }

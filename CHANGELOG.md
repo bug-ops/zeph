@@ -21,6 +21,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   churn (LSP notes, focus checkpoints) would make that index itself O(n) per turn, moving cost
   onto the hotter turn loop instead of the `/history` read path.
 
+- `zeph serve`/`zeph-core`: `POST /sessions`, `POST /sessions/:id/prompt` (reactivation), and
+  `POST /sessions/:id/fork` never computed the resume-visibility banner (spec-068 §13.5, AC-24)
+  — `SessionActorHandle::claim_resume_banner()` had zero production call sites (#6425, #6426).
+  `build_agent_factory` now computes the banner from the session's already-replayed message
+  history in its async prefix (before `[session.resume] show_banner` and prior-history checks)
+  and returns it alongside the `build_agent` closure; `SessionActor::spawn` stores it on
+  `SessionActorHandle::pending_resume_banner`. `GET /sessions/:id/events` renders it exactly
+  once, subscribing to the session's output broadcast before sending so a not-yet-attached
+  client can never miss it — the same single-emission guarantee already covered by
+  `claim_resume_banner`'s existing unit test, now exercised through the real HTTP handler for
+  create, reactivate, and fork alike. A forked session's banner never shows a "last active"
+  timestamp — `ForkEngine::fork` already stamps the new child's row with the current time as
+  part of its own bookkeeping, which would otherwise read back as a misleading "last active just
+  now" on a session nobody has actually resumed yet; it matches `POST /sessions`' no-timestamp
+  banner for the same reason.
+
 - `zeph-orchestration`: `PlanVerifier::verify_plan()` (whole-plan grounding, spec 009) shared
   the same `orchestration.verifier_timeout_secs` budget as per-task `verify()`, and consistently
   exhausted it against slower local Ollama models even when per-task verification on the same

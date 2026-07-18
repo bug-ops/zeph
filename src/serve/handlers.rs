@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use zeph_common::SessionId;
-use zeph_core::serve::{SessionActor, SessionActorHandle, SessionCommand};
+use zeph_core::serve::{SessionActor, SessionActorHandle, SessionCommand, SessionOutput};
 
 use super::AppState;
 use super::agent_factory::build_agent_factory;
@@ -60,10 +60,11 @@ async fn reactivate_session(
     let meta = store.get(session_id.as_str()).await.ok().flatten()?;
     let conversation_id = meta.conversation_id.map(zeph_memory::ConversationId)?;
 
-    let build_agent = Box::pin(build_agent_factory(
+    let (resume_banner, build_agent) = Box::pin(build_agent_factory(
         state.deps.clone(),
         session_id.clone(),
         conversation_id,
+        false,
     ))
     .await;
     let (handle, _blocking_handle) = SessionActor::spawn(
@@ -72,6 +73,7 @@ async fn reactivate_session(
         session_id,
         build_agent,
         state.mailbox_capacity,
+        resume_banner,
     );
     state.registry.insert(session_id.clone(), handle.clone());
 
@@ -131,10 +133,11 @@ pub(super) async fn create_session_handler(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    let build_agent = Box::pin(build_agent_factory(
+    let (resume_banner, build_agent) = Box::pin(build_agent_factory(
         state.deps.clone(),
         session_id.clone(),
         conversation_id,
+        false,
     ))
     .await;
     let (handle, _blocking_handle) = SessionActor::spawn(
@@ -143,6 +146,7 @@ pub(super) async fn create_session_handler(
         &session_id,
         build_agent,
         state.mailbox_capacity,
+        resume_banner,
     );
     state.registry.insert(session_id.clone(), handle);
 
@@ -334,6 +338,12 @@ pub(super) async fn prompt_session_handler(
 /// dropped rather than the connection closed — the durable event log (when `[session] enabled =
 /// true`) is the source of truth for anything a lagged subscriber missed.
 ///
+/// Also renders the session's pending resume banner (#6425/#6426, spec-068 §13.5, AC-24), if
+/// any, exactly once across every attach — see [`zeph_core::serve::SessionActorHandle::claim_resume_banner`].
+/// The banner is sent as a plain `SessionOutput::Token`, the same variant used for streamed
+/// model output — a leading `token` event immediately after attach may therefore be the resume
+/// banner rather than actual LLM output; it always precedes the first `TurnComplete`.
+///
 /// Returns `400` if `id` is empty or contains a path separator, `..`, or a NUL byte (see
 /// [`get_session_handler`]), or `404` if the session is neither live nor durably known (or
 /// reactivation failed — see [`reactivate_session`], D-12).
@@ -353,7 +363,20 @@ pub(super) async fn events_session_handler(
         return Err(StatusCode::NOT_FOUND);
     };
 
-    let stream = BroadcastStream::new(handle.tx_out.subscribe()).filter_map(|item| match item {
+    // #6425/#6426 (spec-068 §13.5, AC-24): subscribe() MUST happen before send() — a
+    // broadcast::Receiver only observes messages sent after its own creation, so sending first
+    // would race a not-yet-subscribed client and silently drop the banner. claim_resume_banner()
+    // guarantees exactly one of any concurrent/sequential attaches to this session renders it.
+    let rx = handle.tx_out.subscribe();
+    if let Some(banner) = handle.pending_resume_banner.clone()
+        && handle.claim_resume_banner()
+    {
+        // `rx` (above) must stay alive across this send — claim_resume_banner()'s exactly-once
+        // guarantee is already burned at this point regardless of whether the send itself lands.
+        let _ = handle.tx_out.send(SessionOutput::Token(banner.to_string()));
+    }
+
+    let stream = BroadcastStream::new(rx).filter_map(|item| match item {
         Ok(output) => match Event::default().json_data(&output) {
             Ok(event) => Some(Ok(event)),
             Err(e) => {
@@ -440,10 +463,15 @@ pub(super) async fn fork_session_handler(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    let build_agent = Box::pin(build_agent_factory(
+    // is_fork: true — ForkEngine::fork (above) already wrote this child's SessionStore row via
+    // record_fork + update_seq (the latter sets updated_at = NOW()), so build_agent_factory must
+    // not read it back as a genuine "last active" timestamp (S1 fix, #6425 follow-up): a freshly
+    // forked session is fresh, and must render the same no-timestamp banner as a brand-new one.
+    let (resume_banner, build_agent) = Box::pin(build_agent_factory(
         state.deps.clone(),
         new_id.clone(),
         conversation_id,
+        true,
     ))
     .await;
     let (handle, _blocking_handle) = SessionActor::spawn(
@@ -452,6 +480,7 @@ pub(super) async fn fork_session_handler(
         &new_id,
         build_agent,
         state.mailbox_capacity,
+        resume_banner,
     );
     state.registry.insert(new_id.clone(), handle);
 
@@ -602,6 +631,17 @@ mod tests {
         state: &AppState,
         id: &str,
     ) -> tokio::sync::mpsc::Receiver<SessionCommand> {
+        insert_live_session_with_banner(state, id, None)
+    }
+
+    /// Same as [`insert_live_session`], but lets the caller set `pending_resume_banner` — used by
+    /// the #6425/#6426 regression tests below to exercise `events_session_handler`'s banner-claim
+    /// wiring without going through the full `build_agent_factory`/`SessionActor::spawn` pipeline.
+    fn insert_live_session_with_banner(
+        state: &AppState,
+        id: &str,
+        banner: Option<&str>,
+    ) -> tokio::sync::mpsc::Receiver<SessionCommand> {
         let (tx, rx) = tokio::sync::mpsc::channel(4);
         let (tx_out, _sub) = tokio::sync::broadcast::channel(4);
         state.registry.insert(
@@ -612,9 +652,349 @@ mod tests {
                 last_active: std::time::Instant::now(),
                 cancel: tokio_util::sync::CancellationToken::new(),
                 resume_banner_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                pending_resume_banner: banner.map(std::sync::Arc::from),
             },
         );
         rx
+    }
+
+    /// `make_state`, but with `[session] enabled = true` against `data_dir` instead of the
+    /// disabled default — needed by the end-to-end resume-banner tests below, which must
+    /// actually hydrate/replay a durable event log through `build_agent_factory`.
+    async fn make_state_with_persistence(data_dir: &std::path::Path) -> AppState {
+        let mut state = make_state().await;
+        state.deps.session_persistence_config = zeph_config::SessionConfig {
+            enabled: true,
+            data_dir: data_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        state
+    }
+
+    /// Seeds `session_id`'s durable event log and `SessionStore` row directly (bypassing any
+    /// live agent turn) with one user/assistant exchange, so a subsequent `build_agent_factory`
+    /// call (via `create`/`reactivate`/`fork`) replays real prior history — mirrors
+    /// `agent_factory::tests::hydrate_session_sink_replays_prior_history_on_reactivation`, but
+    /// using the public `zeph_session`/`zeph_agent_persistence` APIs directly since
+    /// `hydrate_session_sink` itself is private to the `agent_factory` module.
+    async fn seed_session_history(
+        deps: &ServeAgentDeps,
+        session_id: &SessionId,
+        conversation_id: zeph_memory::ConversationId,
+    ) {
+        let store = zeph_session::SessionStore::new(deps.memory.sqlite().pool().clone());
+        store.create(session_id.as_str()).await.unwrap();
+        store
+            .link_conversation(session_id.as_str(), conversation_id.0)
+            .await
+            .unwrap();
+
+        let data_dir = PathBuf::from(&deps.session_persistence_config.data_dir);
+        let session_path = zeph_session::session_dir(&data_dir, session_id.as_str());
+        let log = zeph_session::SessionEventLog::open_exclusive(&session_path)
+            .await
+            .unwrap();
+        let sink =
+            zeph_agent_persistence::SessionSink::new(Arc::new(log), store, session_id.clone());
+        sink.record_message(zeph_llm::provider::Role::User, "hello", &[])
+            .await
+            .unwrap();
+        sink.record_message(zeph_llm::provider::Role::Assistant, "hi there", &[])
+            .await
+            .unwrap();
+    }
+
+    /// #6426 regression: when two attach paths (e.g. two `GET /sessions/:id/events` clients)
+    /// hit the same live session, exactly one must render the resume banner —
+    /// `claim_resume_banner()`'s single-emission guarantee, exercised through the real HTTP
+    /// handler rather than the bare primitive (`zeph_core::serve::tests::
+    /// claim_resume_banner_wins_exactly_once_across_clones` covers the primitive itself).
+    #[tokio::test]
+    async fn events_session_handler_renders_banner_exactly_once_across_two_attaches() {
+        let state = make_state().await;
+        insert_live_session_with_banner(&state, "s1", Some("resume banner text"));
+
+        let first = Box::pin(events_session_handler(
+            State(state.clone()),
+            Path("s1".to_owned()),
+        ))
+        .await
+        .unwrap();
+        let second = Box::pin(events_session_handler(
+            State(state.clone()),
+            Path("s1".to_owned()),
+        ))
+        .await
+        .unwrap();
+        // Push a distinguishing event only after BOTH attaches have subscribed (a
+        // broadcast::Receiver only observes sends issued after its own creation — the same
+        // ordering constraint the production fix relies on) so the second attach's stream has
+        // something to yield even though it must not see the banner.
+        let handle = state.registry.get(&SessionId::new("s1")).unwrap();
+        handle.tx_out.send(SessionOutput::TurnComplete).unwrap();
+
+        let first_text = first_sse_frame_text(first).await;
+        assert!(
+            first_text.contains("resume banner text"),
+            "the first attach must win the resume-banner claim and render it, got: {first_text}"
+        );
+
+        let second_text = first_sse_frame_text(second).await;
+        assert!(
+            !second_text.contains("resume banner text"),
+            "the second attach must NOT render the resume banner (already claimed), got: \
+             {second_text}"
+        );
+    }
+
+    /// Reads the first frame off an `events_session_handler` SSE response, as raw UTF-8 text,
+    /// with a bounded timeout so a stream with nothing to yield fails the test instead of
+    /// hanging. Takes `impl IntoResponse` (rather than the bare `Sse<impl Stream<...>>`) since
+    /// the underlying `KeepAliveStream` is not `Unpin`, matching `test_support.rs`'s own
+    /// `into_data_stream()` usage on a full `axum::response::Response`.
+    async fn first_sse_frame_text(sse: impl IntoResponse) -> String {
+        let mut stream = sse.into_response().into_body().into_data_stream();
+        let frame = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            futures::StreamExt::next(&mut stream),
+        )
+        .await
+        .expect("SSE frame must arrive before timeout")
+        .expect("stream must yield at least one frame")
+        .expect("frame read must not error");
+        String::from_utf8_lossy(&frame).into_owned()
+    }
+
+    /// #6425/#6426 end-to-end regression: proves the full plumbing (`build_agent_factory`
+    /// computes the banner -> `SessionActor::spawn` stores it on `SessionActorHandle` ->
+    /// `events_session_handler` renders it via `claim_resume_banner`), which previously had zero
+    /// coverage — `build_agent_factory`'s own unit tests never threaded their `resume_banner`
+    /// return value anywhere, and `events_session_handler`'s only tests used a hand-built
+    /// `SessionActorHandle` bypassing `build_agent_factory`/`SessionActor::spawn` entirely.
+    #[tokio::test]
+    async fn build_agent_factory_banner_flows_through_events_session_handler_end_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state_with_persistence(dir.path()).await;
+        let session_id = SessionId::new("resume-e2e-session");
+        let cid = state
+            .deps
+            .memory
+            .sqlite()
+            .create_conversation()
+            .await
+            .unwrap();
+        seed_session_history(&state.deps, &session_id, cid).await;
+
+        let (resume_banner, build_agent) = Box::pin(build_agent_factory(
+            state.deps.clone(),
+            session_id.clone(),
+            cid,
+            false,
+        ))
+        .await;
+        let banner = resume_banner.expect(
+            "build_agent_factory must compute Some(banner) for a session with prior history \
+             and [session.resume] show_banner = true (the default)",
+        );
+        assert!(
+            banner.contains("2 messages") && banner.contains("1 turn"),
+            "banner must reflect the seeded 1 user + 1 assistant history exactly; got: {banner}"
+        );
+
+        let (handle, _blocking_handle) = SessionActor::spawn(
+            &state.supervisor,
+            &state.registry,
+            &session_id,
+            build_agent,
+            state.mailbox_capacity,
+            Some(banner.clone()),
+        );
+        state.registry.insert(session_id.clone(), handle.clone());
+
+        let sse = Box::pin(events_session_handler(
+            State(state.clone()),
+            Path(session_id.as_str().to_owned()),
+        ))
+        .await
+        .unwrap();
+        let frame_text = first_sse_frame_text(sse).await;
+        assert!(
+            frame_text.contains(&banner),
+            "GET /sessions/:id/events must render the exact banner build_agent_factory computed; \
+             got: {frame_text}"
+        );
+
+        handle.cancel.cancel();
+    }
+
+    /// #6425 fork-specific regression (debugger handoff, explicit ask): a forked session's
+    /// banner must reflect the COPIED message count from the source session, not e.g. zero or
+    /// the source's own count if fewer events were copied — proves `preloaded_messages` flows
+    /// correctly from `ForkEngine::fork`'s copy through `build_agent_factory` for the fork path
+    /// specifically, not just create/reactivate.
+    #[tokio::test]
+    async fn fork_session_handler_banner_reflects_copied_message_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state_with_persistence(dir.path()).await;
+        let src_id = SessionId::new("fork-banner-src");
+        let cid = state
+            .deps
+            .memory
+            .sqlite()
+            .create_conversation()
+            .await
+            .unwrap();
+        seed_session_history(&state.deps, &src_id, cid).await;
+
+        let fork_response = Box::pin(fork_session_handler(
+            State(state.clone()),
+            Path(src_id.as_str().to_owned()),
+            Json(ForkRequest::default()),
+        ))
+        .await
+        .unwrap()
+        .into_response();
+        assert_eq!(fork_response.status(), StatusCode::CREATED);
+        let bytes = http_body_util::BodyExt::collect(fork_response.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body["events_copied"], 2,
+            "fork with no at_seq must copy every seeded event"
+        );
+        let new_id = body["session_id"].as_str().unwrap().to_owned();
+
+        let sse = Box::pin(events_session_handler(State(state), Path(new_id)))
+            .await
+            .unwrap();
+        let frame_text = first_sse_frame_text(sse).await;
+        assert!(
+            frame_text.contains("2 messages") && frame_text.contains("1 turn"),
+            "the forked session's banner must reference the copied message/turn count \
+             (2 messages, 1 turn), got: {frame_text}"
+        );
+        // S1 (impl-critic finding): ForkEngine::fork already wrote the child's SessionStore row
+        // (record_fork + update_seq, the latter sets updated_at = NOW()) before
+        // build_agent_factory runs, so a naive last_active lookup would read that back as "just
+        // now" — a freshly forked session must render the same no-timestamp banner as a
+        // brand-new one (create's banner never shows a "last active" segment either).
+        assert!(
+            !frame_text.contains("last active"),
+            "a freshly forked session must NOT show a \"last active\" timestamp — it has never \
+             actually been resumed by a caller, unlike ForkEngine's internal bookkeeping write; \
+             got: {frame_text}"
+        );
+    }
+
+    /// #6425 negative-path regression: `[session.resume] show_banner = false` must make
+    /// `build_agent_factory` return `None` for the banner — even though the session has real
+    /// prior history that would otherwise produce one — and `events_session_handler` must never
+    /// send anything on that account (`claim_resume_banner` is never even reached, since
+    /// `pending_resume_banner` is `None`). Without this test, a regression that ignored
+    /// `show_banner` entirely (e.g. always computing a banner whenever history exists) would slip
+    /// through undetected, since every other banner test in this module leaves `show_banner` at
+    /// its default `true`.
+    #[tokio::test]
+    async fn build_agent_factory_computes_no_banner_when_show_banner_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = make_state_with_persistence(dir.path()).await;
+        state.deps.session_config.resume.show_banner = false;
+        let session_id = SessionId::new("no-banner-session");
+        let cid = state
+            .deps
+            .memory
+            .sqlite()
+            .create_conversation()
+            .await
+            .unwrap();
+        seed_session_history(&state.deps, &session_id, cid).await;
+
+        let (resume_banner, build_agent) = Box::pin(build_agent_factory(
+            state.deps.clone(),
+            session_id.clone(),
+            cid,
+            false,
+        ))
+        .await;
+        assert!(
+            resume_banner.is_none(),
+            "build_agent_factory must return None when show_banner = false, even with prior \
+             history present; got: {resume_banner:?}"
+        );
+        drop(build_agent);
+
+        // Registers a handle carrying the actual computed (None) banner — bypassing
+        // SessionActor::spawn's real Agent-building closure (which this test has no need to
+        // drive to completion) — mirrors insert_live_session_with_banner's role in the
+        // exactly-once test above.
+        insert_live_session_with_banner(&state, session_id.as_str(), resume_banner.as_deref());
+        let handle = state.registry.get(&session_id).unwrap();
+
+        let sse = Box::pin(events_session_handler(
+            State(state.clone()),
+            Path(session_id.as_str().to_owned()),
+        ))
+        .await
+        .unwrap();
+        // Push a distinguishing event only after the SSE subscribe above, so the stream has
+        // something to yield — proving the absence of a banner frame is because none was sent,
+        // not because the stream never produced any output at all.
+        handle.tx_out.send(SessionOutput::TurnComplete).unwrap();
+        let frame_text = first_sse_frame_text(sse).await;
+        assert!(
+            !frame_text.contains("resum") && !frame_text.contains("message"),
+            "no banner text may ever be sent when show_banner = false; got: {frame_text}"
+        );
+    }
+
+    /// #6425 reactivation-path regression: `reactivate_session` (not `create`/`fork`) is its own
+    /// call site into `build_agent_factory`/`SessionActor::spawn` — this proves the banner is
+    /// wired through it too, not just the other two paths already covered by
+    /// `build_agent_factory_banner_flows_through_events_session_handler_end_to_end` (create) and
+    /// `fork_session_handler_banner_reflects_copied_message_count` (fork). Simulates a session
+    /// whose actor has ended (idle eviction / process restart, D-12) by seeding durable history
+    /// and a `SessionStore` row without ever inserting a live registry entry, then calling
+    /// `events_session_handler` directly — its `get_or_reactivate` miss must invoke
+    /// `reactivate_session`, which must thread the freshly computed banner onto the newly spawned
+    /// `SessionActorHandle` exactly like the create/fork paths do.
+    #[tokio::test]
+    async fn reactivate_session_banner_reflects_prior_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state_with_persistence(dir.path()).await;
+        let session_id = SessionId::new("reactivate-banner-session");
+        let cid = state
+            .deps
+            .memory
+            .sqlite()
+            .create_conversation()
+            .await
+            .unwrap();
+        seed_session_history(&state.deps, &session_id, cid).await;
+
+        // No live registry entry exists for session_id — the registry miss inside
+        // events_session_handler's get_or_reactivate must fall through to reactivate_session.
+        assert!(state.registry.get(&session_id).is_none());
+
+        let sse = Box::pin(events_session_handler(
+            State(state.clone()),
+            Path(session_id.as_str().to_owned()),
+        ))
+        .await
+        .unwrap();
+        let frame_text = first_sse_frame_text(sse).await;
+        assert!(
+            frame_text.contains("2 messages") && frame_text.contains("1 turn"),
+            "a reactivated session's banner must reflect its prior history (2 messages, 1 \
+             turn), got: {frame_text}"
+        );
+
+        let handle = state
+            .registry
+            .get(&session_id)
+            .expect("reactivate_session must register a live handle on success");
+        handle.cancel.cancel();
     }
 
     /// Regression test for #5474: `POST /sessions/:id/prompt` must sanitize/classify the raw HTTP
