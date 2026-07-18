@@ -89,6 +89,9 @@ pub(crate) struct ToolSetup {
     /// afterward any other way.
     #[allow(dead_code)]
     pub(crate) mcp_media_enabled: bool,
+    /// Clock backing the `get_current_time` tool (#6361). Callers must pass this SAME `Arc`
+    /// into `Agent::with_clock` so the tool and the time-reminder injection share one clock.
+    pub(crate) clock: Arc<dyn zeph_common::ClockSource>,
 }
 
 #[derive(Clone)]
@@ -625,11 +628,14 @@ pub(crate) async fn build_tool_setup(
     let shell_executor = Arc::new(shell_executor);
     let shell_executor_handle = Some(Arc::clone(&shell_executor));
     let diagnostics_executor = build_diagnostics_executor(config);
+    let clock: Arc<dyn zeph_common::ClockSource> = Arc::new(zeph_common::SystemClock);
+    let time_executor = build_time_executor(Arc::clone(&clock));
     let base_executor = build_base_executor_chain(
         file_executor,
         zeph_tools::DynExecutor(shell_executor),
         scrape_executor,
         diagnostics_executor,
+        time_executor,
         config
             .tools
             .shell
@@ -659,6 +665,7 @@ pub(crate) async fn build_tool_setup(
         shell_executor_handle,
         risk_chain_accumulator,
         mcp_media_enabled,
+        clock,
     }
 }
 
@@ -1733,9 +1740,22 @@ pub(crate) fn build_diagnostics_executor(config: &Config) -> zeph_tools::Diagnos
         .with_timeout(std::time::Duration::from_secs(config.tools.shell.timeout))
 }
 
-/// Assembles the `file -> shell -> scrape -> cwd -> diagnostics` composite tool chain
-/// shared by all three live entry points (CLI's [`build_tool_setup`], `acp.rs`'s
-/// `spawn_acp_agent`, `daemon.rs`'s `run_daemon`) and the #5578 dispatch-reachability
+/// Builds the `get_current_time` tool executor (#6361), backed by `clock`.
+///
+/// Production entry points must pass the SAME `Arc<dyn ClockSource>` used to populate
+/// `RuntimeConfig.clock` (see `Agent::with_clock`), so the on-demand tool (D1) and the
+/// periodic time-reminder injection (D2) always agree on "now" — required for a future
+/// reproducible-run harness that freezes the clock (mirrors Codex `clock_source`). Tests that
+/// don't care about clock sharing can pass a fresh `Arc::new(zeph_common::SystemClock)`.
+pub(crate) fn build_time_executor(
+    clock: Arc<dyn zeph_common::ClockSource>,
+) -> zeph_tools::GetCurrentTimeExecutor {
+    zeph_tools::GetCurrentTimeExecutor::new(clock)
+}
+
+/// Assembles the `file -> shell -> scrape -> cwd -> diagnostics -> get_current_time`
+/// composite tool chain shared by all three live entry points (CLI's [`build_tool_setup`],
+/// `acp.rs`'s `spawn_acp_agent`, `daemon.rs`'s `run_daemon`) and the #5578 dispatch-reachability
 /// tests. Pinning the nesting order in one function means a future reorder or drop of
 /// one of these executors in production is caught by every caller — including the
 /// tests — instead of a hand-copied test chain silently going stale.
@@ -1744,6 +1764,10 @@ pub(crate) fn build_diagnostics_executor(config: &Config) -> zeph_tools::Diagnos
 /// its own already-customized executors (audit logging, OS sandbox, task supervisor,
 /// egress config, etc. attached via their builder methods beforehand) without this
 /// function needing to know about any of that; the tests pass in bare/default ones.
+/// `time_executor` (#6361) is caller-constructed via [`build_time_executor`] so production
+/// entry points can share one clock `Arc` with `RuntimeConfig.clock` (see that function's
+/// doc); test call sites that don't need a shared clock pass
+/// `zeph_tools::GetCurrentTimeExecutor::default()`.
 #[expect(
     clippy::type_complexity,
     reason = "concrete nested CompositeExecutor chain type mirrors the production wiring \
@@ -1755,6 +1779,7 @@ pub(crate) fn build_base_executor_chain<F, S, W>(
     shell_executor: S,
     scrape_executor: W,
     diagnostics_executor: zeph_tools::DiagnosticsExecutor,
+    time_executor: zeph_tools::GetCurrentTimeExecutor,
     cwd_allowed_paths: Vec<PathBuf>,
 ) -> zeph_tools::CompositeExecutor<
     F,
@@ -1764,7 +1789,10 @@ pub(crate) fn build_base_executor_chain<F, S, W>(
             W,
             zeph_tools::CompositeExecutor<
                 zeph_tools::SetCwdExecutor,
-                zeph_tools::DiagnosticsExecutor,
+                zeph_tools::CompositeExecutor<
+                    zeph_tools::DiagnosticsExecutor,
+                    zeph_tools::GetCurrentTimeExecutor,
+                >,
             >,
         >,
     >,
@@ -1782,7 +1810,7 @@ where
                 scrape_executor,
                 zeph_tools::CompositeExecutor::new(
                     zeph_tools::SetCwdExecutor::new(cwd_allowed_paths),
-                    diagnostics_executor,
+                    zeph_tools::CompositeExecutor::new(diagnostics_executor, time_executor),
                 ),
             ),
         ),
@@ -3140,6 +3168,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            zeph_tools::GetCurrentTimeExecutor::default(),
             vec![],
         );
 
@@ -3165,6 +3194,71 @@ mod tests {
         assert!(
             matches!(result, Err(zeph_tools::ToolError::SandboxViolation { .. })),
             "expected SandboxViolation from DiagnosticsExecutor, got {result:?}"
+        );
+    }
+
+    /// Regression test for #6361, mirroring the #5433 `diagnostics` reachability test:
+    /// `get_current_time` is fully unit-tested in `zeph-tools` in isolation, but that alone
+    /// does not prove any live entry point actually exposes it — an earlier reorder of
+    /// `build_base_executor_chain` could silently drop it from the LLM's tool list. Asserts
+    /// the tool definition survives the full composite-chain merge.
+    #[test]
+    fn get_current_time_executor_reachable_through_composite_chain() {
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        let file_executor = zeph_tools::FileExecutor::new(vec![]);
+        let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let diagnostics_executor = build_diagnostics_executor(&config);
+        let base_executor = build_base_executor_chain(
+            file_executor,
+            shell_executor,
+            scrape_executor,
+            diagnostics_executor,
+            zeph_tools::GetCurrentTimeExecutor::default(),
+            vec![],
+        );
+        let defs = base_executor.tool_definitions();
+        assert!(defs.iter().any(|d| d.id == "get_current_time"));
+    }
+
+    /// Regression test for #6361, mirroring the #5578 `diagnostics` dispatch test: proves a
+    /// real `ToolCall` for `get_current_time` reaches `GetCurrentTimeExecutor` through the
+    /// full production composite chain (not just in isolation) and returns a well-formed,
+    /// non-error `ToolOutput`.
+    #[tokio::test]
+    async fn get_current_time_tool_call_dispatches_through_composite_chain() {
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        let file_executor = zeph_tools::FileExecutor::new(vec![]);
+        let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let diagnostics_executor = build_diagnostics_executor(&config);
+        let base_executor = build_base_executor_chain(
+            file_executor,
+            shell_executor,
+            scrape_executor,
+            diagnostics_executor,
+            zeph_tools::GetCurrentTimeExecutor::default(),
+            vec![],
+        );
+
+        let call = zeph_tools::ToolCall {
+            tool_id: "get_current_time".into(),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = base_executor.execute_tool_call(&call).await;
+        let output = result
+            .expect("get_current_time dispatch must not error")
+            .expect(
+                "get_current_time must be reachable through the composite chain and return Some",
+            );
+        assert!(
+            output.summary.ends_with('Z'),
+            "expected an RFC3339 UTC summary, got: {}",
+            output.summary
         );
     }
 

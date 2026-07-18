@@ -396,6 +396,9 @@ where
             std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>,
         >,
     >,
+    /// Same `Arc` used to build the `get_current_time` tool executor (#6361) — shared so the
+    /// tool and the time-reminder injection agree on "now".
+    clock: std::sync::Arc<dyn zeph_common::ClockSource>,
 }
 
 /// Build the `Agent` from the `AgentBuilder` construction chain used by the daemon (A2A)
@@ -471,6 +474,7 @@ where
     .with_embedding_provider(deps.embedding_provider.clone())
     .with_provider_pool(config.llm.providers.clone(), deps.provider_config_snapshot)
     .with_safe_mode(config.cli.safe_mode)
+    .with_clock(deps.clock)
     .with_allowed_paths(
         config
             .tools
@@ -763,6 +767,9 @@ pub(crate) async fn run_daemon(
     }
     let shell_policy_handle = shell_executor.policy_handle();
     let diagnostics_executor = agent_setup::build_diagnostics_executor(config);
+    let clock: std::sync::Arc<dyn zeph_common::ClockSource> =
+        std::sync::Arc::new(zeph_common::SystemClock);
+    let time_executor = agent_setup::build_time_executor(std::sync::Arc::clone(&clock));
     // #5611: base chain stays ungated here; it is composed with mcp/search/skill_loader/
     // memory/overflow below, then the FULLY composed tree is wrapped in one outermost
     // TrustGateExecutor via `apply_common_tool_gating`, matching runner.rs. Gating only this
@@ -772,6 +779,7 @@ pub(crate) async fn run_daemon(
         shell_executor,
         scrape_executor,
         diagnostics_executor,
+        time_executor,
         config
             .tools
             .shell
@@ -1066,6 +1074,7 @@ pub(crate) async fn run_daemon(
         mcp_shared_tools,
         provider_config_snapshot,
         trust_snapshot,
+        clock,
     };
     let agent = Box::pin(build_daemon_agent(deps, loopback_channel)).await;
 
@@ -1489,6 +1498,7 @@ mod tests {
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            clock: std::sync::Arc::new(zeph_common::SystemClock),
         };
 
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
@@ -1580,6 +1590,7 @@ mod tests {
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            clock: std::sync::Arc::new(zeph_common::SystemClock),
         };
 
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
@@ -1660,6 +1671,7 @@ mod tests {
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            clock: std::sync::Arc::new(zeph_common::SystemClock),
         };
 
         let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
@@ -1700,6 +1712,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            zeph_tools::GetCurrentTimeExecutor::default(),
             vec![],
         );
         let policy =
@@ -1752,6 +1765,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            zeph_tools::GetCurrentTimeExecutor::default(),
             vec![],
         );
         // Default PermissionPolicy: Supervised autonomy, no explicit rules configured —
@@ -1929,6 +1943,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            zeph_tools::GetCurrentTimeExecutor::default(),
             vec![],
         );
         let policy =
@@ -2113,6 +2128,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            zeph_tools::GetCurrentTimeExecutor::default(),
             vec![],
         );
         let policy =
@@ -2168,6 +2184,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            zeph_tools::GetCurrentTimeExecutor::default(),
             vec![],
         );
         let policy =
@@ -2250,6 +2267,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            zeph_tools::GetCurrentTimeExecutor::default(),
             vec![],
         );
         let (trust_gated, _mcp_ids_handle) = agent_setup::apply_common_tool_gating(
@@ -2333,6 +2351,7 @@ mod tests {
             shell_executor,
             scrape_executor,
             diagnostics_executor,
+            zeph_tools::GetCurrentTimeExecutor::default(),
             vec![],
         );
         let policy =

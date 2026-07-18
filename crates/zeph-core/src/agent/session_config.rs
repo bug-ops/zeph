@@ -116,6 +116,12 @@ pub struct AgentSessionConfig {
     /// Inject `<budget>` XML into the volatile system prompt section (#2267).
     pub budget_hint_enabled: bool,
 
+    /// Inject a `<current_time>` reminder into the volatile system prompt every N agent turns
+    /// (#6361).
+    pub time_reminder_enabled: bool,
+    /// Turn interval between `<current_time>` reminder injections (#6361).
+    pub time_reminder_interval_requests: u32,
+
     /// Token budget for skill bodies injected into a sub-agent's one-shot system prompt
     /// at spawn time (#6421). See `SkillsConfig::subagent_skill_token_budget`.
     pub subagent_skill_token_budget: usize,
@@ -211,6 +217,8 @@ impl AgentSessionConfig {
             debug_config: config.debug.clone(),
             server_compaction: config.llm.providers.iter().any(|e| e.server_compaction),
             budget_hint_enabled: config.agent.budget_hint_enabled,
+            time_reminder_enabled: config.agent.time_reminder_enabled,
+            time_reminder_interval_requests: config.agent.time_reminder_interval_requests,
             subagent_skill_token_budget: config.skills.subagent_skill_token_budget.get(),
             secrets: config
                 .secrets

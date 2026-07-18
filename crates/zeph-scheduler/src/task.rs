@@ -451,7 +451,8 @@ impl ScheduledTask {
 
     /// Create a one-shot task that runs at a specific point in time.
     ///
-    /// The resulting task has [`TaskProvenance::Static`] provenance.
+    /// The resulting task has [`TaskProvenance::Static`] provenance. To create a task with
+    /// different provenance, use [`ScheduledTask::oneshot_with_provenance`].
     #[must_use]
     pub fn oneshot(
         name: impl Into<String>,
@@ -459,12 +460,28 @@ impl ScheduledTask {
         kind: TaskKind,
         config: serde_json::Value,
     ) -> Self {
+        Self::oneshot_with_provenance(name, run_at, kind, config, TaskProvenance::Static)
+    }
+
+    /// Create a one-shot task that runs at a specific point in time, with explicit provenance.
+    ///
+    /// Parallel to [`ScheduledTask::periodic_with_provenance`]; used by
+    /// [`crate::scheduler::Scheduler::init`] to hydrate CLI-added one-shot rows with
+    /// [`TaskProvenance::External`] (#6361).
+    #[must_use]
+    pub fn oneshot_with_provenance(
+        name: impl Into<String>,
+        run_at: DateTime<Utc>,
+        kind: TaskKind,
+        config: serde_json::Value,
+        provenance: TaskProvenance,
+    ) -> Self {
         Self {
             name: name.into(),
             mode: TaskMode::OneShot { run_at },
             kind,
             config,
-            provenance: TaskProvenance::Static,
+            provenance,
         }
     }
 

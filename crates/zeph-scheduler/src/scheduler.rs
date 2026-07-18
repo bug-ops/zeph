@@ -316,7 +316,73 @@ impl Scheduler {
             self.tasks.iter().map(|t| t.name.clone()).collect();
 
         for job in stored_jobs {
-            if job.task_mode != "periodic" || static_names.contains(&job.name) {
+            if static_names.contains(&job.name) {
+                continue;
+            }
+
+            if job.task_mode == "oneshot" {
+                // #6361 B1: one-shot rows added out-of-process (e.g. `zeph schedule add
+                // --run-at`) were previously never hydrated into self.tasks here — this loop
+                // used to hard-skip anything but "periodic" — so tick()/catch_up_missed()
+                // silently ignored them forever. Read the raw `run_at` column (not the
+                // coalesced `next_run`) so hydration is unambiguous regardless of whether
+                // `next_run` has been separately populated for this row.
+                let Some(ref run_at_str) = job.run_at else {
+                    tracing::error!(
+                        task = %job.name,
+                        "skipping persisted oneshot job with missing run_at"
+                    );
+                    if let Err(db_err) = self.store.mark_error(&job.name).await {
+                        tracing::warn!(
+                            task = %job.name,
+                            "failed to mark job as error in store: {db_err}"
+                        );
+                    }
+                    continue;
+                };
+                let Ok(run_at) = run_at_str.parse::<chrono::DateTime<Utc>>() else {
+                    tracing::error!(
+                        task = %job.name,
+                        run_at = %run_at_str,
+                        "skipping persisted oneshot job with unparsable run_at"
+                    );
+                    if let Err(db_err) = self.store.mark_error(&job.name).await {
+                        tracing::warn!(
+                            task = %job.name,
+                            "failed to mark job as error in store: {db_err}"
+                        );
+                    }
+                    continue;
+                };
+                // #6114-style hardening (mirrors the periodic branch below): provenance is
+                // writer-controllable for out-of-process rows, so force the most restrictive
+                // tier regardless of the stored label.
+                //
+                // Rebuild the custom-task config shape ({"task": "<prompt>"}, see
+                // handlers.rs/TaskHandler::execute) from the stored task_data column. A CLI
+                // `--run-at` job (default kind "custom") stores its prompt in task_data, not
+                // in a config column of its own — passing Value::Null here (as this arm did
+                // before the fix) silently discarded the user's prompt, so a hydrated custom
+                // oneshot job fired the generic "check status" fallback instead of the actual
+                // prompt (#6361 C1).
+                let config = if job.task_data.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!({ "task": job.task_data })
+                };
+                let task = ScheduledTask::oneshot_with_provenance(
+                    job.name.clone(),
+                    run_at,
+                    crate::task::TaskKind::from_str_kind(&job.kind),
+                    config,
+                    TaskProvenance::External,
+                );
+                tracing::debug!(task = %job.name, "hydrated CLI-added oneshot job from store");
+                self.tasks.push(task);
+                continue;
+            }
+
+            if job.task_mode != "periodic" {
                 continue;
             }
             // `list_jobs_full` already attempted CronExpr validation; None means the stored
@@ -341,8 +407,14 @@ impl Scheduler {
             // writer-controllable (direct SQL / out-of-process CLI), so it cannot be trusted as
             // read — force the most restrictive tier regardless of the stored label. This hardens
             // a latent trust-model gap (defense-in-depth); it does not patch an active bypass,
-            // since hydration only ever loads periodic rows with `Value::Null` config, which
-            // never reach a provenance-gated decision point today.
+            // since this (periodic) branch's own config stays `Value::Null` below, which never
+            // reaches a provenance-gated decision point today.
+            //
+            // TODO(critic): periodic hydration also drops task_data→config; same class as the
+            // #6361 oneshot fix (see the sibling `"oneshot"` branch above, which rebuilds
+            // `{"task": task_data}` instead of passing `Value::Null`). A CLI-added *periodic*
+            // custom task would likewise lose its prompt on restart. Pre-existing, out of scope
+            // for #6361 — left as-is pending a scoped follow-up.
             let hydrated_provenance = TaskProvenance::External;
             match ScheduledTask::periodic_with_provenance(
                 job.name.clone(),
@@ -980,10 +1052,12 @@ impl Scheduler {
         //
         // Note: DB-hydrated rows (`init()` in scheduler.rs) are always forced to
         // `TaskProvenance::External` regardless of the stored `provenance` column (#6114) — a
-        // direct-SQL writer cannot self-label a row to dodge this check. That said, this path is
-        // reached only by `OneShot` + `TaskKind::Custom` tasks, and hydration only ever loads
-        // periodic rows, so a hydrated row can never reach `inject_custom_task` in the first
-        // place; the forced-External hardening matters for future code paths, not this one.
+        // direct-SQL writer cannot self-label a row to dodge this check. This path IS reachable
+        // by DB-hydrated rows: since #6361, `init()` hydrates `OneShot` + `TaskKind::Custom`
+        // rows added out-of-process (e.g. `zeph schedule add --run-at`), always tagged
+        // `TaskProvenance::External`, and they land here via `inject_custom_task` when no
+        // `CustomTaskHandler` is registered. The forced-External hardening is load-bearing for
+        // this exact path, not just future ones.
         let apply_injection_check = self.reentry_defense_enabled
             && task.provenance != TaskProvenance::Static
             && (self.injection_pattern_check || task.provenance.is_external());
@@ -1468,6 +1542,148 @@ mod tests {
         assert!(
             dt > chrono::Utc::now(),
             "next_run must be in the future after hydration"
+        );
+    }
+
+    /// `init()` hydrates one-shot jobs written out-of-process (e.g. `zeph schedule add
+    /// --run-at`) and they fire on the next tick.
+    ///
+    /// Regression test for #6361 blocker B1: before the fix, the hydration loop hard-skipped
+    /// any row whose `task_mode != "periodic"`, so a CLI-added one-shot row was never loaded
+    /// into `self.tasks` — not on this start, not ever. `zeph schedule add --run-at` would
+    /// silently register a task that never fired.
+    #[tokio::test]
+    async fn init_hydrates_cli_added_oneshot_jobs_and_they_fire() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        store.init().await.unwrap();
+
+        // Simulate the CLI write path (`insert_job`, matching `handle_schedule_command`'s
+        // `--run-at` branch): a one-shot row with an already-past run_at, written while no
+        // Scheduler is running.
+        let past = Utc::now() - Duration::hours(1);
+        store
+            .insert_job(
+                "cli-oneshot",
+                "",
+                "health_check",
+                "oneshot",
+                Some(&past.to_rfc3339()),
+                "",
+            )
+            .await
+            .unwrap();
+
+        let store2 = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store2, rx);
+        let count = Arc::new(AtomicU32::new(0));
+        scheduler.register_handler(
+            &TaskKind::HealthCheck,
+            Box::new(CountingHandler {
+                count: count.clone(),
+            }),
+        );
+
+        assert_eq!(
+            scheduler.tasks.len(),
+            0,
+            "tasks must be empty before init()"
+        );
+
+        scheduler.init().await.unwrap();
+
+        assert_eq!(
+            scheduler.tasks.len(),
+            1,
+            "init() must hydrate the CLI-added oneshot job from the store"
+        );
+        assert_eq!(scheduler.tasks[0].name, "cli-oneshot");
+        assert_eq!(
+            scheduler.tasks[0].provenance,
+            TaskProvenance::External,
+            "hydrated oneshot rows must be forced to External provenance"
+        );
+
+        scheduler.tick().await;
+
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            1,
+            "hydrated oneshot task must fire on the next tick"
+        );
+        assert!(
+            scheduler.tasks.is_empty(),
+            "completed oneshot must be removed from tasks after firing"
+        );
+    }
+
+    /// `init()` hydrates a CLI-added `kind="custom"` oneshot row with its REAL prompt, not the
+    /// generic fallback.
+    ///
+    /// Regression test for #6361 C1: the oneshot hydration arm originally passed
+    /// `serde_json::Value::Null` as the reconstructed task's config, discarding
+    /// `job.task_data` (where the CLI stores the user's prompt via
+    /// `store.insert_job(..., "oneshot", ..., &sanitized_prompt)`). Since custom-task handlers
+    /// read the prompt from `config.get("task")`, a hydrated custom oneshot job fired the
+    /// generic "Execute the following scheduled task now: check status" fallback instead of
+    /// the user's actual prompt — the D3 headline deliverable (`zeph schedule add <PROMPT>
+    /// --run-at <TS>`, default kind "custom") never worked. The prior B1 test used
+    /// `kind = "health_check"`, a config-driven built-in handler that never reads `task_data`,
+    /// which masked this defect entirely.
+    #[tokio::test]
+    async fn init_hydrates_cli_added_oneshot_custom_job_with_real_prompt() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        store.init().await.unwrap();
+
+        let real_prompt = "check the deploy status";
+        let past = Utc::now() - Duration::hours(1);
+        // Mirrors the CLI write path exactly (`handle_schedule_add`'s `--run-at` branch):
+        // `store.insert_job(&job_name, "", &kind, "oneshot", Some(&run_at), &sanitized_prompt)`.
+        store
+            .insert_job(
+                "cli-custom-oneshot",
+                "",
+                "custom",
+                "oneshot",
+                Some(&past.to_rfc3339()),
+                real_prompt,
+            )
+            .await
+            .unwrap();
+
+        let store2 = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store2, rx);
+        let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::channel(8);
+        scheduler = scheduler.with_custom_task_sender(prompt_tx);
+
+        scheduler.init().await.unwrap();
+
+        let task = scheduler
+            .tasks
+            .iter()
+            .find(|t| t.name == "cli-custom-oneshot")
+            .expect("hydrated custom oneshot job must appear in tasks after init()");
+        assert_eq!(
+            task.config.get("task").and_then(|v| v.as_str()),
+            Some(real_prompt),
+            "hydrated task config must carry the real prompt from task_data, not Value::Null"
+        );
+
+        scheduler.tick().await;
+
+        let injected = prompt_rx
+            .try_recv()
+            .expect("hydrated custom oneshot must inject a prompt on tick()");
+        assert!(
+            injected.contains(real_prompt),
+            "injected prompt must contain the user's real prompt '{real_prompt}', got: {injected}"
+        );
+        assert!(
+            !injected.contains("check status"),
+            "injected prompt must NOT be the generic fallback, got: {injected}"
         );
     }
 

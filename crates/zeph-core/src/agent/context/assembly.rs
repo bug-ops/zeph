@@ -1092,6 +1092,30 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Time-reminder injection (#6361, spec 070 FR-003/FR-004): inject a `<current_time>`
+        // line into the volatile system prompt block every N agent turns so the LLM's notion
+        // of "now" does not silently go stale across a long session. Opt-in
+        // (time_reminder_enabled = false by default, NFR-005). "N agent turns" — not literal
+        // per-model-request cadence — because this hook runs once per turn, before the tool
+        // loop; within-a-single-long-turn staleness is covered by the on-demand
+        // `get_current_time` tool instead. `turn_counter` still holds its pre-increment value
+        // here (`sidequest.tick()` runs later in the turn), so the reminder fires on turn 1
+        // (0.is_multiple_of(N) == true) and every N turns thereafter.
+        if self.runtime.config.time_reminder_enabled {
+            let _span = tracing::info_span!("core.context.time_reminder").entered();
+            let interval = self.runtime.config.time_reminder_interval_requests;
+            let turn = self.services.sidequest.turn_counter;
+            if interval > 0 && turn.is_multiple_of(u64::from(interval)) {
+                use std::fmt::Write as _;
+                let now = self.runtime.config.clock.now();
+                let _ = write!(
+                    system_prompt,
+                    "\n\n<current_time>{}</current_time>",
+                    zeph_common::timestamp::rfc3339_from(now)
+                );
+            }
+        }
+
         tracing::debug!(
             len = system_prompt.len(),
             skills = ?self.services.skill.active_skill_names,
@@ -3738,6 +3762,108 @@ mod tests {
         assert!(
             !prompt.contains("connected tools may return images"),
             "caveat must not appear when no server has media_passthrough enabled"
+        );
+    }
+
+    // ── #6361: time-reminder injection ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn time_reminder_fires_on_turn_1_when_enabled() {
+        // Pins the intended off-by-one semantics: turn_counter holds its pre-increment value
+        // at this hook (sidequest.tick() runs later in the turn), so 0.is_multiple_of(N) ==
+        // true and the reminder fires immediately on the first turn — not just at turn N.
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec!["ok".to_owned()]));
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.runtime.config.time_reminder_enabled = true;
+        agent.runtime.config.time_reminder_interval_requests = 10;
+        let fixed = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        agent.runtime.config.clock = Arc::new(zeph_common::FixedClock(fixed));
+
+        agent.rebuild_system_prompt("query").await;
+        let prompt = &agent.msg.messages[0].content;
+        assert!(
+            prompt.contains("<current_time>2023-11-14T22:13:20Z</current_time>"),
+            "time reminder must fire on turn 1: {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn time_reminder_absent_on_non_multiple_turn() {
+        // The core FR-004 cadence logic (is_multiple_of), not just the turn-1 degenerate case.
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec!["ok".to_owned()]));
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.runtime.config.time_reminder_enabled = true;
+        agent.runtime.config.time_reminder_interval_requests = 10;
+        agent.services.sidequest.turn_counter = 5;
+        let fixed = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        agent.runtime.config.clock = Arc::new(zeph_common::FixedClock(fixed));
+
+        agent.rebuild_system_prompt("query").await;
+        let prompt = &agent.msg.messages[0].content;
+        assert!(
+            !prompt.contains("<current_time>"),
+            "time reminder must not fire at turn 5 with interval 10: {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn time_reminder_fires_at_later_multiple_of_interval() {
+        // Rules out an off-by-one that only turn-1's `0 % N == 0` degenerate case would mask.
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec!["ok".to_owned()]));
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.runtime.config.time_reminder_enabled = true;
+        agent.runtime.config.time_reminder_interval_requests = 10;
+        agent.services.sidequest.turn_counter = 20;
+        let fixed = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        agent.runtime.config.clock = Arc::new(zeph_common::FixedClock(fixed));
+
+        agent.rebuild_system_prompt("query").await;
+        let prompt = &agent.msg.messages[0].content;
+        assert!(
+            prompt.contains("<current_time>2023-11-14T22:13:20Z</current_time>"),
+            "time reminder must fire at turn 20 (a multiple of interval 10): {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn time_reminder_absent_when_disabled() {
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec!["ok".to_owned()]));
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        // time_reminder_enabled defaults to false.
+
+        agent.rebuild_system_prompt("query").await;
+        let prompt = &agent.msg.messages[0].content;
+        assert!(
+            !prompt.contains("<current_time>"),
+            "time reminder must not appear when time_reminder_enabled = false"
         );
     }
 }

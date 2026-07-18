@@ -141,6 +141,48 @@ pub fn migrate_agent_budget_hint(toml_src: &str) -> Result<MigrationResult, Migr
     })
 }
 
+/// Migration step: add `time_reminder_enabled`/`time_reminder_interval_requests` as
+/// commented-out entries under `[agent]` if absent (#6361).
+///
+/// # Errors
+///
+/// Returns an error if the config cannot be parsed or the `[agent]` section is malformed.
+pub fn migrate_agent_time_reminder(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if toml_src.contains("time_reminder_enabled") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("agent") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Inject a <current_time> reminder into the system prompt every N agent \
+         turns (#6361).\n\
+         # time_reminder_enabled = false\n\
+         # time_reminder_interval_requests = 10\n";
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec![
+            "agent.time_reminder_enabled".to_owned(),
+            "agent.time_reminder_interval_requests".to_owned(),
+        ],
+    })
+}
+
 /// Add a commented-out `[quality]` block if the config lacks it (#3228).
 ///
 /// Introduced alongside the MARCH self-check pipeline (#3226). All `QualityConfig`

@@ -10,6 +10,7 @@
 //! query constants and helpers.
 
 pub mod audit;
+pub mod clock;
 pub mod config;
 #[cfg(feature = "deep-link")]
 pub mod deep_link;
@@ -48,6 +49,7 @@ pub mod types;
 /// Format: `[full output stored — ID: {uuid} — {bytes} bytes, use read_overflow tool to retrieve]`
 pub const OVERFLOW_NOTICE_PREFIX: &str = "[full output stored \u{2014} ID: ";
 
+pub use clock::{ClockSource, FixedClock, SystemClock};
 pub use fidelity::{ContextFidelity, PlannedToolHint};
 pub use math::{EmbeddingVector, Normalized, Unnormalized};
 pub use monotonic::monotonic_millis;

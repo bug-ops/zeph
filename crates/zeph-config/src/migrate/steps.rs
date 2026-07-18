@@ -77,11 +77,12 @@ use super::{
     MigrateError, Migration, MigrationResult, migrate_a2a_card_trust_config,
     migrate_a2a_server_remove_inert_fields, migrate_acp_auth_clients_config,
     migrate_acp_subagents_config, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
-    migrate_autodream_config, migrate_caveman_config, migrate_cocoon_provider_notice,
-    migrate_cocoon_show_balance, migrate_compression_predictor_config, migrate_database_url,
-    migrate_deep_link_config, migrate_durable_config, migrate_durable_shared_db,
-    migrate_durable_stale_running_after_secs, migrate_egress_config, migrate_embed_provider_rename,
-    migrate_eval_model_to_provider, migrate_fidelity_timeout_defaults, migrate_five_signal_config,
+    migrate_agent_time_reminder, migrate_autodream_config, migrate_caveman_config,
+    migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
+    migrate_compression_predictor_config, migrate_database_url, migrate_deep_link_config,
+    migrate_durable_config, migrate_durable_shared_db, migrate_durable_stale_running_after_secs,
+    migrate_egress_config, migrate_embed_provider_rename, migrate_eval_model_to_provider,
+    migrate_fidelity_timeout_defaults, migrate_five_signal_config,
     migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_config,
     migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
     migrate_knowledge_config, migrate_llm_stream_limits, migrate_magic_docs_config,
@@ -189,6 +190,17 @@ impl Migration for MigrateAgentBudgetHint {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_agent_budget_hint(toml_src)
+    }
+}
+
+pub(super) struct MigrateAgentTimeReminder;
+impl Migration for MigrateAgentTimeReminder {
+    fn name(&self) -> &'static str {
+        "migrate_agent_time_reminder"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_agent_time_reminder(toml_src)
     }
 }
 

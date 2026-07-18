@@ -86,6 +86,7 @@ pub mod scrape;
 pub mod search_code;
 pub mod shadow_probe;
 pub mod shell;
+pub mod time;
 pub mod tool_filter;
 pub mod trust_gate;
 pub mod trust_level;
@@ -157,6 +158,7 @@ pub use shell::{
     ShellExecutor, ShellOutputEnvelope, ShellPolicyHandle, check_blocklist, deobfuscate_command,
     effective_shell_command, is_blocked_rm_worktrees,
 };
+pub use time::GetCurrentTimeExecutor;
 pub use tool_filter::ToolFilter;
 pub use trust_gate::TrustGateExecutor;
 pub use trust_level::SkillTrustLevel;

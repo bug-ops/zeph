@@ -44,9 +44,31 @@ pub(crate) const fn secs_to_ymdhms(secs: u64) -> (u32, u32, u32, u32, u32, u32) 
 }
 
 fn unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+    unix_secs_of(SystemTime::now())
+}
+
+fn unix_secs_of(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Formats `time` as RFC 3339 UTC: `YYYY-MM-DDTHH:MM:SSZ`.
+///
+/// Instants before the Unix epoch saturate to `1970-01-01T00:00:00Z`. Shared by
+/// [`utc_now_rfc3339`] and by callers holding a [`SystemTime`] from an injectable clock source
+/// (e.g. `zeph_common::clock::ClockSource`) that must not call `SystemTime::now()` directly.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::time::{Duration, SystemTime, UNIX_EPOCH};
+///
+/// let t = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+/// assert_eq!(zeph_common::timestamp::rfc3339_from(t), "2023-11-14T22:13:20Z");
+/// ```
+#[must_use]
+pub fn rfc3339_from(time: SystemTime) -> String {
+    let (y, mo, d, h, mi, s) = secs_to_ymdhms(unix_secs_of(time));
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
 /// Returns the current UTC time as a `(year, month, day, hour, minute, second)` tuple.
@@ -77,8 +99,7 @@ pub fn utc_now_datetime() -> (u32, u32, u32, u32, u32, u32) {
 /// ```
 #[must_use]
 pub fn utc_now_rfc3339() -> String {
-    let (y, mo, d, h, mi, s) = utc_now_datetime();
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+    rfc3339_from(SystemTime::now())
 }
 
 /// Returns the current UTC time in compact format: `YYYYMMDD_HHMMSS`.
@@ -110,6 +131,18 @@ mod tests {
         assert_eq!(&ts[10..11], "T");
         // Basic digit checks
         assert!(ts[..4].chars().all(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn rfc3339_from_fixed_epoch() {
+        let t = UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        assert_eq!(rfc3339_from(t), "2023-11-14T22:13:20Z");
+    }
+
+    #[test]
+    fn rfc3339_from_unix_epoch_saturates_for_pre_epoch_instants() {
+        let before_epoch = UNIX_EPOCH - std::time::Duration::from_secs(1);
+        assert_eq!(rfc3339_from(before_epoch), "1970-01-01T00:00:00Z");
     }
 
     #[test]

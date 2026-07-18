@@ -70,6 +70,11 @@ pub struct ScheduledTaskInfo {
     pub provenance: String,
     /// Last recorded run time (RFC 3339), or `None` if the task has never run.
     pub last_run: Option<String>,
+    /// Raw `run_at` column value (one-shot tasks only), independent of the `next_run`
+    /// coalescing applied to [`ScheduledTaskInfo::next_run`]. `Scheduler::init()` hydration
+    /// reads this field (rather than the coalesced `next_run`) to reconstruct one-shot rows
+    /// unambiguously (#6361).
+    pub run_at: Option<String>,
 }
 
 /// A single row returned by [`JobStore::list_recent_runs`], ordered by recency.
@@ -443,8 +448,9 @@ impl JobStore {
             String,
             String,
             Option<String>,
+            Option<String>,
         )> = zeph_db::query_as(sql!(
-            "SELECT name, kind, task_mode, cron_expr, COALESCE(next_run, run_at), task_data, status, provenance, last_run \
+            "SELECT name, kind, task_mode, cron_expr, COALESCE(next_run, run_at), task_data, status, provenance, last_run, run_at \
              FROM scheduled_jobs WHERE status != 'done' ORDER BY name"
         ))
         .fetch_all(&self.pool)
@@ -462,6 +468,7 @@ impl JobStore {
                     status,
                     provenance,
                     last_run,
+                    run_at,
                 )| {
                     // Empty string = oneshot task (no cron). Non-empty = validate eagerly.
                     let cron_expr = if raw_cron.is_empty() {
@@ -489,6 +496,7 @@ impl JobStore {
                         status,
                         provenance,
                         last_run,
+                        run_at,
                     }
                 },
             )
@@ -785,6 +793,11 @@ mod tests {
         assert_eq!(oneshot.task_mode, "oneshot");
         assert!(oneshot.cron_expr.is_none());
         assert_eq!(oneshot.next_run, "2030-01-01T10:00:00Z");
+        assert_eq!(
+            oneshot.run_at.as_deref(),
+            Some("2030-01-01T10:00:00Z"),
+            "run_at must be the raw column value, independent of the next_run coalescing (#6361 C1)"
+        );
         assert_eq!(
             oneshot.last_run, None,
             "a task that has never run must report last_run = None"

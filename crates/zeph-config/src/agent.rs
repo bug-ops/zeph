@@ -273,6 +273,7 @@ impl Default for ToolFilterConfig {
 /// max_tool_retries = 3
 /// ```
 #[derive(Debug, Deserialize, Serialize)]
+#[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 pub struct AgentConfig {
     /// Human-readable agent name surfaced in the TUI and Telegram header. Default: `"Zeph"`.
     pub name: String,
@@ -314,10 +315,33 @@ pub struct AgentConfig {
     /// Background task supervisor tuning. Controls concurrency limits and turn-boundary abort.
     #[serde(default)]
     pub supervisor: TaskSupervisorConfig,
+    /// Inject a `<current_time>` reminder into the volatile system prompt block every N agent
+    /// turns (#6361, spec 070 FR-003). Opt-in — defaults to `false` so existing prompt content
+    /// and token budget are unaffected unless explicitly enabled (NFR-005). Complementary to
+    /// the always-available `get_current_time` tool, which covers time-awareness within a
+    /// single long-running turn where this per-turn injection cannot re-fire.
+    #[serde(default = "default_time_reminder_enabled")]
+    pub time_reminder_enabled: bool,
+    /// Number of agent turns between `<current_time>` reminder injections when
+    /// `time_reminder_enabled = true` (#6361, spec 070 FR-004). Named after Codex's
+    /// `reminder_interval_model_requests`, but counts agent turn-cycles (`sidequest.turn_counter`)
+    /// rather than individual model requests — the mandated injection hook
+    /// (`rebuild_system_prompt`) runs once per turn, before the tool loop, so a literal
+    /// per-model-request cadence is unreachable there.
+    #[serde(default = "default_time_reminder_interval_requests")]
+    pub time_reminder_interval_requests: u32,
 }
 
 fn default_budget_hint_enabled() -> bool {
     true
+}
+
+fn default_time_reminder_enabled() -> bool {
+    false
+}
+
+fn default_time_reminder_interval_requests() -> u32 {
+    10
 }
 
 fn default_goal_max_text_chars() -> usize {

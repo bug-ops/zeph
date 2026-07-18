@@ -136,6 +136,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `BEGIN`/`COMMIT` (required so `PRAGMA foreign_keys = OFF` actually takes effect for the parent
   table rebuild — the `PRAGMA` is a no-op inside sqlx's default per-migration transaction); the
   matching Postgres migration is a plain constraint swap.
+- **Agent time awareness** (#6361): the agent previously had no mechanism to learn the real
+  current wall-clock time, relying entirely on training-cutoff assumptions or whatever dates
+  happened to already be in context.
+  - New `get_current_time` tool (`zeph-tools`), always available regardless of the `scheduler`
+    feature flag, returning the current UTC time as `rfc3339` (default) or `unix` seconds.
+    Resolves the time through a new injectable `zeph_common::ClockSource` trait (`SystemClock`
+    in production, `FixedClock` for tests) rather than reading the system clock directly.
+  - Optional periodic `<current_time>` reminder injected into the volatile system-prompt block,
+    gated by new `agent.time_reminder_enabled` (default `false`, opt-in) and
+    `agent.time_reminder_interval_requests` (default `10`, counts agent turns). Wrapped in
+    `tracing::info_span!("core.context.time_reminder")`. Complementary to the on-demand tool,
+    which covers time-awareness within a single long-running turn where the per-turn injection
+    cannot re-fire.
+  - `zeph schedule add --run-at <RFC3339>` creates a one-shot scheduled job (mutually exclusive
+    with the positional cron expression), reusing the existing `TaskMode::OneShot` lifecycle.
+    **Breaking CLI change**: `zeph schedule add`'s positional argument order is now
+    `<PROMPT> [CRON]` (was `<CRON> <PROMPT>`) — clap requires a required positional argument
+    to never follow an optional one by index, and `CRON` must become optional to support
+    `--run-at`, so it moved to the second position. Rejects a past `--run-at` with a clear
+    error. Fixed a related scheduler-hydration gap:
+    `Scheduler::init()` previously hydrated only `"periodic"` rows written out-of-process (e.g.
+    by the CLI) into its in-memory task list — a CLI-added one-shot row was silently never
+    loaded and therefore never fired. `init()` now hydrates `"oneshot"` rows too, via a new
+    `ScheduledTask::oneshot_with_provenance` constructor, forcing `TaskProvenance::External` to
+    match the existing periodic-row trust hardening (#6114).
+  - `zeph-common/src/timestamp.rs` gained a `rfc3339_from(SystemTime)` helper (the existing
+    `utc_now_rfc3339()` now delegates to it) so `ClockSource` stays chrono-free, consistent with
+    that module's "no external date/time crates" design.
 
 - **Resume UX and history visibility** (spec-068 §13, #6420): resuming a non-empty prior
   conversation no longer looks like starting from scratch on display-owning channels.

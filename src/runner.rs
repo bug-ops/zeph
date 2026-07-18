@@ -249,6 +249,9 @@ where
     registry: std::sync::Arc<RwLock<zeph_skills::registry::SkillRegistry>>,
     matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
     tool_executor: zeph_tools::DynExecutor,
+    /// Same `Arc` used to build the `get_current_time` tool executor (#6361) — shared so the
+    /// tool and the time-reminder injection agree on "now".
+    clock: std::sync::Arc<dyn zeph_common::ClockSource>,
     session_config: zeph_core::AgentSessionConfig,
     active_provider_name: String,
     skill_paths: Vec<std::path::PathBuf>,
@@ -371,6 +374,7 @@ where
     .with_embedding_provider(deps.embedding_provider.clone())
     .with_bare_mode(deps.bare_mode)
     .with_safe_mode(deps.safe_mode)
+    .with_clock(deps.clock)
     .with_allowed_paths(
         config
             .tools
@@ -2437,6 +2441,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         crate::agent_setup::register_mcp_tool_ids(&sentinel.mcp_tool_ids_handle(), &mcp_tools);
     }
     let mcp_manager = tool_setup.mcp_manager;
+    let clock = tool_setup.clock;
     let mcp_shared_tools = tool_setup.mcp_shared_tools;
     let mcp_tool_rx = tool_setup.mcp_tool_rx;
     let mcp_elicitation_rx = tool_setup.mcp_elicitation_rx;
@@ -2569,6 +2574,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             registry,
             matcher,
             tool_executor,
+            clock,
             session_config,
             active_provider_name,
             skill_paths,
@@ -4572,6 +4578,7 @@ mod tests {
             tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(
                 zeph_tools::SetCwdExecutor::new(vec![]),
             )),
+            clock: std::sync::Arc::new(zeph_common::SystemClock),
             session_config,
             active_provider_name: "test".to_owned(),
             skill_paths: Vec::new(),
@@ -4664,6 +4671,7 @@ mod tests {
             tool_executor: zeph_tools::DynExecutor(std::sync::Arc::new(
                 zeph_tools::SetCwdExecutor::new(vec![]),
             )),
+            clock: std::sync::Arc::new(zeph_common::SystemClock),
             session_config,
             active_provider_name: "test".to_owned(),
             skill_paths: Vec::new(),

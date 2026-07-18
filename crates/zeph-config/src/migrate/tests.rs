@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        94,
-        "MIGRATIONS registry must contain all 94 sequential steps"
+        95,
+        "MIGRATIONS registry must contain all 95 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -923,6 +923,38 @@ fn migrate_agent_budget_hint_no_agent_section_is_noop() {
 fn migrate_agent_budget_hint_already_present_is_noop() {
     let src = "[agent]\nname = \"Zeph\"\nbudget_hint_enabled = true\n";
     let result = migrate_agent_budget_hint(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+// ── migrate_agent_time_reminder tests (#6361) ─────────────────────────────
+
+#[test]
+fn migrate_agent_time_reminder_adds_comment_to_existing_agent_section() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_agent_time_reminder(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("time_reminder_enabled"));
+    assert!(result.output.contains("time_reminder_interval_requests"));
+    assert!(
+        result
+            .sections_changed
+            .contains(&"agent.time_reminder_enabled".to_owned())
+    );
+}
+
+#[test]
+fn migrate_agent_time_reminder_no_agent_section_is_noop() {
+    let src = "[llm]\nmodel = \"gpt-4o\"\n";
+    let result = migrate_agent_time_reminder(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn migrate_agent_time_reminder_already_present_is_noop() {
+    let src = "[agent]\nname = \"Zeph\"\ntime_reminder_enabled = true\n";
+    let result = migrate_agent_time_reminder(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
     assert_eq!(result.output, src);
 }
@@ -2042,7 +2074,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 94);
+    assert_eq!(MIGRATIONS.len(), 95);
 }
 
 #[test]
@@ -2080,7 +2112,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–94).
+    // Names must follow the documented step order (steps 1–95).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -2176,6 +2208,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_memory_store_config",
         "migrate_orchestration_whole_plan_verifier_timeout",
         "migrate_session_resume_config",
+        "migrate_agent_time_reminder",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

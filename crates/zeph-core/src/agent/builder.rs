@@ -870,6 +870,18 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the shared wall-clock source (#6361) backing time-reminder injection.
+    ///
+    /// Callers should pass the SAME `Arc` used to build the `get_current_time` tool executor
+    /// (`agent_setup::build_time_executor`), so the tool (on-demand) and this injection
+    /// (periodic) always agree on "now" — required for a future reproducible-run harness that
+    /// freezes the clock. Defaults to `Arc::new(zeph_common::SystemClock)` if never called.
+    #[must_use]
+    pub fn with_clock(mut self, clock: std::sync::Arc<dyn zeph_common::ClockSource>) -> Self {
+        self.runtime.config.clock = clock;
+        self
+    }
+
     /// Set the sandbox root(s) `/cd` (and any other agent-invoked cwd change) is validated
     /// against (#6032 SEC-2).
     ///
@@ -2675,6 +2687,8 @@ impl<C: Channel> Agent<C> {
             debug_config: _debug_config,
             server_compaction,
             budget_hint_enabled,
+            time_reminder_enabled,
+            time_reminder_interval_requests,
             subagent_skill_token_budget,
             secrets,
             recap,
@@ -2748,6 +2762,8 @@ impl<C: Channel> Agent<C> {
         self.services.memory.persistence.store_config = store_config;
         self.wire_graph_persistence();
         self.runtime.config.budget_hint_enabled = budget_hint_enabled;
+        self.runtime.config.time_reminder_enabled = time_reminder_enabled;
+        self.runtime.config.time_reminder_interval_requests = time_reminder_interval_requests;
         self.services.skill.subagent_skill_token_budget = subagent_skill_token_budget;
         self.runtime.config.recap_config = recap;
         self.runtime.config.resume_config = resume;

@@ -266,6 +266,15 @@ pub(crate) struct RuntimeConfig {
     pub(crate) spawn_depth: u32,
     /// Inject `<budget>` XML into the volatile system prompt section (#2267).
     pub(crate) budget_hint_enabled: bool,
+    /// Inject a `<current_time>` reminder into the volatile system prompt every
+    /// `time_reminder_interval_requests` agent turns (#6361). Opt-in, default `false`.
+    pub(crate) time_reminder_enabled: bool,
+    /// Turn interval between `<current_time>` reminder injections (#6361).
+    pub(crate) time_reminder_interval_requests: u32,
+    /// Injectable wall-clock source for the `get_current_time` tool and time-reminder
+    /// injection (#6361). Defaults to [`zeph_common::SystemClock`]; tests substitute
+    /// `zeph_common::FixedClock` for deterministic assertions.
+    pub(crate) clock: Arc<dyn zeph_common::ClockSource>,
     /// Per-channel skill allowlist. Skills not matching the allowlist are excluded from the
     /// prompt. An empty `allowed` list means all skills are permitted (default).
     pub(crate) channel_skills: zeph_config::ChannelSkillsConfig,
@@ -1396,6 +1405,9 @@ impl Default for RuntimeConfig {
             adversarial_policy_info: None,
             spawn_depth: 0,
             budget_hint_enabled: true,
+            time_reminder_enabled: false,
+            time_reminder_interval_requests: 10,
+            clock: Arc::new(zeph_common::SystemClock),
             channel_skills: zeph_config::ChannelSkillsConfig::default(),
             channel_tool_allowlist: None,
             loop_min_interval_secs: 5,

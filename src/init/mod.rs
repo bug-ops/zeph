@@ -269,6 +269,9 @@ pub(crate) struct WizardState {
     pub(crate) sandbox_fail_if_unavailable: bool,
     // Budget hint injection (#2267)
     pub(crate) budget_hint_enabled: bool,
+    // Time-reminder injection (#6361)
+    pub(crate) time_reminder_enabled: bool,
+    pub(crate) time_reminder_interval_requests: u32,
     // SleepGate forgetting sweep (#2397)
     pub(crate) forgetting_enabled: bool,
     // Time-based microcompact (#2699)
@@ -532,6 +535,8 @@ impl Default for WizardState {
             sandbox_denied_domains: Vec::new(),
             sandbox_fail_if_unavailable: false,
             budget_hint_enabled: true,
+            time_reminder_enabled: false,
+            time_reminder_interval_requests: 10,
             forgetting_enabled: false,
             microcompact_enabled: false,
             microcompact_gap_threshold_minutes: 60,
@@ -800,6 +805,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     let mut config = Config::default();
     config.agent.auto_update_check = state.auto_update_check;
     config.agent.budget_hint_enabled = state.budget_hint_enabled;
+    config.agent.time_reminder_enabled = state.time_reminder_enabled;
+    config.agent.time_reminder_interval_requests = state.time_reminder_interval_requests;
     let provider = state.provider.unwrap_or(ProviderKind::Ollama);
 
     // Build the providers pool.
@@ -1443,6 +1450,19 @@ fn step_update_check(state: &mut WizardState) -> anyhow::Result<()> {
         )
         .default(true)
         .interact()?;
+
+    state.time_reminder_enabled = Confirm::new()
+        .with_prompt(
+            "Periodically remind the LLM of the current UTC time during long sessions? (time_reminder_enabled)",
+        )
+        .default(false)
+        .interact()?;
+    if state.time_reminder_enabled {
+        state.time_reminder_interval_requests = Input::new()
+            .with_prompt("Reminder interval, in agent turns (time_reminder_interval_requests)")
+            .default(10u32)
+            .interact_text()?;
+    }
 
     println!();
     Ok(())
@@ -2679,6 +2699,29 @@ mod tests {
         };
         let config = build_config(&state);
         assert!(!config.memory.compression_guidelines.enabled);
+    }
+
+    #[test]
+    fn build_config_time_reminder_disabled_by_default() {
+        let state = WizardState {
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(!config.agent.time_reminder_enabled);
+    }
+
+    #[test]
+    fn build_config_time_reminder_enabled_wires_interval() {
+        let state = WizardState {
+            time_reminder_enabled: true,
+            time_reminder_interval_requests: 5,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.agent.time_reminder_enabled);
+        assert_eq!(config.agent.time_reminder_interval_requests, 5);
     }
 
     #[test]

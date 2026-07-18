@@ -214,6 +214,8 @@ impl Default for Config {
                 tool_filter: crate::agent::ToolFilterConfig::default(),
                 budget_hint_enabled: true,
                 supervisor: crate::agent::TaskSupervisorConfig::default(),
+                time_reminder_enabled: false,
+                time_reminder_interval_requests: 10,
             },
             llm: LlmConfig {
                 // #5932/#6018-followup (critic S1): `Config::default()` must itself satisfy

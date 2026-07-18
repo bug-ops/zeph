@@ -1714,6 +1714,10 @@ impl<C: Channel> Agent<C> {
         // Extract before rebuild_system_prompt so the value is not tainted
         // by the secrets-bearing system prompt (ConversationId is just an i64).
         let conv_id = self.services.memory.persistence.conversation_id;
+        // ORDERING DEPENDENCY (#6361): rebuild_system_prompt's time-reminder injection reads
+        // `sidequest.turn_counter` BEFORE it is incremented by `sidequest.tick()` below — this
+        // is why `0.is_multiple_of(N) == true` fires the reminder on turn 1. Moving
+        // `sidequest.tick()` before this call would silently break turn-1 firing.
         self.rebuild_system_prompt(text).await;
 
         self.detect_and_record_corrections(trimmed, conv_id).await;

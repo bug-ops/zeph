@@ -1075,18 +1075,32 @@ pub(crate) enum PluginCommand {
 pub(crate) enum ScheduleCommand {
     /// List all active scheduled jobs
     List,
-    /// Add a new periodic cron job
+    /// Add a new periodic cron job, or a one-shot job with `--run-at` (#6361)
+    ///
+    /// NOTE: positional order is `<PROMPT> [CRON]` — `PROMPT` comes first, `CRON` second
+    /// (breaking change from the pre-#6361 `<CRON> <PROMPT>` order). clap requires a
+    /// required positional argument to never follow an optional one by index; since `CRON`
+    /// becomes optional when `--run-at` is used, it cannot stay first. Pre-1.0 breaking
+    /// change, documented in CHANGELOG.md.
     Add {
-        /// Cron expression (5 or 6 fields, e.g. "0 * * * *")
-        cron: String,
         /// Task prompt to execute on each trigger
         prompt: String,
+        /// Cron expression (5 or 6 fields, e.g. "0 * * * *"). Mutually exclusive with
+        /// `--run-at`; exactly one of the two must be given.
+        #[arg(required_unless_present = "run_at", conflicts_with = "run_at")]
+        cron: Option<String>,
         /// Job name (auto-generated from prompt if omitted)
         #[arg(long)]
         name: Option<String>,
         /// Task kind (default: "custom")
         #[arg(long, default_value = "custom")]
         kind: String,
+        /// Run once at this wall-clock time instead of on a cron schedule (#6361, spec 070
+        /// FR-005). Must be RFC3339 with an explicit UTC offset (e.g. `2026-07-19T14:30:00Z`)
+        /// — a bare local-time string without an offset is rejected. Must be in the future.
+        /// Mutually exclusive with the positional `cron` argument.
+        #[arg(long)]
+        run_at: Option<String>,
     },
     /// Remove a scheduled job by name
     Remove {
@@ -1300,13 +1314,70 @@ mod tests {
     fn cli_parses_schedule_add() {
         use super::{Command, ScheduleCommand};
         let cli =
-            Cli::try_parse_from(["zeph", "schedule", "add", "0 * * * *", "run report"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Schedule {
-                command: ScheduleCommand::Add { .. }
-            })
-        ));
+            Cli::try_parse_from(["zeph", "schedule", "add", "run report", "0 * * * *"]).unwrap();
+        let Some(Command::Schedule {
+            command: ScheduleCommand::Add { prompt, cron, .. },
+        }) = cli.command
+        else {
+            panic!("expected ScheduleCommand::Add");
+        };
+        assert_eq!(prompt, "run report");
+        assert_eq!(cron.as_deref(), Some("0 * * * *"));
+    }
+
+    #[cfg(feature = "scheduler")]
+    #[test]
+    fn cli_parses_schedule_add_run_at() {
+        use super::{Command, ScheduleCommand};
+        let cli = Cli::try_parse_from([
+            "zeph",
+            "schedule",
+            "add",
+            "check the deploy",
+            "--run-at",
+            "2026-07-19T14:30:00Z",
+        ])
+        .unwrap();
+        let Some(Command::Schedule {
+            command:
+                ScheduleCommand::Add {
+                    prompt,
+                    cron,
+                    run_at,
+                    ..
+                },
+        }) = cli.command
+        else {
+            panic!("expected ScheduleCommand::Add");
+        };
+        assert_eq!(prompt, "check the deploy");
+        assert_eq!(cron, None, "cron must be absent when --run-at is given");
+        assert_eq!(run_at.as_deref(), Some("2026-07-19T14:30:00Z"));
+    }
+
+    #[cfg(feature = "scheduler")]
+    #[test]
+    fn cli_rejects_schedule_add_with_both_cron_and_run_at() {
+        let result = Cli::try_parse_from([
+            "zeph",
+            "schedule",
+            "add",
+            "run report",
+            "0 * * * *",
+            "--run-at",
+            "2026-07-19T14:30:00Z",
+        ]);
+        assert!(
+            result.is_err(),
+            "cron positional and --run-at must be mutually exclusive"
+        );
+    }
+
+    #[cfg(feature = "scheduler")]
+    #[test]
+    fn cli_rejects_schedule_add_with_neither_cron_nor_run_at() {
+        let result = Cli::try_parse_from(["zeph", "schedule", "add", "run report"]);
+        assert!(result.is_err(), "one of cron or --run-at is required");
     }
 
     #[cfg(feature = "scheduler")]

@@ -9,6 +9,9 @@ max_tool_iterations = 10
 # instruction_auto_detect = true
 # Inject a <budget> XML block into the system prompt so the LLM can self-regulate (#2267)
 # budget_hint_enabled = true
+# Inject a <current_time> reminder into the system prompt every N agent turns (#6361)
+# time_reminder_enabled = false
+# time_reminder_interval_requests = 10
 # Additional instruction files to always inject into the system prompt
 # instruction_files = ["custom-instructions.md"]
 

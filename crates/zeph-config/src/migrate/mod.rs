@@ -601,9 +601,9 @@ mod steps;
 use steps::{
     MigrateA2aCardTrustConfig, MigrateA2aServerRemoveInertFields, MigrateAcpAuthClientsConfig,
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
-    MigrateAutodreamConfig, MigrateCavemanConfig, MigrateCocoonProviderNotice,
-    MigrateCocoonShowBalance, MigrateCompressionPredictorConfig, MigrateDatabaseUrl,
-    MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableSharedDb,
+    MigrateAgentTimeReminder, MigrateAutodreamConfig, MigrateCavemanConfig,
+    MigrateCocoonProviderNotice, MigrateCocoonShowBalance, MigrateCompressionPredictorConfig,
+    MigrateDatabaseUrl, MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableSharedDb,
     MigrateDurableStaleRunningAfterSecs, MigrateEgressConfig, MigrateEmbedProviderRename,
     MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig,
     MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
@@ -633,7 +633,7 @@ use steps::{
     MigrateWorktreeConfig, MigrateWorktreeGitTimeout, MigrateWorktreeQuotaFields,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–94).
+/// Ordered registry of all sequential migration steps (steps 1–95).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -819,6 +819,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 94 — add [session.resume] advisory block for the resume-visibility
             // banner and /history bound (spec-068 §13, §18, #6420)
             Box::new(MigrateSessionResumeConfig),
+            // Step 95 — add time_reminder_enabled/time_reminder_interval_requests advisory
+            // comments under [agent] (#6361)
+            Box::new(MigrateAgentTimeReminder),
         ]
     });
 
