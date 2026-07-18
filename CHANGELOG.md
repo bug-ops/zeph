@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- `zeph-experiments`: `engine::tests::engine_persists_results_to_sqlite` `.unwrap()`ed
+  `mock_semantic_memory()` unconditionally, so a `postgres`-only build
+  (`--no-default-features --features postgres`) without a live Postgres reachable via
+  `ZEPH_TEST_POSTGRES_URL` failed the test instead of skipping it — the panic itself was
+  already fixed in #6436 (a clear `MemoryError::Other` naming the missing env var), but the
+  test still had no way to opt out (#6437). The test is now `#[ignore]`d under
+  `cfg(all(feature = "postgres", not(feature = "sqlite")))`, mirroring the
+  `#[ignore = "requires Docker"]` convention in `crates/zeph-db/tests/postgres_integration.rs`;
+  it still runs unconditionally under the default `sqlite` feature set and can be run manually
+  against a live Postgres instance with `--ignored`.
+
 - `zeph-core`: `/history` re-scanned the entire message vector on every call —
   `MessageAccessImpl::transcript_len` was O(total non-system messages) unconditionally, and
   `transcript_page`'s `.skip(start)` ran on top of a `.filter()`, so it walked from index 0 even

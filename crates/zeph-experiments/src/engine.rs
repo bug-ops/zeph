@@ -805,6 +805,16 @@ mod tests {
 
     #[cfg(test)]
     #[tokio::test]
+    // Under a postgres-only build (`--no-default-features --features postgres`),
+    // `mock_semantic_memory` needs a live Postgres reachable via
+    // `ZEPH_TEST_POSTGRES_URL` (see crates/zeph-memory/src/testing.rs) — there is no
+    // in-process equivalent to SQLite's `:memory:`. Mirrors the `#[ignore = "requires
+    // Docker"]` convention in crates/zeph-db/tests/postgres_integration.rs: skipped by
+    // default, run explicitly with `--ignored` once a Postgres instance is available.
+    #[cfg_attr(
+        all(feature = "postgres", not(feature = "sqlite")),
+        ignore = "requires ZEPH_TEST_POSTGRES_URL"
+    )]
     async fn engine_persists_results_to_sqlite() {
         use zeph_memory::testing::mock_semantic_memory;
 
