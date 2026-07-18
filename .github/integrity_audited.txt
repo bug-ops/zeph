@@ -64,6 +64,7 @@ crates/zeph-subagent/src/manager/spawn.rs VERIFIED # resume-on-spawn transcript 
 crates/zeph-subagent/src/transcript.rs VERIFIED # the TranscriptReader/TranscriptWriter chain-verification implementation itself
 src/acp.rs VERIFIED # ACP session-lock/open path, chain-verified
 src/commands/durable.rs VERIFIED # zeph durable CLI, HWM-verified reads
+src/commands/scheduler_daemon.rs VERIFIED # open_execution calls are test-only (#[cfg(test)] mod tests), exercising the already-HWM-verified LocalBackend read path (see local.rs); no production trust-reading in this file
 src/commands/sessions.rs VERIFIED # zeph sessions resume/show CLI, chain-verified reads
 src/runner.rs VERIFIED # main CLI dispatch; configures history-integrity key rings before any reader opens
 src/serve/agent_factory.rs VERIFIED # serve-mode session bootstrap, chain-verified opens
