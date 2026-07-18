@@ -204,6 +204,10 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn clear_history(&mut self) {
         let svc = zeph_agent_context::ContextService::new();
         svc.clear_history(&mut self.message_window_view());
+        // `ContextService` mutates `messages` through a borrowed view, so the non-system
+        // counter (#6427) can't be updated inline at the mutation site — recompute it here,
+        // mirroring `cached_prompt_tokens`, which the view already updates in place.
+        self.msg.recompute_non_system_count();
     }
 
     /// Remove previously injected LSP context notes from the message history.
@@ -213,11 +217,13 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn remove_lsp_messages(&mut self) {
         let svc = zeph_agent_context::ContextService::new();
         svc.remove_lsp_messages(&mut self.message_window_view());
+        self.msg.recompute_non_system_count();
     }
 
     pub(in crate::agent) fn remove_code_context_messages(&mut self) {
         let svc = zeph_agent_context::ContextService::new();
         svc.remove_code_context_messages(&mut self.message_window_view());
+        self.msg.recompute_non_system_count();
     }
 
     /// Spawn a fire-and-forget background task to generate and persist a session digest for
@@ -495,6 +501,7 @@ impl<C: Channel> Agent<C> {
         // --- Apply the replayed history (same shape as `with_preloaded_messages`, D-6) ---
         let mut messages = hydrated.messages;
         self.msg.messages.append(&mut messages);
+        self.msg.recompute_non_system_count();
         self.msg.history_preloaded = true;
 
         // --- Set conversation_id from the resumed/forked session, not a freshly minted one ---
@@ -730,6 +737,9 @@ impl<C: Channel> Agent<C> {
             .await;
         let result = svc.prepare_context(query, &mut window, &mut view).await;
         self.channel.send_status_best_effort("").await;
+        // `window` mutates `messages` through a borrowed view, so the non-system counter
+        // (#6427) can't be updated inline at the mutation site — recompute it here.
+        self.msg.recompute_non_system_count();
 
         let delta =
             result.map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))?;

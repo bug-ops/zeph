@@ -57,6 +57,7 @@ fn make_message_state() -> MessageState {
         deferred_db_summaries: Vec::new(),
         history_preloaded: false,
         history_cursor: 0,
+        non_system_count: 0,
     }
 }
 

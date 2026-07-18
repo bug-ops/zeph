@@ -139,6 +139,7 @@ impl MessageAccess for MessageAccessImpl<'_> {
         self.msg.pending_image_parts.clear();
         self.tool_orchestrator.clear_cache();
         self.security.user_provided_urls.write().clear();
+        self.msg.recompute_non_system_count();
     }
 
     fn queue_len(&self) -> usize {
@@ -161,22 +162,47 @@ impl MessageAccess for MessageAccessImpl<'_> {
     }
 
     fn transcript_len(&self) -> usize {
-        self.msg
-            .messages
-            .iter()
-            .filter(|m| m.role != Role::System)
-            .count()
+        self.msg.non_system_len()
     }
 
     fn transcript_page(&self, start: usize, count: usize) -> Vec<TranscriptEntry> {
-        self.msg
-            .messages
-            .iter()
-            .filter(|m| m.role != Role::System)
-            .skip(start)
-            .take(count)
-            .map(message_to_transcript_entry)
-            .collect()
+        let total = self.msg.non_system_len();
+        if count == 0 || start >= total {
+            return Vec::new();
+        }
+        let end = start.saturating_add(count).min(total);
+        // Scan from whichever end of `messages` is ordinally closer to the requested page —
+        // the bounded-default `/history N` case always asks for the tail (back_cost == 0) and
+        // `/history all`'s first page always asks for the head (front_cost == 0), so both of
+        // the common call patterns become O(count) instead of walking the full vector on every
+        // call (#6427). Middle-of-history pages from repeated `/history next` still cost up to
+        // O(min(start, total - end)), but that heavy full-history walk is explicitly the rare,
+        // user-warned-about path ("this may take a moment"), not a hot one.
+        let front_cost = start;
+        let back_cost = total - end;
+        if front_cost <= back_cost {
+            self.msg
+                .messages
+                .iter()
+                .filter(|m| m.role != Role::System)
+                .skip(start)
+                .take(end - start)
+                .map(message_to_transcript_entry)
+                .collect()
+        } else {
+            let mut page: Vec<TranscriptEntry> = self
+                .msg
+                .messages
+                .iter()
+                .rev()
+                .filter(|m| m.role != Role::System)
+                .skip(back_cost)
+                .take(end - start)
+                .map(message_to_transcript_entry)
+                .collect();
+            page.reverse();
+            page
+        }
     }
 
     fn history_cursor(&self) -> usize {
@@ -352,5 +378,251 @@ impl SessionAccess for NullSessionAccess {
 
     fn history_expand_default_lines(&self) -> usize {
         20
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::Agent;
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use zeph_llm::provider::MessageMetadata;
+
+    fn make_agent() -> Agent<MockChannel> {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        Agent::new(provider, channel, registry, None, 5, executor)
+    }
+
+    fn msg(role: Role, content: &str) -> Message {
+        Message {
+            role,
+            content: content.to_string(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }
+    }
+
+    fn access(agent: &mut Agent<MockChannel>) -> MessageAccessImpl<'_> {
+        MessageAccessImpl {
+            msg: &mut agent.msg,
+            tool_state: &mut agent.services.tool_state,
+            providers: &mut agent.runtime.providers,
+            metrics: &agent.runtime.metrics,
+            security: &mut agent.services.security,
+            tool_orchestrator: &mut agent.tool_orchestrator,
+        }
+    }
+
+    /// `TranscriptEntry` has no `PartialEq` (see `zeph-commands/src/transcript.rs`) — project
+    /// into a comparable tuple for `assert_eq!` in these tests.
+    fn comparable(entries: &[TranscriptEntry]) -> Vec<(TranscriptRole, String, Option<String>)> {
+        entries
+            .iter()
+            .map(|e| (e.role, e.content.clone(), e.tool_name.clone()))
+            .collect()
+    }
+
+    /// Reference implementation matching the pre-#6427 behavior exactly (the same filter,
+    /// skip, take chain), used to prove the optimized `transcript_page` produces identical
+    /// output for every case, including interleaved `Role::System` messages.
+    fn reference_page(messages: &[Message], start: usize, count: usize) -> Vec<TranscriptEntry> {
+        messages
+            .iter()
+            .filter(|m| m.role != Role::System)
+            .skip(start)
+            .take(count)
+            .map(message_to_transcript_entry)
+            .collect()
+    }
+
+    #[test]
+    fn transcript_len_empty_history_is_zero() {
+        let mut agent = make_agent();
+        let ctx = access(&mut agent);
+        // Fresh agent has only the system-prompt message.
+        assert_eq!(ctx.transcript_len(), 0);
+    }
+
+    #[test]
+    fn transcript_page_empty_history_returns_empty() {
+        let mut agent = make_agent();
+        let ctx = access(&mut agent);
+        assert!(ctx.transcript_page(0, 20).is_empty());
+    }
+
+    #[test]
+    fn transcript_page_count_zero_returns_empty() {
+        let mut agent = make_agent();
+        agent.push_message(msg(Role::User, "hi"));
+        let ctx = access(&mut agent);
+        assert!(ctx.transcript_page(0, 0).is_empty());
+    }
+
+    #[test]
+    fn transcript_page_start_beyond_len_returns_empty() {
+        let mut agent = make_agent();
+        agent.push_message(msg(Role::User, "hi"));
+        let ctx = access(&mut agent);
+        assert!(ctx.transcript_page(5, 3).is_empty());
+        assert!(ctx.transcript_page(1, 3).is_empty()); // start == total is also out of range
+    }
+
+    #[test]
+    fn transcript_len_and_page_ignore_system_only_history() {
+        let mut agent = make_agent();
+        agent.push_message(msg(Role::System, "extra system note"));
+        agent.push_message(msg(Role::System, "another note"));
+        let ctx = access(&mut agent);
+        assert_eq!(ctx.transcript_len(), 0);
+        assert!(ctx.transcript_page(0, 10).is_empty());
+    }
+
+    #[test]
+    fn transcript_len_counts_only_non_system_and_tracks_incrementally() {
+        let mut agent = make_agent();
+        agent.push_message(msg(Role::User, "u1"));
+        agent.push_message(msg(Role::System, "lsp note"));
+        agent.push_message(msg(Role::Assistant, "a1"));
+        agent.push_message(msg(Role::User, "u2"));
+        let ctx = access(&mut agent);
+        assert_eq!(ctx.transcript_len(), 3);
+    }
+
+    #[test]
+    fn transcript_page_bounded_default_tail_matches_reference() {
+        // Mirrors the `/history N` hot path: start = total - n (near the tail), exercising
+        // the back-scan branch.
+        let mut agent = make_agent();
+        for i in 0..30 {
+            agent.push_message(msg(Role::User, &format!("u{i}")));
+            agent.push_message(msg(Role::Assistant, &format!("a{i}")));
+        }
+        let messages = agent.msg.messages.clone();
+        let ctx = access(&mut agent);
+        let total = ctx.transcript_len();
+        let n = 20.min(total);
+        let start = total - n;
+        let expected = reference_page(&messages, start, n);
+        let actual = ctx.transcript_page(start, n);
+        assert_eq!(comparable(&actual), comparable(&expected));
+        assert_eq!(actual.len(), n);
+    }
+
+    #[test]
+    fn transcript_page_front_scan_then_next_continuation_matches_reference() {
+        // Mirrors `/history all` -> repeated `/history next`: start = 0, then start = cursor,
+        // cursor + count, ... — exercising the front-scan branch across a page boundary.
+        let mut agent = make_agent();
+        for i in 0..45 {
+            agent.push_message(msg(Role::User, &format!("u{i}")));
+        }
+        let messages = agent.msg.messages.clone();
+        let ctx = access(&mut agent);
+        let total = ctx.transcript_len();
+        let page_size = 20;
+
+        let mut cursor = 0;
+        while cursor < total {
+            let count = page_size.min(total - cursor);
+            let expected = reference_page(&messages, cursor, count);
+            let actual = ctx.transcript_page(cursor, count);
+            assert_eq!(
+                comparable(&actual),
+                comparable(&expected),
+                "mismatch at cursor={cursor}"
+            );
+            cursor += count;
+        }
+    }
+
+    #[test]
+    fn transcript_page_matches_reference_with_interleaved_system_messages() {
+        // Simulates focus checkpoints / LSP notes / knowledge blocks scattered throughout
+        // history (#6427) — the non-system counter must still yield byte-identical output to
+        // the naive filter-skip-take reference for every (start, count) pair, regardless of
+        // which end `transcript_page` chooses to scan from.
+        let mut agent = make_agent();
+        for i in 0..40 {
+            agent.push_message(msg(Role::User, &format!("u{i}")));
+            if i % 3 == 0 {
+                agent.push_message(msg(Role::System, &format!("note{i}")));
+            }
+            agent.push_message(msg(Role::Assistant, &format!("a{i}")));
+        }
+        let messages = agent.msg.messages.clone();
+        let ctx = access(&mut agent);
+        let total = ctx.transcript_len();
+        assert_eq!(
+            total,
+            messages.iter().filter(|m| m.role != Role::System).count()
+        );
+
+        for start in [0, 1, total / 2, total.saturating_sub(1), total] {
+            for count in [0, 1, 5, total] {
+                let expected = reference_page(&messages, start, count);
+                let actual = ctx.transcript_page(start, count);
+                assert_eq!(
+                    comparable(&actual),
+                    comparable(&expected),
+                    "mismatch at start={start}, count={count}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clear_history_resets_transcript_len_to_zero() {
+        let mut agent = make_agent();
+        agent.push_message(msg(Role::User, "u1"));
+        agent.push_message(msg(Role::Assistant, "a1"));
+        let mut ctx = access(&mut agent);
+        assert_eq!(ctx.transcript_len(), 2);
+        ctx.clear_history();
+        assert_eq!(ctx.transcript_len(), 0);
+    }
+
+    /// Regression for the direct-append + recompute pattern used by `builder.rs:237`
+    /// (durable-log replay seeding) — the batch-mutation counterpart to the incremental
+    /// `push_message` path already covered above.
+    #[test]
+    fn with_preloaded_messages_recomputes_non_system_count() {
+        let agent = make_agent();
+        let preloaded = vec![
+            msg(Role::User, "u1"),
+            msg(Role::System, "focus checkpoint"),
+            msg(Role::Assistant, "a1"),
+            msg(Role::User, "u2"),
+        ];
+        let mut agent = agent.with_preloaded_messages(preloaded);
+        let expected = agent
+            .msg
+            .messages
+            .iter()
+            .filter(|m| m.role != Role::System)
+            .count();
+        let ctx = access(&mut agent);
+        assert_eq!(ctx.transcript_len(), expected);
+        assert_eq!(ctx.transcript_len(), 3);
+    }
+
+    /// Regression for the "mutation happens inside `zeph-agent-context` through a borrowed
+    /// `message_window_view()`, recompute after the call returns" pattern — the pattern used
+    /// by 9 of the 11 batch-mutation sites (`assembly.rs`'s `clear_history`/
+    /// `remove_lsp_messages`/`remove_code_context_messages`, `persistence/history.rs`,
+    /// `summarization/*.rs`). Distinct from `MessageAccessImpl::clear_history` (tested above),
+    /// which mutates `messages` directly and never goes through `ContextService`.
+    #[test]
+    fn agent_clear_history_recomputes_non_system_count() {
+        let mut agent = make_agent();
+        agent.push_message(msg(Role::User, "u1"));
+        agent.push_message(msg(Role::Assistant, "a1"));
+        assert_eq!(access(&mut agent).transcript_len(), 2);
+        agent.clear_history();
+        assert_eq!(access(&mut agent).transcript_len(), 0);
     }
 }

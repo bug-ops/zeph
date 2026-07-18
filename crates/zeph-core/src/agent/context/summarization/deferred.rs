@@ -15,6 +15,9 @@ impl<C: Channel> Agent<C> {
         let providers = self.providers();
         let mut summ = self.summarization_view();
         svc.maybe_summarize_tool_pair(&mut summ, &providers).await;
+        // `summ` mutates `messages` through a borrowed view, so the non-system counter
+        // (#6427) can't be updated inline at the mutation site — recompute it here.
+        self.msg.recompute_non_system_count();
     }
 
     /// Batch-apply all pending deferred tool pair summaries.
@@ -24,7 +27,9 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn apply_deferred_summaries(&mut self) -> usize {
         let svc = zeph_agent_context::ContextService::new();
         let mut summ = self.summarization_view();
-        svc.apply_deferred_summaries(&mut summ)
+        let applied = svc.apply_deferred_summaries(&mut summ);
+        self.msg.recompute_non_system_count();
+        applied
     }
 
     #[tracing::instrument(
@@ -36,12 +41,14 @@ impl<C: Channel> Agent<C> {
         let svc = zeph_agent_context::ContextService::new();
         let mut summ = self.summarization_view();
         svc.flush_deferred_summaries(&mut summ).await;
+        self.msg.recompute_non_system_count();
     }
 
     pub(in crate::agent) fn maybe_apply_deferred_summaries(&mut self) {
         let svc = zeph_agent_context::ContextService::new();
         let mut summ = self.summarization_view();
         svc.maybe_apply_deferred_summaries(&mut summ);
+        self.msg.recompute_non_system_count();
     }
 }
 

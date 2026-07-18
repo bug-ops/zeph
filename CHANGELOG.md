@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- `zeph-core`: `/history` re-scanned the entire message vector on every call —
+  `MessageAccessImpl::transcript_len` was O(total non-system messages) unconditionally, and
+  `transcript_page`'s `.skip(start)` ran on top of a `.filter()`, so it walked from index 0 even
+  though the common bounded-default case (`/history N`) computes `start` near the end of history.
+  Repeated `/history all` → `/history next` paging did O(total²/page_size) aggregate work (#6427,
+  follow-up from #6420). `MessageState` now maintains an incrementally-updated `non_system_count`
+  (O(1) `transcript_len`), and `transcript_page` scans from whichever end of the vector is closer
+  to the requested page, making both named hot patterns (`/history N` bounded-default and
+  `/history all`'s first page) O(count) instead of O(total). Middle-of-history pages reached via
+  a long `/history next` chain still cost up to O(min(start, total-end)) — tracking a full
+  position index of non-system ordinals was rejected since arbitrary-position System-message
+  churn (LSP notes, focus checkpoints) would make that index itself O(n) per turn, moving cost
+  onto the hotter turn loop instead of the `/history` read path.
+
 - `zeph-orchestration`: `PlanVerifier::verify_plan()` (whole-plan grounding, spec 009) shared
   the same `orchestration.verifier_timeout_secs` budget as per-task `verify()`, and consistently
   exhausted it against slower local Ollama models even when per-task verification on the same

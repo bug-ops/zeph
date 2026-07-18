@@ -41,6 +41,9 @@ impl<C: Channel> Agent<C> {
             .compact_context(&mut summ, None)
             .await
             .map_err(|e| crate::agent::error::AgentError::ContextError(format!("{e:#}")))?; // 6
+        // `summ` mutates `messages` through a borrowed view, so the non-system counter
+        // (#6427) can't be updated inline at the mutation site — recompute it here.
+        self.msg.recompute_non_system_count();
 
         if outcome.is_compacted() {
             self.update_metrics(|m| m.context_compactions += 1); // 7

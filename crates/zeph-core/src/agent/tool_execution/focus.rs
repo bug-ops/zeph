@@ -169,6 +169,7 @@ impl<C: Channel> Agent<C> {
             // skipped here.
             self.msg.messages.push(assistant_msg);
         }
+        self.msg.recompute_non_system_count();
         self.recompute_prompt_tokens();
         // C1 fix: mark compacted so maybe_compact() does not double-fire this turn.
         // cooldown=0: focus truncation does not impose post-compaction cooldown.
@@ -200,6 +201,7 @@ impl<C: Channel> Agent<C> {
                 self.msg.messages.insert(1, kb_msg);
             }
         }
+        self.msg.recompute_non_system_count();
         self.recompute_prompt_tokens();
     }
 
@@ -346,6 +348,7 @@ impl<C: Channel> Agent<C> {
                 self.msg.messages.remove(idx);
             }
         }
+        self.msg.recompute_non_system_count();
         self.rebuild_knowledge_block();
     }
 

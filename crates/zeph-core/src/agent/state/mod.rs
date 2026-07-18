@@ -38,7 +38,7 @@ use tokio::sync::{Notify, mpsc, watch};
 use tokio::time::Interval;
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::Message;
+use zeph_llm::provider::{Message, Role};
 use zeph_llm::stt::SpeechToText;
 
 use crate::config::{ProviderEntry, SecurityConfig, SkillPromptMode, TimeoutConfig};
@@ -1066,6 +1066,51 @@ pub(crate) struct MessageState {
     /// `/history all`/`/history next` pagination cursor (spec-068 §13.6). `0` = not yet
     /// started or reset by a subsequent bounded `/history [N]` call.
     pub(crate) history_cursor: usize,
+    /// Count of `messages` entries with `role != Role::System` (#6427).
+    ///
+    /// Backs `MessageAccessImpl::transcript_len`/`transcript_page`
+    /// (`command_context_impls.rs`) so `/history` doesn't rescan the full vector on every
+    /// call. Every mutation site of `messages` must keep this in sync — use
+    /// [`MessageState::track_single_message`] for a per-message push/insert/remove (O(1)) or
+    /// [`MessageState::recompute_non_system_count`] after a batch mutation (O(n), but never on
+    /// the `/history` read path this field exists to speed up).
+    pub(crate) non_system_count: usize,
+}
+
+impl MessageState {
+    /// O(1) count of non-system messages — see [`Self::non_system_count`].
+    pub(crate) fn non_system_len(&self) -> usize {
+        self.non_system_count
+    }
+
+    /// Recompute [`Self::non_system_count`] from scratch after a batch mutation (append,
+    /// truncate, drain, retain, or a cross-crate mutation through a borrowed `&mut
+    /// Vec<Message>` view) where tracking the exact delta inline would be error-prone.
+    ///
+    /// O(n), but only called on structural mutation paths (history replay, compaction, focus
+    /// lifecycle, `/clear`) — never on the `/history` read path this counter exists to speed
+    /// up. Call alongside `recompute_prompt_tokens()`, which follows the same pattern for the
+    /// cached token count.
+    pub(crate) fn recompute_non_system_count(&mut self) {
+        self.non_system_count = self
+            .messages
+            .iter()
+            .filter(|m| m.role != Role::System)
+            .count();
+    }
+
+    /// Adjust [`Self::non_system_count`] for a single message added to or removed from
+    /// `messages`. `added = true` for push/insert, `false` for remove/pop.
+    pub(crate) fn track_single_message(&mut self, role: Role, added: bool) {
+        if role == Role::System {
+            return;
+        }
+        if added {
+            self.non_system_count += 1;
+        } else {
+            self.non_system_count = self.non_system_count.saturating_sub(1);
+        }
+    }
 }
 
 impl McpState {

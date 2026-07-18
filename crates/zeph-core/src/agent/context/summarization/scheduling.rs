@@ -37,6 +37,9 @@ impl<C: Channel> Agent<C> {
         svc.maybe_compact(&mut summ, &status)
             .await
             .map_err(|e| crate::agent::error::AgentError::ContextError(format!("{e:#}")))?;
+        // `summ` mutates `messages` through a borrowed view, so the non-system counter
+        // (#6427) can't be updated inline at the mutation site — recompute it here.
+        self.msg.recompute_non_system_count();
 
         // Update the persistent compaction badge whenever this tier actually freed tokens.
         self.emit_compaction_status_signal(tokens_before).await;
@@ -98,6 +101,7 @@ impl<C: Channel> Agent<C> {
         let svc = zeph_agent_context::ContextService::new();
         let mut summ = self.summarization_view();
         svc.maybe_soft_compact_mid_iteration(&mut summ);
+        self.msg.recompute_non_system_count();
     }
 
     /// Proactive context compression: delegates to [`ContextService::maybe_proactive_compress`].
@@ -122,6 +126,7 @@ impl<C: Channel> Agent<C> {
             .summarization_view()
             .with_compression_guidelines(guidelines);
         svc.maybe_proactive_compress(&mut summ, &status).await;
+        self.msg.recompute_non_system_count();
 
         // Update the persistent compaction badge whenever proactive compression freed tokens.
         self.emit_compaction_status_signal(tokens_before).await;

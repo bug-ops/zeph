@@ -126,6 +126,11 @@ impl<C: Channel> Agent<C> {
                 usize::try_from(count).unwrap_or(0);
         }
 
+        // `PersistenceService::load_history` mutates `messages` through a borrowed
+        // `&mut Vec<Message>` (part of `LoadHistoryParams`), so the non-system counter
+        // (#6427) can't be updated inline at the mutation site — recompute it here,
+        // mirroring the `recompute_prompt_tokens` call this already needed.
+        self.msg.recompute_non_system_count();
         self.recompute_prompt_tokens();
         Ok(())
     }

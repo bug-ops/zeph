@@ -235,6 +235,7 @@ impl<C: Channel> Agent<C> {
         mut messages: Vec<zeph_llm::provider::Message>,
     ) -> Self {
         self.msg.messages.append(&mut messages);
+        self.msg.recompute_non_system_count();
         self.msg.history_preloaded = true;
         self
     }

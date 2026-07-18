@@ -302,6 +302,7 @@ impl<C: Channel> Agent<C> {
         if msg.role == zeph_llm::provider::Role::Assistant {
             self.services.session.last_assistant_at = Some(std::time::Instant::now());
         }
+        self.msg.track_single_message(msg.role, true);
         self.msg.messages.push(msg);
         // Detect MagicDoc headers in tool output after pushing the message.
         self.detect_magic_docs_in_messages();
@@ -322,6 +323,7 @@ impl<C: Channel> Agent<C> {
         if msg.role == zeph_llm::provider::Role::Assistant {
             self.services.session.last_assistant_at = Some(std::time::Instant::now());
         }
+        self.msg.track_single_message(msg.role, true);
         self.msg.messages.insert(index, msg);
         self.detect_magic_docs_in_messages();
     }
@@ -411,6 +413,7 @@ impl<C: Channel> Agent<C> {
             return;
         }
         let content = format!("{CODE_CONTEXT_PREFIX}{text}");
+        self.msg.track_single_message(Role::System, true);
         self.msg.messages.insert(
             1,
             Message::from_parts(

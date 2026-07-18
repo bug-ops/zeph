@@ -368,6 +368,7 @@ impl<C: Channel> Agent<C> {
                 deferred_db_summaries: Vec::new(),
                 history_preloaded: false,
                 history_cursor: 0,
+                non_system_count: 0,
             },
             context_manager: context_manager::ContextManager::new(),
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
@@ -1318,7 +1319,9 @@ impl<C: Channel> Agent<C> {
 
             let user_msg = format!("Error: {e:#}");
             self.channel.send(&user_msg).await?;
-            self.msg.messages.pop();
+            if let Some(popped) = self.msg.messages.pop() {
+                self.msg.track_single_message(popped.role, false);
+            }
             self.recompute_prompt_tokens();
             self.channel.flush_chunks().await?;
             true

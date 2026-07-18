@@ -124,6 +124,7 @@ impl<C: Channel> Agent<C> {
                 metadata: MessageMetadata::default(),
             });
             self.msg.messages.extend(tail);
+            self.msg.recompute_non_system_count();
             self.update_metrics(|m| m.server_compaction_events += 1);
             self.channel.send_status_best_effort("").await;
         }
