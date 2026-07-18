@@ -4,7 +4,7 @@
 //! Test helpers for `zeph-memory`.
 //!
 //! Provides `mock_semantic_memory` — a convenience constructor that creates a
-//! fully-wired [`SemanticMemory`] backed by an in-memory `SQLite` database and
+//! fully-wired [`SemanticMemory`] backed by a relational store and
 //! [`InMemoryVectorStore`], so tests do not need a real Qdrant or filesystem.
 
 use std::sync::Arc;
@@ -22,21 +22,25 @@ use crate::token_counter::TokenCounter;
 /// Build a [`SemanticMemory`] that runs entirely in-process with no external
 /// dependencies.
 ///
-/// - `SQLite` backend: `:memory:` (in-process, no file I/O)
+/// - `SQLite` backend (feature `sqlite`): `:memory:` (in-process, no file I/O)
+/// - `PostgreSQL` backend (feature `postgres` only): connects to the URL from
+///   the `ZEPH_TEST_POSTGRES_URL` environment variable — `PostgreSQL` has no
+///   in-process equivalent to `SQLite`'s `:memory:`, so a reachable instance
+///   must be provided by the caller.
 /// - Vector backend: [`InMemoryVectorStore`] (cosine similarity search)
 /// - LLM provider: [`MockProvider`] with embedding support enabled
 ///
 /// # Errors
 ///
-/// Returns `MemoryError` if the in-memory `SQLite` cannot be initialised.
+/// Returns `MemoryError` if the backing store cannot be initialised — under
+/// the `postgres`-only build, this includes `ZEPH_TEST_POSTGRES_URL` being unset.
 pub async fn mock_semantic_memory() -> Result<Arc<SemanticMemory>, MemoryError> {
     let mut mock = MockProvider::default();
     mock.supports_embeddings = true;
     mock.embedding = vec![0.1_f32; 384];
     let provider = AnyProvider::Mock(mock);
 
-    // `:memory:` creates an in-process SQLite database — no disk I/O.
-    let sqlite = SqliteStore::with_pool_size(":memory:", 1).await?;
+    let sqlite = mock_store().await?;
     let pool = sqlite.pool().clone();
 
     // InMemoryVectorStore satisfies the VectorStore trait without Qdrant.
@@ -54,6 +58,27 @@ pub async fn mock_semantic_memory() -> Result<Arc<SemanticMemory>, MemoryError> 
         0.3,
         Arc::new(TokenCounter::new()),
     )))
+}
+
+/// `:memory:` creates an in-process `SQLite` database — no disk I/O.
+#[cfg(feature = "sqlite")]
+async fn mock_store() -> Result<SqliteStore, MemoryError> {
+    SqliteStore::with_pool_size(":memory:", 1).await
+}
+
+/// `PostgreSQL` has no `:memory:`-equivalent in-process mode, so this backend
+/// requires a reachable instance via `ZEPH_TEST_POSTGRES_URL`.
+#[cfg(all(feature = "postgres", not(feature = "sqlite")))]
+async fn mock_store() -> Result<SqliteStore, MemoryError> {
+    let url = std::env::var("ZEPH_TEST_POSTGRES_URL").map_err(|_| {
+        MemoryError::Other(
+            "mock_semantic_memory requires the ZEPH_TEST_POSTGRES_URL environment variable \
+             when built with the postgres backend and no sqlite backend"
+                .to_string(),
+        )
+    })?;
+    let pool = zeph_db::DbConfig { url, pool_size: 1 }.connect().await?;
+    SqliteStore::from_pool(pool).await
 }
 
 #[cfg(test)]

@@ -179,30 +179,30 @@ impl ModelCache {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::TempDir;
+
     use super::*;
 
-    fn tmp_cache() -> ModelCache {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir()
-            .join("zeph-test-model-cache")
-            .join(format!("{}-{id}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        ModelCache {
-            path: dir.join("test.json"),
-        }
+    // Returns the TempDir guard alongside the cache: it must stay alive for the
+    // duration of the test, since dropping it removes the directory the cache
+    // file lives in.
+    fn tmp_cache() -> (ModelCache, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let cache = ModelCache {
+            path: dir.path().join("test.json"),
+        };
+        (cache, dir)
     }
 
     #[test]
     fn missing_file_is_stale() {
-        let c = tmp_cache();
+        let (c, _dir) = tmp_cache();
         assert!(c.is_stale());
     }
 
     #[tokio::test]
     async fn fresh_cache_is_not_stale() {
-        let c = tmp_cache();
+        let (c, _dir) = tmp_cache();
         let models = vec![RemoteModelInfo {
             id: "m1".into(),
             display_name: "Model 1".into(),
@@ -215,7 +215,7 @@ mod tests {
 
     #[tokio::test]
     async fn json_round_trip() {
-        let c = tmp_cache();
+        let (c, _dir) = tmp_cache();
         let models = vec![
             RemoteModelInfo {
                 id: "a".into(),
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn stale_detection_on_old_timestamp() {
-        let c = tmp_cache();
+        let (c, _dir) = tmp_cache();
         // Write envelope with timestamp 2 days ago.
         let old_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -255,7 +255,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalidate_removes_file() {
-        let c = tmp_cache();
+        let (c, _dir) = tmp_cache();
         let models = vec![];
         c.save(&models).await.unwrap();
         assert!(c.path.exists());
@@ -272,14 +272,14 @@ mod tests {
 
     #[tokio::test]
     async fn load_async_missing_file_returns_none() {
-        let c = tmp_cache();
+        let (c, _dir) = tmp_cache();
         let result = c.load_async().await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn load_async_matches_sync_load() {
-        let c = tmp_cache();
+        let (c, _dir) = tmp_cache();
         let models = vec![RemoteModelInfo {
             id: "x1".into(),
             display_name: "X One".into(),
@@ -294,13 +294,13 @@ mod tests {
 
     #[tokio::test]
     async fn is_stale_async_missing_file_returns_true() {
-        let c = tmp_cache();
+        let (c, _dir) = tmp_cache();
         assert!(c.is_stale_async().await);
     }
 
     #[tokio::test]
     async fn is_stale_async_matches_sync_is_stale() {
-        let c = tmp_cache();
+        let (c, _dir) = tmp_cache();
         let models = vec![RemoteModelInfo {
             id: "y1".into(),
             display_name: "Y One".into(),

@@ -37,6 +37,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now" on a session nobody has actually resumed yet; it matches `POST /sessions`' no-timestamp
   banner for the same reason.
 
+- `zeph-llm`: `model_cache::tests::tmp_cache()` built its per-test temp directory
+  from `process::id()` plus an in-process counter, which `cargo nextest`'s
+  fresh-process-per-test model collapsed to a constant `<pid>-0` name with no
+  cleanup — a recycled PID within 24h of an earlier run could collide with a
+  leftover `test.json`, spuriously failing `missing_file_is_stale` (#6432).
+  Switched to `tempfile::TempDir`, which is both collision-proof and
+  auto-cleaned on drop.
+
+- `zeph-memory`: `testing::mock_semantic_memory()` unconditionally constructed
+  a `SqliteStore`, panicking with an opaque DB-connection error in a
+  `postgres`-only build (no `sqlite` feature compiled in) (#6431). Store
+  construction is now feature-gated: `sqlite` keeps the existing `:memory:`
+  behavior unchanged, `postgres`-only connects via `ZEPH_TEST_POSTGRES_URL`
+  and returns a clear, actionable error if that variable is unset instead of
+  panicking.
+
 - `zeph-orchestration`: `PlanVerifier::verify_plan()` (whole-plan grounding, spec 009) shared
   the same `orchestration.verifier_timeout_secs` budget as per-task `verify()`, and consistently
   exhausted it against slower local Ollama models even when per-task verification on the same
