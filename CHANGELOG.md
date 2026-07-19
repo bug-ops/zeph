@@ -350,6 +350,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up — see the `TODO(critic)` comment at its definition — since the flagged-URL set it
   feeds is exact-string matched, making scheme-relative extraction a larger design change.
 
+### Testing
+
+- **zeph-acp**: added a self-testing CI guard, `.github/scripts/check_acp_permission_gate.sh`
+  (wired into the `lint-shellcheck` job), that fails the build if
+  `AcpPermissionGate::new(_, None)` reappears in `crates/zeph-acp/src` (#6515, follow-up to
+  #6512). A `None` second argument falls back to the developer's real
+  `acp-permissions.toml`, silently persisting `AllowAlways`/`RejectAlways` decisions across
+  unrelated test runs — the exact regression class #6514 already fixed for both
+  `terminal.rs` and `permission.rs` via a `temp_perm_path()` per-test tempdir-backed path;
+  this guard keeps the fix from silently regressing.
+
 ## [0.22.2] - 2026-07-18
 ### Added
 

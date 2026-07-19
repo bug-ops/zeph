@@ -119,6 +119,8 @@ jobs:
           scandir: install
       - name: Transcript-integrity audit gate (issue #6360)
         run: bash .github/scripts/check_integrity_audit.sh
+      - name: ACP permission-gate test-isolation guard (issue #6515)
+        run: bash .github/scripts/check_acp_permission_gate.sh
 
   lint-fmt:
     name: Lint (fmt)
