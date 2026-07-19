@@ -279,7 +279,9 @@ pub struct TaskSnapshot {
 
 // ── Internal types ───────────────────────────────────────────────────────────
 
-type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+// `Output = bool` (not `()`) so `spawn_classified` can report an inner failure through
+// the same internal plumbing `spawn` uses (`true` = success/`Normal`, `false` = `Failed`).
+type BoxFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
 type BoxFactory = Box<dyn Fn() -> BoxFuture + Send + Sync>;
 
 struct TaskEntry {
@@ -449,22 +451,99 @@ impl TaskSupervisor {
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        let factory: BoxFactory = Box::new(move || Box::pin((desc.factory)()));
+        let user_factory = desc.factory;
+        let factory: BoxFactory = Box::new(move || {
+            let fut = user_factory();
+            Box::pin(async move {
+                fut.await;
+                true
+            })
+        });
+        self.spawn_boxed(desc.name, desc.restart, factory)
+    }
+
+    /// Spawn a named, supervised async task like [`spawn`][Self::spawn], but classify the
+    /// produced value's own success/failure via `is_success` — mirrors
+    /// [`spawn_oneshot_classified`][Self::spawn_oneshot_classified] except it supports
+    /// [`RestartPolicy::Restart`] and returns a [`TaskHandle`] (not a typed
+    /// [`BlockingHandle<R>`]), since a restart-capable task's result value cannot be handed
+    /// back to a single caller across restarts — each restart attempt produces a fresh value
+    /// that only the registry's [`TaskStatus`] can observe.
+    ///
+    /// This matters whenever `Fut::Output` itself encodes failure (typically `Result<T, E>`):
+    /// without a classifier, a task that runs to completion but produces `Err(..)` is
+    /// classified and reported identically to one that produced `Ok(..)` — `spawn` alone only
+    /// observes whether the *outer* future resolved, never what value it resolved to.
+    /// `is_success` is called once, by reference, after the future resolves.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use std::time::Duration;
+    /// use tokio_util::sync::CancellationToken;
+    /// use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let sup = TaskSupervisor::new(CancellationToken::new());
+    ///
+    /// let _handle = sup.spawn_classified(
+    ///     TaskDescriptor {
+    ///         name: "fallible-service",
+    ///         restart: RestartPolicy::Restart { max: 0, base_delay: Duration::from_secs(1) },
+    ///         factory: || async { Result::<(), String>::Err("boom".to_string()) },
+    ///     },
+    ///     Result::is_ok,
+    /// );
+    /// # }
+    /// ```
+    pub fn spawn_classified<F, Fut, R>(
+        &self,
+        desc: TaskDescriptor<F>,
+        is_success: impl Fn(&R) -> bool + Send + Sync + 'static,
+    ) -> TaskHandle
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let user_factory = desc.factory;
+        let is_success = Arc::new(is_success);
+        let factory: BoxFactory = Box::new(move || {
+            let fut = user_factory();
+            let is_success = Arc::clone(&is_success);
+            Box::pin(async move {
+                let val = fut.await;
+                is_success(&val)
+            })
+        });
+        self.spawn_boxed(desc.name, desc.restart, factory)
+    }
+
+    /// Shared registration tail for [`spawn`][Self::spawn] and
+    /// [`spawn_classified`][Self::spawn_classified]: spawns the boxed factory, wires up the
+    /// completion reporter, and inserts the registry entry.
+    fn spawn_boxed(
+        &self,
+        name: &'static str,
+        restart: RestartPolicy,
+        factory: BoxFactory,
+    ) -> TaskHandle {
         let cancel = self.inner.cancel.clone();
         let completion_tx = self.inner.completion_tx.clone();
-        let name: Arc<str> = Arc::from(desc.name);
+        let name_arc: Arc<str> = Arc::from(name);
 
-        let (abort_handle, jh) = Self::do_spawn(desc.name, &factory, cancel);
-        Self::wire_completion_reporter(Arc::clone(&name), jh, completion_tx);
+        let (abort_handle, jh) = Self::do_spawn(name, &factory, cancel);
+        Self::wire_completion_reporter(Arc::clone(&name_arc), jh, completion_tx);
 
         let entry = TaskEntry {
-            name: Arc::clone(&name),
+            name: Arc::clone(&name_arc),
             status: TaskStatus::Running,
             started_at: Instant::now(),
             restart_count: 0,
-            restart_policy: desc.restart,
+            restart_policy: restart,
             abort_handle: abort_handle.clone(),
-            factory: match desc.restart {
+            factory: match restart {
                 RestartPolicy::RunOnce => None,
                 RestartPolicy::Restart { .. } => Some(factory),
             },
@@ -472,14 +551,14 @@ impl TaskSupervisor {
 
         {
             let mut state = self.inner.state.lock();
-            if let Some(old) = state.tasks.remove(&name) {
+            if let Some(old) = state.tasks.remove(&name_arc) {
                 old.abort_handle.abort();
             }
-            state.tasks.insert(Arc::clone(&name), entry);
+            state.tasks.insert(Arc::clone(&name_arc), entry);
         }
 
         TaskHandle {
-            name: desc.name,
+            name,
             abort: abort_handle,
         }
     }
@@ -866,14 +945,15 @@ impl TaskSupervisor {
         name: &'static str,
         factory: &BoxFactory,
         cancel: CancellationToken,
-    ) -> (AbortHandle, tokio::task::JoinHandle<()>) {
+    ) -> (AbortHandle, tokio::task::JoinHandle<bool>) {
         let fut = factory();
         let span = tracing::info_span!("supervised_task", task.name = name);
         let jh = tokio::spawn(
             async move {
                 tokio::select! {
-                    () = fut => {},
-                    () = cancel.cancelled() => {},
+                    ok = fut => ok,
+                    // Token-cancelled = graceful exit, not a failure.
+                    () = cancel.cancelled() => true,
                 }
             }
             .instrument(span),
@@ -885,12 +965,13 @@ impl TaskSupervisor {
     /// Wire a completion reporter: drives `jh` and sends the result to `completion_tx`.
     fn wire_completion_reporter(
         name: Arc<str>,
-        jh: tokio::task::JoinHandle<()>,
+        jh: tokio::task::JoinHandle<bool>,
         completion_tx: mpsc::UnboundedSender<Completion>,
     ) {
         tokio::spawn(async move {
             let kind = match jh.await {
-                Ok(()) => CompletionKind::Normal,
+                Ok(true) => CompletionKind::Normal,
+                Ok(false) => CompletionKind::Failed,
                 Err(e) if e.is_panic() => CompletionKind::Panicked,
                 Err(_) => CompletionKind::Cancelled,
             };
@@ -1054,21 +1135,31 @@ impl TaskSupervisor {
 
         match entry.restart_policy {
             RestartPolicy::RunOnce => {
-                entry.status = if completion.kind == CompletionKind::Failed {
-                    TaskStatus::Failed {
+                if completion.kind == CompletionKind::Failed {
+                    entry.status = TaskStatus::Failed {
                         reason: "task completed with an inner failure".to_string(),
-                    }
+                    };
                 } else {
-                    TaskStatus::Completed
-                };
+                    entry.status = TaskStatus::Completed;
+                }
                 state.tasks.remove(&completion.name);
                 None
             }
             RestartPolicy::Restart { max, base_delay } => {
-                // Only restart on panic — normal exit and cancellation are not errors.
+                // Only *restart* on panic — normal exit, an inner failure, and cancellation
+                // are not retried. An inner failure is retained (not removed) as a durable
+                // Failed entry so it stays visible in snapshot()/TUI, mirroring the
+                // panic-exhausted path below — restart-policy tasks use fixed, bounded
+                // `&'static str` names, so retention here cannot leak (#6510).
                 if completion.kind != CompletionKind::Panicked {
-                    entry.status = TaskStatus::Completed;
-                    state.tasks.remove(&completion.name);
+                    if completion.kind == CompletionKind::Failed {
+                        entry.status = TaskStatus::Failed {
+                            reason: "task completed with an inner failure".to_string(),
+                        };
+                    } else {
+                        entry.status = TaskStatus::Completed;
+                        state.tasks.remove(&completion.name);
+                    }
                     return None;
                 }
                 if entry.restart_count >= max {
@@ -1139,8 +1230,9 @@ impl TaskSupervisor {
         let jh = tokio::spawn(
             async move {
                 tokio::select! {
-                    () = fut => {},
-                    () = cancel.cancelled() => {},
+                    ok = fut => ok,
+                    // Token-cancelled = graceful exit, not a failure.
+                    () = cancel.cancelled() => true,
                 }
             }
             .instrument(span),
@@ -1623,12 +1715,10 @@ mod tests {
     /// not `CompletionKind::Normal` (logged at `info` as a plain completion). This is the
     /// distinction `spawn_agent_task` (zeph-subagent) relies on so a subagent task that
     /// returns `Err` after a genuine completion (e.g. a worktree-setup failure) is reported
-    /// as a supervisor-level failure instead of a normal completion. The classification
-    /// only surfaces via the reap driver's log lines — for `RunOnce` the registry entry's
-    /// `Failed`/`Completed` status assignment and its removal happen in the same locked
-    /// critical section (see `classify_completion`), so there is no window in which
-    /// `snapshot()` could observe the transient status; the log line is the only externally
-    /// observable signal of which branch was taken.
+    /// as a supervisor-level failure instead of a normal completion. The registry entry is
+    /// set to `Failed` and removed in the same lock acquisition, so there is no window in
+    /// which `snapshot()` could observe the transient status — this test only checks the
+    /// log line.
     #[tokio::test]
     #[tracing_test::traced_test]
     async fn test_oneshot_classified_logs_failed_for_inner_err() {
@@ -1692,6 +1782,139 @@ mod tests {
         assert!(
             !logs_contain("completed with an inner failure"),
             "spawn_oneshot's default always-true classifier must never report an inner failure"
+        );
+    }
+
+    /// Regression test for #6510: a `spawn_classified` task registered with
+    /// `RestartPolicy::Restart` must classify an inner failure as `CompletionKind::Failed`
+    /// and — critically — retain the registry entry as `TaskStatus::Failed` so it stays
+    /// durably visible via [`TaskSupervisor::snapshot`] (the TUI's only data source),
+    /// instead of being removed in the same lock acquisition that sets the status. Before
+    /// this fix, `spawn`/`TaskDescriptor` only supported `Fut::Output = ()`, so a
+    /// `Restart`-policy task could never produce anything but
+    /// `CompletionKind::Normal | Panicked | Cancelled`; even once `Failed` became reachable,
+    /// an earlier revision of this fix set the status and immediately removed the entry in
+    /// the same critical section, leaving a zero-width observation window (#6510's own
+    /// reproduction still showed the task vanish rather than surface as `Failed`). The
+    /// primary assertion below is on `snapshot()`, not the log line, because a `snapshot()`
+    /// poll is what would actually fail if the status-branch fix were reverted back to
+    /// unconditional `TaskStatus::Completed`.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn spawn_classified_restart_reports_failed_for_inner_err() {
+        let (sup, _cancel) = make_supervisor();
+
+        let _handle = sup.spawn_classified(
+            TaskDescriptor {
+                name: "classified-restart-fail",
+                restart: RestartPolicy::Restart {
+                    max: 0,
+                    base_delay: Duration::from_millis(10),
+                },
+                factory: || async { Result::<(), &'static str>::Err("boom") },
+            },
+            Result::is_ok,
+        );
+
+        // Give the reap driver a beat to process the completion.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let snaps = sup.snapshot();
+        let snap = snaps
+            .iter()
+            .find(|s| s.name.as_ref() == "classified-restart-fail");
+        assert!(
+            matches!(snap.map(|s| &s.status), Some(TaskStatus::Failed { .. })),
+            "an Err value from a Restart-policy spawn_classified task must surface as a \
+             durably-retained TaskStatus::Failed entry in snapshot()/TUI, not vanish or \
+             settle as Completed — got {snap:?}"
+        );
+        assert!(
+            logs_contain("completed with an inner failure"),
+            "the inner-failure warning log must still fire alongside the status change"
+        );
+    }
+
+    /// Counterpart to the above: an `Ok`-returning factory on a `Restart`-policy
+    /// `spawn_classified` task must be classified `Completed` and removed from the
+    /// registry exactly as before this fix — only the `Failed` path changes behavior.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn spawn_classified_restart_does_not_report_failed_for_inner_ok() {
+        let (sup, _cancel) = make_supervisor();
+
+        let _handle = sup.spawn_classified(
+            TaskDescriptor {
+                name: "classified-restart-ok",
+                restart: RestartPolicy::Restart {
+                    max: 0,
+                    base_delay: Duration::from_millis(10),
+                },
+                factory: || async { Result::<(), &'static str>::Ok(()) },
+            },
+            Result::is_ok,
+        );
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            sup.snapshot()
+                .iter()
+                .all(|s| s.name.as_ref() != "classified-restart-ok"),
+            "an Ok completion must still be removed from the registry, unchanged from \
+             pre-#6510 behavior — only Failed completions are now retained"
+        );
+        assert!(
+            !logs_contain("completed with an inner failure"),
+            "an Ok value must not be classified as CompletionKind::Failed"
+        );
+    }
+
+    /// A classified task registered with `RestartPolicy::Restart { max > 0, .. }` must still
+    /// restart on panic (the classifier only affects status *reporting*, never the restart
+    /// *decision*, which stays panic-only per `classify_completion`), and the classifier must
+    /// keep working correctly on the post-restart attempt.
+    #[tokio::test]
+    async fn spawn_classified_restart_after_panic_then_classifies_next_attempt() {
+        let (sup, _cancel) = make_supervisor();
+
+        let attempt = Arc::new(AtomicU32::new(0));
+        let attempt2 = Arc::clone(&attempt);
+
+        let _handle = sup.spawn_classified(
+            TaskDescriptor {
+                name: "classified-restart-after-panic",
+                restart: RestartPolicy::Restart {
+                    max: 3,
+                    base_delay: Duration::from_millis(10),
+                },
+                factory: move || {
+                    let n = attempt2.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        assert!(n != 0, "first attempt always panics");
+                        Result::<(), &'static str>::Err("boom on retry")
+                    }
+                },
+            },
+            Result::is_ok,
+        );
+
+        // Panic (attempt 0) triggers a restart; attempt 1 returns Err, which is terminal
+        // (Restart only retries on panic) and must be classified Failed and retained.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        assert_eq!(
+            attempt.load(Ordering::SeqCst),
+            2,
+            "factory should run exactly twice: initial panic + one restart"
+        );
+        let snaps = sup.snapshot();
+        let snap = snaps
+            .iter()
+            .find(|s| s.name.as_ref() == "classified-restart-after-panic");
+        assert!(
+            matches!(snap.map(|s| &s.status), Some(TaskStatus::Failed { .. })),
+            "the post-restart Err attempt must classify and retain as Failed — got {snap:?}"
         );
     }
 

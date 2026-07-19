@@ -27,6 +27,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   overwriting it with an empty map, so a transient failure degrades to stale-but-real trust
   data rather than maximum trust.
 
+- `zeph-common`/`zeph`: a gateway startup failure (bind error, or any other `GatewayError`
+  variant) was invisible in `list_tasks()`/the TUI — the supervised `gateway_server` task always
+  showed `Completed`, never `Failed`, because `spawn_gateway_server` (`src/gateway_spawn.rs`)
+  swallowed `GatewayServer::serve()`'s `Err` into a `tracing::error!` log line and returned `()`,
+  and separately `TaskSupervisor::classify_completion`'s `RestartPolicy::Restart` branch
+  (`crates/zeph-common/src/task_supervisor.rs`) had no way to distinguish an inner failure from a
+  normal exit even if one were reported (#6510). Fixed by:
+  - New `TaskSupervisor::spawn_classified` method, which classifies a task's typed
+    `Future::Output` via a caller-supplied `is_success` predicate (mirroring the existing
+    `RunOnce`-only `spawn_oneshot_classified`, but supporting `RestartPolicy::Restart` and
+    returning a `TaskHandle`). Zero behavior change for `spawn`'s 14 existing callers.
+  - `classify_completion`'s `RestartPolicy::Restart` branch now retains the registry entry as
+    `TaskStatus::Failed` (instead of removing it) when the completion is classified as an inner
+    failure, so `snapshot()`/`list_tasks()`/the TUI durably observe the failure. The restart
+    *decision* itself is unchanged (still restarts only on an actual panic). Scoped to
+    `RestartPolicy::Restart` only — `RunOnce` (used by `spawn_oneshot_classified`, whose
+    production caller registers per-invocation-unique task names) is left untouched to avoid
+    unbounded registry growth.
+  - `src/gateway_spawn.rs`'s `gateway_server` task now registers via
+    `spawn_classified(..., Result::is_ok)` and propagates `serve()`'s `Result` instead of
+    discarding it — any `GatewayError` variant now surfaces as `Failed`, not just the log line.
+
 - `zeph-llm`: `openai`/`compatible` providers could crash the turn with `tool_calls[].id must
   be unique within the request` after Focus-based context compaction (#6501). Zeph replays
   `tool_call.id` values returned by the upstream model verbatim as message history on every
