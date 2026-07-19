@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- `zeph-core`: a transient `skill_trust` DB read failure made every active skill fail open to
+  `SkillTrustLevel::Trusted` for the whole turn, including skills an operator had explicitly
+  `Blocked` or left `Quarantined` (#6482). `Agent::build_skill_trust_map` collapsed both "table
+  has no rows" and "the read errored" into the same empty `HashMap`, so a lock-contention or
+  disk I/O hiccup on `load_all_skill_trust()` silently unsanitized skill bodies and unblocked
+  `QUARANTINE_DENIED` tools (`bash`, `write`, `edit`, `delete_path`, `fetch`, `memory_save`,
+  `diagnostics`, ...) for that turn — the same fail-open-on-missing-governance-input defect
+  class already closed for Discord/Slack allowlists (#6502) and MCP trust levels (#6505). Fixed
+  by a new `SkillTrustMapLoad::{Fresh, LoadFailed}` return type: `apply_skill_trust_and_gating`
+  and `reload_skills` now reuse the previous turn's `trust_snapshot` on `LoadFailed` instead of
+  overwriting it with an empty map, so a transient failure degrades to stale-but-real trust
+  data rather than maximum trust.
+
 - `zeph-llm`: `openai`/`compatible` providers could crash the turn with `tool_calls[].id must
   be unique within the request` after Focus-based context compaction (#6501). Zeph replays
   `tool_call.id` values returned by the upstream model verbatim as message history on every
