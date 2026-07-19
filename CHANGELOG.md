@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- `zeph-llm`: `openai`/`compatible` providers could crash the turn with `tool_calls[].id must
+  be unique within the request` after Focus-based context compaction (#6501). Zeph replays
+  `tool_call.id` values returned by the upstream model verbatim as message history on every
+  subsequent turn; some backends (observed: gonkagate/Kimi-K2) derive their id counters
+  relative to their perceived context window, so a counter reset after compaction shrinks the
+  sent history could re-mint an id colliding with one still present earlier in history. Fixed
+  by a new `dedupe_tool_call_ids` pass in `crates/zeph-llm/src/openai/mod.rs`'s
+  `convert_messages_structured`, which rewrites colliding `tool_calls[].id` values to unique
+  ids before serialization and keeps each `tool`-role `tool_call_id` correctly paired with its
+  rewritten assistant call. Applies to both `type = "openai"` and `type = "compatible"`
+  providers (the latter delegates message conversion to the former). Ids that never collide are
+  left untouched.
+
 - `zeph-vault`/`zeph`: `zeph vault init` ignored `--vault-path`/`--vault-key` overrides and
   unconditionally overwrote an existing vault with a fresh, empty keypair — no confirmation,
   no `--force` requirement, no partial-recovery path (#6475). Caused a real data-loss incident

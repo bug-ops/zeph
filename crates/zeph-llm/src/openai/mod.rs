@@ -28,6 +28,7 @@
 //! api_key_vault = "ZEPH_OPENAI_API_KEY"
 //! ```
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
 use crate::error::LlmError;
@@ -1666,7 +1667,54 @@ fn convert_messages_structured(messages: &[Message]) -> Vec<StructuredApiMessage
         }
     }
 
+    dedupe_tool_call_ids(&mut result);
     result
+}
+
+/// Rewrites colliding `tool_calls[].id` values so every id is unique within the outgoing request.
+///
+/// Zeph does not mint `tool_call.id` values itself — it replays whatever the upstream model
+/// returned as message history on every subsequent turn. Some `OpenAI`-compatible backends
+/// derive their id counters relative to their perceived context window; after Focus-based
+/// context compaction shrinks what Zeph sends, the backend's counter can reset and re-mint an
+/// id that collides with one still present earlier in the still-serialized history (#6501),
+/// which the backend then rejects outright. This pass walks the request in order and mints a
+/// fresh id for any `tool_calls[].id` that repeats one already seen, then rewrites the matching
+/// `tool`-role message's `tool_call_id` (matched in FIFO order per original id) so call/response
+/// pairing stays intact. Ids that never collide are left untouched.
+fn dedupe_tool_call_ids(messages: &mut [StructuredApiMessage]) {
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    let mut pending: HashMap<String, VecDeque<String>> = HashMap::new();
+
+    for msg in messages.iter_mut() {
+        if let Some(tool_calls) = msg.tool_calls.as_mut() {
+            for call in tool_calls.iter_mut() {
+                if seen_ids.insert(call.id.clone()) {
+                    continue;
+                }
+
+                let original_id = call.id.clone();
+                let mut new_id = format!("{original_id}-{}", uuid::Uuid::new_v4());
+                while !seen_ids.insert(new_id.clone()) {
+                    new_id = format!("{original_id}-{}", uuid::Uuid::new_v4());
+                }
+                pending
+                    .entry(original_id)
+                    .or_default()
+                    .push_back(new_id.clone());
+                call.id = new_id;
+            }
+        } else if msg.role == "tool"
+            && let Some(original_id) = msg.tool_call_id.clone()
+            && let Some(queue) = pending.get_mut(&original_id)
+            && let Some(new_id) = queue.pop_front()
+        {
+            if queue.is_empty() {
+                pending.remove(&original_id);
+            }
+            msg.tool_call_id = Some(new_id);
+        }
+    }
 }
 
 #[derive(Serialize)]

@@ -1207,6 +1207,349 @@ fn convert_messages_structured_assistant_tool_only_content_is_none() {
 }
 
 #[test]
+fn convert_messages_structured_dedupes_colliding_tool_call_ids() {
+    // Simulates the #6501 scenario: an upstream backend re-mints a tool_call.id that
+    // collides with one still present earlier in history after Focus compaction shrinks
+    // the perceived context window. Unrelated messages sit between the two round trips
+    // to mirror a post-compaction gap.
+    let messages = vec![
+        Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: "call_1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+            }],
+        ),
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "file1.rs".into(),
+                is_error: false,
+            }],
+        ),
+        Message::from_legacy(Role::Assistant, "unrelated turn in between"),
+        Message::from_legacy(Role::User, "unrelated follow-up"),
+        Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: "call_1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "pwd"}),
+            }],
+        ),
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "/tmp".into(),
+                is_error: false,
+            }],
+        ),
+    ];
+
+    let result = convert_messages_structured(&messages);
+    assert_eq!(result.len(), 6);
+
+    // First round trip keeps its original id.
+    let first_call_id = result[0].tool_calls.as_ref().unwrap()[0].id.clone();
+    assert_eq!(first_call_id, "call_1");
+    assert_eq!(result[1].tool_call_id.as_deref(), Some("call_1"));
+
+    // Second round trip's colliding id must be rewritten to something unique...
+    let second_call_id = result[4].tool_calls.as_ref().unwrap()[0].id.clone();
+    assert_ne!(
+        second_call_id, "call_1",
+        "colliding tool_call.id must be rewritten"
+    );
+    assert_ne!(second_call_id, first_call_id);
+
+    // ...and its paired tool-result message must carry the same rewritten id.
+    assert_eq!(
+        result[5].tool_call_id.as_deref(),
+        Some(second_call_id.as_str())
+    );
+}
+
+#[test]
+fn convert_messages_structured_preserves_unique_tool_call_ids() {
+    // No collisions in this history — ids must pass through unchanged.
+    let messages = vec![
+        Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: "call_1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+            }],
+        ),
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "file1.rs".into(),
+                is_error: false,
+            }],
+        ),
+        Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: "call_2".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "pwd"}),
+            }],
+        ),
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "call_2".into(),
+                content: "/tmp".into(),
+                is_error: false,
+            }],
+        ),
+    ];
+
+    let result = convert_messages_structured(&messages);
+    assert_eq!(result[0].tool_calls.as_ref().unwrap()[0].id, "call_1");
+    assert_eq!(result[1].tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(result[2].tool_calls.as_ref().unwrap()[0].id, "call_2");
+    assert_eq!(result[3].tool_call_id.as_deref(), Some("call_2"));
+}
+
+#[test]
+fn convert_messages_structured_dedupes_triple_collision_fifo() {
+    // Same original id reused three times across the history (e.g. two Focus-compaction
+    // resets in the same session). Each collision must mint its own fresh id, and each
+    // tool-role response must pair with the correct occurrence in call order (FIFO).
+    fn round_trip(cmd: &str, output: &str) -> [Message; 2] {
+        [
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "call_1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": cmd}),
+                }],
+            ),
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: output.into(),
+                    is_error: false,
+                }],
+            ),
+        ]
+    }
+
+    let mut messages = Vec::new();
+    messages.extend(round_trip("ls", "file1.rs"));
+    messages.extend(round_trip("pwd", "/tmp"));
+    messages.extend(round_trip("whoami", "root"));
+
+    let result = convert_messages_structured(&messages);
+    assert_eq!(result.len(), 6);
+
+    let call_ids: Vec<String> = (0..3)
+        .map(|i| result[i * 2].tool_calls.as_ref().unwrap()[0].id.clone())
+        .collect();
+
+    // First occurrence keeps the original id; the other two must be rewritten to
+    // something unique, and all three must be pairwise distinct.
+    assert_eq!(call_ids[0], "call_1");
+    assert_ne!(call_ids[1], "call_1");
+    assert_ne!(call_ids[2], "call_1");
+    assert_ne!(call_ids[1], call_ids[2]);
+
+    // Each tool-role response must carry the id of its own round trip, in order.
+    for i in 0..3 {
+        assert_eq!(
+            result[i * 2 + 1].tool_call_id.as_deref(),
+            Some(call_ids[i].as_str()),
+            "round trip {i} response must pair with its own call id"
+        );
+    }
+}
+
+#[test]
+fn convert_messages_structured_dedupes_multiple_colliding_calls_in_one_message() {
+    // A single assistant turn issues two tool_calls, and both individually collide with
+    // distinct earlier ids. Rewriting must be per-call independent — no cross-contamination
+    // between the two rewritten ids or their paired responses.
+    let messages = vec![
+        Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: "call_1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+            }],
+        ),
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "file1.rs".into(),
+                is_error: false,
+            }],
+        ),
+        Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: "call_2".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "pwd"}),
+            }],
+        ),
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "call_2".into(),
+                content: "/tmp".into(),
+                is_error: false,
+            }],
+        ),
+        // One assistant turn re-issuing both call_1 and call_2 — both collide.
+        Message::from_parts(
+            Role::Assistant,
+            vec![
+                MessagePart::ToolUse {
+                    id: "call_1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "date"}),
+                },
+                MessagePart::ToolUse {
+                    id: "call_2".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "whoami"}),
+                },
+            ],
+        ),
+        Message::from_parts(
+            Role::User,
+            vec![
+                MessagePart::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "Mon Jul 20".into(),
+                    is_error: false,
+                },
+                MessagePart::ToolResult {
+                    tool_use_id: "call_2".into(),
+                    content: "root".into(),
+                    is_error: false,
+                },
+            ],
+        ),
+    ];
+
+    let result = convert_messages_structured(&messages);
+    // Messages 4 and 5 are the second-round assistant turn (2 tool_calls) and the two
+    // resulting tool-role response messages (7 total structured messages).
+    assert_eq!(result.len(), 7);
+
+    let second_calls = result[4].tool_calls.as_ref().unwrap();
+    assert_eq!(second_calls.len(), 2);
+    let rewritten_call_1 = second_calls[0].id.clone();
+    let rewritten_call_2 = second_calls[1].id.clone();
+
+    assert_ne!(rewritten_call_1, "call_1");
+    assert_ne!(rewritten_call_2, "call_2");
+    assert_ne!(
+        rewritten_call_1, rewritten_call_2,
+        "independently rewritten ids must not collide with each other"
+    );
+
+    // Responses are messages 5 and 6, in the same order as the calls that produced them.
+    assert_eq!(
+        result[5].tool_call_id.as_deref(),
+        Some(rewritten_call_1.as_str()),
+        "first response must pair with the rewritten call_1, not call_2's id"
+    );
+    assert_eq!(
+        result[6].tool_call_id.as_deref(),
+        Some(rewritten_call_2.as_str()),
+        "second response must pair with the rewritten call_2, not call_1's id"
+    );
+}
+
+#[test]
+fn dedupe_tool_call_ids_orphaned_call_without_response_does_not_panic() {
+    // A colliding tool_calls entry with no matching tool-role response anywhere in the
+    // request (e.g. response was dropped by upstream compaction). Must not panic and must
+    // still mint a fresh, unique id for the orphaned call.
+    let mut messages = vec![
+        StructuredApiMessage {
+            role: "assistant".to_owned(),
+            content: None,
+            tool_calls: Some(vec![OpenAiToolCallOut {
+                id: "call_1".to_owned(),
+                r#type: "function".to_owned(),
+                function: OpenAiFunctionCall {
+                    name: "bash".to_owned(),
+                    arguments: "{}".to_owned(),
+                },
+            }]),
+            tool_call_id: None,
+        },
+        // Second occurrence of call_1 with no paired "tool" response message at all.
+        StructuredApiMessage {
+            role: "assistant".to_owned(),
+            content: None,
+            tool_calls: Some(vec![OpenAiToolCallOut {
+                id: "call_1".to_owned(),
+                r#type: "function".to_owned(),
+                function: OpenAiFunctionCall {
+                    name: "bash".to_owned(),
+                    arguments: "{}".to_owned(),
+                },
+            }]),
+            tool_call_id: None,
+        },
+    ];
+
+    dedupe_tool_call_ids(&mut messages);
+
+    assert_eq!(messages[0].tool_calls.as_ref().unwrap()[0].id, "call_1");
+    let rewritten = messages[1].tool_calls.as_ref().unwrap()[0].id.clone();
+    assert_ne!(rewritten, "call_1");
+}
+
+#[test]
+fn dedupe_tool_call_ids_tool_message_without_pending_entry_is_unchanged() {
+    // A "tool" role message whose tool_call_id never collided (no entry in `pending`)
+    // must pass through unmodified rather than panicking on a missing map lookup.
+    let mut messages = vec![StructuredApiMessage {
+        role: "tool".to_owned(),
+        content: Some("output".to_owned()),
+        tool_calls: None,
+        tool_call_id: Some("never_collided".to_owned()),
+    }];
+
+    dedupe_tool_call_ids(&mut messages);
+
+    assert_eq!(
+        messages[0].tool_call_id.as_deref(),
+        Some("never_collided"),
+        "tool_call_id with no pending rewrite must be left untouched"
+    );
+}
+
+#[test]
+fn dedupe_tool_call_ids_empty_tool_calls_array_does_not_panic() {
+    let mut messages = vec![StructuredApiMessage {
+        role: "assistant".to_owned(),
+        content: Some("no calls here".to_owned()),
+        tool_calls: Some(vec![]),
+        tool_call_id: None,
+    }];
+
+    dedupe_tool_call_ids(&mut messages);
+
+    assert!(messages[0].tool_calls.as_ref().unwrap().is_empty());
+}
+
+#[test]
 fn parse_usage_with_cached_tokens() {
     let json = r#"{
             "prompt_tokens": 2006,
