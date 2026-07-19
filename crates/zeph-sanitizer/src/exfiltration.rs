@@ -43,14 +43,32 @@ pub use zeph_config::ExfiltrationGuardConfig;
 ///
 /// Local paths (`./img.png`) and data URIs (`data:image/...`) are intentionally
 /// excluded — they cannot exfiltrate data to a remote server.
+///
+/// Per `CommonMark`, the destination may be preceded/followed by optional whitespace
+/// and may be wrapped in angle brackets (`<https://...>`), which also permits
+/// otherwise-illegal characters (e.g. spaces) inside the URL. Group 2 holds an
+/// angle-bracket-wrapped URL, group 3 holds a bare URL — callers must check both.
+///
+/// An optional `CommonMark` title (`"..."`, `'...'`, or `(...)`) may follow the destination,
+/// separated by whitespace — e.g. `![t](https://evil.com/x.gif "title")`. The bare-URL
+/// branch stops at the first whitespace (so it cannot swallow a trailing title itself),
+/// so the title clause must be matched explicitly or the whole pattern fails to match.
 static MARKDOWN_IMAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"!\[([^\]]*)\]\((https?://[^)]+)\)").expect("valid MARKDOWN_IMAGE_RE")
+    Regex::new(
+        r#"!\[([^\]]*)\]\(\s*(?:<(https?://[^>]+)>|(https?://[^)\s]+))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)"#,
+    )
+    .expect("valid MARKDOWN_IMAGE_RE")
 });
 
 /// Matches reference-style markdown image declarations: `[ref]: https://example.com/img`
 /// Used in conjunction with `REFERENCE_LABEL_RE` to detect two-part reference images.
+///
+/// The destination may be wrapped in angle brackets (`<https://...>`) per `CommonMark`.
+/// Group 2 holds an angle-bracket-wrapped URL, group 3 holds a bare URL — callers must
+/// check both.
 static REFERENCE_DEF_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^\[([^\]]+)\]:\s*(https?://\S+)").expect("valid REFERENCE_DEF_RE")
+    Regex::new(r"(?m)^\[([^\]]+)\]:\s*(?:<(https?://[^>]+)>|(https?://\S+))")
+        .expect("valid REFERENCE_DEF_RE")
 });
 
 /// Matches reference-style image usages: `![alt][ref]`
@@ -63,11 +81,14 @@ static URL_EXTRACT_RE: LazyLock<Regex> =
 
 /// Matches HTML `<img>` tags with external http/https `src` attributes.
 ///
-/// Both single-quoted and double-quoted `src` values are matched. The captured group 1 contains
-/// the URL. The full tag (`<img … >`) is replaced with `[image removed: <url>]`.
+/// Single-quoted, double-quoted, and unquoted (HTML5-legal) `src` values are all matched.
+/// Group 1 holds a quoted URL, group 2 holds an unquoted URL — callers must check both.
+/// The full tag (`<img … >`) is replaced with `[image removed: <url>]`.
 static HTML_IMG_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)<img\b[^>]*\bsrc\s*=\s*["'](https?://[^"']+)["'][^>]*>"#)
-        .expect("valid HTML_IMG_RE")
+    Regex::new(
+        r#"(?i)<img\b[^>]*\bsrc\s*=\s*(?:["'](https?://[^"']+)["']|(https?://[^\s>]+))[^>]*>"#,
+    )
+    .expect("valid HTML_IMG_RE")
 });
 
 /// Detects invisible Unicode characters between `!` and `[` used to bypass markdown regex.
@@ -175,8 +196,13 @@ impl ExfiltrationGuard {
     /// When `block_markdown_images` is `false`, returns the input unchanged.
     ///
     /// # Scanning coverage
-    /// - Inline images: `![alt](https://evil.com/track.gif)`
-    /// - Reference-style images: `![alt][ref]` + `[ref]: https://evil.com/img`
+    /// - Inline images: `![alt](https://evil.com/track.gif)`, including `CommonMark`-legal
+    ///   whitespace before the destination (`![alt]( https://...)`) and angle-bracket-wrapped
+    ///   destinations (`![alt](<https://...>)`)
+    /// - Reference-style images: `![alt][ref]` + `[ref]: https://evil.com/img`, including
+    ///   angle-bracket-wrapped reference destinations (`[ref]: <https://...>`)
+    /// - HTML `<img>` tags with quoted (`src="..."`, `src='...'`) or HTML5-legal unquoted
+    ///   (`src=https://...`) `src` attributes
     /// - Percent-encoded URLs inside already-captured groups: decoded before `is_external_url()`
     ///
     /// # Not covered (tracked in #1195)
@@ -203,7 +229,11 @@ impl ExfiltrationGuard {
         let mut last_end = 0usize;
         for cap in MARKDOWN_IMAGE_RE.captures_iter(text) {
             let m = cap.get(0).expect("full match");
-            let raw_url = cap.get(2).expect("url group").as_str();
+            let raw_url = cap
+                .get(2)
+                .or_else(|| cap.get(3))
+                .expect("url group")
+                .as_str();
             let url = percent_decode_url(raw_url);
 
             if is_external_url(&url) {
@@ -224,7 +254,7 @@ impl ExfiltrationGuard {
             std::collections::HashMap::new();
         for cap in REFERENCE_DEF_RE.captures_iter(&result) {
             let label = cap.get(1).expect("label").as_str().to_lowercase();
-            let raw_url = cap.get(2).expect("url").as_str();
+            let raw_url = cap.get(2).or_else(|| cap.get(3)).expect("url").as_str();
             let url = percent_decode_url(raw_url);
             if is_external_url(&url) {
                 ref_defs.insert(label, url);
@@ -279,7 +309,12 @@ impl ExfiltrationGuard {
         let mut html_last_end = 0usize;
         for cap in HTML_IMG_RE.captures_iter(&result) {
             let m = cap.get(0).expect("full match");
-            let url = cap.get(1).expect("src url group").as_str().to_owned();
+            let url = cap
+                .get(1)
+                .or_else(|| cap.get(2))
+                .expect("src url group")
+                .as_str()
+                .to_owned();
             tracing::warn!(url = %url, "HTML img tag with external URL stripped from LLM output");
             html_result.push_str(&result[html_last_end..m.start()]);
             let _ = write!(html_result, "[image removed: {url}]");
@@ -606,6 +641,141 @@ mod tests {
             "normal URL must be removed"
         );
         assert_eq!(normal_events.len(), 1);
+    }
+
+    #[test]
+    fn strips_inline_image_with_leading_whitespace_in_destination() {
+        // CommonMark permits optional whitespace between `(` and the destination.
+        let (cleaned, events) =
+            guard().scan_output("Before ![t]( https://evil.com/pixel.gif) after");
+        assert!(
+            !cleaned.contains("![t]("),
+            "markdown image syntax must be removed: {cleaned}"
+        );
+        assert!(
+            cleaned.contains("[image removed: https://evil.com/pixel.gif]"),
+            "replacement label must contain the url: {cleaned}"
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn strips_inline_image_with_angle_bracket_destination() {
+        // CommonMark permits wrapping the destination in angle brackets.
+        let (cleaned, events) =
+            guard().scan_output("Before ![t](<https://evil.com/pixel.gif>) after");
+        assert!(
+            !cleaned.contains("![t]("),
+            "markdown image syntax must be removed: {cleaned}"
+        );
+        assert!(
+            cleaned.contains("[image removed: https://evil.com/pixel.gif]"),
+            "replacement label must contain the url: {cleaned}"
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn strips_inline_image_with_double_quoted_title() {
+        // Standard CommonMark image title syntax: `![alt](url "title")`.
+        let (cleaned, events) =
+            guard().scan_output(r#"Before ![t](https://evil.com/x.gif "title") after"#);
+        assert!(
+            !cleaned.contains("![t]("),
+            "markdown image syntax must be removed: {cleaned}"
+        );
+        assert!(
+            cleaned.contains("[image removed: https://evil.com/x.gif]"),
+            "replacement label must contain the url without the title: {cleaned}"
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn strips_inline_image_with_single_quoted_title() {
+        let (cleaned, events) =
+            guard().scan_output("Before ![t](https://evil.com/x.gif 'title') after");
+        assert!(
+            !cleaned.contains("![t]("),
+            "markdown image syntax must be removed: {cleaned}"
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn strips_inline_image_with_paren_title() {
+        let (cleaned, events) =
+            guard().scan_output("Before ![t](https://evil.com/x.gif (title)) after");
+        assert!(
+            !cleaned.contains("![t]("),
+            "markdown image syntax must be removed: {cleaned}"
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn strips_inline_image_with_leading_whitespace_and_title() {
+        let (cleaned, events) =
+            guard().scan_output(r#"Before ![t]( https://evil.com/x.gif "title") after"#);
+        assert!(
+            !cleaned.contains("![t]("),
+            "markdown image syntax must be removed: {cleaned}"
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn strips_inline_image_with_angle_bracket_destination_and_title() {
+        let (cleaned, events) =
+            guard().scan_output(r#"Before ![t](<https://evil.com/x.gif> "title") after"#);
+        assert!(
+            !cleaned.contains("![t]("),
+            "markdown image syntax must be removed: {cleaned}"
+        );
+        assert!(
+            cleaned.contains("[image removed: https://evil.com/x.gif]"),
+            "replacement label must contain the url without the title: {cleaned}"
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn strips_reference_style_image_with_angle_bracket_destination() {
+        let text = "Here is the image: ![alt][ref]\n[ref]: <https://evil.com/track.gif>\nend";
+        let (cleaned, events) = guard().scan_output(text);
+        assert!(
+            !cleaned.contains("![alt][ref]"),
+            "image usage syntax must be removed: {cleaned}"
+        );
+        assert!(
+            !cleaned.contains("[ref]:"),
+            "reference definition must be removed: {cleaned}"
+        );
+        assert!(!events.is_empty(), "must generate event");
+    }
+
+    #[test]
+    fn html_img_tag_unquoted_src_blocked() {
+        let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+            block_markdown_images: true,
+            ..ExfiltrationGuardConfig::default()
+        });
+        // HTML5 permits unquoted attribute values.
+        let (cleaned, events) = guard.scan_output("text <img src=https://evil.com/p.gif> end");
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ExfiltrationEvent::HtmlImageBlocked { url } if url == "https://evil.com/p.gif")),
+            "expected HtmlImageBlocked event for unquoted src"
+        );
+        assert!(
+            !cleaned.contains("<img"),
+            "img tag must be removed: {cleaned}"
+        );
+        assert!(
+            cleaned.contains("[image removed:"),
+            "replacement label must be present: {cleaned}"
+        );
     }
 
     #[test]
