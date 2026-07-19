@@ -197,6 +197,21 @@ fn prompt_abs_paths(label: &str) -> anyhow::Result<Vec<String>> {
     }
 }
 
+/// Parse a wizard-entered USD amount into cents, clamped to `[0, u32::MAX]`.
+///
+/// Non-numeric input falls back to the wizard's suggested default (2500 cents = $25.00),
+/// matching the pre-filled prompt value rather than silently accepting a typo as `0`.
+/// Negative values clamp to `0` (unlimited), consistent with `max_daily_cents`'s meaning.
+fn parse_daily_cap_dollars(s: &str) -> u32 {
+    s.trim().parse::<f64>().map_or(2500, |dollars| {
+        let cents = (dollars.max(0.0) * 100.0).round();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            cents.min(f64::from(u32::MAX)) as u32
+        }
+    })
+}
+
 pub(super) fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Security ==\n");
     println!(
@@ -210,10 +225,18 @@ pub(super) fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
         .interact()?;
     state.rate_limit_enabled = Confirm::new()
         .with_prompt(
-            "Enable tool rate limiter? (sliding-window per-category limits: shell 30/min, web 20/min, memory 60/min)",
+            "Enable tool rate limiter? (sliding-window per-category limits: shell 30/min, web 20/min, memory 60/min; recommended)",
         )
-        .default(false)
+        .default(true)
         .interact()?;
+
+    let daily_cap_dollars: String = Input::new()
+        .with_prompt(
+            "Daily LLM cost cap in USD (guards against a runaway loop burning API spend; 0 = unlimited)",
+        )
+        .default("25.00".to_owned())
+        .interact_text()?;
+    state.max_daily_cents = parse_daily_cap_dollars(&daily_cap_dollars);
     state.skill_scan_on_load = Confirm::new()
         .with_prompt(
             "Scan skill content for injection patterns on load? (advisory — logs warnings, does not block; recommended)",
@@ -507,5 +530,39 @@ mod tests {
     fn sandbox_platform_support_unsupported_returns_false() {
         let (can_enable, _) = sandbox_platform_support();
         assert!(!can_enable);
+    }
+
+    // --- parse_daily_cap_dollars (issue #6469) ---
+
+    #[test]
+    fn parse_daily_cap_dollars_zero_means_unlimited() {
+        assert_eq!(parse_daily_cap_dollars("0"), 0);
+    }
+
+    #[test]
+    fn parse_daily_cap_dollars_default_value() {
+        assert_eq!(parse_daily_cap_dollars("25.00"), 2500);
+    }
+
+    #[test]
+    fn parse_daily_cap_dollars_fractional_rounds_to_nearest_cent() {
+        assert_eq!(parse_daily_cap_dollars("12.344"), 1234);
+        assert_eq!(parse_daily_cap_dollars("12.346"), 1235);
+    }
+
+    #[test]
+    fn parse_daily_cap_dollars_non_numeric_falls_back_to_default() {
+        assert_eq!(parse_daily_cap_dollars("not a number"), 2500);
+        assert_eq!(parse_daily_cap_dollars(""), 2500);
+    }
+
+    #[test]
+    fn parse_daily_cap_dollars_negative_clamps_to_zero() {
+        assert_eq!(parse_daily_cap_dollars("-5"), 0);
+    }
+
+    #[test]
+    fn parse_daily_cap_dollars_trims_whitespace() {
+        assert_eq!(parse_daily_cap_dollars("  25.00  "), 2500);
     }
 }

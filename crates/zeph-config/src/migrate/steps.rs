@@ -75,7 +75,11 @@
 //! step 98 adds a `[plugins.reputation]` advisory block for the install-time
 //! name-similarity/typosquat check (spec-043, #5864); step 99 adds a documentation-only
 //! advisory comment to an existing active `[durable]` table noting that row-HMAC +
-//! high-water-mark tamper-evidence (issue #6360) is unconditional, not a new opt-in toggle.
+//! high-water-mark tamper-evidence (issue #6360) is unconditional, not a new opt-in toggle;
+//! step 100 adds a commented `[integrity]` advisory block for vault-anchor
+//! downgrade-resistance (issue #6449); step 101 adds a commented `[security.rate_limit]`
+//! advisory block — purely documentary, the tool rate limiter already defaults to enabled
+//! at the struct-default level (issue #6469).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -111,11 +115,11 @@ use super::{
     migrate_planner_model_to_provider, migrate_plugins_reputation_config,
     migrate_policy_provider_and_utility_window, migrate_provider_max_concurrent,
     migrate_qdrant_api_key, migrate_qdrant_timeout_secs, migrate_quality_config,
-    migrate_sandbox_config, migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
-    migrate_search_config, migrate_secret_masking_config, migrate_serve_config,
-    migrate_session_persist_provider_overrides, migrate_session_persistence_config,
-    migrate_session_provider_persistence, migrate_session_recap_config,
-    migrate_session_resume_config, migrate_shadow_sentinel_config,
+    migrate_rate_limit_advisory, migrate_sandbox_config, migrate_sandbox_egress_filter,
+    migrate_scheduler_daemon_config, migrate_search_config, migrate_secret_masking_config,
+    migrate_serve_config, migrate_session_persist_provider_overrides,
+    migrate_session_persistence_config, migrate_session_provider_persistence,
+    migrate_session_recap_config, migrate_session_resume_config, migrate_shadow_sentinel_config,
     migrate_shell_checkpoints_config, migrate_shell_transactional,
     migrate_skill_trust_require_check, migrate_skills_registry, migrate_stt_to_provider,
     migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
@@ -1280,5 +1284,18 @@ impl Migration for MigrateIntegrityConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_integrity_config(toml_src)
+    }
+}
+
+/// Step 101 — adds a commented `[security.rate_limit]` advisory block; purely documentary,
+/// the tool rate limiter already defaults to enabled at the struct-default level (#6469).
+pub(super) struct MigrateRateLimitAdvisory;
+impl Migration for MigrateRateLimitAdvisory {
+    fn name(&self) -> &'static str {
+        "migrate_rate_limit_advisory"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_rate_limit_advisory(toml_src)
     }
 }

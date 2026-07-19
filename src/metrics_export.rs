@@ -169,6 +169,7 @@ pub struct PrometheusMetrics {
     security_exfiltration_blocks_total: Counter,
     security_quarantine_total: Family<QuarantineResultLabels, Counter>,
     security_rate_limit_trips_total: Counter,
+    cost_budget_exhausted_total: Counter,
 
     // --- Orchestration metrics ---
     orchestration_plans_total: Counter,
@@ -348,6 +349,13 @@ impl PrometheusMetrics {
             security_rate_limit_trips_total.clone(),
         );
 
+        let cost_budget_exhausted_total = Counter::default();
+        registry.register(
+            "zeph_cost_budget_exhausted",
+            "Total times the daily cost budget was exhausted, blocking further LLM calls",
+            cost_budget_exhausted_total.clone(),
+        );
+
         let orchestration_plans_total = Counter::default();
         registry.register(
             "zeph_orchestration_plans",
@@ -474,6 +482,7 @@ impl PrometheusMetrics {
             security_exfiltration_blocks_total,
             security_quarantine_total,
             security_rate_limit_trips_total,
+            cost_budget_exhausted_total,
             orchestration_plans_total,
             orchestration_tasks_total,
             mcp_servers,
@@ -691,6 +700,11 @@ impl PrometheusMetrics {
         let rate_delta = counter_delta(current.rate_limit_trips, prev.rate_limit_trips);
         if rate_delta > 0 {
             self.security_rate_limit_trips_total.inc_by(rate_delta);
+        }
+
+        let budget_delta = counter_delta(current.cost_budget_exhausted, prev.cost_budget_exhausted);
+        if budget_delta > 0 {
+            self.cost_budget_exhausted_total.inc_by(budget_delta);
         }
 
         // --- Orchestration counters ---
@@ -1012,6 +1026,24 @@ mod tests {
             "missing direction label"
         );
         assert!(buf.ends_with("# EOF\n"), "OpenMetrics requires EOF marker");
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn test_cost_budget_exhausted_metric_sync() {
+        let pm = PrometheusMetrics::new();
+
+        let mut snap = MetricsSnapshot::default();
+        snap.cost_budget_exhausted = 2;
+
+        pm.sync(&snap, &MetricsSnapshot::default());
+
+        let mut buf = String::new();
+        prometheus_client::encoding::text::encode(&mut buf, &pm.registry).unwrap();
+        assert!(
+            buf.contains("zeph_cost_budget_exhausted_total 2"),
+            "missing or wrong cost_budget_exhausted counter, got:\n{buf}"
+        );
     }
 
     #[test]

@@ -9,7 +9,10 @@ use parking_lot::Mutex;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-#[error("daily budget exhausted: spent {spent_cents:.2} / {budget_cents:.2} cents")]
+#[error(
+    "daily budget exhausted: spent {spent_cents:.2} / {budget_cents:.2} cents \
+     (raise or disable via `[cost] max_daily_cents` in config.toml; 0 = unlimited)"
+)]
 pub struct BudgetExhausted {
     pub spent_cents: f64,
     pub budget_cents: f64,

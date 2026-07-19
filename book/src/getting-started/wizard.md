@@ -178,7 +178,8 @@ Debug dump is intended for context debugging — use it when you need to inspect
 Configure security features:
 
 - **PII filter** — scrub emails, phone numbers, SSNs, and credit card numbers from tool outputs before they reach the LLM context and debug dumps (default: enabled)
-- **Tool rate limiter** — sliding-window per-category limits (shell 30/min, web 20/min, memory 60/min) to prevent runaway tool calls (default: disabled)
+- **Tool rate limiter** — sliding-window per-category limits (shell 30/min, web 20/min, memory 60/min) to prevent runaway tool calls (default: enabled)
+- **Daily LLM cost cap** — refuses new turns once cumulative daily spend crosses the cap, guarding against unbounded API spend from a runaway loop; local-only (Ollama/Candle) usage always costs `0` and never trips it (default: $25.00/day; `0` = unlimited)
 - **Skill scan on load** — scan skill content for injection patterns when skills are loaded; logs warnings but does not block execution (default: enabled)
 - **Pre-execution verification** — block destructive commands (e.g. `rm -rf /`) and injection patterns before every tool call (default: enabled)
   - **Allowed paths** — comma-separated path prefixes where destructive commands are permitted (empty = deny all). Example: `/tmp,/home/user/scratch`

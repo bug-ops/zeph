@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Changed
+
+- `zeph-config`/`zeph-core`: the tool rate limiter (`[security.rate_limit]`) and the daily
+  LLM cost cap (`[cost].max_daily_cents`) are now enabled by default, guarding a fresh install
+  against a runaway agent loop hammering a tool category or burning unbounded API spend
+  (#6469). `RateLimitConfig::default().enabled` flips `false` → `true` (per-category limits
+  unchanged: shell 30/min, web 20/min, memory 60/min, mcp 40/min, other 60/min, 30s cooldown),
+  and `default_max_daily_cents()` flips `0` (unlimited) → `2500` ($25.00/day; local-only
+  Ollama/Candle usage always costs `0` and never trips this cap). A named-fn serde default
+  (`default_rate_limit_enabled`) replaces `RateLimitConfig::enabled`'s bare
+  `#[serde(default)]` so a present-but-partial `[security.rate_limit]` section (only one
+  sub-limit set) resolves `enabled = true` consistently with an absent section — previously
+  these two cases silently disagreed. **Only sparse/absent `[cost]`/`[security.rate_limit]`
+  sections pick up the new defaults** — any config file that already sets `enabled` or
+  `max_daily_cents` explicitly (including the old defaults `false`/`0`) is unaffected. The
+  `--init` wizard's rate-limiter prompt now defaults to "yes", and a new prompt asks for the
+  daily cost cap in USD (pre-filled $25.00). Budget-exhausted and rate-limit-trip messages now
+  include a one-line remediation hint pointing at the relevant config key. A new
+  `zeph_cost_budget_exhausted_total` Prometheus counter mirrors the existing
+  `zeph_security_rate_limit_trips` metric.
+
 ### Fixed
 
 - `zeph-core`: the vault-anchor reconcile sweep (`run_anchor_sweep`) hard-deleted a transcript/

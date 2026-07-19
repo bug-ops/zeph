@@ -34,7 +34,7 @@ Per-model cost tracking with daily budget enforcement.
 ```toml
 [cost]
 enabled = true
-max_daily_cents = 500   # Daily spending limit in cents (USD)
+max_daily_cents = 2500   # Daily spending limit in cents (default: 2500 = $25.00; 0 = unlimited)
 ```
 
 ### Built-in Pricing

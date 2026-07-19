@@ -478,6 +478,9 @@ pub struct MetricsSnapshot {
     pub pii_ner_circuit_breaker_trips: u64,
     pub memory_validation_failures: u64,
     pub rate_limit_trips: u64,
+    /// Number of times `CostTracker::check_budget()` returned `BudgetExhausted`, blocking
+    /// the next LLM call for the rest of the day.
+    pub cost_budget_exhausted: u64,
     pub pre_execution_blocks: u64,
     pub pre_execution_warnings: u64,
     /// `true` when a guardrail filter is active for this session.

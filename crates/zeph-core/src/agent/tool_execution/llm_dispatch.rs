@@ -69,6 +69,7 @@ impl<C: Channel> Agent<C> {
         if let Some(ref tracker) = self.runtime.metrics.cost_tracker
             && let Err(e) = tracker.check_budget()
         {
+            self.update_metrics(|m| m.cost_budget_exhausted += 1);
             self.channel
                 .send(&format!("Budget limit reached: {e}"))
                 .await?;
@@ -363,6 +364,7 @@ impl<C: Channel> Agent<C> {
         if let Some(ref tracker) = self.runtime.metrics.cost_tracker
             && let Err(e) = tracker.check_budget()
         {
+            self.update_metrics(|m| m.cost_budget_exhausted += 1);
             self.channel
                 .send(&format!("Budget limit reached: {e}"))
                 .await?;

@@ -29,8 +29,8 @@ pub use features::{
     migrate_orchestration_asset_sensitivity, migrate_orchestration_command_config,
     migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
     migrate_orchestration_persistence, migrate_orchestration_whole_plan_verifier_timeout,
-    migrate_skill_trust_require_check, migrate_skills_registry, migrate_tui_delights,
-    migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
+    migrate_rate_limit_advisory, migrate_skill_trust_require_check, migrate_skills_registry,
+    migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
 };
 pub use infra::*;
 pub use integrity::migrate_integrity_config;
@@ -627,16 +627,17 @@ use steps::{
     MigrateOverflowMaxPerCallOverride, MigratePiiFilterNames, MigratePlannerModelToProvider,
     MigratePluginsReputationConfig, MigratePolicyProviderAndUtilityWindow,
     MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQdrantTimeoutSecs,
-    MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
-    MigrateSearchConfig, MigrateSecretMaskingConfig, MigrateServeConfig,
-    MigrateSessionPersistProviderOverrides, MigrateSessionPersistenceConfig,
-    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateSessionResumeConfig,
-    MigrateShadowSentinelConfig, MigrateShellCheckpointsConfig, MigrateShellTransactional,
-    MigrateSkillTrustRequireCheck, MigrateSkillsRegistry, MigrateSttToProvider,
-    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
-    MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig,
-    MigrateTuiThemeDefaults, MigrateUtilityHighGainTools, MigrateVigilConfig,
-    MigrateWorktreeConfig, MigrateWorktreeGitTimeout, MigrateWorktreeQuotaFields,
+    MigrateQualityConfig, MigrateRateLimitAdvisory, MigrateSandboxConfig,
+    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSearchConfig,
+    MigrateSecretMaskingConfig, MigrateServeConfig, MigrateSessionPersistProviderOverrides,
+    MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
+    MigrateSessionResumeConfig, MigrateShadowSentinelConfig, MigrateShellCheckpointsConfig,
+    MigrateShellTransactional, MigrateSkillTrustRequireCheck, MigrateSkillsRegistry,
+    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
+    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
+    MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateUtilityHighGainTools,
+    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
+    MigrateWorktreeQuotaFields,
 };
 
 /// Ordered registry of all sequential migration steps (steps 1–99).
@@ -844,6 +845,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 100 — add [integrity] advisory block for vault-anchor downgrade-resistance
             // (issue #6449)
             Box::new(MigrateIntegrityConfig),
+            // Step 101 — advisory notice for [security.rate_limit] default-on posture (#6469)
+            Box::new(MigrateRateLimitAdvisory),
         ]
     });
 

@@ -1126,3 +1126,78 @@ pub fn migrate_skill_trust_require_check(toml_src: &str) -> Result<MigrationResu
         },
     })
 }
+
+/// Step 101 — appends a commented `[security.rate_limit]` advisory block when the section is
+/// entirely absent (issue #6469).
+///
+/// The tool rate limiter now defaults to `enabled = true` at the struct-default level
+/// (`RateLimitConfig::default()`), so an absent section already behaves as if it were present
+/// with the values below — this step is purely for discoverability, matching
+/// [`migrate_integrity_config`](super::migrate_integrity_config)'s advisory-only pattern. It
+/// never activates a live value: the runtime posture comes entirely from serde field defaults,
+/// not from this migration.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the source is not valid TOML.
+pub fn migrate_rate_limit_advisory(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if section_header_present(toml_src, "security.rate_limit")
+        || toml_src.contains("# [security.rate_limit]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [security.rate_limit] — per-category sliding-window tool rate limiter with \
+         circuit breaker. Enabled by default; values below match the built-in defaults (issue #6469).\n\
+         # [security.rate_limit]\n\
+         # enabled = true\n\
+         # shell_calls_per_minute = 30\n\
+         # web_calls_per_minute = 20\n\
+         # memory_calls_per_minute = 60\n\
+         # mcp_calls_per_minute = 40\n\
+         # other_calls_per_minute = 60\n\
+         # circuit_breaker_cooldown_secs = 30\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["security.rate_limit".to_owned()],
+    })
+}
+
+#[cfg(test)]
+mod rate_limit_advisory_tests {
+    use super::*;
+
+    #[test]
+    fn migrate_rate_limit_advisory_appends_block() {
+        let base = "[agent]\nname = \"zeph\"\n";
+        let result = migrate_rate_limit_advisory(base).unwrap();
+        assert_eq!(result.changed_count, 1);
+        assert!(result.output.contains("# [security.rate_limit]"));
+        assert!(result.output.contains("# enabled = true"));
+        assert!(result.output.contains("# shell_calls_per_minute = 30"));
+    }
+
+    #[test]
+    fn migrate_rate_limit_advisory_idempotent_on_commented_output() {
+        let base = "[agent]\nname = \"zeph\"\n";
+        let first = migrate_rate_limit_advisory(base).unwrap();
+        let second = migrate_rate_limit_advisory(&first.output).unwrap();
+        assert_eq!(second.changed_count, 0, "second run must not double-append");
+        assert_eq!(second.output, first.output);
+    }
+
+    #[test]
+    fn migrate_rate_limit_advisory_noop_when_active_section_present() {
+        let base = "[security.rate_limit]\nenabled = false\n";
+        let result = migrate_rate_limit_advisory(base).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, base);
+    }
+}

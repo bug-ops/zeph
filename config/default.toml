@@ -658,8 +658,9 @@ strict = false
 [cost]
 # Track LLM API costs and enforce daily budget
 enabled = true
-# Maximum daily spend in cents (0 = unlimited)
-max_daily_cents = 0
+# Maximum daily spend in cents (0 = unlimited). Default: 2500 ($25.00/day) — a runaway-loop
+# guardrail; local-only (Ollama/Candle) usage always costs 0 so never trips this cap.
+max_daily_cents = 2500
 
 
 [vault]
@@ -1026,6 +1027,23 @@ subagent_inheritance_factor = 0.5
 # Example scope: enable all tools for the default task type
 # [security.capability_scopes.general]
 # patterns = ["*"]
+
+[security.rate_limit]
+# Per-category sliding-window tool rate limiter with circuit breaker. Enabled by default —
+# guards against a runaway agent loop hammering a single tool category (issue #6469).
+enabled = true
+# Maximum shell tool calls per minute (default: 30)
+shell_calls_per_minute = 30
+# Maximum web tool calls per minute (default: 20)
+web_calls_per_minute = 20
+# Maximum memory tool calls per minute (default: 60)
+memory_calls_per_minute = 60
+# Maximum MCP tool calls per minute (default: 40)
+mcp_calls_per_minute = 40
+# Maximum other tool calls per minute (default: 60)
+other_calls_per_minute = 60
+# Seconds the circuit breaker stays tripped after a limit is exceeded (default: 30)
+circuit_breaker_cooldown_secs = 30
 
 # ShadowSentinel Phase 2: persistent safety event stream + LLM pre-execution probe (spec 050).
 # Defence-in-depth only — PolicyGateExecutor and TrajectorySentinel remain the primary gate.

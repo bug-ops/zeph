@@ -8,7 +8,7 @@
 //! calls in that category are rejected until the cooldown expires.
 //!
 //! Configured under `[security.rate_limit]` in the agent config file.
-//! Disabled by default — opt-in.
+//! Enabled by default.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
@@ -82,7 +82,8 @@ impl RateLimitExceeded {
         format!(
             "[rate-limited] {} calls exceeded {}/min (current: {}). \
              Circuit breaker active, cooldown: {}s. \
-             Try again later or use a different approach.",
+             Try again later or use a different approach. \
+             (adjust via `[security.rate_limit]` in config.toml, or set enabled = false to disable)",
             self.category.as_str(),
             self.limit,
             self.count,
@@ -296,7 +297,10 @@ mod tests {
 
     #[test]
     fn disabled_always_allows() {
-        let mut limiter = ToolRateLimiter::new(RateLimitConfig::default());
+        let mut limiter = ToolRateLimiter::new(RateLimitConfig {
+            enabled: false,
+            ..Default::default()
+        });
         let results = limiter.check_batch(&["shell", "shell", "shell"]);
         assert!(results.iter().all(Option::is_none));
     }
@@ -415,7 +419,10 @@ mod tests {
 
     #[test]
     fn disabled_empty_batch_returns_empty() {
-        let mut limiter = ToolRateLimiter::new(RateLimitConfig::default());
+        let mut limiter = ToolRateLimiter::new(RateLimitConfig {
+            enabled: false,
+            ..Default::default()
+        });
         let results = limiter.check_batch(&[]);
         assert!(results.is_empty());
     }

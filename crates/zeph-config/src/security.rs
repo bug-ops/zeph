@@ -534,7 +534,7 @@ pub struct SecurityConfig {
     /// PII filter for tool outputs and debug dumps (enabled by default).
     #[serde(default)]
     pub pii_filter: PiiFilterConfig,
-    /// Tool action rate limiter (opt-in, disabled by default).
+    /// Tool action rate limiter (enabled by default).
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
     /// Pre-execution verifiers (enabled by default).
@@ -812,5 +812,42 @@ no_providers_backoff_secs = 10
         let cfg: TimeoutConfig = toml::from_str("").expect("deserialize empty");
         assert_eq!(cfg.context_prep_timeout_secs, 30);
         assert_eq!(cfg.no_providers_backoff_secs, 2);
+    }
+
+    // ------------------------------------------------------------------
+    // SecurityConfig.rate_limit — default-on split-brain guard (issue #6469)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn security_config_absent_rate_limit_section_is_enabled() {
+        let cfg: SecurityConfig = toml::from_str("").expect("deserialize empty");
+        assert!(cfg.rate_limit.enabled);
+    }
+
+    /// A `[security.rate_limit]` section present in the file but only setting one
+    /// sub-limit must still resolve `enabled = true` — this is the split-brain the
+    /// named-default-fn fix closes (an absent section and a partial section must agree).
+    #[test]
+    fn security_config_partial_rate_limit_section_is_enabled() {
+        let toml = r"
+[rate_limit]
+shell_calls_per_minute = 50
+";
+        let cfg: SecurityConfig = toml::from_str(toml).expect("deserialize");
+        assert!(
+            cfg.rate_limit.enabled,
+            "partial [security.rate_limit] section must default enabled = true"
+        );
+        assert_eq!(cfg.rate_limit.shell_calls_per_minute, 50);
+    }
+
+    #[test]
+    fn security_config_explicit_rate_limit_disabled_is_preserved() {
+        let toml = r"
+[rate_limit]
+enabled = false
+";
+        let cfg: SecurityConfig = toml::from_str(toml).expect("deserialize");
+        assert!(!cfg.rate_limit.enabled);
     }
 }

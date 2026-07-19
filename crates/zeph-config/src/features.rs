@@ -150,7 +150,7 @@ impl std::fmt::Display for VaultBackend {
 }
 
 fn default_max_daily_cents() -> u32 {
-    0
+    2500
 }
 
 fn default_otlp_endpoint() -> String {
@@ -907,14 +907,14 @@ impl Default for VaultConfig {
 /// ```toml
 /// [cost]
 /// enabled = true
-/// max_daily_cents = 500  # $5.00 per day
+/// max_daily_cents = 2500  # $25.00 per day (the default)
 /// ```
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CostConfig {
     /// Track and display token costs. Default: `true`.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Daily spending cap in US cents (`0` = unlimited). Default: `0`.
+    /// Daily spending cap in US cents (`0` = unlimited). Default: `2500` ($25.00/day).
     #[serde(default = "default_max_daily_cents")]
     pub max_daily_cents: u32,
 }
@@ -1490,6 +1490,37 @@ mod tests {
     #[test]
     fn registry_backend_kind_display() {
         assert_eq!(RegistryBackendKind::SkillsSh.to_string(), "skills-sh");
+    }
+
+    // --- CostConfig defaults (issue #6469) ---
+
+    #[test]
+    fn cost_config_default_has_nonzero_daily_cap() {
+        let cfg = CostConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.max_daily_cents, 2500);
+    }
+
+    #[test]
+    fn cost_config_absent_section_picks_up_new_default() {
+        let cfg: CostConfig = toml::from_str("").unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.max_daily_cents, 2500);
+    }
+
+    #[test]
+    fn cost_config_explicit_zero_is_preserved() {
+        let cfg: CostConfig = toml::from_str("max_daily_cents = 0").unwrap();
+        assert_eq!(
+            cfg.max_daily_cents, 0,
+            "explicit 0 must mean unlimited, not be overridden"
+        );
+    }
+
+    #[test]
+    fn cost_config_explicit_nonzero_is_preserved() {
+        let cfg: CostConfig = toml::from_str("max_daily_cents = 500").unwrap();
+        assert_eq!(cfg.max_daily_cents, 500);
     }
 }
 

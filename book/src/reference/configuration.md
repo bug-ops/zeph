@@ -671,6 +671,15 @@ block_markdown_images = true  # Strip external markdown images from LLM output
 validate_tool_urls = true     # Flag tool calls using URLs from injection-flagged content
 guard_memory_writes = true    # Skip Qdrant embedding for injection-flagged content
 
+[security.rate_limit]
+enabled = true              # Per-category sliding-window tool rate limiter (default: true)
+shell_calls_per_minute = 30
+web_calls_per_minute = 20
+memory_calls_per_minute = 60
+mcp_calls_per_minute = 40
+other_calls_per_minute = 60
+circuit_breaker_cooldown_secs = 30  # Cooldown after a limit trips
+
 [timeouts]
 llm_seconds = 120           # LLM chat completion timeout
 embedding_seconds = 30      # Embedding generation timeout
@@ -684,8 +693,8 @@ exporter = "none"           # "none" or "otlp" (requires `otel` feature)
 endpoint = "http://localhost:4317"
 
 [cost]
-enabled = false
-max_daily_cents = 500       # Daily budget in cents (USD), UTC midnight reset
+enabled = true
+max_daily_cents = 2500      # Daily budget in cents, UTC midnight reset (default: 2500 = $25.00; 0 = unlimited)
 
 [cocoon]
 # show_balance = true              # Display TON balance in TUI sidebar (default: true). Set to false to show "*** TON" instead

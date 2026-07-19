@@ -179,6 +179,9 @@ pub(crate) struct WizardState {
     // Security
     pub(crate) pii_filter_enabled: bool,
     pub(crate) rate_limit_enabled: bool,
+    /// Daily LLM cost cap in US cents (`0` = unlimited). Distinct from
+    /// `budget_hint_enabled`, which only injects soft system-prompt hints.
+    pub(crate) max_daily_cents: u32,
     pub(crate) skill_scan_on_load: bool,
     pub(crate) skill_require_integrity_check_on_promote: bool,
     pub(crate) skill_cross_session_rollout: bool,
@@ -480,7 +483,8 @@ impl Default for WizardState {
             experiments_schedule_enabled: false,
             experiments_schedule_cron: String::new(),
             pii_filter_enabled: true,
-            rate_limit_enabled: false,
+            rate_limit_enabled: true,
+            max_daily_cents: 2500,
             skill_scan_on_load: true,
             skill_require_integrity_check_on_promote: true,
             skill_cross_session_rollout: false,
@@ -1280,6 +1284,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
 
     config.security.pii_filter.enabled = state.pii_filter_enabled;
     config.security.rate_limit.enabled = state.rate_limit_enabled;
+    config.cost.max_daily_cents = state.max_daily_cents;
     config.security.pre_execution_verify.enabled = state.pre_execution_verify_enabled;
     if !state.pre_execution_verify_allowed_paths.is_empty() {
         config
