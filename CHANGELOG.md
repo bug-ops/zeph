@@ -42,6 +42,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wall-clock (not sweep-cycle) based, so it survives process restarts and is independent of the
   hourly sweep interval. Cap-eviction (the separate LRU path) is unaffected.
 
+- `zeph-orchestration`/`zeph-core`: `SpawnContext::inherited_tool_allowlist` was always `None` in
+  production because no per-task allowlist concept existed to source it from at the
+  `build_spawn_context` call site — only `SpawnContext::max_trust_level` was wired from the
+  parent's own effective trust level (#6503), leaving the tool-allowlist half of #6493 deferred
+  (#6504). `TaskNode` (`crates/zeph-orchestration/src/graph.rs`) gains a new
+  `tool_allowlist: Option<Vec<String>>` field (`None` = no per-task narrowing; `Some(vec![])`
+  narrows the spawned sub-agent to zero tools, fail-closed — use `None`, not an empty list, to
+  impose no restriction), and `handle_scheduler_spawn_action`
+  (`crates/zeph-core/src/agent/scheduler_loop.rs`) now populates
+  `SpawnContext::inherited_tool_allowlist` from it, mirroring the existing `network_denied`
+  wiring. The existing `apply_constraint_propagation` intersection logic
+  (`crates/zeph-subagent/src/manager/spawn.rs`) already consumed this field correctly and is
+  unchanged. **Scope note**: this closes the orchestration-policy plumbing only — nothing yet
+  populates `TaskNode.tool_allowlist` from a planner, config, or the parent session's own
+  `PermissionRule` deny lists, so production sub-agent spawns are unaffected until a follow-up
+  populates the field (tracked in #6526 and #6527).
+
 - `zeph`: `zeph vault set/get/list/rm/init` ignored `ZEPH_VAULT_KEY`/`ZEPH_VAULT_PATH` env vars
   and always fell back to the default vault directory unless overridden by `--vault-key`/
   `--vault-path` (#6500), diverging from the resolution `zeph doctor` and agent startup already

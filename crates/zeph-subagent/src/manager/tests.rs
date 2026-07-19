@@ -4350,6 +4350,26 @@ fn constraint_propagation_intersection_is_case_insensitive() {
     }
 }
 
+#[test]
+fn constraint_propagation_empty_parent_allowlist_is_fail_closed_zero_tools() {
+    // `Some(HashSet::new())` (explicit empty allowlist) must yield ZERO tools regardless of
+    // the agent's own policy — this is the fail-closed distinction from `None` (no
+    // narrowing). Covers `InheritAll`, `AllowList`, and `DenyList` starting policies.
+    let ctx = ctx_with_allowlist(&[]);
+
+    let mut inherit_all = def_with_inherit_all();
+    apply_constraint_propagation(&mut inherit_all, &ctx);
+    assert_matches!(&inherit_all.tools, ToolPolicy::AllowList(v) if v.is_empty());
+
+    let mut allow_list = def_with_allow_list(&["shell", "read"]);
+    apply_constraint_propagation(&mut allow_list, &ctx);
+    assert_matches!(&allow_list.tools, ToolPolicy::AllowList(v) if v.is_empty());
+
+    let mut deny_list = def_with_deny_list(&["shell"]);
+    apply_constraint_propagation(&mut deny_list, &ctx);
+    assert_matches!(&deny_list.tools, ToolPolicy::AllowList(v) if v.is_empty());
+}
+
 #[cfg(test)]
 mod worktree_predicate_tests {
     use zeph_config::BgIsolation;

@@ -163,6 +163,7 @@ mod tests {
             token_budget_cents: None,
             network_scope: None,
             asset_sensitivity: None,
+            tool_allowlist: None,
             timeout: None,
             recovery: None,
             routed_from: None,

@@ -471,6 +471,7 @@ pub struct RecoveryAction {
 /// assert_eq!(node.execution_mode, ExecutionMode::Parallel);
 /// assert!(node.network_scope.is_none());
 /// assert!(node.asset_sensitivity.is_none());
+/// assert!(node.tool_allowlist.is_none());
 /// assert!(node.timeout.is_none());
 /// assert!(node.recovery.is_none());
 /// assert!(node.routed_from.is_none());
@@ -552,6 +553,17 @@ pub struct TaskNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_sensitivity: Option<zeph_config::AssetSensitivity>,
 
+    /// Per-task tool allowlist inherited by the spawned sub-agent. When `Some(list)`, the
+    /// sub-agent's effective tool set is narrowed to the intersection of this list and its
+    /// own `SubAgentDef` policy (see `apply_constraint_propagation`). `None` = no per-task
+    /// narrowing. `Some([])` narrows the sub-agent to ZERO tools (fail-closed) — use `None`,
+    /// not an empty list, to impose no restriction. Tool names are matched after
+    /// `normalize_tool_id`, so raw names are fine. This is the explicit-allowlist mechanism;
+    /// any future `asset_sensitivity`-derived tool narrowing should populate this same field
+    /// rather than introduce a parallel path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_allowlist: Option<Vec<String>>,
+
     /// Per-task timeout override. `None` = use the graph-global `task_timeout_secs`
     /// default for both spawned and `RunInline` dispatch. See [`TimeoutPolicy`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -630,6 +642,7 @@ impl TaskNode {
             token_budget_cents: None,
             network_scope: None,
             asset_sensitivity: None,
+            tool_allowlist: None,
             timeout: None,
             recovery: None,
             routed_from: None,
@@ -1174,6 +1187,7 @@ mod tests {
         let node: TaskNode = serde_json::from_str(json).expect("should deserialize old JSON");
         assert!(node.network_scope.is_none());
         assert!(node.asset_sensitivity.is_none());
+        assert!(node.tool_allowlist.is_none());
         assert!(node.timeout.is_none());
         assert!(node.recovery.is_none());
     }
@@ -1248,6 +1262,7 @@ mod tests {
         let node = TaskNode::new(0, "t", "d");
         assert!(node.network_scope.is_none());
         assert!(node.asset_sensitivity.is_none());
+        assert!(node.tool_allowlist.is_none());
     }
 
     #[test]
@@ -1376,5 +1391,37 @@ mod tests {
             !json.contains("asset_sensitivity"),
             "none should be omitted"
         );
+    }
+
+    #[test]
+    fn test_task_node_skip_serializing_if_none_tool_allowlist() {
+        let node = TaskNode::new(0, "t", "d");
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(!json.contains("tool_allowlist"), "none should be omitted");
+    }
+
+    #[test]
+    fn test_task_node_tool_allowlist_roundtrip() {
+        let mut node = TaskNode::new(0, "t", "d");
+        node.tool_allowlist = Some(vec!["shell".to_string(), "read".to_string()]);
+        let json = serde_json::to_string(&node).unwrap();
+        let restored: TaskNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            restored.tool_allowlist,
+            Some(vec!["shell".to_string(), "read".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_task_node_tool_allowlist_empty_vec_distinct_from_none() {
+        // `Some(vec![])` (fail-closed, zero tools) must round-trip distinctly from `None`
+        // (no restriction) — the two are not equivalent despite both being "empty" in a
+        // loose sense. See the `tool_allowlist` field doc for the fail-closed semantics.
+        let mut node = TaskNode::new(0, "t", "d");
+        node.tool_allowlist = Some(vec![]);
+        let json = serde_json::to_string(&node).unwrap();
+        let restored: TaskNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.tool_allowlist, Some(vec![]));
+        assert_ne!(restored.tool_allowlist, None);
     }
 }

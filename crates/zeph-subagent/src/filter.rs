@@ -841,6 +841,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_allow_list_blocks_every_tool() {
+        // `AllowList(vec![])` (fail-closed, e.g. from an empty `tool_allowlist` intersection
+        // in `apply_constraint_propagation`) must block ALL tool calls, not just unlisted
+        // ones — `.any()` over an empty list is always `false`.
+        let exec =
+            FilteredToolExecutor::new(stub_box(&["shell", "web"]), ToolPolicy::AllowList(vec![]));
+        let call = ToolCall {
+            tool_id: "shell".into(),
+            params: serde_json::Map::default(),
+            caller_id: None,
+            context: None,
+
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let res = exec.execute_tool_call_erased(&call).await;
+        assert!(res.is_err(), "empty AllowList must block every tool call");
+    }
+
+    #[tokio::test]
     async fn deny_list_blocks_listed_tool() {
         let exec = FilteredToolExecutor::new(
             stub_box(&["shell", "web"]),

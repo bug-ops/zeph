@@ -66,6 +66,17 @@ fn network_denied_for_task(task: Option<&zeph_orchestration::TaskNode>) -> bool 
     )
 }
 
+/// Extracts `task`'s `tool_allowlist` (if any) as the `HashSet` consumed by
+/// `SpawnContext::inherited_tool_allowlist` / `apply_constraint_propagation`. `None` (task
+/// missing or no per-task allowlist set) means no per-task narrowing is applied — the
+/// sub-agent's tool set is governed solely by its own `SubAgentDef` policy.
+fn task_tool_allowlist(
+    task: Option<&zeph_orchestration::TaskNode>,
+) -> Option<std::collections::HashSet<String>> {
+    task.and_then(|t| t.tool_allowlist.as_ref())
+        .map(|v| v.iter().cloned().collect())
+}
+
 /// Reconstruct a [`zeph_orchestration::ToolCallSummary`] trace from a loaded transcript's
 /// messages, pairing each `MessagePart::ToolUse` with its later `MessagePart::ToolResult` (by
 /// `tool_use_id`) for the `ok` field. A `ToolUse` with no matching `ToolResult` (e.g. the
@@ -499,6 +510,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         let task = scheduler.graph().tasks.get(task_id.index());
         let task_title = task.map_or("unknown", |t| t.title.as_str());
         let network_denied = network_denied_for_task(task);
+        let task_allowlist = task_tool_allowlist(task);
 
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
@@ -522,6 +534,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         let mut spawn_ctx = self.build_spawn_context(&cfg);
         spawn_ctx.network_denied = network_denied;
+        spawn_ctx.inherited_tool_allowlist = task_allowlist;
 
         // Idle-timeout progress heartbeat (issue #6245, Alt-A): the driver owns creation of
         // the Arc. One clone flows into the sub-agent loop via `spawn_ctx.progress_at`
@@ -1647,7 +1660,8 @@ impl<C: crate::channel::Channel> Agent<C> {
 mod tests {
     use super::{
         CommandHandoffContext, append_shared_state_block, determine_task_outcome,
-        lookahead_effective_depth, network_denied_for_task, tool_trace_from_messages,
+        lookahead_effective_depth, network_denied_for_task, task_tool_allowlist,
+        tool_trace_from_messages,
     };
 
     #[test]
@@ -1712,6 +1726,34 @@ mod tests {
     fn deny_scope_returns_true() {
         let node = task_with_scope(Some(zeph_orchestration::NetworkScope::Deny));
         assert!(network_denied_for_task(Some(&node)));
+    }
+
+    // ── task_tool_allowlist (issue #6504) ───────────────────────────────────
+
+    fn task_with_allowlist(allowlist: Option<Vec<String>>) -> zeph_orchestration::TaskNode {
+        let mut node = zeph_orchestration::TaskNode::new(0, "t", "d");
+        node.tool_allowlist = allowlist;
+        node
+    }
+
+    #[test]
+    fn no_task_allowlist_returns_none() {
+        assert_eq!(task_tool_allowlist(None), None);
+    }
+
+    #[test]
+    fn missing_tool_allowlist_returns_none() {
+        let node = task_with_allowlist(None);
+        assert_eq!(task_tool_allowlist(Some(&node)), None);
+    }
+
+    #[test]
+    fn populated_tool_allowlist_converts_to_hash_set() {
+        let node = task_with_allowlist(Some(vec!["shell".to_string(), "read".to_string()]));
+        let expected: std::collections::HashSet<String> = ["shell".to_string(), "read".to_string()]
+            .into_iter()
+            .collect();
+        assert_eq!(task_tool_allowlist(Some(&node)), Some(expected));
     }
 
     // ── determine_task_outcome / append_shared_state_block (spec-080, #6363) ────────
