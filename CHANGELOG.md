@@ -14,6 +14,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `crate::bootstrap::parse_vault_args` into its path resolution, giving `zeph vault` the same
   CLI flag > `ZEPH_VAULT_KEY`/`ZEPH_VAULT_PATH` env var > default directory precedence.
 
+- `zeph-sanitizer`/`zeph-core`: `URL_EXTRACT_RE` — used by `extract_flagged_urls` and
+  `ExfiltrationGuard::validate_tool_call`/`scan_raw_args` — required a literal `https?:` scheme,
+  so a scheme-relative URL (`//evil.com/exfil?data=...`) in untrusted tool output was never
+  added to the per-turn `flagged_urls` set, and even if a later tool-call argument reused the
+  same scheme-relative form, it could never be flagged either — a sibling gap to the
+  `is_external_url` scheme-relative parity fixed for `scan_output` in #6508 (#6519). Widening
+  the regex to also capture scheme-relative URLs on its own would have opened a second gap:
+  `flagged_urls` is an exact-string `HashSet<String>`, so the *same* origin captured in one
+  textual form (`//evil.com/x`) would not match its occurrence in the other form
+  (`https://evil.com/x`) in a later tool call. Fixed both together: `URL_EXTRACT_RE` now matches
+  an optional scheme like the other regexes in this file, and a new public
+  `normalize_url_for_matching` helper canonicalizes a URL to its scheme-relative form
+  (`//host/path`). `extract_flagged_urls` itself keeps returning raw, non-normalized text — it
+  also feeds `zeph-core`'s `user_provided_urls` (consumed by `zeph-tools`'
+  `UrlGroundingVerifier`, a default-on Block verifier that does exact-prefix matching against
+  the literal user-supplied URL text), so normalizing inside the shared extractor would have
+  broken URL-grounding checks for any user-provided URL whose form didn't happen to match the
+  tool's later request form. Normalization is applied only at the `flagged_urls`-specific
+  call site (`record_injection_flags` in `crates/zeph-core/src/agent/tool_execution/sanitize.rs`)
+  and at lookup time in `validate_tool_call`/`scan_raw_args`. The raw (non-normalized) matched
+  text is still used for `ExfiltrationEvent::SuspiciousToolUrl` reporting.
+
 - `zeph-channels`: a negative or non-finite (`NaN`/`±inf`) `Retry-After` value from a 429
   response's header or JSON body reached `Duration::from_secs_f64` unclamped and panicked the
   process handling outbound Discord/Slack/Telegram sends (#6496). `send_with_retry` in

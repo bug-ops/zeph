@@ -84,16 +84,17 @@ static REFERENCE_DEF_RE: LazyLock<Regex> = LazyLock::new(|| {
 static REFERENCE_USAGE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"!\[([^\]]*)\]\[([^\]]+)\]").expect("valid REFERENCE_USAGE_RE"));
 
-/// Extracts http/https URLs from arbitrary text (used for tool argument scanning).
+/// Extracts http/https and scheme-relative URLs from arbitrary text (used for tool argument
+/// scanning and untrusted-content flagging).
 ///
-/// The scheme is matched case-insensitively, matching `is_external_url`'s casing rules.
+/// The scheme is matched case-insensitively and is optional, matching `is_external_url`'s
+/// casing and scheme-relative rules (`//evil.com/x` resolves to the same attacker-controlled
+/// origin as `https://evil.com/x`).
 ///
-// TODO(critic): URL_EXTRACT_RE lacks scheme-relative parity with is_external_url (#6508
-// sibling gap, tracked in #6519). The flagged-URL set used by validate_tool_call is
-// exact-string matched, so adding scheme-relative extraction here is a larger design change
-// than the casing fix above — deferred, not implemented in this pass.
+/// Matches from this regex must be passed through [`normalize_url_for_matching`] before being
+/// inserted into or looked up in a `flagged_urls` set — see that function's doc comment for why.
 static URL_EXTRACT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)https?://[^\s"'<>]+"#).expect("valid URL_EXTRACT_RE"));
+    LazyLock::new(|| Regex::new(r#"(?i)(?:https?:)?//[^\s"'<>]+"#).expect("valid URL_EXTRACT_RE"));
 
 /// Matches HTML `<img>` tags with external http/https `src` attributes.
 ///
@@ -404,7 +405,7 @@ impl ExfiltrationGuard {
         for s in &strings {
             for url_match in URL_EXTRACT_RE.find_iter(s) {
                 let url = url_match.as_str();
-                if flagged_urls.contains(url) {
+                if flagged_urls.contains(normalize_url_for_matching(url)) {
                     events.push(ExfiltrationEvent::SuspiciousToolUrl {
                         url: url.to_owned(),
                         tool_name: tool_name.into(),
@@ -446,7 +447,7 @@ impl ExfiltrationGuard {
     ) -> Vec<ExfiltrationEvent> {
         URL_EXTRACT_RE
             .find_iter(args)
-            .filter(|m| flagged_urls.contains(m.as_str()))
+            .filter(|m| flagged_urls.contains(normalize_url_for_matching(m.as_str())))
             .map(|m| ExfiltrationEvent::SuspiciousToolUrl {
                 url: m.as_str().to_owned(),
                 tool_name: tool_name.into(),
@@ -462,14 +463,26 @@ impl ExfiltrationGuard {
 /// set to [`ExfiltrationGuard::validate_tool_call`] on each subsequent tool call. Clear
 /// `flagged_urls` at the start of each `process_response` call (per-turn clearing strategy).
 ///
+/// Returns the **raw**, non-normalized matched text — including scheme-relative matches
+/// (`//host/path`) alongside explicit-scheme ones. This function has more than one consumer
+/// (e.g. `zeph-core` also feeds its output into `user_provided_urls` for URL-grounding checks,
+/// which must compare against the exact text the user or tool output supplied), so it must not
+/// silently rewrite its callers' text.
+///
+/// Callers that build an exact-string matching set from this output — like the `flagged_urls`
+/// set consumed by [`ExfiltrationGuard::validate_tool_call`] — must normalize each entry
+/// themselves via [`normalize_url_for_matching`] before inserting it, so that an explicit-scheme
+/// URL and its scheme-relative equivalent collapse into a single, matchable entry. See that
+/// function's doc comment for why this matters.
+///
 /// # Examples
 ///
 /// ```rust
 /// use zeph_sanitizer::exfiltration::extract_flagged_urls;
 ///
-/// let urls = extract_flagged_urls("visit https://evil.com/x and https://other.com/y");
+/// let urls = extract_flagged_urls("visit https://evil.com/x and //other.com/y");
 /// assert!(urls.contains("https://evil.com/x"));
-/// assert!(urls.contains("https://other.com/y"));
+/// assert!(urls.contains("//other.com/y"));
 /// assert_eq!(urls.len(), 2);
 /// ```
 #[must_use]
@@ -526,6 +539,64 @@ fn is_external_url(url: &str) -> bool {
             .is_some_and(|s| s.eq_ignore_ascii_case("http://"))
 }
 
+/// Normalize a URL to a canonical scheme-relative form (`//host/path`) for exact-string
+/// `flagged_urls`-style set membership.
+///
+/// `URL_EXTRACT_RE` (used by [`extract_flagged_urls`] and
+/// [`ExfiltrationGuard::validate_tool_call`]) matches both explicit-scheme (`https://…`) and
+/// scheme-relative (`//…`) URLs, since both resolve to the same attacker-controlled origin (see
+/// `is_external_url`). But a `flagged_urls` set built from those matches does exact-string
+/// comparison: without normalization, the same origin captured in one textual form (e.g.
+/// `//evil.com/x` extracted from untrusted tool output) would never match its occurrence in the
+/// other form (e.g. `https://evil.com/x` in a later tool-call argument) — silently defeating the
+/// cross-reference check the set exists for. Stripping any `http://`/`https://` prefix down to
+/// `//host/path` makes both forms compare equal, while an already scheme-relative URL passes
+/// through untouched.
+///
+/// [`extract_flagged_urls`] itself returns raw, non-normalized text (some of its callers need
+/// exact text fidelity — e.g. URL-grounding checks against user-supplied input — and must not
+/// have their strings silently rewritten). Callers building a `flagged_urls`-style matching set
+/// from that raw output must apply this function to every entry before inserting it, and to
+/// every URL looked up against that set. The *raw*, non-normalized match text should still be
+/// used for reporting (see [`ExfiltrationEvent::SuspiciousToolUrl`]).
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_sanitizer::exfiltration::{extract_flagged_urls, normalize_url_for_matching};
+/// use std::collections::HashSet;
+///
+/// assert_eq!(normalize_url_for_matching("https://evil.com/x"), "//evil.com/x");
+/// assert_eq!(normalize_url_for_matching("HTTPS://evil.com/x"), "//evil.com/x");
+/// assert_eq!(normalize_url_for_matching("//evil.com/x"), "//evil.com/x");
+///
+/// // Building a `flagged_urls`-style set from raw `extract_flagged_urls` output: both textual
+/// // forms of the same origin collapse into a single matchable entry.
+/// let raw = extract_flagged_urls("https://evil.com/x and //evil.com/x again");
+/// let flagged: HashSet<String> = raw
+///     .iter()
+///     .map(|u| normalize_url_for_matching(u).to_owned())
+///     .collect();
+/// assert_eq!(flagged.len(), 1);
+/// assert!(flagged.contains("//evil.com/x"));
+/// ```
+#[must_use]
+pub fn normalize_url_for_matching(url: &str) -> &str {
+    if url
+        .get(..8)
+        .is_some_and(|s| s.eq_ignore_ascii_case("https://"))
+    {
+        &url[6..]
+    } else if url
+        .get(..7)
+        .is_some_and(|s| s.eq_ignore_ascii_case("http://"))
+    {
+        &url[5..]
+    } else {
+        url
+    }
+}
+
 /// Recursively collect all string leaves from a JSON value.
 fn collect_strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
     match value {
@@ -563,6 +634,20 @@ mod tests {
             validate_tool_urls: false,
             guard_memory_writes: false,
         })
+    }
+
+    /// Build a `flagged_urls`-style matching set from raw text, mirroring what a
+    /// `flagged_urls`-specific caller (e.g. `zeph-core`'s tool-output pipeline) does with
+    /// `extract_flagged_urls`'s raw output: normalize every entry via
+    /// `normalize_url_for_matching` before insertion. `extract_flagged_urls` itself does NOT
+    /// normalize — see its doc comment — so tests exercising cross-form matching must build
+    /// the set this way rather than inserting raw literals or the unmodified
+    /// `extract_flagged_urls` return value.
+    fn build_flagged_set(text: &str) -> HashSet<String> {
+        extract_flagged_urls(text)
+            .iter()
+            .map(|u| normalize_url_for_matching(u).to_owned())
+            .collect()
     }
 
     // --- scan_output ---
@@ -1220,14 +1305,53 @@ mod tests {
 
     #[test]
     fn detects_flagged_url_in_json_string() {
-        let mut flagged = HashSet::new();
-        flagged.insert("https://evil.com/payload".to_owned());
+        // Build the flagged set the way a `flagged_urls`-specific caller does: raw extraction
+        // followed by explicit normalization (see `build_flagged_set`).
+        let flagged = build_flagged_set("https://evil.com/payload");
         let args = r#"{"url": "https://evil.com/payload"}"#;
         let events = guard().validate_tool_call("fetch", args, &flagged);
         assert_eq!(events.len(), 1);
         assert!(
             matches!(&events[0], ExfiltrationEvent::SuspiciousToolUrl { url, tool_name }
             if url == "https://evil.com/payload" && tool_name == "fetch")
+        );
+    }
+
+    #[test]
+    fn scheme_relative_flag_matches_explicit_scheme_tool_arg() {
+        // Flagged via scheme-relative extraction from untrusted output; matched against an
+        // explicit-scheme occurrence of the same URL in a later tool-call argument.
+        let flagged = build_flagged_set("suspicious link: //evil.com/exfil?data=secret");
+        let args = r#"{"url": "https://evil.com/exfil?data=secret"}"#;
+        let events = guard().validate_tool_call("fetch", args, &flagged);
+        assert_eq!(
+            events.len(),
+            1,
+            "scheme-relative flag must match explicit-scheme tool arg"
+        );
+        assert!(
+            matches!(&events[0], ExfiltrationEvent::SuspiciousToolUrl { url, .. }
+            if url == "https://evil.com/exfil?data=secret"),
+            "raw (non-normalized) url must be preserved in the event"
+        );
+    }
+
+    #[test]
+    fn explicit_scheme_flag_matches_scheme_relative_tool_arg() {
+        // Flagged via explicit-scheme extraction from untrusted output; matched against a
+        // scheme-relative occurrence of the same URL in a later tool-call argument.
+        let flagged = build_flagged_set("suspicious link: https://evil.com/exfil2?data=secret");
+        let args = r#"{"url": "//evil.com/exfil2?data=secret"}"#;
+        let events = guard().validate_tool_call("fetch", args, &flagged);
+        assert_eq!(
+            events.len(),
+            1,
+            "explicit-scheme flag must match scheme-relative tool arg"
+        );
+        assert!(
+            matches!(&events[0], ExfiltrationEvent::SuspiciousToolUrl { url, .. }
+            if url == "//evil.com/exfil2?data=secret"),
+            "raw (non-normalized) url must be preserved in the event"
         );
     }
 
@@ -1258,8 +1382,7 @@ mod tests {
 
     #[test]
     fn extracts_urls_from_nested_json() {
-        let mut flagged = HashSet::new();
-        flagged.insert("https://evil.com/deep".to_owned());
+        let flagged = build_flagged_set("https://evil.com/deep");
         let args = r#"{"nested": {"inner": ["https://evil.com/deep"]}}"#;
         let events = guard().validate_tool_call("tool", args, &flagged);
         assert_eq!(events.len(), 1);
@@ -1269,8 +1392,7 @@ mod tests {
     fn handles_escaped_slashes_in_json() {
         // JSON-encoded URL with escaped forward slashes should still be detected
         // after serde_json parsing (which unescapes the string value).
-        let mut flagged = HashSet::new();
-        flagged.insert("https://evil.com/path".to_owned());
+        let flagged = build_flagged_set("https://evil.com/path");
         // serde_json will unescape \/ → /
         let args = r#"{"url": "https:\/\/evil.com\/path"}"#;
         let parsed: serde_json::Value = serde_json::from_str(args).unwrap();
@@ -1324,5 +1446,69 @@ mod tests {
         let urls = extract_flagged_urls(content);
         assert!(urls.contains("https://evil.com/x"));
         assert!(urls.contains("https://other.com/y"));
+    }
+
+    #[test]
+    fn extracts_scheme_relative_urls_from_plain_text_raw() {
+        // extract_flagged_urls returns raw, non-normalized text — a scheme-relative match
+        // stays scheme-relative in the returned set (normalization is an opt-in step for
+        // callers building a `flagged_urls`-style matching set, not automatic here).
+        let content = "check //evil.com/x for details";
+        let urls = extract_flagged_urls(content);
+        assert!(urls.contains("//evil.com/x"));
+    }
+
+    #[test]
+    fn extract_flagged_urls_does_not_collapse_explicit_and_scheme_relative_forms() {
+        // Unlike a normalized `flagged_urls`-style set, extract_flagged_urls's raw output keeps
+        // both textual forms of the same origin as distinct entries — callers that need exact
+        // text fidelity (e.g. URL-grounding checks against user-supplied input) depend on this.
+        let urls = extract_flagged_urls("https://evil.com/x and //evil.com/x again");
+        assert_eq!(
+            urls.len(),
+            2,
+            "raw output must keep both forms distinct: {urls:?}"
+        );
+        assert!(urls.contains("https://evil.com/x"));
+        assert!(urls.contains("//evil.com/x"));
+    }
+
+    #[test]
+    fn build_flagged_set_normalizes_explicit_and_scheme_relative_to_same_entry() {
+        // The `flagged_urls`-style construction path (raw extraction + explicit
+        // normalize_url_for_matching, as `build_flagged_set` models) must collapse both
+        // textual forms of the same origin into a single matchable entry — otherwise the
+        // exact-string `flagged_urls` set would miss the cross-form match. This is the
+        // direct regression test for #6519.
+        let urls = build_flagged_set("https://evil.com/x and //evil.com/x again");
+        assert_eq!(
+            urls.len(),
+            1,
+            "both forms must normalize to the same entry: {urls:?}"
+        );
+        assert!(urls.contains("//evil.com/x"));
+    }
+
+    // --- normalize_url_for_matching ---
+
+    #[test]
+    fn normalize_url_for_matching_strips_scheme_case_insensitively() {
+        assert_eq!(
+            normalize_url_for_matching("https://evil.com/x"),
+            "//evil.com/x"
+        );
+        assert_eq!(
+            normalize_url_for_matching("HTTPS://evil.com/x"),
+            "//evil.com/x"
+        );
+        assert_eq!(
+            normalize_url_for_matching("http://evil.com/x"),
+            "//evil.com/x"
+        );
+        assert_eq!(
+            normalize_url_for_matching("Http://evil.com/x"),
+            "//evil.com/x"
+        );
+        assert_eq!(normalize_url_for_matching("//evil.com/x"), "//evil.com/x");
     }
 }

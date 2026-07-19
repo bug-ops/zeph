@@ -262,8 +262,17 @@ impl<C: Channel> Agent<C> {
             tool_name,
             detail,
         );
+        // `flagged_urls` does exact-string membership checks in `ExfiltrationGuard::
+        // validate_tool_call`/`scan_raw_args`, so entries must be normalized here — an
+        // explicit-scheme and scheme-relative occurrence of the same URL must compare equal.
+        // `extract_flagged_urls` itself returns raw text (other consumers, e.g.
+        // `user_provided_urls` in `agent/mod.rs`, need exact fidelity), so normalization is
+        // this call site's responsibility. See `normalize_url_for_matching`'s doc comment.
         let urls = zeph_sanitizer::exfiltration::extract_flagged_urls(&sanitized.body);
-        self.services.security.flagged_urls.extend(urls);
+        self.services.security.flagged_urls.extend(
+            urls.iter()
+                .map(|u| zeph_sanitizer::exfiltration::normalize_url_for_matching(u).to_owned()),
+        );
     }
 
     /// Run the ML classifier on `body` and return an early result if the output is blocked
