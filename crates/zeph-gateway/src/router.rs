@@ -36,7 +36,15 @@ pub(crate) fn build_router(
     max_body_size: usize,
     trusted_proxy_cidrs: &[String],
 ) -> Router {
-    let auth_cfg = AuthConfig::new(auth_token, false);
+    // require_auth mirrors whether a token is actually configured (#6487), matching the same
+    // trim-then-empty-check `AuthConfig::new` itself applies when normalizing `token_hash` — a
+    // whitespace-only token is "not configured" by both measures. When a token is set, this is a
+    // no-op (the token-present branch in `auth_middleware` already checks every request
+    // regardless of `require_auth`), but it keeps `AuthConfig` internally consistent instead of
+    // unconditionally claiming "auth not required" while a token silently guards every request.
+    // `GatewayServer::serve` refuses to start with no token at all (#6487), so in practice this
+    // only reaches `require_auth = false` via direct `build_router` calls (tests).
+    let auth_cfg = AuthConfig::new(auth_token, auth_token.is_some_and(|t| !t.trim().is_empty()));
     let rate_state = RateLimitState::new(rate_limit, trusted_proxy_cidrs);
 
     let protected = Router::new()

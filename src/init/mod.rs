@@ -2026,12 +2026,25 @@ fn step_prometheus(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Prometheus Metrics Export ==\n");
     println!("Requires the binary to be compiled with --features prometheus.");
     println!("Exposes a /metrics endpoint on the HTTP gateway for Prometheus scraping.");
-    println!("Enabling this will also enable [gateway] if it is not already set.\n");
+    println!(
+        "Enabling this also enables the [gateway] HTTP listener if it is not already set. \
+         The same listener additionally exposes a POST /webhook endpoint that forwards \
+         external content directly into the agent's turn loop, as if from a trusted channel \
+         (#6487).\n"
+    );
 
     state.prometheus_enabled = Confirm::new()
         .with_prompt("Enable Prometheus metrics export?")
         .default(false)
         .interact()?;
+
+    if state.prometheus_enabled {
+        println!(
+            "  The gateway refuses to start without a bearer token (#6487). Store one with:\n    \
+             zeph vault set ZEPH_GATEWAY_TOKEN <token>\n  \
+             This wizard never prompts for the raw token — see CLAUDE.md Secrets & Vault."
+        );
+    }
 
     println!();
     Ok(())

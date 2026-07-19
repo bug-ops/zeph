@@ -52,6 +52,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- `zeph-gateway`/`zeph`: `[gateway] enabled = true` with no `auth_token` let any caller that
+  could reach the HTTP listener inject arbitrary content into the agent's turn loop via an
+  unauthenticated `POST /webhook` (#6487). `GatewayServer::serve` previously only logged a
+  `tracing::warn!` and kept running with `require_auth` hardcoded to `false` in `build_router`,
+  and the `--init` wizard had no dedicated `[gateway]` step — the only path that touched
+  `config.gateway` was `step_prometheus`'s side-effect auto-enable, which never set an
+  `auth_token` or disclosed that it also opens the webhook endpoint. Fixed with three
+  defense-in-depth changes:
+  - `GatewayServer::serve` now refuses to start (`GatewayError::MissingAuthToken`) when
+    `enabled = true` and no non-empty bearer token is configured, instead of warning and
+    continuing. Deployments with a real `auth_token` (inline or vault-resolved) are unaffected.
+  - `build_router`'s `AuthConfig::require_auth` is now derived from whether a token was actually
+    passed in, instead of being hardcoded to `false`.
+  - `--init`'s Prometheus step now discloses that enabling it also opens `[gateway]`'s
+    `POST /webhook` endpoint, and prints `zeph vault set ZEPH_GATEWAY_TOKEN <token>` instructions
+    (the wizard never prompts for the raw token — it is resolved from the age vault at startup,
+    like the other vault-only secrets).
+  - New `zeph doctor` check (`gateway.auth`) flags `[gateway] enabled = true` with no resolvable
+    `auth_token` before a real launch attempt.
+
 - `zeph-subagent`/`zeph-core`: closed three subagent trust-boundary gaps found during a security
   audit of the sub-agent grant/spawn/transcript machinery (#6492, #6493, #6494) — in every case
   the enforcement machinery already existed, but a wiring step was missing.

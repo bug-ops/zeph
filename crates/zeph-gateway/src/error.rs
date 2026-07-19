@@ -21,6 +21,19 @@ pub enum GatewayError {
     /// This typically indicates a listener failure or an OS-level socket error.
     #[error("server error: {0}")]
     Server(#[source] std::io::Error),
+
+    /// The gateway is enabled but no bearer token was configured (#6487).
+    ///
+    /// `POST /webhook` forwards its body directly into the agent's turn loop as if it came
+    /// from a trusted channel — starting without a token would let any local or network
+    /// caller that can reach the listener inject arbitrary content. Set `[gateway] auth_token`
+    /// (resolved from the age vault key `ZEPH_GATEWAY_TOKEN`) before starting the gateway.
+    #[error(
+        "refusing to start gateway: no auth_token configured — every request would be \
+         unauthenticated. Set [gateway] auth_token or store one at vault key ZEPH_GATEWAY_TOKEN \
+         (`zeph vault set ZEPH_GATEWAY_TOKEN <token>`)"
+    )]
+    MissingAuthToken,
 }
 
 #[cfg(test)]

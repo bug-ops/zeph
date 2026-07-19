@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use zeph_core::redact::scrub_content;
-use zeph_core::vault::AgeVaultProvider;
+use zeph_core::vault::{AgeVaultProvider, VaultProvider};
 
 /// Individual check outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -328,6 +328,69 @@ fn check_durable_integrity_seal(
              executions remain (issue #6449)",
             elapsed_ms(start),
         )
+    }
+}
+
+/// Reports whether `[gateway] enabled = true` has a resolvable, non-empty bearer token
+/// (#6487). `GatewayServer::serve` now refuses to start in this exact state (`/webhook` would
+/// otherwise forward unauthenticated external content directly into the agent's turn loop), so
+/// this check surfaces the misconfiguration at `doctor` time instead of only at a failed launch.
+///
+/// `key_path`/`vault_path` are the same CLI-resolved vault location used by the other vault-aware
+/// checks (see [`check_integrity_anchor`]'s doc comment for the resolution rationale) — this
+/// check never inspects an unrelated default vault when an override is in effect.
+///
+/// Non-emptiness is checked after trimming, matching `AuthConfig::new`'s own normalization
+/// (`zeph_common::http_middleware`) and `GatewayServer::serve`'s startup gate (critic M2): a
+/// whitespace-only token must report the same `Fail` as no token at all, not a misleading `Ok`
+/// for a value that `AuthConfig` will itself treat as "not configured" at runtime.
+async fn check_gateway_auth(
+    config: &zeph_core::config::Config,
+    key_path: &Path,
+    vault_path: &Path,
+) -> CheckResult {
+    let start = Instant::now();
+    if !config.gateway.enabled {
+        return CheckResult::ok("gateway.auth", "gateway disabled", elapsed_ms(start));
+    }
+    if config
+        .gateway
+        .auth_token
+        .as_deref()
+        .is_some_and(|t| !t.trim().is_empty())
+    {
+        return CheckResult::ok(
+            "gateway.auth",
+            "auth_token configured directly in config.toml",
+            elapsed_ms(start),
+        );
+    }
+    let Ok(provider) = AgeVaultProvider::load(key_path, vault_path) else {
+        return CheckResult::fail(
+            "gateway.auth",
+            "gateway enabled but no auth_token and no age vault found to resolve \
+             ZEPH_GATEWAY_TOKEN from — the gateway will refuse to start; run `zeph vault set \
+             ZEPH_GATEWAY_TOKEN <token>`",
+            elapsed_ms(start),
+        );
+    };
+    match provider.get_secret("ZEPH_GATEWAY_TOKEN").await {
+        Ok(Some(val)) if !val.trim().is_empty() => CheckResult::ok(
+            "gateway.auth",
+            "ZEPH_GATEWAY_TOKEN resolved from vault",
+            elapsed_ms(start),
+        ),
+        Ok(_) => CheckResult::fail(
+            "gateway.auth",
+            "gateway enabled but ZEPH_GATEWAY_TOKEN is not set in the vault — the gateway will \
+             refuse to start; run `zeph vault set ZEPH_GATEWAY_TOKEN <token>`",
+            elapsed_ms(start),
+        ),
+        Err(e) => CheckResult::warn(
+            "gateway.auth",
+            format!("could not resolve ZEPH_GATEWAY_TOKEN from vault: {e}"),
+            elapsed_ms(start),
+        ),
     }
 }
 
@@ -1070,6 +1133,9 @@ async fn build_doctor_report(
         &anchor_vault_path,
     ));
 
+    // 18. gateway.auth (issue #6487)
+    results.push(check_gateway_auth(&config, &anchor_key_path, &anchor_vault_path).await);
+
     DoctorReport {
         elapsed_ms: elapsed_ms(total_start),
         results,
@@ -1447,6 +1513,189 @@ mod tests {
         // being enabled in the default config.
         assert_eq!(seal.status, CheckStatus::Ok);
         assert!(seal.detail.contains("disabled"));
+
+        // #6487 (critic M5): confirms `check_gateway_auth` is actually wired into
+        // `build_doctor_report`'s pipeline, not just independently correct when called directly
+        // (all 5 dedicated `check_gateway_auth_*` tests below call it directly). Dumped defaults
+        // have `[gateway] enabled = false`, so this reports OK — the point is that the check ran
+        // at all through the real pipeline; a removed or misplaced wiring line would make this
+        // `find` return `None` instead.
+        let gateway_auth = report
+            .results
+            .iter()
+            .find(|r| r.name == "gateway.auth")
+            .expect("gateway.auth check must run as part of build_doctor_report");
+        assert_eq!(gateway_auth.status, CheckStatus::Ok);
+        assert!(gateway_auth.detail.contains("disabled"));
+    }
+
+    // #6487 (critic M5): dedicated end-to-end regression — `build_doctor_report` must surface a
+    // `Fail` for `gateway.auth` when the *parsed config* (not a directly-constructed one) has
+    // gateway enabled with no token anywhere, proving the check_gateway_auth(...).await call at
+    // the `results.push` site actually executes with the right config/vault-path plumbing.
+    #[tokio::test]
+    async fn build_doctor_report_wires_gateway_auth_check_and_fails_when_unsafe() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("config.toml");
+        // Mutate the struct and re-serialize, rather than appending a second `[gateway]` TOML
+        // header onto `dump_defaults()`'s output — the defaults already emit an active
+        // `[gateway]` section (`enabled = false`), so appending another would be a duplicate
+        // table and fail `check_config_parse` before `check_gateway_auth` ever ran.
+        let mut config = zeph_core::config::Config::default();
+        config.gateway.enabled = true;
+        let toml_src = toml::to_string_pretty(&config).expect("serialize config");
+        std::fs::write(&config_path, toml_src).unwrap();
+
+        // No vault at all — ZEPH_GATEWAY_TOKEN cannot resolve from anywhere.
+        let vault_dir = tempfile::tempdir().unwrap();
+        let key_path = vault_dir.path().join("vault-key.txt");
+        let vault_path = vault_dir.path().join("secrets.age");
+
+        let report = Box::pin(build_doctor_report(
+            &config_path,
+            1,
+            1,
+            None,
+            Some(&key_path),
+            Some(&vault_path),
+        ))
+        .await;
+
+        let gateway_auth = report
+            .results
+            .iter()
+            .find(|r| r.name == "gateway.auth")
+            .expect("gateway.auth check must run as part of build_doctor_report");
+        assert_eq!(
+            gateway_auth.status,
+            CheckStatus::Fail,
+            "gateway enabled with no resolvable token anywhere must Fail through the real \
+             pipeline, got detail: {}",
+            gateway_auth.detail
+        );
+        assert!(gateway_auth.detail.contains("vault set ZEPH_GATEWAY_TOKEN"));
+    }
+
+    // #6487: gateway.auth doctor check.
+
+    #[tokio::test]
+    async fn check_gateway_auth_ok_when_gateway_disabled() {
+        let config = zeph_core::config::Config::default();
+        let dir = tempfile::tempdir().unwrap();
+        let result = check_gateway_auth(
+            &config,
+            &dir.path().join("vault-key.txt"),
+            &dir.path().join("secrets.age"),
+        )
+        .await;
+        assert_eq!(result.status, CheckStatus::Ok);
+        assert!(result.detail.contains("disabled"));
+    }
+
+    #[tokio::test]
+    async fn check_gateway_auth_ok_when_token_set_directly_in_config() {
+        let mut config = zeph_core::config::Config::default();
+        config.gateway.enabled = true;
+        config.gateway.auth_token = Some("inline-secret".into());
+        let dir = tempfile::tempdir().unwrap();
+        let result = check_gateway_auth(
+            &config,
+            &dir.path().join("vault-key.txt"),
+            &dir.path().join("secrets.age"),
+        )
+        .await;
+        assert_eq!(result.status, CheckStatus::Ok);
+        assert!(result.detail.contains("config.toml"));
+    }
+
+    #[tokio::test]
+    async fn check_gateway_auth_fails_when_enabled_with_no_token_and_no_vault() {
+        let mut config = zeph_core::config::Config::default();
+        config.gateway.enabled = true;
+        let dir = tempfile::tempdir().unwrap();
+        let result = check_gateway_auth(
+            &config,
+            &dir.path().join("vault-key.txt"),
+            &dir.path().join("secrets.age"),
+        )
+        .await;
+        assert_eq!(result.status, CheckStatus::Fail);
+        assert!(result.detail.contains("vault set ZEPH_GATEWAY_TOKEN"));
+    }
+
+    #[tokio::test]
+    async fn check_gateway_auth_fails_when_enabled_with_vault_present_but_no_token_key() {
+        let mut config = zeph_core::config::Config::default();
+        config.gateway.enabled = true;
+        let dir = tempfile::tempdir().unwrap();
+        zeph_core::vault::AgeVaultProvider::init_vault(dir.path()).unwrap();
+        let result = check_gateway_auth(
+            &config,
+            &dir.path().join("vault-key.txt"),
+            &dir.path().join("secrets.age"),
+        )
+        .await;
+        assert_eq!(result.status, CheckStatus::Fail);
+        assert!(result.detail.contains("ZEPH_GATEWAY_TOKEN is not set"));
+    }
+
+    #[tokio::test]
+    async fn check_gateway_auth_ok_when_token_resolves_from_vault() {
+        let mut config = zeph_core::config::Config::default();
+        config.gateway.enabled = true;
+        let dir = tempfile::tempdir().unwrap();
+        zeph_core::vault::AgeVaultProvider::init_vault(dir.path()).unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+        let mut provider =
+            zeph_core::vault::AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        provider
+            .set_secret_mut("ZEPH_GATEWAY_TOKEN".into(), "vault-secret".into(), false)
+            .unwrap();
+        provider.save().unwrap();
+
+        let result = check_gateway_auth(&config, &key_path, &vault_path).await;
+        assert_eq!(result.status, CheckStatus::Ok);
+        assert!(result.detail.contains("resolved from vault"));
+    }
+
+    // #6487 (critic M2): whitespace-only tokens must Fail, not silently pass as "configured" —
+    // `AuthConfig::new` (zeph-common) trims before checking emptiness, so a whitespace-only
+    // value would otherwise report OK here while the gateway 401s every real request at runtime.
+
+    #[tokio::test]
+    async fn check_gateway_auth_fails_when_inline_config_token_is_whitespace_only() {
+        let mut config = zeph_core::config::Config::default();
+        config.gateway.enabled = true;
+        config.gateway.auth_token = Some("   ".into());
+        let dir = tempfile::tempdir().unwrap();
+        let result = check_gateway_auth(
+            &config,
+            &dir.path().join("vault-key.txt"),
+            &dir.path().join("secrets.age"),
+        )
+        .await;
+        assert_eq!(result.status, CheckStatus::Fail);
+    }
+
+    #[tokio::test]
+    async fn check_gateway_auth_fails_when_vault_token_is_whitespace_only() {
+        let mut config = zeph_core::config::Config::default();
+        config.gateway.enabled = true;
+        let dir = tempfile::tempdir().unwrap();
+        zeph_core::vault::AgeVaultProvider::init_vault(dir.path()).unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+        let mut provider =
+            zeph_core::vault::AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        provider
+            .set_secret_mut("ZEPH_GATEWAY_TOKEN".into(), "   ".into(), false)
+            .unwrap();
+        provider.save().unwrap();
+
+        let result = check_gateway_auth(&config, &key_path, &vault_path).await;
+        assert_eq!(result.status, CheckStatus::Fail);
+        assert!(result.detail.contains("ZEPH_GATEWAY_TOKEN is not set"));
     }
 
     #[test]
