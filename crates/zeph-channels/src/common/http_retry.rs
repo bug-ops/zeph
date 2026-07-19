@@ -23,14 +23,22 @@ struct RateLimitBody {
     retry_after: Option<f64>,
 }
 
+/// Discards a `Retry-After` value that is negative or non-finite (`NaN`/`±inf`),
+/// treating it the same as a missing or unparseable value so it cannot reach
+/// [`Duration::from_secs_f64`], which panics on such inputs.
+fn valid_retry_secs(secs: Option<f64>) -> Option<f64> {
+    secs.filter(|v| v.is_finite() && *v >= 0.0)
+}
+
 /// Executes a request with automatic 429 retry-after backoff.
 ///
 /// Builds a fresh request each attempt via `make_req`. On HTTP 429 the function
 /// reads the `Retry-After` header (falling back to the JSON body's `retry_after`
-/// field), clamps to [`MAX_RETRY_SECS`], sleeps, and retries up to [`MAX_RETRIES`]
-/// times. When retries are exhausted a final request is issued to obtain a
-/// `reqwest::Error` with the original HTTP status — `reqwest::Error` cannot be
-/// constructed directly.
+/// field, then a 1 s default), discarding negative or non-finite values from
+/// either source as if they were unparseable, clamps to [`MAX_RETRY_SECS`],
+/// sleeps, and retries up to [`MAX_RETRIES`] times. When retries are exhausted
+/// a final request is issued to obtain a `reqwest::Error` with the original
+/// HTTP status — `reqwest::Error` cannot be constructed directly.
 ///
 /// `context` is a short label (e.g. `"discord"`, `"telegram"`, `"slack"`) attached
 /// to the warning logs so retries can be attributed to the originating channel.
@@ -64,17 +72,21 @@ where
         }
 
         // Parse retry delay: header wins, then body field, then default 1 s.
-        let header_secs = resp
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<f64>().ok());
+        // Negative/NaN/infinite values are treated as absent (see `valid_retry_secs`)
+        // so they can't reach `Duration::from_secs_f64`, which panics on them.
+        let header_secs = valid_retry_secs(
+            resp.headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<f64>().ok()),
+        );
 
-        let body_secs = resp
-            .json::<RateLimitBody>()
-            .await
-            .unwrap_or_default()
-            .retry_after;
+        let body_secs = valid_retry_secs(
+            resp.json::<RateLimitBody>()
+                .await
+                .unwrap_or_default()
+                .retry_after,
+        );
 
         let delay_secs = header_secs.or(body_secs).unwrap_or(1.0).min(MAX_RETRY_SECS);
 
@@ -177,6 +189,69 @@ mod tests {
         let url = format!("{}/channels/ch1/messages", server.uri());
         let resp = send_with_retry("test", || client.post(&url)).await.unwrap();
         assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_ignores_negative_retry_after_header() {
+        let server = MockServer::start().await;
+
+        // 429 with a negative Retry-After header must not panic when converted
+        // to a Duration — it should fall back to the 1 s default instead.
+        Mock::given(method("POST"))
+            .and(path("/channels/ch1/messages"))
+            .respond_with(ResponseTemplate::new(429).append_header("Retry-After", "-5"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/channels/ch1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "4"})))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/channels/ch1/messages", server.uri());
+        let resp = send_with_retry("test", || client.post(&url)).await.unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_ignores_negative_retry_after_body() {
+        let server = MockServer::start().await;
+
+        // 429 with no header but a negative retry_after body field must also
+        // fall back to the default instead of reaching Duration::from_secs_f64.
+        Mock::given(method("POST"))
+            .and(path("/channels/ch1/messages"))
+            .respond_with(
+                ResponseTemplate::new(429).set_body_json(serde_json::json!({"retry_after": -1.0})),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/channels/ch1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "5"})))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/channels/ch1/messages", server.uri());
+        let resp = send_with_retry("test", || client.post(&url)).await.unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[test]
+    fn valid_retry_secs_rejects_negative_and_non_finite() {
+        assert_eq!(valid_retry_secs(Some(-5.0)), None);
+        assert_eq!(valid_retry_secs(Some(f64::NAN)), None);
+        assert_eq!(valid_retry_secs(Some(f64::INFINITY)), None);
+        assert_eq!(valid_retry_secs(Some(f64::NEG_INFINITY)), None);
+        assert_eq!(valid_retry_secs(None), None);
+        assert_eq!(valid_retry_secs(Some(0.0)), Some(0.0));
+        assert_eq!(valid_retry_secs(Some(2.5)), Some(2.5));
     }
 
     #[tokio::test]

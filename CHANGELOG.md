@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- `zeph-channels`: a negative or non-finite (`NaN`/`±inf`) `Retry-After` value from a 429
+  response's header or JSON body reached `Duration::from_secs_f64` unclamped and panicked the
+  process handling outbound Discord/Slack/Telegram sends (#6496). `send_with_retry` in
+  `crates/zeph-channels/src/common/http_retry.rs` now discards such values via a new
+  `valid_retry_secs` filter before falling back through header → body → 1 s default, same as an
+  unparseable value.
+
 - `zeph-core`: a transient `skill_trust` DB read failure made every active skill fail open to
   `SkillTrustLevel::Trusted` for the whole turn, including skills an operator had explicitly
   `Blocked` or left `Quarantined` (#6482). `Agent::build_skill_trust_map` collapsed both "table
