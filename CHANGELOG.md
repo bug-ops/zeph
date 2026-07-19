@@ -127,6 +127,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     for allowed user/role IDs (Discord) and allowed user IDs (Slack), mirroring
     Telegram's existing prompt.
 
+- **zeph-sanitizer**: `ExfiltrationGuard::scan_output` only matched narrow literal
+  markdown/HTML image syntax, letting three standard-compliant syntax variants bypass
+  tracking-pixel detection entirely (#6476):
+  - Markdown inline/reference destinations with `CommonMark`-legal leading whitespace
+    (`![t]( https://evil.com/pixel.gif)`) or angle-bracket wrapping
+    (`![t](<https://evil.com/pixel.gif>)`, `[ref]: <https://evil.com/img>`).
+  - HTML5-legal unquoted `<img src=...>` attribute values
+    (`<img src=https://evil.com/pixel.gif>`).
+  - A regression found during review: narrowing the bare-URL match to stop before a
+    whitespace-wrapped destination initially broke detection of standard `CommonMark`
+    image titles (`![t](https://evil.com/x.gif "title")`); fixed by adding an explicit
+    optional title clause (double-quoted, single-quoted, or paren-wrapped) to the regex.
+  `MARKDOWN_IMAGE_RE`, `REFERENCE_DEF_RE`, and `HTML_IMG_RE` now cover all three variants
+  (plus titles) via alternation, with capture-group consumption updated at every call site
+  in `scan_output`. Nine new regression tests assert `scan_output()` actually blocks/
+  substitutes each variant, not just that the regex matches.
+
 ## [0.22.2] - 2026-07-18
 ### Added
 
