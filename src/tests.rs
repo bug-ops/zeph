@@ -198,7 +198,7 @@ async fn create_channel_telegram_with_empty_allowed_users_errors() {
         result
             .unwrap_err()
             .to_string()
-            .contains("allowed_users must not be empty")
+            .contains("telegram allowlist must not be empty")
     );
 }
 
