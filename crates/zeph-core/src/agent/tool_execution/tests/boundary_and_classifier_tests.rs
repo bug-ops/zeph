@@ -316,6 +316,7 @@ async fn sanitize_tool_output_cross_boundary_acp_mcp_quarantines() {
         sources: vec![],
         model: "mock".to_owned(),
         timeout_ms: 30_000,
+        ..Default::default()
     };
     let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
 
@@ -350,6 +351,135 @@ async fn sanitize_tool_output_cross_boundary_acp_mcp_quarantines() {
     );
 }
 
+// Regression test for #6495: cross-boundary quarantine must not fail open. When the
+// quarantine LLM errors and `fail_strategy=Closed` (the default), the caller must return
+// the fixed blocked-content placeholder instead of falling through to normal (unquarantined)
+// processing — the confused-deputy protection this path exists for would otherwise be
+// defeated by any quarantine LLM hiccup.
+#[tokio::test]
+async fn sanitize_tool_output_cross_boundary_quarantine_error_fail_closed_blocks() {
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use tokio::sync::watch;
+    use zeph_common::SecurityEventCategory;
+    use zeph_llm::mock::MockProvider;
+    use zeph_sanitizer::QuarantineConfig;
+    use zeph_sanitizer::quarantine::{
+        GuardrailFailStrategy, QUARANTINE_BLOCKED_PLACEHOLDER, QuarantinedSummarizer,
+    };
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+    let quarantine_provider = zeph_llm::any::AnyProvider::Mock(MockProvider::failing());
+    let qcfg = QuarantineConfig {
+        enabled: true,
+        sources: vec![],
+        model: "mock".to_owned(),
+        timeout_ms: 30_000,
+        fail_strategy: GuardrailFailStrategy::Closed,
+    };
+    let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
+
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
+        .with_metrics(tx)
+        .with_acp_session(true)
+        .with_quarantine_summarizer(qs);
+    agent.services.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+        enabled: true,
+        spotlight_untrusted: true,
+        flag_injection_patterns: false,
+        mcp_to_acp_boundary: true,
+        ..Default::default()
+    });
+
+    let (result, _) = agent
+        .sanitize_tool_output("malicious MCP payload", "evil_server:tool_x")
+        .await;
+
+    assert!(
+        result.contains(QUARANTINE_BLOCKED_PLACEHOLDER),
+        "fail-closed cross-boundary quarantine error must yield the blocked placeholder: {result}"
+    );
+    assert!(
+        !result.contains("malicious MCP payload"),
+        "fail-closed fallback must never leak the original untrusted content: {result}"
+    );
+    let snap = rx.borrow().clone();
+    assert_eq!(snap.quarantine_failures, 1);
+    assert!(
+        snap.security_events
+            .iter()
+            .any(|e| e.category == SecurityEventCategory::Quarantine),
+        "must emit a Quarantine security event for the fail-closed block"
+    );
+}
+
+// Companion to the fail-closed test above: `fail_strategy=Open` must preserve the pre-#6495
+// behavior of falling through to the spotlighted (but unquarantined) content on error.
+#[tokio::test]
+async fn sanitize_tool_output_cross_boundary_quarantine_error_fail_open_preserves_legacy_behavior()
+{
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use tokio::sync::watch;
+    use zeph_llm::mock::MockProvider;
+    use zeph_sanitizer::QuarantineConfig;
+    use zeph_sanitizer::quarantine::{
+        GuardrailFailStrategy, QUARANTINE_BLOCKED_PLACEHOLDER, QuarantinedSummarizer,
+    };
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+    let quarantine_provider = zeph_llm::any::AnyProvider::Mock(MockProvider::failing());
+    let qcfg = QuarantineConfig {
+        enabled: true,
+        sources: vec![],
+        model: "mock".to_owned(),
+        timeout_ms: 30_000,
+        fail_strategy: GuardrailFailStrategy::Open,
+    };
+    let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
+
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
+        .with_metrics(tx)
+        .with_acp_session(true)
+        .with_quarantine_summarizer(qs);
+    agent.services.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+        enabled: true,
+        spotlight_untrusted: true,
+        flag_injection_patterns: false,
+        mcp_to_acp_boundary: true,
+        ..Default::default()
+    });
+
+    let (result, _) = agent
+        .sanitize_tool_output("mcp payload", "evil_server:tool_x")
+        .await;
+
+    assert!(
+        !result.contains(QUARANTINE_BLOCKED_PLACEHOLDER),
+        "fail-open must not use the blocked placeholder: {result}"
+    );
+    assert!(
+        result.contains("mcp payload"),
+        "fail-open must fall back to the spotlighted sanitized content: {result}"
+    );
+    let snap = rx.borrow().clone();
+    assert_eq!(snap.quarantine_failures, 1);
+}
+
 #[tokio::test]
 async fn sanitize_tool_output_cross_boundary_disabled_skips_quarantine() {
     use crate::agent::agent_tests::{
@@ -376,6 +506,7 @@ async fn sanitize_tool_output_cross_boundary_disabled_skips_quarantine() {
         sources: vec![],
         model: "mock".to_owned(),
         timeout_ms: 30_000,
+        ..Default::default()
     };
     let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
 
@@ -464,6 +595,7 @@ async fn sanitize_tool_output_cross_boundary_resolves_real_mcp_server_id() {
         sources: vec![],
         model: "mock".to_owned(),
         timeout_ms: 30_000,
+        ..Default::default()
     };
     let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
 

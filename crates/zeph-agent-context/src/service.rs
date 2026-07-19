@@ -1010,11 +1010,24 @@ impl ContextService {
                     return msg;
                 }
                 Err(e) => {
+                    view.metrics.quarantine_failures += 1;
+                    if qs.error_should_block() {
+                        tracing::warn!(
+                            error = %e,
+                            "quarantine failed for memory retrieval, fail_strategy=closed: blocking content"
+                        );
+                        view.security_events.push(
+                            zeph_common::SecurityEventCategory::Quarantine,
+                            "memory_retrieval",
+                            format!("Quarantine failed (fail-closed): {e}"),
+                        );
+                        msg.content = qs.blocked_fallback(&sanitized);
+                        return msg;
+                    }
                     tracing::warn!(
                         error = %e,
-                        "quarantine failed for memory retrieval, using original sanitized content"
+                        "quarantine failed for memory retrieval, fail_strategy=open: using original sanitized content"
                     );
-                    view.metrics.quarantine_failures += 1;
                     view.security_events.push(
                         zeph_common::SecurityEventCategory::Quarantine,
                         "memory_retrieval",
@@ -2075,6 +2088,226 @@ mod tests {
             assert_eq!(
                 inserted_count, 10,
                 "all 10 message-carrying PreparedContext fields must increment inserted_count"
+            );
+        }
+    }
+
+    // Regression tests for #6495: `sanitize_memory_message` must not fail open when the
+    // quarantine LLM errors. With `fail_strategy=Closed` (the default), the returned message
+    // must carry the fixed blocked placeholder rather than the pre-quarantine sanitized body.
+    mod quarantine_fail_strategy_tests {
+        use parking_lot::RwLock;
+        use std::borrow::Cow;
+        use std::sync::Arc;
+
+        use zeph_common::SecurityEventCategory;
+        use zeph_config::memory::TieredRetrievalConfig;
+        use zeph_config::{
+            ContextFormat, ContextStrategy, DocumentConfig, GraphConfig, PersonaConfig,
+            ReasoningConfig, TrajectoryConfig, TreeConfig,
+        };
+        use zeph_context::manager::ContextManager;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+        use zeph_memory::TokenCounter;
+        use zeph_sanitizer::quarantine::{
+            GuardrailFailStrategy, QUARANTINE_BLOCKED_PLACEHOLDER, QuarantinedSummarizer,
+        };
+        use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer, MemorySourceHint};
+        use zeph_skills::registry::SkillRegistry;
+
+        use super::super::*;
+        use crate::state::{ContextAssemblyView, MetricsCounters, SecurityEventSink};
+
+        fn make_task_supervisor() -> Arc<zeph_common::TaskSupervisor> {
+            Arc::new(zeph_common::TaskSupervisor::new(
+                tokio_util::sync::CancellationToken::new(),
+            ))
+        }
+
+        struct RecordingSink {
+            events: Vec<SecurityEventCategory>,
+        }
+        impl SecurityEventSink for RecordingSink {
+            fn push(&mut self, category: SecurityEventCategory, _: &'static str, _: String) {
+                self.events.push(category);
+            }
+        }
+
+        fn make_counter() -> Arc<TokenCounter> {
+            Arc::new(TokenCounter::default())
+        }
+
+        fn scrub_noop(s: &str) -> Cow<'_, str> {
+            Cow::Borrowed(s)
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn make_view<'a>(
+            sanitizer: &'a ContentSanitizer,
+            quarantine_summarizer: Option<&'a QuarantinedSummarizer>,
+            last_confidence: &'a mut Option<f32>,
+            last_skills_prompt: &'a mut String,
+            active_skill_names: &'a mut Vec<String>,
+            ctx_mgr: &'a mut ContextManager,
+            sink: &'a mut RecordingSink,
+        ) -> ContextAssemblyView<'a> {
+            ContextAssemblyView {
+                memory: None,
+                conversation_id: None,
+                recall_limit: 10,
+                cross_session_score_threshold: 0.5,
+                context_format: ContextFormat::default(),
+                last_recall_confidence: last_confidence,
+                context_strategy: ContextStrategy::default(),
+                crossover_turn_threshold: 0,
+                cached_session_digest: None,
+                digest_enabled: false,
+                graph_config: GraphConfig::default(),
+                document_config: DocumentConfig::default(),
+                persona_config: PersonaConfig::default(),
+                trajectory_config: TrajectoryConfig::default(),
+                reasoning_config: ReasoningConfig::default(),
+                memcot_config: zeph_config::MemCotConfig::default(),
+                memcot_state: None,
+                tree_config: TreeConfig::default(),
+                last_skills_prompt,
+                active_skill_names,
+                skill_registry: Arc::new(RwLock::new(SkillRegistry::default())),
+                skill_paths: &[],
+                correction_config: None,
+                sidequest_turn_counter: 0,
+                proactive_explorer: None,
+                sanitizer,
+                quarantine_summarizer,
+                context_manager: ctx_mgr,
+                token_counter: make_counter(),
+                metrics: MetricsCounters::default(),
+                security_events: sink,
+                cached_prompt_tokens: 0,
+                redact_credentials: false,
+                channel_skills: &[],
+                scrub: scrub_noop,
+                tiered_retrieval_config: TieredRetrievalConfig {
+                    enabled: false,
+                    ..TieredRetrievalConfig::default()
+                },
+                tiered_retrieval_classifier: None,
+                tiered_retrieval_validator: None,
+                type_aware_compose_config: zeph_config::memory::TypeAwareComposeConfig::default(),
+                fidelity_config: None,
+                fidelity_semantic_provider: None,
+                fidelity_compress_provider: None,
+                planned_next_tools: &[],
+                status_tx: None,
+                task_supervisor: make_task_supervisor(),
+            }
+        }
+
+        fn quarantine_config(
+            fail_strategy: GuardrailFailStrategy,
+        ) -> zeph_config::QuarantineConfig {
+            zeph_config::QuarantineConfig {
+                enabled: true,
+                sources: vec!["memory_retrieval".to_owned()],
+                model: "mock".to_owned(),
+                timeout_ms: 30_000,
+                fail_strategy,
+            }
+        }
+
+        #[tokio::test]
+        async fn fail_closed_default_blocks_content_on_quarantine_error() {
+            let quarantine_provider = AnyProvider::Mock(MockProvider::failing());
+            let qcfg = quarantine_config(GuardrailFailStrategy::Closed);
+            let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
+
+            let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+            let mut ctx_mgr = ContextManager::new();
+            let mut sink = RecordingSink { events: vec![] };
+            let mut last_confidence = None::<f32>;
+            let mut last_skills_prompt = String::new();
+            let mut active_skill_names = Vec::new();
+
+            let mut view = make_view(
+                &sanitizer,
+                Some(&qs),
+                &mut last_confidence,
+                &mut last_skills_prompt,
+                &mut active_skill_names,
+                &mut ctx_mgr,
+                &mut sink,
+            );
+
+            let msg = Message {
+                role: Role::User,
+                content: "recalled secret memory".to_owned(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            };
+            let result = ContextService::new()
+                .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, &mut view)
+                .await;
+
+            assert!(
+                result.content.contains(QUARANTINE_BLOCKED_PLACEHOLDER),
+                "fail-closed default must substitute the blocked placeholder: {}",
+                result.content
+            );
+            assert!(
+                !result.content.contains("recalled secret memory"),
+                "fail-closed fallback must never leak the original untrusted content: {}",
+                result.content
+            );
+            assert!(
+                sink.events.contains(&SecurityEventCategory::Quarantine),
+                "must emit a Quarantine security event for the fail-closed block"
+            );
+        }
+
+        #[tokio::test]
+        async fn fail_open_preserves_legacy_fallback_behavior() {
+            let quarantine_provider = AnyProvider::Mock(MockProvider::failing());
+            let qcfg = quarantine_config(GuardrailFailStrategy::Open);
+            let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
+
+            let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+            let mut ctx_mgr = ContextManager::new();
+            let mut sink = RecordingSink { events: vec![] };
+            let mut last_confidence = None::<f32>;
+            let mut last_skills_prompt = String::new();
+            let mut active_skill_names = Vec::new();
+
+            let mut view = make_view(
+                &sanitizer,
+                Some(&qs),
+                &mut last_confidence,
+                &mut last_skills_prompt,
+                &mut active_skill_names,
+                &mut ctx_mgr,
+                &mut sink,
+            );
+
+            let msg = Message {
+                role: Role::User,
+                content: "recalled memory content".to_owned(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            };
+            let result = ContextService::new()
+                .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, &mut view)
+                .await;
+
+            assert!(
+                !result.content.contains(QUARANTINE_BLOCKED_PLACEHOLDER),
+                "fail-open must not use the blocked placeholder: {}",
+                result.content
+            );
+            assert!(
+                result.content.contains("recalled memory content"),
+                "fail-open must fall back to the sanitized content: {}",
+                result.content
             );
         }
     }

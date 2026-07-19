@@ -258,6 +258,25 @@ fn security_without_guardrail_gets_guardrail_commented() {
 }
 
 #[test]
+fn quarantine_without_fail_strategy_gets_fail_strategy_commented() {
+    // #6495: QuarantineConfig gained a `fail_strategy` field. The generic diff mechanism
+    // (same as the guardrail test above) must add it as a commented default for existing
+    // configs that only set the older quarantine keys.
+    let user =
+        "[security.content_isolation.quarantine]\nenabled = true\nsources = [\"web_scrape\"]\n";
+    let migrator = ConfigMigrator::new();
+    let result = migrator.migrate(user).expect("migrate");
+    assert!(
+        result.output.contains("fail_strategy"),
+        "migration must add fail_strategy for quarantine configs missing it: got:\n{}",
+        result.output
+    );
+    // Existing user values must survive the migration untouched.
+    assert!(result.output.contains("enabled = true"));
+    assert!(result.output.contains("web_scrape"));
+}
+
+#[test]
 fn migrate_reference_contains_tools_policy() {
     // IMP-NO-MIGRATE-CONFIG: verify that the embedded default.toml (the canonical reference
     // used by ConfigMigrator) contains a [tools.policy] section. This ensures that

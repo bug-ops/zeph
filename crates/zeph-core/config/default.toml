@@ -543,6 +543,15 @@ sources = ["web_scrape", "a2a_message"]
 # Provider to use for quarantine LLM calls — must be a recognized provider name
 # (e.g. "claude", "ollama", "openai", or a compatible entry name)
 model = "claude"
+# Maximum time to wait for the quarantine LLM to respond, in milliseconds (default: 30000)
+timeout_ms = 30000
+# What to do when the quarantine LLM call fails (timeout, provider error, empty response):
+# "closed" (default) substitutes a fixed "content could not be safely processed" placeholder
+# instead of falling back to the merely sanitized content — safe default for quarantine
+# sources, which are the highest-risk content the agent handles.
+# "open" preserves the pre-#6495 behavior of falling back to the sanitized content, for
+# availability-sensitive deployments.
+fail_strategy = "closed"
 
 [security.pii_filter]
 # Scrub PII from tool outputs before they enter LLM context and debug dumps (default: true)

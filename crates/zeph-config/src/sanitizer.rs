@@ -252,6 +252,17 @@ pub struct QuarantineConfig {
     /// Defaults to 30 000 ms (30 s).
     #[serde(default = "default_quarantine_timeout_ms")]
     pub timeout_ms: u64,
+
+    /// What to do when `extract_facts` fails (timeout, LLM error, or empty response).
+    ///
+    /// Mirrors [`GuardrailFailStrategy`]: `Closed` (the default) substitutes a fixed
+    /// "content could not be safely processed" placeholder instead of falling through to
+    /// the merely sanitized/spotlighted content, since quarantine sources are, by
+    /// definition, the highest-risk content the agent handles. `Open` preserves the
+    /// pre-#6495 behavior of falling back to the sanitized content for
+    /// availability-sensitive deployments.
+    #[serde(default = "default_fail_strategy")]
+    pub fail_strategy: GuardrailFailStrategy,
 }
 
 fn default_quarantine_sources() -> Vec<String> {
@@ -273,6 +284,7 @@ impl Default for QuarantineConfig {
             sources: default_quarantine_sources(),
             model: default_quarantine_model(),
             timeout_ms: default_quarantine_timeout_ms(),
+            fail_strategy: default_fail_strategy(),
         }
     }
 }

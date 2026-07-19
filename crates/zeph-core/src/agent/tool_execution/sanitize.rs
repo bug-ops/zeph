@@ -408,12 +408,31 @@ impl<C: Channel> Agent<C> {
                     ));
                 }
                 Err(e) => {
+                    // Resolve qs's fail-closed fallback before the `&mut self` calls below —
+                    // `qs` borrows `self.services.security.quarantine_summarizer` and cannot
+                    // stay live across a `self.update_metrics`/`push_security_event` call.
+                    let blocked_body = qs
+                        .error_should_block()
+                        .then(|| qs.blocked_fallback(sanitized));
+                    self.update_metrics(|m| m.quarantine_failures += 1);
+                    if let Some(body) = blocked_body {
+                        tracing::warn!(
+                            tool = %tool_name,
+                            error = %e,
+                            "cross-boundary quarantine failed, fail_strategy=closed: blocking content"
+                        );
+                        self.push_security_event(
+                            zeph_common::SecurityEventCategory::Quarantine,
+                            tool_name,
+                            format!("Cross-boundary quarantine failed (fail-closed): {e}"),
+                        );
+                        return Some((body, has_injection_flags));
+                    }
                     tracing::warn!(
                         tool = %tool_name,
                         error = %e,
-                        "cross-boundary quarantine failed, using spotlighted output"
+                        "cross-boundary quarantine failed, fail_strategy=open: using spotlighted output"
                     );
-                    self.update_metrics(|m| m.quarantine_failures += 1);
                 }
             }
         }
@@ -464,12 +483,31 @@ impl<C: Channel> Agent<C> {
                 ))
             }
             Err(e) => {
+                // Resolve qs's fail-closed fallback before the `&mut self` calls below — `qs`
+                // borrows `self.services.security.quarantine_summarizer` and cannot stay live
+                // across a `self.update_metrics`/`push_security_event` call.
+                let blocked_body = qs
+                    .error_should_block()
+                    .then(|| qs.blocked_fallback(sanitized));
+                self.update_metrics(|m| m.quarantine_failures += 1);
+                if let Some(body) = blocked_body {
+                    tracing::warn!(
+                        tool = %tool_name,
+                        error = %e,
+                        "quarantine failed, fail_strategy=closed: blocking content"
+                    );
+                    self.push_security_event(
+                        zeph_common::SecurityEventCategory::Quarantine,
+                        tool_name,
+                        format!("Quarantine failed (fail-closed): {e}"),
+                    );
+                    return Some((body, has_injection_flags));
+                }
                 tracing::warn!(
                     tool = %tool_name,
                     error = %e,
-                    "quarantine failed, using original sanitized output"
+                    "quarantine failed, fail_strategy=open: using original sanitized output"
                 );
-                self.update_metrics(|m| m.quarantine_failures += 1);
                 self.push_security_event(
                     zeph_common::SecurityEventCategory::Quarantine,
                     tool_name,

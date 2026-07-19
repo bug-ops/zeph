@@ -127,6 +127,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     for allowed user/role IDs (Discord) and allowed user IDs (Slack), mirroring
     Telegram's existing prompt.
 
+### Security
+
+- `zeph-acp`: fixed the ACP shell permission gate's "Allow always" cache binding for shell
+  interpreters (`bash`, `sh`, `zsh`, `fish`, `dash`) — approving one `bash -c <script>` invocation
+  no longer silently authorizes every subsequent invocation of that interpreter regardless of
+  script content (#6485). `AcpShellExecutor::handle_bash` and `handle_bash_stdin` (`crates/zeph-acp/src/terminal.rs`)
+  previously cached decisions keyed only on the interpreter binary name — sound for simple binaries
+  (`git`, `cargo`, `rm`) where the binary determines the class of action, but not for interpreters
+  where the binary name alone says nothing about what the script does. A single approved `bash -c
+  "cargo test"` would previously auto-allow a later, attacker-steered `bash -c "curl ... | bash"`
+  with no prompt. The permission cache identity for shell interpreters is now bound to a BLAKE3
+  digest of the exact command/stdin payload (new `build_permission_title` helper), so "Allow
+  always" is scoped to that exact command — repeating an identical command still short-circuits
+  the prompt, but any different command triggers a fresh IDE confirmation. The digest and the
+  human-facing `raw_input` are both derived from the *effective* command, combining `command` and
+  the structured `args` field (new `effective_bash_payload` helper) — `{"command": "bash", "args":
+  ["-c", "<script>"]}` is bound to the exact script the same way the inline `{"command": "bash -c
+  \"<script>\""}` form is, closing an args-form variant of the same bypass that hashed only the
+  constant `"bash"` and hid the script from the permission prompt. `handle_bash` now also
+  surfaces the same `SHELL_INTERPRETERS` warning in the permission prompt that `handle_bash_stdin`
+  already showed (previously only the stdin-write path warned, despite the module doc claiming
+  REQ-P23-5 covered both). `handle_bash`'s interpreter classification is now case-insensitive
+  (`BASH -c "<script>"` and other casing variants are recognized the same as `bash -c "<script>"`),
+  closing a bypass where an uncommon-cased interpreter name skipped content-binding entirely —
+  on macOS's default case-insensitive filesystem an uppercase `BASH` resolves to and executes the
+  real `bash` binary.
+  - **Breaking (pre-1.0)**: persisted `~/.config/zeph/acp-permissions.toml` entries for shell
+    interpreters granted before this fix will not match the new content-bound cache keys and are
+    silently ignored (no load failure) — affected users are re-prompted once per distinct command
+    they run again. Entries for non-interpreter binaries (`git`, `cargo`, `rm`, ...) are unaffected.
+
+- `zeph-sanitizer`/`zeph-config`/`zeph-core`/`zeph-agent-context`: fixed quarantine
+  summarization failing open on LLM error (#6495). `QuarantinedSummarizer::extract_facts`
+  returns `Err` on quarantine-LLM timeout, provider error, or empty response, and all three
+  production call sites (`handle_cross_boundary_quarantine`/`handle_quarantine_summary` in
+  `crates/zeph-core/src/agent/tool_execution/sanitize.rs`, and the memory-retrieval quarantine
+  path in `crates/zeph-agent-context/src/service.rs`) previously fell through to the merely
+  sanitized/spotlighted content unconditionally on any such error — including on the
+  `mcp_to_acp_boundary` confused-deputy protection path, where a quarantine LLM hiccup would
+  silently defeat the protection with no fallback signal. `QuarantineConfig` gained a
+  `fail_strategy` field (`GuardrailFailStrategy`, reused from the existing guardrail feature —
+  `Open`/`Closed`) mirroring `GuardrailFilter`'s existing pattern, **defaulting to `Closed`**:
+  on `extract_facts` error, all three call sites now substitute a fixed
+  `QUARANTINE_BLOCKED_PLACEHOLDER` body (new `QuarantinedSummarizer::blocked_fallback` helper)
+  instead of the pre-quarantine sanitized content. Set `fail_strategy = "open"` under
+  `[security.content_isolation.quarantine]` to opt back into the pre-#6495 fallback behavior for
+  availability-sensitive deployments.
+  - **Breaking (pre-1.0)**: existing deployments with quarantine enabled now fail closed by
+    default on quarantine-LLM errors — content that previously fell back to sanitized/spotlighted
+    output is now replaced with the blocked placeholder unless `fail_strategy = "open"` is set.
+
 ## [0.22.2] - 2026-07-18
 ### Added
 

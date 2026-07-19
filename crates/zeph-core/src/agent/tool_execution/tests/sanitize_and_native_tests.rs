@@ -238,6 +238,7 @@ async fn sanitize_tool_output_quarantine_web_scrape_invoked() {
         sources: vec!["web_scrape".to_owned()],
         model: "claude".to_owned(),
         timeout_ms: 30_000,
+        ..Default::default()
     };
     let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
 
@@ -301,6 +302,7 @@ async fn sanitize_tool_output_quarantine_receives_pii_scrubbed_content() {
         sources: vec!["web_scrape".to_owned()],
         model: "claude".to_owned(),
         timeout_ms: 30_000,
+        ..Default::default()
     };
     let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
 
@@ -338,15 +340,19 @@ async fn sanitize_tool_output_quarantine_receives_pii_scrubbed_content() {
     );
 }
 
+// #6495: with the default `fail_strategy=Closed`, an `extract_facts` error must NOT fall
+// back to the original (merely sanitized) content — it must substitute the fixed blocked
+// placeholder, since quarantine sources are the highest-risk content the agent handles.
 #[tokio::test]
-async fn sanitize_tool_output_quarantine_fallback_on_error() {
+async fn sanitize_tool_output_quarantine_error_fail_closed_blocks() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
     use tokio::sync::watch;
+    use zeph_common::SecurityEventCategory;
     use zeph_llm::mock::MockProvider;
     use zeph_sanitizer::QuarantineConfig;
-    use zeph_sanitizer::quarantine::QuarantinedSummarizer;
+    use zeph_sanitizer::quarantine::{QUARANTINE_BLOCKED_PLACEHOLDER, QuarantinedSummarizer};
     use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
     let provider = mock_provider(vec![]);
@@ -355,13 +361,85 @@ async fn sanitize_tool_output_quarantine_fallback_on_error() {
     let executor = MockToolExecutor::no_tools();
     let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
 
-    // Quarantine provider fails
+    // Quarantine provider fails; fail_strategy defaults to Closed.
     let quarantine_provider = zeph_llm::any::AnyProvider::Mock(MockProvider::failing());
     let qcfg = QuarantineConfig {
         enabled: true,
         sources: vec!["web_scrape".to_owned()],
         model: "claude".to_owned(),
         timeout_ms: 30_000,
+        ..Default::default()
+    };
+    let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
+
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
+        .with_metrics(tx)
+        .with_quarantine_summarizer(qs);
+    agent.services.security.sanitizer = ContentSanitizer::new(&ContentIsolationConfig {
+        enabled: true,
+        spotlight_untrusted: true,
+        flag_injection_patterns: false,
+        ..Default::default()
+    });
+
+    let (result, _) = agent
+        .sanitize_tool_output("original web content", "web_scrape")
+        .await;
+
+    assert!(
+        result.contains(QUARANTINE_BLOCKED_PLACEHOLDER),
+        "fail-closed default must substitute the blocked placeholder: {result}"
+    );
+    assert!(
+        !result.contains("original web content"),
+        "fail-closed fallback must never leak the original untrusted content: {result}"
+    );
+    let snap = rx.borrow().clone();
+    assert_eq!(
+        snap.quarantine_failures, 1,
+        "quarantine_failures should be 1"
+    );
+    assert_eq!(
+        snap.quarantine_invocations, 0,
+        "quarantine_invocations should be 0"
+    );
+    assert!(
+        snap.security_events
+            .iter()
+            .any(|e| e.category == SecurityEventCategory::Quarantine),
+        "must emit a Quarantine security event for the fail-closed block"
+    );
+}
+
+// Companion to the fail-closed test above: `fail_strategy=Open` preserves the pre-#6495
+// behavior of falling back to the original sanitized content on error.
+#[tokio::test]
+async fn sanitize_tool_output_quarantine_error_fail_open_preserves_legacy_behavior() {
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use tokio::sync::watch;
+    use zeph_llm::mock::MockProvider;
+    use zeph_sanitizer::QuarantineConfig;
+    use zeph_sanitizer::quarantine::{
+        GuardrailFailStrategy, QUARANTINE_BLOCKED_PLACEHOLDER, QuarantinedSummarizer,
+    };
+    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
+
+    // Quarantine provider fails; fail_strategy explicitly set to Open.
+    let quarantine_provider = zeph_llm::any::AnyProvider::Mock(MockProvider::failing());
+    let qcfg = QuarantineConfig {
+        enabled: true,
+        sources: vec!["web_scrape".to_owned()],
+        model: "claude".to_owned(),
+        timeout_ms: 30_000,
+        fail_strategy: GuardrailFailStrategy::Open,
     };
     let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
 
@@ -382,7 +460,11 @@ async fn sanitize_tool_output_quarantine_fallback_on_error() {
     // Fallback: original sanitized content preserved
     assert!(
         result.contains("original web content"),
-        "fallback must preserve original content"
+        "fail-open fallback must preserve original content"
+    );
+    assert!(
+        !result.contains(QUARANTINE_BLOCKED_PLACEHOLDER),
+        "fail-open must not use the blocked placeholder: {result}"
     );
     // Failure metric incremented
     let snap = rx.borrow().clone();
@@ -420,6 +502,7 @@ async fn sanitize_tool_output_quarantine_skips_shell_tool() {
         sources: vec!["web_scrape".to_owned()], // only web_scrape, NOT shell
         model: "claude".to_owned(),
         timeout_ms: 30_000,
+        ..Default::default()
     };
     let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
 

@@ -25,7 +25,18 @@ use std::time::Duration;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
+pub use zeph_config::GuardrailFailStrategy;
+
 use super::{ContentSanitizer, ContentSourceKind, QuarantineConfig, SanitizedContent};
+
+/// Placeholder body substituted for quarantine output when `fail_strategy` is
+/// [`GuardrailFailStrategy::Closed`] and [`QuarantinedSummarizer::extract_facts`] failed.
+///
+/// Returned instead of the pre-quarantine sanitized content: quarantine sources are, by
+/// definition, the highest-risk content the agent handles, so a fail-closed deployment must
+/// not fall back to content that only passed the baseline (non-LLM) sanitization pass.
+pub const QUARANTINE_BLOCKED_PLACEHOLDER: &str =
+    "[Content could not be safely processed by the quarantine filter and was blocked.]";
 
 // ---------------------------------------------------------------------------
 // System prompt — not configurable (security boundary)
@@ -92,6 +103,7 @@ pub struct QuarantinedSummarizer {
     provider: AnyProvider,
     enabled_sources: HashSet<ContentSourceKind>,
     timeout: Duration,
+    fail_strategy: GuardrailFailStrategy,
 }
 
 impl QuarantinedSummarizer {
@@ -127,6 +139,7 @@ impl QuarantinedSummarizer {
             provider,
             enabled_sources,
             timeout: Duration::from_millis(config.timeout_ms),
+            fail_strategy: config.fail_strategy,
         }
     }
 
@@ -141,6 +154,64 @@ impl QuarantinedSummarizer {
     #[must_use]
     pub fn should_quarantine(&self, source: ContentSourceKind) -> bool {
         self.enabled_sources.contains(&source)
+    }
+
+    /// Configured fail strategy (mirrors [`GuardrailFilter::fail_strategy`](crate::guardrail::GuardrailFilter::fail_strategy)).
+    #[must_use]
+    pub fn fail_strategy(&self) -> GuardrailFailStrategy {
+        self.fail_strategy
+    }
+
+    /// Whether to block on an `extract_facts` error (respects `fail_strategy`).
+    ///
+    /// Mirrors [`GuardrailFilter::error_should_block`](crate::guardrail::GuardrailFilter::error_should_block).
+    /// Callers should use [`QuarantinedSummarizer::blocked_fallback`] to build the replacement
+    /// body when this returns `true`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::quarantine::QuarantinedSummarizer;
+    /// use zeph_config::QuarantineConfig;
+    /// use zeph_llm::any::AnyProvider;
+    /// use zeph_llm::mock::MockProvider;
+    ///
+    /// let provider = AnyProvider::Mock(MockProvider::default());
+    /// let qs = QuarantinedSummarizer::new(provider, &QuarantineConfig::default());
+    /// // Default fail_strategy is Closed — errors must block.
+    /// assert!(qs.error_should_block());
+    /// ```
+    #[must_use]
+    pub fn error_should_block(&self) -> bool {
+        self.fail_strategy == GuardrailFailStrategy::Closed
+    }
+
+    /// Build the fail-closed fallback body for `sanitized` when `extract_facts` failed.
+    ///
+    /// Wraps [`QUARANTINE_BLOCKED_PLACEHOLDER`] in the same spotlight wrapper a successful
+    /// summary would receive, so downstream consumers see one consistent output shape
+    /// regardless of whether extraction succeeded. Callers gate this behind
+    /// [`QuarantinedSummarizer::error_should_block`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::quarantine::QuarantinedSummarizer;
+    /// use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
+    /// use zeph_config::{ContentIsolationConfig, QuarantineConfig};
+    /// use zeph_llm::any::AnyProvider;
+    /// use zeph_llm::mock::MockProvider;
+    ///
+    /// let provider = AnyProvider::Mock(MockProvider::default());
+    /// let qs = QuarantinedSummarizer::new(provider, &QuarantineConfig::default());
+    /// let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+    /// let sanitized = sanitizer.sanitize("untrusted", ContentSource::new(ContentSourceKind::WebScrape));
+    /// let fallback = qs.blocked_fallback(&sanitized);
+    /// assert!(fallback.contains("could not be safely processed"));
+    /// ```
+    #[must_use]
+    pub fn blocked_fallback(&self, sanitized: &SanitizedContent) -> String {
+        ContentSanitizer::apply_spotlight(QUARANTINE_BLOCKED_PLACEHOLDER, &sanitized.source, &[])
     }
 
     /// Extract verifiable facts from untrusted content via the quarantine LLM.
@@ -279,6 +350,7 @@ mod tests {
         assert_eq!(cfg.sources, vec!["web_scrape", "a2a_message"]);
         assert_eq!(cfg.model, "claude");
         assert_eq!(cfg.timeout_ms, 30_000);
+        assert_eq!(cfg.fail_strategy, GuardrailFailStrategy::Closed);
     }
 
     #[test]
@@ -288,6 +360,7 @@ mod tests {
             sources: vec!["web_scrape".to_owned(), "mcp_response".to_owned()],
             model: "ollama".to_owned(),
             timeout_ms: 15_000,
+            fail_strategy: zeph_config::GuardrailFailStrategy::Open,
         };
         let toml_str = toml::to_string(&cfg).expect("serialize");
         let back: QuarantineConfig = toml::from_str(&toml_str).expect("deserialize");
@@ -525,6 +598,92 @@ spotlight_untrusted = true
             matches!(err, QuarantineError::Timeout),
             "expected Timeout, got {err:?}"
         );
+    }
+
+    // --- fail_strategy / error_should_block / blocked_fallback (#6495) ---
+
+    #[test]
+    fn fail_strategy_defaults_to_closed_and_blocks() {
+        let qs = make_summarizer_with_default_config();
+        assert_eq!(qs.fail_strategy(), GuardrailFailStrategy::Closed);
+        assert!(qs.error_should_block());
+    }
+
+    #[test]
+    fn fail_strategy_open_does_not_block() {
+        use zeph_llm::mock::MockProvider;
+        let provider = AnyProvider::Mock(MockProvider::default());
+        let cfg = QuarantineConfig {
+            fail_strategy: GuardrailFailStrategy::Open,
+            ..Default::default()
+        };
+        let qs = QuarantinedSummarizer::new(provider, &cfg);
+        assert_eq!(qs.fail_strategy(), GuardrailFailStrategy::Open);
+        assert!(!qs.error_should_block());
+    }
+
+    #[test]
+    fn blocked_fallback_contains_placeholder_and_spotlight_wrapper() {
+        let qs = make_summarizer_with_default_config();
+        let sanitized = default_sanitizer().sanitize(
+            "untrusted content",
+            ContentSource::new(ContentSourceKind::WebScrape),
+        );
+        let fallback = qs.blocked_fallback(&sanitized);
+        assert!(fallback.contains(QUARANTINE_BLOCKED_PLACEHOLDER));
+        assert!(fallback.starts_with("<external-data"));
+        assert!(fallback.ends_with("</external-data>"));
+        // The original untrusted content must never leak into the blocked fallback.
+        assert!(!fallback.contains("untrusted content"));
+    }
+
+    #[tokio::test]
+    async fn extract_facts_error_then_fail_closed_yields_blocking_fallback() {
+        // Simulates the call-site pattern: on `extract_facts` error with fail_strategy=Closed,
+        // callers must substitute `blocked_fallback`, never the raw sanitized body.
+        use zeph_llm::mock::MockProvider;
+        let provider = AnyProvider::Mock(MockProvider::failing());
+        let cfg = QuarantineConfig {
+            fail_strategy: GuardrailFailStrategy::Closed,
+            ..Default::default()
+        };
+        let qs = QuarantinedSummarizer::new(provider, &cfg);
+        let sanitized = default_sanitizer().sanitize(
+            "secret internal data",
+            ContentSource::new(ContentSourceKind::WebScrape),
+        );
+        let content_sanitizer = default_sanitizer();
+        let err = qs
+            .extract_facts(&sanitized, &content_sanitizer)
+            .await
+            .unwrap_err();
+        assert_matches!(err, QuarantineError::LlmError(_));
+        assert!(qs.error_should_block());
+        let fallback = qs.blocked_fallback(&sanitized);
+        assert!(fallback.contains(QUARANTINE_BLOCKED_PLACEHOLDER));
+        assert!(!fallback.contains("secret internal data"));
+    }
+
+    #[tokio::test]
+    async fn extract_facts_error_then_fail_open_preserves_old_behavior() {
+        // With fail_strategy=Open, callers keep falling back to `sanitized.body` — verify
+        // `error_should_block` is false so the pre-#6495 fallback path is taken.
+        use zeph_llm::mock::MockProvider;
+        let provider = AnyProvider::Mock(MockProvider::failing());
+        let cfg = QuarantineConfig {
+            fail_strategy: GuardrailFailStrategy::Open,
+            ..Default::default()
+        };
+        let qs = QuarantinedSummarizer::new(provider, &cfg);
+        let sanitized = default_sanitizer()
+            .sanitize("content", ContentSource::new(ContentSourceKind::WebScrape));
+        let content_sanitizer = default_sanitizer();
+        let err = qs
+            .extract_facts(&sanitized, &content_sanitizer)
+            .await
+            .unwrap_err();
+        assert_matches!(err, QuarantineError::LlmError(_));
+        assert!(!qs.error_should_block());
     }
 
     // --- from_str_opt ---
