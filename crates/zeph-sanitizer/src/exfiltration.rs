@@ -53,9 +53,15 @@ pub use zeph_config::ExfiltrationGuardConfig;
 /// separated by whitespace — e.g. `![t](https://evil.com/x.gif "title")`. The bare-URL
 /// branch stops at the first whitespace (so it cannot swallow a trailing title itself),
 /// so the title clause must be matched explicitly or the whole pattern fails to match.
+/// The double-quoted title branch also tolerates a backslash-escaped quote (`\"`) inside
+/// the title without treating it as the closing delimiter, per `CommonMark` title parsing.
+///
+/// The scheme is matched case-insensitively (`(?i)`) and is optional — a scheme-relative
+/// destination (`//evil.com/x.gif`) is treated the same as an explicit `https://` one, since
+/// both resolve to an attacker-controlled origin when rendered.
 static MARKDOWN_IMAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r#"!\[([^\]]*)\]\(\s*(?:<(https?://[^>]+)>|(https?://[^)\s]+))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)"#,
+        r#"(?i)!\[([^\]]*)\]\(\s*(?:<((?:https?:)?//[^>]+)>|((?:https?:)?//[^)\s]+))(?:\s+(?:"(?:\\.|[^"])*"|'[^']*'|\([^)]*\)))?\s*\)"#,
     )
     .expect("valid MARKDOWN_IMAGE_RE")
 });
@@ -66,8 +72,11 @@ static MARKDOWN_IMAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// The destination may be wrapped in angle brackets (`<https://...>`) per `CommonMark`.
 /// Group 2 holds an angle-bracket-wrapped URL, group 3 holds a bare URL — callers must
 /// check both.
+///
+/// The scheme is matched case-insensitively and is optional, so scheme-relative
+/// destinations (`//evil.com/img`) are captured alongside explicit `https://` ones.
 static REFERENCE_DEF_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^\[([^\]]+)\]:\s*(?:<(https?://[^>]+)>|(https?://\S+))")
+    Regex::new(r"(?im)^\[([^\]]+)\]:\s*(?:<((?:https?:)?//[^>]+)>|((?:https?:)?//\S+))")
         .expect("valid REFERENCE_DEF_RE")
 });
 
@@ -76,17 +85,28 @@ static REFERENCE_USAGE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"!\[([^\]]*)\]\[([^\]]+)\]").expect("valid REFERENCE_USAGE_RE"));
 
 /// Extracts http/https URLs from arbitrary text (used for tool argument scanning).
+///
+/// The scheme is matched case-insensitively, matching `is_external_url`'s casing rules.
+///
+// TODO(critic): URL_EXTRACT_RE lacks scheme-relative parity with is_external_url (#6508
+// sibling gap, tracked in follow-up issue). The flagged-URL set used by validate_tool_call is
+// exact-string matched, so adding scheme-relative extraction here is a larger design change
+// than the casing fix above — deferred, not implemented in this pass.
 static URL_EXTRACT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"https?://[^\s"'<>]+"#).expect("valid URL_EXTRACT_RE"));
+    LazyLock::new(|| Regex::new(r#"(?i)https?://[^\s"'<>]+"#).expect("valid URL_EXTRACT_RE"));
 
 /// Matches HTML `<img>` tags with external http/https `src` attributes.
 ///
 /// Single-quoted, double-quoted, and unquoted (HTML5-legal) `src` values are all matched.
 /// Group 1 holds a quoted URL, group 2 holds an unquoted URL — callers must check both.
 /// The full tag (`<img … >`) is replaced with `[image removed: <url>]`.
+///
+/// The `(?i)` flag also makes the scheme case-insensitive, and the scheme is optional so
+/// scheme-relative `src` values (`//evil.com/track.gif`) are matched too — both are
+/// HTML5-legal and render identically to an explicit `https://` URL.
 static HTML_IMG_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r#"(?i)<img\b[^>]*\bsrc\s*=\s*(?:["'](https?://[^"']+)["']|(https?://[^\s>]+))[^>]*>"#,
+        r#"(?i)<img\b[^>]*\bsrc\s*=\s*(?:["']((?:https?:)?//[^"']+)["']|((?:https?:)?//[^\s>]+))[^>]*>"#,
     )
     .expect("valid HTML_IMG_RE")
 });
@@ -204,11 +224,18 @@ impl ExfiltrationGuard {
     /// - HTML `<img>` tags with quoted (`src="..."`, `src='...'`) or HTML5-legal unquoted
     ///   (`src=https://...`) `src` attributes
     /// - Percent-encoded URLs inside already-captured groups: decoded before `is_external_url()`
+    /// - Case-insensitive schemes (`HTTPS://`, `Http://`) and scheme-relative destinations
+    ///   (`//evil.com/track.gif`), which browsers and markdown renderers treat identically to
+    ///   an explicit lowercase `https://` URL
     ///
     /// # Not covered (tracked in #1195)
     /// - Percent-encoded scheme bypass: `%68ttps://evil.com` — the regex requires literal
     ///   `https?://`, so a percent-encoded scheme is never captured. Fix requires pre-decoding
     ///   the full input text before regex matching.
+    /// - Percent-encoded scheme-relative bypass: `%2f%2fevil.com/x.gif` decodes to `//evil.com/x.gif`
+    ///   (a protocol-relative load), but the regex requires a literal `//` at the destination
+    ///   start to capture at all, so it is never decoded or stripped. Same root cause and fix as
+    ///   the percent-encoded scheme bypass above.
     /// - Reference definitions inside fenced code blocks (false positive risk)
     ///
     /// # Panics
@@ -486,8 +513,17 @@ fn percent_decode_url(raw: &str) -> String {
     out
 }
 
+/// A URL is external if it names an `http`/`https` scheme (case-insensitively) or is
+/// scheme-relative (`//host/path`) — the latter inherits the page's scheme at render time
+/// and resolves to the same attacker-controlled origin as an explicit `https://` URL.
 fn is_external_url(url: &str) -> bool {
-    url.starts_with("http://") || url.starts_with("https://")
+    url.starts_with("//")
+        || url
+            .get(..8)
+            .is_some_and(|s| s.eq_ignore_ascii_case("https://"))
+        || url
+            .get(..7)
+            .is_some_and(|s| s.eq_ignore_ascii_case("http://"))
 }
 
 /// Recursively collect all string leaves from a JSON value.
@@ -1043,6 +1079,141 @@ mod tests {
             !cleaned.contains("![alt]("),
             "clean image must be stripped by Pass 1: {cleaned}"
         );
+    }
+
+    #[test]
+    fn strips_inline_image_with_uppercase_scheme() {
+        let (cleaned, events) = guard().scan_output("Before ![t](HTTPS://evil.com/p.gif) after");
+        assert!(
+            !cleaned.contains("![t]("),
+            "uppercase-scheme image syntax must be removed: {cleaned}"
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn strips_inline_image_with_mixed_case_scheme() {
+        let (cleaned, events) = guard().scan_output("Before ![t](Http://evil.com/p.gif) after");
+        assert!(
+            !cleaned.contains("![t]("),
+            "mixed-case-scheme image syntax must be removed: {cleaned}"
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn strips_inline_image_with_scheme_relative_url() {
+        let (cleaned, events) = guard().scan_output("Before ![t](//evil.com/p.gif) after");
+        assert!(
+            !cleaned.contains("![t]("),
+            "scheme-relative image syntax must be removed: {cleaned}"
+        );
+        assert!(
+            cleaned.contains("[image removed: //evil.com/p.gif]"),
+            "replacement label must contain the scheme-relative url: {cleaned}"
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn strips_html_img_tag_with_scheme_relative_src() {
+        let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+            block_markdown_images: true,
+            ..ExfiltrationGuardConfig::default()
+        });
+        let (cleaned, events) = guard.scan_output(r#"text <img src="//evil.com/p.gif"> end"#);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ExfiltrationEvent::HtmlImageBlocked { url } if url == "//evil.com/p.gif")),
+            "expected HtmlImageBlocked event for scheme-relative src"
+        );
+        assert!(
+            !cleaned.contains("<img"),
+            "img tag must be removed: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn strips_reference_style_image_with_scheme_relative_destination() {
+        let text = "Here is the image: ![alt][ref]\n[ref]: //evil.com/track.gif\nend";
+        let (cleaned, events) = guard().scan_output(text);
+        assert!(
+            !cleaned.contains("![alt][ref]"),
+            "image usage syntax must be removed: {cleaned}"
+        );
+        assert!(
+            !cleaned.contains("[ref]:"),
+            "reference definition must be removed: {cleaned}"
+        );
+        assert!(!events.is_empty(), "must generate event");
+    }
+
+    #[test]
+    fn strips_inline_image_with_escaped_quote_in_title() {
+        let (cleaned, events) =
+            guard().scan_output(r#"Before ![t](https://evil.com/x.gif "a\"b") after"#);
+        assert!(
+            !cleaned.contains("![t]("),
+            "markdown image syntax with escaped-quote title must be removed: {cleaned}"
+        );
+        assert!(
+            cleaned.contains("[image removed: https://evil.com/x.gif]"),
+            "replacement label must contain the url without the title: {cleaned}"
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn preserves_plain_relative_path_image() {
+        let text = "Look: ![diagram](images/pic.gif) — local";
+        let (cleaned, events) = guard().scan_output(text);
+        assert_eq!(cleaned, text);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn preserves_relative_path_with_interior_double_slash() {
+        // The now-optional scheme requires a literal `//` at the *start* of the destination.
+        // A relative path with an interior `//` (not a leading one) must not be misclassified
+        // as scheme-relative — the destination here starts with `a`, not `/`.
+        let text = "Look: ![diagram](assets//img/pic.gif) — local";
+        let (cleaned, events) = guard().scan_output(text);
+        assert_eq!(cleaned, text);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn strips_image_with_trailing_backslash_before_title_close() {
+        // Title text is `a\` followed by the real closing quote: `"a\")`. The alternation
+        // `(?:\\.|[^"])*` first tries to treat `\"` as an escaped quote, which runs past the
+        // only closing quote in the string and leaves the title unterminated; the engine then
+        // falls back to consuming the lone `\` via the `[^"]` branch instead, stopping right
+        // before the real closing `"` and matching it. Net effect: the image IS still stripped
+        // — a stricter CommonMark parser would treat this exact input as an unterminated title
+        // and not render it as an image at all, so the guard is overzealous here, not
+        // permissive. Over-stripping a non-image is safe for an exfiltration guard; documented
+        // so a future reader does not mistake this for a bypass.
+        let text = r#"Before ![t](https://evil.com/x.gif "a\") after"#;
+        let (cleaned, events) = guard().scan_output(text);
+        assert!(
+            !cleaned.contains("![t]("),
+            "markdown image syntax must be removed: {cleaned}"
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    // --- is_external_url ---
+
+    #[test]
+    fn is_external_url_case_insensitive_and_scheme_relative() {
+        assert!(is_external_url("https://evil.com/x"));
+        assert!(is_external_url("HTTPS://evil.com/x"));
+        assert!(is_external_url("Http://evil.com/x"));
+        assert!(is_external_url("//evil.com/x"));
+        assert!(!is_external_url("images/pic.gif"));
+        assert!(!is_external_url("/images/pic.gif"));
+        assert!(!is_external_url("data:image/png;base64,abc"));
     }
 
     // --- validate_tool_call ---

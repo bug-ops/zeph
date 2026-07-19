@@ -237,6 +237,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in `scan_output`. Nine new regression tests assert `scan_output()` actually blocks/
   substitutes each variant, not just that the regex matches.
 
+- **zeph-sanitizer**: follow-up to #6476/#6507 — `ExfiltrationGuard::scan_output` still missed
+  two more standard-compliant bypasses of the same class, plus a title-parsing gap in the
+  regex added by #6507 (#6508):
+  - Case-sensitive scheme matching: `MARKDOWN_IMAGE_RE`, `REFERENCE_DEF_RE`, and `HTML_IMG_RE`
+    anchored on a literal `https?://`, and `is_external_url`'s scheme check used a lowercase
+    `starts_with`, so an uppercase or mixed-case scheme (`HTTPS://evil.com/pixel.gif`,
+    `Http://evil.com/pixel.gif`) — valid and rendered identically by browsers/markdown
+    renderers — bypassed detection entirely.
+  - Scheme-relative destinations (`//evil.com/pixel.gif`, inheriting the page's scheme) are
+    legal in both `CommonMark` image syntax and HTML5 `src` attributes but were never matched
+    since all three regexes required a literal scheme prefix.
+  - A backslash-escaped quote inside a `CommonMark` image title (`![t](https://evil.com/x.gif
+    "a\"b")`) was missed by the `#6507` title clause (`"[^"]*"` does not account for `\"` as a
+    non-terminating escaped quote per `CommonMark` title-parsing rules).
+  All three regex statics now match the scheme case-insensitively and treat an optional,
+  scheme-relative `//` prefix as equivalent to an explicit `https?://`; `is_external_url` was
+  rewritten to classify both case-insensitively-schemed and scheme-relative URLs as external.
+  The double-quoted title branch now tolerates `\"` as an escaped, non-terminating quote. Ten
+  new regression tests cover uppercase/mixed-case schemes, scheme-relative destinations across
+  all three regex sites, the escaped-quote title, and negative cases (plain relative paths and
+  an interior — non-leading — `//` in a relative path must not be misclassified as external).
+  `URL_EXTRACT_RE` (the separate tool-URL-injection-flagging vector) was also made
+  case-insensitive for consistency; scheme-relative support for that path is deferred as a
+  follow-up — see the `TODO(critic)` comment at its definition — since the flagged-URL set it
+  feeds is exact-string matched, making scheme-relative extraction a larger design change.
+
 ## [0.22.2] - 2026-07-18
 ### Added
 
