@@ -47,6 +47,7 @@ pub fn create_mcp_manager_with_vault(
                 timeout: std::time::Duration::from_secs(s.timeout),
                 trust_level: s.trust_level,
                 tool_allowlist: s.tool_allowlist.clone(),
+                allow_untrusted_without_allowlist: s.allow_untrusted_without_allowlist,
                 expected_tools: s.expected_tools.clone(),
                 roots,
                 tool_metadata: s.tool_metadata.clone(),

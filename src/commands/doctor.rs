@@ -747,6 +747,7 @@ async fn check_mcp_server(
         timeout: Duration::from_secs(server.timeout),
         trust_level: server.trust_level,
         tool_allowlist: server.tool_allowlist.clone(),
+        allow_untrusted_without_allowlist: server.allow_untrusted_without_allowlist,
         expected_tools: server.expected_tools.clone(),
         roots,
         tool_metadata: server.tool_metadata.clone(),

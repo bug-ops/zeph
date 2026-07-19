@@ -724,6 +724,7 @@ fn build_server_entry(id: &str, target: &str, extra_args: &[&str]) -> zeph_mcp::
         timeout: std::time::Duration::from_secs(30),
         trust_level: zeph_config::McpTrustLevel::Untrusted,
         tool_allowlist: None,
+        allow_untrusted_without_allowlist: false,
         expected_tools: Vec::new(),
         roots: Vec::new(),
         tool_metadata: std::collections::HashMap::new(),

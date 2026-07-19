@@ -608,7 +608,14 @@ strict = false
 # env = {}                      # environment variables for the child process
 # timeout = 30
 # trust_level = "untrusted"     # "trusted" (skip SSRF), "untrusted" (default), or "sandboxed"
-# tool_allowlist = []           # empty = all tools exposed; non-empty = only listed tools visible
+# tool_allowlist = []           # non-empty = only listed tools visible. When absent/unset for an
+#                                # untrusted server, zero tools are exposed (fail-closed) unless
+#                                # allow_untrusted_without_allowlist = true (see below).
+# allow_untrusted_without_allowlist = false  # opt-in escape hatch: expose ALL tools for an
+#                                # untrusted server with no tool_allowlist, while still running
+#                                # the full untrusted pipeline (SSRF, sanitization, injection
+#                                # detection, attestation). Default: false. Has no effect on
+#                                # "trusted" or "sandboxed" servers, or when tool_allowlist is set.
 # media_passthrough = false     # opt-in: attach this server's returned images to vision-capable
 #                                # providers (spec-072). Hard-blocked when trust_level = "sandboxed".
 

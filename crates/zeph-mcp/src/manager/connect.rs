@@ -130,10 +130,10 @@ impl McpManager {
                     .cloned();
                 let (filtered, sanitize_result, new_fingerprints) = {
                     let trust_guard = server_trust.read().await;
-                    let (trust_level, allowlist, expected_tools) =
+                    let (trust_level, allowlist, expected_tools, allow_untrusted_without_allowlist) =
                         trust_guard.get(&event.server_id).map_or(
-                            (McpTrustLevel::Untrusted, None, Vec::new()),
-                            |(tl, al, et)| (*tl, al.clone(), et.clone()),
+                            (McpTrustLevel::Untrusted, None, Vec::new(), false),
+                            |(tl, al, et, auwa)| (*tl, al.clone(), et.clone(), *auwa),
                         );
                     let empty = HashMap::new();
                     let tool_metadata =
@@ -144,6 +144,7 @@ impl McpManager {
                             server_id: &event.server_id,
                             trust_level,
                             allowlist: allowlist.as_deref(),
+                            allow_untrusted_without_allowlist,
                             expected_tools: &expected_tools,
                             status_tx: status_tx.as_ref(),
                             max_description_bytes,
@@ -522,7 +523,7 @@ impl McpManager {
         let trust_guard = self.server_trust.read().await;
         let trust_map: std::collections::HashMap<String, McpTrustLevel> = trust_guard
             .iter()
-            .map(|(id, (tl, _, _))| (id.clone(), *tl))
+            .map(|(id, (tl, _, _, _))| (id.clone(), *tl))
             .collect();
         drop(trust_guard);
 
@@ -590,10 +591,10 @@ impl McpManager {
                         (server_id.clone(), truncated)
                     });
 
-                    let (trust_level, allowlist, expected_tools) =
+                    let (trust_level, allowlist, expected_tools, allow_untrusted_without_allowlist) =
                         self.server_trust.read().await.get(&server_id).map_or(
-                            (McpTrustLevel::Untrusted, None, Vec::new()),
-                            |(tl, al, et)| (*tl, al.clone(), et.clone()),
+                            (McpTrustLevel::Untrusted, None, Vec::new(), false),
+                            |(tl, al, et, auwa)| (*tl, al.clone(), et.clone(), *auwa),
                         );
                     let empty = HashMap::new();
                     let tool_metadata = self.server_tool_metadata.get(&server_id).unwrap_or(&empty);
@@ -609,6 +610,7 @@ impl McpManager {
                             server_id: &server_id,
                             trust_level,
                             allowlist: allowlist.as_deref(),
+                            allow_untrusted_without_allowlist,
                             expected_tools: &expected_tools,
                             status_tx: self.status_tx.as_ref(),
                             max_description_bytes: limits.description_bytes,

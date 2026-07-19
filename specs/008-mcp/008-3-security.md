@@ -36,11 +36,17 @@ MCP servers are untrusted code running in subprocesses. Zeph enforces multiple l
 - All tool outputs scanned for injection patterns before returning to agent
 - Server responses that fail validation are rejected with logging
 - OAP authorization policies applied: which tools can be called by which agents
+- `Untrusted` servers fail closed on a missing `tool_allowlist` — zero tools exposed unless
+  an allowlist is declared or `allow_untrusted_without_allowlist` is explicitly set. Only
+  `Trusted` exposes all tools without an allowlist. Trust levels not explicitly handled by
+  the allowlist policy (including future variants) also fail closed.
 
 **Never:**
 - Pass unsanitized user input to MCP tools
 - Trust server output without injection detection (DeBERTa + regex)
 - Allow cross-agent tool access without explicit capability delegation
+- Expose all tools for an `Untrusted` server with no declared `tool_allowlist` unless the
+  operator has explicitly opted in via `allow_untrusted_without_allowlist`
 
 ## Elicitation Phases
 

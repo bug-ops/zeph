@@ -215,6 +215,23 @@ pub(super) fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
         };
         let media_passthrough = resolve_media_passthrough(trust_level, prompt_answer);
 
+        // Untrusted servers with no tool_allowlist fail closed (zero tools exposed) by
+        // default (#6474). The wizard never prompts for an allowlist today, so ask about the
+        // opt-in escape hatch instead — only relevant for Untrusted (Trusted already exposes
+        // everything; Sandboxed fails closed unconditionally regardless of this flag).
+        let allow_untrusted_without_allowlist = if trust_level == McpTrustLevel::Untrusted {
+            Confirm::new()
+                .with_prompt(
+                    "Expose all tools from this untrusted server without an explicit \
+                     allowlist? (not recommended — leave disabled and add a tool_allowlist \
+                     to config.toml later to restrict exposed tools)",
+                )
+                .default(false)
+                .interact()?
+        } else {
+            false
+        };
+
         state.mcp_remote_servers.push(McpServerConfig {
             id,
             command: None,
@@ -227,6 +244,7 @@ pub(super) fn step_mcp_remote(state: &mut WizardState) -> anyhow::Result<()> {
             oauth,
             trust_level,
             tool_allowlist: None,
+            allow_untrusted_without_allowlist,
             expected_tools: Vec::new(),
             roots: Vec::new(),
             tool_metadata: std::collections::HashMap::new(),

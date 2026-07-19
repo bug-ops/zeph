@@ -55,7 +55,8 @@
 //! Each server is assigned a [`McpTrustLevel`]:
 //!
 //! - `Trusted` — SSRF skip, all tools exposed (operator-controlled servers).
-//! - `Untrusted` (default) — SSRF enforced; tools shown with a warning when allowlist is absent.
+//! - `Untrusted` (default) — SSRF enforced; fails closed (no tools) when no allowlist is
+//!   declared, unless `allow_untrusted_without_allowlist` is explicitly set.
 //! - `Sandboxed` — strict mode; only allowlisted tools exposed; elicitation disabled.
 //!
 //! # Examples
@@ -80,7 +81,10 @@
 //!     },
 //!     timeout: Duration::from_secs(30),
 //!     trust_level: McpTrustLevel::Untrusted,
-//!     tool_allowlist: None,
+//!     // No allowlist declared: with the secure default (allow_untrusted_without_allowlist =
+//!     // false) this server would expose zero tools. Declare an allowlist to expose tools.
+//!     tool_allowlist: Some(vec!["read_file".to_owned(), "list_directory".to_owned()]),
+//!     allow_untrusted_without_allowlist: false,
 //!     expected_tools: vec![],
 //!     roots: vec![],
 //!     tool_metadata: HashMap::new(),

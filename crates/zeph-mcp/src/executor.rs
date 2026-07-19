@@ -508,6 +508,7 @@ mod tests {
             timeout: std::time::Duration::from_secs(5),
             trust_level,
             tool_allowlist: None,
+            allow_untrusted_without_allowlist: false,
             expected_tools: Vec::new(),
             roots: Vec::new(),
             tool_metadata: std::collections::HashMap::new(),

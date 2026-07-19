@@ -13,9 +13,11 @@ use tokio::sync::RwLock;
 use tokio::sync::{mpsc, watch};
 
 type StatusTx = mpsc::UnboundedSender<String>;
-/// Per-server trust config: (`trust_level`, `tool_allowlist`, `expected_tools`).
-type ServerTrust =
-    Arc<tokio::sync::RwLock<HashMap<String, (McpTrustLevel, Option<Vec<String>>, Vec<String>)>>>;
+/// Per-server trust config: (`trust_level`, `tool_allowlist`, `expected_tools`,
+/// `allow_untrusted_without_allowlist`).
+type ServerTrust = Arc<
+    tokio::sync::RwLock<HashMap<String, (McpTrustLevel, Option<Vec<String>>, Vec<String>, bool)>>,
+>;
 
 use rmcp::transport::auth::CredentialStore;
 
@@ -159,18 +161,24 @@ impl serde::Serialize for McpTransport {
 ///
 /// # Trust semantics
 ///
-/// The combination of `trust_level`, `tool_allowlist`, and `expected_tools` controls
-/// which tools are exposed to the agent:
+/// The combination of `trust_level`, `tool_allowlist`, `expected_tools`, and
+/// `allow_untrusted_without_allowlist` controls which tools are exposed to the agent:
 ///
 /// - `Trusted` — all tools are exposed; SSRF and data-flow checks are relaxed.
-/// - `Untrusted` + no allowlist — all tools exposed with a warning.
+/// - `Untrusted` + no allowlist — fails closed: zero tools exposed, unless
+///   `allow_untrusted_without_allowlist` is `true` (opt-in escape hatch that keeps the
+///   full untrusted pipeline — SSRF, sanitization, injection detection, attestation —
+///   while exposing all tools).
 /// - `Untrusted` + allowlist — only listed tools are exposed.
 /// - `Sandboxed` + allowlist — only listed tools; empty allowlist = no tools.
+/// - `Sandboxed` + no allowlist — no tools exposed (fail closed unconditionally;
+///   `allow_untrusted_without_allowlist` has no effect on `Sandboxed`).
 // `roots: Vec<rmcp::model::Root>` names a type deprecated by SEP-2577 (still functional —
 // see `crate::roots`); the derive(Serialize, Deserialize) expansion below also references
 // it, which a field-level `#[allow(deprecated)]` does not silence, hence the struct-level
 // attribute.
 #[allow(deprecated)]
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerEntry {
     pub id: String,
@@ -184,6 +192,11 @@ pub struct ServerEntry {
     /// `Some(vec![])` is an explicit empty list. See `McpTrustLevel` for per-level semantics.
     #[serde(default)]
     pub tool_allowlist: Option<Vec<String>>,
+    /// Explicit opt-in to expose all tools for an `Untrusted` server with no
+    /// `tool_allowlist` declared. Default: `false` (secure by default — fails closed).
+    /// Mirrors [`McpServerConfig::allow_untrusted_without_allowlist`](zeph_config::McpServerConfig::allow_untrusted_without_allowlist).
+    #[serde(default)]
+    pub allow_untrusted_without_allowlist: bool,
     /// Expected tool names for attestation. When non-empty, tools outside this
     /// list are filtered (Untrusted/Sandboxed) or warned (Trusted).
     #[serde(default)]
@@ -397,15 +410,6 @@ impl std::fmt::Debug for McpManager {
     }
 }
 
-/// Always sanitizes first (security invariant), then assigns security metadata,
-/// then runs attestation against `expected_tools`, then applies allowlist filtering.
-///
-/// Returns the filtered tool list and the sanitization result (for injection feedback).
-// TODO(critic): ingest_tools has both too_many_arguments and too_many_lines
-// suppressed; not in scope for #3451. File a separate issue to decompose
-// with an IngestParams struct.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-// complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
 /// Configuration bundle passed to [`ingest_tools`].
 ///
 /// Consolidates all per-server policy parameters so call sites pass a single
@@ -417,6 +421,9 @@ struct IngestConfig<'a> {
     trust_level: McpTrustLevel,
     /// Explicit tool allow-list from operator config (`None` = not configured).
     allowlist: Option<&'a [String]>,
+    /// Explicit opt-in to expose all tools for an `Untrusted` server with no `allowlist`.
+    /// See [`ServerEntry::allow_untrusted_without_allowlist`].
+    allow_untrusted_without_allowlist: bool,
     /// Operator-declared set of expected tool names used for attestation.
     expected_tools: &'a [String],
     /// Channel for surfacing warnings to the user-facing status bar.

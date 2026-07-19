@@ -69,6 +69,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     post-loop status publish is skipped on this path since the LLM-call error handler already
     published the terminal `Failed` status.
 
+### Security
+
+- **zeph-mcp**: fixed a fail-open in `apply_allowlist` where an `Untrusted` MCP server
+  (the default trust level) with no `tool_allowlist` configured exposed **all** of its tools
+  with only a `warn!` log, instead of failing closed like `Sandboxed` already does (#6474).
+  This was the out-of-box default for any `[[mcp.servers]]` entry declared without an
+  explicit allowlist, and exactly the configuration the ACP bridge (`crates/zeph-acp/src/
+  mcp_bridge.rs`) used for every IDE-requested MCP server — defeating its documented sandbox
+  intent. `Untrusted` + no `tool_allowlist` now exposes **zero** tools by default. A new
+  per-server opt-in, `allow_untrusted_without_allowlist` (`McpServerConfig` /
+  `ServerEntry`, default `false`), restores the previous expose-all behavior for operators
+  who explicitly want it while keeping the full untrusted pipeline (SSRF checks,
+  sanitization, injection detection, attestation, data-flow filtering) — distinct from
+  `trust_level = "trusted"`, which additionally relaxes SSRF/data-flow enforcement.
+  **Behavior change**: `expected_tools` is attestation-only, not an implicit allowlist —
+  an `Untrusted` server with `expected_tools` set but no `tool_allowlist` and the new flag
+  unset now also exposes zero tools (previously it exposed the attested subset). Also closed
+  a latent Medium: the `_ => tools` catch-all combined with `McpTrustLevel`'s
+  `#[non_exhaustive]` meant any future trust variant would silently expose all tools;
+  `Trusted` is now an explicit match arm and the catch-all fails closed instead.
+  `Sandboxed`'s existing fail-closed behavior (with or without an allowlist) is unchanged.
+
 ## [0.22.2] - 2026-07-18
 ### Added
 

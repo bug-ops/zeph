@@ -27,8 +27,10 @@ const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 /// `McpTransport::Http` since rmcp's `StreamableHttpClientTransport` handles both.
 /// Unknown transport variants are skipped with a warning.
 ///
-/// All converted entries start with [`McpTrustLevel::Untrusted`] and no tool allowlist
-/// so that the agent sandbox applies to IDE-requested MCP servers.
+/// All converted entries start with [`McpTrustLevel::Untrusted`], no tool allowlist, and
+/// `allow_untrusted_without_allowlist = false`, so the agent sandbox applies to
+/// IDE-requested MCP servers: with no allowlist declared, these servers expose zero tools
+/// by default (fail-closed). An IDE must declare a `tool_allowlist` to expose any tools.
 ///
 /// `elicitation_enabled` is read from the `_meta` field of each server entry under
 /// the key `"elicitation_enabled"`. Absent or non-boolean values default to `false`.
@@ -79,6 +81,7 @@ pub fn acp_mcp_servers_to_entries(
                     timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
                     trust_level: McpTrustLevel::Untrusted,
                     tool_allowlist: None,
+                    allow_untrusted_without_allowlist: false,
                     expected_tools: Vec::new(),
                     roots: Vec::new(),
                     tool_metadata: HashMap::new(),
@@ -100,6 +103,7 @@ pub fn acp_mcp_servers_to_entries(
                 timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
                 trust_level: McpTrustLevel::Untrusted,
                 tool_allowlist: None,
+                allow_untrusted_without_allowlist: false,
                 expected_tools: Vec::new(),
                 roots: Vec::new(),
                 tool_metadata: HashMap::new(),
@@ -123,6 +127,7 @@ pub fn acp_mcp_servers_to_entries(
                     timeout: Duration::from_secs(DEFAULT_MCP_TIMEOUT_SECS),
                     trust_level: McpTrustLevel::Untrusted,
                     tool_allowlist: None,
+                    allow_untrusted_without_allowlist: false,
                     expected_tools: Vec::new(),
                     roots: Vec::new(),
                     tool_metadata: HashMap::new(),

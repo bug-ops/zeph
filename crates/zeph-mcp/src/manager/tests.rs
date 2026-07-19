@@ -22,6 +22,7 @@ fn make_entry(id: &str) -> ServerEntry {
         timeout: Duration::from_secs(5),
         trust_level: McpTrustLevel::Untrusted,
         tool_allowlist: None,
+        allow_untrusted_without_allowlist: false,
         expected_tools: Vec::new(),
         roots: Vec::new(),
         tool_metadata: HashMap::new(),
@@ -355,6 +356,7 @@ fn make_http_entry(id: &str) -> ServerEntry {
         timeout: Duration::from_secs(1),
         trust_level: McpTrustLevel::Untrusted,
         tool_allowlist: None,
+        allow_untrusted_without_allowlist: false,
         expected_tools: Vec::new(),
         roots: Vec::new(),
         tool_metadata: HashMap::new(),
@@ -465,7 +467,7 @@ impl McpManager {
         self.server_trust
             .write()
             .await
-            .insert(server_id.to_owned(), (level, None, Vec::new()));
+            .insert(server_id.to_owned(), (level, None, Vec::new(), false));
     }
 
     /// Read back the trust level for a server, or `None` if the entry was removed.
@@ -474,7 +476,7 @@ impl McpManager {
             .read()
             .await
             .get(server_id)
-            .map(|(level, _, _)| *level)
+            .map(|(level, _, _, _)| *level)
     }
 
     /// Insert a fake entry into `server_tools` for testing cleanup paths.
@@ -534,7 +536,7 @@ async fn commit_added_server_rejects_duplicate() {
     {
         let trust_guard = mgr.server_trust.read().await;
         assert_eq!(trust_guard.len(), 1, "exactly one trust entry must survive");
-        let (level, _, _) = trust_guard["srv1"];
+        let (level, _, _, _) = trust_guard["srv1"];
         assert_eq!(
             level,
             McpTrustLevel::Trusted,
@@ -571,6 +573,10 @@ async fn refresh_task_updates_watch_channel() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
     let mut rx = mgr.subscribe_tool_changes();
     mgr.spawn_refresh_task(None);
+    // #6474: an unconfigured server_trust entry now fails closed by default; use Trusted so
+    // this test exercises refresh-channel mechanics, not allowlist enforcement.
+    mgr.inject_server_trust_for_test("srv1", McpTrustLevel::Trusted)
+        .await;
 
     // Send a refresh event directly through the internal channel.
     let tx = mgr.clone_refresh_tx().unwrap();
@@ -592,6 +598,12 @@ async fn refresh_task_multiple_servers_combined() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
     let mut rx = mgr.subscribe_tool_changes();
     mgr.spawn_refresh_task(None);
+    // #6474: an unconfigured server_trust entry now fails closed by default; use Trusted so
+    // this test exercises refresh-channel mechanics, not allowlist enforcement.
+    mgr.inject_server_trust_for_test("srv1", McpTrustLevel::Trusted)
+        .await;
+    mgr.inject_server_trust_for_test("srv2", McpTrustLevel::Trusted)
+        .await;
 
     let tx = mgr.clone_refresh_tx().unwrap();
     tx.try_send(crate::client::ToolRefreshEvent {
@@ -617,6 +629,10 @@ async fn refresh_task_replaces_tools_for_same_server() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
     let mut rx = mgr.subscribe_tool_changes();
     mgr.spawn_refresh_task(None);
+    // #6474: an unconfigured server_trust entry now fails closed by default; use Trusted so
+    // this test exercises refresh-channel mechanics, not allowlist enforcement.
+    mgr.inject_server_trust_for_test("srv1", McpTrustLevel::Trusted)
+        .await;
 
     let tx = mgr.clone_refresh_tx().unwrap();
     tx.try_send(crate::client::ToolRefreshEvent {
@@ -657,7 +673,12 @@ async fn refresh_task_populates_and_updates_fingerprints_when_expected_tools_con
 
     mgr.server_trust.write().await.insert(
         "srv1".to_owned(),
-        (McpTrustLevel::Trusted, None, vec!["tool_a".to_owned()]),
+        (
+            McpTrustLevel::Trusted,
+            None,
+            vec!["tool_a".to_owned()],
+            false,
+        ),
     );
 
     let tx = mgr.clone_refresh_tx().unwrap();
@@ -719,6 +740,7 @@ fn make_oauth_entry(id: &str) -> ServerEntry {
         timeout: Duration::from_secs(5),
         trust_level: McpTrustLevel::Untrusted,
         tool_allowlist: None,
+        allow_untrusted_without_allowlist: false,
         expected_tools: Vec::new(),
         roots: Vec::new(),
         tool_metadata: HashMap::new(),
@@ -844,7 +866,12 @@ async fn refresh_task_logs_drift_warning_when_tool_changes_between_reconnects() 
 
     mgr.server_trust.write().await.insert(
         "srv1".to_owned(),
-        (McpTrustLevel::Trusted, None, vec!["tool_a".to_owned()]),
+        (
+            McpTrustLevel::Trusted,
+            None,
+            vec!["tool_a".to_owned()],
+            false,
+        ),
     );
 
     let tx = mgr.clone_refresh_tx().unwrap();
@@ -915,6 +942,10 @@ async fn shutdown_all_terminates_refresh_task() {
 async fn remove_server_cleans_up_server_tools() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
     mgr.spawn_refresh_task(None);
+    // #6474: an unconfigured server_trust entry now fails closed by default; use Trusted so
+    // this test exercises refresh/removal mechanics, not allowlist enforcement.
+    mgr.inject_server_trust_for_test("srv1", McpTrustLevel::Trusted)
+        .await;
 
     // Inject a tool via refresh event.
     let tx = mgr.clone_refresh_tx().unwrap();
@@ -996,6 +1027,7 @@ fn ingest_tools_trusted_returns_all_tools_unsanitized_by_trust() {
             server_id: "srv",
             trust_level: McpTrustLevel::Trusted,
             allowlist: None,
+            allow_untrusted_without_allowlist: false,
             expected_tools: &[],
             status_tx: None,
             max_description_bytes: 2048,
@@ -1009,7 +1041,9 @@ fn ingest_tools_trusted_returns_all_tools_unsanitized_by_trust() {
 }
 
 #[test]
-fn ingest_tools_untrusted_none_allowlist_returns_all_with_warning() {
+fn ingest_tools_untrusted_none_allowlist_fails_closed_by_default() {
+    // #6474: Untrusted + no tool_allowlist must fail closed (zero tools) unless the operator
+    // explicitly opts in via allow_untrusted_without_allowlist.
     let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
     let (result, _, _) = ingest_tools(
         tools,
@@ -1017,6 +1051,7 @@ fn ingest_tools_untrusted_none_allowlist_returns_all_with_warning() {
             server_id: "srv",
             trust_level: McpTrustLevel::Untrusted,
             allowlist: None,
+            allow_untrusted_without_allowlist: false,
             expected_tools: &[],
             status_tx: None,
             max_description_bytes: 2048,
@@ -1024,7 +1059,127 @@ fn ingest_tools_untrusted_none_allowlist_returns_all_with_warning() {
             previous_fingerprints: None,
         },
     );
-    // None allowlist on Untrusted = no override → all tools pass through (warn-only)
+    assert!(result.is_empty());
+}
+
+#[test]
+fn ingest_tools_untrusted_none_allowlist_opt_in_flag_exposes_all() {
+    // The allow_untrusted_without_allowlist escape hatch restores the pre-fix behavior
+    // when the operator has explicitly acknowledged the risk.
+    let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
+    let (result, _, _) = ingest_tools(
+        tools,
+        &IngestConfig {
+            server_id: "srv",
+            trust_level: McpTrustLevel::Untrusted,
+            allowlist: None,
+            allow_untrusted_without_allowlist: true,
+            expected_tools: &[],
+            status_tx: None,
+            max_description_bytes: 2048,
+            tool_metadata: &HashMap::new(),
+            previous_fingerprints: None,
+        },
+    );
+    assert_eq!(result.len(), 2);
+}
+
+#[test]
+fn ingest_tools_untrusted_expected_tools_without_allowlist_still_fails_closed() {
+    // #6474 documented breaking change: expected_tools is attestation-only, NOT an implicit
+    // allowlist. Before this fix, attestation would narrow [tool_a, tool_b] down to the
+    // expected subset [tool_a] and apply_allowlist's old fail-open None arm would pass that
+    // subset through untouched. Post-fix, the None arm (flag unset) must still fail closed to
+    // zero tools even though expected_tools narrowed the set — this is the exact interaction a
+    // future "fix the surprise" refactor could silently break by treating a non-empty
+    // expected_tools as sufficient authorization.
+    let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
+    let expected_tools = vec!["tool_a".to_owned()];
+    let (result, _, _) = ingest_tools(
+        tools,
+        &IngestConfig {
+            server_id: "srv",
+            trust_level: McpTrustLevel::Untrusted,
+            allowlist: None,
+            allow_untrusted_without_allowlist: false,
+            expected_tools: &expected_tools,
+            status_tx: None,
+            max_description_bytes: 2048,
+            tool_metadata: &HashMap::new(),
+            previous_fingerprints: None,
+        },
+    );
+    assert!(
+        result.is_empty(),
+        "expected_tools must not act as an implicit allowlist — zero tools expected"
+    );
+}
+
+#[test]
+fn ingest_tools_untrusted_expected_tools_without_allowlist_opt_in_flag_exposes_attested_subset() {
+    // Sibling to the test above: with the opt-in flag set, attestation's narrowing to the
+    // expected subset is preserved (attestation runs before the allowlist gate), and the
+    // allowlist gate then passes that narrowed subset through unfiltered.
+    let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
+    let expected_tools = vec!["tool_a".to_owned()];
+    let (result, _, _) = ingest_tools(
+        tools,
+        &IngestConfig {
+            server_id: "srv",
+            trust_level: McpTrustLevel::Untrusted,
+            allowlist: None,
+            allow_untrusted_without_allowlist: true,
+            expected_tools: &expected_tools,
+            status_tx: None,
+            max_description_bytes: 2048,
+            tool_metadata: &HashMap::new(),
+            previous_fingerprints: None,
+        },
+    );
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].name, "tool_a");
+}
+
+#[test]
+fn ingest_tools_sandboxed_none_allowlist_fails_closed_regardless_of_flag() {
+    // allow_untrusted_without_allowlist must have no effect on Sandboxed — no regression.
+    let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
+    let (result, _, _) = ingest_tools(
+        tools,
+        &IngestConfig {
+            server_id: "srv",
+            trust_level: McpTrustLevel::Sandboxed,
+            allowlist: None,
+            allow_untrusted_without_allowlist: true,
+            expected_tools: &[],
+            status_tx: None,
+            max_description_bytes: 2048,
+            tool_metadata: &HashMap::new(),
+            previous_fingerprints: None,
+        },
+    );
+    assert!(result.is_empty());
+}
+
+#[test]
+fn ingest_tools_trusted_none_allowlist_exposes_all_unaffected_by_flag() {
+    // Trusted + no allowlist is intended to expose everything; explicit match arm now,
+    // not the non_exhaustive catch-all — must remain unaffected by the new flag.
+    let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
+    let (result, _, _) = ingest_tools(
+        tools,
+        &IngestConfig {
+            server_id: "srv",
+            trust_level: McpTrustLevel::Trusted,
+            allowlist: None,
+            allow_untrusted_without_allowlist: false,
+            expected_tools: &[],
+            status_tx: None,
+            max_description_bytes: 2048,
+            tool_metadata: &HashMap::new(),
+            previous_fingerprints: None,
+        },
+    );
     assert_eq!(result.len(), 2);
 }
 
@@ -1037,6 +1192,7 @@ fn ingest_tools_untrusted_explicit_empty_allowlist_denies_all() {
             server_id: "srv",
             trust_level: McpTrustLevel::Untrusted,
             allowlist: Some(&[]),
+            allow_untrusted_without_allowlist: false,
             expected_tools: &[],
             status_tx: None,
             max_description_bytes: 2048,
@@ -1062,6 +1218,7 @@ fn ingest_tools_untrusted_nonempty_allowlist_filters_to_listed_only() {
             server_id: "srv",
             trust_level: McpTrustLevel::Untrusted,
             allowlist: Some(&allowlist),
+            allow_untrusted_without_allowlist: false,
             expected_tools: &[],
             status_tx: None,
             max_description_bytes: 2048,
@@ -1085,6 +1242,7 @@ fn ingest_tools_sandboxed_empty_allowlist_returns_no_tools() {
             server_id: "srv",
             trust_level: McpTrustLevel::Sandboxed,
             allowlist: Some(&[]),
+            allow_untrusted_without_allowlist: false,
             expected_tools: &[],
             status_tx: None,
             max_description_bytes: 2048,
@@ -1106,6 +1264,7 @@ fn ingest_tools_sandboxed_nonempty_allowlist_filters_correctly() {
             server_id: "srv",
             trust_level: McpTrustLevel::Sandboxed,
             allowlist: Some(&allowlist),
+            allow_untrusted_without_allowlist: false,
             expected_tools: &[],
             status_tx: None,
             max_description_bytes: 2048,
@@ -1131,6 +1290,7 @@ fn ingest_tools_sanitize_runs_before_filtering() {
             server_id: "srv",
             trust_level: McpTrustLevel::Untrusted,
             allowlist: Some(&allowlist),
+            allow_untrusted_without_allowlist: false,
             expected_tools: &[],
             status_tx: None,
             max_description_bytes: 2048,
@@ -1156,6 +1316,7 @@ fn ingest_tools_assigns_security_meta_from_heuristic() {
             server_id: "srv",
             trust_level: McpTrustLevel::Trusted,
             allowlist: None,
+            allow_untrusted_without_allowlist: false,
             expected_tools: &[],
             status_tx: None,
             max_description_bytes: 2048,
@@ -1188,6 +1349,7 @@ fn ingest_tools_assigns_security_meta_from_config() {
             server_id: "srv",
             trust_level: McpTrustLevel::Trusted,
             allowlist: None,
+            allow_untrusted_without_allowlist: false,
             expected_tools: &[],
             status_tx: None,
             max_description_bytes: 2048,
@@ -1227,6 +1389,7 @@ fn ingest_tools_data_flow_blocks_high_sensitivity_on_untrusted() {
             server_id: "srv",
             trust_level: McpTrustLevel::Untrusted,
             allowlist: None,
+            allow_untrusted_without_allowlist: false,
             expected_tools: &[],
             status_tx: None,
             max_description_bytes: 2048,
@@ -1455,7 +1618,7 @@ async fn make_trust_store() -> Arc<TrustScoreStore> {
 
 fn make_server_trust(server_id: &str, level: McpTrustLevel) -> ServerTrust {
     let mut map = HashMap::new();
-    map.insert(server_id.to_owned(), (level, None, Vec::new()));
+    map.insert(server_id.to_owned(), (level, None, Vec::new(), false));
     Arc::new(tokio::sync::RwLock::new(map))
 }
 

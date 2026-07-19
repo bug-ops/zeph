@@ -113,6 +113,7 @@ impl McpManager {
                 server_id: &entry.id,
                 trust_level: entry.trust_level,
                 allowlist: entry.tool_allowlist.as_deref(),
+                allow_untrusted_without_allowlist: entry.allow_untrusted_without_allowlist,
                 expected_tools: &entry.expected_tools,
                 status_tx: self.status_tx.as_ref(),
                 max_description_bytes: self.max_description_bytes,
@@ -269,6 +270,7 @@ impl McpManager {
                 entry.trust_level,
                 entry.tool_allowlist.clone(),
                 entry.expected_tools.clone(),
+                entry.allow_untrusted_without_allowlist,
             ),
         );
         self.server_tools

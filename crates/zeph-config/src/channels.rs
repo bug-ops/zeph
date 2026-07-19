@@ -21,7 +21,8 @@ pub use crate::mcp_security::ToolSecurityMeta;
 pub enum McpTrustLevel {
     /// Full trust — all tools exposed, SSRF check skipped. Use for operator-controlled servers.
     Trusted,
-    /// Default. SSRF enforced. Tools exposed with a warning when allowlist is empty.
+    /// Default. SSRF enforced. Fails closed (zero tools exposed) when no `tool_allowlist`
+    /// is declared, unless [`McpServerConfig::allow_untrusted_without_allowlist`] is set.
     #[default]
     Untrusted,
     /// Strict sandboxing — SSRF enforced. Only allowlisted tools exposed; empty allowlist = no tools.
@@ -1453,6 +1454,18 @@ pub struct McpServerConfig {
     /// `Some(vec!["a", "b"])` allows only listed tools.
     #[serde(default)]
     pub tool_allowlist: Option<Vec<String>>,
+    /// Explicit opt-in to expose all tools for an `Untrusted` server that has no
+    /// `tool_allowlist` declared. Default: `false` — secure by default (fails closed).
+    ///
+    /// When `false` (default) and `trust_level == Untrusted` with `tool_allowlist = None`,
+    /// zero tools are exposed. Set `true` only when you intentionally want this server to
+    /// expose all its tools while still running the full untrusted pipeline (SSRF checks,
+    /// sanitization, injection detection, attestation, data-flow filtering) — this is
+    /// distinct from `trust_level = trusted`, which additionally relaxes SSRF/data-flow
+    /// enforcement. Has no effect on `Trusted`/`Sandboxed` servers or when `tool_allowlist`
+    /// is set.
+    #[serde(default)]
+    pub allow_untrusted_without_allowlist: bool,
     /// Expected tool names for attestation. Supplements `tool_allowlist`.
     ///
     /// When non-empty: tools not in this list are filtered out (Untrusted/Sandboxed)
@@ -1570,6 +1583,10 @@ impl std::fmt::Debug for McpServerConfig {
             .field("oauth", &self.oauth)
             .field("trust_level", &self.trust_level)
             .field("tool_allowlist", &self.tool_allowlist)
+            .field(
+                "allow_untrusted_without_allowlist",
+                &self.allow_untrusted_without_allowlist,
+            )
             .field("expected_tools", &self.expected_tools)
             .field("roots", &self.roots)
             .field(

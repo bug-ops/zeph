@@ -31,7 +31,7 @@ impl McpManager {
             .read()
             .await
             .get(server_id)
-            .map_or(entry.trust_level, |(t, _, _)| *t);
+            .map_or(entry.trust_level, |(t, _, _, _)| *t);
         trust_level != McpTrustLevel::Sandboxed
     }
 

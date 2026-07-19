@@ -128,6 +128,7 @@ pub(super) fn ingest_tools(
         cfg.server_id,
         cfg.trust_level,
         cfg.allowlist,
+        cfg.allow_untrusted_without_allowlist,
         cfg.status_tx,
     );
     (filtered, sanitize_result, fingerprints)
@@ -230,19 +231,30 @@ fn apply_attestation(
 }
 
 /// Enforce the trust-level allowlist policy and return the permitted tool set.
+///
+/// # Security invariant
+///
+/// `Untrusted` servers fail **closed** (zero tools) when no `tool_allowlist` is declared,
+/// unless `allow_untrusted_without_allowlist` is explicitly `true` — see
+/// [`ServerEntry::allow_untrusted_without_allowlist`](super::ServerEntry::allow_untrusted_without_allowlist).
+/// Only `Trusted` exposes all tools unconditionally. Any trust level not explicitly matched
+/// here (including future `#[non_exhaustive]` variants) also fails closed, so a new variant
+/// is secure-by-default rather than silently exposing every tool.
 fn apply_allowlist(
     tools: Vec<McpTool>,
     server_id: &str,
     trust_level: McpTrustLevel,
     allowlist: Option<&[String]>,
+    allow_untrusted_without_allowlist: bool,
     status_tx: Option<&StatusTx>,
 ) -> Vec<McpTool> {
     match trust_level {
         McpTrustLevel::Untrusted => match allowlist {
-            None => {
+            None if allow_untrusted_without_allowlist => {
                 let msg = format!(
-                    "MCP server '{}' is untrusted with no tool_allowlist — all {} tools exposed; \
-                     consider adding an explicit allowlist",
+                    "MCP server '{}' is untrusted with no tool_allowlist — all {} tools exposed \
+                     because allow_untrusted_without_allowlist=true; consider adding an \
+                     explicit allowlist",
                     server_id,
                     tools.len()
                 );
@@ -251,6 +263,18 @@ fn apply_allowlist(
                     let _ = tx.send(msg);
                 }
                 tools
+            }
+            None => {
+                let msg = format!(
+                    "MCP server '{server_id}' is untrusted with no tool_allowlist — 0 tools \
+                     exposed (fail-closed); declare a tool_allowlist or set \
+                     allow_untrusted_without_allowlist=true to expose tools"
+                );
+                tracing::warn!(server_id, "{msg}");
+                if let Some(tx) = status_tx {
+                    let _ = tx.send(msg);
+                }
+                Vec::new()
             }
             Some([]) => {
                 tracing::warn!(
@@ -295,6 +319,14 @@ fn apply_allowlist(
                 filtered
             }
         }
-        _ => tools,
+        McpTrustLevel::Trusted => tools,
+        _ => {
+            tracing::warn!(
+                server_id,
+                trust_level = ?trust_level,
+                "unrecognized MCP trust level — no tools exposed (fail-closed)"
+            );
+            Vec::new()
+        }
     }
 }

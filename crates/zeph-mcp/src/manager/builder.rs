@@ -71,6 +71,7 @@ impl McpManager {
                         c.trust_level,
                         c.tool_allowlist.clone(),
                         c.expected_tools.clone(),
+                        c.allow_untrusted_without_allowlist,
                     ),
                 )
             })
