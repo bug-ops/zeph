@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use zeph_core::config::Config;
 use zeph_core::vault::{AgeVaultError, AgeVaultProvider};
 
 use crate::cli::VaultCommand;
@@ -11,14 +12,31 @@ pub(crate) fn default_vault_dir() -> PathBuf {
     zeph_core::vault::default_vault_dir()
 }
 
+/// Dispatch a `zeph vault` subcommand against the age vault.
+///
+/// Key/vault path resolution follows the same precedence as agent startup and `zeph doctor`
+/// (CLI flag > `ZEPH_VAULT_KEY`/`ZEPH_VAULT_PATH` env var > default vault directory), via
+/// [`crate::bootstrap::parse_vault_args`] — see #6500.
+///
+/// # Errors
+///
+/// Returns an error when `ZEPH_VAULT_BACKEND` is set to an unrecognized value, or when the
+/// underlying vault operation (init/load/save) fails.
 pub(crate) fn handle_vault_command(
     cmd: VaultCommand,
+    config: &Config,
     key_path: Option<&std::path::Path>,
     vault_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     let dir = default_vault_dir();
-    let key_path_owned = key_path.map_or_else(|| dir.join("vault-key.txt"), PathBuf::from);
-    let vault_path_owned = vault_path.map_or_else(|| dir.join("secrets.age"), PathBuf::from);
+    let vault_args = crate::bootstrap::parse_vault_args(config, None, key_path, vault_path)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let key_path_owned = vault_args
+        .key_path
+        .map_or_else(|| dir.join("vault-key.txt"), PathBuf::from);
+    let vault_path_owned = vault_args
+        .vault_path
+        .map_or_else(|| dir.join("secrets.age"), PathBuf::from);
 
     match cmd {
         VaultCommand::Init { force } => {
@@ -145,15 +163,23 @@ mod tests {
                 value: "bar".into(),
                 force: false,
             },
+            &Config::default(),
             Some(&key_path),
             Some(&vault_path),
         )
         .unwrap();
 
-        handle_vault_command(VaultCommand::List, Some(&key_path), Some(&vault_path)).unwrap();
+        handle_vault_command(
+            VaultCommand::List,
+            &Config::default(),
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap();
 
         handle_vault_command(
             VaultCommand::Get { key: "FOO".into() },
+            &Config::default(),
             Some(&key_path),
             Some(&vault_path),
         )
@@ -161,6 +187,7 @@ mod tests {
 
         handle_vault_command(
             VaultCommand::Rm { key: "FOO".into() },
+            &Config::default(),
             Some(&key_path),
             Some(&vault_path),
         )
@@ -176,6 +203,7 @@ mod tests {
 
         handle_vault_command(
             VaultCommand::Init { force: false },
+            &Config::default(),
             Some(&key_path),
             Some(&vault_path),
         )
@@ -200,6 +228,7 @@ mod tests {
 
         handle_vault_command(
             VaultCommand::Init { force: false },
+            &Config::default(),
             Some(&key_path),
             Some(&vault_path),
         )
@@ -208,6 +237,7 @@ mod tests {
 
         let err = handle_vault_command(
             VaultCommand::Init { force: false },
+            &Config::default(),
             Some(&key_path),
             Some(&vault_path),
         )
@@ -227,6 +257,7 @@ mod tests {
 
         handle_vault_command(
             VaultCommand::Init { force: false },
+            &Config::default(),
             Some(&key_path),
             Some(&vault_path),
         )
@@ -235,6 +266,7 @@ mod tests {
 
         handle_vault_command(
             VaultCommand::Init { force: true },
+            &Config::default(),
             Some(&key_path),
             Some(&vault_path),
         )
@@ -259,6 +291,7 @@ mod tests {
             VaultCommand::Get {
                 key: "NONEXISTENT".into(),
             },
+            &Config::default(),
             Some(&key_path),
             Some(&vault_path),
         )
@@ -280,6 +313,7 @@ mod tests {
                 value: "original".into(),
                 force: false,
             },
+            &Config::default(),
             Some(&key_path),
             Some(&vault_path),
         )
@@ -291,6 +325,7 @@ mod tests {
                 value: "clobbered".into(),
                 force: false,
             },
+            &Config::default(),
             Some(&key_path),
             Some(&vault_path),
         )
@@ -315,6 +350,7 @@ mod tests {
                 value: "original".into(),
                 force: false,
             },
+            &Config::default(),
             Some(&key_path),
             Some(&vault_path),
         )
@@ -326,6 +362,7 @@ mod tests {
                 value: "updated".into(),
                 force: true,
             },
+            &Config::default(),
             Some(&key_path),
             Some(&vault_path),
         )
@@ -346,10 +383,52 @@ mod tests {
             VaultCommand::Rm {
                 key: "NONEXISTENT".into(),
             },
+            &Config::default(),
             Some(&key_path),
             Some(&vault_path),
         )
         .unwrap_err();
         assert!(err.to_string().contains("key not found"));
+    }
+
+    // #6500: `ZEPH_VAULT_KEY`/`ZEPH_VAULT_PATH` env vars are honored when no CLI override is
+    // given, matching the precedence `zeph doctor` and agent startup already get via
+    // `parse_vault_args` — previously `handle_vault_command` ignored them and always fell back
+    // to the default vault directory.
+    #[allow(unsafe_code)]
+    #[test]
+    #[serial]
+    fn handle_vault_command_respects_env_vars_without_cli_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+
+        zeph_core::vault::AgeVaultProvider::init_vault(dir.path()).unwrap();
+
+        unsafe {
+            std::env::set_var("ZEPH_VAULT_KEY", &key_path);
+            std::env::set_var("ZEPH_VAULT_PATH", &vault_path);
+        }
+
+        let result = handle_vault_command(
+            VaultCommand::Set {
+                key: "FOO".into(),
+                value: "bar".into(),
+                force: false,
+            },
+            &Config::default(),
+            None,
+            None,
+        );
+
+        unsafe {
+            std::env::remove_var("ZEPH_VAULT_KEY");
+            std::env::remove_var("ZEPH_VAULT_PATH");
+        }
+
+        result.unwrap();
+
+        let provider = zeph_core::vault::AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        assert_eq!(provider.get("FOO"), Some("bar"));
     }
 }

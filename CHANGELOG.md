@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- `zeph`: `zeph vault set/get/list/rm/init` ignored `ZEPH_VAULT_KEY`/`ZEPH_VAULT_PATH` env vars
+  and always fell back to the default vault directory unless overridden by `--vault-key`/
+  `--vault-path` (#6500), diverging from the resolution `zeph doctor` and agent startup already
+  perform via `parse_vault_args`. `handle_vault_command` in `src/commands/vault.rs` now threads
+  `crate::bootstrap::parse_vault_args` into its path resolution, giving `zeph vault` the same
+  CLI flag > `ZEPH_VAULT_KEY`/`ZEPH_VAULT_PATH` env var > default directory precedence.
+
 - `zeph-channels`: a negative or non-finite (`NaN`/`±inf`) `Retry-After` value from a 429
   response's header or JSON body reached `Duration::from_secs_f64` unclamped and panicked the
   process handling outbound Discord/Slack/Telegram sends (#6496). `send_with_retry` in
