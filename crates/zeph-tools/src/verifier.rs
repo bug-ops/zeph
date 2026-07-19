@@ -20,7 +20,8 @@
 //!   It runs *before* dispatch, in the LLM-call hot path, and must not be conflated
 //!   with the shell safety net to avoid accidental allow-listing via config drift.
 //!
-//! Overlap (3 entries: `rm -rf /`, `mkfs`, `dd if=`) is intentional — belt-and-suspenders.
+//! Overlap (`mkfs`, `dd if=`, and the root/home `rm` patterns below) is intentional —
+//! belt-and-suspenders.
 
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
@@ -70,6 +71,21 @@ pub trait PreExecutionVerifier: Send + Sync + std::fmt::Debug {
 ///
 /// Intentionally separate from `DEFAULT_BLOCKED_COMMANDS` in `shell.rs` — see module
 /// docs for the semantic distinction between the two lists.
+///
+/// `rm -rf /`, `rm -rf ~`, and `rm -r /` are kept as **substring** patterns deliberately,
+/// alongside the argv[0]-anchored [`crate::shell::is_blocked_rm_root_or_home`] check that
+/// runs first in [`DestructiveCommandVerifier::check_patterns`] (see below). The two are
+/// complementary, not redundant:
+///
+/// - `is_blocked_rm_root_or_home` requires `rm` to be the *first* token of the command and
+///   catches flag-reordering/bundling/long-form bypasses (`rm -fr /`, `rm --force /`, …)
+///   that these literal substrings miss.
+/// - The substring patterns below catch `rm` appearing *anywhere* in the command — chained
+///   (`cd /tmp && rm -rf /`, `echo hi; rm -rf /`), prefixed (`sudo rm -rf /`,
+///   `env rm -rf /`), or non-canonical target forms (`rm -rf ~/subpath`, `rm -r /etc`) —
+///   that the anchored, non-tokenizing check cannot see because `check_patterns` receives
+///   the full, un-split command string. Removing them regressed coverage of exactly these
+///   forms (recurrence class: reviewed and restored during critic follow-up).
 static DESTRUCTIVE_PATTERNS: &[&str] = &[
     "rm -rf /",
     "rm -rf ~",
@@ -252,6 +268,9 @@ impl DestructiveCommandVerifier {
     }
 
     fn check_patterns(command: &str) -> Option<&'static str> {
+        if crate::shell::is_blocked_rm_root_or_home(command) {
+            return Some("rm -rf / (recursive/force targeting root, ~, or $HOME)");
+        }
         DESTRUCTIVE_PATTERNS
             .iter()
             .find(|&pat| command.contains(pat))
@@ -901,6 +920,106 @@ mod tests {
         let v = dcv();
         let result = v.verify("bash", &json!({"command": "rm -rf /"}));
         assert_matches!(result, VerificationResult::Block { .. });
+    }
+
+    // --- #6473: reordered/separated/long-form rm force-flag bypass ---
+
+    #[test]
+    fn block_rm_root_bypass_vectors() {
+        let v = dcv();
+        for cmd in &["rm -fr /", "rm -r -f /", "rm --force /", "rm / -f"] {
+            let result = v.verify("bash", &json!({"command": cmd}));
+            assert_matches!(
+                result,
+                VerificationResult::Block { .. },
+                "expected `{cmd}` to be blocked"
+            );
+        }
+    }
+
+    #[test]
+    fn block_rm_home_env_var() {
+        let v = dcv();
+        let result = v.verify("bash", &json!({"command": "rm -rf \"$HOME\""}));
+        assert_matches!(result, VerificationResult::Block { .. });
+    }
+
+    #[test]
+    fn allow_rm_relative_path() {
+        let v = dcv();
+        assert_eq!(
+            v.verify("bash", &json!({"command": "rm -rf ./some/relative/path"})),
+            VerificationResult::Allow
+        );
+    }
+
+    #[test]
+    fn allow_rm_single_file_force_only() {
+        let v = dcv();
+        assert_eq!(
+            v.verify("bash", &json!({"command": "rm -f /tmp/build/output.log"})),
+            VerificationResult::Allow
+        );
+    }
+
+    // --- critic follow-up: chained/prefixed/non-canonical rm-root regression ---
+    //
+    // `is_blocked_rm_root_or_home` requires `rm` to be argv[0] of the full, un-split
+    // command string, so it cannot see `rm` appearing after a separator or a prefix
+    // command. These vectors rely on the restored literal substring entries in
+    // `DESTRUCTIVE_PATTERNS` (`"rm -rf /"`, `"rm -rf ~"`, `"rm -r /"`) as a
+    // belt-and-suspenders fallback.
+
+    #[test]
+    fn block_chained_rm_root() {
+        let v = dcv();
+        for cmd in &["cd /tmp && rm -rf /", "echo hi; rm -rf /"] {
+            let result = v.verify("bash", &json!({"command": cmd}));
+            assert_matches!(
+                result,
+                VerificationResult::Block { .. },
+                "expected `{cmd}` to be blocked"
+            );
+        }
+    }
+
+    #[test]
+    fn block_prefixed_rm_root() {
+        let v = dcv();
+        for cmd in &["sudo rm -rf /", "env rm -rf /"] {
+            let result = v.verify("bash", &json!({"command": cmd}));
+            assert_matches!(
+                result,
+                VerificationResult::Block { .. },
+                "expected `{cmd}` to be blocked"
+            );
+        }
+    }
+
+    #[test]
+    fn block_recursive_only_on_system_path() {
+        let v = dcv();
+        for cmd in &["rm -r /etc", "rm -r /usr", "rm -r /var"] {
+            let result = v.verify("bash", &json!({"command": cmd}));
+            assert_matches!(
+                result,
+                VerificationResult::Block { .. },
+                "expected `{cmd}` to be blocked"
+            );
+        }
+    }
+
+    #[test]
+    fn block_rm_rf_home_subpath() {
+        let v = dcv();
+        for cmd in &["rm -rf ~/Documents", "rm -rf ~/.ssh"] {
+            let result = v.verify("bash", &json!({"command": cmd}));
+            assert_matches!(
+                result,
+                VerificationResult::Block { .. },
+                "expected `{cmd}` to be blocked"
+            );
+        }
     }
 
     #[test]

@@ -49,6 +49,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `spawn_classified(..., Result::is_ok)` and propagates `serve()`'s `Result` instead of
     discarding it — any `GatewayError` variant now surfaces as `Failed`, not just the log line.
 
+- `zeph-tools`/`zeph-subagent`: two shell-guard bypass classes (#6497, #6473).
+  - **#6497** — `NetworkScope::Deny` sub-agents (`NetworkDenyToolExecutor`) and
+    `ShellConfig::allow_network = false` only blocked 5 literal network binaries
+    (`curl`/`wget`/`nc`/`ncat`/`netcat`), missing `ssh`/`scp`/`rsync`, `openssl s_client`,
+    `socat`, `python3 -c`/`python -c`/`perl -e`/`ruby -e` one-liners, and bash's
+    `/dev/tcp`/`/dev/udp` pseudo-devices. `zeph_tools::NETWORK_COMMANDS` now covers all of
+    these; the `/dev/tcp`/`/dev/udp` entries are matched via a new substring fallback in
+    `check_blocklist` (`crates/zeph-tools/src/shell/mod.rs`) since they appear embedded
+    mid-token (e.g. `exec 3<>/dev/tcp/host/port`), not as a sub-command's first token.
+  - **#6473** — the destructive-`rm` guard (`DEFAULT_BLOCKED_COMMANDS`'s `rm -rf /` entry
+    and `zeph-tools`'s `DestructiveCommandVerifier`) matched only the literal, canonically
+    ordered `rm -rf /` substring, missing reordered/separated/long-form variants
+    (`rm -fr /`, `rm -r -f /`, `rm --force /`, `rm / -f`) and `$HOME`-targeted deletes
+    (`rm -rf "$HOME"`). New `is_blocked_rm_root_or_home` (`crates/zeph-tools/src/shell/mod.rs`)
+    generalizes the existing `.git/worktrees`-specific tokenized flag detector
+    (`is_blocked_rm_worktrees`) to the root/home/`$HOME`/any-absolute-path case, independent
+    of flag ordering, bundling, or long-form spelling. Both `check_blocklist` and
+    `ShellExecutor::find_blocked_command` (previously a drifted, separately-maintained copy
+    of `check_blocklist`'s matching logic — now unified via a shared `match_blocklist_tokens`
+    helper) and `DestructiveCommandVerifier::check_patterns` use the new detector.
+    `DestructiveCommandVerifier`'s `is_blocked_rm_root_or_home` check is argv[0]-anchored
+    and operates on the full, un-split command string, so `"rm -rf /"`/`"rm -rf ~"`/
+    `"rm -r /"` are kept as substring patterns in `DESTRUCTIVE_PATTERNS` alongside it
+    (belt-and-suspenders) to still catch chained (`cd /tmp && rm -rf /`), prefixed
+    (`sudo rm -rf /`), recursive-only-on-system-path (`rm -r /etc`), and home-subpath
+    (`rm -rf ~/Documents`) forms that the anchored check alone cannot see.
+
 - `zeph-llm`: `openai`/`compatible` providers could crash the turn with `tool_calls[].id must
   be unique within the request` after Focus-based context compaction (#6501). Zeph replays
   `tool_call.id` values returned by the upstream model verbatim as message history on every

@@ -67,9 +67,34 @@ use transaction::{TransactionSnapshot, affected_paths, build_scope_matchers, is_
 use crate::risk_chain::RiskChainAccumulator;
 
 const DEFAULT_BLOCKED: &[&str] = &[
-    "rm -rf /", "sudo", "mkfs", "dd if=", "curl", "wget", "nc ", "ncat", "netcat", "shutdown",
-    "reboot", "halt",
+    "sudo", "mkfs", "dd if=", "curl", "wget", "nc ", "ncat", "netcat", "shutdown", "reboot", "halt",
 ];
+
+/// Scans `rm` argument tokens (everything after argv[0]) and reports whether a recursive
+/// flag (`-r`, `-R`, `--recursive`, or bundled e.g. `-rf`) and a force flag (`-f`,
+/// `--force`, or bundled) are present, in any order or bundling style.
+fn rm_recursive_force_flags(tokens: &[&str]) -> (bool, bool) {
+    let mut has_recursive = false;
+    let mut has_force = false;
+
+    for token in tokens {
+        if *token == "--recursive" {
+            has_recursive = true;
+        } else if *token == "--force" {
+            has_force = true;
+        } else if let Some(flags) = token.strip_prefix('-').filter(|f| !f.starts_with('-')) {
+            // Short flag bundle like `-rfd` or `-fr`.
+            if flags.contains('r') || flags.contains('R') {
+                has_recursive = true;
+            }
+            if flags.contains('f') {
+                has_force = true;
+            }
+        }
+    }
+
+    (has_recursive, has_force)
+}
 
 /// Returns `true` if `cmd` is an `rm` invocation with both recursive and force flags
 /// that targets `.git/worktrees`, regardless of flag ordering or bundling style.
@@ -105,26 +130,74 @@ pub fn is_blocked_rm_worktrees(cmd: &str) -> bool {
         return false;
     }
 
-    let mut has_recursive = false;
-    let mut has_force = false;
+    let (has_recursive, has_force) = rm_recursive_force_flags(&tokens[1..]);
+    has_recursive && has_force
+}
 
-    for token in &tokens[1..] {
-        if *token == "--recursive" {
-            has_recursive = true;
-        } else if *token == "--force" {
-            has_force = true;
-        } else if let Some(flags) = token.strip_prefix('-').filter(|f| !f.starts_with('-')) {
-            // Short flag bundle like `-rfd` or `-fr`.
-            if flags.contains('r') || flags.contains('R') {
-                has_recursive = true;
-            }
-            if flags.contains('f') {
-                has_force = true;
-            }
-        }
+/// Returns `true` if `token` (quotes stripped) is the filesystem root (`/`), the home
+/// directory shorthand (`~`, `~/`), or a literal `$HOME` reference (`$HOME`, `${HOME}`,
+/// with or without a trailing slash).
+///
+/// Only literal tokens are recognised — a shell variable that merely *resolves* to root
+/// or home at runtime (e.g. `rm -rf "$TARGET"`) cannot be detected by static tokenizing
+/// and is intentionally out of scope.
+fn is_literal_root_or_home_target(token: &str) -> bool {
+    let trimmed = token.trim_matches(|c| c == '\'' || c == '"');
+    matches!(
+        trimmed,
+        "/" | "~" | "~/" | "$home" | "${home}" | "$home/" | "${home}/"
+    )
+}
+
+/// Returns `true` if `cmd` is an `rm` invocation whose target is the filesystem root,
+/// the home directory, or a literal `$HOME` token, combined with a recursive or force
+/// flag — or, for any other absolute path, both a recursive *and* a force flag — in any
+/// order, bundling, or long-form spelling, and regardless of whether the flag appears
+/// before or after the target.
+///
+/// The root/`~`/`$HOME` targets accept a single destructive flag because there is no
+/// legitimate reason to force- or recursively-delete them at all; other absolute paths
+/// (e.g. `/home/user`) require both flags to avoid blocking common, safe single-file
+/// deletions like `rm -f /tmp/build/output.log`.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_tools::shell::is_blocked_rm_root_or_home;
+/// assert!(is_blocked_rm_root_or_home("rm -rf /"));
+/// assert!(is_blocked_rm_root_or_home("rm -fr /"));
+/// assert!(is_blocked_rm_root_or_home("rm -r -f /"));
+/// assert!(is_blocked_rm_root_or_home("rm --force /"));
+/// assert!(is_blocked_rm_root_or_home("rm / -f"));
+/// assert!(is_blocked_rm_root_or_home("rm -rf \"$home\""));
+/// assert!(is_blocked_rm_root_or_home("rm -rf /home/user")); // broad absolute-path guard
+/// assert!(!is_blocked_rm_root_or_home("rm -f /tmp/build/output.log")); // single file, not root
+/// assert!(!is_blocked_rm_root_or_home("rm -rf ./some/relative/path")); // relative path
+/// ```
+#[must_use]
+pub fn is_blocked_rm_root_or_home(cmd: &str) -> bool {
+    let lower = cmd.to_lowercase();
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    if first.rsplit('/').next().unwrap_or(first) != "rm" {
+        return false;
     }
 
-    has_recursive && has_force
+    let rest = &tokens[1..];
+    let (has_recursive, has_force) = rm_recursive_force_flags(rest);
+    if !has_recursive && !has_force {
+        return false;
+    }
+
+    rest.iter().any(|token| {
+        if is_literal_root_or_home_target(token) {
+            return true;
+        }
+        has_recursive && has_force && token.starts_with('/')
+    })
 }
 
 /// Graceful period between SIGTERM and SIGKILL during process escalation.
@@ -133,13 +206,15 @@ const GRACEFUL_TERM_MS: Duration = Duration::from_millis(250);
 
 /// The default list of blocked command patterns used by [`ShellExecutor`].
 ///
-/// Includes highly destructive commands (`rm -rf /`, `mkfs`, `dd if=`), privilege
-/// escalation (`sudo`), and network egress tools (`curl`, `wget`, `nc`, `netcat`).
-/// Network commands can be re-enabled via [`ShellConfig::allow_network`].
+/// Includes highly destructive commands (`mkfs`, `dd if=`), privilege escalation
+/// (`sudo`), and network egress tools (`curl`, `wget`, `nc`, `netcat`). Network commands
+/// can be re-enabled via [`ShellConfig::allow_network`].
 ///
-/// `rm` commands targeting `.git/worktrees` with recursive+force flags are blocked
-/// semantically via [`is_blocked_rm_worktrees`] regardless of flag ordering or bundling,
-/// so they do not appear as literal entries in this list.
+/// `rm` commands targeting `.git/worktrees`, or the filesystem root/home/`$HOME` (with a
+/// destructive flag), or any other absolute path (with both recursive and force flags),
+/// are blocked semantically via [`is_blocked_rm_worktrees`] / [`is_blocked_rm_root_or_home`]
+/// regardless of flag ordering or bundling, so they do not appear as literal entries in
+/// this list.
 ///
 /// Exposed so other executors (e.g. `AcpShellExecutor`) can reuse the same
 /// blocklist without duplicating it.
@@ -158,6 +233,41 @@ pub const SHELL_INTERPRETERS: &[&str] =
 /// analysis of nested shell evaluation is not feasible.
 const SUBSHELL_METACHARS: &[&str] = &["$(", "`", "<(", ">("];
 
+/// Matches an already-lowercased, escape-stripped command string against `blocklist`,
+/// applying the semantic `rm` worktrees/root/home guards and the tokenized
+/// pattern/substring checks.
+///
+/// Shared by [`check_blocklist`] and [`ShellExecutor::find_blocked_command`] so both
+/// entry points stay in sync — the two differ only in how they handle subshell
+/// constructs (blanket-block vs. inspect-extracted-content), which callers layer on
+/// top of this helper.
+fn match_blocklist_tokens(cleaned: &str, blocklist: &[String]) -> Option<String> {
+    let commands = tokenize_commands(cleaned);
+    for cmd_tokens in &commands {
+        let joined = cmd_tokens.join(" ");
+        if is_blocked_rm_worktrees(&joined) {
+            return Some("rm --recursive --force .git/worktrees".to_owned());
+        }
+        if is_blocked_rm_root_or_home(&joined) {
+            return Some("rm -rf / (recursive/force targeting root, ~, or $HOME)".to_owned());
+        }
+    }
+    for blocked in blocklist {
+        if EMBEDDED_SUBSTRING_PATTERNS.contains(&blocked.as_str()) {
+            if cleaned.contains(blocked.as_str()) {
+                return Some(blocked.clone());
+            }
+            continue;
+        }
+        for cmd_tokens in &commands {
+            if tokens_match_pattern(cmd_tokens, blocked) {
+                return Some(blocked.clone());
+            }
+        }
+    }
+    None
+}
+
 /// Check if `command` matches any pattern in `blocklist`.
 ///
 /// Returns the matched pattern string if the command is blocked, `None` otherwise.
@@ -175,21 +285,7 @@ pub fn check_blocklist(command: &str, blocklist: &[String]) -> Option<String> {
         }
     }
     let cleaned = strip_shell_escapes(&lower);
-    let commands = tokenize_commands(&cleaned);
-    for cmd_tokens in &commands {
-        let joined = cmd_tokens.join(" ");
-        if is_blocked_rm_worktrees(&joined) {
-            return Some("rm --recursive --force .git/worktrees".to_owned());
-        }
-    }
-    for blocked in blocklist {
-        for cmd_tokens in &commands {
-            if tokens_match_pattern(cmd_tokens, blocked) {
-                return Some(blocked.clone());
-            }
-        }
-    }
-    None
+    match_blocklist_tokens(&cleaned, blocklist)
 }
 
 /// Build the effective command string for blocklist evaluation when the binary is a
@@ -213,7 +309,60 @@ pub fn effective_shell_command<'a>(binary: &str, args: &'a [String]) -> Option<&
 /// and by [`check_blocklist`] callers outside this module (e.g. `zeph-subagent`'s
 /// `NetworkDenyToolExecutor`) that need to block network egress for a single sub-agent
 /// spawn without mutating the shared executor's global policy.
-pub const NETWORK_COMMANDS: &[&str] = &["curl", "wget", "nc ", "ncat", "netcat"];
+///
+/// Beyond the classic HTTP/TCP fetch tools (`curl`, `wget`, `nc`/`ncat`/`netcat`), this
+/// also covers remote-access and generic-egress vectors that a network-denied sub-agent
+/// could otherwise reach for: `ssh`/`scp`/`rsync` (remote shell/copy), `openssl s_client`
+/// and `socat` (raw TCP), and one-liner script interpreters (`python3 -c`, `python -c`,
+/// `perl -e`, `ruby -e`) that can open sockets via their standard library. This is a
+/// best-effort, substring/prefix blocklist — see [`check_blocklist`] doc — not a sandbox
+/// boundary.
+///
+/// **Known residual gaps** (a name blocklist cannot be exhaustive; these are not covered,
+/// not merely "arbitrary in-language networking hidden behind a script file"):
+/// - **Flag insertion before `-c`/`-e`** defeats the prefix match: `python3 -B -c '...'`,
+///   `perl -MIO::Socket -e '...'` are one inserted token away from bypassing the
+///   `python3 -c` / `perl -e` entries, since the underlying multi-word matcher only
+///   matches a contiguous prefix starting at token 0.
+/// - **Versioned or alternate interpreter names** not in this list: `python3.11 -c`,
+///   `python2 -c`, `pypy3 -c` (basename differs from `python3`/`python`), and interpreters
+///   not listed at all (`node -e`, `php -r`, `lua -e`, `deno`, `bun`, `gawk`).
+/// - **Wrapper commands not in the transparent-prefix list** (`env`, `command`, `exec`,
+///   `nice`, `nohup`, `time`, `xargs`) — e.g. `busybox nc host port` — bypass entirely,
+///   since the wrapped `nc` invocation is never reached.
+pub const NETWORK_COMMANDS: &[&str] = &[
+    "curl",
+    "wget",
+    "nc ",
+    "ncat",
+    "netcat",
+    "ssh",
+    "scp",
+    "rsync",
+    "openssl s_client",
+    "socat",
+    "python3 -c",
+    "python -c",
+    "perl -e",
+    "ruby -e",
+    "/dev/tcp",
+    "/dev/udp",
+];
+
+/// Blocklist entries that must be matched as a raw substring of the (normalized) command
+/// rather than via [`tokens_match_pattern`]'s first-token/prefix matching.
+///
+/// Bash's `/dev/tcp` and `/dev/udp` pseudo-devices are reached through a redirection
+/// operator with no separating whitespace (e.g. `exec 3<>/dev/tcp/host/port`), so the
+/// path never appears as the first token of a sub-command — token-position matching
+/// cannot see it, and a plain substring check is the only reliable detection.
+///
+/// This substring match is intentionally broad — it matches `/dev/tcp`/`/dev/udp`
+/// anywhere in the command, including inside an otherwise-benign string (e.g.
+/// `echo "see /dev/tcp docs"`, `ls /dev/tcp*`). Only active when network egress is
+/// already denied ([`ShellConfig::allow_network`] `false` or `NetworkDenyToolExecutor`),
+/// so the failure mode is fail-safe (over-blocks, never under-blocks).
+const EMBEDDED_SUBSTRING_PATTERNS: &[&str] = &["/dev/tcp", "/dev/udp"];
 
 /// Effective command-restriction policy held inside a `ShellExecutor`.
 ///
@@ -1603,35 +1752,13 @@ impl ShellExecutor {
     fn find_blocked_command(&self, code: &str) -> Option<String> {
         let snapshot = self.policy.load_full();
         let cleaned = strip_shell_escapes(&code.to_lowercase());
-        let commands = tokenize_commands(&cleaned);
-        for cmd_tokens in &commands {
-            let joined = cmd_tokens.join(" ");
-            if is_blocked_rm_worktrees(&joined) {
-                return Some("rm --recursive --force .git/worktrees".to_owned());
-            }
-        }
-        for blocked in &snapshot.blocked_commands {
-            for cmd_tokens in &commands {
-                if tokens_match_pattern(cmd_tokens, blocked) {
-                    return Some(blocked.clone());
-                }
-            }
+        if let Some(hit) = match_blocklist_tokens(&cleaned, &snapshot.blocked_commands) {
+            return Some(hit);
         }
         // Also check commands embedded inside subshell constructs.
         for inner in extract_subshell_contents(&cleaned) {
-            let inner_commands = tokenize_commands(&inner);
-            for cmd_tokens in &inner_commands {
-                let joined = cmd_tokens.join(" ");
-                if is_blocked_rm_worktrees(&joined) {
-                    return Some("rm --recursive --force .git/worktrees".to_owned());
-                }
-            }
-            for blocked in &snapshot.blocked_commands {
-                for cmd_tokens in &inner_commands {
-                    if tokens_match_pattern(cmd_tokens, blocked) {
-                        return Some(blocked.clone());
-                    }
-                }
+            if let Some(hit) = match_blocklist_tokens(&inner, &snapshot.blocked_commands) {
+                return Some(hit);
             }
         }
         None
