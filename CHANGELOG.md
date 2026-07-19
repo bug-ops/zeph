@@ -83,6 +83,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     (`sudo rm -rf /`), recursive-only-on-system-path (`rm -r /etc`), and home-subpath
     (`rm -rf ~/Documents`) forms that the anchored check alone cannot see.
 
+- `zeph-acp`: `permission.rs`'s test suite constructed `AcpPermissionGate::new(conn, None)`,
+  which falls back to the developer's real `acp-permissions.toml` config file instead of a
+  test fixture (#6512). Every `allow_always`/`reject_always` test persisted a real entry to
+  that file, which the live `zeph --acp` binary also reads — a test-isolation violation and a
+  security-relevant hazard (test-injected trust decisions could silently apply to the real
+  agent). Fixed by adding a `temp_perm_path()` helper and backing every gate in the test module
+  with an isolated `tempfile::tempdir()`, mirroring the pattern already used in `terminal.rs`
+  (#6511).
+
 - `zeph-llm`: `openai`/`compatible` providers could crash the turn with `tool_calls[].id must
   be unique within the request` after Focus-based context compaction (#6501). Zeph replays
   `tool_call.id` values returned by the upstream model verbatim as message history on every
