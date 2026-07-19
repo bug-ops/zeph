@@ -91,6 +91,13 @@ pub(super) struct AgentLoopArgs {
     /// nothing sent. Owned exclusively by this run's own turn loop for its lifetime; never
     /// clone the inner sender into a longer-lived struct (see `forward::ForwardSender` docs).
     pub(super) forward: Option<ForwardSender>,
+    /// Shared secret-mask registry (issue #6492), the same `Arc` used for the parent's
+    /// outbound-LLM masking and the forwarding drain's `SanitizeLayers`. Applied to every
+    /// tool-result's `content` in [`handle_tool_step`] immediately before it is pushed into
+    /// `messages` — the single chokepoint feeding the transcript, the next turn's LLM
+    /// context, and the debug dump. `None` when no registry is wired (mirrors
+    /// `SubAgentManager::secret_registry`'s `None` default).
+    pub(super) secret_registry: Option<Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
 }
 
 /// Record a progress heartbeat, if this loop has a live handle. No-op for `None` (untracked
@@ -508,6 +515,7 @@ async fn run_turn(
     llm_timeout: std::time::Duration,
     debug_dump_sink: Option<&dyn zeph_llm::debug_dump::DebugDumpSink>,
     forward: Option<&ForwardSender>,
+    secret_registry: Option<&zeph_sanitizer::secret_mask::SecretMaskRegistry>,
 ) -> Result<TurnOutcome, super::error::SubAgentError> {
     let response = call_provider_with_status(
         provider,
@@ -580,6 +588,7 @@ async fn run_turn(
         agent_name,
         sanitizer,
         granted_secrets,
+        secret_registry,
     )
     .await;
 
@@ -622,6 +631,7 @@ async fn handle_tool_step(
     agent_name: &str,
     sanitizer: &ContentSanitizer,
     granted_secrets: &mut HashMap<String, GrantedSecret>,
+    secret_registry: Option<&zeph_sanitizer::secret_mask::SecretMaskRegistry>,
 ) -> bool {
     match response {
         ChatResponse::Text(text) => {
@@ -788,6 +798,19 @@ async fn handle_tool_step(
                     }
                 }
 
+                // #6492: mask any known vault secret (this run's own grants and any other
+                // registered secret) out of the tool result before it reaches `messages` —
+                // the single chokepoint feeding the transcript, the next turn's LLM context,
+                // and the debug dump. `would_mask` is the allocation-free pre-check so a turn
+                // with no secret in it pays no extra cost. This mitigation is contingent on
+                // `secret_masking.enabled` (default `true` — `secret_registry` is `None` when
+                // disabled) and on the secret being at least `MIN_SECRET_LEN` (8) bytes.
+                if let Some(registry) = secret_registry
+                    && registry.would_mask(&content)
+                {
+                    content = registry.mask(&content);
+                }
+
                 result_parts.push(MessagePart::ToolResult {
                     tool_use_id: tc.id.clone(),
                     content,
@@ -854,8 +877,10 @@ pub(super) async fn run_agent_loop(
         progress_at,
         debug_dump_sink,
         forward,
+        secret_registry,
     } = args;
     let debug_dump_sink = debug_dump_sink.as_deref();
+    let secret_registry = secret_registry.as_deref();
 
     let sanitizer = ContentSanitizer::new(&content_isolation);
 
@@ -882,6 +907,11 @@ pub(super) async fn run_agent_loop(
     // Forwarded terminal state, independent of status_tx's always-Completed publish below
     // (impl-critic M1) — set to Canceled on either cancellation exit path.
     let mut forward_terminal_state = SubAgentState::Completed;
+    // #6494: captures a `run_turn` error so control still falls through to the unconditional
+    // post-loop finalize block below instead of an early `?`-return skipping it — a skipped
+    // finalize leaves the transcript chained-but-unanchored, reopening the whole-strip
+    // downgrade #6449/#6461 closed for any turn that ends on an LLM error/timeout.
+    let mut pending_error: Option<super::error::SubAgentError> = None;
 
     loop {
         record_progress(progress_at.as_ref());
@@ -896,7 +926,7 @@ pub(super) async fn run_agent_loop(
             break;
         }
 
-        match run_turn(
+        let turn_result = run_turn(
             &provider,
             &executor,
             &mut messages,
@@ -920,14 +950,27 @@ pub(super) async fn run_agent_loop(
             llm_timeout,
             debug_dump_sink,
             forward.as_ref(),
+            secret_registry,
         )
-        .await?
-        {
-            TurnOutcome::ToolCalled => any_tool_called = true,
-            TurnOutcome::NudgeSent | TurnOutcome::SecretHandled => {}
-            TurnOutcome::Done => break,
-            TurnOutcome::Cancelled => {
+        .await;
+
+        match turn_result {
+            Ok(TurnOutcome::ToolCalled) => any_tool_called = true,
+            Ok(TurnOutcome::NudgeSent | TurnOutcome::SecretHandled) => {}
+            Ok(TurnOutcome::Done) => break,
+            Ok(TurnOutcome::Cancelled) => {
                 forward_terminal_state = SubAgentState::Canceled;
+                break;
+            }
+            Err(e) => {
+                // `call_provider_with_status` already published a terminal `Failed` status
+                // (and forwarded terminal chunk) before returning this error — capture it and
+                // fall through to the unconditional post-loop finalize instead of an early
+                // return. `forward_terminal_state` is intentionally left untouched here: the
+                // post-loop `publish_completed_status` call (its only reader) is unconditionally
+                // skipped whenever `pending_error.is_some()`, which is always true on this arm,
+                // so setting it would be a dead store.
+                pending_error = Some(e);
                 break;
             }
         }
@@ -937,24 +980,36 @@ pub(super) async fn run_agent_loop(
         trim_message_history(&mut messages, max_history_messages);
     }
 
-    publish_completed_status(
-        &status_tx,
-        forward.as_ref(),
-        forward_terminal_state,
-        &last_result,
-        turns,
-        started_at,
-    );
+    // Skipped on the error path: `call_provider_with_status` already published `Failed` (and
+    // its matching forwarded terminal) before returning the error captured in `pending_error`
+    // — publishing `Completed` here as well would overwrite that status and double-forward a
+    // terminal chunk.
+    if pending_error.is_none() {
+        publish_completed_status(
+            &status_tx,
+            forward.as_ref(),
+            forward_terminal_state,
+            &last_result,
+            turns,
+            started_at,
+        );
+    }
 
     // Anchor the transcript (issue #6449): best-effort, logged rather than propagated — the
     // transcript file itself is already durably written, and a failed anchor put only means this
-    // one file falls back to #6453-level chain-only protection, never data loss.
+    // one file falls back to #6453-level chain-only protection, never data loss. Runs
+    // unconditionally on every loop exit path, including the LLM-error path above (#6494) —
+    // skipping it there left the transcript chained-but-unanchored, reopening the whole-strip
+    // downgrade #6449/#6461 closed.
     if let Some(writer) = transcript_writer
         && let Err(e) = writer.finalize().await
     {
         tracing::warn!(error = %e, task_id = %loop_task_id, "transcript anchor finalize failed");
     }
 
+    if let Some(e) = pending_error {
+        return Err(e);
+    }
     Ok(last_result)
 }
 
@@ -1227,6 +1282,103 @@ mod handle_tool_step_granted_secrets_tests {
         }
     }
 
+    /// Executor whose tool output summary echoes back exactly the string it is constructed
+    /// with — simulates a tool call that leaks a secret's raw value into its own output
+    /// (e.g. `shell: echo $SOME_VAULT_KEY`), for #6492 masking regression tests.
+    struct EchoingExecutor {
+        echo: String,
+    }
+
+    impl ErasedToolExecutor for EchoingExecutor {
+        fn execute_erased<'a>(
+            &'a self,
+            _response: &'a str,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+
+        fn execute_confirmed_erased<'a>(
+            &'a self,
+            _response: &'a str,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+
+        fn tool_definitions_erased(&self) -> Vec<ToolDef> {
+            vec![]
+        }
+
+        fn execute_tool_call_erased<'a>(
+            &'a self,
+            call: &'a ToolCall,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            let echo = self.echo.clone();
+            let tool_name = call.tool_id.clone();
+            Box::pin(async move {
+                Ok(Some(ToolOutput {
+                    tool_name,
+                    summary: echo,
+                    blocks_executed: 1,
+                    filter_stats: None,
+                    diff: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                    claim_source: None,
+                    ..Default::default()
+                }))
+            })
+        }
+
+        fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+            false
+        }
+
+        fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
+            false
+        }
+
+        fn execute_tool_call_confirmed_erased<'a>(
+            &'a self,
+            call: &'a ToolCall,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a,
+            >,
+        > {
+            self.execute_tool_call_erased(call)
+        }
+
+        fn checkpoint_undo_erased(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+
+        fn checkpoint_redo_erased(&self) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+
+        fn checkpoint_list_erased(&self) -> zeph_tools::CheckpointListResult {
+            zeph_tools::CheckpointListResult::default()
+        }
+
+        fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool {
+            false
+        }
+    }
+
     fn tool_use_response() -> ChatResponse {
         ChatResponse::ToolUse {
             text: None,
@@ -1267,6 +1419,7 @@ mod handle_tool_step_granted_secrets_tests {
             "bot",
             &sanitizer,
             &mut granted_secrets,
+            None,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -1309,6 +1462,7 @@ mod handle_tool_step_granted_secrets_tests {
             "bot",
             &sanitizer,
             &mut granted_secrets,
+            None,
         )
         .await;
         assert!(!no_tool);
@@ -1353,6 +1507,7 @@ mod handle_tool_step_granted_secrets_tests {
             "bot",
             &sanitizer,
             &mut granted_secrets,
+            None,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -1408,6 +1563,7 @@ mod handle_tool_step_granted_secrets_tests {
             "bot",
             &sanitizer,
             &mut granted_secrets,
+            None,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -1439,6 +1595,108 @@ mod handle_tool_step_granted_secrets_tests {
         assert!(
             context.env_overrides().get("EXPIRED_KEY").is_none(),
             "expired grant must not be attached to the tool call context"
+        );
+    }
+
+    // --- #6492: tool-result content masking ---
+
+    #[tokio::test]
+    async fn tool_result_containing_a_registered_secret_is_masked_before_reaching_messages() {
+        let secret_value = "sk-supersecretvalue12345678";
+        let executor = FilteredToolExecutor::new(
+            Arc::new(EchoingExecutor {
+                echo: secret_value.to_owned(),
+            }) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let hooks = SubagentHooks::default();
+        let mut messages = Vec::new();
+        let mut granted_secrets = HashMap::new();
+        let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+        let registry = zeph_sanitizer::secret_mask::SecretMaskRegistry::new();
+        registry.register(
+            "SOME_VAULT_KEY",
+            secret_value,
+            zeph_sanitizer::secret_mask::SecretCategory::ApiKey,
+        );
+
+        let no_tool = handle_tool_step(
+            &executor,
+            tool_use_response(),
+            &mut messages,
+            &hooks,
+            "task-1",
+            "bot",
+            &sanitizer,
+            &mut granted_secrets,
+            Some(&registry),
+        )
+        .await;
+        assert!(!no_tool, "a tool call was made");
+
+        let content = messages
+            .iter()
+            .find_map(|m| {
+                m.parts.iter().find_map(|p| match p {
+                    MessagePart::ToolResult { content, .. } => Some(content.clone()),
+                    _ => None,
+                })
+            })
+            .expect("a ToolResult part must be present");
+        assert!(
+            !content.contains(secret_value),
+            "raw secret must not appear in the tool-result content pushed into messages \
+             (would leak into transcript/LLM context/debug dump): {content}"
+        );
+        assert!(
+            content.contains("<SECRET:api_key:"),
+            "masked content must carry the typed placeholder: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_result_is_left_unmasked_when_no_secret_registry_is_wired() {
+        // Regression guard: passing `None` (registry disabled / not wired) must leave
+        // tool-result content byte-for-byte identical to pre-fix behavior — masking must
+        // never be forced on when no registry is configured.
+        let secret_value = "sk-supersecretvalue12345678";
+        let executor = FilteredToolExecutor::new(
+            Arc::new(EchoingExecutor {
+                echo: secret_value.to_owned(),
+            }) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let hooks = SubagentHooks::default();
+        let mut messages = Vec::new();
+        let mut granted_secrets = HashMap::new();
+        let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+
+        let no_tool = handle_tool_step(
+            &executor,
+            tool_use_response(),
+            &mut messages,
+            &hooks,
+            "task-1",
+            "bot",
+            &sanitizer,
+            &mut granted_secrets,
+            None,
+        )
+        .await;
+        assert!(!no_tool);
+
+        let content = messages
+            .iter()
+            .find_map(|m| {
+                m.parts.iter().find_map(|p| match p {
+                    MessagePart::ToolResult { content, .. } => Some(content.clone()),
+                    _ => None,
+                })
+            })
+            .expect("a ToolResult part must be present");
+        assert!(
+            content.contains(secret_value),
+            "with no registry wired, content must be unchanged (pre-fix baseline): {content}"
         );
     }
 }

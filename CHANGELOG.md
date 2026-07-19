@@ -37,6 +37,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   falling back to `default_vault_dir()` only when no override is supplied — behavior is
   unchanged for the common no-override case.
 
+### Security
+
+- `zeph-subagent`/`zeph-core`: closed three subagent trust-boundary gaps found during a security
+  audit of the sub-agent grant/spawn/transcript machinery (#6492, #6493, #6494) — in every case
+  the enforcement machinery already existed, but a wiring step was missing.
+  - **#6492 (secret leak into transcript/LLM context/debug dump)**: a delivered vault secret's
+    raw value was attached as a per-call `ExecutionContext` env override for tool execution, but
+    if the invoked tool echoed it back (e.g. `shell: echo $KEY`), the raw value landed unmasked
+    in the tool-result content pushed into `messages` — which feeds the transcript JSONL, the
+    next turn's LLM context, and the debug dump alike. Fixed with two changes: (1)
+    `SubAgentManager::deliver_secret` now registers the delivered value into the shared
+    `SecretMaskRegistry` (the same registry already used for parent-outbound masking and
+    forwarding-drain sanitization) at grant-delivery time; (2) the agent loop's
+    `handle_tool_step` now masks tool-result `content` against that registry immediately before
+    it is pushed into `messages` — a single chokepoint covering all three sinks.
+  - **#6493 (spawned sub-agent could exceed the parent's own trust level)**: `SpawnContext`'s
+    `max_trust_level`/`inherited_tool_allowlist` constraint-propagation fields (added for #3993)
+    were enforced correctly wherever set, but never populated at the one production
+    `SpawnContext` construction site (`build_spawn_context`, covering foreground, background,
+    and orchestration-driven spawns alike). `build_spawn_context` now computes the parent
+    session's own current effective trust level (the same weakest-link fold applied to the
+    parent's own tool gate) and caps every spawned sub-agent to it, so a sub-agent can never
+    receive higher privileges than its parent currently holds. `inherited_tool_allowlist` is
+    left unset pending a follow-up to add per-task orchestration-policy plumbing.
+  - **#6494 (transcript anchor finalize skipped on LLM-error exit)**: `run_agent_loop` returned
+    early via `?` on an LLM-call error/timeout, skipping the unconditional post-loop transcript
+    anchor `finalize()` — leaving the transcript chained-but-unanchored and reopening the
+    whole-strip downgrade #6449/#6461 closed. The loop now captures the error, falls through to
+    the existing finalize block unconditionally, and returns the captured error afterward; the
+    post-loop status publish is skipped on this path since the LLM-call error handler already
+    published the terminal `Failed` status.
+
 ## [0.22.2] - 2026-07-18
 ### Added
 

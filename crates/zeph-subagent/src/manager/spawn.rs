@@ -760,6 +760,7 @@ impl SubAgentManager {
             progress_at: ctx.progress_at,
             debug_dump_sink: ctx.debug_dump_sink,
             forward: forward_sender,
+            secret_registry: self.secret_registry.clone(),
         };
 
         let join_handle = self.spawn_agent_task(Arc::from(task_id.as_str()), move || async move {
@@ -1182,6 +1183,9 @@ impl SubAgentManager {
             config.forward_transcript,
             &forward_content_isolation,
         );
+        // Cloned before the `move` closure below (same reason as `debug_dump_sink_for_loop`
+        // above): `self` cannot be captured by the `'static` task closure.
+        let secret_registry_for_loop = self.secret_registry.clone();
         let join_handle = self.spawn_agent_task(Arc::from(new_task_id.as_str()), move || {
             run_agent_loop(AgentLoopArgs {
                 provider,
@@ -1211,6 +1215,7 @@ impl SubAgentManager {
                 progress_at: None,
                 debug_dump_sink: debug_dump_sink_for_loop,
                 forward: forward_sender,
+                secret_registry: secret_registry_for_loop,
             })
         });
 

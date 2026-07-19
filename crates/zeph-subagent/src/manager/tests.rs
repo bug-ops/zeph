@@ -2293,6 +2293,7 @@ fn make_agent_loop_args(
         progress_at: None,
         debug_dump_sink: None,
         forward: None,
+        secret_registry: None,
     }
 }
 
@@ -2453,6 +2454,7 @@ async fn run_agent_loop_publishes_failed_status_on_llm_call_timeout() {
         progress_at: None,
         debug_dump_sink: None,
         forward: None,
+        secret_registry: None,
     };
 
     let result = run_agent_loop(args).await;
@@ -2475,6 +2477,163 @@ async fn run_agent_loop_publishes_failed_status_on_llm_call_timeout() {
         "Failed status message should mention the timeout: {:?}",
         status.last_message
     );
+}
+
+// ── transcript anchor finalize on every loop-exit path (#6494) ───────────
+
+/// In-memory [`AnchorStore`] mock, mirroring `transcript.rs`'s own test-only mock — kept as a
+/// separate copy here (rather than exported) since it is `#[cfg(test)]`-private to that module.
+#[derive(Default)]
+struct MockAnchorStoreForLoopTest {
+    map: std::sync::Mutex<std::collections::HashMap<String, zeph_common::anchor::Anchor>>,
+}
+
+impl zeph_common::anchor::AnchorStore for MockAnchorStoreForLoopTest {
+    fn get(
+        &self,
+        subsystem: zeph_common::anchor::AnchorSubsystem,
+        file_id: &[u8],
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        Option<zeph_common::anchor::Anchor>,
+                        zeph_common::anchor::AnchorError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        let result = self.get_sync(subsystem, file_id);
+        Box::pin(async move { result })
+    }
+
+    fn get_sync(
+        &self,
+        subsystem: zeph_common::anchor::AnchorSubsystem,
+        file_id: &[u8],
+    ) -> Result<Option<zeph_common::anchor::Anchor>, zeph_common::anchor::AnchorError> {
+        let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+        Ok(self.map.lock().unwrap().get(&key).cloned())
+    }
+
+    fn put(
+        &self,
+        subsystem: zeph_common::anchor::AnchorSubsystem,
+        file_id: &[u8],
+        anchor: zeph_common::anchor::Anchor,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), zeph_common::anchor::AnchorError>>
+                + Send
+                + '_,
+        >,
+    > {
+        let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+        self.map.lock().unwrap().insert(key, anchor);
+        Box::pin(async { Ok(()) })
+    }
+
+    fn delete(
+        &self,
+        subsystem: zeph_common::anchor::AnchorSubsystem,
+        file_id: &[u8],
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), zeph_common::anchor::AnchorError>>
+                + Send
+                + '_,
+        >,
+    > {
+        let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+        self.map.lock().unwrap().remove(&key);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+async fn run_agent_loop_finalizes_transcript_anchor_on_llm_error_exit_path() {
+    // Regression test for #6494: an LLM-call error/timeout must still finalize (anchor) the
+    // transcript before `run_agent_loop` returns `Err` — otherwise the transcript is left
+    // chained-but-unanchored, reopening the whole-strip downgrade #6449/#6461 closed for any
+    // turn that ends on an LLM error. `configure_history_integrity`/`configure_anchor_store`
+    // mutate process-global state; safe here because `cargo nextest` runs each test in its own
+    // process (see `transcript.rs`'s own anchor tests for the same convention).
+    crate::transcript::configure_history_integrity(Some(std::sync::Arc::new(
+        zeph_common::hash_chain::ChainKeyRing::new(
+            0,
+            zeph_common::hash_chain::ChainKey::new([9u8; 32]),
+        ),
+    )));
+    let store = std::sync::Arc::new(MockAnchorStoreForLoopTest::default());
+    crate::transcript::configure_anchor_store(Some(
+        store.clone() as std::sync::Arc<dyn zeph_common::anchor::AnchorStore>
+    ));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("abc.jsonl");
+    let writer = crate::transcript::TranscriptWriter::new(&path).unwrap();
+
+    let provider = AnyProvider::Mock(MockProvider::default().with_delay(500));
+    let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
+
+    let (status_tx, _status_rx) = tokio::sync::watch::channel(SubAgentStatus {
+        state: SubAgentState::Working,
+        last_message: None,
+        turns_used: 0,
+        started_at: std::time::Instant::now(),
+    });
+    let (secret_request_tx, _secret_request_rx) = tokio::sync::mpsc::channel(1);
+    let (_secret_approved_tx, secret_rx) =
+        tokio::sync::mpsc::channel::<Option<crate::grants::GrantedSecret>>(1);
+
+    let args = AgentLoopArgs {
+        provider,
+        executor,
+        system_prompt: "You are a bot".into(),
+        task_prompt: "Do something".into(),
+        skills: None,
+        max_turns: 3,
+        cancel: tokio_util::sync::CancellationToken::new(),
+        status_tx,
+        started_at: std::time::Instant::now(),
+        secret_request_tx,
+        secret_rx,
+        background: false,
+        hooks: super::super::hooks::SubagentHooks::default(),
+        task_id: "test-task".into(),
+        agent_name: "test-bot".into(),
+        initial_messages: vec![],
+        transcript_writer: Some(writer),
+        spawn_depth: 0,
+        mcp_tool_names: Vec::new(),
+        content_isolation: ContentIsolationConfig::default(),
+        max_history_messages: 200,
+        // Much shorter than the mock provider's 500ms delay so the timeout branch fires
+        // deterministically instead of racing the real response.
+        llm_timeout: std::time::Duration::from_millis(30),
+        progress_at: None,
+        debug_dump_sink: None,
+        forward: None,
+        secret_registry: None,
+    };
+
+    let result = run_agent_loop(args).await;
+    assert!(
+        result.is_err(),
+        "expected the LLM-call timeout to still propagate as an error"
+    );
+
+    assert_eq!(
+        store.map.lock().unwrap().len(),
+        1,
+        "finalize() must have persisted a vault anchor even though the loop exited via the \
+         LLM-error path — a missing entry means finalize was skipped, reopening the \
+         whole-strip downgrade #6449/#6461 closed"
+    );
+
+    crate::transcript::configure_anchor_store(None);
+    crate::transcript::configure_history_integrity(None);
 }
 
 // ── idle-timeout progress heartbeat (#6245) ──────────────────────────────

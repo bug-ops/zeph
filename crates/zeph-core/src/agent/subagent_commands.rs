@@ -828,10 +828,39 @@ impl<C: Channel> Agent<C> {
                     self.services.security.pii_filter.clone(),
                 )) as Arc<dyn zeph_llm::debug_dump::DebugDumpSink>
             }),
-            // Constraint propagation (#3993): populated by orchestration layer when spawning
-            // with explicit trust/tool restrictions. Top-level agent sessions leave these None.
+            // Constraint propagation (#3993/#6493): cap the spawned sub-agent's trust to the
+            // parent session's own current effective trust level, so a sub-agent can never
+            // receive higher privileges than the parent itself currently holds — this is the
+            // only production call site that constructs a `SpawnContext`, so every spawn path
+            // (foreground, background, and orchestration-driven via
+            // `handle_scheduler_spawn_action`) is covered. `inherited_tool_allowlist` is left
+            // `None`: the top-level agent has no explicit tool-allowlist concept of its own to
+            // narrow against (see issue tracking the follow-up per-task `TaskNode` allowlist
+            // plumbing for the orchestration layer).
+            max_trust_level: Some(self.parent_effective_trust_level()),
             ..Default::default()
         }
+    }
+    /// Compute the parent session's own current effective trust level (issue #6493).
+    ///
+    /// Mirrors the fold in [`crate::agent::context::assembly`]'s
+    /// `apply_skill_trust_and_gating` exactly, so the cap handed to a spawned sub-agent is
+    /// always consistent with what is actually enforced on the parent's own tool gate this
+    /// turn: the least-trusted level among all skills active this turn, or `Trusted` when no
+    /// skill is active.
+    fn parent_effective_trust_level(&self) -> zeph_common::SkillTrustLevel {
+        if self.services.skill.active_skill_names.is_empty() {
+            return zeph_common::SkillTrustLevel::Trusted;
+        }
+        let snapshot = self.services.skill.trust_snapshot.read();
+        self.services
+            .skill
+            .active_skill_names
+            .iter()
+            .filter_map(|name| snapshot.get(name).map(|s| s.trust_level))
+            .fold(zeph_common::SkillTrustLevel::Trusted, |acc, lvl| {
+                acc.min_trust(lvl)
+            })
     }
     /// Extract recent parent messages for history propagation (Section 5.7 in spec).
     ///
@@ -1700,6 +1729,136 @@ mod tests {
         // proves the wiring produces a working `Arc<dyn DebugDumpSink>`, not just `Some(_)`.
         let id = sink.dump_request("mock", &[], &[], serde_json::Value::Null);
         sink.dump_response(id, &zeph_llm::provider::ChatResponse::Text("ok".into()));
+    }
+
+    // ── build_spawn_context: trust-level constraint propagation (#6493) ─────
+
+    #[test]
+    fn build_spawn_context_leaves_max_trust_level_trusted_when_no_active_skills() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let agent = Agent::new(
+            provider,
+            channel,
+            registry,
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+
+        let ctx = agent.build_spawn_context(&zeph_config::SubAgentConfig::default());
+        assert_eq!(
+            ctx.max_trust_level,
+            Some(zeph_common::SkillTrustLevel::Trusted),
+            "with no active skills this turn, the parent's own effective trust is Trusted, \
+             so the cap must impose no additional restriction"
+        );
+    }
+
+    #[test]
+    fn build_spawn_context_caps_trust_to_least_trusted_active_skill() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            registry,
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.services.skill.active_skill_names = vec!["trusted-skill".into(), "evil-skill".into()];
+        agent.services.skill.trust_snapshot.write().insert(
+            "trusted-skill".into(),
+            crate::skill_invoker::SkillTrustSnapshot {
+                trust_level: zeph_common::SkillTrustLevel::Trusted,
+                requires_trust_check: false,
+                blake3_hash: String::new(),
+            },
+        );
+        agent.services.skill.trust_snapshot.write().insert(
+            "evil-skill".into(),
+            crate::skill_invoker::SkillTrustSnapshot {
+                trust_level: zeph_common::SkillTrustLevel::Quarantined,
+                requires_trust_check: false,
+                blake3_hash: String::new(),
+            },
+        );
+
+        let ctx = agent.build_spawn_context(&zeph_config::SubAgentConfig::default());
+        assert_eq!(
+            ctx.max_trust_level,
+            Some(zeph_common::SkillTrustLevel::Quarantined),
+            "the cap must be the LEAST-trusted of all active skills this turn (weakest-link), \
+             matching the fold `apply_skill_trust_and_gating` applies to the parent's own gate"
+        );
+    }
+
+    /// Records every `set_effective_trust` call — unlike `MockToolExecutor`, which falls
+    /// through to the trait's no-op default. Used by
+    /// [`spawning_a_subagent_caps_trust_to_parent_effective_level`] to observe the trust level
+    /// that actually reached the sub-agent's tool executor through the REAL production spawn
+    /// path (`handle_agent_background` → `build_spawn_context` → `SubAgentManager::spawn` →
+    /// `FilteredToolExecutor::set_effective_trust` → this executor, the same `Arc` the parent
+    /// itself uses), not a hand-built `SpawnContext` in a unit test.
+    #[derive(Default)]
+    struct TrustRecordingExecutor {
+        recorded: Arc<Mutex<Option<zeph_tools::SkillTrustLevel>>>,
+    }
+
+    impl ToolExecutor for TrustRecordingExecutor {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+
+        fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
+
+        fn set_effective_trust(&self, level: zeph_tools::SkillTrustLevel) {
+            *self.recorded.lock().unwrap() = Some(level);
+        }
+
+        zeph_tools::tool_executor_no_inner_defaults!();
+    }
+
+    #[tokio::test]
+    async fn spawning_a_subagent_caps_trust_to_parent_effective_level() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = TrustRecordingExecutor::default();
+        let recorded = Arc::clone(&executor.recorded);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let mut mgr = zeph_subagent::SubAgentManager::new(4);
+        mgr.definitions_mut().push(subagent_def("helper"));
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        // Parent's own current trust is restricted this turn by an active Quarantined skill.
+        agent.services.skill.active_skill_names = vec!["evil-skill".into()];
+        agent.services.skill.trust_snapshot.write().insert(
+            "evil-skill".into(),
+            crate::skill_invoker::SkillTrustSnapshot {
+                trust_level: zeph_common::SkillTrustLevel::Quarantined,
+                requires_trust_check: false,
+                blake3_hash: String::new(),
+            },
+        );
+
+        let resp = agent.handle_agent_background("helper", "do work").await;
+        assert!(
+            resp.is_some_and(|r| r.contains("started in background")),
+            "test setup: the real production spawn path must succeed"
+        );
+
+        assert_eq!(
+            *recorded.lock().unwrap(),
+            Some(zeph_tools::SkillTrustLevel::Quarantined),
+            "a sub-agent spawned while the parent's own effective trust is Quarantined must \
+             never receive a higher (Trusted) effective trust on its own tool executor — \
+             #6493's escalation gap"
+        );
     }
 
     // ── filtered_skills_for token-budget cap (#6421) ─────────────────────────

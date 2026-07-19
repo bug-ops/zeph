@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use zeph_common::secret::Secret;
+use zeph_sanitizer::secret_mask::SecretCategory;
 
 use super::SubAgentManager;
 use crate::error::SubAgentError;
@@ -105,6 +106,15 @@ impl SubAgentManager {
             ));
         };
 
+        // Register the delivered value for masking (#6492): closes the forwarding-path leak
+        // (the drain masks against this same registry, which was never populated with the
+        // secret it was supposed to catch) and feeds the agent loop's own tool-result masking
+        // pass, which consults this registry before content reaches the transcript, LLM
+        // context, or debug dump.
+        if let Some(registry) = self.secret_registry.as_ref() {
+            registry.register(key, value.expose(), SecretCategory::from_key_name(key));
+        }
+
         handle
             .secret_tx
             .try_send(Some(GrantedSecret { value, expires_at }))
@@ -164,7 +174,58 @@ impl SubAgentManager {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use tokio::sync::{mpsc, watch};
+    use tokio_util::sync::CancellationToken;
+    use zeph_common::secret::Secret;
+    use zeph_sanitizer::secret_mask::SecretMaskRegistry;
+
     use super::make_hook_env;
+    use crate::def::SubAgentDef;
+    use crate::grants::{GrantedSecret, PermissionGrants};
+    use crate::manager::{SubAgentHandle, SubAgentManager, SubAgentStatus};
+    use crate::state::SubAgentState;
+
+    /// Builds a [`SubAgentHandle`] with a LIVE `secret_tx`/`secret_rx` pair — unlike
+    /// [`SubAgentHandle::for_test`], which immediately drops the receiver (documented as
+    /// valid only for metadata inspection, never for a call that actually sends on the
+    /// channel). `deliver_secret` calls `secret_tx.try_send(..)`, so a dropped receiver
+    /// would make every delivery fail with `Channel("channel closed")` regardless of the
+    /// registration logic under test here.
+    fn handle_with_live_secret_channel(
+        id: &str,
+        def: SubAgentDef,
+    ) -> (SubAgentHandle, mpsc::Receiver<Option<GrantedSecret>>) {
+        let initial_status = SubAgentStatus {
+            state: SubAgentState::Working,
+            last_message: None,
+            turns_used: 0,
+            started_at: Instant::now(),
+        };
+        let (status_tx, status_rx) = watch::channel(initial_status);
+        drop(status_tx);
+        let (pending_secret_rx_tx, pending_secret_rx) = mpsc::channel(1);
+        drop(pending_secret_rx_tx);
+        let (secret_tx, secret_rx) = mpsc::channel(1);
+        let handle = SubAgentHandle {
+            id: id.to_owned(),
+            task_id: id.to_owned(),
+            def,
+            state: SubAgentState::Working,
+            join_handle: None,
+            cancel: CancellationToken::new(),
+            status_rx,
+            grants: PermissionGrants::default(),
+            pending_secret_rx,
+            secret_tx,
+            started_at_str: String::new(),
+            transcript_dir: None,
+            mcp_tool_names: Vec::new(),
+        };
+        (handle, secret_rx)
+    }
 
     #[test]
     fn make_hook_env_sets_agent_type_subagent() {
@@ -182,5 +243,85 @@ mod tests {
             Some("my-agent")
         );
         assert_eq!(env.get("ZEPH_TOOL_NAME").map(String::as_str), Some("Shell"));
+    }
+
+    // --- #6492: deliver_secret registers into the shared secret-mask registry ---
+
+    #[test]
+    fn deliver_secret_registers_value_into_secret_mask_registry() {
+        let mut mgr = SubAgentManager::new(4);
+        let registry = Arc::new(SecretMaskRegistry::new());
+        mgr.set_secret_registry(Arc::clone(&registry));
+
+        let (mut handle, _secret_rx) =
+            handle_with_live_secret_channel("task-1", SubAgentDef::for_test("helper"));
+        handle
+            .grants
+            .grant_secret("SOME_VAULT_KEY", Duration::from_mins(5));
+        mgr.insert_handle_for_test("task-1".to_owned(), handle);
+
+        mgr.deliver_secret(
+            "task-1",
+            "SOME_VAULT_KEY",
+            Secret::new("the-secret-value-123"),
+        )
+        .expect("delivery must succeed: an active grant exists");
+
+        assert!(
+            registry.would_mask("value is the-secret-value-123"),
+            "a delivered secret must be registered into the shared mask registry — closes \
+             the gap where the forwarding drain masked against a registry that was never \
+             populated with the secret it was supposed to catch"
+        );
+    }
+
+    #[test]
+    fn deliver_secret_without_registry_still_succeeds() {
+        // Regression guard: registering into the mask registry must stay best-effort — a
+        // session with no registry wired (the `None` default) must not lose secret delivery.
+        let mut mgr = SubAgentManager::new(4);
+
+        let (mut handle, _secret_rx) =
+            handle_with_live_secret_channel("task-1", SubAgentDef::for_test("helper"));
+        handle
+            .grants
+            .grant_secret("SOME_VAULT_KEY", Duration::from_mins(5));
+        mgr.insert_handle_for_test("task-1".to_owned(), handle);
+
+        let result = mgr.deliver_secret(
+            "task-1",
+            "SOME_VAULT_KEY",
+            Secret::new("the-secret-value-123"),
+        );
+        assert!(
+            result.is_ok(),
+            "delivery must succeed even with no registry wired"
+        );
+    }
+
+    #[test]
+    fn deliver_secret_without_active_grant_is_denied() {
+        // Baseline: delivery must still be refused when there is no active grant, unaffected
+        // by the new registration step (which only runs after the grant check succeeds).
+        let mut mgr = SubAgentManager::new(4);
+        let registry = Arc::new(SecretMaskRegistry::new());
+        mgr.set_secret_registry(Arc::clone(&registry));
+
+        let handle = SubAgentHandle::for_test("task-1", SubAgentDef::for_test("helper"));
+        mgr.insert_handle_for_test("task-1".to_owned(), handle);
+
+        let result = mgr.deliver_secret(
+            "task-1",
+            "SOME_VAULT_KEY",
+            Secret::new("the-secret-value-123"),
+        );
+        assert!(
+            result.is_err(),
+            "delivery without an active grant must be denied"
+        );
+        assert!(
+            !registry.would_mask("value is the-secret-value-123"),
+            "a denied delivery must never register the secret"
+        );
     }
 }
