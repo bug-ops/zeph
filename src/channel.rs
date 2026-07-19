@@ -202,7 +202,8 @@ pub(crate) async fn create_channel_inner(
             dc.allowed_role_ids.clone(),
             dc.allowed_channel_ids.clone(),
             supervisor.as_ref(),
-        );
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
         tracing::info!("running in Discord mode");
         return Ok((AnyChannel::Discord(channel), None));
     }

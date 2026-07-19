@@ -400,10 +400,14 @@ fn build_config_discord_channel() {
         channel: ChannelChoice::Discord,
         discord_token: Some("tok".into()),
         discord_app_id: Some("123".into()),
+        discord_allowed_user_ids: vec!["111".into()],
+        discord_allowed_role_ids: vec!["222".into()],
         ..WizardState::default()
     };
     let config = build_config(&state);
-    assert!(config.discord.is_some());
+    let discord = config.discord.expect("discord config must be set");
+    assert_eq!(discord.allowed_user_ids, vec!["111"]);
+    assert_eq!(discord.allowed_role_ids, vec!["222"]);
 }
 
 #[test]
@@ -414,10 +418,12 @@ fn build_config_slack_channel() {
         channel: ChannelChoice::Slack,
         slack_bot_token: Some("xoxb".into()),
         slack_signing_secret: Some("secret".into()),
+        slack_allowed_user_ids: vec!["U0123".into()],
         ..WizardState::default()
     };
     let config = build_config(&state);
-    assert!(config.slack.is_some());
+    let slack = config.slack.expect("slack config must be set");
+    assert_eq!(slack.allowed_user_ids, vec!["U0123"]);
 }
 
 #[test]

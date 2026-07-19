@@ -306,12 +306,7 @@ impl TelegramChannel {
     /// Returns an error if the bot cannot be initialized.
     #[allow(clippy::too_many_lines)]
     pub fn start(mut self) -> Result<Self, ChannelError> {
-        if self.allowed_users.is_empty() {
-            tracing::error!("telegram.allowed_users is empty; refusing to start an open bot");
-            return Err(ChannelError::Other(
-                "telegram.allowed_users must not be empty".into(),
-            ));
-        }
+        crate::auth::require_configured_allowlist("telegram", &[&self.allowed_users])?;
 
         // Bot-to-Bot: register capability with Telegram (non-fatal, fire-and-forget).
         // bot_to_bot_active starts as false; the spawned task sets it to true only on success.
@@ -606,11 +601,12 @@ impl TelegramChannel {
 
 /// Returns `true` when `username` appears in `allowed`.
 ///
-/// An empty `allowed` list is treated as "no restriction" and always returns
-/// `true`, but `start()` rejects empty lists before the listener is spawned,
-/// so in practice `allowed` is never empty at call time.
+/// Delegates to the shared [`crate::auth::is_identity_allowed`] primitive.
+/// `start()` rejects empty lists before the listener is spawned via
+/// [`crate::auth::require_configured_allowlist`], so in practice `allowed` is
+/// never empty at call time.
 fn is_user_authorized(username: Option<&str>, allowed: &[String]) -> bool {
-    allowed.is_empty() || username.is_some_and(|u| allowed.iter().any(|a| a == u))
+    crate::auth::is_identity_allowed(username, allowed)
 }
 
 /// Returns `true` when `username` is in `allowed_bots` or the list is empty.

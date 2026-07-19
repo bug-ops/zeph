@@ -57,7 +57,8 @@ impl SlackChannel {
     ///
     /// # Errors
     ///
-    /// Returns an error if the auth.test API call fails.
+    /// Returns an error if `allowed_user_ids` is empty or the auth.test API
+    /// call fails — see [`new_with_supervisor`] for details.
     ///
     /// [`new_with_supervisor`]: SlackChannel::new_with_supervisor
     pub async fn new(
@@ -88,7 +89,14 @@ impl SlackChannel {
     ///
     /// # Errors
     ///
-    /// Returns an error if the auth.test API call fails.
+    /// Returns [`ChannelError::Other`]
+    /// when `allowed_user_ids` is empty. An unconfigured allowlist is refused
+    /// rather than treated as "allow everyone" — mirrors the Telegram channel's
+    /// fail-closed startup check (see [`crate::auth::require_configured_allowlist`]).
+    /// The check runs before the `auth.test` API call, so a misconfigured adapter
+    /// makes no network request.
+    ///
+    /// Also returns an error if the `auth.test` API call fails.
     ///
     /// [`new`]: SlackChannel::new
     pub async fn new_with_supervisor(
@@ -100,6 +108,7 @@ impl SlackChannel {
         allowed_channel_ids: Vec<String>,
         supervisor: Option<&TaskSupervisor>,
     ) -> Result<Self, zeph_core::channel::ChannelError> {
+        crate::auth::require_configured_allowlist("slack", &[&allowed_user_ids])?;
         let api = api::SlackApi::new(bot_token);
         let bot_user_id = match api.auth_test().await {
             Ok(id) => {
@@ -138,10 +147,7 @@ impl SlackChannel {
         {
             return false;
         }
-        if self.allowed_user_ids.is_empty() {
-            return true;
-        }
-        self.allowed_user_ids.contains(&msg.user_id)
+        crate::auth::is_identity_allowed(Some(&msg.user_id), &self.allowed_user_ids)
     }
 
     #[cfg_attr(
@@ -594,5 +600,24 @@ mod tests {
         tokio::time::advance(crate::CONFIRM_TIMEOUT + Duration::from_millis(1)).await;
         let result = timeout_fut.await;
         assert!(result.is_err(), "expected timeout Err, got recv result");
+    }
+
+    /// Regression test for #6472: an unconfigured allowlist must refuse to
+    /// start (fail-closed), matching Telegram's `start()` semantics, instead
+    /// of silently accepting messages from any user. The gate runs before the
+    /// `auth.test` API call, so this never touches the network.
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_with_supervisor_rejects_empty_allowlist() {
+        let result = SlackChannel::new_with_supervisor(
+            "xoxb-test".into(),
+            "signing-secret".into(),
+            "127.0.0.1".into(),
+            0,
+            vec![],
+            vec![],
+            None,
+        )
+        .await;
+        assert!(matches!(result, Err(ChannelError::Other(_))));
     }
 }

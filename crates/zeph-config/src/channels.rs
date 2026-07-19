@@ -559,7 +559,10 @@ pub struct TelegramConfig {
     /// hand-edited `config.toml` still load.
     #[serde(skip_serializing)]
     pub token: Option<String>,
-    /// Telegram usernames allowed to interact with the bot (empty = allow all).
+    /// Telegram usernames allowed to interact with the bot.
+    ///
+    /// Must not be empty: the channel refuses to start (fail-closed) rather
+    /// than run open to any sender when unconfigured.
     #[serde(default)]
     pub allowed_users: Vec<String>,
     /// Skill allowlist for this channel.
@@ -636,10 +639,20 @@ pub struct DiscordConfig {
     pub token: Option<String>,
     /// Public Discord application snowflake — not a secret, safe to serialize.
     pub application_id: Option<String>,
+    /// Discord user snowflakes allowed to interact with the bot.
+    ///
+    /// At least one of `allowed_user_ids` or `allowed_role_ids` must be
+    /// non-empty: the channel refuses to start (fail-closed) rather than run
+    /// open to any sender when both are unconfigured.
     #[serde(default)]
     pub allowed_user_ids: Vec<String>,
+    /// Discord role snowflakes allowed to interact with the bot.
+    ///
+    /// See [`allowed_user_ids`](Self::allowed_user_ids) for the fail-closed
+    /// startup requirement shared with this field.
     #[serde(default)]
     pub allowed_role_ids: Vec<String>,
+    /// Discord channel snowflakes the bot responds in (empty = all channels).
     #[serde(default)]
     pub allowed_channel_ids: Vec<String>,
     #[serde(default)]
@@ -688,8 +701,13 @@ pub struct SlackConfig {
     pub webhook_host: String,
     #[serde(default = "default_slack_port")]
     pub port: u16,
+    /// Slack user IDs allowed to interact with the bot.
+    ///
+    /// Must not be empty: the channel refuses to start (fail-closed) rather
+    /// than run open to any sender when unconfigured.
     #[serde(default)]
     pub allowed_user_ids: Vec<String>,
+    /// Slack channel IDs the bot responds in (empty = all channels).
     #[serde(default)]
     pub allowed_channel_ids: Vec<String>,
     #[serde(default)]

@@ -59,8 +59,18 @@ pub(crate) struct WizardState {
     pub(crate) telegram_stream_interval_ms: u64,
     pub(crate) discord_token: Option<String>,
     pub(crate) discord_app_id: Option<String>,
+    /// Discord user snowflakes allowed to interact with the bot. Required (together with
+    /// `discord_allowed_role_ids`) since `DiscordChannel::new` now refuses to start when both
+    /// are empty (#6472) — the wizard must prompt so `--init` never produces an unstartable
+    /// config.
+    pub(crate) discord_allowed_user_ids: Vec<String>,
+    /// Discord role snowflakes allowed to interact with the bot. See `discord_allowed_user_ids`.
+    pub(crate) discord_allowed_role_ids: Vec<String>,
     pub(crate) slack_bot_token: Option<String>,
     pub(crate) slack_signing_secret: Option<String>,
+    /// Slack user IDs allowed to interact with the bot. Required since
+    /// `SlackChannel::new_with_supervisor` now refuses to start when empty (#6472).
+    pub(crate) slack_allowed_user_ids: Vec<String>,
     pub(crate) vault_backend: String,
     pub(crate) auto_update_check: bool,
     pub(crate) scheduler_enabled: bool,
@@ -388,8 +398,11 @@ impl Default for WizardState {
             telegram_stream_interval_ms: 3000,
             discord_token: None,
             discord_app_id: None,
+            discord_allowed_user_ids: Vec::new(),
+            discord_allowed_role_ids: Vec::new(),
             slack_bot_token: None,
             slack_signing_secret: None,
+            slack_allowed_user_ids: Vec::new(),
             vault_backend: String::new(),
             auto_update_check: false,
             scheduler_enabled: false,
@@ -734,6 +747,26 @@ fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
                     .with_prompt("Discord application ID")
                     .interact_text()?,
             );
+            let user_ids: String = Input::new()
+                .with_prompt(
+                    "Allowed Discord user IDs (comma-separated; required unless a role is set)",
+                )
+                .default(String::new())
+                .interact_text()?;
+            state.discord_allowed_user_ids = user_ids
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let role_ids: String = Input::new()
+                .with_prompt("Allowed Discord role IDs (comma-separated, optional)")
+                .default(String::new())
+                .interact_text()?;
+            state.discord_allowed_role_ids = role_ids
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect();
         }
         3 => {
             state.channel = ChannelChoice::Slack;
@@ -746,6 +779,15 @@ fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
                         .interact()?,
                 );
             }
+            let user_ids: String = Input::new()
+                .with_prompt("Allowed Slack user IDs (comma-separated)")
+                .default(String::new())
+                .interact_text()?;
+            state.slack_allowed_user_ids = user_ids
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect();
         }
         _ => unreachable!(),
     }
@@ -1107,8 +1149,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             config.discord = Some(DiscordConfig {
                 token: None,
                 application_id: state.discord_app_id.clone(),
-                allowed_user_ids: vec![],
-                allowed_role_ids: vec![],
+                allowed_user_ids: state.discord_allowed_user_ids.clone(),
+                allowed_role_ids: state.discord_allowed_role_ids.clone(),
                 allowed_channel_ids: vec![],
                 skills: ChannelSkillsConfig::default(),
                 allowed_tools: None,
@@ -1120,7 +1162,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 signing_secret: None,
                 webhook_host: "127.0.0.1".into(),
                 port: 3000,
-                allowed_user_ids: vec![],
+                allowed_user_ids: state.slack_allowed_user_ids.clone(),
                 allowed_channel_ids: vec![],
                 skills: ChannelSkillsConfig::default(),
                 allowed_tools: None,

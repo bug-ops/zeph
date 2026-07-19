@@ -517,17 +517,17 @@ repo_map_ttl_secs = 300
 # [discord]
 # token = ""                    # or set ZEPH_DISCORD_TOKEN
 # application_id = ""           # for slash command registration
-# allowed_user_ids = []         # Discord user IDs (empty = allow all)
-# allowed_role_ids = []         # Discord role IDs
-# allowed_channel_ids = []      # restrict to specific channels
+# allowed_user_ids = ["123456789012345678"]  # Discord user IDs; must set this or allowed_role_ids
+# allowed_role_ids = []         # Discord role IDs; must set this or allowed_user_ids
+# allowed_channel_ids = []      # restrict to specific channels (empty = all channels)
 
 # [slack]
 # bot_token = ""                # or set ZEPH_SLACK_BOT_TOKEN
 # signing_secret = ""           # or set ZEPH_SLACK_SIGNING_SECRET
 # port = 3000                   # Events API webhook port
 # webhook_host = "127.0.0.1"   # bind address for Events API webhook
-# allowed_user_ids = []         # Slack user IDs (empty = allow all)
-# allowed_channel_ids = []      # restrict to specific channels
+# allowed_user_ids = ["U01234567"]  # Slack user IDs (required, must not be empty)
+# allowed_channel_ids = []      # restrict to specific channels (empty = all channels)
 
 [mcp]
 # Allowlist of permitted commands for /mcp add (empty = allow all)

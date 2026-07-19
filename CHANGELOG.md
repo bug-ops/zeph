@@ -69,8 +69,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     post-loop status publish is skipped on this path since the LLM-call error handler already
     published the terminal `Failed` status.
 
-### Security
-
 - **zeph-mcp**: fixed a fail-open in `apply_allowlist` where an `Untrusted` MCP server
   (the default trust level) with no `tool_allowlist` configured exposed **all** of its tools
   with only a `warn!` log, instead of failing closed like `Sandboxed` already does (#6474).
@@ -90,6 +88,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `#[non_exhaustive]` meant any future trust variant would silently expose all tools;
   `Trusted` is now an explicit match arm and the catch-all fails closed instead.
   `Sandboxed`'s existing fail-closed behavior (with or without an allowlist) is unchanged.
+
+- `zeph-channels`: Discord and Slack channel adapters no longer fail open when their
+  user/role allowlist is left unconfigured (#6472). `DiscordChannel::new` and
+  `SlackChannel::new`/`new_with_supervisor` now refuse to start — mirroring
+  `TelegramChannel::start()`'s existing fail-closed check — when `allowed_user_ids`
+  (and, for Discord, `allowed_role_ids`) are all empty, instead of silently accepting
+  messages from any sender. This is a breaking-but-safe behavior change: existing
+  Discord/Slack configs with an empty allowlist will now fail to start until an
+  allowlist is configured; no new config field was added, since the safe default is
+  simply "require one to be set," matching Telegram's established policy.
+  - New `zeph_channels::auth` module centralizes the fail-closed startup gate
+    (`require_configured_allowlist`) and the per-message allow decision
+    (`is_identity_allowed`, `all_lists_empty`) so Telegram, Discord, and Slack share
+    one authorization primitive instead of three divergent implementations (#6498) —
+    a future channel adapter reuses the same choke point rather than reinventing it.
+  - Slack's real recv-time authorization filter (`slack/events.rs`'s webhook handler,
+    which gates which events are forwarded to the agent — the actual enforcement
+    point, since `SlackChannel::recv`/`try_recv` do not re-check the allowlist) was a
+    separate hand-rolled fail-open check; it now routes through
+    `zeph_channels::auth::is_identity_allowed` like every other allowlist check.
+  - `zeph --init`'s Discord and Slack wizard steps previously never prompted for an
+    allowlist (unlike Telegram), which combined with the fix above meant a freshly
+    initialized Discord/Slack config would refuse to start. The wizard now prompts
+    for allowed user/role IDs (Discord) and allowed user IDs (Slack), mirroring
+    Telegram's existing prompt.
 
 ## [0.22.2] - 2026-07-18
 ### Added

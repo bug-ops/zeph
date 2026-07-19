@@ -57,18 +57,30 @@ impl DiscordChannel {
     /// in the workspace-wide task registry with automatic restart on panic and lifecycle
     /// observability. Without a supervisor both tasks fall back to plain `tokio::spawn`
     /// with a warning — acceptable in tests but not recommended for production.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChannelError::Other`] when `allowed_user_ids` and
+    /// `allowed_role_ids` are both empty. An unconfigured allowlist is refused
+    /// rather than treated as "allow everyone" — mirrors the Telegram channel's
+    /// fail-closed startup check (see [`crate::auth::require_configured_allowlist`]).
+    /// The check runs before any gateway connection or slash-command registration,
+    /// so a misconfigured adapter has no observable side effect.
     pub fn new(
         token: String,
         allowed_user_ids: Vec<String>,
         allowed_role_ids: Vec<String>,
         allowed_channel_ids: Vec<String>,
         supervisor: Option<&TaskSupervisor>,
-    ) -> Self {
+    ) -> Result<Self, ChannelError> {
+        crate::auth::require_configured_allowlist(
+            "discord",
+            &[&allowed_user_ids, &allowed_role_ids],
+        )?;
         let rest = rest::RestClient::new(token.clone());
         let (gateway_handle, rx) = gateway::spawn_gateway(token, supervisor);
         Self::register_slash_commands(rest.clone(), supervisor);
-        Self {
+        Ok(Self {
             rx,
             rest,
             _gateway_handle: gateway_handle,
@@ -79,7 +91,7 @@ impl DiscordChannel {
             buffer: StreamingBuffer::new(EDIT_THROTTLE),
             message_id: None,
             supervisor: supervisor.cloned(),
-        }
+        })
     }
 
     /// Register Discord slash commands in a supervised fire-and-forget task.
@@ -110,15 +122,14 @@ impl DiscordChannel {
         {
             return false;
         }
-        if self.allowed_user_ids.is_empty() && self.allowed_role_ids.is_empty() {
+        if crate::auth::all_lists_empty(&[&self.allowed_user_ids, &self.allowed_role_ids]) {
             return true;
         }
-        if self.allowed_user_ids.contains(&msg.author_id) {
-            return true;
-        }
-        msg.author_roles
-            .iter()
-            .any(|r| self.allowed_role_ids.contains(r))
+        self.allowed_user_ids.contains(&msg.author_id)
+            || msg
+                .author_roles
+                .iter()
+                .any(|r| self.allowed_role_ids.contains(r))
     }
 
     #[cfg_attr(
@@ -646,5 +657,29 @@ mod tests {
             }
         }
         assert!(confirmed);
+    }
+
+    /// Regression test for #6472: an unconfigured allowlist must refuse to
+    /// start (fail-closed), matching Telegram's `start()` semantics, instead
+    /// of silently accepting messages from any user.
+    #[test]
+    fn new_rejects_empty_allowlists() {
+        let result = DiscordChannel::new("test-token".into(), vec![], vec![], vec![], None);
+        assert!(matches!(result, Err(ChannelError::Other(_))));
+    }
+
+    /// A non-empty role allowlist alone is sufficient to pass the startup gate,
+    /// even when `allowed_user_ids` is empty — mirrors `is_authorized`'s
+    /// role-only path.
+    #[tokio::test]
+    async fn new_allows_role_only_allowlist() {
+        let result = DiscordChannel::new(
+            "test-token".into(),
+            vec![],
+            vec!["admin-role".into()],
+            vec![],
+            None,
+        );
+        assert!(result.is_ok());
     }
 }

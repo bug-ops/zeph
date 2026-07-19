@@ -158,9 +158,7 @@ async fn handle_event(
                     {
                         return Ok(String::new());
                     }
-                    if !state.allowed_user_ids.is_empty()
-                        && !state.allowed_user_ids.iter().any(|u| u == user)
-                    {
+                    if !crate::auth::is_identity_allowed(Some(user), &state.allowed_user_ids) {
                         return Ok(String::new());
                     }
 

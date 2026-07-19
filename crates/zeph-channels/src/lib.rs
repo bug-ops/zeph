@@ -30,8 +30,16 @@
 //! durations that all remote channel adapters must honour for interactive
 //! dialogs.  They are intentionally centralised here so that the behaviour is
 //! consistent across Telegram, Discord, and Slack.
+//!
+//! # Shared authorization
+//!
+//! The [`auth`] module centralizes the fail-closed allowlist policy: every
+//! remote adapter refuses to start when unconfigured (see
+//! [`auth::require_configured_allowlist`]) rather than silently accepting
+//! messages from any sender.
 
 mod any;
+pub mod auth;
 pub mod cli;
 mod common;
 pub mod confirm;
