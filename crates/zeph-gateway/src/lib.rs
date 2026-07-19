@@ -14,8 +14,9 @@
 //!
 //! - Bearer token comparison is performed in constant time via BLAKE3 + `subtle::ConstantTimeEq`
 //!   to prevent timing-oracle attacks (see [`GatewayServer::with_auth`]).
-//! - When no token is configured the server logs a warning. Callers are expected to enforce
-//!   access control at the network layer (firewall, upstream reverse proxy) in that case.
+//! - A bearer token is mandatory: [`GatewayServer::serve`] refuses to start
+//!   ([`GatewayError::MissingAuthToken`]) when no non-empty token is configured, since
+//!   `/webhook` forwards its body directly into the agent's turn loop (#6487).
 //! - Payload fields are sanitised with [`zeph_common::sanitize`] before forwarding.
 //!
 //! # Rate limiting

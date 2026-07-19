@@ -34,7 +34,7 @@ pub(crate) struct AppState {
 ///
 /// | Setting | Default |
 /// |---|---|
-/// | Bearer auth | disabled (open) |
+/// | Bearer auth | none configured — [`GatewayServer::serve`] refuses to start until [`GatewayServer::with_auth`] sets one (#6487) |
 /// | Rate limit | 120 requests / 60 s per IP |
 /// | Max body size | 1 MiB (1 048 576 bytes) |
 ///
@@ -130,8 +130,9 @@ impl GatewayServer {
     /// in constant time (BLAKE3 + `subtle::ConstantTimeEq`) to prevent
     /// timing-oracle attacks.
     ///
-    /// When `token` is `None`, bearer authentication is disabled and a warning
-    /// is logged at startup.
+    /// When `token` is `None` (or empty), [`GatewayServer::serve`] refuses to start
+    /// ([`GatewayError::MissingAuthToken`]) rather than serve `/webhook` unauthenticated
+    /// (#6487).
     ///
     /// # Example
     ///
@@ -302,6 +303,11 @@ impl GatewayServer {
     ///   permission denied, etc.).
     /// - [`GatewayError::Server`] — the server encountered a fatal I/O error
     ///   after binding.
+    /// - [`GatewayError::MissingAuthToken`] — no bearer token was configured via
+    ///   [`GatewayServer::with_auth`] (#6487). The gateway refuses to start rather than serve
+    ///   `/webhook` unauthenticated; this is a hard startup failure, not a warning, because an
+    ///   unauthenticated `/webhook` lets any caller that reaches the listener inject content
+    ///   directly into the agent's turn loop.
     #[tracing::instrument(name = "gateway.serve", skip_all)]
     pub async fn serve(self) -> Result<(), GatewayError> {
         let state = AppState {
@@ -311,12 +317,18 @@ impl GatewayServer {
         };
 
         // Non-emptiness, not `is_none()` (#6268): a vault-resolved token that resolves to an
-        // empty string must trigger this warning the same as no token at all — `Some("")`
-        // used to silently suppress it while `AuthConfig` (correctly) rejects every request.
-        if self.auth_token.as_deref().is_none_or(str::is_empty) {
-            tracing::warn!(
-                "gateway running without bearer auth — ensure firewall or upstream proxy enforces access control"
-            );
+        // empty (or whitespace-only) string must be treated the same as no token at all.
+        // Trimming matches `AuthConfig::new`'s own normalization (`http_middleware.rs`) — without
+        // it, a whitespace-only token would pass this gate and `doctor`'s check, yet
+        // `AuthConfig` would still normalize it to "no token configured" internally and reject
+        // every request with `require_auth = true`, producing a confusing "started fine but
+        // 401s everything" state instead of a clear refusal to start.
+        if self
+            .auth_token
+            .as_deref()
+            .is_none_or(|t| t.trim().is_empty())
+        {
+            return Err(GatewayError::MissingAuthToken);
         }
 
         let router = build_router(
@@ -447,5 +459,75 @@ mod tests {
         let (_stx, srx) = watch::channel(false);
         let server = GatewayServer::new("not_an_ip", 9999, tx, srx);
         assert_eq!(server.addr.port(), 9999);
+    }
+
+    /// #6487: `serve()` must refuse to start when no auth token was configured at all — this
+    /// is the exact misconfiguration that previously only logged a warning while accepting every
+    /// unauthenticated `/webhook` request.
+    #[tokio::test]
+    async fn serve_refuses_to_start_without_auth_token() {
+        let (tx, _rx) = mpsc::channel(1);
+        let (_stx, srx) = watch::channel(false);
+        let server = GatewayServer::new("127.0.0.1", 0, tx, srx);
+        let err = server
+            .serve()
+            .await
+            .expect_err("must refuse to start without a token");
+        assert!(matches!(err, GatewayError::MissingAuthToken));
+    }
+
+    /// #6268/#6487: a token that resolves to an empty string (e.g. a blank vault secret) must
+    /// be treated exactly like no token at all, not silently accepted as a valid `""` secret.
+    #[tokio::test]
+    async fn serve_refuses_to_start_with_empty_auth_token() {
+        let (tx, _rx) = mpsc::channel(1);
+        let (_stx, srx) = watch::channel(false);
+        let server = GatewayServer::new("127.0.0.1", 0, tx, srx).with_auth(Some(String::new()));
+        let err = server
+            .serve()
+            .await
+            .expect_err("empty token must be treated as missing");
+        assert!(matches!(err, GatewayError::MissingAuthToken));
+    }
+
+    /// #6487 (critic M2): a whitespace-only token must be treated exactly like no token at
+    /// all. Without trimming, this would pass the startup gate and `doctor`'s check, yet
+    /// `AuthConfig::new` (`zeph-common`) independently normalizes it to "not configured" and
+    /// sets `require_auth = true` — every request would then 401, a confusing "started but
+    /// rejects everything" state instead of a clear refusal to start.
+    #[tokio::test]
+    async fn serve_refuses_to_start_with_whitespace_only_auth_token() {
+        let (tx, _rx) = mpsc::channel(1);
+        let (_stx, srx) = watch::channel(false);
+        let server = GatewayServer::new("127.0.0.1", 0, tx, srx).with_auth(Some("   ".into()));
+        let err = server
+            .serve()
+            .await
+            .expect_err("whitespace-only token must be treated as missing");
+        assert!(matches!(err, GatewayError::MissingAuthToken));
+    }
+
+    /// #6487: a legitimate deployment that configures a real `auth_token` must be unaffected by
+    /// the fail-closed startup check — `serve()` must bind and run normally until shutdown.
+    #[tokio::test]
+    async fn serve_starts_normally_with_auth_token_configured() {
+        let (tx, _rx) = mpsc::channel(1);
+        let (stx, srx) = watch::channel(false);
+        let server = GatewayServer::new("127.0.0.1", 0, tx, srx).with_auth(Some("secret".into()));
+        let handle = tokio::spawn(server.serve());
+
+        // Give the listener a moment to bind before signalling shutdown.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        stx.send(true)
+            .expect("shutdown watch channel must accept the signal");
+
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("serve must return promptly once shutdown is signalled")
+            .expect("serve task must not panic");
+        assert!(
+            result.is_ok(),
+            "serve must exit cleanly once a token is configured: {result:?}"
+        );
     }
 }
