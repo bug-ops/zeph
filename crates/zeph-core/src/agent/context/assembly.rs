@@ -1663,13 +1663,29 @@ impl<C: Channel> Agent<C> {
         std::collections::HashMap<String, crate::skill_invoker::SkillTrustSnapshot>,
         Vec<Skill>,
     ) {
-        let trust_map = self.build_skill_trust_map().await;
-
-        self.services
-            .skill
-            .trust_snapshot
-            .write()
-            .clone_from(&trust_map);
+        let trust_map = match self.build_skill_trust_map().await {
+            crate::agent::trust_commands::SkillTrustMapLoad::Fresh(map) => {
+                self.services.skill.trust_snapshot.write().clone_from(&map);
+                map
+            }
+            crate::agent::trust_commands::SkillTrustMapLoad::LoadFailed => {
+                // Do NOT overwrite the persisted snapshot — leave it exactly as the previous
+                // turn left it, and reuse it as this turn's local trust map too, so every
+                // downstream use (catalog filter, effective_trust fold, PASTE activation)
+                // sees the stale-but-real data instead of failing open to Trusted.
+                //
+                // Residual: on the very first turn ever, `trust_snapshot` still holds its
+                // `HashMap::new()` construction-time value, so a load failure on that one
+                // narrow bootstrap window still yields an empty map (the original
+                // fail-open-to-Trusted behavior). There is no "previous" state before the
+                // first turn to fall back to — accepted per the issue's remediation scope.
+                tracing::warn!(
+                    "apply_skill_trust_and_gating: trust snapshot load failed, reusing \
+                     previous turn's snapshot (stale this turn)"
+                );
+                self.services.skill.trust_snapshot.read().clone()
+            }
+        };
 
         let remaining_skills: Vec<Skill> = all_skills
             .iter()
@@ -3864,6 +3880,84 @@ mod tests {
         assert!(
             !prompt.contains("<current_time>"),
             "time reminder must not appear when time_reminder_enabled = false"
+        );
+    }
+
+    // ── #6482: skill trust snapshot must not fail open on a transient load failure ──
+
+    #[tokio::test]
+    async fn skill_trust_snapshot_reused_when_trust_load_fails_not_reset_to_trusted() {
+        // A dropped/unreachable skill_trust table must not be treated as "no trust data" —
+        // that would make every skill resolve to SkillTrustLevel::MISSING_ENTRY_FALLBACK
+        // (Trusted) for the turn, unblocking QUARANTINE_DENIED tools for a skill an
+        // operator explicitly quarantined. The fix reuses the previous turn's snapshot.
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec![
+            "ok".to_owned(),
+            "ok2".to_owned(),
+        ]));
+        let memory = zeph_memory::semantic::SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            None,
+            provider.clone(),
+            "test-model",
+        )
+        .await
+        .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "evil-skill",
+                zeph_common::SkillTrustLevel::Quarantined,
+                zeph_memory::store::SourceKind::Local,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+        let memory = Arc::new(memory);
+
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(memory.clone(), cid, 50, 5, 50);
+
+        agent.rebuild_system_prompt("query").await;
+        assert_eq!(
+            agent
+                .services
+                .skill
+                .trust_snapshot
+                .read()
+                .get("evil-skill")
+                .map(|s| s.trust_level),
+            Some(zeph_common::SkillTrustLevel::Quarantined),
+            "first turn must load the real trust snapshot from the store"
+        );
+
+        sqlx::query("DROP TABLE skill_trust")
+            .execute(memory.sqlite().pool())
+            .await
+            .unwrap();
+
+        agent.rebuild_system_prompt("query").await;
+        assert_eq!(
+            agent
+                .services
+                .skill
+                .trust_snapshot
+                .read()
+                .get("evil-skill")
+                .map(|s| s.trust_level),
+            Some(zeph_common::SkillTrustLevel::Quarantined),
+            "a load failure must reuse the previous snapshot, not fail open to an empty map"
         );
     }
 }

@@ -246,7 +246,19 @@ impl<C: Channel> Agent<C> {
         // straight from metadata (already loaded in `all_meta` above) needs no further I/O.
         // Blocked skills are excluded, mirroring `apply_skill_trust_and_gating`'s per-turn
         // catalog filter.
-        let trust_map = self.build_skill_trust_map().await;
+        let trust_map = match self.build_skill_trust_map().await {
+            crate::agent::trust_commands::SkillTrustMapLoad::Fresh(map) => map,
+            crate::agent::trust_commands::SkillTrustMapLoad::LoadFailed => {
+                // Same fail-closed policy as `apply_skill_trust_and_gating`: a transient
+                // read failure must not be treated as "no trust data" (which would drop
+                // the Blocked-skill catalog filter below) — reuse the last-known snapshot.
+                tracing::warn!(
+                    "reload_skills: trust snapshot load failed, reusing previous snapshot \
+                     for catalog filtering"
+                );
+                self.services.skill.trust_snapshot.read().clone()
+            }
+        };
         let catalog_skills: Vec<Skill> = all_meta
             .iter()
             .filter(|m| {

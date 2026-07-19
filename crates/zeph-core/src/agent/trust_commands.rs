@@ -173,36 +173,58 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    pub(super) async fn build_skill_trust_map(&mut self) -> HashMap<String, SkillTrustSnapshot> {
+    /// Loads the current skill trust map from the store.
+    ///
+    /// Invariant: a load failure (`Err` from `load_all_skill_trust`) must never be treated
+    /// as "no trust data" — that would make every skill resolve to
+    /// `SkillTrustLevel::MISSING_ENTRY_FALLBACK` (`Trusted`) for the turn, unblocking
+    /// `QUARANTINE_DENIED` tools for skills an operator explicitly demoted. Callers MUST
+    /// reuse the previous turn's snapshot on `LoadFailed` instead of overwriting it with an
+    /// empty map. Memory being unconfigured (`None`) is a permanent, expected condition with
+    /// no prior trust state to protect, so it legitimately yields an empty `Fresh` map.
+    pub(super) async fn build_skill_trust_map(&mut self) -> SkillTrustMapLoad {
         // Clone Arc before .await so no &self fields are held across suspension points.
         let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
-            return HashMap::new();
+            return SkillTrustMapLoad::Fresh(HashMap::new());
         };
         let rows = match memory.sqlite().load_all_skill_trust().await {
             Ok(rows) => rows,
             Err(error) => {
                 tracing::warn!(
                     %error,
-                    "build_skill_trust_map: load_all_skill_trust failed, skills will render \
-                     with no trust-map entry this turn"
+                    "build_skill_trust_map: load_all_skill_trust failed, reusing last-known \
+                     trust snapshot instead of failing open to Trusted"
                 );
-                return HashMap::new();
+                return SkillTrustMapLoad::LoadFailed;
             }
         };
-        rows.into_iter()
-            .map(|r| {
-                (
-                    r.skill_name,
-                    SkillTrustSnapshot {
-                        trust_level: r.trust_level,
-                        requires_trust_check: r.requires_trust_check,
-                        blake3_hash: r.blake3_hash,
-                    },
-                )
-            })
-            .collect()
+        SkillTrustMapLoad::Fresh(
+            rows.into_iter()
+                .map(|r| {
+                    (
+                        r.skill_name,
+                        SkillTrustSnapshot {
+                            trust_level: r.trust_level,
+                            requires_trust_check: r.requires_trust_check,
+                            blake3_hash: r.blake3_hash,
+                        },
+                    )
+                })
+                .collect(),
+        )
     }
+}
+
+/// Result of [`Agent::build_skill_trust_map`], distinguishing a genuine store read failure
+/// from a legitimate (possibly empty) result so callers never conflate the two.
+pub(super) enum SkillTrustMapLoad {
+    /// Loaded successfully — may legitimately be empty (memory unconfigured, or the table
+    /// has no rows yet).
+    Fresh(HashMap<String, SkillTrustSnapshot>),
+    /// `load_all_skill_trust` returned an error. Callers must NOT treat this as "no
+    /// entries" — reuse the last-known-good snapshot instead of failing open to Trusted.
+    LoadFailed,
 }
 
 #[cfg(test)]
@@ -544,5 +566,48 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("requires_trust_check=true"));
+    }
+
+    #[tokio::test]
+    async fn build_skill_trust_map_returns_load_failed_on_read_error_not_empty_fresh() {
+        // Regression for #6482: a genuine store read failure must be distinguishable from
+        // "no trust data" (Fresh(empty)) — collapsing both into an empty map is what let
+        // every skill fail open to SkillTrustLevel::MISSING_ENTRY_FALLBACK (Trusted).
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "evil-skill",
+                SkillTrustLevel::Quarantined,
+                SourceKind::Local,
+                None,
+                None,
+                "hash1",
+            )
+            .await
+            .unwrap();
+        let mut agent = agent_with_memory(memory.clone());
+
+        match agent.build_skill_trust_map().await {
+            SkillTrustMapLoad::Fresh(map) => {
+                assert_eq!(
+                    map.get("evil-skill").map(|s| s.trust_level),
+                    Some(SkillTrustLevel::Quarantined)
+                );
+            }
+            SkillTrustMapLoad::LoadFailed => panic!("expected a successful Fresh load"),
+        }
+
+        sqlx::query("DROP TABLE skill_trust")
+            .execute(memory.sqlite().pool())
+            .await
+            .unwrap();
+
+        match agent.build_skill_trust_map().await {
+            SkillTrustMapLoad::Fresh(_) => {
+                panic!("a dropped table must surface as LoadFailed, not an empty Fresh map")
+            }
+            SkillTrustMapLoad::LoadFailed => {}
+        }
     }
 }
