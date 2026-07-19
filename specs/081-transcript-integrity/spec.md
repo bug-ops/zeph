@@ -280,14 +280,20 @@ decisions for future readers of the permanent spec.
 - **Residuals, accepted and documented**: (1) session prefix-rollback (bounded, at most one
   run's unanchored tail); (2) a grandfathered `execution_id` is a *permanent* forge-able slot,
   not a frozen snapshot — each is an explicit, bounded operator opt-out; (3) sessions aged out
-  past `max_session_anchors` fall back to chain-only (§11) protection; (4) the reconcile sweep's
-  orphan-reap step treats file/session-directory absence as sufficient grounds to remove an
-  anchor — an attacker who deletes the real file, waits out a sweep window (≤ 1h, or a restart),
-  and recreates a forged legacy-looking replacement under the same identity gets it trusted
-  (overlaps residual (via FR-006's no-backfill posture) with fabricating a brand-new legacy
-  session; requires a destructive precursor the threat model already grants file-write access
-  to). No reap grace-window or tombstone is implemented; a candidate hardening for a future PR
-  if this residual proves unacceptable in practice.
+  past `max_session_anchors` fall back to chain-only (§11) protection; (4) **narrowed by issue
+  #6462**: the reconcile sweep's orphan-reap step no longer treats a single sweep's file/
+  session-directory absence as sufficient grounds to remove an anchor. `Anchor` carries a new
+  `orphaned_since: Option<u64>` (wall-clock ms), stamped on the first sweep that observes the
+  file absent and cleared (self-heal) if the file reappears; only once the file has stayed
+  absent for a 24h grace window does a later sweep hard-delete the anchor. An attacker who
+  deletes the real file, recreates a forged legacy-looking replacement under the same identity
+  *within* the grace window still gets caught (the real anchor — count/head/written_at — is
+  untouched during the window, so full checkpoint verification still applies); only sustaining
+  the deletion for the full grace window reopens the residual (still overlapping, via FR-006's
+  no-backfill posture, the accepted "fabricate a brand-new legacy session" residual — requires
+  the same destructive file-write precursor the threat model already grants). The grace raises
+  the attacker's cost from "wait out one sweep (≤ 1h, or a restart)" to "sustain deletion for
+  24h+", not a fully closed gap.
 
 ### 11.2 HWM key-rotation window fix (issue #6460)
 

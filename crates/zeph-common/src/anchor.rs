@@ -81,6 +81,17 @@ pub struct Anchor {
     /// sweep to select the true oldest anchor for eviction (issue #6449 rev2 critic S3) — eviction
     /// ordering must never depend on an attacker-controlled signal.
     pub written_at: u64,
+    /// Wall-clock milliseconds at which the reconcile-and-cap sweep first observed this anchor's
+    /// backing file/session-directory absent. `None` while the file exists. Set on the first
+    /// sweep that finds the file gone, cleared if the file reappears before the grace window
+    /// elapses (self-heal), and used to gate orphan reap behind a grace window so a
+    /// delete→wait-out-a-sweep→recreate-forged-legacy sequence cannot make the sweep delete the
+    /// anchor on the attacker's behalf (issue #6462). `#[serde(default)]` means pre-existing
+    /// persisted anchors deserialize with `None`, no vault migration needed;
+    /// `skip_serializing_if` keeps steady-state (never-orphaned) anchors byte-identical to their
+    /// pre-#6462 serialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orphaned_since: Option<u64>,
 }
 
 /// Current [`Anchor::version`].
@@ -97,6 +108,7 @@ impl Anchor {
             count,
             head_hex: head.to_hex(),
             written_at: now_unix_millis(),
+            orphaned_since: None,
         }
     }
 
@@ -112,7 +124,13 @@ impl Anchor {
     }
 }
 
-fn now_unix_millis() -> u64 {
+/// Current wall-clock time in Unix milliseconds, saturating to `u64::MAX` rather than panicking
+/// on an unrepresentable (pre-epoch or post-overflow) system clock.
+///
+/// Shared by [`Anchor::new`] (stamps [`Anchor::written_at`]) and the reconcile-and-cap sweep
+/// (stamps/checks [`Anchor::orphaned_since`], issue #6462) so both use the same time source.
+#[must_use]
+pub fn now_unix_millis() -> u64 {
     u64::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -331,6 +349,38 @@ mod tests {
         assert_eq!(round_tripped.count, 7);
         assert_eq!(round_tripped.head_hex, anchor.head_hex);
         assert_eq!(round_tripped.written_at, anchor.written_at);
+        assert_eq!(round_tripped.orphaned_since, None);
+    }
+
+    /// A freshly constructed anchor omits `orphaned_since` from its JSON entirely
+    /// (`skip_serializing_if`), so a pre-#6462 vault entry stays byte-identical until first
+    /// observed orphaned.
+    #[test]
+    fn anchor_new_omits_orphaned_since_from_serialized_json() {
+        let anchor = Anchor::new(0, 1, sample_head());
+        let json = serde_json::to_string(&anchor).unwrap();
+        assert!(!json.contains("orphaned_since"));
+    }
+
+    /// A pre-#6462 anchor (no `orphaned_since` key at all) deserializes with `None` — no vault
+    /// migration required.
+    #[test]
+    fn anchor_deserializes_legacy_json_without_orphaned_since_field() {
+        let legacy_json =
+            r#"{"version":1,"epoch":0,"count":3,"head_hex":"ab12","written_at":1000}"#;
+        let anchor: Anchor = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(anchor.orphaned_since, None);
+    }
+
+    /// A stamped anchor (`orphaned_since = Some(_)`) round-trips its value.
+    #[test]
+    fn anchor_round_trips_orphaned_since_when_set() {
+        let mut anchor = Anchor::new(0, 7, sample_head());
+        anchor.orphaned_since = Some(123_456);
+        let json = serde_json::to_string(&anchor).unwrap();
+        assert!(json.contains("orphaned_since"));
+        let round_tripped: Anchor = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped.orphaned_since, Some(123_456));
     }
 
     #[test]

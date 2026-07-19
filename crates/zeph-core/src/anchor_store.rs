@@ -19,21 +19,29 @@
 //! to `O(max_session_anchors + max_transcript_files)` by:
 //!
 //! 1. **Reconcile**: dropping any anchor whose on-disk file/session directory no longer exists
-//!    (an orphan). Removing an orphan anchor is *never a false TAMPER risk* — an anchor is only
-//!    ever consulted when opening a file that exists — but it is **not** an unconditionally
-//!    benign no-op from a downgrade-resistance standpoint: under this feature's own threat model
-//!    (file-write access), an attacker can delete the real file/session dir for a *specific,
-//!    even recently-anchored* identity, wait out a sweep so the now-orphaned anchor is reaped as
-//!    routine maintenance, then recreate a forged legacy-looking replacement under the same
-//!    identity — which the read path then trusts (an absent anchor is never a tamper signature,
-//!    per the module docs on `zeph_common::anchor`). This is an accepted, bounded residual, not a
-//!    silent gap: it requires a destructive precursor (deleting the real file — itself something
-//!    the threat model already grants) plus waiting out a sweep window (≤ 1h, or a restart), and
-//!    it overlaps the already-accepted "fabricate a brand-new legacy session" no-backfill
-//!    residual (spec-081 FR-006) — the only difference here is reusing a *deleted* identity
-//!    rather than a fresh one. No mitigation (e.g. a reap grace-window, or a tombstone) is
-//!    implemented in this PR; flagged for a future hardening pass if the residual proves
-//!    unacceptable in practice.
+//!    (an orphan) — but only after a **grace window** (issue #6462; see `ORPHAN_REAP_GRACE_MS`)
+//!    of *sustained* absence, not the instant a single sweep observes the file gone. Removing an
+//!    orphan anchor is *never a false TAMPER risk* — an anchor is only ever consulted when opening
+//!    a file that exists — but reaping it too eagerly is not an unconditionally benign no-op from
+//!    a downgrade-resistance standpoint: under this feature's own threat model (file-write
+//!    access), an attacker can delete the real file/session dir for a *specific, even
+//!    recently-anchored* identity, then recreate a forged legacy-looking replacement under the
+//!    same identity — which the read path trusts once the anchor is gone (an absent anchor is
+//!    never a tamper signature, per the module docs on `zeph_common::anchor`). The grace window
+//!    closes this: the first sweep that observes the file absent only *stamps*
+//!    [`zeph_common::anchor::Anchor::orphaned_since`] with the current wall-clock time (the real
+//!    anchor — `count`/`head`/`written_at` — is otherwise untouched, so a forged-but-chained
+//!    recreation within the window is still caught by full checkpoint verification, not just the
+//!    legacy-strip case); only once the file has stayed absent for at least
+//!    `ORPHAN_REAP_GRACE_MS` does a later sweep hard-delete it. If the file reappears before
+//!    the grace elapses, `orphaned_since` is cleared (self-heal) and the clock restarts on any
+//!    future absence. The grace is keyed on wall-clock time, not a sweep-cycle counter, so it
+//!    survives process restarts and stays correct regardless of `SWEEP_INTERVAL`. This remains a
+//!    bounded residual, not a closed gap: an attacker who keeps the real file deleted for the
+//!    full grace window still eventually gets the anchor reaped (overlapping the already-accepted
+//!    "fabricate a brand-new legacy session" no-backfill residual, spec-081 FR-006) — the grace
+//!    only raises the cost from "wait out one sweep (≤ 1h, or a restart)" to "sustain the
+//!    deletion for the full grace window".
 //! 2. **Cap**: evicting the oldest session anchors (by the `written_at` field embedded *inside*
 //!    each AEAD-protected [`Anchor`] value — never filesystem mtime, which a file-write-only
 //!    attacker can freely rewrite; see the module docs on `zeph_common::anchor`) once the
@@ -236,35 +244,178 @@ pub fn install_anchor_store(store: Option<Arc<dyn AnchorStore>>) {
 /// Outcome of one [`run_anchor_sweep`] pass, for logging and tests.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AnchorSweepReport {
-    /// Orphaned anchors removed (on-disk file/session directory no longer exists).
+    /// Orphaned anchors hard-deleted this sweep (backing file/session directory absent for at
+    /// least `ORPHAN_REAP_GRACE_MS` since first observed absent).
     pub orphans_reaped: usize,
+    /// Anchors newly flagged orphaned this sweep (backing file/session directory absent for the
+    /// first time — `orphaned_since` stamped, not yet reaped; issue #6462).
+    pub orphans_stamped: usize,
+    /// Previously orphan-stamped anchors whose backing file/session directory reappeared this
+    /// sweep (`orphaned_since` cleared — self-heal; issue #6462).
+    pub orphans_cleared: usize,
     /// Session anchors evicted because the session-anchor count exceeded the cap.
     pub evicted_for_cap: usize,
 }
 
+/// Grace window a backing file/session-directory must stay *sustained-absent* before the
+/// reconcile sweep hard-deletes its anchor (issue #6462). Wall-clock milliseconds, not a
+/// sweep-cycle count, so it is independent of [`SWEEP_INTERVAL`] and survives process restarts —
+/// see the module docs for the downgrade-resistance rationale.
+const ORPHAN_REAP_GRACE_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Per-key disposition decided by [`plan_orphan_action`] for a single absent-file anchor (issue
+/// #6462). Kept separate from the stamp/clear/keep cases (which also depend on cap-eviction
+/// bookkeeping) so the grace-window boundary condition itself is a small, directly unit-testable
+/// pure function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrphanAction {
+    /// First sweep to observe the file absent — stamp `orphaned_since = now`.
+    Stamp,
+    /// Already stamped, still within `ORPHAN_REAP_GRACE_MS` — no write this sweep.
+    WithinGrace,
+    /// Already stamped, sustained absence has reached or exceeded the grace window — hard-delete.
+    Reap,
+}
+
+/// Decide the orphan disposition for a backing-file-absent anchor, given its current
+/// `orphaned_since` stamp (`None` if never before observed absent) and `now`.
+///
+/// `now.saturating_sub(orphaned_since)` guards against clock skew: a backward clock jump (or a
+/// future-dated stamp) yields an elapsed time of `0`, which is always `< ORPHAN_REAP_GRACE_MS`,
+/// so skew fails safe toward [`OrphanAction::WithinGrace`], never a premature
+/// [`OrphanAction::Reap`].
+fn plan_orphan_action(orphaned_since: Option<u64>, now: u64) -> OrphanAction {
+    match orphaned_since {
+        None => OrphanAction::Stamp,
+        Some(since) if now.saturating_sub(since) >= ORPHAN_REAP_GRACE_MS => OrphanAction::Reap,
+        Some(_) => OrphanAction::WithinGrace,
+    }
+}
+
+/// The vault writes/removals decided by the read-only planning pass of [`run_anchor_sweep`],
+/// before any lock is taken.
+#[derive(Default)]
+struct SweepPlan {
+    orphans_to_reap: Vec<String>,
+    orphans_to_stamp: Vec<(String, String)>,
+    orphans_to_clear: Vec<(String, String)>,
+    evictions: Vec<String>,
+}
+
+/// Filesystem stats + JSON decode over `snapshot` — no vault lock held. Split out of
+/// [`run_anchor_sweep`] to keep that function's orchestration (lock/save) readable on its own.
+fn plan_sweep(
+    snapshot: &[(String, String)],
+    transcript_dir: &Path,
+    sessions_data_dir: &Path,
+    max_session_anchors: usize,
+    now: u64,
+) -> SweepPlan {
+    let mut plan = SweepPlan::default();
+    let mut live_session_anchors: Vec<(String, u64)> = Vec::new();
+
+    for (key, json) in snapshot {
+        let Some((subsystem, file_id)) = parse_anchor_key(key) else {
+            continue; // not a well-formed anchor key — leave it alone
+        };
+        let file_id_str = String::from_utf8_lossy(&file_id).into_owned();
+        let exists = match subsystem {
+            AnchorSubsystem::SubagentTranscript => {
+                transcript_dir.join(format!("{file_id_str}.jsonl")).exists()
+            }
+            AnchorSubsystem::SessionLog => {
+                zeph_session::session_dir(sessions_data_dir, &file_id_str).exists()
+            }
+        };
+        // A malformed anchor value cannot carry a grace timestamp — reap immediately if absent
+        // (matching pre-#6462 behavior for corrupted entries; never attacker-reachable, since
+        // only the age-key holder can write a vault value at all), otherwise treat as a live
+        // entry with an unknown `written_at`.
+        let Some(anchor) = serde_json::from_str::<Anchor>(json).ok() else {
+            if exists {
+                if subsystem == AnchorSubsystem::SessionLog {
+                    live_session_anchors.push((key.clone(), 0));
+                }
+            } else {
+                plan.orphans_to_reap.push(key.clone());
+            }
+            continue;
+        };
+
+        if exists {
+            // File present: clear a stale `orphaned_since` stamp (self-heal). A steady-state
+            // anchor (never orphaned) is left untouched — no extra write in the common case.
+            if anchor.orphaned_since.is_some() {
+                let mut cleared = anchor.clone();
+                cleared.orphaned_since = None;
+                if let Ok(new_json) = serde_json::to_string(&cleared) {
+                    plan.orphans_to_clear.push((key.clone(), new_json));
+                }
+            }
+            if subsystem == AnchorSubsystem::SessionLog {
+                live_session_anchors.push((key.clone(), anchor.written_at));
+            }
+            continue;
+        }
+
+        match plan_orphan_action(anchor.orphaned_since, now) {
+            OrphanAction::Reap => plan.orphans_to_reap.push(key.clone()),
+            OrphanAction::WithinGrace => {}
+            OrphanAction::Stamp => {
+                let mut stamped = anchor;
+                stamped.orphaned_since = Some(now);
+                if let Ok(new_json) = serde_json::to_string(&stamped) {
+                    plan.orphans_to_stamp.push((key.clone(), new_json));
+                }
+            }
+        }
+    }
+
+    if live_session_anchors.len() > max_session_anchors {
+        live_session_anchors.sort_by_key(|(_, written_at)| *written_at);
+        let to_evict = live_session_anchors.len() - max_session_anchors;
+        plan.evictions.extend(
+            live_session_anchors
+                .into_iter()
+                .take(to_evict)
+                .map(|(key, _)| key),
+        );
+    }
+
+    plan
+}
+
 /// Run one reconcile-and-cap pass over the vault's `ZEPH_HISTORY_ANCHOR_*` keys (issue #6449).
+///
+/// `now` is the caller-supplied current wall-clock time (Unix milliseconds, matching
+/// [`Anchor::written_at`]/[`Anchor::orphaned_since`]) — injected rather than read via
+/// `SystemTime::now()` internally so tests can cross the `ORPHAN_REAP_GRACE_MS` boundary
+/// deterministically. Real callers ([`spawn_anchor_sweep`]) pass
+/// [`zeph_common::anchor::now_unix_millis`].
 ///
 /// Synchronous and blocking (file-existence checks + vault mutation) — callers on an async path
 /// must dispatch this through [`TaskSupervisor::spawn_blocking`], never call it inline.
 ///
-/// The vault **write** lock is held only for the final targeted `remove_secret_mut` calls plus
-/// `save()` — every `Path::exists()` stat and anchor JSON decode runs against a snapshot taken
-/// under a brief **read** lock, released before any filesystem I/O. Holding the write lock across
-/// `O(total anchors)` stat syscalls would otherwise stall every concurrent anchor `get`/`put` for
-/// the duration of the sweep (perf finding, same root cause class as issue #6449 M1). This is
-/// still "in place" per M-sweep-inplace: removal is always by targeted key
-/// (`remove_secret_mut`), never a whole-map snapshot-modify-writeback, so a concurrent `put` for
+/// The vault **write** lock is held only for the final targeted `set_secret_mut`/
+/// `remove_secret_mut` calls plus `save()` — every `Path::exists()` stat and anchor JSON decode
+/// runs against a snapshot taken under a brief **read** lock, released before any filesystem I/O
+/// (see `plan_sweep`). Holding the write lock across `O(total anchors)` stat syscalls would
+/// otherwise stall every concurrent anchor `get`/`put` for the duration of the sweep (perf
+/// finding, same root cause class as issue #6449 M1). This is still "in place" per
+/// M-sweep-inplace: every mutation is always by targeted key (`set_secret_mut`/
+/// `remove_secret_mut`), never a whole-map snapshot-modify-writeback, so a concurrent `put` for
 /// an unrelated key is never clobbered.
 ///
 /// # Errors
 ///
 /// Returns a description string if the final `save()` (only performed when at least one entry
-/// was removed) fails.
+/// was written or removed) fails.
 pub fn run_anchor_sweep(
     vault: &Arc<StdRwLock<AgeVaultProvider>>,
     transcript_dir: &Path,
     sessions_data_dir: &Path,
     max_session_anchors: usize,
+    now: u64,
 ) -> Result<AnchorSweepReport, String> {
     // Step 1: snapshot every anchor key + raw value under a brief READ lock — no I/O here.
     let snapshot: Vec<(String, String)> = {
@@ -279,58 +430,41 @@ pub fn run_anchor_sweep(
             .collect()
     }; // read guard dropped here, before any filesystem stat
 
-    // Step 2: decide what to remove — filesystem stats and JSON decode, no lock held at all.
-    let mut orphans: Vec<String> = Vec::new();
-    let mut live_session_anchors: Vec<(String, u64)> = Vec::new();
-    for (key, json) in &snapshot {
-        let Some((subsystem, file_id)) = parse_anchor_key(key) else {
-            continue; // not a well-formed anchor key — leave it alone
-        };
-        let file_id_str = String::from_utf8_lossy(&file_id).into_owned();
-        let exists = match subsystem {
-            AnchorSubsystem::SubagentTranscript => {
-                transcript_dir.join(format!("{file_id_str}.jsonl")).exists()
-            }
-            AnchorSubsystem::SessionLog => {
-                zeph_session::session_dir(sessions_data_dir, &file_id_str).exists()
-            }
-        };
-        if !exists {
-            orphans.push(key.clone());
-            continue;
-        }
-        if subsystem == AnchorSubsystem::SessionLog {
-            let written_at = serde_json::from_str::<Anchor>(json)
-                .ok()
-                .map_or(0, |a| a.written_at);
-            live_session_anchors.push((key.clone(), written_at));
-        }
-    }
+    // Step 2: decide what to write/remove — filesystem stats and JSON decode, no lock held.
+    let plan = plan_sweep(
+        &snapshot,
+        transcript_dir,
+        sessions_data_dir,
+        max_session_anchors,
+        now,
+    );
 
-    let mut evictions: Vec<String> = Vec::new();
-    if live_session_anchors.len() > max_session_anchors {
-        live_session_anchors.sort_by_key(|(_, written_at)| *written_at);
-        let to_evict = live_session_anchors.len() - max_session_anchors;
-        evictions.extend(
-            live_session_anchors
-                .into_iter()
-                .take(to_evict)
-                .map(|(key, _)| key),
-        );
-    }
-
-    // Step 3: acquire the WRITE lock only for the targeted removes + one save().
+    // Step 3: acquire the WRITE lock only for the targeted writes/removes + one save().
     let mut report = AnchorSweepReport::default();
-    if !orphans.is_empty() || !evictions.is_empty() {
+    let has_writes = !plan.orphans_to_reap.is_empty()
+        || !plan.orphans_to_stamp.is_empty()
+        || !plan.orphans_to_clear.is_empty()
+        || !plan.evictions.is_empty();
+    if has_writes {
         let mut guard = vault
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for key in &orphans {
+        for (key, json) in plan.orphans_to_stamp {
+            if guard.set_secret_mut(key, json, true).is_ok() {
+                report.orphans_stamped += 1;
+            }
+        }
+        for (key, json) in plan.orphans_to_clear {
+            if guard.set_secret_mut(key, json, true).is_ok() {
+                report.orphans_cleared += 1;
+            }
+        }
+        for key in &plan.orphans_to_reap {
             if guard.remove_secret_mut(key) {
                 report.orphans_reaped += 1;
             }
         }
-        for key in &evictions {
+        for key in &plan.evictions {
             if guard.remove_secret_mut(key) {
                 report.evicted_for_cap += 1;
             }
@@ -379,14 +513,20 @@ pub fn spawn_anchor_sweep(
                                 &transcript_dir,
                                 &sessions_data_dir,
                                 max_session_anchors,
+                                zeph_common::anchor::now_unix_millis(),
                             )
                         });
                     match handle.join().await {
                         Ok(Ok(report))
-                            if report.orphans_reaped > 0 || report.evicted_for_cap > 0 =>
+                            if report.orphans_reaped > 0
+                                || report.orphans_stamped > 0
+                                || report.orphans_cleared > 0
+                                || report.evicted_for_cap > 0 =>
                         {
                             tracing::info!(
                                 orphans_reaped = report.orphans_reaped,
+                                orphans_stamped = report.orphans_stamped,
+                                orphans_cleared = report.orphans_cleared,
                                 evicted_for_cap = report.evicted_for_cap,
                                 "anchor reconcile-and-cap sweep completed"
                             );
@@ -674,7 +814,103 @@ mod tests {
     }
 
     #[test]
-    fn sweep_reaps_orphan_transcript_anchor() {
+    fn plan_orphan_action_stamps_on_first_observation() {
+        assert_eq!(plan_orphan_action(None, 1_000), OrphanAction::Stamp);
+    }
+
+    #[test]
+    fn plan_orphan_action_boundary_grace_minus_one_within_grace_at_grace_reaps() {
+        let since = 1_000u64;
+        assert_eq!(
+            plan_orphan_action(Some(since), since + ORPHAN_REAP_GRACE_MS - 1),
+            OrphanAction::WithinGrace
+        );
+        assert_eq!(
+            plan_orphan_action(Some(since), since + ORPHAN_REAP_GRACE_MS),
+            OrphanAction::Reap
+        );
+    }
+
+    #[test]
+    fn plan_orphan_action_saturates_on_clock_skew_instead_of_reaping() {
+        let since = 1_000u64;
+        assert_eq!(
+            plan_orphan_action(Some(since), since - 1),
+            OrphanAction::WithinGrace,
+            "now < orphaned_since must never underflow or reap"
+        );
+    }
+
+    /// Write a raw anchor secret directly into the vault, bypassing the async `AnchorStore`
+    /// trait (tests operate on the synchronous `AgeVaultProvider` directly).
+    fn write_anchor(
+        vault: &Arc<StdRwLock<AgeVaultProvider>>,
+        subsystem: AnchorSubsystem,
+        file_id: &[u8],
+        anchor: &Anchor,
+    ) {
+        let mut guard = vault.write().unwrap();
+        let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+        let json = serde_json::to_string(anchor).unwrap();
+        guard.set_secret_mut(key, json, true).unwrap();
+        guard.save().unwrap();
+    }
+
+    fn read_anchor(
+        vault: &Arc<StdRwLock<AgeVaultProvider>>,
+        subsystem: AnchorSubsystem,
+        file_id: &[u8],
+    ) -> Option<Anchor> {
+        let guard = vault.read().unwrap();
+        let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+        guard.get(&key).map(|v| serde_json::from_str(v).unwrap())
+    }
+
+    /// Issue #6462 two-phase regression: an orphan is stamped, not reaped, on the sweep that
+    /// first observes its file absent; only a later sweep — after the grace window has fully
+    /// elapsed — hard-deletes it.
+    #[test]
+    fn sweep_stamps_then_reaps_orphan_transcript_anchor() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = test_vault(dir.path());
+        let transcript_dir = dir.path().join("transcripts");
+        let sessions_dir = dir.path().join("sessions");
+        std::fs::create_dir_all(&transcript_dir).unwrap();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        write_anchor(
+            &vault,
+            AnchorSubsystem::SubagentTranscript,
+            b"gone",
+            &sample_anchor(1),
+        );
+
+        let t0 = 1_000_000u64;
+        let first = run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512, t0).unwrap();
+        assert_eq!(first.orphans_stamped, 1, "first sweep must stamp, not reap");
+        assert_eq!(first.orphans_reaped, 0);
+        assert_eq!(
+            vault.read().unwrap().list_keys().len(),
+            1,
+            "anchor must survive the first sweep"
+        );
+        let stamped = read_anchor(&vault, AnchorSubsystem::SubagentTranscript, b"gone").unwrap();
+        assert_eq!(stamped.orphaned_since, Some(t0));
+
+        let after_grace = t0 + ORPHAN_REAP_GRACE_MS;
+        let second =
+            run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512, after_grace).unwrap();
+        assert_eq!(
+            second.orphans_reaped, 1,
+            "second sweep past grace must reap"
+        );
+        assert!(vault.read().unwrap().list_keys().is_empty());
+    }
+
+    /// #6463: mirrors the transcript two-phase test for `AnchorSubsystem::SessionLog`, and
+    /// confirms a sibling *legitimate* session's anchor is untouched throughout — the orphan
+    /// reap of one identity must never cause a false read-time tamper signal on another.
+    #[test]
+    fn sweep_stamps_then_reaps_orphan_session_log_anchor() {
         let dir = tempfile::tempdir().unwrap();
         let vault = test_vault(dir.path());
         let transcript_dir = dir.path().join("transcripts");
@@ -682,17 +918,213 @@ mod tests {
         std::fs::create_dir_all(&transcript_dir).unwrap();
         std::fs::create_dir_all(&sessions_dir).unwrap();
 
-        {
-            let mut guard = vault.write().unwrap();
-            let key = zeph_common::anchor::anchor_key(AnchorSubsystem::SubagentTranscript, b"gone");
-            let json = serde_json::to_string(&sample_anchor(1)).unwrap();
-            guard.set_secret_mut(key, json, true).unwrap();
-            guard.save().unwrap();
-        }
+        // A legitimate, still-live session — must never be affected by the orphan below.
+        std::fs::create_dir_all(zeph_session::session_dir(&sessions_dir, "legit")).unwrap();
+        write_anchor(
+            &vault,
+            AnchorSubsystem::SessionLog,
+            b"legit",
+            &sample_anchor(1),
+        );
 
-        let report = run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512).unwrap();
-        assert_eq!(report.orphans_reaped, 1);
+        // The orphan: no backing session directory at all.
+        write_anchor(
+            &vault,
+            AnchorSubsystem::SessionLog,
+            b"gone",
+            &sample_anchor(1),
+        );
+
+        let t0 = 2_000_000u64;
+        let first = run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512, t0).unwrap();
+        assert_eq!(first.orphans_stamped, 1);
+        assert_eq!(first.orphans_reaped, 0);
+        assert!(
+            read_anchor(&vault, AnchorSubsystem::SessionLog, b"gone")
+                .unwrap()
+                .orphaned_since
+                .is_some()
+        );
+        assert!(
+            read_anchor(&vault, AnchorSubsystem::SessionLog, b"legit")
+                .unwrap()
+                .orphaned_since
+                .is_none(),
+            "a live sibling session must never be stamped"
+        );
+
+        let after_grace = t0 + ORPHAN_REAP_GRACE_MS;
+        let second =
+            run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512, after_grace).unwrap();
+        assert_eq!(second.orphans_reaped, 1);
+        assert!(
+            read_anchor(&vault, AnchorSubsystem::SessionLog, b"gone").is_none(),
+            "the orphan must be gone"
+        );
+        assert!(
+            read_anchor(&vault, AnchorSubsystem::SessionLog, b"legit").is_some(),
+            "the legitimate session's anchor must survive, undisturbed"
+        );
+    }
+
+    /// Self-heal: if the backing file reappears before the grace window elapses,
+    /// `orphaned_since` is cleared and the anchor is never reaped.
+    #[test]
+    fn sweep_self_heals_when_orphaned_file_reappears_before_grace_elapses() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = test_vault(dir.path());
+        let transcript_dir = dir.path().join("transcripts");
+        let sessions_dir = dir.path().join("sessions");
+        std::fs::create_dir_all(&transcript_dir).unwrap();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        write_anchor(
+            &vault,
+            AnchorSubsystem::SubagentTranscript,
+            b"flaky",
+            &sample_anchor(1),
+        );
+
+        let t0 = 1_000_000u64;
+        let first = run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512, t0).unwrap();
+        assert_eq!(first.orphans_stamped, 1);
+
+        // The file reappears (e.g. a concurrent re-finalize) before the grace window elapses.
+        std::fs::write(transcript_dir.join("flaky.jsonl"), b"").unwrap();
+        let heal_time = t0 + 1;
+        let second =
+            run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512, heal_time).unwrap();
+        assert_eq!(second.orphans_cleared, 1);
+        assert_eq!(second.orphans_reaped, 0);
+        let healed = read_anchor(&vault, AnchorSubsystem::SubagentTranscript, b"flaky").unwrap();
+        assert_eq!(
+            healed.orphaned_since, None,
+            "self-heal must clear the stamp"
+        );
+
+        // Even long past what would have been the original grace deadline, the anchor survives
+        // while the file stays present — but this alone doesn't prove the clock *reset* (a file
+        // that still exists is never reaped regardless of any stamp). Prove the reset directly:
+        // delete the file again, at a time already past the ORIGINAL (t0-based) grace deadline,
+        // and confirm the sweep stamps a *fresh* `orphaned_since` instead of reaping immediately
+        // off the stale t0 clock.
+        let far_future = t0 + ORPHAN_REAP_GRACE_MS * 10;
+        let third =
+            run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512, far_future).unwrap();
+        assert_eq!(third.orphans_reaped, 0);
+        assert!(
+            vault
+                .read()
+                .unwrap()
+                .list_keys()
+                .contains(&"ZEPH_HISTORY_ANCHOR_SUBAGENT_flaky")
+        );
+
+        std::fs::remove_file(transcript_dir.join("flaky.jsonl")).unwrap();
+        let re_orphan_time = far_future + 1;
+        let fourth =
+            run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512, re_orphan_time).unwrap();
+        assert_eq!(
+            fourth.orphans_stamped, 1,
+            "a fresh absence must be stamped again, not treated as already-expired leftover \
+             from the pre-heal clock"
+        );
+        assert_eq!(
+            fourth.orphans_reaped, 0,
+            "must not reap immediately — if the clock had merely paused instead of resetting, \
+             this sweep (already well past t0 + GRACE) would incorrectly reap right away"
+        );
+        let re_stamped =
+            read_anchor(&vault, AnchorSubsystem::SubagentTranscript, b"flaky").unwrap();
+        assert_eq!(
+            re_stamped.orphaned_since,
+            Some(re_orphan_time),
+            "orphaned_since must restart from the new absence time, not resume counting from t0"
+        );
+
+        // The new clock must independently reach its own grace deadline.
+        let past_new_grace = re_orphan_time + ORPHAN_REAP_GRACE_MS;
+        let fifth =
+            run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512, past_new_grace).unwrap();
+        assert_eq!(fifth.orphans_reaped, 1);
         assert!(vault.read().unwrap().list_keys().is_empty());
+    }
+
+    /// N-1 vs N boundary: one millisecond short of the grace window must not reap; reaching (or
+    /// exceeding) it must.
+    #[test]
+    fn sweep_orphan_reap_boundary_grace_minus_one_not_reaped_grace_reaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = test_vault(dir.path());
+        let transcript_dir = dir.path().join("transcripts");
+        let sessions_dir = dir.path().join("sessions");
+        std::fs::create_dir_all(&transcript_dir).unwrap();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        write_anchor(
+            &vault,
+            AnchorSubsystem::SubagentTranscript,
+            b"gone",
+            &sample_anchor(1),
+        );
+
+        let t0 = 1_000_000u64;
+        run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512, t0).unwrap();
+
+        let just_under = run_anchor_sweep(
+            &vault,
+            &transcript_dir,
+            &sessions_dir,
+            512,
+            t0 + ORPHAN_REAP_GRACE_MS - 1,
+        )
+        .unwrap();
+        assert_eq!(
+            just_under.orphans_reaped, 0,
+            "must not reap before the grace window elapses"
+        );
+        assert_eq!(vault.read().unwrap().list_keys().len(), 1);
+
+        let at_grace = run_anchor_sweep(
+            &vault,
+            &transcript_dir,
+            &sessions_dir,
+            512,
+            t0 + ORPHAN_REAP_GRACE_MS,
+        )
+        .unwrap();
+        assert_eq!(
+            at_grace.orphans_reaped, 1,
+            "must reap once the grace window is reached"
+        );
+        assert!(vault.read().unwrap().list_keys().is_empty());
+    }
+
+    /// Clock skew: a backward clock jump (`now` older than the recorded `orphaned_since`) must
+    /// never panic or underflow, and must fail safe toward keeping the anchor.
+    #[test]
+    fn sweep_orphan_reap_saturates_instead_of_underflowing_on_clock_skew() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = test_vault(dir.path());
+        let transcript_dir = dir.path().join("transcripts");
+        let sessions_dir = dir.path().join("sessions");
+        std::fs::create_dir_all(&transcript_dir).unwrap();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        write_anchor(
+            &vault,
+            AnchorSubsystem::SubagentTranscript,
+            b"gone",
+            &sample_anchor(1),
+        );
+
+        let t0 = 1_000_000u64;
+        run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512, t0).unwrap();
+
+        // Clock jumps backward relative to the stamped `orphaned_since`.
+        let report = run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512, t0 - 1).unwrap();
+        assert_eq!(
+            report.orphans_reaped, 0,
+            "must fail safe, never reap on a clock regression"
+        );
+        assert_eq!(vault.read().unwrap().list_keys().len(), 1);
     }
 
     #[test]
@@ -714,7 +1146,8 @@ mod tests {
             guard.save().unwrap();
         }
 
-        let report = run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512).unwrap();
+        let report =
+            run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512, 1_000_000).unwrap();
         assert_eq!(report.orphans_reaped, 0);
         assert_eq!(vault.read().unwrap().list_keys().len(), 1);
     }
@@ -760,7 +1193,8 @@ mod tests {
 
         // Cap at 2: must evict "s-old" (written_at=100), the true oldest by anchor content —
         // NOT whichever mtime manipulation would suggest.
-        let report = run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 2).unwrap();
+        let report =
+            run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 2, 1_000_000).unwrap();
         assert_eq!(report.evicted_for_cap, 1);
 
         let remaining_keys: Vec<String> = vault

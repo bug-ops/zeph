@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- `zeph-core`: the vault-anchor reconcile sweep (`run_anchor_sweep`) hard-deleted a transcript/
+  session anchor the instant its backing file was absent, with no grace period or persisted
+  "was-anchored" record (#6462). Since file absence is attacker-controlled under this feature's
+  threat model (file-write access), an attacker could delete a targeted file, wait out a sweep so
+  the now-orphaned anchor was reaped as routine maintenance, then recreate forged legacy-looking
+  content under the same identity — which the read path then trusted, since an absent anchor is
+  never a tamper signature. `Anchor` gains a new `orphaned_since: Option<u64>` field
+  (`crates/zeph-common/src/anchor.rs`, serde-default so existing vault entries round-trip
+  unchanged); the sweep now stamps `orphaned_since` with the wall-clock time on first observing a
+  file absent instead of reaping immediately, clears it if the file reappears (self-heal), and
+  only hard-deletes the anchor once it has stayed absent for a 24-hour grace window. The grace is
+  wall-clock (not sweep-cycle) based, so it survives process restarts and is independent of the
+  hourly sweep interval. Cap-eviction (the separate LRU path) is unaffected.
+
 - `zeph`: `zeph vault set/get/list/rm/init` ignored `ZEPH_VAULT_KEY`/`ZEPH_VAULT_PATH` env vars
   and always fell back to the default vault directory unless overridden by `--vault-key`/
   `--vault-path` (#6500), diverging from the resolution `zeph doctor` and agent startup already
