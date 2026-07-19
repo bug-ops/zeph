@@ -89,7 +89,7 @@ static REFERENCE_USAGE_RE: LazyLock<Regex> =
 /// The scheme is matched case-insensitively, matching `is_external_url`'s casing rules.
 ///
 // TODO(critic): URL_EXTRACT_RE lacks scheme-relative parity with is_external_url (#6508
-// sibling gap, tracked in follow-up issue). The flagged-URL set used by validate_tool_call is
+// sibling gap, tracked in #6519). The flagged-URL set used by validate_tool_call is
 // exact-string matched, so adding scheme-relative extraction here is a larger design change
 // than the casing fix above — deferred, not implemented in this pass.
 static URL_EXTRACT_RE: LazyLock<Regex> =
