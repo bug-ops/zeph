@@ -498,6 +498,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     ///
     /// Returns `(spawn_success, concurrency_fail, done_status)`.
     /// `done_status` is `Some` when spawn failure forces the scheduler to emit a `Done` action.
+    #[allow(clippy::too_many_lines)] // sub-agent dispatch setup: task lookup, constraint computation, spawn-context assembly, task-supervisor wiring are tightly coupled — extracting would obscure the control flow
     pub(super) async fn handle_scheduler_spawn_action(
         &mut self,
         scheduler: &mut zeph_orchestration::DagScheduler,
