@@ -216,6 +216,7 @@ impl fmt::Debug for LocalBackend {
     }
 }
 
+/// Construction, builders, and accessors.
 impl LocalBackend {
     /// Wrap an existing [`zeph_db::DbPool`] as a local backend with the given payload ceiling.
     ///
@@ -363,7 +364,10 @@ impl LocalBackend {
             .map_err(|e| DurableError::storage("init", e))?;
         Ok(())
     }
+}
 
+/// Execution lifecycle: CRUD, journal-row mapping, checkpoints, and promise/timer resolution.
+impl LocalBackend {
     /// List execution summaries for operability surfaces (the `zeph durable` CLI and TUI).
     ///
     /// Returns at most `limit` executions, newest first, optionally filtered by `status` and `kind`
@@ -505,269 +509,6 @@ impl LocalBackend {
                 },
             )
             .collect())
-    }
-
-    /// Count terminal executions a [`prune`](Journal::prune) sweep would delete under `policy`.
-    ///
-    /// Read-only: backs `zeph durable prune --dry-run`. It applies the same TTL cutoffs as the
-    /// delete path, so the count is exactly what a real sweep would remove now.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DurableError::Storage`] if the query fails.
-    pub async fn count_prunable(&self, policy: &RetentionPolicy) -> Result<u64, DurableError> {
-        let cutoffs = crate::retention::PruneCutoffs::from_policy(policy, now_unix_millis());
-        let (count,): (i64,) = zeph_db::query_as(sql!(
-            "SELECT COUNT(*) FROM durable_executions
-             WHERE finalized_at IS NOT NULL
-               AND ( (status = 'completed' AND finalized_at <= ?)
-                  OR (status IN ('failed', 'aborted', 'canceled') AND finalized_at <= ?) )"
-        ))
-        .bind(cutoffs.completed_before_ms)
-        .bind(cutoffs.failed_before_ms)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DurableError::storage("count_prunable", e))?;
-        Ok(count.max(0).cast_unsigned())
-    }
-
-    /// Count crash-orphaned executions a [`sweep_orphans`](Journal::sweep_orphans) sweep would
-    /// abort under `policy` (#6254).
-    ///
-    /// Read-only: backs `zeph durable prune --dry-run`. Mirrors the real sweep's staleness scan
-    /// and INV-15 flock liveness check (acquiring and immediately releasing each candidate's
-    /// `ExecutionLock`, exactly as the real sweep does, so the count reflects genuinely
-    /// unowned rows rather than staleness alone) — but never mutates `status`. Returns `0` when
-    /// the sweep is disabled (`stale_running_after_secs == 0`) or this backend has no `lock_dir`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DurableError::Storage`] if the query fails.
-    pub async fn count_orphans(&self, policy: &RetentionPolicy) -> Result<u64, DurableError> {
-        if policy.stale_running_after_secs == 0 {
-            return Ok(0);
-        }
-        let Some(lock_dir) = self.lock_dir.clone() else {
-            return Ok(0);
-        };
-        let cutoff_ms = orphan_cutoff_ms(policy, now_unix_millis());
-        let candidates: Vec<(String,)> = zeph_db::query_as(sql!(
-            "SELECT execution_id FROM durable_executions WHERE status = 'running' AND updated_at <= ?"
-        ))
-        .bind(cutoff_ms)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DurableError::storage("count_orphans", e))?;
-        let mut count = 0u64;
-        for (exec_str,) in &candidates {
-            let Ok(execution_id) = parse_execution_id(exec_str) else {
-                continue;
-            };
-            if ExecutionLock::acquire(&lock_dir, execution_id).is_ok() {
-                count += 1;
-            }
-        }
-        Ok(count)
-    }
-
-    /// Count sealed-payload rows across `durable_journal` and `durable_promises` whose leading
-    /// on-disk byte — the AEAD key-id selector (`zeph_core::durable::XChaCha20Poly1305Cipher`'s
-    /// `key_id(1) || nonce(24) || ciphertext || tag(16)` layout) — equals `key_id`.
-    ///
-    /// Read-only; backs `zeph durable rotate-key --drop-previous`'s default-on safety scan
-    /// (#6447): a nonzero count means payloads still sealed under the previous key would become
-    /// permanently unreadable (`UnknownKeyId`) if that key were dropped now. Filters `payload IS
-    /// NOT NULL` on both tables — control entries (`EffectIntent`) carry no payload and are
-    /// irrelevant to this scan.
-    ///
-    /// The predicate is dialect-specific because `SQLite`'s `substr` on a `BLOB` returns a 1-byte
-    /// `BLOB` (compared here against a bound single-byte blob) while `PostgreSQL`'s `bytea`
-    /// cannot be compared against an integer at all (`get_byte(payload, 0)` extracts it as an
-    /// `INTEGER` instead).
-    ///
-    /// May over-count in a mixed-mode deployment where some rows were written while
-    /// `encrypt_payload = false` (plaintext, no key-id prefix): a plaintext row's leading byte is
-    /// arbitrary content that can coincidentally equal `key_id`. This is intentionally fail-safe
-    /// — it can only cause an unnecessary refusal (resolved with `--force`), never a missed match
-    /// that would let a genuinely-sealed row be dropped silently.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DurableError::Storage`] if either query fails.
-    pub async fn count_sealed_under_key_id(&self, key_id: u8) -> Result<u64, DurableError> {
-        #[cfg(feature = "postgres")]
-        {
-            let key_id_param = i32::from(key_id);
-            let (journal_count,): (i64,) = zeph_db::query_as(sql!(
-                "SELECT COUNT(*) FROM durable_journal
-                 WHERE payload IS NOT NULL AND get_byte(payload, 0) = ?"
-            ))
-            .bind(key_id_param)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| DurableError::storage("count_sealed_under_key_id", e))?;
-            let (promises_count,): (i64,) = zeph_db::query_as(sql!(
-                "SELECT COUNT(*) FROM durable_promises
-                 WHERE payload IS NOT NULL AND get_byte(payload, 0) = ?"
-            ))
-            .bind(key_id_param)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| DurableError::storage("count_sealed_under_key_id", e))?;
-            Ok((journal_count.max(0) + promises_count.max(0)).cast_unsigned())
-        }
-        #[cfg(not(feature = "postgres"))]
-        {
-            let key_byte = vec![key_id];
-            let (journal_count,): (i64,) = zeph_db::query_as(sql!(
-                "SELECT COUNT(*) FROM durable_journal
-                 WHERE payload IS NOT NULL AND substr(payload, 1, 1) = ?"
-            ))
-            .bind(key_byte.clone())
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| DurableError::storage("count_sealed_under_key_id", e))?;
-            let (promises_count,): (i64,) = zeph_db::query_as(sql!(
-                "SELECT COUNT(*) FROM durable_promises
-                 WHERE payload IS NOT NULL AND substr(payload, 1, 1) = ?"
-            ))
-            .bind(key_byte)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| DurableError::storage("count_sealed_under_key_id", e))?;
-            Ok((journal_count.max(0) + promises_count.max(0)).cast_unsigned())
-        }
-    }
-
-    /// Count `EffectIntent` control entries whose row HMAC (INV-8) verifies **only** under the
-    /// registered [`previous_hmac_key`](Self::with_previous_hmac_key), not the current
-    /// [`hmac_key`](Self::with_hmac_key) (#6451).
-    ///
-    /// The read-side counterpart to [`count_sealed_under_key_id`](Self::count_sealed_under_key_id)
-    /// for the control-entry HMAC's own rotation window, and **not redundant** with it: the AEAD
-    /// blob-scan only sees payload-bearing rows, but a pre-rotation `EffectIntent` whose
-    /// `StepResult` was never committed (a crash between intent and result, in a still-retained
-    /// non-terminal execution) has a previous-key HMAC and no payload at all — the blob-scan
-    /// cannot see it, so dropping the previous key without this scan would silently orphan its
-    /// HMAC verification. Only `EffectIntent` rows carry a persisted+verified HMAC:
-    /// `PromiseCreated`/`TimerArmed`/`TimerFired`/`Checkpoint` all return
-    /// [`DurableError::UnsupportedEntryKind`] in `prepare_row`, and
-    /// `durable_promises` has no `hmac` column.
-    ///
-    /// Backs `zeph durable rotate-key --drop-previous`'s safety scan alongside the AEAD blob-scan
-    /// — refuse the drop while **either** is nonzero. This is a fourth, dedicated key-attach site
-    /// distinct from the three runtime read paths (agent replay, scheduler daemon, CLI read):
-    /// the caller must attach **both** [`with_hmac_key`](Self::with_hmac_key) (current) and
-    /// [`with_previous_hmac_key`](Self::with_previous_hmac_key) (previous) to this backend before
-    /// calling, or every row's HMAC is unrecomputable and this returns
-    /// [`DurableError::ControlIntegrity`] rather than a (silently wrong) count.
-    ///
-    /// Uses the precise variant — recompute-and-compare against both keys — rather than a pure
-    /// "fails under current" fail-safe: a genuinely corrupt/forged row (matches neither key) is
-    /// not counted here, since it is not something dropping the previous key would newly break;
-    /// [`read_execution`](Journal::read_execution) already rejects it on every read regardless of
-    /// which key is dropped.
-    ///
-    /// Cold path (runs only at `--drop-previous`); control rows are sparse.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DurableError::Storage`] if the query fails, or [`DurableError::ControlIntegrity`]
-    /// if matching control rows exist but this backend is missing the current or previous HMAC
-    /// key needed to recompute them.
-    pub async fn count_control_entries_under_previous_hmac(&self) -> Result<u64, DurableError> {
-        let rows: Vec<ControlHmacScanRow> = zeph_db::query_as(sql!(
-            "SELECT execution_id, step_id, idem_key, hmac
-             FROM durable_journal
-             WHERE entry_kind = 'effect_intent' AND hmac IS NOT NULL"
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DurableError::storage("count_control_entries_under_previous_hmac", e))?;
-
-        if rows.is_empty() {
-            return Ok(0);
-        }
-
-        let (Some(current_key), Some(previous_key)) =
-            (self.hmac_key.as_ref(), self.previous_hmac_key.as_ref())
-        else {
-            return Err(DurableError::ControlIntegrity);
-        };
-
-        let mut count = 0u64;
-        for (execution_id_raw, step_id_raw, idem_key_raw, hmac_raw) in rows {
-            let Ok(execution_id) = parse_execution_id(&execution_id_raw) else {
-                continue;
-            };
-            let Ok(step_id_value) = u32::try_from(step_id_raw) else {
-                continue;
-            };
-            let step_id = StepId::new(step_id_value);
-            let idem_key = idem_key_raw
-                .as_deref()
-                .and_then(|b| slice_to_array32(b, "effect_intent idem_key").ok())
-                .map(IdempotencyKey::from_bytes);
-            let Ok(stored) = slice_to_array32(&hmac_raw, "effect_intent hmac") else {
-                continue;
-            };
-
-            let tag = EntryKindTag::EffectIntent.as_str();
-            let expected_current = Self::keyed_control_hmac(
-                current_key,
-                execution_id,
-                step_id,
-                tag,
-                idem_key.as_ref(),
-            );
-            if blake3::Hash::from(expected_current) == blake3::Hash::from(stored) {
-                continue;
-            }
-            let expected_previous = Self::keyed_control_hmac(
-                previous_key,
-                execution_id,
-                step_id,
-                tag,
-                idem_key.as_ref(),
-            );
-            if blake3::Hash::from(expected_previous) == blake3::Hash::from(stored) {
-                count += 1;
-            }
-        }
-        Ok(count)
-    }
-
-    /// Count `durable_execution_integrity` rows whose high-water-mark was signed under `epoch`.
-    ///
-    /// The `--drop-previous` HWM scan (addendum to #6451, spec-081 FR-008): before permanently
-    /// removing the previous rotation key, refuse if any surviving execution's HWM row is still
-    /// addressed to the previous epoch. Unlike
-    /// [`count_control_entries_under_previous_hmac`](Self::count_control_entries_under_previous_hmac),
-    /// the HWM row carries `key_epoch` in the clear, so this is a plain indexed `COUNT` — no key
-    /// material, no per-row recompute. This is also the only one of the three `--drop-previous`
-    /// scans that catches a checkpoint-folded pre-rotation execution: `checkpoint_fold` never
-    /// re-signs the HWM, so a folded execution's integrity row keeps
-    /// `key_epoch = previous_key_id` even though its old-key-id payloads are gone — invisible to
-    /// both the AEAD blob-scan
-    /// ([`count_sealed_under_key_id`](Self::count_sealed_under_key_id)) and the control-HMAC scan
-    /// (`EffectIntent`-only). Terminal-but-unpruned executions are counted too (the row is deleted
-    /// only by the retention prune sweep, never on `finalize`) — fail-safe over-refusal, resolvable
-    /// with `--force`, mirroring the other two scans' coarseness.
-    ///
-    /// Cold path (runs only at `--drop-previous`); integrity rows are sparse (one per execution).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DurableError::Storage`] if the query fails.
-    pub async fn count_integrity_rows_under_epoch(&self, epoch: u32) -> Result<u64, DurableError> {
-        let count: i64 = zeph_db::query_scalar(sql!(
-            "SELECT COUNT(*) FROM durable_execution_integrity WHERE key_epoch = ?"
-        ))
-        .bind(i64::from(epoch))
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DurableError::storage("count_integrity_rows_under_epoch", e))?;
-        Ok(count.max(0).cast_unsigned())
     }
 
     /// Ensure a `durable_executions` row exists for `id`, returning whether this is a resume.
@@ -1661,222 +1402,313 @@ impl LocalBackend {
         Ok(entries)
     }
 
-    /// Delete one bounded batch of prunable terminal executions and their child rows.
+    /// Find every **resumable** (`status = 'running'`) execution that has committed at least one
+    /// `StepResult` but carries no `durable_execution_integrity` row (issue #6449).
     ///
-    /// Selects up to `batch` executions past their TTL, then deletes their journal, promise, timer,
-    /// integrity (issue #6360), and execution rows in a single transaction (children first, to
-    /// respect the foreign keys). Returns the number of executions removed; the retention loop
-    /// stops once a batch returns fewer than `batch`.
+    /// This is the drain-before-seal precondition scan for `zeph durable seal-integrity`: the
+    /// returned set is exactly the executions that would be silently downgraded to
+    /// unconditional-tamper the moment this backend seals, unless drained to a terminal status
+    /// first or explicitly grandfathered. A non-resumable (terminal) execution missing its row is
+    /// not a concern — it can never be resumed again, sealed or not.
     ///
-    /// The candidate-selection `SELECT` runs *inside* the same `begin_write` transaction as the
-    /// deletes (not on the autocommit pool beforehand), closing the race where a concurrent
-    /// `open_execution` reopen (un-finalize, #6251) lands between "select prunable ids" and
-    /// "delete them" — without this, a legitimately-resumed execution could be deleted out from
-    /// under its own reopen. `SQLite`'s `BEGIN IMMEDIATE` (via `begin_write`) already serializes
-    /// writers at the file level, so the `SELECT` alone is enough there; `PostgreSQL` needs an
-    /// explicit `SELECT ... FOR UPDATE` first to take row locks on the same candidates before
-    /// they're read, since a plain `BEGIN` does not otherwise block a concurrent `UPDATE` on those
-    /// rows (mirrors the `BEGIN IMMEDIATE` / `SELECT FOR UPDATE` split in `goal/store.rs`).
-    async fn delete_prune_batch(
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails.
+    pub async fn find_unsealed_resumable_executions(
         &self,
-        cutoffs: crate::retention::PruneCutoffs,
-        batch: u64,
-    ) -> Result<u64, DurableError> {
-        let mut tx = zeph_db::begin_write(&self.pool)
-            .await
-            .map_err(|e| DurableError::storage("prune", e))?;
-
-        // Postgres only: lock the same candidate rows before reading them, so a concurrent
-        // `open_execution` reopen UPDATE on one of these rows blocks until this transaction
-        // commits (and then no longer matches, since the SELECT below re-reads post-commit) or
-        // this transaction rolls back. Bounded by the same ORDER BY/LIMIT as the real read below
-        // so the lock's blast radius matches the batch, not the whole prunable backlog.
-        #[cfg(feature = "postgres")]
-        zeph_db::query(sql!(
-            "SELECT execution_id FROM durable_executions
-             WHERE finalized_at IS NOT NULL
-               AND ( (status = 'completed' AND finalized_at <= ?)
-                  OR (status IN ('failed', 'aborted', 'canceled') AND finalized_at <= ?) )
-             ORDER BY finalized_at LIMIT ?
-             FOR UPDATE"
+    ) -> Result<Vec<ExecutionId>, DurableError> {
+        let rows: Vec<(String,)> = zeph_db::query_as(sql!(
+            "SELECT e.execution_id FROM durable_executions e
+             WHERE e.status = 'running'
+               AND NOT EXISTS (
+                 SELECT 1 FROM durable_execution_integrity i WHERE i.execution_id = e.execution_id
+               )
+               AND (
+                 EXISTS (
+                   SELECT 1 FROM durable_journal j
+                   WHERE j.execution_id = e.execution_id AND j.entry_kind = 'step_result'
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM durable_journal j
+                   WHERE j.execution_id = e.execution_id AND j.entry_kind = 'checkpoint'
+                     AND j.folded_count > 0
+                 )
+               )"
         ))
-        .bind(cutoffs.completed_before_ms)
-        .bind(cutoffs.failed_before_ms)
-        .bind(i64::try_from(batch).unwrap_or(i64::MAX))
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| DurableError::storage("prune", e))?;
-
-        let ids: Vec<(String,)> = zeph_db::query_as(sql!(
-            "SELECT execution_id FROM durable_executions
-             WHERE finalized_at IS NOT NULL
-               AND ( (status = 'completed' AND finalized_at <= ?)
-                  OR (status IN ('failed', 'aborted', 'canceled') AND finalized_at <= ?) )
-             ORDER BY finalized_at LIMIT ?"
-        ))
-        .bind(cutoffs.completed_before_ms)
-        .bind(cutoffs.failed_before_ms)
-        .bind(i64::try_from(batch).unwrap_or(i64::MAX))
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| DurableError::storage("prune", e))?;
-        if ids.is_empty() {
-            tx.commit()
-                .await
-                .map_err(|e| DurableError::storage("prune", e))?;
-            return Ok(0);
-        }
-        let journal = sql!("DELETE FROM durable_journal WHERE execution_id = ?");
-        let promises = sql!("DELETE FROM durable_promises WHERE execution_id = ?");
-        let timers = sql!("DELETE FROM durable_timers WHERE execution_id = ?");
-        // Issue #6360: `durable_execution_integrity` references `durable_executions` without
-        // `ON DELETE CASCADE` (same convention as journal/promises/timers), so it must be deleted
-        // here too — otherwise the `DELETE FROM durable_executions` below violates the FK on every
-        // backend with FK enforcement on (Postgres always; SQLite via `zeph-db`'s
-        // `PRAGMA foreign_keys = ON`), rolling back the whole prune batch for any keyed execution
-        // that ever committed a `StepResult` (`bump_hwm_for_step_result` always writes this row
-        // when an HWM key is configured). A no-op `DELETE` for an unkeyed/never-committed execution
-        // (no row present) is fine.
-        let integrity = sql!("DELETE FROM durable_execution_integrity WHERE execution_id = ?");
-        // Re-guarded by the same status/finalized_at predicate as the SELECT above (not just
-        // `execution_id = ?`) — belt and suspenders alongside the transactional read above.
-        let executions = sql!(
-            "DELETE FROM durable_executions
-             WHERE execution_id = ?
-               AND finalized_at IS NOT NULL
-               AND ( (status = 'completed' AND finalized_at <= ?)
-                  OR (status IN ('failed', 'aborted', 'canceled') AND finalized_at <= ?) )"
-        );
-        let mut removed = 0u64;
-        for (id,) in &ids {
-            for stmt in [journal, promises, timers, integrity] {
-                zeph_db::query(stmt)
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| DurableError::storage("prune", e))?;
-            }
-            let result = zeph_db::query(executions)
-                .bind(id)
-                .bind(cutoffs.completed_before_ms)
-                .bind(cutoffs.failed_before_ms)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| DurableError::storage("prune", e))?;
-            removed += result.rows_affected();
-        }
-        tx.commit()
-            .await
-            .map_err(|e| DurableError::storage("prune", e))?;
-        Ok(removed)
-    }
-
-    /// One batch of the crash-orphan sweep (INV-17, #6254).
-    ///
-    /// Selects up to `batch` `status='running'` rows whose `updated_at` is at or before
-    /// `cutoff_ms`, then for each candidate non-blockingly try-acquires its INV-15
-    /// `ExecutionLock`: `ExecutionLocked` (a live owner holds it) short-circuits to skip —
-    /// staleness of `updated_at` alone is never sufficient grounds to abort. Only when the lock is
-    /// acquired does the guarded `UPDATE` run, still holding the lock, so the abort is race-free
-    /// against a concurrent `open_execution_exclusive` reopen for the same id (both require the
-    /// same non-reentrant flock). The lock releases when it drops at the end of each loop
-    /// iteration.
-    ///
-    /// `cursor` is the previous batch's [`SweepCursor`](crate::retention::SweepCursor) (`None` for
-    /// the first batch); the candidate scan is keyset-paginated strictly past it so a skipped
-    /// (lock-held) row is never re-selected by a later batch — #6254 C1: without this, a batch
-    /// consisting entirely of lock-held rows would re-select the identical rows on every
-    /// iteration and the caller's batch loop would never terminate. Returns the number of rows
-    /// scanned (for the caller's batch-continuation decision), the number actually aborted, and
-    /// the cursor to resume from on the next call.
-    async fn sweep_orphan_batch(
-        &self,
-        lock_dir: &std::path::Path,
-        cutoff_ms: i64,
-        batch: u64,
-        cursor: Option<crate::retention::SweepCursor>,
-    ) -> Result<crate::retention::SweepBatchOutcome, DurableError> {
-        // Sentinel "no lower bound" cursor: every real `updated_at` (Unix ms) is > i64::MIN, so
-        // this keyset predicate is a no-op on the first batch while still using one static,
-        // sql!()-cacheable query for both the first and subsequent calls.
-        let (after_updated_at, after_exec) = cursor.map_or((i64::MIN, String::new()), |c| {
-            (c.updated_at_ms, c.execution_id)
-        });
-
-        let candidates: Vec<(String, i64)> = zeph_db::query_as(sql!(
-            "SELECT execution_id, updated_at FROM durable_executions
-             WHERE status = 'running' AND updated_at <= ?
-               AND (updated_at > ? OR (updated_at = ? AND execution_id > ?))
-             ORDER BY updated_at, execution_id LIMIT ?"
-        ))
-        .bind(cutoff_ms)
-        .bind(after_updated_at)
-        .bind(after_updated_at)
-        .bind(&after_exec)
-        .bind(i64::try_from(batch).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| DurableError::storage("sweep_orphans", e))?;
+        .map_err(|e| DurableError::storage("seal_integrity_scan", e))?;
 
-        let scanned = u64::try_from(candidates.len()).unwrap_or(u64::MAX);
-        let next_cursor = candidates
-            .last()
-            .map(|(id, updated_at)| crate::retention::SweepCursor {
-                updated_at_ms: *updated_at,
-                execution_id: id.clone(),
-            });
+        rows.into_iter()
+            .map(|(id,)| {
+                ExecutionId::parse_str(&id).map_err(|_| DurableError::Decode {
+                    context: "malformed execution_id in durable_executions",
+                })
+            })
+            .collect()
+    }
 
-        let now = now_unix_millis();
-        let abort = sql!(
-            "UPDATE durable_executions SET status = 'aborted', finalized_at = ?, updated_at = ?
-             WHERE execution_id = ? AND status = 'running' AND finalized_at IS NULL"
-        );
-        let mut aborted = 0u64;
-        for (exec_str, _updated_at) in &candidates {
-            let Ok(execution_id) = parse_execution_id(exec_str) else {
-                continue;
-            };
-            match ExecutionLock::acquire(lock_dir, execution_id) {
-                Ok(_lock) => {
-                    let result = zeph_db::query(abort)
-                        .bind(now)
-                        .bind(now)
-                        .bind(exec_str)
-                        .execute(&self.pool)
-                        .await
-                        .map_err(|e| DurableError::storage("sweep_orphans", e))?;
-                    aborted += result.rows_affected();
-                    // `_lock` drops here, releasing the flock for the next holder.
-                }
-                Err(DurableError::ExecutionLocked { .. }) => {
-                    // A live owner holds this execution — never abort on staleness alone (INV-17).
-                }
-                Err(e) => return Err(e),
+    /// Recompute the number of committed `StepResult`s for `execution_id` directly from the
+    /// journal: surviving `step_result` rows plus every checkpoint's `folded_count` (a fold moves
+    /// committed results into a checkpoint snapshot net-zero, so this sum is invariant across
+    /// folding). Shared by [`check_high_water_mark`](Self::check_high_water_mark)'s present-row
+    /// recomputation and its post-seal absent-row check (issue #6449).
+    async fn committed_step_result_count(
+        &self,
+        execution_id: ExecutionId,
+    ) -> Result<u64, DurableError> {
+        let exec = execution_id.as_uuid().to_string();
+        let live_count: i64 = zeph_db::query_scalar(sql!(
+            "SELECT COUNT(*) FROM durable_journal
+             WHERE execution_id = ? AND entry_kind = 'step_result'"
+        ))
+        .bind(&exec)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("hwm_verify", e))?;
+        let folded_sum: i64 = zeph_db::query_scalar(sql!(
+            "SELECT COALESCE(SUM(folded_count), 0) FROM durable_journal
+             WHERE execution_id = ? AND entry_kind = 'checkpoint'"
+        ))
+        .bind(&exec)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("hwm_verify", e))?;
+        Ok(u64::try_from(live_count.saturating_add(folded_sum)).unwrap_or(0))
+    }
+
+    /// Derive the persisted column values for an entry, sealing payloads and stamping HMACs.
+    fn prepare_row(&self, entry: &JournalEntry) -> Result<JournalRow, DurableError> {
+        let execution_id = entry.execution_id.as_uuid().to_string();
+        let step_id = i64::from(entry.step_id.value());
+        let created_at = entry.created_at_ms;
+        let entry_kind = entry.entry.tag();
+        match &entry.entry {
+            EntryKind::StepResult {
+                idempotency_key,
+                payload,
+                effect,
+                payload_version,
+            } => {
+                ensure_payload_within_limit(payload.len(), self.max_payload_bytes)?;
+                let aad = PayloadAad::new(
+                    entry.execution_id,
+                    entry.step_id,
+                    EntryKindTag::StepResult,
+                    Some(*idempotency_key),
+                );
+                let sealed = self.seal_payload(payload.as_ref(), &aad)?;
+                Ok(JournalRow {
+                    execution_id,
+                    step_id,
+                    entry_kind,
+                    idem_key: Some(idempotency_key.as_bytes().to_vec()),
+                    effect_class: Some(effect.as_str()),
+                    payload: Some(sealed),
+                    payload_version: Some(i32::from(*payload_version)),
+                    hmac: None,
+                    created_at,
+                })
+            }
+            EntryKind::EffectIntent {
+                idempotency_key,
+                effect,
+                hmac: _,
+            } => {
+                // The backend is the HMAC keyholder; it stamps the row HMAC itself when configured
+                // and ignores any caller-supplied value.
+                let hmac = self.control_hmac(entry, Some(idempotency_key));
+                Ok(JournalRow {
+                    execution_id,
+                    step_id,
+                    entry_kind,
+                    idem_key: Some(idempotency_key.as_bytes().to_vec()),
+                    effect_class: Some(effect.as_str()),
+                    payload: None,
+                    payload_version: None,
+                    hmac,
+                    created_at,
+                })
+            }
+            EntryKind::PromiseCreated { .. }
+            | EntryKind::PromiseResolved { .. }
+            | EntryKind::TimerArmed { .. }
+            | EntryKind::TimerFired { .. }
+            | EntryKind::Checkpoint { .. } => {
+                Err(DurableError::UnsupportedEntryKind { kind: entry_kind })
             }
         }
-        Ok(crate::retention::SweepBatchOutcome {
-            scanned,
-            aborted,
-            next_cursor,
+    }
+
+    /// Look up the owning execution's kind for read-time entry reconstruction.
+    async fn lookup_kind(&self, id: ExecutionId) -> Result<ExecutionKind, DurableError> {
+        let kind: Option<String> = zeph_db::query_scalar(sql!(
+            "SELECT kind FROM durable_executions WHERE execution_id = ?"
+        ))
+        .bind(id.as_uuid().to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("read", e))?;
+        let kind = kind.ok_or(DurableError::Decode {
+            context: "journaled entries reference a missing execution row",
+        })?;
+        ExecutionKind::from_tag(&kind).ok_or(DurableError::Decode {
+            context: "execution kind is not reconstructible (custom kind read-back unsupported)",
         })
     }
 
-    /// Seal a plaintext payload, or pass it through verbatim when no cipher is configured.
-    fn seal_payload(&self, plaintext: &[u8], aad: &PayloadAad) -> Result<Vec<u8>, DurableError> {
-        match &self.cipher {
-            Some(cipher) => Ok(cipher.seal(plaintext, aad)?),
-            None => Ok(plaintext.to_vec()),
-        }
+    /// Reconstruct a [`JournalEntry`] from a stored row, opening sealed payloads.
+    fn row_to_entry(
+        &self,
+        id: ExecutionId,
+        kind: ExecutionKind,
+        row: JournalRowRead,
+    ) -> Result<JournalEntry, DurableError> {
+        let (
+            seq,
+            step_id_raw,
+            entry_kind,
+            idem_key,
+            effect_class,
+            payload,
+            payload_version,
+            hmac,
+            created_at,
+        ) = row;
+        let step_id =
+            StepId::new(
+                u32::try_from(step_id_raw).map_err(|_| DurableError::Decode {
+                    context: "step_id out of u32 range",
+                })?,
+            );
+        let entry = match entry_kind.as_str() {
+            "step_result" => {
+                let idem_bytes = idem_key.ok_or(DurableError::Decode {
+                    context: "step_result idem_key missing",
+                })?;
+                let idem_key = IdempotencyKey::from_bytes(slice_to_array32(
+                    &idem_bytes,
+                    "step_result idem_key",
+                )?);
+                let effect = effect_class
+                    .as_deref()
+                    .and_then(crate::EffectClass::from_tag)
+                    .ok_or(DurableError::Decode {
+                        context: "step_result effect_class missing or invalid",
+                    })?;
+                let sealed = payload.ok_or(DurableError::Decode {
+                    context: "step_result payload missing",
+                })?;
+                ensure_payload_within_limit(
+                    sealed.len(),
+                    self.max_payload_bytes.saturating_add(SEAL_OVERHEAD_SLACK),
+                )?;
+                let aad = PayloadAad::new(id, step_id, EntryKindTag::StepResult, Some(idem_key));
+                let opened = self.open_payload(&sealed, &aad)?;
+                let version = u8::try_from(payload_version.unwrap_or(1)).map_err(|_| {
+                    DurableError::Decode {
+                        context: "payload_version out of u8 range",
+                    }
+                })?;
+                EntryKind::StepResult {
+                    idempotency_key: idem_key,
+                    payload: opened,
+                    effect,
+                    payload_version: version,
+                }
+            }
+            "effect_intent" => {
+                let idem_bytes = idem_key.ok_or(DurableError::Decode {
+                    context: "effect_intent idem_key missing",
+                })?;
+                let idem_key = IdempotencyKey::from_bytes(slice_to_array32(
+                    &idem_bytes,
+                    "effect_intent idem_key",
+                )?);
+                let effect = effect_class
+                    .as_deref()
+                    .and_then(crate::EffectClass::from_tag)
+                    .ok_or(DurableError::Decode {
+                        context: "effect_intent effect_class missing or invalid",
+                    })?;
+                let hmac = hmac
+                    .map(|bytes| slice_to_array32(&bytes, "effect_intent hmac"))
+                    .transpose()?;
+                self.verify_control_hmac(
+                    id,
+                    step_id,
+                    EntryKindTag::EffectIntent.as_str(),
+                    Some(&idem_key),
+                    hmac,
+                )?;
+                EntryKind::EffectIntent {
+                    idempotency_key: idem_key,
+                    effect,
+                    hmac,
+                }
+            }
+            "checkpoint" => self.checkpoint_entry(id, step_id, payload)?,
+            other => {
+                return Err(DurableError::UnsupportedEntryKind {
+                    kind: static_entry_tag(other),
+                });
+            }
+        };
+        Ok(JournalEntry {
+            seq: Some(JournalSeq::new(seq)),
+            execution_id: id,
+            kind,
+            step_id,
+            entry,
+            created_at_ms: created_at,
+        })
     }
 
-    /// Open a sealed payload, or copy it through verbatim when no cipher is configured.
-    fn open_payload(&self, sealed: &[u8], aad: &PayloadAad) -> Result<Bytes, DurableError> {
-        match &self.cipher {
-            Some(cipher) => Ok(Bytes::from(cipher.open(sealed, aad)?)),
-            None => Ok(Bytes::copy_from_slice(sealed)),
-        }
+    /// Reconstruct a [`EntryKind::Checkpoint`] from a stored row, opening its sealed snapshot.
+    ///
+    /// `step_id` carries the checkpoint's `up_to_step` (the fold boundary); the snapshot is bound to
+    /// it in the AAD so a checkpoint blob cannot be relocated to a different fold boundary.
+    fn checkpoint_entry(
+        &self,
+        id: ExecutionId,
+        step_id: StepId,
+        payload: Option<Vec<u8>>,
+    ) -> Result<EntryKind, DurableError> {
+        let sealed = payload.ok_or(DurableError::Decode {
+            context: "checkpoint entry missing snapshot payload",
+        })?;
+        ensure_payload_within_limit(
+            sealed.len(),
+            self.max_payload_bytes.saturating_add(SEAL_OVERHEAD_SLACK),
+        )?;
+        let aad = PayloadAad::new(id, step_id, EntryKindTag::Checkpoint, None);
+        let snapshot = self.open_payload(&sealed, &aad)?;
+        Ok(EntryKind::Checkpoint {
+            up_to_step: step_id.value(),
+            snapshot,
+        })
     }
 
+    /// Reconstruct every entry from a fetched row set, sharing one kind lookup.
+    async fn rows_to_entries(
+        &self,
+        id: ExecutionId,
+        rows: Vec<JournalRowRead>,
+    ) -> Result<Vec<JournalEntry>, DurableError> {
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let kind = self.lookup_kind(id).await?;
+        let mut entries = Vec::with_capacity(rows.len());
+        for row in rows {
+            entries.push(self.row_to_entry(id, kind, row)?);
+        }
+        Ok(entries)
+    }
+}
+
+/// Control-entry HMAC and high-water-mark crypto.
+impl LocalBackend {
     /// Compute the keyed-BLAKE3 row HMAC over a control entry's identity, when an HMAC key is set.
     ///
     /// Binds `(execution_id, step_id, entry_kind, idem_key?)` so a control row cannot be forged or
@@ -2117,81 +1949,6 @@ impl LocalBackend {
         Ok(())
     }
 
-    /// Find every **resumable** (`status = 'running'`) execution that has committed at least one
-    /// `StepResult` but carries no `durable_execution_integrity` row (issue #6449).
-    ///
-    /// This is the drain-before-seal precondition scan for `zeph durable seal-integrity`: the
-    /// returned set is exactly the executions that would be silently downgraded to
-    /// unconditional-tamper the moment this backend seals, unless drained to a terminal status
-    /// first or explicitly grandfathered. A non-resumable (terminal) execution missing its row is
-    /// not a concern — it can never be resumed again, sealed or not.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DurableError::Storage`] if the query fails.
-    pub async fn find_unsealed_resumable_executions(
-        &self,
-    ) -> Result<Vec<ExecutionId>, DurableError> {
-        let rows: Vec<(String,)> = zeph_db::query_as(sql!(
-            "SELECT e.execution_id FROM durable_executions e
-             WHERE e.status = 'running'
-               AND NOT EXISTS (
-                 SELECT 1 FROM durable_execution_integrity i WHERE i.execution_id = e.execution_id
-               )
-               AND (
-                 EXISTS (
-                   SELECT 1 FROM durable_journal j
-                   WHERE j.execution_id = e.execution_id AND j.entry_kind = 'step_result'
-                 )
-                 OR EXISTS (
-                   SELECT 1 FROM durable_journal j
-                   WHERE j.execution_id = e.execution_id AND j.entry_kind = 'checkpoint'
-                     AND j.folded_count > 0
-                 )
-               )"
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DurableError::storage("seal_integrity_scan", e))?;
-
-        rows.into_iter()
-            .map(|(id,)| {
-                ExecutionId::parse_str(&id).map_err(|_| DurableError::Decode {
-                    context: "malformed execution_id in durable_executions",
-                })
-            })
-            .collect()
-    }
-
-    /// Recompute the number of committed `StepResult`s for `execution_id` directly from the
-    /// journal: surviving `step_result` rows plus every checkpoint's `folded_count` (a fold moves
-    /// committed results into a checkpoint snapshot net-zero, so this sum is invariant across
-    /// folding). Shared by [`check_high_water_mark`](Self::check_high_water_mark)'s present-row
-    /// recomputation and its post-seal absent-row check (issue #6449).
-    async fn committed_step_result_count(
-        &self,
-        execution_id: ExecutionId,
-    ) -> Result<u64, DurableError> {
-        let exec = execution_id.as_uuid().to_string();
-        let live_count: i64 = zeph_db::query_scalar(sql!(
-            "SELECT COUNT(*) FROM durable_journal
-             WHERE execution_id = ? AND entry_kind = 'step_result'"
-        ))
-        .bind(&exec)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DurableError::storage("hwm_verify", e))?;
-        let folded_sum: i64 = zeph_db::query_scalar(sql!(
-            "SELECT COALESCE(SUM(folded_count), 0) FROM durable_journal
-             WHERE execution_id = ? AND entry_kind = 'checkpoint'"
-        ))
-        .bind(&exec)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DurableError::storage("hwm_verify", e))?;
-        Ok(u64::try_from(live_count.saturating_add(folded_sum)).unwrap_or(0))
-    }
-
     /// The comparison half of `verify_high_water_mark`.
     ///
     /// Absent a stored `durable_execution_integrity` row: **pre-seal** (or unkeyed), this
@@ -2288,234 +2045,490 @@ impl LocalBackend {
         }
         Ok(())
     }
+}
 
-    /// Derive the persisted column values for an entry, sealing payloads and stamping HMACs.
-    fn prepare_row(&self, entry: &JournalEntry) -> Result<JournalRow, DurableError> {
-        let execution_id = entry.execution_id.as_uuid().to_string();
-        let step_id = i64::from(entry.step_id.value());
-        let created_at = entry.created_at_ms;
-        let entry_kind = entry.entry.tag();
-        match &entry.entry {
-            EntryKind::StepResult {
-                idempotency_key,
-                payload,
-                effect,
-                payload_version,
-            } => {
-                ensure_payload_within_limit(payload.len(), self.max_payload_bytes)?;
-                let aad = PayloadAad::new(
-                    entry.execution_id,
-                    entry.step_id,
-                    EntryKindTag::StepResult,
-                    Some(*idempotency_key),
-                );
-                let sealed = self.seal_payload(payload.as_ref(), &aad)?;
-                Ok(JournalRow {
-                    execution_id,
-                    step_id,
-                    entry_kind,
-                    idem_key: Some(idempotency_key.as_bytes().to_vec()),
-                    effect_class: Some(effect.as_str()),
-                    payload: Some(sealed),
-                    payload_version: Some(i32::from(*payload_version)),
-                    hmac: None,
-                    created_at,
-                })
-            }
-            EntryKind::EffectIntent {
-                idempotency_key,
-                effect,
-                hmac: _,
-            } => {
-                // The backend is the HMAC keyholder; it stamps the row HMAC itself when configured
-                // and ignores any caller-supplied value.
-                let hmac = self.control_hmac(entry, Some(idempotency_key));
-                Ok(JournalRow {
-                    execution_id,
-                    step_id,
-                    entry_kind,
-                    idem_key: Some(idempotency_key.as_bytes().to_vec()),
-                    effect_class: Some(effect.as_str()),
-                    payload: None,
-                    payload_version: None,
-                    hmac,
-                    created_at,
-                })
-            }
-            EntryKind::PromiseCreated { .. }
-            | EntryKind::PromiseResolved { .. }
-            | EntryKind::TimerArmed { .. }
-            | EntryKind::TimerFired { .. }
-            | EntryKind::Checkpoint { .. } => {
-                Err(DurableError::UnsupportedEntryKind { kind: entry_kind })
-            }
+/// Payload sealing and opening.
+impl LocalBackend {
+    /// Seal a plaintext payload, or pass it through verbatim when no cipher is configured.
+    fn seal_payload(&self, plaintext: &[u8], aad: &PayloadAad) -> Result<Vec<u8>, DurableError> {
+        match &self.cipher {
+            Some(cipher) => Ok(cipher.seal(plaintext, aad)?),
+            None => Ok(plaintext.to_vec()),
         }
     }
 
-    /// Look up the owning execution's kind for read-time entry reconstruction.
-    async fn lookup_kind(&self, id: ExecutionId) -> Result<ExecutionKind, DurableError> {
-        let kind: Option<String> = zeph_db::query_scalar(sql!(
-            "SELECT kind FROM durable_executions WHERE execution_id = ?"
-        ))
-        .bind(id.as_uuid().to_string())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DurableError::storage("read", e))?;
-        let kind = kind.ok_or(DurableError::Decode {
-            context: "journaled entries reference a missing execution row",
-        })?;
-        ExecutionKind::from_tag(&kind).ok_or(DurableError::Decode {
-            context: "execution kind is not reconstructible (custom kind read-back unsupported)",
-        })
+    /// Open a sealed payload, or copy it through verbatim when no cipher is configured.
+    fn open_payload(&self, sealed: &[u8], aad: &PayloadAad) -> Result<Bytes, DurableError> {
+        match &self.cipher {
+            Some(cipher) => Ok(Bytes::from(cipher.open(sealed, aad)?)),
+            None => Ok(Bytes::copy_from_slice(sealed)),
+        }
     }
+}
 
-    /// Reconstruct a [`JournalEntry`] from a stored row, opening sealed payloads.
-    fn row_to_entry(
-        &self,
-        id: ExecutionId,
-        kind: ExecutionKind,
-        row: JournalRowRead,
-    ) -> Result<JournalEntry, DurableError> {
-        let (
-            seq,
-            step_id_raw,
-            entry_kind,
-            idem_key,
-            effect_class,
-            payload,
-            payload_version,
-            hmac,
-            created_at,
-        ) = row;
-        let step_id =
-            StepId::new(
-                u32::try_from(step_id_raw).map_err(|_| DurableError::Decode {
-                    context: "step_id out of u32 range",
-                })?,
-            );
-        let entry = match entry_kind.as_str() {
-            "step_result" => {
-                let idem_bytes = idem_key.ok_or(DurableError::Decode {
-                    context: "step_result idem_key missing",
-                })?;
-                let idem_key = IdempotencyKey::from_bytes(slice_to_array32(
-                    &idem_bytes,
-                    "step_result idem_key",
-                )?);
-                let effect = effect_class
-                    .as_deref()
-                    .and_then(crate::EffectClass::from_tag)
-                    .ok_or(DurableError::Decode {
-                        context: "step_result effect_class missing or invalid",
-                    })?;
-                let sealed = payload.ok_or(DurableError::Decode {
-                    context: "step_result payload missing",
-                })?;
-                ensure_payload_within_limit(
-                    sealed.len(),
-                    self.max_payload_bytes.saturating_add(SEAL_OVERHEAD_SLACK),
-                )?;
-                let aad = PayloadAad::new(id, step_id, EntryKindTag::StepResult, Some(idem_key));
-                let opened = self.open_payload(&sealed, &aad)?;
-                let version = u8::try_from(payload_version.unwrap_or(1)).map_err(|_| {
-                    DurableError::Decode {
-                        context: "payload_version out of u8 range",
-                    }
-                })?;
-                EntryKind::StepResult {
-                    idempotency_key: idem_key,
-                    payload: opened,
-                    effect,
-                    payload_version: version,
-                }
-            }
-            "effect_intent" => {
-                let idem_bytes = idem_key.ok_or(DurableError::Decode {
-                    context: "effect_intent idem_key missing",
-                })?;
-                let idem_key = IdempotencyKey::from_bytes(slice_to_array32(
-                    &idem_bytes,
-                    "effect_intent idem_key",
-                )?);
-                let effect = effect_class
-                    .as_deref()
-                    .and_then(crate::EffectClass::from_tag)
-                    .ok_or(DurableError::Decode {
-                        context: "effect_intent effect_class missing or invalid",
-                    })?;
-                let hmac = hmac
-                    .map(|bytes| slice_to_array32(&bytes, "effect_intent hmac"))
-                    .transpose()?;
-                self.verify_control_hmac(
-                    id,
-                    step_id,
-                    EntryKindTag::EffectIntent.as_str(),
-                    Some(&idem_key),
-                    hmac,
-                )?;
-                EntryKind::EffectIntent {
-                    idempotency_key: idem_key,
-                    effect,
-                    hmac,
-                }
-            }
-            "checkpoint" => self.checkpoint_entry(id, step_id, payload)?,
-            other => {
-                return Err(DurableError::UnsupportedEntryKind {
-                    kind: static_entry_tag(other),
-                });
-            }
-        };
-        Ok(JournalEntry {
-            seq: Some(JournalSeq::new(seq)),
-            execution_id: id,
-            kind,
-            step_id,
-            entry,
-            created_at_ms: created_at,
-        })
-    }
-
-    /// Reconstruct a [`EntryKind::Checkpoint`] from a stored row, opening its sealed snapshot.
+/// Retention: prunable/orphan counting and batch pruning.
+impl LocalBackend {
+    /// Count terminal executions a [`prune`](Journal::prune) sweep would delete under `policy`.
     ///
-    /// `step_id` carries the checkpoint's `up_to_step` (the fold boundary); the snapshot is bound to
-    /// it in the AAD so a checkpoint blob cannot be relocated to a different fold boundary.
-    fn checkpoint_entry(
-        &self,
-        id: ExecutionId,
-        step_id: StepId,
-        payload: Option<Vec<u8>>,
-    ) -> Result<EntryKind, DurableError> {
-        let sealed = payload.ok_or(DurableError::Decode {
-            context: "checkpoint entry missing snapshot payload",
-        })?;
-        ensure_payload_within_limit(
-            sealed.len(),
-            self.max_payload_bytes.saturating_add(SEAL_OVERHEAD_SLACK),
-        )?;
-        let aad = PayloadAad::new(id, step_id, EntryKindTag::Checkpoint, None);
-        let snapshot = self.open_payload(&sealed, &aad)?;
-        Ok(EntryKind::Checkpoint {
-            up_to_step: step_id.value(),
-            snapshot,
-        })
+    /// Read-only: backs `zeph durable prune --dry-run`. It applies the same TTL cutoffs as the
+    /// delete path, so the count is exactly what a real sweep would remove now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails.
+    pub async fn count_prunable(&self, policy: &RetentionPolicy) -> Result<u64, DurableError> {
+        let cutoffs = crate::retention::PruneCutoffs::from_policy(policy, now_unix_millis());
+        let (count,): (i64,) = zeph_db::query_as(sql!(
+            "SELECT COUNT(*) FROM durable_executions
+             WHERE finalized_at IS NOT NULL
+               AND ( (status = 'completed' AND finalized_at <= ?)
+                  OR (status IN ('failed', 'aborted', 'canceled') AND finalized_at <= ?) )"
+        ))
+        .bind(cutoffs.completed_before_ms)
+        .bind(cutoffs.failed_before_ms)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("count_prunable", e))?;
+        Ok(count.max(0).cast_unsigned())
     }
 
-    /// Reconstruct every entry from a fetched row set, sharing one kind lookup.
-    async fn rows_to_entries(
-        &self,
-        id: ExecutionId,
-        rows: Vec<JournalRowRead>,
-    ) -> Result<Vec<JournalEntry>, DurableError> {
+    /// Count crash-orphaned executions a [`sweep_orphans`](Journal::sweep_orphans) sweep would
+    /// abort under `policy` (#6254).
+    ///
+    /// Read-only: backs `zeph durable prune --dry-run`. Mirrors the real sweep's staleness scan
+    /// and INV-15 flock liveness check (acquiring and immediately releasing each candidate's
+    /// `ExecutionLock`, exactly as the real sweep does, so the count reflects genuinely
+    /// unowned rows rather than staleness alone) — but never mutates `status`. Returns `0` when
+    /// the sweep is disabled (`stale_running_after_secs == 0`) or this backend has no `lock_dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails.
+    pub async fn count_orphans(&self, policy: &RetentionPolicy) -> Result<u64, DurableError> {
+        if policy.stale_running_after_secs == 0 {
+            return Ok(0);
+        }
+        let Some(lock_dir) = self.lock_dir.clone() else {
+            return Ok(0);
+        };
+        let cutoff_ms = orphan_cutoff_ms(policy, now_unix_millis());
+        let candidates: Vec<(String,)> = zeph_db::query_as(sql!(
+            "SELECT execution_id FROM durable_executions WHERE status = 'running' AND updated_at <= ?"
+        ))
+        .bind(cutoff_ms)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("count_orphans", e))?;
+        let mut count = 0u64;
+        for (exec_str,) in &candidates {
+            let Ok(execution_id) = parse_execution_id(exec_str) else {
+                continue;
+            };
+            if ExecutionLock::acquire(&lock_dir, execution_id).is_ok() {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    /// Count sealed-payload rows across `durable_journal` and `durable_promises` whose leading
+    /// on-disk byte — the AEAD key-id selector (`zeph_core::durable::XChaCha20Poly1305Cipher`'s
+    /// `key_id(1) || nonce(24) || ciphertext || tag(16)` layout) — equals `key_id`.
+    ///
+    /// Read-only; backs `zeph durable rotate-key --drop-previous`'s default-on safety scan
+    /// (#6447): a nonzero count means payloads still sealed under the previous key would become
+    /// permanently unreadable (`UnknownKeyId`) if that key were dropped now. Filters `payload IS
+    /// NOT NULL` on both tables — control entries (`EffectIntent`) carry no payload and are
+    /// irrelevant to this scan.
+    ///
+    /// The predicate is dialect-specific because `SQLite`'s `substr` on a `BLOB` returns a 1-byte
+    /// `BLOB` (compared here against a bound single-byte blob) while `PostgreSQL`'s `bytea`
+    /// cannot be compared against an integer at all (`get_byte(payload, 0)` extracts it as an
+    /// `INTEGER` instead).
+    ///
+    /// May over-count in a mixed-mode deployment where some rows were written while
+    /// `encrypt_payload = false` (plaintext, no key-id prefix): a plaintext row's leading byte is
+    /// arbitrary content that can coincidentally equal `key_id`. This is intentionally fail-safe
+    /// — it can only cause an unnecessary refusal (resolved with `--force`), never a missed match
+    /// that would let a genuinely-sealed row be dropped silently.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if either query fails.
+    pub async fn count_sealed_under_key_id(&self, key_id: u8) -> Result<u64, DurableError> {
+        #[cfg(feature = "postgres")]
+        {
+            let key_id_param = i32::from(key_id);
+            let (journal_count,): (i64,) = zeph_db::query_as(sql!(
+                "SELECT COUNT(*) FROM durable_journal
+                 WHERE payload IS NOT NULL AND get_byte(payload, 0) = ?"
+            ))
+            .bind(key_id_param)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("count_sealed_under_key_id", e))?;
+            let (promises_count,): (i64,) = zeph_db::query_as(sql!(
+                "SELECT COUNT(*) FROM durable_promises
+                 WHERE payload IS NOT NULL AND get_byte(payload, 0) = ?"
+            ))
+            .bind(key_id_param)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("count_sealed_under_key_id", e))?;
+            Ok((journal_count.max(0) + promises_count.max(0)).cast_unsigned())
+        }
+        #[cfg(not(feature = "postgres"))]
+        {
+            let key_byte = vec![key_id];
+            let (journal_count,): (i64,) = zeph_db::query_as(sql!(
+                "SELECT COUNT(*) FROM durable_journal
+                 WHERE payload IS NOT NULL AND substr(payload, 1, 1) = ?"
+            ))
+            .bind(key_byte.clone())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("count_sealed_under_key_id", e))?;
+            let (promises_count,): (i64,) = zeph_db::query_as(sql!(
+                "SELECT COUNT(*) FROM durable_promises
+                 WHERE payload IS NOT NULL AND substr(payload, 1, 1) = ?"
+            ))
+            .bind(key_byte)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("count_sealed_under_key_id", e))?;
+            Ok((journal_count.max(0) + promises_count.max(0)).cast_unsigned())
+        }
+    }
+
+    /// Count `EffectIntent` control entries whose row HMAC (INV-8) verifies **only** under the
+    /// registered [`previous_hmac_key`](Self::with_previous_hmac_key), not the current
+    /// [`hmac_key`](Self::with_hmac_key) (#6451).
+    ///
+    /// The read-side counterpart to [`count_sealed_under_key_id`](Self::count_sealed_under_key_id)
+    /// for the control-entry HMAC's own rotation window, and **not redundant** with it: the AEAD
+    /// blob-scan only sees payload-bearing rows, but a pre-rotation `EffectIntent` whose
+    /// `StepResult` was never committed (a crash between intent and result, in a still-retained
+    /// non-terminal execution) has a previous-key HMAC and no payload at all — the blob-scan
+    /// cannot see it, so dropping the previous key without this scan would silently orphan its
+    /// HMAC verification. Only `EffectIntent` rows carry a persisted+verified HMAC:
+    /// `PromiseCreated`/`TimerArmed`/`TimerFired`/`Checkpoint` all return
+    /// [`DurableError::UnsupportedEntryKind`] in `prepare_row`, and
+    /// `durable_promises` has no `hmac` column.
+    ///
+    /// Backs `zeph durable rotate-key --drop-previous`'s safety scan alongside the AEAD blob-scan
+    /// — refuse the drop while **either** is nonzero. This is a fourth, dedicated key-attach site
+    /// distinct from the three runtime read paths (agent replay, scheduler daemon, CLI read):
+    /// the caller must attach **both** [`with_hmac_key`](Self::with_hmac_key) (current) and
+    /// [`with_previous_hmac_key`](Self::with_previous_hmac_key) (previous) to this backend before
+    /// calling, or every row's HMAC is unrecomputable and this returns
+    /// [`DurableError::ControlIntegrity`] rather than a (silently wrong) count.
+    ///
+    /// Uses the precise variant — recompute-and-compare against both keys — rather than a pure
+    /// "fails under current" fail-safe: a genuinely corrupt/forged row (matches neither key) is
+    /// not counted here, since it is not something dropping the previous key would newly break;
+    /// [`read_execution`](Journal::read_execution) already rejects it on every read regardless of
+    /// which key is dropped.
+    ///
+    /// Cold path (runs only at `--drop-previous`); control rows are sparse.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails, or [`DurableError::ControlIntegrity`]
+    /// if matching control rows exist but this backend is missing the current or previous HMAC
+    /// key needed to recompute them.
+    pub async fn count_control_entries_under_previous_hmac(&self) -> Result<u64, DurableError> {
+        let rows: Vec<ControlHmacScanRow> = zeph_db::query_as(sql!(
+            "SELECT execution_id, step_id, idem_key, hmac
+             FROM durable_journal
+             WHERE entry_kind = 'effect_intent' AND hmac IS NOT NULL"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("count_control_entries_under_previous_hmac", e))?;
+
         if rows.is_empty() {
-            return Ok(Vec::new());
+            return Ok(0);
         }
-        let kind = self.lookup_kind(id).await?;
-        let mut entries = Vec::with_capacity(rows.len());
-        for row in rows {
-            entries.push(self.row_to_entry(id, kind, row)?);
+
+        let (Some(current_key), Some(previous_key)) =
+            (self.hmac_key.as_ref(), self.previous_hmac_key.as_ref())
+        else {
+            return Err(DurableError::ControlIntegrity);
+        };
+
+        let mut count = 0u64;
+        for (execution_id_raw, step_id_raw, idem_key_raw, hmac_raw) in rows {
+            let Ok(execution_id) = parse_execution_id(&execution_id_raw) else {
+                continue;
+            };
+            let Ok(step_id_value) = u32::try_from(step_id_raw) else {
+                continue;
+            };
+            let step_id = StepId::new(step_id_value);
+            let idem_key = idem_key_raw
+                .as_deref()
+                .and_then(|b| slice_to_array32(b, "effect_intent idem_key").ok())
+                .map(IdempotencyKey::from_bytes);
+            let Ok(stored) = slice_to_array32(&hmac_raw, "effect_intent hmac") else {
+                continue;
+            };
+
+            let tag = EntryKindTag::EffectIntent.as_str();
+            let expected_current = Self::keyed_control_hmac(
+                current_key,
+                execution_id,
+                step_id,
+                tag,
+                idem_key.as_ref(),
+            );
+            if blake3::Hash::from(expected_current) == blake3::Hash::from(stored) {
+                continue;
+            }
+            let expected_previous = Self::keyed_control_hmac(
+                previous_key,
+                execution_id,
+                step_id,
+                tag,
+                idem_key.as_ref(),
+            );
+            if blake3::Hash::from(expected_previous) == blake3::Hash::from(stored) {
+                count += 1;
+            }
         }
-        Ok(entries)
+        Ok(count)
+    }
+
+    /// Count `durable_execution_integrity` rows whose high-water-mark was signed under `epoch`.
+    ///
+    /// The `--drop-previous` HWM scan (addendum to #6451, spec-081 FR-008): before permanently
+    /// removing the previous rotation key, refuse if any surviving execution's HWM row is still
+    /// addressed to the previous epoch. Unlike
+    /// [`count_control_entries_under_previous_hmac`](Self::count_control_entries_under_previous_hmac),
+    /// the HWM row carries `key_epoch` in the clear, so this is a plain indexed `COUNT` — no key
+    /// material, no per-row recompute. This is also the only one of the three `--drop-previous`
+    /// scans that catches a checkpoint-folded pre-rotation execution: `checkpoint_fold` never
+    /// re-signs the HWM, so a folded execution's integrity row keeps
+    /// `key_epoch = previous_key_id` even though its old-key-id payloads are gone — invisible to
+    /// both the AEAD blob-scan
+    /// ([`count_sealed_under_key_id`](Self::count_sealed_under_key_id)) and the control-HMAC scan
+    /// (`EffectIntent`-only). Terminal-but-unpruned executions are counted too (the row is deleted
+    /// only by the retention prune sweep, never on `finalize`) — fail-safe over-refusal, resolvable
+    /// with `--force`, mirroring the other two scans' coarseness.
+    ///
+    /// Cold path (runs only at `--drop-previous`); integrity rows are sparse (one per execution).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails.
+    pub async fn count_integrity_rows_under_epoch(&self, epoch: u32) -> Result<u64, DurableError> {
+        let count: i64 = zeph_db::query_scalar(sql!(
+            "SELECT COUNT(*) FROM durable_execution_integrity WHERE key_epoch = ?"
+        ))
+        .bind(i64::from(epoch))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("count_integrity_rows_under_epoch", e))?;
+        Ok(count.max(0).cast_unsigned())
+    }
+
+    /// Delete one bounded batch of prunable terminal executions and their child rows.
+    ///
+    /// Selects up to `batch` executions past their TTL, then deletes their journal, promise, timer,
+    /// integrity (issue #6360), and execution rows in a single transaction (children first, to
+    /// respect the foreign keys). Returns the number of executions removed; the retention loop
+    /// stops once a batch returns fewer than `batch`.
+    ///
+    /// The candidate-selection `SELECT` runs *inside* the same `begin_write` transaction as the
+    /// deletes (not on the autocommit pool beforehand), closing the race where a concurrent
+    /// `open_execution` reopen (un-finalize, #6251) lands between "select prunable ids" and
+    /// "delete them" — without this, a legitimately-resumed execution could be deleted out from
+    /// under its own reopen. `SQLite`'s `BEGIN IMMEDIATE` (via `begin_write`) already serializes
+    /// writers at the file level, so the `SELECT` alone is enough there; `PostgreSQL` needs an
+    /// explicit `SELECT ... FOR UPDATE` first to take row locks on the same candidates before
+    /// they're read, since a plain `BEGIN` does not otherwise block a concurrent `UPDATE` on those
+    /// rows (mirrors the `BEGIN IMMEDIATE` / `SELECT FOR UPDATE` split in `goal/store.rs`).
+    async fn delete_prune_batch(
+        &self,
+        cutoffs: crate::retention::PruneCutoffs,
+        batch: u64,
+    ) -> Result<u64, DurableError> {
+        let mut tx = zeph_db::begin_write(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("prune", e))?;
+
+        // Postgres only: lock the same candidate rows before reading them, so a concurrent
+        // `open_execution` reopen UPDATE on one of these rows blocks until this transaction
+        // commits (and then no longer matches, since the SELECT below re-reads post-commit) or
+        // this transaction rolls back. Bounded by the same ORDER BY/LIMIT as the real read below
+        // so the lock's blast radius matches the batch, not the whole prunable backlog.
+        #[cfg(feature = "postgres")]
+        zeph_db::query(sql!(
+            "SELECT execution_id FROM durable_executions
+             WHERE finalized_at IS NOT NULL
+               AND ( (status = 'completed' AND finalized_at <= ?)
+                  OR (status IN ('failed', 'aborted', 'canceled') AND finalized_at <= ?) )
+             ORDER BY finalized_at LIMIT ?
+             FOR UPDATE"
+        ))
+        .bind(cutoffs.completed_before_ms)
+        .bind(cutoffs.failed_before_ms)
+        .bind(i64::try_from(batch).unwrap_or(i64::MAX))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DurableError::storage("prune", e))?;
+
+        let ids: Vec<(String,)> = zeph_db::query_as(sql!(
+            "SELECT execution_id FROM durable_executions
+             WHERE finalized_at IS NOT NULL
+               AND ( (status = 'completed' AND finalized_at <= ?)
+                  OR (status IN ('failed', 'aborted', 'canceled') AND finalized_at <= ?) )
+             ORDER BY finalized_at LIMIT ?"
+        ))
+        .bind(cutoffs.completed_before_ms)
+        .bind(cutoffs.failed_before_ms)
+        .bind(i64::try_from(batch).unwrap_or(i64::MAX))
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| DurableError::storage("prune", e))?;
+        if ids.is_empty() {
+            tx.commit()
+                .await
+                .map_err(|e| DurableError::storage("prune", e))?;
+            return Ok(0);
+        }
+        let journal = sql!("DELETE FROM durable_journal WHERE execution_id = ?");
+        let promises = sql!("DELETE FROM durable_promises WHERE execution_id = ?");
+        let timers = sql!("DELETE FROM durable_timers WHERE execution_id = ?");
+        // Issue #6360: `durable_execution_integrity` references `durable_executions` without
+        // `ON DELETE CASCADE` (same convention as journal/promises/timers), so it must be deleted
+        // here too — otherwise the `DELETE FROM durable_executions` below violates the FK on every
+        // backend with FK enforcement on (Postgres always; SQLite via `zeph-db`'s
+        // `PRAGMA foreign_keys = ON`), rolling back the whole prune batch for any keyed execution
+        // that ever committed a `StepResult` (`bump_hwm_for_step_result` always writes this row
+        // when an HWM key is configured). A no-op `DELETE` for an unkeyed/never-committed execution
+        // (no row present) is fine.
+        let integrity = sql!("DELETE FROM durable_execution_integrity WHERE execution_id = ?");
+        // Re-guarded by the same status/finalized_at predicate as the SELECT above (not just
+        // `execution_id = ?`) — belt and suspenders alongside the transactional read above.
+        let executions = sql!(
+            "DELETE FROM durable_executions
+             WHERE execution_id = ?
+               AND finalized_at IS NOT NULL
+               AND ( (status = 'completed' AND finalized_at <= ?)
+                  OR (status IN ('failed', 'aborted', 'canceled') AND finalized_at <= ?) )"
+        );
+        let mut removed = 0u64;
+        for (id,) in &ids {
+            for stmt in [journal, promises, timers, integrity] {
+                zeph_db::query(stmt)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| DurableError::storage("prune", e))?;
+            }
+            let result = zeph_db::query(executions)
+                .bind(id)
+                .bind(cutoffs.completed_before_ms)
+                .bind(cutoffs.failed_before_ms)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| DurableError::storage("prune", e))?;
+            removed += result.rows_affected();
+        }
+        tx.commit()
+            .await
+            .map_err(|e| DurableError::storage("prune", e))?;
+        Ok(removed)
+    }
+
+    /// One batch of the crash-orphan sweep (INV-17, #6254).
+    ///
+    /// Selects up to `batch` `status='running'` rows whose `updated_at` is at or before
+    /// `cutoff_ms`, then for each candidate non-blockingly try-acquires its INV-15
+    /// `ExecutionLock`: `ExecutionLocked` (a live owner holds it) short-circuits to skip —
+    /// staleness of `updated_at` alone is never sufficient grounds to abort. Only when the lock is
+    /// acquired does the guarded `UPDATE` run, still holding the lock, so the abort is race-free
+    /// against a concurrent `open_execution_exclusive` reopen for the same id (both require the
+    /// same non-reentrant flock). The lock releases when it drops at the end of each loop
+    /// iteration.
+    ///
+    /// `cursor` is the previous batch's [`SweepCursor`](crate::retention::SweepCursor) (`None` for
+    /// the first batch); the candidate scan is keyset-paginated strictly past it so a skipped
+    /// (lock-held) row is never re-selected by a later batch — #6254 C1: without this, a batch
+    /// consisting entirely of lock-held rows would re-select the identical rows on every
+    /// iteration and the caller's batch loop would never terminate. Returns the number of rows
+    /// scanned (for the caller's batch-continuation decision), the number actually aborted, and
+    /// the cursor to resume from on the next call.
+    async fn sweep_orphan_batch(
+        &self,
+        lock_dir: &std::path::Path,
+        cutoff_ms: i64,
+        batch: u64,
+        cursor: Option<crate::retention::SweepCursor>,
+    ) -> Result<crate::retention::SweepBatchOutcome, DurableError> {
+        // Sentinel "no lower bound" cursor: every real `updated_at` (Unix ms) is > i64::MIN, so
+        // this keyset predicate is a no-op on the first batch while still using one static,
+        // sql!()-cacheable query for both the first and subsequent calls.
+        let (after_updated_at, after_exec) = cursor.map_or((i64::MIN, String::new()), |c| {
+            (c.updated_at_ms, c.execution_id)
+        });
+
+        let candidates: Vec<(String, i64)> = zeph_db::query_as(sql!(
+            "SELECT execution_id, updated_at FROM durable_executions
+             WHERE status = 'running' AND updated_at <= ?
+               AND (updated_at > ? OR (updated_at = ? AND execution_id > ?))
+             ORDER BY updated_at, execution_id LIMIT ?"
+        ))
+        .bind(cutoff_ms)
+        .bind(after_updated_at)
+        .bind(after_updated_at)
+        .bind(&after_exec)
+        .bind(i64::try_from(batch).unwrap_or(i64::MAX))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("sweep_orphans", e))?;
+
+        let scanned = u64::try_from(candidates.len()).unwrap_or(u64::MAX);
+        let next_cursor = candidates
+            .last()
+            .map(|(id, updated_at)| crate::retention::SweepCursor {
+                updated_at_ms: *updated_at,
+                execution_id: id.clone(),
+            });
+
+        let now = now_unix_millis();
+        let abort = sql!(
+            "UPDATE durable_executions SET status = 'aborted', finalized_at = ?, updated_at = ?
+             WHERE execution_id = ? AND status = 'running' AND finalized_at IS NULL"
+        );
+        let mut aborted = 0u64;
+        for (exec_str, _updated_at) in &candidates {
+            let Ok(execution_id) = parse_execution_id(exec_str) else {
+                continue;
+            };
+            match ExecutionLock::acquire(lock_dir, execution_id) {
+                Ok(_lock) => {
+                    let result = zeph_db::query(abort)
+                        .bind(now)
+                        .bind(now)
+                        .bind(exec_str)
+                        .execute(&self.pool)
+                        .await
+                        .map_err(|e| DurableError::storage("sweep_orphans", e))?;
+                    aborted += result.rows_affected();
+                    // `_lock` drops here, releasing the flock for the next holder.
+                }
+                Err(DurableError::ExecutionLocked { .. }) => {
+                    // A live owner holds this execution — never abort on staleness alone (INV-17).
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(crate::retention::SweepBatchOutcome {
+            scanned,
+            aborted,
+            next_cursor,
+        })
     }
 }
 

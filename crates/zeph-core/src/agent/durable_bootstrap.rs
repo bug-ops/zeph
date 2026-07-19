@@ -15,7 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use zeph_durable::{
-    DurableBackendEnum, DurableRetentionService, JournalWriterHandle, LocalBackend, PayloadCipher,
+    DurableBackendEnum, DurableRetentionService, ExecutionId, JournalWriterHandle, LocalBackend,
+    PayloadCipher,
 };
 
 use crate::agent::Agent;
@@ -30,9 +31,10 @@ use crate::channel::Channel;
 /// redundant sweeps against the same journal.
 const RETENTION_TASK_NAME: &str = "durable.retention_sweep";
 
-/// Open a [`LocalBackend`] at `db_url`, initialise its schema, attach `cipher`, `hmac_key`, and
-/// `hwm_key` if present, spawn its [`JournalWriter`](zeph_durable::JournalWriter) actor, and spawn
-/// the background [`DurableRetentionService`] prune sweep — all via `task_supervisor`.
+/// Key material and integrity-seal state shared by every durable-backend construction call
+/// site: `open_durable_backend`, the P1/P2 `AgentBuilder::with_durable_*` methods
+/// (`builder.rs`), and their reassembly points in `Agent::ensure_session_durable_ctx` and
+/// `plan.rs`'s `ensure_durable_backend` (#6458).
 ///
 /// `hmac_key` is `None` for a single-user local, non-shared database (INV-8) — the documented
 /// stance where control entries carry no HMAC. `hwm_key` (issue #6360) is meant to be attached
@@ -42,31 +44,82 @@ const RETENTION_TASK_NAME: &str = "durable.retention_sweep";
 /// (#6451). `previous_hwm_key` is the HWM-side counterpart, `Some` under the same condition
 /// (addendum to #6451): unlike `previous_hmac_key`, its epoch reuses the AEAD cipher's `key_id`
 /// lifecycle rather than being epoch-less try-both (see `HwmKeySlot`/`with_previous_hwm_key` in
-/// `zeph-durable`).
+/// `zeph-durable`). `integrity_sealed`/`integrity_grandfather` (issue #6449) are resolved from
+/// the vault by `crate::commands::durable::load_integrity_seal` in the `zeph` binary crate.
+///
+/// A mis-wired key field here — wrong key, wrong slot, or an unintended `None` — never results in
+/// a silent accept: every control-entry and high-water-mark verification this key material feeds
+/// fails closed, surfacing as
+/// [`ControlIntegrity`](zeph_durable::DurableError::ControlIntegrity) or
+/// [`HighWaterMarkIntegrity`](zeph_durable::DurableError::HighWaterMarkIntegrity) rather than a
+/// silently accepted read.
+///
+/// Deliberately does not derive `Debug`: every key field holds raw key-material bytes that must
+/// never be logged or printed (see project pitfall: secret-bearing `Debug` derives).
+///
+/// # Examples
+///
+/// ```
+/// use zeph_core::DurableKeyMaterial;
+///
+/// // A non-durable / disabled-encryption configuration: every key slot empty.
+/// let key_material = DurableKeyMaterial {
+///     cipher: None,
+///     hmac_key: None,
+///     hwm_key: None,
+///     previous_hmac_key: None,
+///     previous_hwm_key: None,
+///     integrity_sealed: false,
+///     integrity_grandfather: Default::default(),
+/// };
+/// assert!(key_material.hmac_key.is_none());
+/// ```
+pub struct DurableKeyMaterial {
+    /// AEAD payload cipher; `None` when `config.encrypt_payload = false` (development mode only).
+    pub cipher: Option<Arc<dyn PayloadCipher>>,
+    /// Current control-entry HMAC key.
+    pub hmac_key: Option<[u8; 32]>,
+    /// Current high-water-mark key as `(epoch, key)`.
+    pub hwm_key: Option<(u32, [u8; 32])>,
+    /// Previous control-entry HMAC key, valid only during an open rotation window.
+    pub previous_hmac_key: Option<[u8; 32]>,
+    /// Previous high-water-mark key as `(epoch, key)`, valid only during an open rotation window.
+    pub previous_hwm_key: Option<(u32, [u8; 32])>,
+    /// Whether the durable integrity seal is set.
+    pub integrity_sealed: bool,
+    /// Executions grandfathered in before the integrity seal was set, exempt from verification.
+    pub integrity_grandfather: std::collections::HashSet<ExecutionId>,
+}
+
+/// Open a [`LocalBackend`] at `db_url`, initialise its schema, attach the key material in
+/// `key_material` if present, spawn its [`JournalWriter`](zeph_durable::JournalWriter) actor, and
+/// spawn the background [`DurableRetentionService`] prune sweep — all via `task_supervisor`.
+///
+/// See [`DurableKeyMaterial`] for the meaning of each field.
 ///
 /// Returns `None` (after logging a `tracing::warn!`) on any I/O failure so callers degrade to
 /// non-durable mode rather than fail session bootstrap (#5452 FR-004).
-///
-/// `#[allow(clippy::too_many_arguments)]`: bundling the seven key-material/seal params into one
-/// `DurableKeyMaterial` struct is deliberately deferred (addendum to #6451, M2) — see
-/// `AgentBuilder::with_durable_orchestration`'s doc for the full rationale.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn open_durable_backend(
     task_supervisor: &zeph_common::TaskSupervisor,
     writer_task_name: &'static str,
     cfg: &zeph_config::DurableConfig,
     db_url: &str,
-    cipher: Option<Arc<dyn PayloadCipher>>,
-    hmac_key: Option<[u8; 32]>,
-    hwm_key: Option<(u32, [u8; 32])>,
-    previous_hmac_key: Option<[u8; 32]>,
-    previous_hwm_key: Option<(u32, [u8; 32])>,
-    integrity_seal: (bool, std::collections::HashSet<zeph_durable::ExecutionId>),
+    key_material: DurableKeyMaterial,
 ) -> Option<(
     Arc<DurableBackendEnum>,
     JournalWriterHandle,
     zeph_common::task_supervisor::BlockingHandle<()>,
 )> {
+    let DurableKeyMaterial {
+        cipher,
+        hmac_key,
+        hwm_key,
+        previous_hmac_key,
+        previous_hwm_key,
+        integrity_sealed,
+        integrity_grandfather,
+    } = key_material;
+
     let local = match LocalBackend::open(db_url, cfg.max_payload_bytes).await {
         Ok(b) => b,
         Err(e) => {
@@ -104,8 +157,8 @@ pub(crate) async fn open_durable_backend(
         local
     };
     let local = local
-        .with_integrity_sealed(integrity_seal.0)
-        .with_grandfather(integrity_seal.1);
+        .with_integrity_sealed(integrity_sealed)
+        .with_grandfather(integrity_grandfather);
     let local = Arc::new(local);
     let backend = Arc::new(DurableBackendEnum::Local(local.clone()));
     let (writer_actor, handle) = zeph_durable::JournalWriter::new(local, cfg);
@@ -145,10 +198,10 @@ impl<C: Channel> Agent<C> {
     /// the session journals as a step within the *same* execution and a crash mid-session can
     /// resume from any prior turn's journal state.
     ///
-    /// `#[allow(clippy::too_many_lines)]`: threading `previous_hwm_key`/`previous_hmac_key`
-    /// (addendum to #6451) and `integrity_seal` (#6449) alongside the existing key-material stash
-    /// pushed this past the line budget; splitting this single linear bootstrap sequence into
-    /// sub-functions for that would add indirection with no readability gain.
+    /// `#[allow(clippy::too_many_lines)]`: the `open_execution` / advisory-lock / `DurableContext`
+    /// construction sequence in this function's body is a single linear bootstrap that stays
+    /// past the line budget regardless of how the key-material parameters are threaded;
+    /// splitting it into sub-functions would add indirection with no readability gain.
     #[allow(clippy::too_many_lines)]
     pub(crate) async fn ensure_session_durable_ctx(&mut self) {
         if self.services.session.durable_ctx.is_some()
@@ -176,18 +229,19 @@ impl<C: Channel> Agent<C> {
             );
             return;
         };
-        let cipher = self.services.session.durable_agent_turns_cipher.clone();
-        let hmac_key = self.services.session.durable_agent_turns_hmac_key;
-        let hwm_key = self.services.session.durable_agent_turns_hwm_key;
-        let previous_hmac_key = self.services.session.durable_agent_turns_previous_hmac_key;
-        let previous_hwm_key = self.services.session.durable_agent_turns_previous_hwm_key;
-        let integrity_seal = (
-            self.services.session.durable_agent_turns_integrity_sealed,
-            self.services
+        let key_material = DurableKeyMaterial {
+            cipher: self.services.session.durable_agent_turns_cipher.clone(),
+            hmac_key: self.services.session.durable_agent_turns_hmac_key,
+            hwm_key: self.services.session.durable_agent_turns_hwm_key,
+            previous_hmac_key: self.services.session.durable_agent_turns_previous_hmac_key,
+            previous_hwm_key: self.services.session.durable_agent_turns_previous_hwm_key,
+            integrity_sealed: self.services.session.durable_agent_turns_integrity_sealed,
+            integrity_grandfather: self
+                .services
                 .session
                 .durable_agent_turns_integrity_grandfather
                 .clone(),
-        );
+        };
 
         tracing::debug!("durable agent_turns: opening backend start");
         let backend_result = open_durable_backend(
@@ -195,12 +249,7 @@ impl<C: Channel> Agent<C> {
             "agent.durable.turn_journal_writer",
             &cfg,
             &db_url,
-            cipher,
-            hmac_key,
-            hwm_key,
-            previous_hmac_key,
-            previous_hwm_key,
-            integrity_seal,
+            key_material,
         )
         .await;
         tracing::debug!("durable agent_turns: opening backend done");
@@ -344,7 +393,7 @@ impl<C: Channel> Agent<C> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RETENTION_TASK_NAME, open_durable_backend};
+    use super::{DurableKeyMaterial, RETENTION_TASK_NAME, open_durable_backend};
     use crate::agent::agent_tests::*;
 
     fn agent_with_conversation() -> crate::agent::Agent<MockChannel> {
@@ -460,12 +509,15 @@ mod tests {
             "test.durable.journal_writer",
             &cfg,
             &db_url,
-            None,
-            Some(current_key),
-            None,
-            Some(previous_key),
-            None,
-            (false, std::collections::HashSet::new()),
+            DurableKeyMaterial {
+                cipher: None,
+                hmac_key: Some(current_key),
+                hwm_key: None,
+                previous_hmac_key: Some(previous_key),
+                previous_hwm_key: None,
+                integrity_sealed: false,
+                integrity_grandfather: std::collections::HashSet::new(),
+            },
         )
         .await;
         let (backend, _writer, _task_handle) =

@@ -329,30 +329,26 @@ impl<C: crate::channel::Channel> Agent<C> {
                 return None;
             }
             let db_url = self.services.orchestration.durable_db_url.clone()?;
-            let cipher = self.services.orchestration.durable_cipher.clone();
-            let hmac_key = self.services.orchestration.durable_hmac_key;
-            let hwm_key = self.services.orchestration.durable_hwm_key;
-            let previous_hmac_key = self.services.orchestration.durable_previous_hmac_key;
-            let previous_hwm_key = self.services.orchestration.durable_previous_hwm_key;
-            let integrity_seal = (
-                self.services.orchestration.durable_integrity_sealed,
-                self.services
+            let key_material = crate::agent::DurableKeyMaterial {
+                cipher: self.services.orchestration.durable_cipher.clone(),
+                hmac_key: self.services.orchestration.durable_hmac_key,
+                hwm_key: self.services.orchestration.durable_hwm_key,
+                previous_hmac_key: self.services.orchestration.durable_previous_hmac_key,
+                previous_hwm_key: self.services.orchestration.durable_previous_hwm_key,
+                integrity_sealed: self.services.orchestration.durable_integrity_sealed,
+                integrity_grandfather: self
+                    .services
                     .orchestration
                     .durable_integrity_grandfather
                     .clone(),
-            );
+            };
             let (backend, handle, task_handle) =
                 crate::agent::durable_bootstrap::open_durable_backend(
                     &self.runtime.lifecycle.task_supervisor,
                     "agent.durable.journal_writer",
                     &cfg,
                     &db_url,
-                    cipher,
-                    hmac_key,
-                    hwm_key,
-                    previous_hmac_key,
-                    previous_hwm_key,
-                    integrity_seal,
+                    key_material,
                 )
                 .await?;
             self.services.orchestration.durable_backend = Some(backend);

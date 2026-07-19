@@ -35,6 +35,7 @@ use zeph_channels::AnyChannel;
 use zeph_common::deep_link::parse_deep_link;
 use zeph_common::{RestartPolicy, SessionId, TaskDescriptor, TaskSupervisor};
 use zeph_config::{ThinkingConfig, ThinkingEffort};
+use zeph_core::DurableKeyMaterial;
 use zeph_core::agent::Agent;
 #[cfg(feature = "acp")]
 use zeph_core::config::AcpTransport;
@@ -3322,12 +3323,15 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             agent.with_durable_orchestration(
                 config.durable.clone(),
                 durable_url,
-                cipher,
-                hmac_keys.current,
-                hwm_keys.current.map(|s| (s.epoch, s.key)),
-                hmac_keys.previous,
-                hwm_keys.previous.map(|s| (s.epoch, s.key)),
-                integrity_seal,
+                DurableKeyMaterial {
+                    cipher,
+                    hmac_key: hmac_keys.current,
+                    hwm_key: hwm_keys.current.map(|s| (s.epoch, s.key)),
+                    previous_hmac_key: hmac_keys.previous,
+                    previous_hwm_key: hwm_keys.previous.map(|s| (s.epoch, s.key)),
+                    integrity_sealed: integrity_seal.0,
+                    integrity_grandfather: integrity_seal.1,
+                },
             )
         } else {
             agent
@@ -3344,12 +3348,15 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 config.durable.clone(),
                 durable_url,
                 config.memory.sqlite_path.clone(),
-                cipher,
-                hmac_keys.current,
-                hwm_keys.current.map(|s| (s.epoch, s.key)),
-                hmac_keys.previous,
-                hwm_keys.previous.map(|s| (s.epoch, s.key)),
-                integrity_seal,
+                DurableKeyMaterial {
+                    cipher,
+                    hmac_key: hmac_keys.current,
+                    hwm_key: hwm_keys.current.map(|s| (s.epoch, s.key)),
+                    previous_hmac_key: hmac_keys.previous,
+                    previous_hwm_key: hwm_keys.previous.map(|s| (s.epoch, s.key)),
+                    integrity_sealed: integrity_seal.0,
+                    integrity_grandfather: integrity_seal.1,
+                },
             )
         } else {
             agent

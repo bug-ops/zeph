@@ -192,6 +192,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   falling back to `default_vault_dir()` only when no override is supplied — behavior is
   unchanged for the common no-override case.
 
+### Changed
+
+- **zeph-core**/**zeph-durable**: two internal structural refactors in the durable execution
+  layer, no observable behavior change.
+  - `open_durable_backend` and both `AgentBuilder::with_durable_*` methods
+    (`crates/zeph-core/src/agent/durable_bootstrap.rs`, `builder.rs`) took 5+ positional
+    key-material `Option` parameters (AEAD cipher key, control-entry HMAC key + previous key,
+    high-water-mark key + previous key), which had tripped clippy's `too_many_arguments`
+    threshold on 4 functions, worked around with explicit `#[allow(...)]` annotations. Bundled
+    into a single `pub struct DurableKeyMaterial`, threaded through all call sites
+    (`src/runner.rs`, `builder.rs`, `durable_bootstrap.rs`, `plan.rs`). Removed the three
+    now-unnecessary `too_many_arguments` allows; kept `too_many_lines` on
+    `ensure_session_durable_ctx`, whose length comes from its open-execution/lock sequence, not
+    the parameter count. Deliberately does not derive `Debug` (raw key-material bytes) and does
+    not add `Zeroize` (parity with prior by-value key passing; deferred as a separate follow-up
+    if wanted) (#6458).
+  - `impl LocalBackend` (`crates/zeph-durable/src/backend/local.rs`) mixed 60 methods spanning
+    five independent concerns — construction/builders, execution-lifecycle CRUD, control-entry
+    HMAC/high-water-mark crypto, payload sealing, and retention counting/batch pruning — in one
+    ~2300-line block. Split in-place into five concern-grouped `impl LocalBackend` blocks (the
+    file stays a single file per `/specs/064-durable-execution/spec.md`'s crate/module layout),
+    each with a one-line doc comment. Verified byte-for-byte identical method bodies, 60 methods
+    accounted for before and after. Promise/timer and checkpoint methods were folded into the
+    execution-lifecycle block rather than split into a sixth block; a dedicated sixth block is a
+    defensible alternative left for a future pass (#6483).
+
 ### Security
 
 - `zeph-gateway`/`zeph`: `[gateway] enabled = true` with no `auth_token` let any caller that

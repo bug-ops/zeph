@@ -2419,44 +2419,25 @@ impl<C: Channel> Agent<C> {
     }
 
     /// `db_url` is the `sqlite://…/durable.db` connection string (a sibling of the main DB).
-    /// The `cipher` is `None` when `config.encrypt_payload = false` (development mode only). The
-    /// `hmac_key` is `None` for a single-user local, non-shared database (INV-8) — see
-    /// `crate::durable::derive_control_hmac_key_b64`. The `hwm_key` (issue #6360) is meant to be
-    /// attached unconditionally (FR-009) — `None` only when `ZEPH_DURABLE_KEY` itself is
-    /// unavailable — see `crate::durable::derive_hwm_key_b64`. `previous_hmac_key` is `Some`
-    /// only while a `zeph durable rotate-key` rotation window is open (#6451). `previous_hwm_key`
-    /// is the HWM-side counterpart, `Some` under the same condition (addendum to #6451).
-    /// `integrity_seal` (issue #6449) is `(sealed, grandfather)`, resolved from the vault by
-    /// `crate::commands::durable::load_integrity_seal`.
-    ///
-    /// `#[allow(clippy::too_many_arguments)]`: bundling the key-material/seal params into one
-    /// struct is deliberately deferred (addendum to #6451, M2) — it would re-touch every
-    /// already-threaded call site (runner → builder → state → bootstrap → plan →
-    /// `scheduler_daemon`) a second time for no safety gain, since a mis-wired key `Option` here
-    /// fails closed (`ControlIntegrity`/`HighWaterMarkIntegrity`), never a silent accept. Tracked
-    /// as a follow-up.
+    /// `key_material` bundles the cipher, HMAC/HWM keys, and integrity-seal state — see
+    /// [`crate::agent::DurableKeyMaterial`] for the meaning of each field.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
     pub fn with_durable_orchestration(
         mut self,
         config: zeph_config::DurableConfig,
         db_url: String,
-        cipher: Option<std::sync::Arc<dyn zeph_durable::PayloadCipher>>,
-        hmac_key: Option<[u8; 32]>,
-        hwm_key: Option<(u32, [u8; 32])>,
-        previous_hmac_key: Option<[u8; 32]>,
-        previous_hwm_key: Option<(u32, [u8; 32])>,
-        integrity_seal: (bool, std::collections::HashSet<zeph_durable::ExecutionId>),
+        key_material: crate::agent::DurableKeyMaterial,
     ) -> Self {
         self.services.orchestration.durable_config = Some(config);
         self.services.orchestration.durable_db_url = Some(db_url);
-        self.services.orchestration.durable_cipher = cipher;
-        self.services.orchestration.durable_hmac_key = hmac_key;
-        self.services.orchestration.durable_hwm_key = hwm_key;
-        self.services.orchestration.durable_previous_hmac_key = previous_hmac_key;
-        self.services.orchestration.durable_previous_hwm_key = previous_hwm_key;
-        self.services.orchestration.durable_integrity_sealed = integrity_seal.0;
-        self.services.orchestration.durable_integrity_grandfather = integrity_seal.1;
+        self.services.orchestration.durable_cipher = key_material.cipher;
+        self.services.orchestration.durable_hmac_key = key_material.hmac_key;
+        self.services.orchestration.durable_hwm_key = key_material.hwm_key;
+        self.services.orchestration.durable_previous_hmac_key = key_material.previous_hmac_key;
+        self.services.orchestration.durable_previous_hwm_key = key_material.previous_hwm_key;
+        self.services.orchestration.durable_integrity_sealed = key_material.integrity_sealed;
+        self.services.orchestration.durable_integrity_grandfather =
+            key_material.integrity_grandfather;
         self
     }
 
@@ -2476,36 +2457,29 @@ impl<C: Channel> Agent<C> {
     /// future config override ever pointed two different memory databases at the same journal
     /// `db_url`, their executions still would not collide (#5553).
     ///
-    /// `#[allow(clippy::too_many_arguments)]`: see [`Self::with_durable_orchestration`]'s doc —
-    /// the key-material/seal bundling is deferred, not skipped.
-    /// `integrity_seal` (issue #6449) is `(sealed, grandfather)`, resolved from the vault by
-    /// `crate::commands::durable::load_integrity_seal`.
+    /// `key_material` bundles the cipher, HMAC/HWM keys, and integrity-seal state — see
+    /// [`crate::agent::DurableKeyMaterial`] for the meaning of each field.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
     pub fn with_durable_agent_turns(
         mut self,
         config: zeph_config::DurableConfig,
         db_url: String,
         sqlite_path: String,
-        cipher: Option<std::sync::Arc<dyn zeph_durable::PayloadCipher>>,
-        hmac_key: Option<[u8; 32]>,
-        hwm_key: Option<(u32, [u8; 32])>,
-        previous_hmac_key: Option<[u8; 32]>,
-        previous_hwm_key: Option<(u32, [u8; 32])>,
-        integrity_seal: (bool, std::collections::HashSet<zeph_durable::ExecutionId>),
+        key_material: crate::agent::DurableKeyMaterial,
     ) -> Self {
         self.services.session.durable_agent_turns_config = Some(config);
         self.services.session.durable_agent_turns_db_url = Some(db_url);
         self.services.session.durable_agent_turns_sqlite_path = Some(sqlite_path);
-        self.services.session.durable_agent_turns_cipher = cipher;
-        self.services.session.durable_agent_turns_hmac_key = hmac_key;
-        self.services.session.durable_agent_turns_hwm_key = hwm_key;
-        self.services.session.durable_agent_turns_previous_hmac_key = previous_hmac_key;
-        self.services.session.durable_agent_turns_previous_hwm_key = previous_hwm_key;
-        self.services.session.durable_agent_turns_integrity_sealed = integrity_seal.0;
+        self.services.session.durable_agent_turns_cipher = key_material.cipher;
+        self.services.session.durable_agent_turns_hmac_key = key_material.hmac_key;
+        self.services.session.durable_agent_turns_hwm_key = key_material.hwm_key;
+        self.services.session.durable_agent_turns_previous_hmac_key =
+            key_material.previous_hmac_key;
+        self.services.session.durable_agent_turns_previous_hwm_key = key_material.previous_hwm_key;
+        self.services.session.durable_agent_turns_integrity_sealed = key_material.integrity_sealed;
         self.services
             .session
-            .durable_agent_turns_integrity_grandfather = integrity_seal.1;
+            .durable_agent_turns_integrity_grandfather = key_material.integrity_grandfather;
         self
     }
 
