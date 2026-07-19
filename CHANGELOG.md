@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+
+- `zeph-vault`/`zeph`: `zeph vault init` ignored `--vault-path`/`--vault-key` overrides and
+  unconditionally overwrote an existing vault with a fresh, empty keypair — no confirmation,
+  no `--force` requirement, no partial-recovery path (#6475). Caused a real data-loss incident
+  during live testing (19 secrets destroyed with no backup). Fixed by:
+  - `src/commands/vault.rs::handle_vault_command`'s `Init` arm now dispatches through the same
+    override-resolved `key_path_owned`/`vault_path_owned` values already used by
+    `Set`/`Get`/`List`/`Rm`, instead of a freshly recomputed `default_vault_dir()`.
+  - New `AgeVaultProvider::init_vault_at(key_path, vault_path, force)` in `zeph-vault`, mirroring
+    `load`'s explicit-path signature. Refuses to overwrite when `vault-key.txt` or `secrets.age`
+    already exists at the target unless `force: true`, returning a new
+    `AgeVaultError::VaultAlreadyExists(PathBuf)` variant. `init_vault(dir)` (the directory-based
+    convenience used by ~20 existing internal call sites) is now a thin wrapper over
+    `init_vault_at` with `force: false`, so every caller gets the guard by default with no
+    signature changes required at those call sites.
+  - New `VaultCommand::Init { force: bool }` CLI flag (`vault init --force`), mirroring the
+    existing `vault set --force` UX. A `--force` overwrite prints an explicit "Overwriting
+    existing vault at ..." notice, distinct from the normal first-time "Vault initialized:"
+    success message.
+
+- `zeph`: `zeph doctor`'s `integrity.anchor` and `durable.integrity_seal` checks
+  (`check_integrity_anchor`/`check_durable_integrity_seal` in `src/commands/doctor.rs`, added by
+  #6449) ignored `--vault-path`/`--vault-key` overrides and always inspected
+  `default_vault_dir()` directly, unlike the sibling `check_vault_file_exists`/
+  `check_vault_file_mode`/`check_vault_key_mode` checks in the same `run_doctor` invocation,
+  which already resolve overrides via `crate::bootstrap::parse_vault_args` (#6479). Could report
+  a misleading `OK`/`WARN` when `--vault-path`/`--vault-key` pointed at a vault different from
+  the default. Fixed by threading the same resolved `vault_args` key/vault path into both checks,
+  falling back to `default_vault_dir()` only when no override is supplied — behavior is
+  unchanged for the common no-override case.
 
 ## [0.22.2] - 2026-07-18
 ### Added

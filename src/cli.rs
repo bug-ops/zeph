@@ -1310,8 +1310,14 @@ pub(crate) enum UrlSchemeCommand {
 
 #[derive(Subcommand)]
 pub(crate) enum VaultCommand {
-    /// Generate age keypair and empty encrypted vault
-    Init,
+    /// Generate age keypair and empty encrypted vault.
+    /// Note: refuses to overwrite an already-initialized vault at the target location.
+    Init {
+        /// Overwrite an existing vault. Without this flag, `vault init` refuses to replace a
+        /// vault-key.txt/secrets.age pair that already exists at the target location.
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Encrypt and store a secret.
     /// Note: VALUE is visible in process listing (ps/history). For sensitive values

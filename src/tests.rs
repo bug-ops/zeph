@@ -690,7 +690,18 @@ fn cli_parse_vault_init() {
     assert!(matches!(
         cli.command,
         Some(Command::Vault {
-            command: VaultCommand::Init
+            command: VaultCommand::Init { force: false }
+        })
+    ));
+}
+
+#[test]
+fn cli_parse_vault_init_force() {
+    let cli = Cli::try_parse_from(["zeph", "vault", "init", "--force"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Command::Vault {
+            command: VaultCommand::Init { force: true }
         })
     ));
 }

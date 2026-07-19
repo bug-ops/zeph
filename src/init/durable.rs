@@ -174,13 +174,24 @@ pub(super) fn store_durable_key(state: &WizardState) -> anyhow::Result<()> {
     let key_path = dir.join("vault-key.txt");
     let vault_path = dir.join("secrets.age");
     if !key_path.exists() || !vault_path.exists() {
+        // `init_vault` (since #6475) refuses with `AgeVaultError::VaultAlreadyExists` — and no
+        // `--force` — whenever exactly one of the two files is present (a partial prior vault
+        // state). That guard cannot be satisfied from inside this non-interactive wizard step,
+        // so a partial state now surfaces as a hard "failed to initialize age vault: vault
+        // already exists at ..." error here instead of the pre-#6475 silent regeneration (the
+        // #5874 wipe vector). This is intentional and strictly safer — it trades a confusing
+        // wizard failure for the alternative of silently destroying whichever file survived —
+        // but it does mean a partial vault state is not self-healing through this path; the
+        // operator must resolve it manually (e.g. `zeph vault init --force`) before retrying.
         zeph_core::vault::AgeVaultProvider::init_vault(&dir)
             .map_err(|e| anyhow::anyhow!("failed to initialize age vault: {e}"))?;
     }
     let mut provider = zeph_core::vault::AgeVaultProvider::load(&key_path, &vault_path)
         .map_err(|e| anyhow::anyhow!("failed to load age vault: {e}"))?;
-    // Reaching this point already implies the caller's own rotation gate approved an
-    // overwrite (no pre-existing key, or the user typed the "rotate" confirmation above).
+    // `overwrite: true` here is about the ZEPH_DURABLE_KEY *secret*, not the vault file guard
+    // above: reaching this point implies the caller's own rotation gate already approved
+    // replacing the secret (no pre-existing key, or the user typed the "rotate" confirmation
+    // above) — unrelated to, and not affected by, the vault-file-level guard on `init_vault`.
     provider
         .set_secret_mut("ZEPH_DURABLE_KEY".to_owned(), key.to_owned(), true)
         .map_err(|e| anyhow::anyhow!("failed to set ZEPH_DURABLE_KEY: {e}"))?;

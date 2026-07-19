@@ -248,7 +248,16 @@ fn check_config_parse(config_path: &Path) -> (CheckResult, Option<zeph_core::con
 /// Reports whether vault-anchor downgrade-resistance (issue #6449) is active for this
 /// deployment. `[integrity] anchor = "none"` is a documented, valid opt-out (reported `OK`, not
 /// `WARN`) — see `zeph_config::AnchorMode`.
-fn check_integrity_anchor(config: &zeph_core::config::Config) -> CheckResult {
+///
+/// `key_path`/`vault_path` are the CLI-resolved vault location (`--vault-key`/`--vault-path`
+/// overrides, falling back to `default_vault_dir()`) — the same resolution already used by
+/// [`check_vault_file_exists`]/[`check_vault_file_mode`]/[`check_vault_key_mode`], so this check
+/// never inspects an unrelated default vault when an override is in effect.
+fn check_integrity_anchor(
+    config: &zeph_core::config::Config,
+    key_path: &Path,
+    vault_path: &Path,
+) -> CheckResult {
     let start = Instant::now();
     match config.integrity.anchor {
         zeph_config::AnchorMode::None => CheckResult::ok(
@@ -257,8 +266,7 @@ fn check_integrity_anchor(config: &zeph_core::config::Config) -> CheckResult {
             elapsed_ms(start),
         ),
         zeph_config::AnchorMode::Vault => {
-            let dir = zeph_core::vault::default_vault_dir();
-            if dir.join("vault-key.txt").exists() && dir.join("secrets.age").exists() {
+            if key_path.exists() && vault_path.exists() {
                 CheckResult::ok(
                     "integrity.anchor",
                     format!(
@@ -282,7 +290,14 @@ fn check_integrity_anchor(config: &zeph_core::config::Config) -> CheckResult {
 
 /// Reports the durable integrity seal status (issue #6449): sealed/unsealed, and how many
 /// resumable pre-feature executions remain (blocking `zeph durable seal-integrity`).
-fn check_durable_integrity_seal(config: &zeph_core::config::Config) -> CheckResult {
+///
+/// `key_path`/`vault_path` are the CLI-resolved vault location — see
+/// [`check_integrity_anchor`]'s doc comment for the resolution rationale.
+fn check_durable_integrity_seal(
+    config: &zeph_core::config::Config,
+    key_path: &Path,
+    vault_path: &Path,
+) -> CheckResult {
     let start = Instant::now();
     if !config.durable.enabled {
         return CheckResult::ok(
@@ -291,9 +306,7 @@ fn check_durable_integrity_seal(config: &zeph_core::config::Config) -> CheckResu
             elapsed_ms(start),
         );
     }
-    let dir = zeph_core::vault::default_vault_dir();
-    let Ok(provider) = AgeVaultProvider::load(&dir.join("vault-key.txt"), &dir.join("secrets.age"))
-    else {
+    let Ok(provider) = AgeVaultProvider::load(key_path, vault_path) else {
         return CheckResult::warn(
             "durable.integrity_seal",
             "durable enabled but no age vault found — cannot resolve seal status",
@@ -841,21 +854,21 @@ fn check_url_scheme() -> CheckResult {
 // Main entry point
 // ---------------------------------------------------------------------------
 
-/// Run all doctor checks and return exit code (0 = ok, 1 = failures).
+/// Runs every doctor check and assembles the aggregate report, without rendering it.
 ///
-/// # Errors
-///
-/// Returns an error if config resolution or I/O fails at the top level.
+/// Split out from [`run_doctor`] so the full check pipeline — including the `--vault-path`/
+/// `--vault-key` override resolution shared by checks 2-4 and 17 (#6479) — can be exercised
+/// end-to-end in tests against an in-memory [`DoctorReport`], without needing to capture the
+/// process's real stdout (`run_doctor`'s [`finish`] writes there directly).
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-pub(crate) async fn run_doctor(
+async fn build_doctor_report(
     config_path: &Path,
-    json: bool,
     llm_timeout_secs: u64,
     mcp_timeout_secs: u64,
     vault_override: Option<&str>,
     vault_key_override: Option<&Path>,
     vault_path_override: Option<&Path>,
-) -> anyhow::Result<i32> {
+) -> DoctorReport {
     let total_start = Instant::now();
     let mut results: Vec<CheckResult> = Vec::new();
 
@@ -865,22 +878,22 @@ pub(crate) async fn run_doctor(
     results.push(config_result);
 
     let Some(config) = config_opt else {
-        let report = DoctorReport {
+        return DoctorReport {
             elapsed_ms: elapsed_ms(total_start),
             results,
         };
-        return finish(&report, json);
     };
 
     // 2 + 3 + 4. Vault checks
+    let vault_args_result = crate::bootstrap::parse_vault_args(
+        &config,
+        vault_override,
+        vault_key_override,
+        vault_path_override,
+    );
     {
         let start = Instant::now();
-        match crate::bootstrap::parse_vault_args(
-            &config,
-            vault_override,
-            vault_key_override,
-            vault_path_override,
-        ) {
+        match &vault_args_result {
             Ok(vault_args) => {
                 if vault_args.backend == zeph_config::VaultBackend::Age {
                     if let Some(ref vault_path) = vault_args.vault_path {
@@ -893,7 +906,11 @@ pub(crate) async fn run_doctor(
                 }
             }
             Err(e) => {
-                results.push(CheckResult::fail("vault.backend", e, elapsed_ms(start)));
+                results.push(CheckResult::fail(
+                    "vault.backend",
+                    e.clone(),
+                    elapsed_ms(start),
+                ));
             }
         }
     }
@@ -1026,14 +1043,62 @@ pub(crate) async fn run_doctor(
     results.push(check_url_scheme());
 
     // 17. integrity.anchor / durable.seal (issue #6449)
-    results.push(check_integrity_anchor(&config));
-    results.push(check_durable_integrity_seal(&config));
+    //
+    // Resolve the same vault_args computed for checks 2-4 above (--vault-key/--vault-path
+    // overrides, falling back to default_vault_dir()) so these two checks never diverge from
+    // the vault the rest of this invocation is configured against (#6479).
+    let (anchor_key_path, anchor_vault_path) = {
+        let default_dir = zeph_core::vault::default_vault_dir();
+        let (resolved_key, resolved_vault) = vault_args_result
+            .as_ref()
+            .map(|va| (va.key_path.clone(), va.vault_path.clone()))
+            .unwrap_or_default();
+        (
+            resolved_key.map_or_else(|| default_dir.join("vault-key.txt"), PathBuf::from),
+            resolved_vault.map_or_else(|| default_dir.join("secrets.age"), PathBuf::from),
+        )
+    };
+    results.push(check_integrity_anchor(
+        &config,
+        &anchor_key_path,
+        &anchor_vault_path,
+    ));
+    results.push(check_durable_integrity_seal(
+        &config,
+        &anchor_key_path,
+        &anchor_vault_path,
+    ));
 
-    let report = DoctorReport {
+    DoctorReport {
         elapsed_ms: elapsed_ms(total_start),
         results,
-    };
+    }
+}
 
+/// Runs every doctor check and renders the report to stdout (plain text or JSON).
+///
+/// # Errors
+///
+/// Returns an error if config resolution or I/O fails at the top level.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_doctor(
+    config_path: &Path,
+    json: bool,
+    llm_timeout_secs: u64,
+    mcp_timeout_secs: u64,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&Path>,
+    vault_path_override: Option<&Path>,
+) -> anyhow::Result<i32> {
+    let report = Box::pin(build_doctor_report(
+        config_path,
+        llm_timeout_secs,
+        mcp_timeout_secs,
+        vault_override,
+        vault_key_override,
+        vault_path_override,
+    ))
+    .await;
     finish(&report, json)
 }
 
@@ -1256,6 +1321,131 @@ mod tests {
             "FAIL message must include remediation command, got: {}",
             result.detail
         );
+    }
+
+    // #6479: check_integrity_anchor/check_durable_integrity_seal must inspect the vault path
+    // they're given, not an unconditionally hardcoded default_vault_dir().
+    #[test]
+    fn check_integrity_anchor_ok_when_vault_present_at_given_path() {
+        let dir = tempfile::tempdir().unwrap();
+        zeph_core::vault::AgeVaultProvider::init_vault(dir.path()).unwrap();
+        let mut config = zeph_core::config::Config::default();
+        config.integrity.anchor = zeph_config::AnchorMode::Vault;
+
+        let result = check_integrity_anchor(
+            &config,
+            &dir.path().join("vault-key.txt"),
+            &dir.path().join("secrets.age"),
+        );
+        assert_eq!(result.status, CheckStatus::Ok);
+    }
+
+    #[test]
+    fn check_integrity_anchor_warns_when_given_path_has_no_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = zeph_core::config::Config::default();
+        config.integrity.anchor = zeph_config::AnchorMode::Vault;
+
+        // No vault written at `dir` — an override pointing here must WARN, independent of
+        // whether a real vault happens to exist at the machine's default_vault_dir().
+        let result = check_integrity_anchor(
+            &config,
+            &dir.path().join("vault-key.txt"),
+            &dir.path().join("secrets.age"),
+        );
+        assert_eq!(result.status, CheckStatus::Warn);
+    }
+
+    #[test]
+    fn check_durable_integrity_seal_resolves_given_vault_path() {
+        let dir = tempfile::tempdir().unwrap();
+        zeph_core::vault::AgeVaultProvider::init_vault(dir.path()).unwrap();
+        let mut config = zeph_core::config::Config::default();
+        config.durable.enabled = true;
+
+        let result = check_durable_integrity_seal(
+            &config,
+            &dir.path().join("vault-key.txt"),
+            &dir.path().join("secrets.age"),
+        );
+        // A freshly-initialized vault has no seal secret yet — WARN (not sealed), never a
+        // hard load failure, proving the given path was actually loaded.
+        assert_eq!(result.status, CheckStatus::Warn);
+        assert!(result.detail.contains("not sealed"));
+    }
+
+    #[test]
+    fn check_durable_integrity_seal_warns_when_given_path_has_no_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = zeph_core::config::Config::default();
+        config.durable.enabled = true;
+
+        let result = check_durable_integrity_seal(
+            &config,
+            &dir.path().join("vault-key.txt"),
+            &dir.path().join("secrets.age"),
+        );
+        assert_eq!(result.status, CheckStatus::Warn);
+        assert!(result.detail.contains("no age vault found"));
+    }
+
+    // #6479: end-to-end regression — `build_doctor_report` (the full pipeline `run_doctor`
+    // drives) must actually thread a `--vault-path`/`--vault-key` override into checks 17/18,
+    // not just the standalone `check_integrity_anchor`/`check_durable_integrity_seal` functions
+    // tested above. This is the exact wiring gap #6479 originally had: each check function was
+    // individually correct in isolation, but the call site in `run_doctor` passed it the wrong
+    // (hardcoded default) path.
+    #[tokio::test]
+    async fn build_doctor_report_threads_vault_override_into_integrity_checks() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            zeph_core::config::Config::dump_defaults().expect("dump defaults"),
+        )
+        .unwrap();
+
+        // Deliberately empty — no vault-key.txt/secrets.age here. If the override were ignored
+        // (the pre-#6479 bug), this check would instead report whatever status the real machine's
+        // default_vault_dir() happens to have, which is exactly the bug this test guards against.
+        let vault_dir = tempfile::tempdir().unwrap();
+        let key_path = vault_dir.path().join("vault-key.txt");
+        let vault_path = vault_dir.path().join("secrets.age");
+
+        let report = Box::pin(build_doctor_report(
+            &config_path,
+            1, // llm_timeout_secs — bounds any localhost provider probe in dumped defaults
+            1, // mcp_timeout_secs
+            None,
+            Some(&key_path),
+            Some(&vault_path),
+        ))
+        .await;
+
+        let anchor = report
+            .results
+            .iter()
+            .find(|r| r.name == "integrity.anchor")
+            .expect("integrity.anchor check must run");
+        assert_eq!(
+            anchor.status,
+            CheckStatus::Warn,
+            "override points at an empty dir — must WARN via the override path, not silently \
+             report OK against the real default vault; got detail: {}",
+            anchor.detail
+        );
+
+        let seal = report
+            .results
+            .iter()
+            .find(|r| r.name == "durable.integrity_seal")
+            .expect("durable.integrity_seal check must run");
+        // `[durable] enabled` is false in dumped defaults, so this reports OK ("durable
+        // execution disabled") regardless of the vault override — confirms the check still runs
+        // and the override didn't cause a panic/short-circuit, without depending on `[durable]`
+        // being enabled in the default config.
+        assert_eq!(seal.status, CheckStatus::Ok);
+        assert!(seal.detail.contains("disabled"));
     }
 
     #[test]

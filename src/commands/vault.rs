@@ -21,9 +21,16 @@ pub(crate) fn handle_vault_command(
     let vault_path_owned = vault_path.map_or_else(|| dir.join("secrets.age"), PathBuf::from);
 
     match cmd {
-        VaultCommand::Init => {
-            AgeVaultProvider::init_vault(&dir)
-                .map_err(|e| anyhow::anyhow!("vault init failed: {e}"))?;
+        VaultCommand::Init { force } => {
+            AgeVaultProvider::init_vault_at(&key_path_owned, &vault_path_owned, force).map_err(
+                |e| match e {
+                    AgeVaultError::VaultAlreadyExists(path) => anyhow::anyhow!(
+                        "vault already exists at {}. Re-run with --force to overwrite it.",
+                        path.display()
+                    ),
+                    other => anyhow::anyhow!("vault init failed: {other}"),
+                },
+            )?;
         }
         VaultCommand::Set { key, value, force } => {
             let mut provider = AgeVaultProvider::load(&key_path_owned, &vault_path_owned)
@@ -158,6 +165,86 @@ mod tests {
             Some(&vault_path),
         )
         .unwrap();
+    }
+
+    // #6475: `vault init` writes to the --vault-path/--vault-key override, not the default dir.
+    #[test]
+    fn handle_vault_command_init_respects_path_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+
+        handle_vault_command(
+            VaultCommand::Init { force: false },
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap();
+
+        assert!(
+            key_path.exists(),
+            "vault key must be written to the override path"
+        );
+        assert!(
+            vault_path.exists(),
+            "vault file must be written to the override path"
+        );
+    }
+
+    // #6475: `vault init` refuses to silently overwrite an already-initialized vault.
+    #[test]
+    fn handle_vault_command_init_existing_vault_without_force_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+
+        handle_vault_command(
+            VaultCommand::Init { force: false },
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap();
+        let original_key = std::fs::read(&key_path).unwrap();
+
+        let err = handle_vault_command(
+            VaultCommand::Init { force: false },
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("--force"));
+
+        // The original vault must survive the rejected re-init attempt.
+        assert_eq!(std::fs::read(&key_path).unwrap(), original_key);
+    }
+
+    // #6475: `--force` still allows a deliberate reset of an existing vault.
+    #[test]
+    fn handle_vault_command_init_existing_vault_with_force_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+
+        handle_vault_command(
+            VaultCommand::Init { force: false },
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap();
+        let original_key = std::fs::read(&key_path).unwrap();
+
+        handle_vault_command(
+            VaultCommand::Init { force: true },
+            Some(&key_path),
+            Some(&vault_path),
+        )
+        .unwrap();
+
+        assert_ne!(
+            std::fs::read(&key_path).unwrap(),
+            original_key,
+            "--force must regenerate the keypair"
+        );
     }
 
     // R-04: Get/Rm missing-key error paths

@@ -70,6 +70,11 @@ pub enum AgeVaultError {
     /// already exists in the vault.
     #[error("secret key already exists: {0} (pass overwrite=true to replace it)")]
     AlreadyExists(String),
+    /// [`AgeVaultProvider::init_vault`] (or [`AgeVaultProvider::init_vault_at`]) found an
+    /// existing `vault-key.txt` or `secrets.age` at the target location and `force` was not
+    /// set.
+    #[error("vault already exists at {0} (pass force=true / --force to overwrite it)")]
+    VaultAlreadyExists(PathBuf),
 }
 
 // ---------------------------------------------------------------------------
@@ -444,9 +449,13 @@ impl AgeVaultProvider {
     /// | `<dir>/vault-key.txt` | age identity (private + public key comment) | `0600` |
     /// | `<dir>/secrets.age`   | age-encrypted empty JSON object `{}` | default |
     ///
+    /// Refuses to overwrite a pre-existing vault at `dir` — see [`AgeVaultProvider::init_vault_at`]
+    /// for the underlying guard and a `force` escape hatch.
+    ///
     /// # Errors
     ///
-    /// Returns [`AgeVaultError`] on key/vault write failure or encryption failure.
+    /// Returns [`AgeVaultError::VaultAlreadyExists`] if `vault-key.txt` or `secrets.age` already
+    /// exists under `dir`, or [`AgeVaultError`] on key/vault write failure or encryption failure.
     ///
     /// # Examples
     ///
@@ -459,9 +468,77 @@ impl AgeVaultProvider {
     /// # Ok::<_, zeph_vault::AgeVaultError>(())
     /// ```
     pub fn init_vault(dir: &Path) -> Result<(), AgeVaultError> {
+        Self::init_vault_at(&dir.join("vault-key.txt"), &dir.join("secrets.age"), false)
+    }
+
+    /// Generates a fresh age keypair and an empty encrypted vault at explicit `key_path` and
+    /// `vault_path` locations, mirroring [`AgeVaultProvider::load`]'s explicit-path signature.
+    ///
+    /// Unlike [`AgeVaultProvider::init_vault`] (which always derives the standard
+    /// `vault-key.txt`/`secrets.age` filenames from a directory), this accepts arbitrary target
+    /// paths — the correct entry point when the caller has resolved `--vault-key`/`--vault-path`
+    /// CLI overrides that may not follow the default directory/filename convention.
+    ///
+    /// # Overwrite guard
+    ///
+    /// If either `key_path` or `vault_path` already exists and `force` is `false`, the vault is
+    /// left untouched and [`AgeVaultError::VaultAlreadyExists`] is returned — a partial prior
+    /// state (only one of the two files present) is treated the same as a full prior vault,
+    /// since it is itself evidence of an earlier init attempt worth protecting. Pass `force:
+    /// true` to regenerate the keypair and overwrite both files unconditionally.
+    ///
+    /// The existence check and the subsequent write are not wrapped in a single filesystem lock,
+    /// so a racing concurrent call between the check and the write could still both pass the
+    /// guard; this is a best-effort, not a hard mutual-exclusion guarantee.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AgeVaultError::VaultAlreadyExists`] when a vault already exists and `force` is
+    /// `false`, or [`AgeVaultError`] on key/vault write failure or encryption failure.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// use zeph_vault::AgeVaultProvider;
+    ///
+    /// AgeVaultProvider::init_vault_at(
+    ///     Path::new("/etc/zeph/vault-key.txt"),
+    ///     Path::new("/etc/zeph/secrets.age"),
+    ///     false,
+    /// )?;
+    /// # Ok::<_, zeph_vault::AgeVaultError>(())
+    /// ```
+    pub fn init_vault_at(
+        key_path: &Path,
+        vault_path: &Path,
+        force: bool,
+    ) -> Result<(), AgeVaultError> {
         use age::secrecy::ExposeSecret as _;
 
-        std::fs::create_dir_all(dir).map_err(AgeVaultError::KeyWrite)?;
+        let existing = if key_path.exists() {
+            Some(key_path)
+        } else if vault_path.exists() {
+            Some(vault_path)
+        } else {
+            None
+        };
+
+        if let Some(existing_path) = existing {
+            if !force {
+                return Err(AgeVaultError::VaultAlreadyExists(
+                    existing_path.to_path_buf(),
+                ));
+            }
+            println!("Overwriting existing vault at {}.", existing_path.display());
+        }
+
+        if let Some(parent) = key_path.parent() {
+            std::fs::create_dir_all(parent).map_err(AgeVaultError::KeyWrite)?;
+        }
+        if let Some(parent) = vault_path.parent() {
+            std::fs::create_dir_all(parent).map_err(AgeVaultError::VaultWrite)?;
+        }
 
         let identity = age::x25519::Identity::generate();
         let public_key = identity.to_public();
@@ -472,13 +549,11 @@ impl AgeVaultProvider {
             identity.to_string().expose_secret()
         ));
 
-        let key_path = dir.join("vault-key.txt");
-        write_private_file(&key_path, key_content.as_bytes())?;
+        write_private_file(key_path, key_content.as_bytes())?;
 
-        let vault_path = dir.join("secrets.age");
         let empty: BTreeMap<String, Zeroizing<String>> = BTreeMap::new();
         let ciphertext = encrypt_secrets(&identity, &empty)?;
-        atomic_write(&vault_path, &ciphertext)?;
+        atomic_write(vault_path, &ciphertext)?;
 
         println!("Vault initialized:");
         println!("  Key:   {}", key_path.display());
@@ -618,6 +693,93 @@ mod tests {
 
         assert!(dir.path().join("vault-key.txt").exists());
         assert!(dir.path().join("secrets.age").exists());
+    }
+
+    #[test]
+    fn init_vault_refuses_to_overwrite_existing_vault() {
+        let dir = tempdir().unwrap();
+        AgeVaultProvider::init_vault(dir.path()).unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+        let original_key = std::fs::read(&key_path).unwrap();
+
+        let err = AgeVaultProvider::init_vault(dir.path()).unwrap_err();
+        assert!(matches!(err, AgeVaultError::VaultAlreadyExists(_)));
+
+        // Neither file was touched by the rejected re-init.
+        assert_eq!(std::fs::read(&key_path).unwrap(), original_key);
+        let _ = vault_path; // existence already implied by init_vault_creates_files
+    }
+
+    #[test]
+    fn init_vault_at_force_overwrites_existing_vault() {
+        let dir = tempdir().unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+        AgeVaultProvider::init_vault_at(&key_path, &vault_path, false).unwrap();
+        let original_key = std::fs::read(&key_path).unwrap();
+
+        AgeVaultProvider::init_vault_at(&key_path, &vault_path, true).unwrap();
+        let new_key = std::fs::read(&key_path).unwrap();
+
+        assert_ne!(original_key, new_key, "force must regenerate the keypair");
+    }
+
+    #[test]
+    fn init_vault_at_respects_explicit_non_default_paths() {
+        let dir = tempdir().unwrap();
+        let key_path = dir.path().join("custom-key.txt");
+        let vault_path = dir.path().join("custom-vault.age");
+
+        AgeVaultProvider::init_vault_at(&key_path, &vault_path, false).unwrap();
+
+        assert!(key_path.exists());
+        assert!(vault_path.exists());
+        // The standard default-named files must not have been created as a side effect.
+        assert!(!dir.path().join("vault-key.txt").exists());
+        assert!(!dir.path().join("secrets.age").exists());
+    }
+
+    #[test]
+    fn init_vault_at_guards_when_only_vault_file_present() {
+        let dir = tempdir().unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+        // Simulate a partial prior state: only `secrets.age` exists, `vault-key.txt` does not
+        // (e.g. an interrupted write, or a corrupted/incomplete prior init).
+        std::fs::write(&vault_path, b"not a real age file").unwrap();
+
+        let err = AgeVaultProvider::init_vault_at(&key_path, &vault_path, false).unwrap_err();
+        match err {
+            AgeVaultError::VaultAlreadyExists(path) => assert_eq!(path, vault_path),
+            other => panic!("expected VaultAlreadyExists, got {other:?}"),
+        }
+        // Neither the guard nor the refused init may have created/touched the key file.
+        assert!(!key_path.exists());
+        assert_eq!(std::fs::read(&vault_path).unwrap(), b"not a real age file");
+    }
+
+    #[test]
+    fn init_vault_at_creates_independent_parent_dirs_for_key_and_vault() {
+        let dir = tempdir().unwrap();
+        // key_path and vault_path live under two entirely separate, not-yet-existing nested
+        // parent directories — proves each parent is created independently rather than the two
+        // calls collapsing into a no-op because they happen to share an already-existing parent.
+        let key_path = dir.path().join("keys/sub/vault-key.txt");
+        let vault_path = dir.path().join("secrets/sub/secrets.age");
+
+        AgeVaultProvider::init_vault_at(&key_path, &vault_path, false).unwrap();
+
+        assert!(
+            key_path.exists(),
+            "key file must exist under its own parent chain"
+        );
+        assert!(
+            vault_path.exists(),
+            "vault file must exist under its own, separate parent chain"
+        );
+        assert!(dir.path().join("keys/sub").is_dir());
+        assert!(dir.path().join("secrets/sub").is_dir());
     }
 
     #[test]
