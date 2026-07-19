@@ -614,13 +614,29 @@ mod tests {
         acp::schema::v1::ToolCallUpdate::new(id.to_owned(), fields)
     }
 
+    /// A fresh, isolated `acp-permissions.toml` path for one test.
+    ///
+    /// `AcpPermissionGate::new(conn, None)` falls back to the real
+    /// `~/Library/Application Support/zeph/acp-permissions.toml` (or platform
+    /// equivalent) — sharing that path across test runs violates the "unique
+    /// per-test path" testing rule and pollutes the developer's real permission
+    /// file with test-injected `AllowAlways`/`RejectAlways` decisions (#6512).
+    /// Every gate constructed in this module must use its own tempdir-backed
+    /// path instead of `None`.
+    fn temp_perm_path() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acp-permissions.toml");
+        (dir, path)
+    }
+
     #[tokio::test]
     async fn allow_once_returns_true() {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
                 let conn = make_conn_async("allow_once").await;
-                let (gate, handler) = AcpPermissionGate::new(conn, None);
+                let (_tmp, perm_path) = temp_perm_path();
+                let (gate, handler) = AcpPermissionGate::new(conn, Some(perm_path));
                 tokio::task::spawn_local(handler);
 
                 let sid = acp::schema::v1::SessionId::new("s1");
@@ -637,7 +653,8 @@ mod tests {
         local
             .run_until(async {
                 let conn = make_conn_async("reject_once").await;
-                let (gate, handler) = AcpPermissionGate::new(conn, None);
+                let (_tmp, perm_path) = temp_perm_path();
+                let (gate, handler) = AcpPermissionGate::new(conn, Some(perm_path));
                 tokio::task::spawn_local(handler);
 
                 let sid = acp::schema::v1::SessionId::new("s1");
@@ -654,7 +671,8 @@ mod tests {
         local
             .run_until(async {
                 let conn = make_conn_async("allow_always").await;
-                let (gate, handler) = AcpPermissionGate::new(conn, None);
+                let (_tmp, perm_path) = temp_perm_path();
+                let (gate, handler) = AcpPermissionGate::new(conn, Some(perm_path));
                 tokio::task::spawn_local(handler);
 
                 let sid = acp::schema::v1::SessionId::new("s1");
@@ -676,7 +694,8 @@ mod tests {
         local
             .run_until(async {
                 let conn = make_conn_async("reject_always").await;
-                let (gate, handler) = AcpPermissionGate::new(conn, None);
+                let (_tmp, perm_path) = temp_perm_path();
+                let (gate, handler) = AcpPermissionGate::new(conn, Some(perm_path));
                 tokio::task::spawn_local(handler);
 
                 let sid = acp::schema::v1::SessionId::new("s1");
@@ -698,7 +717,8 @@ mod tests {
         local
             .run_until(async {
                 let conn = make_conn_cancelled().await;
-                let (gate, handler) = AcpPermissionGate::new(conn, None);
+                let (_tmp, perm_path) = temp_perm_path();
+                let (gate, handler) = AcpPermissionGate::new(conn, Some(perm_path));
                 tokio::task::spawn_local(handler);
 
                 let sid = acp::schema::v1::SessionId::new("s1");
@@ -809,7 +829,8 @@ mod tests {
         local
             .run_until(async {
                 let conn = make_conn_async("allow_always").await;
-                let (gate, handler) = AcpPermissionGate::new(conn, None);
+                let (_tmp, perm_path) = temp_perm_path();
+                let (gate, handler) = AcpPermissionGate::new(conn, Some(perm_path));
                 tokio::task::spawn_local(handler);
 
                 // First call with tool_name "b" under session "a" — gets AllowAlways cached.
@@ -820,7 +841,8 @@ mod tests {
                 // A call with tool_name "a\0b" — after stripping \0 becomes "ab",
                 // which is a different cache key.
                 let conn2 = make_conn_async("reject_once").await;
-                let (gate2, handler2) = AcpPermissionGate::new(conn2, None);
+                let (_tmp2, perm_path2) = temp_perm_path();
+                let (gate2, handler2) = AcpPermissionGate::new(conn2, Some(perm_path2));
                 tokio::task::spawn_local(handler2);
 
                 let sid2 = acp::schema::v1::SessionId::new("s2");
@@ -968,7 +990,8 @@ mod tests {
         local
             .run_until(async {
                 let conn = make_conn_async("allow_always").await;
-                let (gate, handler) = AcpPermissionGate::new(conn, None);
+                let (_tmp, perm_path) = temp_perm_path();
+                let (gate, handler) = AcpPermissionGate::new(conn, Some(perm_path));
                 tokio::task::spawn_local(handler);
 
                 let sid = acp::schema::v1::SessionId::new("s1");
@@ -977,7 +1000,8 @@ mod tests {
 
                 // Different binary in a new gate backed by reject_once — must not inherit "git" cache.
                 let conn2 = make_conn_async("reject_once").await;
-                let (gate2, handler2) = AcpPermissionGate::new(conn2, None);
+                let (_tmp2, perm_path2) = temp_perm_path();
+                let (gate2, handler2) = AcpPermissionGate::new(conn2, Some(perm_path2));
                 tokio::task::spawn_local(handler2);
 
                 let sid2 = acp::schema::v1::SessionId::new("s2");
