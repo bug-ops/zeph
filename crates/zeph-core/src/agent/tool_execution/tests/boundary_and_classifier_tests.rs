@@ -1195,7 +1195,7 @@ mod pii_ner_circuit_breaker {
         let mut agent = make_agent_with_ner(Arc::new(MarkerFlaggingBackend), 5000, 2);
         let body = "$ date +%s.%N\n1783259155.445901000\n";
 
-        let (result, _) = agent.sanitize_tool_output(body, "bash").await;
+        let (result, _, _) = agent.sanitize_tool_output(body, "bash").await;
 
         assert!(
             result.contains(NER_TEST_MARKER),
@@ -1214,7 +1214,7 @@ mod pii_ner_circuit_breaker {
         let mut agent = make_agent_with_ner(Arc::new(MarkerFlaggingBackend), 5000, 2);
         let body = format!("$ cat notes.txt\nvalue {NER_TEST_MARKER} here\n");
 
-        let (result, _) = agent.sanitize_tool_output(&body, "bash").await;
+        let (result, _, _) = agent.sanitize_tool_output(&body, "bash").await;
 
         assert!(
             result.contains("[PII:PASSWORD]"),
@@ -1235,7 +1235,7 @@ mod pii_ner_circuit_breaker {
         let mut agent = make_agent_with_ner(Arc::new(MarkerFlaggingBackend), 5000, 2);
         let body = format!("$ {NER_TEST_MARKER} looks like an echo but isn't\n");
 
-        let (result, _) = agent.sanitize_tool_output(&body, "web-scrape").await;
+        let (result, _, _) = agent.sanitize_tool_output(&body, "web-scrape").await;
 
         assert!(
             result.contains("[PII:PASSWORD]"),
@@ -1444,7 +1444,7 @@ mod skip_ml_internal_tools {
         agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg)
             .with_classifier(Arc::new(BlockedBackend), 5_000, 0.5)
             .with_enforcement_mode(zeph_config::InjectionEnforcementMode::Block);
-        let (body, _) = agent
+        let (body, _, _) = agent
             .sanitize_tool_output("skill not found: exit", "invoke_skill")
             .await;
         assert_ne!(
@@ -1474,7 +1474,7 @@ mod skip_ml_internal_tools {
 
         for tool in ["bash", "shell"] {
             let body = "$ expr 15 '*' 3\n45";
-            let (result, _) = agent.sanitize_tool_output(body, tool).await;
+            let (result, _, _) = agent.sanitize_tool_output(body, tool).await;
             assert_ne!(
                 result, "[tool output blocked: injection detected by classifier]",
                 "'{tool}' output with shell metacharacters must bypass the ML classifier (#3547)"
